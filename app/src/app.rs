@@ -109,6 +109,9 @@ pub struct SpaiApp {
     system_window: Option<i64>,
     /// Ship-info window: the ship type currently shown (if any).
     ship_window: Option<i64>,
+    /// Pilot lookup (zKill) input + shared result.
+    pilot_query: String,
+    pilot_lookup: crate::lookup::SharedLookup,
 }
 
 impl SpaiApp {
@@ -209,6 +212,8 @@ impl SpaiApp {
             map_search_sel: 0,
             system_window: None,
             ship_window: None,
+            pilot_query: String::new(),
+            pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
         }
     }
 
@@ -648,6 +653,11 @@ impl SpaiApp {
         ui.separator();
         ui.add_space(6.0);
 
+        self.pilot_lookup_section(ui);
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+
         if self.characters.is_empty() {
             ui.label(
                 egui::RichText::new(
@@ -685,6 +695,85 @@ impl SpaiApp {
                 let _ = store.remove_character(id);
             }
             self.refresh_characters();
+        }
+    }
+
+    /// Pilot lookup: resolve a name, pull recent zKill losses, and show the hulls
+    /// the pilot flies (click a hull for its ship window).
+    fn pilot_lookup_section(&mut self, ui: &mut egui::Ui) {
+        use crate::lookup::LookupState;
+        ui.label(egui::RichText::new("Pilot lookup (zKill)").strong());
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.pilot_query)
+                    .hint_text("Character name")
+                    .desired_width(240.0),
+            );
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Look up").clicked() || enter {
+                crate::lookup::spawn_lookup(
+                    self.pilot_query.clone(),
+                    self.pilot_lookup.clone(),
+                    ui.ctx().clone(),
+                );
+            }
+        });
+
+        let state = self.pilot_lookup.lock().unwrap().clone();
+        match state {
+            LookupState::Idle => {}
+            LookupState::Loading(n) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Looking up {n}…"));
+                });
+            }
+            LookupState::Failed(e) => {
+                ui.colored_label(crate::theme::standing::WARNING, e);
+            }
+            LookupState::Done(report) => {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} — {} recent losses",
+                            report.name, report.losses_analyzed
+                        ))
+                        .strong(),
+                    );
+                    if ui.button("Open on zKillboard").clicked() {
+                        let _ = open::that(format!(
+                            "https://zkillboard.com/character/{}/",
+                            report.character_id
+                        ));
+                    }
+                });
+                if report.ships.is_empty() {
+                    ui.label(egui::RichText::new("No recent losses to analyse.").weak());
+                } else {
+                    ui.label(egui::RichText::new("Hulls flown (most-lost first):").weak());
+                    egui::ScrollArea::vertical().max_height(240.0).id_salt("pilot_ships").show(ui, |ui| {
+                        for ps in &report.ships {
+                            let details = self.store.as_ref().and_then(|s| s.ship_details(ps.ship_type_id));
+                            let name = details
+                                .as_ref()
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| "Other".to_owned());
+                            ui.horizontal(|ui| {
+                                let url = format!(
+                                    "https://images.evetech.net/types/{}/icon?size=32",
+                                    ps.ship_type_id
+                                );
+                                ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0)));
+                                let label = format!("{name}  ×{}", ps.count);
+                                if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                                    self.ship_window = Some(ps.ship_type_id);
+                                }
+                            });
+                        }
+                    });
+                }
+            }
         }
     }
 
