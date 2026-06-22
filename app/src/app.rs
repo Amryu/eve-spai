@@ -1318,28 +1318,26 @@ impl SpaiApp {
                 }
 
                 ui.label(egui::RichText::new("Neighbours").strong());
-                egui::ScrollArea::vertical().id_salt("nbrs").max_height(140.0).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
                     for &nid in graph.neighbors(id) {
                         if let Some(ni) = graph.info_of(nid) {
                             let cnt = counts.get(&nid).copied().unwrap_or(0);
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .button(format!(
-                                        "{} {}",
-                                        format_args!("{:.1}", (ni.security * 10.0).round() / 10.0),
-                                        ni.name
-                                    ))
-                                    .clicked()
-                                {
-                                    nav = Some(nid);
-                                }
-                                if cnt > 0 {
-                                    ui.label(
-                                        egui::RichText::new(format!("{cnt} intel"))
-                                            .color(crate::theme::standing::HOSTILE),
-                                    );
-                                }
-                            });
+                            let label = if cnt > 0 {
+                                format!(
+                                    "{:.1} {} ({cnt})",
+                                    (ni.security * 10.0).round() / 10.0,
+                                    ni.name
+                                )
+                            } else {
+                                format!("{:.1} {}", (ni.security * 10.0).round() / 10.0, ni.name)
+                            };
+                            let mut text = egui::RichText::new(label);
+                            if cnt > 0 {
+                                text = text.color(crate::theme::standing::HOSTILE);
+                            }
+                            if ui.button(text).clicked() {
+                                nav = Some(nid);
+                            }
                         }
                     }
                 });
