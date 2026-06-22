@@ -11,6 +11,13 @@ enum IntelTypeFilter {
     Threat,
 }
 
+/// A click on an intel card panel.
+#[derive(Clone, Copy)]
+enum IntelClick {
+    System(i64),
+    Ship(i64),
+}
+
 impl IntelTypeFilter {
     fn matches(self, r: &crate::intel::IntelReport) -> bool {
         match self {
@@ -94,6 +101,8 @@ pub struct SpaiApp {
     map_search: String,
     /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
+    /// Ship-info window: the ship type currently shown (if any).
+    ship_window: Option<i64>,
 }
 
 impl SpaiApp {
@@ -189,12 +198,18 @@ impl SpaiApp {
             map_focus: None,
             map_search: String::new(),
             system_window: None,
+            ship_window: None,
         }
     }
 
     /// Open the system-info window for a system (from map/intel/search click).
     fn open_system(&mut self, system_id: i64) {
         self.system_window = Some(system_id);
+    }
+
+    /// Open the ship-info window for a ship type (from an intel ship panel click).
+    fn open_ship(&mut self, ship_id: i64) {
+        self.ship_window = Some(ship_id);
     }
 
     /// Evaluate new intel against alert rules; fire desktop notifications (cooldown
@@ -418,7 +433,7 @@ impl SpaiApp {
                 .filter_map(|id| self.store.as_ref().and_then(|s| s.ship_details(id)).map(|d| (id, d)))
                 .collect()
         };
-        let mut focus: Option<i64> = None;
+        let mut action: Option<IntelClick> = None;
         {
             let status = self.system_status.lock().unwrap();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -426,18 +441,20 @@ impl SpaiApp {
                     let stale = state.is_stale(r);
                     let from_you =
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                    if let Some(id) =
+                    if let Some(a) =
                         intel_row(ui, r, now, stale, from_you, &systems, &status, &ship_details)
                     {
-                        focus = Some(id);
+                        action = Some(a);
                     }
                     ui.add_space(2.0);
                 }
             });
         }
         drop(state);
-        if let Some(id) = focus {
-            self.open_system(id);
+        match action {
+            Some(IntelClick::System(id)) => self.open_system(id),
+            Some(IntelClick::Ship(id)) => self.open_ship(id),
+            None => {}
         }
     }
 
@@ -1394,6 +1411,37 @@ impl SpaiApp {
         }
     }
 
+    /// Ship-info window: render image, hull class, resists, fitting, speed.
+    fn ship_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.ship_window else {
+            return;
+        };
+        let details = self.store.as_ref().and_then(|s| s.ship_details(id));
+        let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai — Ship", [360.0, 540.0], |ui| {
+            ui.horizontal(|ui| {
+                let url = format!("https://images.evetech.net/types/{id}/render?size=128");
+                ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(96.0)));
+                ui.vertical(|ui| match &details {
+                    Some(d) => {
+                        ui.heading(&d.name);
+                        ui.label(egui::RichText::new(&d.group).weak());
+                    }
+                    None => {
+                        ui.heading("Ship");
+                        ui.label(egui::RichText::new("No SDE details.").weak());
+                    }
+                });
+            });
+            ui.separator();
+            if let Some(d) = &details {
+                ship_stats(ui, d);
+            }
+        });
+        if !keep {
+            self.ship_window = None;
+        }
+    }
+
     fn intel_channels_window(&mut self, ctx: &egui::Context) {
         if !self.intel_channels_open {
             return;
@@ -1614,6 +1662,7 @@ impl eframe::App for SpaiApp {
         self.settings_dialog(&ctx);
         self.intel_channels_window(&ctx);
         self.system_window(&ctx);
+        self.ship_window(&ctx);
         if self.map_popped {
             self.show_map_viewport(&ctx);
         }
@@ -1805,7 +1854,7 @@ fn intel_row(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
-) -> Option<i64> {
+) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
     let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
@@ -1829,7 +1878,7 @@ fn intel_row(
         (ui.visuals().weak_text_color(), icon::INFO)
     };
 
-    let mut clicked: Option<i64> = None;
+    let mut clicked: Option<IntelClick> = None;
     let resp = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(8, 4))
         .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
@@ -1879,19 +1928,22 @@ fn intel_row(
                         .add(egui::Button::new(text).fill(scol.gamma_multiply(0.12)))
                         .on_hover_ui(|ui| system_hover(ui, systems, status, s));
                     if panel.clicked() {
-                        clicked = Some(s.id);
+                        clicked = Some(IntelClick::System(s.id));
                     }
                 }
 
-                // Ship panels with the real EVE hull icon (hover -> resists/fitting).
+                // Ship panels with the real EVE hull icon (click -> ship window).
+                let ship_icon = ui.text_style_height(&egui::TextStyle::Body);
                 for sh in &r.ships {
                     let url = format!("https://images.evetech.net/types/{}/icon?size=32", sh.id);
-                    let img = egui::Image::new(url).fit_to_exact_size(egui::vec2(18.0, 18.0));
-                    let panel = ui.add(
-                        egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()),
-                    );
+                    let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(ship_icon));
+                    let mut panel = ui
+                        .add(egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()));
                     if let Some(d) = ship_details.get(&sh.id) {
-                        panel.on_hover_ui(|ui| ship_hover(ui, d));
+                        panel = panel.on_hover_ui(|ui| ship_hover(ui, d));
+                    }
+                    if panel.clicked() {
+                        clicked = Some(IntelClick::Ship(sh.id));
                     }
                 }
 
@@ -1963,6 +2015,11 @@ fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
     ui.label(egui::RichText::new(&d.name).strong());
     ui.label(egui::RichText::new(&d.group).weak());
     ui.separator();
+    ship_stats(ui, d);
+}
+
+/// Resists / tank / hardpoints / drones / speed for a ship.
+fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
     let resist_line = |ui: &mut egui::Ui, label: &str, hp: f64, r: [u32; 4]| {
         if hp <= 0.0 {
             return;
