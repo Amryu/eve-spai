@@ -45,8 +45,8 @@ pub struct SpaiApp {
     last_alert_time: i64,
     /// Per-system alert cooldown (system id -> last alert unix seconds).
     alert_cooldown: std::collections::HashMap<i64, i64>,
-    /// Recent fired alerts (unix, text) for the Alerts view.
-    recent_alerts: Vec<(i64, String)>,
+    /// Recent fired alerts (unix, text) — shared with the game-log watcher.
+    recent_alerts: crate::gamewatcher::AlertLog,
 }
 
 impl SpaiApp {
@@ -122,7 +122,7 @@ impl SpaiApp {
             },
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
-            recent_alerts: Vec::new(),
+            recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -160,14 +160,17 @@ impl SpaiApp {
         }
         self.last_alert_time = newest;
 
-        for (sys_id, text) in hits {
-            self.alert_cooldown.insert(sys_id, now);
-            self.recent_alerts.push((now, text.clone()));
-            notify(text);
-        }
-        if self.recent_alerts.len() > 50 {
-            let drop = self.recent_alerts.len() - 50;
-            self.recent_alerts.drain(0..drop);
+        if !hits.is_empty() {
+            let mut log = self.recent_alerts.lock().unwrap();
+            for (sys_id, text) in hits {
+                self.alert_cooldown.insert(sys_id, now);
+                log.push((now, text.clone()));
+                notify(text);
+            }
+            let len = log.len();
+            if len > 50 {
+                log.drain(0..len - 50);
+            }
         }
     }
 
@@ -186,13 +189,14 @@ impl SpaiApp {
         ui.separator();
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Recent alerts").strong());
-        if self.recent_alerts.is_empty() {
+        let log = self.recent_alerts.lock().unwrap();
+        if log.is_empty() {
             ui.label(egui::RichText::new("None yet.").weak());
             return;
         }
         let now = chrono::Utc::now().timestamp();
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (t, text) in self.recent_alerts.iter().rev() {
+            for (t, text) in log.iter().rev() {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("{:>7}", fmt_age(now - t)))
@@ -252,6 +256,13 @@ impl SpaiApp {
                 self.intel_state.clone(),
                 ctx.clone(),
             );
+        }
+
+        // Combat alerts from game logs.
+        if self.settings.alert_combat {
+            if let Some(game_dir) = crate::logpaths::game_logs_dir(&self.settings.eve_logs_dir) {
+                crate::gamewatcher::spawn(game_dir, self.recent_alerts.clone(), ctx.clone());
+            }
         }
     }
 
@@ -697,6 +708,9 @@ impl SpaiApp {
                             .add(egui::DragValue::new(&mut self.settings.alert_within_jumps).range(0..=20))
                             .changed();
                     });
+                    changed |= ui
+                        .checkbox(&mut self.settings.alert_combat, "Combat alerts (under attack / scrambled)")
+                        .changed();
 
                     ui.separator();
 

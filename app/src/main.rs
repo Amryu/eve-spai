@@ -11,6 +11,8 @@ mod battle;
 mod chatlog;
 mod esi;
 mod factions;
+mod gamelog;
+mod gamewatcher;
 mod geo;
 mod intel;
 mod logpaths;

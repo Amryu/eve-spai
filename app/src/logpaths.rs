@@ -70,3 +70,23 @@ pub fn chat_logs_dir(configured: &str) -> Option<PathBuf> {
         .map(|d| d.join("Chatlogs"))
         .find(|d| d.is_dir())
 }
+
+/// Resolve the `Gamelogs` directory (combat logs), honouring a configured path.
+pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        let p = PathBuf::from(configured);
+        if p.ends_with("Gamelogs") && p.is_dir() {
+            return Some(p);
+        }
+        let gl = p.join("Gamelogs");
+        if gl.is_dir() {
+            return Some(gl);
+        }
+        return None;
+    }
+    candidate_log_dirs()
+        .into_iter()
+        .map(|d| d.join("Gamelogs"))
+        .find(|d| d.is_dir())
+}

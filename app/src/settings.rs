@@ -35,6 +35,9 @@ pub struct Settings {
     /// Alert when hostiles are within this many jumps of you (0 = off).
     #[serde(default = "default_alert_jumps")]
     pub alert_within_jumps: u32,
+    /// Desktop alerts on combat events (under attack / scrambled) from game logs.
+    #[serde(default = "default_true")]
+    pub alert_combat: bool,
 }
 
 fn default_true() -> bool {
@@ -73,6 +76,7 @@ impl Default for Settings {
             jump_bridges: Vec::new(),
             alert_enabled: true,
             alert_within_jumps: 5,
+            alert_combat: true,
         }
     }
 }
