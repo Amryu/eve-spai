@@ -104,6 +104,9 @@ impl SpaiApp {
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
         cc.egui_ctx.set_fonts(fonts);
 
+        // Image loaders so we can show ship icons from EVE's image server.
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+
         let store = Store::open().map_err(|e| eprintln!("store: {e:#}")).ok();
         let settings = store
             .as_ref()
@@ -1138,6 +1141,38 @@ impl SpaiApp {
         }
     }
 
+    /// Render `content` as a standalone, non-modal, always-on-top OS window.
+    /// Returns false when the window's close button was pressed.
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    fn dialog_viewport(
+        parent: &egui::Context,
+        id: &str,
+        title: &str,
+        size: [f32; 2],
+        content: impl FnOnce(&mut egui::Ui),
+    ) -> bool {
+        let mut keep = true;
+        let mut content = Some(content);
+        parent.show_viewport_immediate(
+            egui::ViewportId::from_hash_of(id),
+            egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size(size)
+                .with_always_on_top(),
+            |ctx, _class| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(c) = content.take() {
+                        c(ui);
+                    }
+                });
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    keep = false;
+                }
+            },
+        );
+        keep
+    }
+
     fn persist(&mut self) {
         if let Some(store) = &self.store {
             if let Err(e) = store.save_settings(&self.settings) {
@@ -1235,17 +1270,16 @@ impl SpaiApp {
         let Some(id) = self.system_window else {
             return;
         };
-        let mut open = true;
         let mut nav: Option<i64> = None;
         let mut show_on_map = false;
         let now = chrono::Utc::now().timestamp();
 
-        egui::Window::new("System info")
-            .id(egui::Id::new("system_window"))
-            .open(&mut open)
-            .resizable(true)
-            .default_width(460.0)
-            .show(ctx, |ui| {
+        let keep = Self::dialog_viewport(
+            ctx,
+            "system_window",
+            "EVE Spai — System info",
+            [470.0, 660.0],
+            |ui| {
                 let Some(graph) = self.systems.clone() else {
                     ui.label("SDE not ready.");
                     return;
@@ -1344,7 +1378,8 @@ impl SpaiApp {
                     }
                 });
                 // TODO: neighbouring intel density over time (sparkline) — deferred.
-            });
+            },
+        );
 
         if let Some(nid) = nav {
             self.system_window = Some(nid);
@@ -1356,7 +1391,7 @@ impl SpaiApp {
             }
             self.map_focus = Some(id);
         }
-        if !open {
+        if !keep {
             self.system_window = None;
         }
     }
@@ -1365,13 +1400,14 @@ impl SpaiApp {
         if !self.intel_channels_open {
             return;
         }
-        let mut open = self.intel_channels_open;
         let mut changed = false;
-        egui::Window::new("Intel channels")
-            .open(&mut open)
-            .resizable(true)
-            .default_width(420.0)
-            .show(ctx, |ui| {
+        let keep = Self::dialog_viewport(
+            ctx,
+            "intel_channels_window",
+            "EVE Spai — Intel channels",
+            [420.0, 480.0],
+            |ui| {
+                ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
                         "EVE chat channels to watch for intel. Match the in-game channel name.",
@@ -1379,7 +1415,7 @@ impl SpaiApp {
                     .weak(),
                 );
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut remove: Option<usize> = None;
                     for (i, ch) in self.settings.intel_channels.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
@@ -1401,27 +1437,29 @@ impl SpaiApp {
                     self.settings.intel_channels.push(String::new());
                     changed = true;
                 }
-            });
+            },
+        );
         if changed {
             self.needs_save = true;
         }
-        self.intel_channels_open = open;
+        if !keep {
+            self.intel_channels_open = false;
+        }
     }
 
     fn settings_dialog(&mut self, ctx: &egui::Context) {
         if !self.settings_open {
             return;
         }
-        let mut open = self.settings_open;
         let mut changed = false;
         let mut new_theme: Option<Theme> = None;
 
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(440.0)
-            .show(ctx, |ui| {
+        let keep = Self::dialog_viewport(
+            ctx,
+            "settings_window",
+            "EVE Spai — Settings",
+            [470.0, 700.0],
+            |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // --- Theme ---
                     ui.label(egui::RichText::new("Theme (3 colours)").strong());
@@ -1535,7 +1573,8 @@ impl SpaiApp {
                         self.intel_channels_open = true;
                     }
                 });
-            });
+            },
+        );
 
         if let Some(theme) = new_theme {
             self.settings.theme = theme;
@@ -1544,7 +1583,9 @@ impl SpaiApp {
         if changed {
             self.needs_save = true;
         }
-        self.settings_open = open;
+        if !keep {
+            self.settings_open = false;
+        }
     }
 }
 
@@ -1844,10 +1885,13 @@ fn intel_row(
                     }
                 }
 
-                // Ship panels (hover -> categorisation/resists/fitting).
+                // Ship panels with the real EVE hull icon (hover -> resists/fitting).
                 for sh in &r.ships {
-                    let txt = egui::RichText::new(format!("{} {}", icon::ROCKET, sh.name)).strong();
-                    let panel = ui.add(egui::Button::new(txt));
+                    let url = format!("https://images.evetech.net/types/{}/icon?size=32", sh.id);
+                    let img = egui::Image::new(url).fit_to_exact_size(egui::vec2(18.0, 18.0));
+                    let panel = ui.add(
+                        egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()),
+                    );
                     if let Some(d) = ship_details.get(&sh.id) {
                         panel.on_hover_ui(|ui| ship_hover(ui, d));
                     }
