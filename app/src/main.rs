@@ -8,6 +8,7 @@ mod app;
 mod auth;
 mod battle;
 mod chatlog;
+mod esi;
 mod geo;
 mod intel;
 mod logpaths;

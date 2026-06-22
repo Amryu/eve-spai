@@ -35,6 +35,10 @@ pub struct SpaiApp {
     intel_query: String,
     /// Clustered battle reports (shared with the zKill feed worker).
     battles: crate::zkill::SharedBattles,
+    /// Active character name + ESI-resolved system (shared with the location poller).
+    player: crate::esi::SharedPlayer,
+    /// System graph for UI distance queries (set once the SDE is ready).
+    systems: Option<std::sync::Arc<crate::geo::Systems>>,
 }
 
 impl SpaiApp {
@@ -75,6 +79,15 @@ impl SpaiApp {
             .map(|s| s.list_characters())
             .unwrap_or_default();
 
+        // Poll the active character's ESI location in the background.
+        let player: crate::esi::SharedPlayer =
+            std::sync::Arc::new(std::sync::Mutex::new(crate::esi::Player::default()));
+        if let Some(store) = &store {
+            let _ = store;
+            let cid = non_empty_or(&settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+            crate::esi::spawn_location_poller(cid, player.clone(), cc.egui_ctx.clone());
+        }
+
         Self {
             store,
             settings,
@@ -91,6 +104,8 @@ impl SpaiApp {
             chat_dir: None,
             intel_query: String::new(),
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            player,
+            systems: None,
         }
     }
 
@@ -123,6 +138,7 @@ impl SpaiApp {
             .collect();
         systems.add_bridges(&bridges);
         let systems = std::sync::Arc::new(systems);
+        self.systems = Some(systems.clone());
 
         // The battle feed runs whenever the SDE is ready (independent of logs).
         crate::zkill::spawn(
@@ -179,10 +195,13 @@ impl SpaiApp {
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
 
+        let player_sys = self.player.lock().unwrap().system_id;
+        let systems = self.systems.clone();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for r in matches {
                 let stale = state.is_stale(r);
-                intel_row(ui, r, now, stale);
+                let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+                intel_row(ui, r, now, stale, from_you);
                 ui.add_space(2.0);
             }
         });
@@ -217,9 +236,17 @@ impl SpaiApp {
 
         ui.label(egui::RichText::new(format!("{} battles", shown.len())).weak());
         ui.add_space(4.0);
+        let player_sys = self.player.lock().unwrap().system_id;
+        let systems = self.systems.clone();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for b in shown {
-                battle_row(ui, b, now);
+                // Nearest battle system to the player.
+                let from_you = b
+                    .systems
+                    .iter()
+                    .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
+                    .min();
+                battle_row(ui, b, now, from_you);
                 ui.add_space(4.0);
             }
         });
@@ -641,6 +668,7 @@ impl eframe::App for SpaiApp {
         self.settings.theme.apply(&ctx);
 
         self.refresh_characters();
+        self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.top_bar(ui);
         self.status_bar(ui);
@@ -666,6 +694,28 @@ impl eframe::App for SpaiApp {
     }
 }
 
+/// Jumps from the player's system to a target system, if both are known.
+fn jumps_from_you(
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    player_sys: Option<i64>,
+    target: Option<i64>,
+) -> Option<u32> {
+    let (sys, p, t) = (systems.as_ref()?, player_sys?, target?);
+    sys.jumps(t, p, 50)
+}
+
+/// A weak "Nj" distance-from-you chip (blank if unknown).
+fn from_you_chip(ui: &mut egui::Ui, from_you: Option<u32>) {
+    if let Some(j) = from_you {
+        let txt = if j == 0 {
+            "here".to_owned()
+        } else {
+            format!("{j}j")
+        };
+        ui.label(egui::RichText::new(txt).weak().small());
+    }
+}
+
 /// Format ISK compactly: 1.2B / 340M / 5.0k.
 fn fmt_isk(isk: f64) -> String {
     if isk >= 1e9 {
@@ -680,12 +730,13 @@ fn fmt_isk(isk: f64) -> String {
 }
 
 /// Render one clustered battle.
-fn battle_row(ui: &mut egui::Ui, b: &crate::battle::Battle, now: i64) {
+fn battle_row(ui: &mut egui::Ui, b: &crate::battle::Battle, now: i64, from_you: Option<u32>) {
     let span_min = ((b.end - b.start) / 60).max(0);
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - b.end))).monospace().weak());
+            from_you_chip(ui, from_you);
             // systems involved (with security colour)
             for (id, name, sec) in &b.systems {
                 let _ = id;
@@ -737,8 +788,14 @@ fn fmt_age(secs: i64) -> String {
 }
 
 /// Render a single intel report row in the concise, parsed format. `stale` means a
-/// later "clear" has outdated it.
-fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64, stale: bool) {
+/// later "clear" has outdated it; `from_you` is jumps from the active character.
+fn intel_row(
+    ui: &mut egui::Ui,
+    r: &crate::intel::IntelReport,
+    now: i64,
+    stale: bool,
+    from_you: Option<u32>,
+) {
     let age = (now - r.received).max(0);
     // Fade older reports toward the background; outdated (cleared) ones fade hard.
     let fade = if stale {
@@ -755,6 +812,7 @@ fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64, stale: 
         // Primary, parsed line: age · systems · count · status · movement.
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak());
+            from_you_chip(ui, from_you);
 
             for s in &r.systems {
                 ui.label(security_badge(s.security).color(dim(security_color(s.security))));

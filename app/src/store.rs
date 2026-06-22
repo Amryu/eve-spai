@@ -193,6 +193,18 @@ impl Store {
         out
     }
 
+    pub fn character_by_name(&self, name: &str) -> Option<CharacterRow> {
+        self.list_characters().into_iter().find(|c| c.name == name)
+    }
+
+    pub fn update_token_expiry(&self, id: i64, expires_at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE characters SET expires_at = ?1 WHERE id = ?2",
+            params![expires_at, id],
+        )?;
+        Ok(())
+    }
+
     pub fn remove_character(&self, id: i64) -> Result<()> {
         let _ = crate::tokens::delete(id);
         self.conn

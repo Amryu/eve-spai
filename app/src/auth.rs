@@ -173,9 +173,9 @@ fn wait_for_callback(server: &tiny_http::Server) -> Result<(String, String)> {
 
 #[derive(Deserialize)]
 pub struct TokenResponse {
-    access_token: String,
-    refresh_token: String,
-    expires_in: i64,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
 }
 
 fn exchange_code(client_id: &str, code: &str, verifier: &str) -> Result<TokenResponse> {
@@ -199,9 +199,7 @@ fn exchange_code(client_id: &str, code: &str, verifier: &str) -> Result<TokenRes
     resp.json().context("parsing token response")
 }
 
-/// Exchange a stored refresh token for a fresh access token (used by ESI calls in
-/// later milestones).
-#[allow(dead_code)]
+/// Exchange a stored refresh token for a fresh access token.
 pub fn refresh_access_token(client_id: &str, refresh_token: &str) -> Result<TokenResponse> {
     let client = http_client()?;
     let resp = client
