@@ -699,11 +699,25 @@ fn battle_row(ui: &mut egui::Ui, b: &crate::battle::Battle, now: i64) {
                 ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
             }
         });
-        // Top parties by involvement: name (kills/losses).
+        // Belligerent sides, "vs" separated.
         ui.horizontal_wrapped(|ui| {
-            for p in b.parties.iter().take(6) {
+            for (i, side) in b.sides.iter().take(2).enumerate() {
+                if i > 0 {
+                    ui.label(egui::RichText::new("vs").strong());
+                }
+                let mut names: Vec<&str> = side.parties.iter().take(3).map(|s| s.as_str()).collect();
+                if side.parties.len() > 3 {
+                    names.push("…");
+                }
                 ui.label(
-                    egui::RichText::new(format!("{} ({}/{})", p.name, p.kills, p.losses)).small(),
+                    egui::RichText::new(format!(
+                        "{} [{}k/{}l, {} lost]",
+                        names.join(", "),
+                        side.kills,
+                        side.losses,
+                        fmt_isk(side.isk_lost)
+                    ))
+                    .small(),
                 );
             }
         });

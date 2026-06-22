@@ -46,12 +46,17 @@ pub struct Engagement {
     pub isk: f64,
 }
 
-/// Aggregated kills/losses for one party across a battle.
+/// One side of a battle: parties that fought together (co-attackers).
 #[derive(Clone, Debug)]
-pub struct PartyStat {
-    pub name: String,
+pub struct Side {
+    /// Member parties, most-involved first.
+    pub parties: Vec<String>,
+    /// Kills scored by this side.
     pub kills: u32,
+    /// Ships lost by this side.
     pub losses: u32,
+    /// ISK destroyed *from* this side (its losses' value).
+    pub isk_lost: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +68,8 @@ pub struct Battle {
     pub end: i64,
     /// Systems involved: (id, name, security).
     pub systems: Vec<(i64, String, f64)>,
-    pub parties: Vec<PartyStat>,
+    /// Belligerent sides, largest first (usually 2).
+    pub sides: Vec<Side>,
     pub kills: usize,
     pub isk: f64,
 }
@@ -115,25 +121,10 @@ fn build_battle(mut engs: Vec<Engagement>) -> Battle {
 
     let mut systems: BTreeMap<i64, (String, f64)> = BTreeMap::new();
     let mut isk = 0.0;
-    // party name -> (kills, losses)
-    let mut tally: HashMap<String, (u32, u32)> = HashMap::new();
     for e in &engs {
         systems.insert(e.system_id, (e.system_name.clone(), e.security));
         isk += e.isk;
-        tally.entry(e.victim.name.clone()).or_default().1 += 1;
-        // Count each attacking party once per kill.
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        for a in &e.attackers {
-            if seen.insert(a.name.as_str()) {
-                tally.entry(a.name.clone()).or_default().0 += 1;
-            }
-        }
     }
-    let mut parties: Vec<PartyStat> = tally
-        .into_iter()
-        .map(|(name, (kills, losses))| PartyStat { name, kills, losses })
-        .collect();
-    parties.sort_by(|a, b| (b.kills + b.losses).cmp(&(a.kills + a.losses)));
 
     Battle {
         kills: engs.len(),
@@ -142,11 +133,75 @@ fn build_battle(mut engs: Vec<Engagement>) -> Battle {
             .into_iter()
             .map(|(id, (name, sec))| (id, name, sec))
             .collect(),
-        parties,
+        sides: infer_sides(&engs),
         start,
         end,
         engagements: engs,
     }
+}
+
+/// Split parties into belligerent sides: co-attackers on a kill are allied; a
+/// victim opposes its attackers. Union co-attackers, then aggregate per component.
+fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
+    // Index every distinct party name.
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for e in engs {
+        for name in std::iter::once(&e.victim.name).chain(e.attackers.iter().map(|a| &a.name)) {
+            let next = index.len();
+            index.entry(name.clone()).or_insert(next);
+        }
+    }
+    let mut uf = UnionFind::new(index.len());
+    for e in engs {
+        let mut attackers: Vec<usize> = e.attackers.iter().map(|a| index[&a.name]).collect();
+        attackers.dedup();
+        for w in attackers.windows(2) {
+            uf.union(w[0], w[1]);
+        }
+    }
+
+    // root -> (members set, kills, losses, isk_lost)
+    let mut sides: HashMap<usize, (BTreeSet<String>, HashMap<String, u32>, u32, u32, f64)> =
+        HashMap::new();
+    let mut root_of: HashMap<String, usize> = HashMap::new();
+    for (name, &i) in &index {
+        let r = uf.find(i);
+        root_of.insert(name.clone(), r);
+        sides.entry(r).or_default().0.insert(name.clone());
+    }
+    for e in engs {
+        // Victim's side takes a loss.
+        let vr = root_of[&e.victim.name];
+        let s = sides.get_mut(&vr).unwrap();
+        s.3 += 1;
+        s.4 += e.isk;
+        *s.1.entry(e.victim.name.clone()).or_default() += 1;
+        // Each attacking side scores one kill.
+        let mut scored: BTreeSet<usize> = BTreeSet::new();
+        for a in &e.attackers {
+            let r = root_of[&a.name];
+            *sides.get_mut(&r).unwrap().1.entry(a.name.clone()).or_default() += 1;
+            if scored.insert(r) {
+                sides.get_mut(&r).unwrap().2 += 1;
+            }
+        }
+    }
+
+    let mut out: Vec<Side> = sides
+        .into_values()
+        .map(|(members, involvement, kills, losses, isk_lost)| {
+            let mut parties: Vec<String> = members.into_iter().collect();
+            parties.sort_by_key(|p| std::cmp::Reverse(involvement.get(p).copied().unwrap_or(0)));
+            Side {
+                parties,
+                kills,
+                losses,
+                isk_lost,
+            }
+        })
+        .collect();
+    out.sort_by_key(|s| std::cmp::Reverse(s.kills + s.losses));
+    out
 }
 
 struct UnionFind {
@@ -249,16 +304,27 @@ mod tests {
     }
 
     #[test]
-    fn party_stats_count_kills_and_losses() {
-        let engs = [
-            eng(1, 0, 1, "Red", "Blue"),
-            eng(2, 60, 1, "Red", "Blue"),
-        ];
+    fn sides_split_by_kills_and_losses() {
+        let engs = [eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 1, "Red", "Blue")];
         let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
         let b = &battles[0];
-        let blue = b.parties.iter().find(|p| p.name == "Blue").unwrap();
-        let red = b.parties.iter().find(|p| p.name == "Red").unwrap();
+        assert_eq!(b.sides.len(), 2);
+        let blue = b.sides.iter().find(|s| s.parties.contains(&"Blue".to_string())).unwrap();
+        let red = b.sides.iter().find(|s| s.parties.contains(&"Red".to_string())).unwrap();
         assert_eq!((blue.kills, blue.losses), (2, 0));
         assert_eq!((red.kills, red.losses), (0, 2));
+    }
+
+    #[test]
+    fn coattackers_form_one_side() {
+        // Blue + Green kill Red together -> one side {Blue, Green} vs {Red}.
+        let mut e = eng(1, 0, 1, "Red", "Blue");
+        e.attackers.push(party(3, "Green"));
+        let battles = cluster(std::slice::from_ref(&e), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let b = &battles[0];
+        assert_eq!(b.sides.len(), 2);
+        let allied = b.sides.iter().find(|s| s.parties.contains(&"Blue".to_string())).unwrap();
+        assert!(allied.parties.contains(&"Green".to_string()));
+        assert_eq!(allied.kills, 1);
     }
 }
