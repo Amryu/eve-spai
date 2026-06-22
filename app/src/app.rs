@@ -1642,6 +1642,7 @@ fn intel_row(
     let warn = crate::theme::standing::WARNING;
     let red = crate::theme::standing::HOSTILE;
     let accent = ui.visuals().hyperlink_color;
+    let jumps_color = crate::theme::standing::CORP;
 
     // Report type drives the background tint and a leading icon.
     let (tint, type_icon) = if r.clear {
@@ -1664,9 +1665,28 @@ fn intel_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(type_icon).color(tint));
-                ui.label(egui::RichText::new(fmt_age(age)).monospace().weak());
-                from_you_chip(ui, from_you);
+                let row_h = ui.spacing().interact_size.y;
+                let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(w, row_h),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| add(ui),
+                    );
+                };
+                // Fixed columns so time/jumps line up across rows.
+                col(ui, 16.0, &|ui| {
+                    ui.label(egui::RichText::new(type_icon).color(tint));
+                });
+                col(ui, 60.0, &|ui| {
+                    ui.label(egui::RichText::new(fmt_age(age)).monospace().weak());
+                });
+                col(ui, 40.0, &|ui| {
+                    if let Some(j) = from_you {
+                        let t = if j == 0 { "here".to_owned() } else { format!("{j}j") };
+                        // Distinct from the (weak) time column.
+                        ui.label(egui::RichText::new(t).monospace().color(jumps_color));
+                    }
+                });
 
                 // Hostile-count panel.
                 if let Some(n) = r.count {
