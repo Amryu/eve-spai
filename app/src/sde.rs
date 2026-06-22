@@ -6,6 +6,7 @@
 //! Source: Fuzzwork's CSV conversion of the SDE. Columns are read positionally so
 //! a leading BOM or added columns don't break parsing.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -13,6 +14,19 @@ use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection};
 
 const BASE: &str = "https://www.fuzzwork.co.uk/dump/latest/csv";
+
+/// Dogma attribute ids we keep for ships (resonances, hp, drones, hardpoints,
+/// speed, slots). Resist = 1 - resonance.
+const SHIP_ATTRS: &[i64] = &[
+    271, 272, 273, 274, // shield resonance: em, exp, kin, therm
+    267, 268, 269, 270, // armor resonance
+    113, 111, 109, 110, // hull resonance
+    263, 265, 9, // shield hp, armor hp, structure hp
+    283, 1271, // drone capacity, drone bandwidth
+    101, 102, // launcher / turret hardpoints
+    37,  // max velocity
+    12, 13, 14, // low / med / hi slots
+];
 
 /// Shared, observable state of the SDE download/bake.
 #[derive(Clone, Debug, Default)]
@@ -45,7 +59,7 @@ pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {
 fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("eve-spai/0.1 (EVE intel tool)")
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(180))
         .build()?;
     let fetch = |name: &str| -> Result<String> {
         set(SdeStatus::Downloading(format!("Downloading {name}…")));
@@ -63,6 +77,9 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     let constellations_csv = fetch("mapConstellations.csv")?;
     let systems_csv = fetch("mapSolarSystems.csv")?;
     let jumps_csv = fetch("mapSolarSystemJumps.csv")?;
+    let groups_csv = fetch("invGroups.csv")?;
+    let types_csv = fetch("invTypes.csv")?;
+    let attrs_csv = fetch("dgmTypeAttributes.csv")?;
 
     set(SdeStatus::Downloading("Building local database…".to_owned()));
     let mut conn = Connection::open(path)?;
@@ -149,6 +166,78 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
             if from != 0 && to != 0 {
                 stmt.execute(params![from, to])?;
             }
+        }
+    }
+
+    // --- Ships (category 6) + selected dogma attributes ---
+    set(SdeStatus::Downloading("Building ship data…".to_owned()));
+    tx.execute("DELETE FROM sde_ships", [])?;
+    tx.execute("DELETE FROM sde_ship_attrs", [])?;
+
+    // Ship groups (categoryID 0=groupID, 1=categoryID, 2=groupName).
+    let mut ship_groups: HashMap<i64, String> = HashMap::new();
+    {
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(groups_csv.as_bytes());
+        for rec in rdr.records() {
+            let rec = rec?;
+            let cat: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
+            if cat != 6 {
+                continue;
+            }
+            if let Ok(gid) = rec.get(0).unwrap_or("").trim().parse::<i64>() {
+                ship_groups.insert(gid, rec.get(2).unwrap_or("").to_owned());
+            }
+        }
+    }
+
+    // Ships: typeID(0), groupID(1), typeName(2), mass(4), volume(5).
+    let mut ship_ids: HashSet<i64> = HashSet::new();
+    {
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(types_csv.as_bytes());
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO sde_ships(id, name, group_name, mass, volume) VALUES(?1,?2,?3,?4,?5)",
+        )?;
+        for rec in rdr.records() {
+            let rec = rec?;
+            let gid: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
+            let Some(group) = ship_groups.get(&gid) else {
+                continue;
+            };
+            let Ok(id) = rec.get(0).unwrap_or("").trim().parse::<i64>() else {
+                continue;
+            };
+            let mass: f64 = rec.get(4).unwrap_or("").trim().parse().unwrap_or(0.0);
+            let volume: f64 = rec.get(5).unwrap_or("").trim().parse().unwrap_or(0.0);
+            stmt.execute(params![id, rec.get(2).unwrap_or(""), group, mass, volume])?;
+            ship_ids.insert(id);
+        }
+    }
+
+    // Ship attributes: typeID(0), attributeID(1), valueInt(2), valueFloat(3).
+    {
+        let needed: HashSet<i64> = SHIP_ATTRS.iter().copied().collect();
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(attrs_csv.as_bytes());
+        let mut stmt =
+            tx.prepare("INSERT OR REPLACE INTO sde_ship_attrs(ship_id, attr_id, value) VALUES(?1,?2,?3)")?;
+        for rec in rdr.records() {
+            let rec = rec?;
+            let tid: i64 = rec.get(0).unwrap_or("").trim().parse().unwrap_or(0);
+            let aid: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
+            if !ship_ids.contains(&tid) || !needed.contains(&aid) {
+                continue;
+            }
+            let value: f64 = rec
+                .get(3)
+                .and_then(|v| v.trim().parse().ok())
+                .or_else(|| rec.get(2).and_then(|v| v.trim().parse().ok()))
+                .unwrap_or(0.0);
+            stmt.execute(params![tid, aid, value])?;
         }
     }
 

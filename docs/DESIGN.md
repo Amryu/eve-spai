@@ -366,6 +366,13 @@ language).
 
 ---
 
+## 9b. Deferred — built-in player lookup (zKill fit analysis)
+TODO. A search to look up a pilot via zKillboard and infer the **fits they bring**
+from their recent **losses**, shown prominently: weapon type + optimal/falloff
+**range**, **speed**, **tank type** (active — with rep count — vs buffer), **EHP**,
+and **resist profile**. Requires the ship-attribute (dogma) data + zKill character
+losses + fit parsing (overlaps the deferred ship/character intelligence work).
+
 ## 9. External integrations
 EVE **SSO** (OAuth2 PKCE) · EVE **ESI** (REST, rate-limit aware) · EVE **image
 server** (small sizes only) · **zKillboard** (+ redisq/stream for live kills) ·
