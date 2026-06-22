@@ -20,11 +20,7 @@ pub enum SdeStatus {
     #[default]
     NotReady,
     Downloading(String),
-    Ready {
-        systems: i64,
-        regions: i64,
-        version: String,
-    },
+    Ready,
     Failed(String),
 }
 
@@ -40,17 +36,13 @@ pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {
         };
         set(SdeStatus::Downloading("Connecting…".to_owned()));
         match run(&path, &set) {
-            Ok((systems, regions, version)) => set(SdeStatus::Ready {
-                systems,
-                regions,
-                version,
-            }),
+            Ok(()) => set(SdeStatus::Ready),
             Err(e) => set(SdeStatus::Failed(format!("{e:#}"))),
         }
     });
 }
 
-fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
+fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("eve-spai/0.1 (EVE intel tool)")
         .timeout(std::time::Duration::from_secs(120))
@@ -160,7 +152,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
         }
     }
 
-    let regions: i64 = tx.query_row("SELECT COUNT(*) FROM sde_regions", [], |r| r.get(0))?;
     let version = chrono::Utc::now().format("%Y-%m-%d").to_string();
     tx.execute(
         "INSERT OR REPLACE INTO sde_meta(key, value) VALUES('version', ?1)",
@@ -175,5 +166,5 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
     if systems == 0 {
         anyhow::bail!("no systems parsed from SDE");
     }
-    Ok((systems, regions, version))
+    Ok(())
 }

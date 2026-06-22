@@ -16,6 +16,7 @@ mod gamewatcher;
 mod geo;
 mod intel;
 mod logpaths;
+mod map;
 mod nav;
 mod packs;
 mod sde;

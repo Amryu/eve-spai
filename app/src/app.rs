@@ -18,8 +18,6 @@ pub struct SpaiApp {
     needs_save: bool,
     /// SDE download/bake state (shared with the background worker).
     sde_status: SharedStatus,
-    /// Map-view system search box.
-    sde_query: String,
     /// SSO login state (shared with the background login worker).
     auth_status: SharedAuth,
     /// Authenticated characters, refreshed from the store each frame.
@@ -46,6 +44,13 @@ pub struct SpaiApp {
     alert_cooldown: std::collections::HashMap<i64, i64>,
     /// Recent fired alerts (unix, text) — shared with the game-log watcher.
     recent_alerts: crate::gamewatcher::AlertLog,
+    // --- Map view state ---
+    map_region: Option<i64>,
+    map_regions: Vec<(i64, String)>,
+    map_systems: Vec<crate::store::MapSystem>,
+    map_loaded_region: Option<i64>,
+    map_pan: egui::Vec2,
+    map_zoom: f32,
 }
 
 impl SpaiApp {
@@ -65,15 +70,11 @@ impl SpaiApp {
         settings.theme.apply(&cc.egui_ctx);
 
         // Resolve SDE state from what's already baked; otherwise download on first run.
-        let initial = store
-            .as_ref()
-            .and_then(|s| s.sde_summary())
-            .map(|(systems, regions, version)| SdeStatus::Ready {
-                systems,
-                regions,
-                version,
-            })
-            .unwrap_or_default();
+        let initial = if store.as_ref().map(|s| s.sde_ready()).unwrap_or(false) {
+            SdeStatus::Ready
+        } else {
+            SdeStatus::default()
+        };
         let sde_status: SharedStatus = std::sync::Arc::new(std::sync::Mutex::new(initial));
         if let Some(store) = &store {
             if matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
@@ -103,7 +104,6 @@ impl SpaiApp {
             active_character: "No character".to_owned(),
             needs_save: false,
             sde_status,
-            sde_query: String::new(),
             auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
             characters,
             intel_state: std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default())),
@@ -122,6 +122,12 @@ impl SpaiApp {
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            map_region: None,
+            map_regions: Vec::new(),
+            map_systems: Vec::new(),
+            map_loaded_region: None,
+            map_pan: egui::Vec2::ZERO,
+            map_zoom: 1.0,
         }
     }
 
@@ -542,47 +548,10 @@ impl SpaiApp {
 
     /// The Map view (M1: SDE status + system lookup; the rendered map lands in M3).
     fn map_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.0);
-
+        ui.add_space(8.0);
         let status = self.sde_status.lock().unwrap().clone();
         match status {
-            SdeStatus::Ready {
-                systems,
-                regions,
-                version,
-            } => {
-                ui.label(format!(
-                    "Static data ready — {systems} systems, {regions} regions (SDE {version})"
-                ));
-                ui.add_space(10.0);
-                ui.label(egui::RichText::new("System lookup").strong());
-                ui.text_edit_singleline(&mut self.sde_query);
-                ui.add_space(4.0);
-
-                let results = self
-                    .store
-                    .as_ref()
-                    .map(|s| s.find_systems(&self.sde_query, 14))
-                    .unwrap_or_default();
-                let systems = self.systems.clone();
-                let status = self.system_status.lock().unwrap();
-                egui::ScrollArea::vertical()
-                    .max_height(320.0)
-                    .show(ui, |ui| {
-                        for r in results {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(security_badge(r.security));
-                                ui.label(egui::RichText::new(&r.name).strong());
-                                system_chips(ui, &systems, &status, r.id);
-                            });
-                        }
-                    });
-
-                ui.add_space(10.0);
-                if ui.button("Re-download static data").clicked() {
-                    self.start_sde(&ui.ctx().clone());
-                }
-            }
+            SdeStatus::Ready { .. } => self.render_map(ui),
             SdeStatus::Downloading(msg) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -596,21 +565,132 @@ impl SpaiApp {
                 }
             }
             SdeStatus::Failed(err) => {
-                let warn = crate::theme::standing::WARNING;
-                ui.colored_label(warn, format!("SDE download failed: {err}"));
+                ui.colored_label(crate::theme::standing::WARNING, format!("SDE download failed: {err}"));
                 if ui.button("Retry").clicked() {
                     self.start_sde(&ui.ctx().clone());
                 }
             }
         }
+    }
 
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new(
-                "The 2D region map renders here next, using these coordinates. (Milestone M3.)",
-            )
-            .weak(),
-        );
+    /// Render the 2D region map (systems, gates, intel + player overlays).
+    fn render_map(&mut self, ui: &mut egui::Ui) {
+        if self.map_regions.is_empty() {
+            if let Some(store) = &self.store {
+                self.map_regions = store.regions();
+            }
+        }
+        if self.map_region.is_none() {
+            let psys = self.player.lock().unwrap().system_id;
+            self.map_region = psys
+                .and_then(|s| self.store.as_ref().and_then(|st| st.region_of_system(s)))
+                .or_else(|| self.map_regions.first().map(|(id, _)| *id));
+        }
+
+        ui.horizontal(|ui| {
+            let current = self
+                .map_region
+                .and_then(|id| self.map_regions.iter().find(|(rid, _)| *rid == id))
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "—".to_owned());
+            egui::ComboBox::from_id_salt("map_region")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for (id, name) in &self.map_regions {
+                        if ui.selectable_label(self.map_region == Some(*id), name).clicked() {
+                            self.map_region = Some(*id);
+                            self.map_pan = egui::Vec2::ZERO;
+                            self.map_zoom = 1.0;
+                        }
+                    }
+                });
+            if ui.small_button("Reset view").clicked() {
+                self.map_pan = egui::Vec2::ZERO;
+                self.map_zoom = 1.0;
+            }
+            ui.label(
+                egui::RichText::new("drag to pan · scroll to zoom").weak().small(),
+            );
+        });
+
+        if self.map_loaded_region != self.map_region {
+            self.map_systems = self
+                .map_region
+                .and_then(|id| self.store.as_ref().map(|s| s.region_systems(id)))
+                .unwrap_or_default();
+            self.map_loaded_region = self.map_region;
+        }
+        let Some(bounds) = crate::map::Bounds::of(&self.map_systems) else {
+            ui.label(egui::RichText::new("No systems in this region.").weak());
+            return;
+        };
+
+        let rect = ui.available_rect_before_wrap();
+        let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+        if resp.dragged() {
+            self.map_pan += resp.drag_delta();
+        }
+        if resp.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll != 0.0 {
+                self.map_zoom = (self.map_zoom * (1.0 + scroll * 0.001)).clamp(0.2, 8.0);
+            }
+        }
+
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+
+        let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
+        for s in &self.map_systems {
+            pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
+        }
+
+        // Gate links (each pair once).
+        let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
+        if let Some(graph) = &self.systems {
+            for s in &self.map_systems {
+                let p1 = pos[&s.id];
+                for &n in graph.neighbors(s.id) {
+                    if s.id < n {
+                        if let Some(p2) = pos.get(&n) {
+                            painter.line_segment([p1, *p2], egui::Stroke::new(1.0, line_col));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Overlays.
+        let intel_ids: std::collections::HashSet<i64> = {
+            let st = self.intel_state.lock().unwrap();
+            st.reports
+                .iter()
+                .filter(|r| !r.clear && !st.is_stale(r))
+                .filter_map(|r| r.primary_system().map(|s| s.id))
+                .collect()
+        };
+        let player_sys = self.player.lock().unwrap().system_id;
+        let label = self.map_zoom > 0.8 || self.map_systems.len() < 80;
+
+        for s in &self.map_systems {
+            let p = pos[&s.id];
+            painter.circle_filled(p, 3.0, security_color(s.security));
+            if intel_ids.contains(&s.id) {
+                painter.circle_stroke(p, 6.0, egui::Stroke::new(2.0, crate::theme::standing::HOSTILE));
+            }
+            if player_sys == Some(s.id) {
+                painter.circle_stroke(p, 7.0, egui::Stroke::new(2.0, ui.visuals().hyperlink_color));
+            }
+            if label {
+                painter.text(
+                    p + egui::vec2(5.0, -2.0),
+                    egui::Align2::LEFT_CENTER,
+                    &s.name,
+                    egui::FontId::proportional(10.0),
+                    ui.visuals().weak_text_color(),
+                );
+            }
+        }
     }
 
     fn persist(&mut self) {

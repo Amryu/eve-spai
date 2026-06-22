@@ -38,6 +38,11 @@ impl Systems {
         self.by_id.get(&id)
     }
 
+    /// Adjacent systems (gate + bridge neighbours).
+    pub fn neighbors(&self, id: i64) -> &[i64] {
+        self.adjacency.get(&id).map_or(&[], |v| v.as_slice())
+    }
+
     /// Add bidirectional jump-bridge edges (configured by the user) so distance and
     /// battle clustering can travel them like gates.
     pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {

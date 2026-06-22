@@ -37,12 +37,14 @@ CREATE TABLE IF NOT EXISTS characters (
 );
 ";
 
-/// A solar system row for lookups/UI.
+/// A solar system with map coordinates.
 #[derive(Clone, Debug)]
-pub struct SystemRow {
+pub struct MapSystem {
     pub id: i64,
     pub name: String,
     pub security: f64,
+    pub x: f64,
+    pub z: f64,
 }
 
 /// A stored, SSO-authenticated character.
@@ -102,50 +104,50 @@ impl Store {
 
     // --- SDE ---
 
-    /// Returns `(systems, regions, version)` if the SDE has been baked, else None.
-    pub fn sde_summary(&self) -> Option<(i64, i64, String)> {
+    /// True when the SDE is baked at the current schema version.
+    pub fn sde_ready(&self) -> bool {
         let systems: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM sde_systems", [], |r| r.get(0))
-            .ok()?;
-        // Re-bake when the schema version changed (new columns/data added).
+            .unwrap_or(0);
         let schema: String = self
             .conn
             .query_row("SELECT value FROM sde_meta WHERE key = 'schema'", [], |r| r.get(0))
             .unwrap_or_default();
-        if systems == 0 || schema != SDE_SCHEMA_VERSION {
-            return None;
-        }
-        let regions: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM sde_regions", [], |r| r.get(0))
-            .unwrap_or(0);
-        let version: String = self
-            .conn
-            .query_row("SELECT value FROM sde_meta WHERE key = 'version'", [], |r| {
-                r.get(0)
-            })
-            .unwrap_or_default();
-        Some((systems, regions, version))
+        systems > 0 && schema == SDE_SCHEMA_VERSION
     }
 
-    /// Case-insensitive prefix search over system names.
-    pub fn find_systems(&self, query: &str, limit: i64) -> Vec<SystemRow> {
-        let q = query.trim();
-        if q.is_empty() {
-            return Vec::new();
+    /// Regions (id, name) for the map picker.
+    pub fn regions(&self) -> Vec<(i64, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_regions ORDER BY name") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+                out.extend(rows.flatten());
+            }
         }
-        let pattern = format!("{q}%");
+        out
+    }
+
+    /// The region a system belongs to.
+    pub fn region_of_system(&self, id: i64) -> Option<i64> {
+        self.conn
+            .query_row("SELECT region_id FROM sde_systems WHERE id = ?1", params![id], |r| r.get(0))
+            .ok()
+    }
+
+    /// Systems in a region with map coordinates (EVE x/z plane, top-down).
+    pub fn region_systems(&self, region_id: i64) -> Vec<MapSystem> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, name, security FROM sde_systems
-             WHERE name LIKE ?1 ORDER BY name LIMIT ?2",
+            "SELECT id, name, security, x, z FROM sde_systems WHERE region_id = ?1",
         ) {
-            if let Ok(rows) = stmt.query_map(params![pattern, limit], |row| {
-                Ok(SystemRow {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    security: row.get(2)?,
+            if let Ok(rows) = stmt.query_map(params![region_id], |r| {
+                Ok(MapSystem {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    security: r.get(2)?,
+                    x: r.get(3)?,
+                    z: r.get(4)?,
                 })
             }) {
                 out.extend(rows.flatten());
