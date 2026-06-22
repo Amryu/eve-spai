@@ -11,6 +11,8 @@ pub struct SystemInfo {
     pub id: i64,
     pub name: String,
     pub security: f64,
+    pub constellation: String,
+    pub region: String,
 }
 
 pub struct Systems {
@@ -104,6 +106,8 @@ mod tests {
                         id,
                         name: n.to_uppercase(),
                         security: 0.0,
+                        constellation: String::new(),
+                        region: String::new(),
                     },
                 )
             })

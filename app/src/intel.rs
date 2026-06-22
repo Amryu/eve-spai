@@ -246,6 +246,8 @@ mod tests {
                     id,
                     name: name.to_string(),
                     security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
                 },
             )
         })

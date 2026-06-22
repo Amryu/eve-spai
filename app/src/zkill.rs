@@ -181,7 +181,7 @@ fn party_of(c: &Combatant, names: &HashMap<i64, String>) -> Party {
     };
     Party {
         id,
-        name: names.get(&id).cloned().unwrap_or_else(|| format!("#{id}")),
+        name: names.get(&id).cloned().unwrap_or_else(|| "Unknown".to_owned()),
         kind,
     }
 }

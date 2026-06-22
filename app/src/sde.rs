@@ -68,6 +68,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
     };
 
     let regions_csv = fetch("mapRegions.csv")?;
+    let constellations_csv = fetch("mapConstellations.csv")?;
     let systems_csv = fetch("mapSolarSystems.csv")?;
     let jumps_csv = fetch("mapSolarSystemJumps.csv")?;
 
@@ -75,6 +76,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
     let mut conn = Connection::open(path)?;
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM sde_regions", [])?;
+    tx.execute("DELETE FROM sde_constellations", [])?;
     tx.execute("DELETE FROM sde_systems", [])?;
     tx.execute("DELETE FROM sde_jumps", [])?;
 
@@ -94,15 +96,33 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
         }
     }
 
-    // Systems: regionID(0), solarSystemID(2), name(3), x(4), y(5), z(6), security(21)
+    // Constellations: constellationID(1), constellationName(2)
+    {
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(constellations_csv.as_bytes());
+        let mut stmt =
+            tx.prepare("INSERT OR REPLACE INTO sde_constellations(id, name) VALUES(?1, ?2)")?;
+        for rec in rdr.records() {
+            let rec = rec?;
+            let id: i64 = match rec.get(1).unwrap_or("").trim().parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            stmt.execute(params![id, rec.get(2).unwrap_or("")])?;
+        }
+    }
+
+    // Systems: regionID(0), constellationID(1), solarSystemID(2), name(3),
+    // x(4), y(5), z(6), security(21)
     let mut systems = 0i64;
     {
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(true)
             .from_reader(systems_csv.as_bytes());
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO sde_systems(id, name, region_id, security, x, y, z)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO sde_systems(id, name, region_id, constellation_id, security, x, y, z)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         for rec in rdr.records() {
             let rec = rec?;
@@ -111,12 +131,13 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
                 Err(_) => continue,
             };
             let region_id: i64 = rec.get(0).unwrap_or("").trim().parse().unwrap_or(0);
+            let constellation_id: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
             let name = rec.get(3).unwrap_or("");
             let security: f64 = rec.get(21).unwrap_or("").trim().parse().unwrap_or(0.0);
             let x: f64 = rec.get(4).unwrap_or("").trim().parse().unwrap_or(0.0);
             let y: f64 = rec.get(5).unwrap_or("").trim().parse().unwrap_or(0.0);
             let z: f64 = rec.get(6).unwrap_or("").trim().parse().unwrap_or(0.0);
-            stmt.execute(params![id, name, region_id, security, x, y, z])?;
+            stmt.execute(params![id, name, region_id, constellation_id, security, x, y, z])?;
             systems += 1;
         }
     }

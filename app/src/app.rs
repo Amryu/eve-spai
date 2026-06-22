@@ -201,7 +201,7 @@ impl SpaiApp {
             for r in matches {
                 let stale = state.is_stale(r);
                 let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                intel_row(ui, r, now, stale, from_you);
+                intel_row(ui, r, now, stale, from_you, &systems);
                 ui.add_space(2.0);
             }
         });
@@ -246,7 +246,7 @@ impl SpaiApp {
                     .iter()
                     .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
                     .min();
-                battle_row(ui, b, now, from_you);
+                battle_row(ui, b, now, from_you, &systems);
                 ui.add_space(4.0);
             }
         });
@@ -387,7 +387,12 @@ impl SpaiApp {
                             ui.horizontal(|ui| {
                                 ui.label(security_badge(r.security));
                                 ui.label(egui::RichText::new(r.name).strong());
-                                ui.label(egui::RichText::new(r.region).weak());
+                                let loc = if r.constellation.is_empty() {
+                                    r.region.clone()
+                                } else {
+                                    format!("{} · {}", r.constellation, r.region)
+                                };
+                                ui.label(egui::RichText::new(loc).weak());
                             });
                         }
                     });
@@ -704,6 +709,24 @@ fn jumps_from_you(
     sys.jumps(t, p, 50)
 }
 
+/// Weak "Constellation · Region" suffix for a system (looked up by id internally;
+/// no ids are ever shown). Omitted if unknown.
+fn region_chip(
+    ui: &mut egui::Ui,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    system_id: i64,
+) {
+    if let Some(info) = systems.as_ref().and_then(|s| s.info_of(system_id)) {
+        let text = match (info.constellation.as_str(), info.region.as_str()) {
+            ("", "") => return,
+            ("", r) => r.to_owned(),
+            (c, "") => c.to_owned(),
+            (c, r) => format!("{c} · {r}"),
+        };
+        ui.label(egui::RichText::new(text).weak().small());
+    }
+}
+
 /// A weak "Nj" distance-from-you chip (blank if unknown).
 fn from_you_chip(ui: &mut egui::Ui, from_you: Option<u32>) {
     if let Some(j) = from_you {
@@ -730,7 +753,13 @@ fn fmt_isk(isk: f64) -> String {
 }
 
 /// Render one clustered battle.
-fn battle_row(ui: &mut egui::Ui, b: &crate::battle::Battle, now: i64, from_you: Option<u32>) {
+fn battle_row(
+    ui: &mut egui::Ui,
+    b: &crate::battle::Battle,
+    now: i64,
+    from_you: Option<u32>,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+) {
     let span_min = ((b.end - b.start) / 60).max(0);
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -739,9 +768,9 @@ fn battle_row(ui: &mut egui::Ui, b: &crate::battle::Battle, now: i64, from_you: 
             from_you_chip(ui, from_you);
             // systems involved (with security colour)
             for (id, name, sec) in &b.systems {
-                let _ = id;
                 ui.label(security_badge(*sec));
                 ui.label(egui::RichText::new(name).strong());
+                region_chip(ui, systems, *id);
             }
             ui.separator();
             ui.label(format!("{} kills", b.kills));
@@ -795,6 +824,7 @@ fn intel_row(
     now: i64,
     stale: bool,
     from_you: Option<u32>,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
 ) {
     let age = (now - r.received).max(0);
     // Fade older reports toward the background; outdated (cleared) ones fade hard.
@@ -817,6 +847,7 @@ fn intel_row(
             for s in &r.systems {
                 ui.label(security_badge(s.security).color(dim(security_color(s.security))));
                 ui.label(egui::RichText::new(&s.name).strong().color(dim(text_col)));
+                region_chip(ui, systems, s.id);
             }
 
             if let Some(n) = r.count {

@@ -12,11 +12,13 @@ use crate::settings::Settings;
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sde_constellations (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_systems (
-    id        INTEGER PRIMARY KEY,
-    name      TEXT NOT NULL,
-    region_id INTEGER,
-    security  REAL,
+    id               INTEGER PRIMARY KEY,
+    name             TEXT NOT NULL,
+    region_id        INTEGER,
+    constellation_id INTEGER,
+    security         REAL,
     x REAL, y REAL, z REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_systems_name ON sde_systems(name);
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS characters (
 pub struct SystemRow {
     pub name: String,
     pub security: f64,
+    pub constellation: String,
     pub region: String,
 }
 
@@ -60,6 +63,8 @@ impl Store {
         let path = dir.join("eve-spai.db");
         let conn = Connection::open(&path)?;
         conn.execute_batch(SCHEMA)?;
+        // Add constellation_id to pre-existing SDE tables (no-op if already there).
+        let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN constellation_id INTEGER", []);
         migrate_plaintext_tokens(&conn);
         Ok(Self { conn, path })
     }
@@ -99,7 +104,12 @@ impl Store {
             .conn
             .query_row("SELECT COUNT(*) FROM sde_systems", [], |r| r.get(0))
             .ok()?;
-        if systems == 0 {
+        // Require constellations too, so DBs from before that data was added re-bake.
+        let constellations: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM sde_constellations", [], |r| r.get(0))
+            .unwrap_or(0);
+        if systems == 0 || constellations == 0 {
             return None;
         }
         let regions: i64 = self
@@ -124,15 +134,18 @@ impl Store {
         let pattern = format!("{q}%");
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT s.name, s.security, COALESCE(r.name, '')
-             FROM sde_systems s LEFT JOIN sde_regions r ON r.id = s.region_id
+            "SELECT s.name, s.security, COALESCE(c.name, ''), COALESCE(r.name, '')
+             FROM sde_systems s
+             LEFT JOIN sde_constellations c ON c.id = s.constellation_id
+             LEFT JOIN sde_regions r ON r.id = s.region_id
              WHERE s.name LIKE ?1 ORDER BY s.name LIMIT ?2",
         ) {
             if let Ok(rows) = stmt.query_map(params![pattern, limit], |row| {
                 Ok(SystemRow {
                     name: row.get(0)?,
                     security: row.get(1)?,
-                    region: row.get(2)?,
+                    constellation: row.get(2)?,
+                    region: row.get(3)?,
                 })
             }) {
                 out.extend(rows.flatten());
@@ -146,15 +159,23 @@ impl Store {
         use std::collections::HashMap;
 
         let mut by_name: HashMap<String, crate::geo::SystemInfo> = HashMap::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name, security FROM sde_systems") {
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT s.id, s.name, s.security, COALESCE(c.name,''), COALESCE(r.name,'')
+             FROM sde_systems s
+             LEFT JOIN sde_constellations c ON c.id = s.constellation_id
+             LEFT JOIN sde_regions r ON r.id = s.region_id",
+        ) {
             if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+                Ok(crate::geo::SystemInfo {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    security: r.get(2)?,
+                    constellation: r.get(3)?,
+                    region: r.get(4)?,
+                })
             }) {
-                for (id, name, security) in rows.flatten() {
-                    by_name.insert(
-                        name.to_lowercase(),
-                        crate::geo::SystemInfo { id, name, security },
-                    );
+                for info in rows.flatten() {
+                    by_name.insert(info.name.to_lowercase(), info);
                 }
             }
         }
