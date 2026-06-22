@@ -59,6 +59,9 @@ pub struct SpaiApp {
     map_popped: bool,
     /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
+    map_search: String,
+    /// System-info window: the system currently shown (if any).
+    system_window: Option<i64>,
 }
 
 impl SpaiApp {
@@ -143,16 +146,14 @@ impl SpaiApp {
             map_follow: false,
             map_popped: false,
             map_focus: None,
+            map_search: String::new(),
+            system_window: None,
         }
     }
 
-    /// Focus the map on a system (used when an intel system is clicked).
-    fn focus_map_on(&mut self, system_id: i64) {
-        self.view = View::Map;
-        if let Some(region) = self.store.as_ref().and_then(|s| s.region_of_system(system_id)) {
-            self.map_go(crate::map::MapView::Region(region));
-        }
-        self.map_focus = Some(system_id);
+    /// Open the system-info window for a system (from map/intel/search click).
+    fn open_system(&mut self, system_id: i64) {
+        self.system_window = Some(system_id);
     }
 
     /// Evaluate new intel against alert rules; fire desktop notifications (cooldown
@@ -278,10 +279,12 @@ impl SpaiApp {
         );
 
         if let Some(dir) = self.chat_dir.clone() {
+            let ships = std::sync::Arc::new(store.ship_index());
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
                 systems,
+                ships,
                 self.intel_state.clone(),
                 ctx.clone(),
             );
@@ -333,6 +336,14 @@ impl SpaiApp {
 
         let player_sys = self.player.lock().unwrap().system_id;
         let systems = self.systems.clone();
+        // Computed details for any ships mentioned in the visible reports.
+        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = {
+            let ids: std::collections::HashSet<i64> =
+                matches.iter().flat_map(|r| r.ships.iter().map(|s| s.id)).collect();
+            ids.into_iter()
+                .filter_map(|id| self.store.as_ref().and_then(|s| s.ship_details(id)).map(|d| (id, d)))
+                .collect()
+        };
         let mut focus: Option<i64> = None;
         {
             let status = self.system_status.lock().unwrap();
@@ -341,7 +352,9 @@ impl SpaiApp {
                     let stale = state.is_stale(r);
                     let from_you =
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                    if let Some(id) = intel_row(ui, r, now, stale, from_you, &systems, &status) {
+                    if let Some(id) =
+                        intel_row(ui, r, now, stale, from_you, &systems, &status, &ship_details)
+                    {
                         focus = Some(id);
                     }
                     ui.add_space(2.0);
@@ -350,7 +363,7 @@ impl SpaiApp {
         }
         drop(state);
         if let Some(id) = focus {
-            self.focus_map_on(id);
+            self.open_system(id);
         }
     }
 
@@ -673,13 +686,19 @@ impl SpaiApp {
             }
         }
 
-        // (Re)load systems for the current view.
+        // (Re)load systems for the current view, keeping only gate-connected systems
+        // (drops wormhole / abyssal islands that have no K-space connections).
         if self.map_loaded != Some(self.map_view) {
-            self.map_systems = match self.map_view {
+            let raw = match self.map_view {
                 MapView::Universe => self.store.as_ref().map(|s| s.all_map_systems()),
                 MapView::Region(id) => self.store.as_ref().map(|s| s.region_systems(id)),
             }
             .unwrap_or_default();
+            self.map_systems = if let Some(g) = &self.systems {
+                raw.into_iter().filter(|s| !g.neighbors(s.id).is_empty()).collect()
+            } else {
+                raw
+            };
             self.map_loaded = Some(self.map_view);
         }
         let Some(bounds) = crate::map::Bounds::of(&self.map_systems) else {
@@ -709,7 +728,9 @@ impl SpaiApp {
             if scroll.abs() > 0.0 {
                 if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
                     let old = self.map_zoom;
-                    let new = (old * (scroll * 0.0015).exp()).clamp(0.1, 40.0);
+                    // Min ~= fit-to-view (can't shrink past the whole map); max lets
+                    // individual systems separate.
+                    let new = (old * (scroll * 0.0015).exp()).clamp(0.7, 60.0);
                     let q = cursor - (rect.center() + self.map_pan);
                     self.map_pan += q * (1.0 - new / old);
                     self.map_zoom = new;
@@ -738,19 +759,11 @@ impl SpaiApp {
             }
         }
 
-        // Click: zoom into a region (universe) or centre on a system (region).
+        // Click a system: open its info window.
         if resp.clicked() {
             if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
                 if let Some(id) = nearest_system(click, &pos, 10.0) {
-                    if let Some(s) = self.map_systems.iter().find(|s| s.id == id).cloned() {
-                        match self.map_view {
-                            MapView::Universe => self.map_go(MapView::Region(s.region_id)),
-                            MapView::Region(_) => {
-                                let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
-                                self.map_pan = rect.center() - base;
-                            }
-                        }
-                    }
+                    self.open_system(id);
                 }
             }
         }
@@ -804,17 +817,21 @@ impl SpaiApp {
                 .filter_map(|r| r.primary_system().map(|s| s.id))
                 .collect()
         };
-        let show_labels = self.map_systems.len() < 150 || self.map_zoom > 2.5;
+        // Dot radius scales with zoom so a far-out universe view isn't a blob.
+        let dot = (1.1 * self.map_zoom).clamp(0.7, 3.5);
+        // System labels only when zoomed in enough (or a small region), and culled
+        // to the visible rect to avoid drawing thousands at once.
+        let show_sys_labels = self.map_systems.len() < 200 || self.map_zoom > 4.0;
         for s in &self.map_systems {
             let p = pos[&s.id];
-            painter.circle_filled(p, 3.0, security_color(s.security));
+            painter.circle_filled(p, dot, security_color(s.security));
             if intel_ids.contains(&s.id) {
-                painter.circle_stroke(p, 6.0, egui::Stroke::new(2.0, crate::theme::standing::HOSTILE));
+                painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(2.0, crate::theme::standing::HOSTILE));
             }
             if player_sys == Some(s.id) {
-                painter.circle_stroke(p, 7.0, egui::Stroke::new(2.0, ui.visuals().hyperlink_color));
+                painter.circle_stroke(p, dot + 4.0, egui::Stroke::new(2.0, ui.visuals().hyperlink_color));
             }
-            if show_labels {
+            if show_sys_labels && rect.contains(p) {
                 painter.text(
                     p + egui::vec2(6.0, -2.0),
                     egui::Align2::LEFT_CENTER,
@@ -822,6 +839,32 @@ impl SpaiApp {
                     egui::FontId::proportional(13.0),
                     ui.visuals().text_color(),
                 );
+            }
+        }
+
+        // Low zoom: label regions (centroid) instead of every system.
+        if !show_sys_labels {
+            let mut acc: std::collections::HashMap<i64, (egui::Vec2, u32)> =
+                std::collections::HashMap::new();
+            for s in &self.map_systems {
+                let e = acc.entry(s.region_id).or_insert((egui::Vec2::ZERO, 0));
+                e.0 += pos[&s.id].to_vec2();
+                e.1 += 1;
+            }
+            for (rid, (sum, n)) in acc {
+                let c = (sum / n as f32).to_pos2();
+                if !rect.contains(c) {
+                    continue;
+                }
+                if let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) {
+                    painter.text(
+                        c,
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
             }
         }
 
@@ -835,18 +878,19 @@ impl SpaiApp {
             .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                use egui_phosphor::regular as icon;
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Universe").clicked() {
                             self.map_go(MapView::Universe);
                         }
                         ui.add_enabled_ui(!self.map_history.is_empty(), |ui| {
-                            if ui.button("\u{2190}").on_hover_text("Back").clicked() {
+                            if ui.button(icon::ARROW_LEFT).on_hover_text("Back").clicked() {
                                 self.map_back();
                             }
                         });
                         ui.add_enabled_ui(!self.map_forward.is_empty(), |ui| {
-                            if ui.button("\u{2192}").on_hover_text("Forward").clicked() {
+                            if ui.button(icon::ARROW_RIGHT).on_hover_text("Forward").clicked() {
                                 self.map_forward_nav();
                             }
                         });
@@ -884,6 +928,41 @@ impl SpaiApp {
                             self.map_popped = true;
                         }
                     });
+                    // Search with live dropdown.
+                    ui.horizontal(|ui| {
+                        ui.label(icon::MAGNIFYING_GLASS);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.map_search)
+                                .hint_text("Find system")
+                                .desired_width(160.0),
+                        );
+                        if !self.map_search.is_empty() && ui.button(icon::X).clicked() {
+                            self.map_search.clear();
+                        }
+                    });
+                    if !self.map_search.trim().is_empty() {
+                        let results = self
+                            .store
+                            .as_ref()
+                            .map(|s| s.search_systems(&self.map_search, 8))
+                            .unwrap_or_default();
+                        let mut open: Option<i64> = None;
+                        for (id, name, sec) in results {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(format!("{:.1}  {name}", (sec * 10.0).round() / 10.0))
+                                        .color(security_color(sec)),
+                                ).frame(false))
+                                .clicked()
+                            {
+                                open = Some(id);
+                            }
+                        }
+                        if let Some(id) = open {
+                            self.map_search.clear();
+                            self.open_system(id);
+                        }
+                    }
                 });
             });
     }
@@ -998,6 +1077,138 @@ impl SpaiApp {
                     self.needs_save = true;
                 }
             });
+    }
+
+    /// System-info window: details, conditions, neighbour navigation (with intel
+    /// density), and the intel reported for this system.
+    fn system_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.system_window else {
+            return;
+        };
+        let mut open = true;
+        let mut nav: Option<i64> = None;
+        let mut show_on_map = false;
+        let now = chrono::Utc::now().timestamp();
+
+        egui::Window::new("System info")
+            .id(egui::Id::new("system_window"))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                let Some(graph) = self.systems.clone() else {
+                    ui.label("SDE not ready.");
+                    return;
+                };
+                let Some(info) = graph.info_of(id).cloned() else {
+                    ui.label("Unknown system.");
+                    return;
+                };
+
+                ui.horizontal(|ui| {
+                    ui.label(security_badge(info.security));
+                    ui.heading(&info.name);
+                });
+                ui.label(
+                    egui::RichText::new(format!("< {} < {}", info.constellation, info.region)).weak(),
+                );
+                {
+                    let status = self.system_status.lock().unwrap();
+                    system_chips(ui, &self.systems, &status, id);
+                }
+                if ui.button("Show on map").clicked() {
+                    show_on_map = true;
+                }
+                ui.separator();
+
+                // Active-intel counts per system (density proxy) + this system's reports.
+                let state = self.intel_state.lock().unwrap();
+                let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+                for r in &state.reports {
+                    if r.clear || state.is_stale(r) {
+                        continue;
+                    }
+                    for s in &r.systems {
+                        *counts.entry(s.id).or_default() += 1;
+                    }
+                }
+
+                ui.label(egui::RichText::new("Neighbours").strong());
+                egui::ScrollArea::vertical().id_salt("nbrs").max_height(140.0).show(ui, |ui| {
+                    for &nid in graph.neighbors(id) {
+                        if let Some(ni) = graph.info_of(nid) {
+                            let cnt = counts.get(&nid).copied().unwrap_or(0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(format!(
+                                        "{} {}",
+                                        format_args!("{:.1}", (ni.security * 10.0).round() / 10.0),
+                                        ni.name
+                                    ))
+                                    .clicked()
+                                {
+                                    nav = Some(nid);
+                                }
+                                if cnt > 0 {
+                                    ui.label(
+                                        egui::RichText::new(format!("{cnt} intel"))
+                                            .color(crate::theme::standing::HOSTILE),
+                                    );
+                                }
+                            });
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.label(egui::RichText::new("Intel here").strong());
+                egui::ScrollArea::vertical().id_salt("sysintel").max_height(220.0).show(ui, |ui| {
+                    let mut any = false;
+                    for r in state.reports.iter().rev() {
+                        if !r.systems.iter().any(|s| s.id == id) {
+                            continue;
+                        }
+                        any = true;
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{:>6}", fmt_age((now - r.received).max(0))))
+                                    .monospace()
+                                    .weak(),
+                            );
+                            if let Some(n) = r.count {
+                                ui.label(egui::RichText::new(format!("{n}x")).strong());
+                            }
+                            if r.clear {
+                                ui.label(egui::RichText::new("CLEAR").color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)));
+                            }
+                            for sh in &r.ships {
+                                ui.label(egui::RichText::new(&sh.name).weak());
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(&r.reporter).weak());
+                            });
+                        });
+                    }
+                    if !any {
+                        ui.label(egui::RichText::new("No recent intel.").weak());
+                    }
+                });
+                // TODO: neighbouring intel density over time (sparkline) — deferred.
+            });
+
+        if let Some(nid) = nav {
+            self.system_window = Some(nid);
+        }
+        if show_on_map {
+            self.view = View::Map;
+            if let Some(r) = self.store.as_ref().and_then(|s| s.region_of_system(id)) {
+                self.map_go(crate::map::MapView::Region(r));
+            }
+            self.map_focus = Some(id);
+        }
+        if !open {
+            self.system_window = None;
+        }
     }
 
     fn intel_channels_window(&mut self, ctx: &egui::Context) {
@@ -1213,6 +1424,7 @@ impl eframe::App for SpaiApp {
 
         self.settings_dialog(&ctx);
         self.intel_channels_window(&ctx);
+        self.system_window(&ctx);
         if self.map_popped {
             self.show_map_viewport(&ctx);
         }
@@ -1403,6 +1615,7 @@ fn intel_row(
     from_you: Option<u32>,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
+    ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
 ) -> Option<i64> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
@@ -1452,6 +1665,15 @@ fn intel_row(
                         .on_hover_ui(|ui| system_hover(ui, systems, status, s));
                     if panel.clicked() {
                         clicked = Some(s.id);
+                    }
+                }
+
+                // Ship panels (hover -> categorisation/resists/fitting).
+                for sh in &r.ships {
+                    let txt = egui::RichText::new(format!("{} {}", icon::ROCKET, sh.name)).strong();
+                    let panel = ui.add(egui::Button::new(txt));
+                    if let Some(d) = ship_details.get(&sh.id) {
+                        panel.on_hover_ui(|ui| ship_hover(ui, d));
                     }
                 }
 
@@ -1518,6 +1740,40 @@ fn intel_row(
     // Raw message available on hover, never shown inline.
     resp.on_hover_text(&r.text);
     clicked
+}
+
+/// Hover tooltip for a ship panel: group, resists, tank, drones, hardpoints, speed.
+fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
+    ui.label(egui::RichText::new(&d.name).strong());
+    ui.label(egui::RichText::new(&d.group).weak());
+    ui.separator();
+    let resist_line = |ui: &mut egui::Ui, label: &str, hp: f64, r: [u32; 4]| {
+        if hp <= 0.0 {
+            return;
+        }
+        ui.label(format!(
+            "{label}: {hp:.0} hp · em {} th {} kin {} exp {}",
+            r[0], r[1], r[2], r[3]
+        ));
+    };
+    resist_line(ui, "Shield", d.shield_hp, d.shield_resist);
+    resist_line(ui, "Armor", d.armor_hp, d.armor_resist);
+    resist_line(ui, "Hull", d.hull_hp, d.hull_resist);
+    ui.separator();
+    let mut hp = Vec::new();
+    if d.turret_hardpoints > 0 {
+        hp.push(format!("{} turrets", d.turret_hardpoints));
+    }
+    if d.launcher_hardpoints > 0 {
+        hp.push(format!("{} launchers", d.launcher_hardpoints));
+    }
+    if !hp.is_empty() {
+        ui.label(hp.join(" · "));
+    }
+    if d.drone_cap > 0.0 {
+        ui.label(format!("Drones: {:.0} m³ / {:.0} Mbit", d.drone_cap, d.drone_bw));
+    }
+    ui.label(format!("Max velocity: {:.0} m/s", d.max_velocity));
 }
 
 /// Hover tooltip for a system panel: security, location, live conditions.

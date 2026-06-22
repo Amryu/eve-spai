@@ -51,6 +51,25 @@ CREATE TABLE IF NOT EXISTS characters (
 );
 ";
 
+/// A ship type with computed resist/tank/fitting stats.
+#[derive(Clone, Debug)]
+pub struct ShipDetails {
+    pub name: String,
+    pub group: String,
+    /// Resist % in EVE display order: em, thermal, kinetic, explosive.
+    pub shield_resist: [u32; 4],
+    pub armor_resist: [u32; 4],
+    pub hull_resist: [u32; 4],
+    pub shield_hp: f64,
+    pub armor_hp: f64,
+    pub hull_hp: f64,
+    pub drone_cap: f64,
+    pub drone_bw: f64,
+    pub turret_hardpoints: i64,
+    pub launcher_hardpoints: i64,
+    pub max_velocity: f64,
+}
+
 /// A solar system with map coordinates.
 #[derive(Clone, Debug)]
 pub struct MapSystem {
@@ -133,6 +152,26 @@ impl Store {
         systems > 0 && schema == SDE_SCHEMA_VERSION
     }
 
+    /// System name search for the map (id, name, security).
+    pub fn search_systems(&self, query: &str, limit: i64) -> Vec<(i64, String, f64)> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let pattern = format!("{q}%");
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT id, name, security FROM sde_systems WHERE name LIKE ?1 ORDER BY name LIMIT ?2",
+        ) {
+            if let Ok(rows) =
+                stmt.query_map(params![pattern, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
     /// Regions (id, name) for the map picker.
     pub fn regions(&self) -> Vec<(i64, String)> {
         let mut out = Vec::new();
@@ -182,6 +221,67 @@ impl Store {
             }
         }
         out
+    }
+
+    /// Lower-cased ship-name index for the intel parser (name -> (id, canonical)).
+    pub fn ship_index(&self) -> std::collections::HashMap<String, (i64, String)> {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_ships") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+                for (id, name) in rows.flatten() {
+                    map.insert(name.to_lowercase(), (id, name));
+                }
+            }
+        }
+        map
+    }
+
+    /// Computed ship details (resists, hp, drones, hardpoints, speed).
+    pub fn ship_details(&self, id: i64) -> Option<ShipDetails> {
+        let (name, group): (String, String) = self
+            .conn
+            .query_row(
+                "SELECT name, COALESCE(group_name,'') FROM sde_ships WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()?;
+
+        let mut attr: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT attr_id, value FROM sde_ship_attrs WHERE ship_id = ?1")
+        {
+            if let Ok(rows) = stmt.query_map(params![id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))) {
+                for (a, v) in rows.flatten() {
+                    attr.insert(a, v);
+                }
+            }
+        }
+        // resist% = round((1 - resonance) * 100); ids in em, therm, kin, exp order.
+        let resist = |ids: [i64; 4]| -> [u32; 4] {
+            ids.map(|a| {
+                let resonance = attr.get(&a).copied().unwrap_or(1.0);
+                ((1.0 - resonance) * 100.0).round().clamp(0.0, 100.0) as u32
+            })
+        };
+        let val = |a: i64| attr.get(&a).copied().unwrap_or(0.0);
+
+        Some(ShipDetails {
+            name,
+            group,
+            shield_resist: resist([271, 274, 273, 272]),
+            armor_resist: resist([267, 270, 269, 268]),
+            hull_resist: resist([113, 110, 109, 111]),
+            shield_hp: val(263),
+            armor_hp: val(265),
+            hull_hp: val(9),
+            drone_cap: val(283),
+            drone_bw: val(1271),
+            turret_hardpoints: val(102) as i64,
+            launcher_hardpoints: val(101) as i64,
+            max_velocity: val(37),
+        })
     }
 
     /// Load the system graph (names + jump adjacency) for the intel parser.

@@ -23,6 +23,7 @@ pub fn spawn(
     chat_dir: PathBuf,
     channels: Vec<String>,
     systems: Arc<Systems>,
+    ships: Arc<HashMap<String, (i64, String)>>,
     state: Arc<Mutex<IntelState>>,
     ctx: egui::Context,
 ) {
@@ -36,6 +37,7 @@ pub fn spawn(
                 &chat_dir,
                 &channels,
                 &systems,
+                &ships,
                 &state,
                 &ctx,
                 &mut processed,
@@ -51,6 +53,7 @@ fn scan(
     chat_dir: &PathBuf,
     channels: &[String],
     systems: &Systems,
+    ships: &HashMap<String, (i64, String)>,
     state: &Mutex<IntelState>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
@@ -83,7 +86,8 @@ fn scan(
             let mut st = state.lock().unwrap();
             for m in &messages[start..] {
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
-                let mut report = intel::analyze(&m.text, systems, received, &meta.channel, &m.author);
+                let mut report =
+                    intel::analyze(&m.text, systems, ships, received, &meta.channel, &m.author);
 
                 // Ignore non-placeable chatter: nothing to anchor without a system/gate.
                 if report.systems.is_empty() && report.gate.is_none() {

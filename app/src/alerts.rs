@@ -81,6 +81,7 @@ mod tests {
                 name: format!("S{system_id}"),
                 security: 0.0,
             }],
+            ships: vec![],
             count: Some(3),
             clear,
             no_visual: false,

@@ -20,6 +20,12 @@ pub struct DetectedSystem {
 }
 
 #[derive(Clone, Debug)]
+pub struct DetectedShip {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Movement {
     pub from: String,
     pub jumps: Option<u32>,
@@ -33,6 +39,7 @@ pub struct IntelReport {
     pub reporter: String,
     pub text: String,
     pub systems: Vec<DetectedSystem>,
+    pub ships: Vec<DetectedShip>,
     /// Approximate hostile/ship count parsed from the message, if any.
     pub count: Option<u32>,
     pub clear: bool,
@@ -104,6 +111,7 @@ const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
 pub fn analyze(
     text: &str,
     systems: &Systems,
+    ship_index: &std::collections::HashMap<String, (i64, String)>,
     received: i64,
     channel: &str,
     reporter: &str,
@@ -111,6 +119,21 @@ pub fn analyze(
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+
+    // Ships: single-token proper-noun hull names (e.g. "Drake", "Tornado").
+    let mut ships: Vec<DetectedShip> = Vec::new();
+    for tok in &tokens {
+        if tok.chars().next().is_some_and(|c| c.is_uppercase()) {
+            if let Some((id, name)) = ship_index.get(&tok.to_lowercase()) {
+                if !ships.iter().any(|s| s.id == *id) {
+                    ships.push(DetectedShip {
+                        id: *id,
+                        name: name.clone(),
+                    });
+                }
+            }
+        }
+    }
 
     let mut detected: Vec<DetectedSystem> = Vec::new();
     // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
@@ -156,6 +179,7 @@ pub fn analyze(
         reporter: reporter.to_owned(),
         text: text.to_owned(),
         systems: detected,
+        ships,
         count: parse_count(text, &consumed),
         clear: lower_tokens.iter().any(|t| CLEAR_WORDS.contains(&t.as_str())),
         no_visual: lower_tokens.iter().any(|t| t == "nv") || lower.contains("no visual"),
@@ -249,6 +273,10 @@ mod tests {
     use super::*;
     use crate::geo::{SystemInfo, Systems};
 
+    fn noships() -> std::collections::HashMap<String, (i64, String)> {
+        std::collections::HashMap::new()
+    }
+
     fn systems() -> Systems {
         let by_name = [
             ("rancer", "Rancer", 1, 0.4),
@@ -279,22 +307,22 @@ mod tests {
     fn detects_systems_count_and_flags() {
         let s = systems();
 
-        let r = analyze("hostile in Rancer, 3 Drake +2", &s, 100, "ch", "Scout");
+        let r = analyze("hostile in Rancer, 3 Drake +2", &s, &noships(), 100, "ch", "Scout");
         assert_eq!(r.systems.len(), 1);
         assert_eq!(r.systems[0].name, "Rancer");
         assert_eq!(r.count, Some(3));
         assert!(!r.clear);
 
-        assert!(analyze("Rancer clear", &s, 1, "ch", "x").clear);
-        assert!(analyze("nv in Jita", &s, 1, "ch", "x").no_visual);
-        assert!(analyze("gate camp 1DQ1-A bubble up", &s, 1, "ch", "x").camp);
-        assert!(analyze("https://zkillboard.com/kill/123/", &s, 1, "ch", "x").killmail);
-        assert!(analyze("cyno up in Rancer", &s, 1, "ch", "x").cyno);
-        assert!(analyze("wh in Jita k162", &s, 1, "ch", "x").wormhole);
-        assert!(analyze("ess being robbed", &s, 1, "ch", "x").ess);
-        assert!(analyze("skyhook theft Rancer", &s, 1, "ch", "x").skyhook);
+        assert!(analyze("Rancer clear", &s, &noships(), 1, "ch", "x").clear);
+        assert!(analyze("nv in Jita", &s, &noships(), 1, "ch", "x").no_visual);
+        assert!(analyze("gate camp 1DQ1-A bubble up", &s, &noships(), 1, "ch", "x").camp);
+        assert!(analyze("https://zkillboard.com/kill/123/", &s, &noships(), 1, "ch", "x").killmail);
+        assert!(analyze("cyno up in Rancer", &s, &noships(), 1, "ch", "x").cyno);
+        assert!(analyze("wh in Jita k162", &s, &noships(), 1, "ch", "x").wormhole);
+        assert!(analyze("ess being robbed", &s, &noships(), 1, "ch", "x").ess);
+        assert!(analyze("skyhook theft Rancer", &s, &noships(), 1, "ch", "x").skyhook);
         // lower-case common words that are system names are not matched
-        assert!(analyze("clear in here", &s, 1, "ch", "x").systems.is_empty());
+        assert!(analyze("clear in here", &s, &noships(), 1, "ch", "x").systems.is_empty());
     }
 
     #[test]
@@ -302,7 +330,7 @@ mod tests {
         let s = systems();
         // Abbreviated null-sec codes resolve by unique prefix; the gate is captured
         // and not double-listed as a plain system.
-        let r = analyze("C-J +20 on 78- gate", &s, 1, "ch", "Scout");
+        let r = analyze("C-J +20 on 78- gate", &s, &noships(), 1, "ch", "Scout");
         assert_eq!(r.count, Some(20));
         assert_eq!(r.gate.as_deref(), Some("78-AAA"));
         assert_eq!(
@@ -311,7 +339,7 @@ mod tests {
         );
 
         // A bare number used as a gate must not also be a hostile count.
-        let r2 = analyze("20 reds on 78 gate", &s, 1, "ch", "Scout");
+        let r2 = analyze("20 reds on 78 gate", &s, &noships(), 1, "ch", "Scout");
         assert_eq!(r2.gate.as_deref(), Some("78-AAA"));
         assert_eq!(r2.count, Some(20));
     }
@@ -320,9 +348,9 @@ mod tests {
     fn clear_outdates_prior_sighting_but_not_later_ones() {
         let s = systems();
         let mut st = IntelState::default();
-        let prior = analyze("hostile in Rancer", &s, 100, "ch", "A");
-        let clear = analyze("Rancer clear", &s, 112, "ch", "B");
-        let later = analyze("hostile back in Rancer", &s, 120, "ch", "C");
+        let prior = analyze("hostile in Rancer", &s, &noships(), 100, "ch", "A");
+        let clear = analyze("Rancer clear", &s, &noships(), 112, "ch", "B");
+        let later = analyze("hostile back in Rancer", &s, &noships(), 120, "ch", "C");
         st.push(prior.clone());
         st.push(clear.clone());
         st.push(later.clone());
