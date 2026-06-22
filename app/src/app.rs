@@ -2,6 +2,7 @@
 //! theme application, and persistence wiring (docs/DESIGN.md §6).
 
 use crate::nav::{self, View};
+use crate::sde::{self, SdeStatus, SharedStatus};
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::theme::{Rgb, Theme};
@@ -15,6 +16,10 @@ pub struct SpaiApp {
     active_character: String,
     /// Settings changed this frame and should be persisted.
     needs_save: bool,
+    /// SDE download/bake state (shared with the background worker).
+    sde_status: SharedStatus,
+    /// Map-view system search box.
+    sde_query: String,
 }
 
 impl SpaiApp {
@@ -33,6 +38,23 @@ impl SpaiApp {
 
         settings.theme.apply(&cc.egui_ctx);
 
+        // Resolve SDE state from what's already baked; otherwise download on first run.
+        let initial = store
+            .as_ref()
+            .and_then(|s| s.sde_summary())
+            .map(|(systems, regions, version)| SdeStatus::Ready {
+                systems,
+                regions,
+                version,
+            })
+            .unwrap_or_default();
+        let sde_status: SharedStatus = std::sync::Arc::new(std::sync::Mutex::new(initial));
+        if let Some(store) = &store {
+            if matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
+                sde::spawn_download(store.path().to_path_buf(), sde_status.clone(), cc.egui_ctx.clone());
+            }
+        }
+
         Self {
             store,
             settings,
@@ -40,7 +62,89 @@ impl SpaiApp {
             settings_open: false,
             active_character: "No character".to_owned(),
             needs_save: false,
+            sde_status,
+            sde_query: String::new(),
         }
+    }
+
+    fn start_sde(&self, ctx: &egui::Context) {
+        if let Some(store) = &self.store {
+            sde::spawn_download(store.path().to_path_buf(), self.sde_status.clone(), ctx.clone());
+        }
+    }
+
+    /// The Map view (M1: SDE status + system lookup; the rendered map lands in M3).
+    fn map_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.heading("Map");
+        ui.separator();
+        ui.add_space(8.0);
+
+        let status = self.sde_status.lock().unwrap().clone();
+        match status {
+            SdeStatus::Ready {
+                systems,
+                regions,
+                version,
+            } => {
+                ui.label(format!(
+                    "Static data ready — {systems} systems, {regions} regions (SDE {version})"
+                ));
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("System lookup").strong());
+                ui.text_edit_singleline(&mut self.sde_query);
+                ui.add_space(4.0);
+
+                let results = self
+                    .store
+                    .as_ref()
+                    .map(|s| s.find_systems(&self.sde_query, 14))
+                    .unwrap_or_default();
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for r in results {
+                            ui.horizontal(|ui| {
+                                ui.label(security_badge(r.security));
+                                ui.label(egui::RichText::new(r.name).strong());
+                                ui.label(egui::RichText::new(r.region).weak());
+                            });
+                        }
+                    });
+
+                ui.add_space(10.0);
+                if ui.button("Re-download static data").clicked() {
+                    self.start_sde(&ui.ctx().clone());
+                }
+            }
+            SdeStatus::Downloading(msg) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(msg);
+                });
+            }
+            SdeStatus::NotReady => {
+                ui.label("Static data has not been downloaded yet.");
+                if ui.button("Download static data").clicked() {
+                    self.start_sde(&ui.ctx().clone());
+                }
+            }
+            SdeStatus::Failed(err) => {
+                let warn = crate::theme::standing::WARNING;
+                ui.colored_label(warn, format!("SDE download failed: {err}"));
+                if ui.button("Retry").clicked() {
+                    self.start_sde(&ui.ctx().clone());
+                }
+            }
+        }
+
+        ui.add_space(10.0);
+        ui.label(
+            egui::RichText::new(
+                "The 2D region map renders here next, using these coordinates. (Milestone M3.)",
+            )
+            .weak(),
+        );
     }
 
     fn persist(&mut self) {
@@ -228,8 +332,9 @@ impl eframe::App for SpaiApp {
         self.status_bar(ui);
         self.nav_rail(ui);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            views::show(ui, self.view);
+        egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
+            View::Map => self.map_view(ui),
+            other => views::show(ui, other),
         });
 
         self.settings_dialog(&ctx);
@@ -242,6 +347,19 @@ impl eframe::App for SpaiApp {
     fn on_exit(&mut self) {
         self.persist();
     }
+}
+
+/// A coloured security-status label, e.g. `0.9` (green) … `-0.3` (red).
+fn security_badge(security: f64) -> egui::RichText {
+    let sec = (security * 10.0).round() / 10.0;
+    let color = if sec >= 0.5 {
+        egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
+    } else if sec > 0.0 {
+        egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)
+    } else {
+        egui::Color32::from_rgb(0xD8, 0x4C, 0x4C)
+    };
+    egui::RichText::new(format!("{sec:.1}")).color(color).monospace()
 }
 
 /// A labelled sRGB colour picker row; returns true if the colour changed.

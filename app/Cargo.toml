@@ -19,3 +19,5 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 directories = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 anyhow = "1"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "webpki-roots"] }
+csv = "1"

@@ -17,12 +17,8 @@ pub fn show(ui: &mut egui::Ui, view: View) {
             "At-a-glance situational summary: active alerts, nearby hostiles, \
              tracked-character locations. (Milestone M2+.)",
         ),
-        View::Map => placeholder(
-            ui,
-            "Map",
-            "Lean 2D region map with intel + character-location overlays and basic \
-             routing. Needs the SDE download and SSO. (Milestone M3.)",
-        ),
+        // View::Map is rendered by SpaiApp::map_view (it needs app state).
+        View::Map => {}
         View::Intel => placeholder(
             ui,
             "Intel",

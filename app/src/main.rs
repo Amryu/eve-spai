@@ -6,6 +6,7 @@
 
 mod app;
 mod nav;
+mod sde;
 mod settings;
 mod store;
 mod theme;
