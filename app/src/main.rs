@@ -24,7 +24,6 @@ mod store;
 mod systemstatus;
 mod theme;
 mod tokens;
-mod views;
 mod watcher;
 mod zkill;
 

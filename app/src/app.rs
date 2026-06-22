@@ -7,7 +7,6 @@ use crate::sde::{self, SdeStatus, SharedStatus};
 use crate::settings::Settings;
 use crate::store::{CharacterRow, Store};
 use crate::theme::{Rgb, Theme};
-use crate::views;
 
 pub struct SpaiApp {
     store: Option<Store>,
@@ -313,6 +312,82 @@ impl SpaiApp {
                 ui.add_space(2.0);
             }
         });
+    }
+
+    /// Overview: at-a-glance summary of live state.
+    fn dashboard_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        let now = chrono::Utc::now().timestamp();
+        let player_sys = self.player.lock().unwrap().system_id;
+        let systems = self.systems.clone();
+
+        // Active character + location.
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(&self.active_character).strong());
+                match player_sys.and_then(|s| systems.as_ref().and_then(|sy| sy.info_of(s))) {
+                    Some(info) => {
+                        ui.label("in");
+                        ui.label(security_badge(info.security));
+                        ui.label(egui::RichText::new(&info.name).strong());
+                        system_chips(ui, &systems, &self.system_status.lock().unwrap(), info.id);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("location unknown").weak());
+                    }
+                }
+            });
+        });
+        ui.add_space(6.0);
+
+        // Intel + battle summary.
+        let (intel_count, nearest) = {
+            let state = self.intel_state.lock().unwrap();
+            let live: Vec<&crate::intel::IntelReport> =
+                state.reports.iter().filter(|r| !r.clear && !state.is_stale(r)).collect();
+            let nearest = live
+                .iter()
+                .filter_map(|r| {
+                    let id = r.primary_system()?.id;
+                    let j = jumps_from_you(&systems, player_sys, Some(id))?;
+                    Some((j, r.primary_system().unwrap().name.clone()))
+                })
+                .min_by_key(|(j, _)| *j);
+            (live.len(), nearest)
+        };
+        let battle_count = self.battles.lock().unwrap().iter().filter(|b| b.kills >= 2).count();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Live intel: {intel_count}"));
+            ui.separator();
+            if let Some((j, name)) = &nearest {
+                ui.label("Nearest hostile:");
+                ui.label(egui::RichText::new(name).strong());
+                ui.label(egui::RichText::new(format!("({j}j)")).weak());
+            } else {
+                ui.label(egui::RichText::new("no nearby hostiles").weak());
+            }
+            ui.separator();
+            ui.label(format!("Battles: {battle_count}"));
+        });
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // Recent alerts.
+        ui.label(egui::RichText::new("Recent alerts").strong());
+        let log = self.recent_alerts.lock().unwrap();
+        if log.is_empty() {
+            ui.label(egui::RichText::new("None.").weak());
+        } else {
+            for (t, text) in log.iter().rev().take(5) {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - t))).monospace().weak());
+                    ui.label(text);
+                });
+            }
+        }
     }
 
     /// The Battle Report view: clusters of killmails near the tracked area.
@@ -804,12 +879,12 @@ impl eframe::App for SpaiApp {
         self.nav_rail(ui);
 
         egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
+            View::Dashboard => self.dashboard_view(ui),
             View::Map => self.map_view(ui),
             View::Characters => self.characters_view(ui),
             View::Intel => self.intel_view(ui),
             View::Battles => self.battles_view(ui),
             View::Alerts => self.alerts_view(ui),
-            other => views::show(ui, other),
         });
 
         self.settings_dialog(&ctx);
