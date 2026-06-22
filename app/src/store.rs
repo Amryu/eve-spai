@@ -141,22 +141,34 @@ impl Store {
         out
     }
 
-    /// Build a lower-cased system-name index for the intel parser.
-    pub fn system_index(&self) -> std::collections::HashMap<String, (String, f64)> {
-        let mut map = std::collections::HashMap::new();
-        if let Ok(mut stmt) = self
-            .conn
-            .prepare("SELECT name, security FROM sde_systems")
-        {
+    /// Load the system graph (names + jump adjacency) for the intel parser.
+    pub fn load_systems(&self) -> crate::geo::Systems {
+        use std::collections::HashMap;
+
+        let mut by_name: HashMap<String, crate::geo::SystemInfo> = HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name, security FROM sde_systems") {
             if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
             }) {
-                for (name, sec) in rows.flatten() {
-                    map.insert(name.to_lowercase(), (name, sec));
+                for (id, name, security) in rows.flatten() {
+                    by_name.insert(
+                        name.to_lowercase(),
+                        crate::geo::SystemInfo { id, name, security },
+                    );
                 }
             }
         }
-        map
+
+        let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT from_id, to_id FROM sde_jumps") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))) {
+                for (a, b) in rows.flatten() {
+                    adjacency.entry(a).or_default().push(b);
+                }
+            }
+        }
+
+        crate::geo::Systems::new(by_name, adjacency)
     }
 
     // --- Characters ---

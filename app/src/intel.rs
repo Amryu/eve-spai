@@ -1,16 +1,29 @@
 //! Intel parsing and decay state (docs/DESIGN.md §7.1 E3/E4).
 //!
-//! M2 first pass: detect EVE solar systems mentioned in a chat message (matched
-//! against the SDE name index) and a few status keywords (clear / no-visual).
-//! The full entity taxonomy (ships, gates, wormholes, …) extends this later.
+//! Parses a chat message into a concise, structured report: detected solar systems
+//! (matched against the SDE), an approximate hostile count, and status flags
+//! (clear / no-visual / spike / gate camp / bubble / killmail). The raw text is
+//! kept but de-emphasised in the UI.
 
 use std::collections::HashMap;
 
-/// Lower-cased system name -> (canonical name, security).
-pub type SystemIndex = HashMap<String, (String, f64)>;
+use crate::geo::Systems;
 
 /// How long a report stays live before decaying out of the feed.
 pub const DEFAULT_TTL_SECS: i64 = 300;
+
+#[derive(Clone, Debug)]
+pub struct DetectedSystem {
+    pub id: i64,
+    pub name: String,
+    pub security: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Movement {
+    pub from: String,
+    pub jumps: Option<u32>,
+}
 
 #[derive(Clone, Debug)]
 pub struct IntelReport {
@@ -19,10 +32,26 @@ pub struct IntelReport {
     pub channel: String,
     pub reporter: String,
     pub text: String,
-    /// Detected systems with security status.
-    pub systems: Vec<(String, f64)>,
+    pub systems: Vec<DetectedSystem>,
+    /// Approximate hostile/ship count parsed from the message, if any.
+    pub count: Option<u32>,
     pub clear: bool,
     pub no_visual: bool,
+    pub spike: bool,
+    pub camp: bool,
+    pub bubble: bool,
+    pub killmail: bool,
+    /// Gate the hostiles are reported on, e.g. "78-" in "C-J +20 on 78- gate".
+    pub gate: Option<String>,
+    /// Where the subject was previously seen (set by the watcher).
+    pub movement: Option<Movement>,
+}
+
+impl IntelReport {
+    /// The first detected system (the report's primary location).
+    pub fn primary_system(&self) -> Option<&DetectedSystem> {
+        self.systems.first()
+    }
 }
 
 #[derive(Default)]
@@ -34,13 +63,12 @@ pub struct IntelState {
 
 impl IntelState {
     pub fn push(&mut self, report: IntelReport) {
-        // A "clear" records that the system was reported empty at this time. We do
-        // NOT delete prior intel — "clear" only means the hostiles aren't there
-        // *now*, so earlier sightings are outdated (greyed), not erased.
+        // A "clear" records that a system was reported empty at this time. We do
+        // NOT delete prior intel — "clear" means the hostiles aren't there *now*,
+        // so earlier sightings are outdated (greyed), not erased.
         if report.clear {
-            for (name, _) in &report.systems {
-                let key = name.to_lowercase();
-                let slot = self.cleared.entry(key).or_insert(report.received);
+            for s in &report.systems {
+                let slot = self.cleared.entry(s.name.to_lowercase()).or_insert(report.received);
                 *slot = (*slot).max(report.received);
             }
         }
@@ -53,14 +81,13 @@ impl IntelState {
         if report.clear {
             return false;
         }
-        report.systems.iter().any(|(name, _)| {
+        report.systems.iter().any(|s| {
             self.cleared
-                .get(&name.to_lowercase())
+                .get(&s.name.to_lowercase())
                 .is_some_and(|&t| t >= report.received)
         })
     }
 
-    /// Drop reports and clear-marks older than `ttl` seconds.
     pub fn prune(&mut self, ttl: i64, now: i64) {
         self.reports.retain(|r| now - r.received <= ttl);
         self.cleared.retain(|_, t| now - *t <= ttl);
@@ -68,40 +95,50 @@ impl IntelState {
 }
 
 const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
-const NO_VISUAL_WORDS: &[&str] = &["nv"];
 
-/// Analyse one message into a report.
+/// Analyse one message into a structured report (movement is added later).
 pub fn analyze(
     text: &str,
-    index: &SystemIndex,
+    systems: &Systems,
     received: i64,
     channel: &str,
     reporter: &str,
 ) -> IntelReport {
+    let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
 
-    let clear = lower_tokens.iter().any(|t| CLEAR_WORDS.contains(&t.as_str()));
-    let no_visual = lower_tokens.iter().any(|t| NO_VISUAL_WORDS.contains(&t.as_str()))
-        || text.to_lowercase().contains("no visual");
-
-    let mut systems: Vec<(String, f64)> = Vec::new();
+    let mut detected: Vec<DetectedSystem> = Vec::new();
     for tok in &tokens {
-        // System names are proper nouns: require an uppercase start or a
-        // digit/hyphen (null-sec codes) to avoid matching common words.
-        let looks_like_name = tok
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
-            || tok.contains('-');
-        if !looks_like_name {
-            continue;
-        }
-        if let Some((name, sec)) = index.get(&tok.to_lowercase()) {
-            if !systems.iter().any(|(n, _)| n == name) {
-                systems.push((name.clone(), *sec));
+        if let Some(info) = resolve(systems, tok) {
+            if !detected.iter().any(|d| d.id == info.id) {
+                detected.push(DetectedSystem {
+                    id: info.id,
+                    name: info.name.clone(),
+                    security: info.security,
+                });
             }
         }
+    }
+
+    // Gate: "... <System> gate" — hostiles are on the gate *to* <System>. Record it
+    // (resolved name, or the raw token if abbreviated/unknown) and don't also list
+    // it as a plain system.
+    let mut gate: Option<String> = None;
+    for (i, tok) in tokens.iter().enumerate() {
+        if !tok.eq_ignore_ascii_case("gate") || i == 0 {
+            continue;
+        }
+        let cand = tokens[i - 1];
+        if cand.eq_ignore_ascii_case("on") || cand.eq_ignore_ascii_case("the") {
+            continue;
+        }
+        let resolved = resolve(systems, cand);
+        gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
+        if let Some(info) = resolved {
+            detected.retain(|d| d.id != info.id);
+        }
+        break;
     }
 
     IntelReport {
@@ -109,10 +146,69 @@ pub fn analyze(
         channel: channel.to_owned(),
         reporter: reporter.to_owned(),
         text: text.to_owned(),
-        systems,
-        clear,
-        no_visual,
+        systems: detected,
+        count: parse_count(text),
+        clear: lower_tokens.iter().any(|t| CLEAR_WORDS.contains(&t.as_str())),
+        no_visual: lower_tokens.iter().any(|t| t == "nv") || lower.contains("no visual"),
+        spike: lower.contains("spike"),
+        camp: lower.contains("camp"),
+        bubble: lower.contains("bubble"),
+        killmail: lower.contains("zkillboard.com") || lower.contains("kill:"),
+        gate,
+        movement: None,
     }
+}
+
+/// Resolve a token to a system: exact name, or an unambiguous null-sec abbreviation
+/// (uppercase/digit code with a hyphen, e.g. "78-", "C-J"). The proper-noun guard
+/// keeps common lower-case words from matching.
+fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::SystemInfo> {
+    let first = token.chars().next()?;
+    let proper = first.is_uppercase() || first.is_ascii_digit() || token.contains('-');
+    if !proper {
+        return None;
+    }
+    if let Some(info) = systems.lookup(token) {
+        return Some(info);
+    }
+    let codey = token.len() >= 2
+        && token.contains('-')
+        && token
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-' || c == '\'');
+    if codey {
+        systems.lookup_prefix(token)
+    } else {
+        None
+    }
+}
+
+/// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number.
+fn parse_count(text: &str) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    for raw in text.split_whitespace() {
+        // Skip system codes (e.g. "78-", "1DQ1-A") — their digits aren't a count.
+        if raw.contains('-') {
+            continue;
+        }
+        let t = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != 'x');
+        let digits = t.trim_start_matches(['+', 'x']).trim_end_matches('x');
+        if digits.is_empty() || digits.len() > 3 {
+            continue;
+        }
+        // Bare numbers only count if the token is purely a number or +/x decorated.
+        let decorated = t.starts_with('+') || t.starts_with('x') || t.ends_with('x');
+        let bare_number = t.chars().all(|c| c.is_ascii_digit());
+        if !(decorated || bare_number) {
+            continue;
+        }
+        if let Ok(n) = digits.parse::<u32>() {
+            if (1..=999).contains(&n) {
+                best = Some(best.map_or(n, |b| b.max(n)));
+            }
+        }
+    }
+    best
 }
 
 /// Split into candidate tokens, keeping `-` and `'` (used in system/char names).
@@ -132,50 +228,76 @@ pub fn parse_eve_time(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geo::{SystemInfo, Systems};
 
-    fn index() -> SystemIndex {
-        let mut m = SystemIndex::new();
-        m.insert("rancer".into(), ("Rancer".into(), 0.4));
-        m.insert("jita".into(), ("Jita".into(), 0.9));
-        m.insert("1dq1-a".into(), ("1DQ1-A".into(), -0.4));
-        m
+    fn systems() -> Systems {
+        let by_name = [
+            ("rancer", "Rancer", 1, 0.4),
+            ("jita", "Jita", 2, 0.9),
+            ("1dq1-a", "1DQ1-A", 3, -0.4),
+            ("78-aaa", "78-AAA", 4, -0.5),
+            ("c-j6mt", "C-J6MT", 5, -0.6),
+        ]
+        .into_iter()
+        .map(|(key, name, id, sec)| {
+            (
+                key.to_string(),
+                SystemInfo {
+                    id,
+                    name: name.to_string(),
+                    security: sec,
+                },
+            )
+        })
+        .collect();
+        Systems::new(by_name, HashMap::new())
     }
 
     #[test]
-    fn detects_systems_and_keywords() {
-        let i = index();
+    fn detects_systems_count_and_flags() {
+        let s = systems();
 
-        let hostile = analyze("hostile in Rancer, 3 Drake", &i, 100, "ch", "Scout");
-        assert_eq!(hostile.systems, vec![("Rancer".to_owned(), 0.4)]);
-        assert!(!hostile.clear && !hostile.no_visual);
+        let r = analyze("hostile in Rancer, 3 Drake +2", &s, 100, "ch", "Scout");
+        assert_eq!(r.systems.len(), 1);
+        assert_eq!(r.systems[0].name, "Rancer");
+        assert_eq!(r.count, Some(3));
+        assert!(!r.clear);
 
-        assert!(analyze("Rancer clear", &i, 1, "ch", "Scout").clear);
-        assert!(analyze("nv in Jita", &i, 1, "ch", "Scout").no_visual);
+        assert!(analyze("Rancer clear", &s, 1, "ch", "x").clear);
+        assert!(analyze("nv in Jita", &s, 1, "ch", "x").no_visual);
+        assert!(analyze("gate camp 1DQ1-A bubble up", &s, 1, "ch", "x").camp);
+        assert!(analyze("https://zkillboard.com/kill/123/", &s, 1, "ch", "x").killmail);
+        // lower-case common words that are system names are not matched
+        assert!(analyze("clear in here", &s, 1, "ch", "x").systems.is_empty());
+    }
 
-        // Null-sec codes with digits/hyphens are detected.
-        assert_eq!(analyze("red spike 1DQ1-A", &i, 1, "ch", "Scout").systems.len(), 1);
-
-        // Common lower-case words that happen to be system names are ignored.
-        assert!(analyze("clear in here", &i, 1, "ch", "Scout").systems.is_empty());
+    #[test]
+    fn detects_gate_and_abbreviated_systems() {
+        let s = systems();
+        // Abbreviated null-sec codes resolve by unique prefix; the gate is captured
+        // and not double-listed as a plain system.
+        let r = analyze("C-J +20 on 78- gate", &s, 1, "ch", "Scout");
+        assert_eq!(r.count, Some(20));
+        assert_eq!(r.gate.as_deref(), Some("78-AAA"));
+        assert_eq!(
+            r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["C-J6MT"],
+        );
     }
 
     #[test]
     fn clear_outdates_prior_sighting_but_not_later_ones() {
-        let i = index();
+        let s = systems();
         let mut st = IntelState::default();
-
-        let prior = analyze("hostile in Rancer", &i, 100, "ch", "A");
-        let clear = analyze("Rancer clear", &i, 112, "ch", "B");
-        let later = analyze("hostile back in Rancer", &i, 120, "ch", "C");
+        let prior = analyze("hostile in Rancer", &s, 100, "ch", "A");
+        let clear = analyze("Rancer clear", &s, 112, "ch", "B");
+        let later = analyze("hostile back in Rancer", &s, 120, "ch", "C");
         st.push(prior.clone());
         st.push(clear.clone());
         st.push(later.clone());
 
-        // "clear" does not remove anything.
         assert_eq!(st.reports.len(), 3);
-        // The earlier sighting is outdated by the clear...
         assert!(st.is_stale(&prior));
-        // ...but the clear itself and a later sighting are current.
         assert!(!st.is_stale(&clear));
         assert!(!st.is_stale(&later));
     }

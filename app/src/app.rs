@@ -106,11 +106,11 @@ impl SpaiApp {
         self.watcher_started = true; // mark started regardless, so we don't re-detect every frame
 
         if let Some(dir) = self.chat_dir.clone() {
-            let index = std::sync::Arc::new(store.system_index());
+            let systems = std::sync::Arc::new(store.load_systems());
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
-                index,
+                systems,
                 self.intel_state.clone(),
                 ctx.clone(),
             );
@@ -146,7 +146,7 @@ impl SpaiApp {
                 query.is_empty()
                     || r.text.to_lowercase().contains(&query)
                     || r.channel.to_lowercase().contains(&query)
-                    || r.systems.iter().any(|(n, _)| n.to_lowercase().contains(&query))
+                    || r.systems.iter().any(|s| s.name.to_lowercase().contains(&query))
             })
             .collect();
 
@@ -602,54 +602,98 @@ impl eframe::App for SpaiApp {
     }
 }
 
-/// Render a single intel report row. `stale` means a later "clear" has outdated it.
+/// Age as s / m+s / h+m pairs (only seconds when under a minute).
+fn fmt_age(secs: i64) -> String {
+    let s = secs.max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m {:02}s", s / 60, s % 60)
+    } else {
+        format!("{}h {:02}m", s / 3600, (s % 3600) / 60)
+    }
+}
+
+/// Render a single intel report row in the concise, parsed format. `stale` means a
+/// later "clear" has outdated it.
 fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64, stale: bool) {
     let age = (now - r.received).max(0);
-    let age_txt = if age < 60 {
-        format!("{age}s")
-    } else {
-        format!("{}m", age / 60)
-    };
     // Fade older reports toward the background; outdated (cleared) ones fade hard.
     let fade = if stale {
         0.35
     } else {
         1.0 - (age as f32 / crate::intel::DEFAULT_TTL_SECS as f32).clamp(0.0, 0.8)
     };
+    let dim = |c: egui::Color32| c.gamma_multiply(fade);
+    let text_col = ui.visuals().text_color();
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{age_txt:>4}")).monospace().weak());
-            ui.label(egui::RichText::new(&r.channel).weak());
-            ui.separator();
 
+        // Primary, parsed line: age · systems · count · status · movement.
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak());
+
+            for s in &r.systems {
+                ui.label(security_badge(s.security).color(dim(security_color(s.security))));
+                ui.label(egui::RichText::new(&s.name).strong().color(dim(text_col)));
+            }
+
+            if let Some(n) = r.count {
+                ui.label(egui::RichText::new(format!("{n}x")).strong().color(dim(text_col)));
+            }
+
+            let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
+                ui.label(egui::RichText::new(txt).color(dim(col)).strong());
+            };
+            let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+            let warn = crate::theme::standing::WARNING;
+            let red = crate::theme::standing::HOSTILE;
             if r.clear {
-                ui.label(
-                    egui::RichText::new("CLEAR")
-                        .color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A))
-                        .strong(),
-                );
+                tag(ui, "CLEAR", green);
             }
             if r.no_visual {
-                ui.label(egui::RichText::new("NV").color(crate::theme::standing::WARNING));
+                tag(ui, "NV", warn);
             }
-            for (name, sec) in &r.systems {
-                ui.label(security_badge(*sec).color(security_color(*sec).gamma_multiply(fade)));
+            if r.spike {
+                tag(ui, "SPIKE", red);
+            }
+            if r.camp {
+                tag(ui, "CAMP", red);
+            }
+            if r.bubble {
+                tag(ui, "BUBBLE", warn);
+            }
+            if r.killmail {
+                tag(ui, "KILL", red);
+            }
+
+            if let Some(gate) = &r.gate {
                 ui.label(
-                    egui::RichText::new(name)
-                        .strong()
-                        .color(ui.visuals().text_color().gamma_multiply(fade)),
+                    egui::RichText::new(format!("on {gate} gate"))
+                        .color(dim(text_col))
+                        .italics(),
                 );
+            }
+
+            if let Some(m) = &r.movement {
+                let arrow = egui_phosphor::regular::ARROW_LEFT;
+                let hint = match m.jumps {
+                    Some(j) => format!("{arrow} {} ({j}j)", m.from),
+                    None => format!("{arrow} {}", m.from),
+                };
+                ui.label(egui::RichText::new(hint).italics().color(dim(text_col)));
             }
             if stale {
                 ui.label(egui::RichText::new("· outdated").italics().weak());
             }
         });
+
+        // Secondary, de-emphasised raw message (the exact words matter less).
         ui.horizontal_wrapped(|ui| {
-            let dim = ui.visuals().text_color().gamma_multiply(fade.max(0.4));
-            ui.label(egui::RichText::new(format!("{}:", r.reporter)).color(dim).weak());
-            ui.label(egui::RichText::new(&r.text).color(dim));
+            let faint = text_col.gamma_multiply((fade * 0.7).max(0.3));
+            ui.label(egui::RichText::new(format!("{}:", r.reporter)).small().color(faint));
+            ui.label(egui::RichText::new(&r.text).small().color(faint));
         });
     });
 }

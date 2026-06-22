@@ -10,36 +10,51 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::intel::{self, IntelState, SystemIndex};
+use crate::geo::Systems;
+use crate::intel::{self, IntelState, Movement};
 
 const POLL: Duration = Duration::from_millis(1500);
 /// On first sight of a file, show at most this many trailing messages as backlog.
 const FIRST_SIGHT_BACKLOG: usize = 20;
+/// Cap movement-distance search (a hostile won't have "moved" further sensibly).
+const MAX_MOVE_JUMPS: u32 = 15;
 
 pub fn spawn(
     chat_dir: PathBuf,
     channels: Vec<String>,
-    index: Arc<SystemIndex>,
+    systems: Arc<Systems>,
     state: Arc<Mutex<IntelState>>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
         let channels: Vec<String> = channels.iter().map(|c| c.to_lowercase()).collect();
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
+        // Last system a sighting was reported in, per channel (id, name).
+        let mut last_system: HashMap<String, (i64, String)> = HashMap::new();
         loop {
-            scan(&chat_dir, &channels, &index, &state, &ctx, &mut processed);
+            scan(
+                &chat_dir,
+                &channels,
+                &systems,
+                &state,
+                &ctx,
+                &mut processed,
+                &mut last_system,
+            );
             std::thread::sleep(POLL);
         }
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan(
     chat_dir: &PathBuf,
     channels: &[String],
-    index: &SystemIndex,
+    systems: &Systems,
     state: &Mutex<IntelState>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
+    last_system: &mut HashMap<String, (i64, String)>,
 ) {
     let Ok(entries) = std::fs::read_dir(chat_dir) else {
         return;
@@ -68,7 +83,26 @@ fn scan(
             let mut st = state.lock().unwrap();
             for m in &messages[start..] {
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
-                st.push(intel::analyze(&m.text, index, received, &meta.channel, &m.author));
+                let mut report = intel::analyze(&m.text, systems, received, &meta.channel, &m.author);
+
+                // Movement: link to the channel's previous sighting in a different
+                // system, recording direction + jump distance.
+                if !report.clear {
+                    let primary = report.primary_system().map(|s| (s.id, s.name.clone()));
+                    if let Some((pid, pname)) = primary {
+                        if let Some((prev_id, prev_name)) = last_system.get(&meta.channel) {
+                            if *prev_id != pid {
+                                report.movement = Some(Movement {
+                                    from: prev_name.clone(),
+                                    jumps: systems.jumps(*prev_id, pid, MAX_MOVE_JUMPS),
+                                });
+                            }
+                        }
+                        last_system.insert(meta.channel.clone(), (pid, pname));
+                    }
+                }
+
+                st.push(report);
             }
             st.prune(intel::DEFAULT_TTL_SECS, now);
             any_new = true;

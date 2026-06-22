@@ -7,6 +7,7 @@
 mod app;
 mod auth;
 mod chatlog;
+mod geo;
 mod intel;
 mod logpaths;
 mod nav;
