@@ -85,6 +85,11 @@ fn scan(
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
                 let mut report = intel::analyze(&m.text, systems, received, &meta.channel, &m.author);
 
+                // Ignore non-placeable chatter: nothing to anchor without a system/gate.
+                if report.systems.is_empty() && report.gate.is_none() {
+                    continue;
+                }
+
                 // Movement: link to the channel's previous sighting in a different
                 // system, recording direction + jump distance.
                 if !report.clear {

@@ -57,6 +57,8 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
+    /// One-shot: centre the map on this system on the next draw (from intel click).
+    map_focus: Option<i64>,
 }
 
 impl SpaiApp {
@@ -140,7 +142,17 @@ impl SpaiApp {
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
+            map_focus: None,
         }
+    }
+
+    /// Focus the map on a system (used when an intel system is clicked).
+    fn focus_map_on(&mut self, system_id: i64) {
+        self.view = View::Map;
+        if let Some(region) = self.store.as_ref().and_then(|s| s.region_of_system(system_id)) {
+            self.map_go(crate::map::MapView::Region(region));
+        }
+        self.map_focus = Some(system_id);
     }
 
     /// Evaluate new intel against alert rules; fire desktop notifications (cooldown
@@ -321,15 +333,25 @@ impl SpaiApp {
 
         let player_sys = self.player.lock().unwrap().system_id;
         let systems = self.systems.clone();
-        let status = self.system_status.lock().unwrap();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for r in matches {
-                let stale = state.is_stale(r);
-                let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                intel_row(ui, r, now, stale, from_you, &systems, &status);
-                ui.add_space(2.0);
-            }
-        });
+        let mut focus: Option<i64> = None;
+        {
+            let status = self.system_status.lock().unwrap();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for r in matches {
+                    let stale = state.is_stale(r);
+                    let from_you =
+                        jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+                    if let Some(id) = intel_row(ui, r, now, stale, from_you, &systems, &status) {
+                        focus = Some(id);
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+        }
+        drop(state);
+        if let Some(id) = focus {
+            self.focus_map_on(id);
+        }
     }
 
     /// Overview: at-a-glance summary of live state.
@@ -706,6 +728,14 @@ impl SpaiApp {
         let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
         for s in &self.map_systems {
             pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
+        }
+
+        // One-shot focus from an intel click.
+        if let Some(fid) = self.map_focus.take() {
+            if let Some(s) = self.map_systems.iter().find(|s| s.id == fid) {
+                let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
+                self.map_pan = rect.center() - base;
+            }
         }
 
         // Click: zoom into a region (universe) or centre on a system (region).
@@ -1363,6 +1393,8 @@ fn fmt_age(secs: i64) -> String {
 
 /// Render a single intel report row in the concise, parsed format. `stale` means a
 /// later "clear" has outdated it; `from_you` is jumps from the active character.
+/// Render one intel report as typed, clickable panels (no raw message inline; the
+/// raw text is available on hover). Returns a clicked system id to focus the map.
 fn intel_row(
     ui: &mut egui::Ui,
     r: &crate::intel::IntelReport,
@@ -1371,100 +1403,135 @@ fn intel_row(
     from_you: Option<u32>,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
-) {
+) -> Option<i64> {
+    use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
-    // Fade older reports toward the background; outdated (cleared) ones fade hard.
-    let fade = if stale {
-        0.35
+    let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+    let warn = crate::theme::standing::WARNING;
+    let red = crate::theme::standing::HOSTILE;
+    let accent = ui.visuals().hyperlink_color;
+
+    // Report type drives the background tint and a leading icon.
+    let (tint, type_icon) = if r.clear {
+        (green, icon::CHECK_CIRCLE)
+    } else if r.killmail {
+        (egui::Color32::from_rgb(0x8A, 0x2A, 0x2A), icon::SKULL)
+    } else if r.spike || r.camp || r.bubble || r.cyno {
+        (red, icon::WARNING_OCTAGON)
+    } else if r.no_visual {
+        (warn, icon::EYE_SLASH)
+    } else if !r.systems.is_empty() || r.count.is_some() {
+        (red, icon::WARNING)
     } else {
-        1.0 - (age as f32 / crate::intel::DEFAULT_TTL_SECS as f32).clamp(0.0, 0.8)
+        (ui.visuals().weak_text_color(), icon::INFO)
     };
-    let dim = |c: egui::Color32| c.gamma_multiply(fade);
-    let text_col = ui.visuals().text_color();
 
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_width(ui.available_width());
+    let mut clicked: Option<i64> = None;
+    let resp = egui::Frame::group(ui.style())
+        .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(type_icon).color(tint));
+                ui.label(egui::RichText::new(fmt_age(age)).monospace().weak());
+                from_you_chip(ui, from_you);
 
-        // Primary, parsed line: age · systems · count · status · movement.
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak());
-            from_you_chip(ui, from_you);
+                // Hostile-count panel.
+                if let Some(n) = r.count {
+                    ui.label(egui::RichText::new(format!("{} {n}", icon::USERS)).color(red).strong())
+                        .on_hover_text("hostiles");
+                }
 
-            for s in &r.systems {
-                ui.label(security_badge(s.security).color(dim(security_color(s.security))));
-                ui.label(egui::RichText::new(&s.name).strong().color(dim(text_col)));
-                system_chips(ui, systems, status, s.id);
-            }
+                // Clickable system panels.
+                for s in &r.systems {
+                    let scol = security_color(s.security);
+                    let text =
+                        egui::RichText::new(format!("{} {}", icon::PLANET, s.name)).color(scol).strong();
+                    let panel = ui
+                        .add(egui::Button::new(text).fill(scol.gamma_multiply(0.12)))
+                        .on_hover_ui(|ui| system_hover(ui, systems, status, s));
+                    if panel.clicked() {
+                        clicked = Some(s.id);
+                    }
+                }
 
-            if let Some(n) = r.count {
-                ui.label(egui::RichText::new(format!("{n}x")).strong().color(dim(text_col)));
-            }
+                // Gate panel.
+                if let Some(g) = &r.gate {
+                    ui.label(
+                        egui::RichText::new(format!("{} {g} gate", icon::SIGN_IN)).color(accent).strong(),
+                    );
+                }
 
-            let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
-                ui.label(egui::RichText::new(txt).color(dim(col)).strong());
-            };
-            let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
-            let warn = crate::theme::standing::WARNING;
-            let red = crate::theme::standing::HOSTILE;
-            if r.clear {
-                tag(ui, "CLEAR", green);
-            }
-            if r.no_visual {
-                tag(ui, "NV", warn);
-            }
-            if r.spike {
-                tag(ui, "SPIKE", red);
-            }
-            if r.camp {
-                tag(ui, "CAMP", red);
-            }
-            if r.bubble {
-                tag(ui, "BUBBLE", warn);
-            }
-            if r.killmail {
-                tag(ui, "KILL", red);
-            }
-            if r.cyno {
-                tag(ui, "CYNO", red);
-            }
-            if r.wormhole {
-                tag(ui, "WH", crate::theme::standing::ALLIANCE);
-            }
-            if r.ess {
-                tag(ui, "ESS", warn);
-            }
-            if r.skyhook {
-                tag(ui, "SKYHOOK", warn);
-            }
-
-            if let Some(gate) = &r.gate {
-                ui.label(
-                    egui::RichText::new(format!("on {gate} gate"))
-                        .color(dim(text_col))
-                        .italics(),
-                );
-            }
-
-            if let Some(m) = &r.movement {
-                let arrow = egui_phosphor::regular::ARROW_LEFT;
-                let hint = match m.jumps {
-                    Some(j) => format!("{arrow} {} ({j}j)", m.from),
-                    None => format!("{arrow} {}", m.from),
+                // Status flags.
+                let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
+                    ui.label(egui::RichText::new(txt).color(col).strong());
                 };
-                ui.label(egui::RichText::new(hint).italics().color(dim(text_col)));
-            }
-            if stale {
-                ui.label(egui::RichText::new("· outdated").italics().weak());
-            }
-        });
+                if r.clear {
+                    tag(ui, "CLEAR", green);
+                }
+                if r.no_visual {
+                    tag(ui, "NV", warn);
+                }
+                if r.spike {
+                    tag(ui, "SPIKE", red);
+                }
+                if r.camp {
+                    tag(ui, "CAMP", red);
+                }
+                if r.bubble {
+                    tag(ui, "BUBBLE", warn);
+                }
+                if r.killmail {
+                    tag(ui, "KILL", red);
+                }
+                if r.cyno {
+                    tag(ui, "CYNO", red);
+                }
+                if r.wormhole {
+                    tag(ui, "WH", crate::theme::standing::ALLIANCE);
+                }
+                if r.ess {
+                    tag(ui, "ESS", warn);
+                }
+                if r.skyhook {
+                    tag(ui, "SKYHOOK", warn);
+                }
 
-        // Secondary, de-emphasised raw message (the exact words matter less).
-        ui.horizontal_wrapped(|ui| {
-            let faint = text_col.gamma_multiply((fade * 0.7).max(0.3));
-            ui.label(egui::RichText::new(format!("{}:", r.reporter)).color(faint));
-            ui.label(egui::RichText::new(&r.text).color(faint));
-        });
+                if let Some(m) = &r.movement {
+                    let hint = match m.jumps {
+                        Some(j) => format!("{} {} ({j}j)", icon::ARROW_LEFT, m.from),
+                        None => format!("{} {}", icon::ARROW_LEFT, m.from),
+                    };
+                    ui.label(egui::RichText::new(hint).italics().weak());
+                }
+                if stale {
+                    ui.label(egui::RichText::new("outdated").italics().weak());
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
+                });
+            });
+        })
+        .response;
+
+    // Raw message available on hover, never shown inline.
+    resp.on_hover_text(&r.text);
+    clicked
+}
+
+/// Hover tooltip for a system panel: security, location, live conditions.
+fn system_hover(
+    ui: &mut egui::Ui,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
+    s: &crate::intel::DetectedSystem,
+) {
+    ui.horizontal(|ui| {
+        ui.label(security_badge(s.security));
+        ui.label(egui::RichText::new(&s.name).strong());
     });
+    system_chips(ui, systems, status, s.id);
 }
 
 /// Returns `value` trimmed if non-empty, otherwise the fallback.

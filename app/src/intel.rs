@@ -113,8 +113,12 @@ pub fn analyze(
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
 
     let mut detected: Vec<DetectedSystem> = Vec::new();
+    // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
+    // "on 78 gate" is a gate, not 78 hostiles).
+    let mut consumed: Vec<String> = Vec::new();
     for tok in &tokens {
         if let Some(info) = resolve(systems, tok) {
+            consumed.push(tok.to_lowercase());
             if !detected.iter().any(|d| d.id == info.id) {
                 detected.push(DetectedSystem {
                     id: info.id,
@@ -139,6 +143,7 @@ pub fn analyze(
         }
         let resolved = resolve(systems, cand);
         gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
+        consumed.push(cand.to_lowercase());
         if let Some(info) = resolved {
             detected.retain(|d| d.id != info.id);
         }
@@ -151,7 +156,7 @@ pub fn analyze(
         reporter: reporter.to_owned(),
         text: text.to_owned(),
         systems: detected,
-        count: parse_count(text),
+        count: parse_count(text, &consumed),
         clear: lower_tokens.iter().any(|t| CLEAR_WORDS.contains(&t.as_str())),
         no_visual: lower_tokens.iter().any(|t| t == "nv") || lower.contains("no visual"),
         spike: lower.contains("spike"),
@@ -180,11 +185,11 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
     if let Some(info) = systems.lookup(token) {
         return Some(info);
     }
-    let codey = token.len() >= 2
-        && token.contains('-')
-        && token
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-' || c == '\'');
+    // Null-sec codes: uppercase/digit/hyphen, e.g. "78-", "C-J", or a bare "78".
+    let all_codey = token
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-' || c == '\'');
+    let codey = token.len() >= 2 && all_codey && (token.contains('-') || token.chars().all(|c| c.is_ascii_digit()));
     if codey {
         systems.lookup_prefix(token)
     } else {
@@ -192,8 +197,10 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
     }
 }
 
-/// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number.
-fn parse_count(text: &str) -> Option<u32> {
+/// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number. A `+`/`x`
+/// decorated number is always a count; a bare number is a count only if it wasn't
+/// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
+fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
     let mut best: Option<u32> = None;
     for raw in text.split_whitespace() {
         // Skip system codes (e.g. "78-", "1DQ1-A") — their digits aren't a count.
@@ -205,10 +212,13 @@ fn parse_count(text: &str) -> Option<u32> {
         if digits.is_empty() || digits.len() > 3 {
             continue;
         }
-        // Bare numbers only count if the token is purely a number or +/x decorated.
         let decorated = t.starts_with('+') || t.starts_with('x') || t.ends_with('x');
         let bare_number = t.chars().all(|c| c.is_ascii_digit());
         if !(decorated || bare_number) {
+            continue;
+        }
+        // A bare number consumed as a system/gate is not a count.
+        if bare_number && !decorated && consumed.iter().any(|c| c == &t.to_lowercase()) {
             continue;
         }
         if let Ok(n) = digits.parse::<u32>() {
@@ -299,6 +309,11 @@ mod tests {
             r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
             vec!["C-J6MT"],
         );
+
+        // A bare number used as a gate must not also be a hostile count.
+        let r2 = analyze("20 reds on 78 gate", &s, 1, "ch", "Scout");
+        assert_eq!(r2.gate.as_deref(), Some("78-AAA"));
+        assert_eq!(r2.count, Some(20));
     }
 
     #[test]
