@@ -1,6 +1,30 @@
 //! The application shell: window, nav rail, top/status bars, settings dialog,
 //! theme application, and persistence wiring (docs/DESIGN.md §6).
 
+/// Intel feed type filter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IntelTypeFilter {
+    All,
+    Hostile,
+    Clear,
+    Kill,
+    Threat,
+}
+
+impl IntelTypeFilter {
+    fn matches(self, r: &crate::intel::IntelReport) -> bool {
+        match self {
+            IntelTypeFilter::All => true,
+            IntelTypeFilter::Hostile => {
+                !r.clear && !r.killmail && (r.count.is_some() || !r.systems.is_empty())
+            }
+            IntelTypeFilter::Clear => r.clear,
+            IntelTypeFilter::Kill => r.killmail,
+            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno,
+        }
+    }
+}
+
 use crate::auth::{self, AuthStatus, SharedAuth};
 use crate::nav::{self, View};
 use crate::sde::{self, SdeStatus, SharedStatus};
@@ -29,8 +53,10 @@ pub struct SpaiApp {
     watcher_started: bool,
     /// Resolved chat-logs directory, or None if EVE logs weren't found.
     chat_dir: Option<std::path::PathBuf>,
-    /// Intel-view search box.
+    /// Intel-view filters.
     intel_query: String,
+    intel_max_jumps: u32,
+    intel_type: IntelTypeFilter,
     /// Clustered battle reports (shared with the zKill feed worker).
     battles: crate::zkill::SharedBattles,
     /// Active character name + ESI-resolved system (shared with the location poller).
@@ -57,6 +83,12 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
+    /// Schematic (gate-topology) layout instead of true geographic positions.
+    map_schematic: bool,
+    /// Coordinates actually drawn (geographic clone or schematic layout).
+    map_draw: Vec<crate::store::MapSystem>,
+    map_draw_schematic: bool,
+    map_draw_key: Option<(crate::map::MapView, bool)>,
     /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
     map_search: String,
@@ -122,6 +154,8 @@ impl SpaiApp {
             watcher_started: false,
             chat_dir: None,
             intel_query: String::new(),
+            intel_max_jumps: 0,
+            intel_type: IntelTypeFilter::All,
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             player,
             systems: None,
@@ -145,6 +179,10 @@ impl SpaiApp {
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
+            map_schematic: false,
+            map_draw: Vec::new(),
+            map_draw_schematic: false,
+            map_draw_key: None,
             map_focus: None,
             map_search: String::new(),
             system_window: None,
@@ -309,20 +347,56 @@ impl SpaiApp {
             return;
         }
 
+        let player_sys = self.player.lock().unwrap().system_id;
+        let systems = self.systems.clone();
+
+        // Full-width filter bar: type · max-jumps · search.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Filter").weak());
-            ui.text_edit_singleline(&mut self.intel_query);
+            use IntelTypeFilter::*;
+            for (lbl, v) in [
+                ("All", All),
+                ("Hostile", Hostile),
+                ("Clear", Clear),
+                ("Kill", Kill),
+                ("Threat", Threat),
+            ] {
+                if ui.selectable_label(self.intel_type == v, lbl).clicked() {
+                    self.intel_type = v;
+                }
+            }
+            ui.separator();
+            ui.label("\u{2264} jumps");
+            ui.add(
+                egui::DragValue::new(&mut self.intel_max_jumps)
+                    .range(0..=50)
+                    .custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n}") }),
+            );
+            ui.separator();
+            ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
+            ui.add_sized(
+                [ui.available_width(), ui.spacing().interact_size.y],
+                egui::TextEdit::singleline(&mut self.intel_query)
+                    .hint_text("Filter by system, text, or channel"),
+            );
         });
         ui.add_space(6.0);
 
         let now = chrono::Utc::now().timestamp();
         let query = self.intel_query.trim().to_lowercase();
+        let type_filter = self.intel_type;
+        let max_jumps = self.intel_max_jumps;
         let state = self.intel_state.lock().unwrap();
 
         let matches: Vec<&crate::intel::IntelReport> = state
             .reports
             .iter()
             .rev()
+            .filter(|r| type_filter.matches(r))
+            .filter(|r| {
+                max_jumps == 0
+                    || jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id))
+                        .is_some_and(|j| j <= max_jumps)
+            })
             .filter(|r| {
                 query.is_empty()
                     || r.text.to_lowercase().contains(&query)
@@ -333,9 +407,6 @@ impl SpaiApp {
 
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
-
-        let player_sys = self.player.lock().unwrap().system_id;
-        let systems = self.systems.clone();
         // Computed details for any ships mentioned in the visible reports.
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = {
             let ids: std::collections::HashSet<i64> =
@@ -701,7 +772,26 @@ impl SpaiApp {
             };
             self.map_loaded = Some(self.map_view);
         }
-        let Some(bounds) = crate::map::Bounds::of(&self.map_systems) else {
+
+        // Compute the drawn coordinates: geographic clone, or a schematic layout
+        // (gate topology). Schematic is limited to region-sized sets for speed.
+        let want = (self.map_view, self.map_schematic);
+        if self.map_draw_key != Some(want) {
+            let use_schematic = self.map_schematic && self.map_systems.len() <= 800;
+            self.map_draw = if use_schematic {
+                self.systems
+                    .as_ref()
+                    .map(|g| crate::map::schematic_layout(&self.map_systems, g))
+                    .unwrap_or_else(|| self.map_systems.clone())
+            } else {
+                self.map_systems.clone()
+            };
+            self.map_draw_schematic = use_schematic && self.systems.is_some();
+            self.map_draw_key = Some(want);
+        }
+        let schematic = self.map_draw_schematic;
+
+        let Some(bounds) = crate::map::Bounds::of(&self.map_draw) else {
             ui.add_space(10.0);
             ui.label(egui::RichText::new("No systems to show.").weak());
             return;
@@ -739,7 +829,7 @@ impl SpaiApp {
         }
         // Follow: centre the player's system.
         if self.map_follow {
-            if let Some(ps) = player_sys.and_then(|id| self.map_systems.iter().find(|s| s.id == id)) {
+            if let Some(ps) = player_sys.and_then(|id| self.map_draw.iter().find(|s| s.id == id)) {
                 let base = crate::map::project(ps.x, ps.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
                 self.map_pan = rect.center() - base;
             }
@@ -747,13 +837,13 @@ impl SpaiApp {
 
         // Project all systems.
         let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
-        for s in &self.map_systems {
+        for s in &self.map_draw {
             pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
         }
 
         // One-shot focus from an intel click.
         if let Some(fid) = self.map_focus.take() {
-            if let Some(s) = self.map_systems.iter().find(|s| s.id == fid) {
+            if let Some(s) = self.map_draw.iter().find(|s| s.id == fid) {
                 let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
                 self.map_pan = rect.center() - base;
             }
@@ -777,7 +867,7 @@ impl SpaiApp {
         // Gate links (each pair once).
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
         if let Some(graph) = &self.systems {
-            for s in &self.map_systems {
+            for s in &self.map_draw {
                 let p1 = pos[&s.id];
                 for &n in graph.neighbors(s.id) {
                     if s.id < n {
@@ -789,42 +879,47 @@ impl SpaiApp {
             }
         }
 
-        // Jump-range hover: rings + in-range highlight around the hovered system.
-        let hovered = ui
+        // Jump-range hover. Distances are always true light-years (real coords);
+        // in schematic mode we keep the band-coloured highlights but drop the rings
+        // (the on-screen distances aren't metric there).
+        let hovered_id = ui
             .input(|i| i.pointer.hover_pos())
             .filter(|_| resp.hovered())
-            .and_then(|p| nearest_system(p, &pos, 8.0))
-            .and_then(|id| self.map_systems.iter().find(|s| s.id == id));
-        if let Some(h) = hovered {
-            let hp = pos[&h.id];
-            // One colour per jump-range band (capital / black ops / jump freighter).
-            let band_color = [
-                egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // capital — green
-                egui::Color32::from_rgb(0xE0, 0xA4, 0x3A), // black ops — amber
-                egui::Color32::from_rgb(0xD8, 0x4C, 0x4C), // jump freighter — red
-            ];
-            // Outer-to-inner so inner rings/labels draw on top.
-            for (i, (name, ly)) in crate::map::JUMP_RANGES.iter().enumerate().rev() {
-                let col = band_color.get(i).copied().unwrap_or(band_color[2]);
-                let r = crate::map::ly_to_pixels(*ly, &bounds, rect, self.map_zoom);
-                painter.circle_stroke(hp, r, egui::Stroke::new(1.5, col.gamma_multiply(0.85)));
-                painter.text(
-                    hp + egui::vec2(0.0, -r),
-                    egui::Align2::CENTER_BOTTOM,
-                    format!("{name} {ly:.0} ly"),
-                    egui::FontId::proportional(12.0),
-                    col,
-                );
-            }
-            // Highlight each in-range system in the colour of the tightest band.
-            for s in &self.map_systems {
-                if s.id == h.id {
-                    continue;
+            .and_then(|p| nearest_system(p, &pos, 8.0));
+        if let Some(h_id) = hovered_id {
+            if let Some(real_h) = self.map_systems.iter().find(|s| s.id == h_id) {
+                let hp = pos[&h_id];
+                // One colour per band (capital / black ops / jump freighter).
+                let band_color = [
+                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // capital — green
+                    egui::Color32::from_rgb(0xE0, 0xA4, 0x3A), // black ops — amber
+                    egui::Color32::from_rgb(0xD8, 0x4C, 0x4C), // jump freighter — red
+                ];
+                if !schematic {
+                    for (i, (name, ly)) in crate::map::JUMP_RANGES.iter().enumerate().rev() {
+                        let col = band_color.get(i).copied().unwrap_or(band_color[2]);
+                        let r = crate::map::ly_to_pixels(*ly, &bounds, rect, self.map_zoom);
+                        painter.circle_stroke(hp, r, egui::Stroke::new(1.5, col.gamma_multiply(0.85)));
+                        painter.text(
+                            hp + egui::vec2(0.0, -r),
+                            egui::Align2::CENTER_BOTTOM,
+                            format!("{name} {ly:.0} ly"),
+                            egui::FontId::proportional(12.0),
+                            col,
+                        );
+                    }
                 }
-                let d = crate::map::ly_distance(h, s);
-                if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
-                    let col = band_color.get(b).copied().unwrap_or(band_color[2]);
-                    painter.circle_stroke(pos[&s.id], dot + 2.0, egui::Stroke::new(1.5, col));
+                // Highlight each in-range system in the colour of the tightest band.
+                // map_draw and map_systems share order, so index zips draw↔real.
+                for (i, s) in self.map_draw.iter().enumerate() {
+                    if s.id == h_id {
+                        continue;
+                    }
+                    let d = crate::map::ly_distance(real_h, &self.map_systems[i]);
+                    if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
+                        let col = band_color.get(b).copied().unwrap_or(band_color[2]);
+                        painter.circle_stroke(pos[&s.id], dot + 2.0, egui::Stroke::new(1.5, col));
+                    }
                 }
             }
         }
@@ -838,10 +933,11 @@ impl SpaiApp {
                 .filter_map(|r| r.primary_system().map(|s| s.id))
                 .collect()
         };
-        // System labels only when zoomed in enough (or a small region), and culled
-        // to the visible rect to avoid drawing thousands at once.
-        let show_sys_labels = self.map_systems.len() < 200 || self.map_zoom > 4.0;
-        for s in &self.map_systems {
+        // System labels only when few systems are actually on screen (so they don't
+        // appear too early / lag). Otherwise region names are labelled below.
+        let visible = self.map_draw.iter().filter(|s| rect.contains(pos[&s.id])).count();
+        let show_sys_labels = visible <= 60;
+        for s in &self.map_draw {
             let p = pos[&s.id];
             painter.circle_filled(p, dot, security_color(s.security));
             if intel_ids.contains(&s.id) {
@@ -865,7 +961,7 @@ impl SpaiApp {
         if !show_sys_labels {
             let mut acc: std::collections::HashMap<i64, (egui::Vec2, u32)> =
                 std::collections::HashMap::new();
-            for s in &self.map_systems {
+            for s in &self.map_draw {
                 let e = acc.entry(s.region_id).or_insert((egui::Vec2::ZERO, 0));
                 e.0 += pos[&s.id].to_vec2();
                 e.1 += 1;
@@ -937,6 +1033,13 @@ impl SpaiApp {
                         }
                         if ui.selectable_label(self.map_follow, "Follow").clicked() {
                             self.map_follow = !self.map_follow;
+                        }
+                        if ui
+                            .selectable_label(self.map_schematic, "Schematic")
+                            .on_hover_text("Gate-topology layout (uniform spacing, region-scale)")
+                            .clicked()
+                        {
+                            self.map_schematic = !self.map_schematic;
                         }
                         if ui.button("Reset").clicked() {
                             self.map_pan = egui::Vec2::ZERO;

@@ -77,6 +77,93 @@ pub fn ly_to_pixels(ly: f64, b: &Bounds, rect: Rect, zoom: f32) -> f32 {
     (ly * LY_METERS) as f32 * b.base_scale(rect, 30.0) * zoom
 }
 
+/// Force-directed (Fruchterman–Reingold) layout that spreads systems by gate
+/// topology rather than true distance — uniform-ish spacing, connections clear.
+/// Returns clones of `systems` with `x`/`z` replaced by the layout coordinates
+/// (in the same order; real coords are kept elsewhere for light-year maths).
+pub fn schematic_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> Vec<MapSystem> {
+    let n = systems.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let idx: std::collections::HashMap<i64, usize> =
+        systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+
+    // Seed from normalised geographic coords for a stable, untangled start.
+    let mut pos: Vec<(f64, f64)> = if let Some(b) = Bounds::of(systems) {
+        let sx = (b.max_x - b.min_x).max(1.0);
+        let sz = (b.max_z - b.min_z).max(1.0);
+        systems
+            .iter()
+            .map(|s| ((s.x - b.min_x) / sx, (s.z - b.min_z) / sz))
+            .collect()
+    } else {
+        (0..n).map(|i| (i as f64 / n as f64, 0.0)).collect()
+    };
+
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for s in systems {
+        let a = idx[&s.id];
+        for &nb in graph.neighbors(s.id) {
+            if let Some(&b) = idx.get(&nb) {
+                if a < b {
+                    edges.push((a, b));
+                }
+            }
+        }
+    }
+
+    let k = (1.0 / n as f64).sqrt(); // ideal edge length in a unit square
+    let iters = 140;
+    for it in 0..iters {
+        let mut disp = vec![(0.0f64, 0.0f64); n];
+        // Repulsion between every pair.
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = pos[i].0 - pos[j].0;
+                let dy = pos[i].1 - pos[j].1;
+                let d = (dx * dx + dy * dy).sqrt().max(1e-4);
+                let f = k * k / d;
+                let (ux, uy) = (dx / d, dy / d);
+                disp[i].0 += ux * f;
+                disp[i].1 += uy * f;
+                disp[j].0 -= ux * f;
+                disp[j].1 -= uy * f;
+            }
+        }
+        // Attraction along gate edges.
+        for &(a, b) in &edges {
+            let dx = pos[a].0 - pos[b].0;
+            let dy = pos[a].1 - pos[b].1;
+            let d = (dx * dx + dy * dy).sqrt().max(1e-4);
+            let f = d * d / k;
+            let (ux, uy) = (dx / d, dy / d);
+            disp[a].0 -= ux * f;
+            disp[a].1 -= uy * f;
+            disp[b].0 += ux * f;
+            disp[b].1 += uy * f;
+        }
+        // Cap displacement, cooling over time.
+        let temp = 0.1 * (1.0 - it as f64 / iters as f64);
+        for i in 0..n {
+            let dl = (disp[i].0 * disp[i].0 + disp[i].1 * disp[i].1).sqrt().max(1e-4);
+            let lim = dl.min(temp);
+            pos[i].0 += disp[i].0 / dl * lim;
+            pos[i].1 += disp[i].1 / dl * lim;
+        }
+    }
+
+    systems
+        .iter()
+        .enumerate()
+        .map(|(i, s)| MapSystem {
+            x: pos[i].0 * 1000.0,
+            z: pos[i].1 * 1000.0,
+            ..s.clone()
+        })
+        .collect()
+}
+
 pub fn project(x: f64, z: f64, b: &Bounds, rect: Rect, zoom: f32, pan: Vec2) -> Pos2 {
     let scale = b.base_scale(rect, 30.0) * zoom;
     let center = rect.center() + pan;
