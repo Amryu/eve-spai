@@ -1796,12 +1796,16 @@ fn intel_row(
         .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                // Keep all items on one baseline and tight vertically.
-                ui.spacing_mut().interact_size.y = 0.0;
+            ui.horizontal(|ui| {
+                // Reporter + channel pinned to the right; everything else fills from
+                // the left and stays vertically centred.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let h = ui.text_style_height(&egui::TextStyle::Body);
                 let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(w, 0.0),
+                        egui::vec2(w, h),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| add(ui),
                     );
@@ -1901,10 +1905,8 @@ fn intel_row(
                 if stale {
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
-
-                ui.label(
-                    egui::RichText::new(format!("— {} · {}", r.reporter, r.channel)).weak(),
-                );
+                    });
+                });
             });
         })
         .response;
