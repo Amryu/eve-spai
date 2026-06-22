@@ -23,6 +23,9 @@ pub struct Settings {
     /// OAuth loopback callback URL (must match the registered application).
     #[serde(default = "default_callback")]
     pub sso_callback: String,
+    /// Name of the last-applied configuration pack (empty = none).
+    #[serde(default)]
+    pub configuration_pack: String,
 }
 
 fn default_client_id() -> String {
@@ -44,6 +47,7 @@ impl Default for Settings {
             intel_channels: Vec::new(),
             sso_client_id: default_client_id(),
             sso_callback: default_callback(),
+            configuration_pack: String::new(),
         }
     }
 }

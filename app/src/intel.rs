@@ -28,16 +28,42 @@ pub struct IntelReport {
 #[derive(Default)]
 pub struct IntelState {
     pub reports: Vec<IntelReport>,
+    /// Most recent "clear" time per system (lower-cased name -> unix seconds).
+    cleared: HashMap<String, i64>,
 }
 
 impl IntelState {
     pub fn push(&mut self, report: IntelReport) {
+        // A "clear" records that the system was reported empty at this time. We do
+        // NOT delete prior intel — "clear" only means the hostiles aren't there
+        // *now*, so earlier sightings are outdated (greyed), not erased.
+        if report.clear {
+            for (name, _) in &report.systems {
+                let key = name.to_lowercase();
+                let slot = self.cleared.entry(key).or_insert(report.received);
+                *slot = (*slot).max(report.received);
+            }
+        }
         self.reports.push(report);
     }
 
-    /// Drop reports older than `ttl` seconds.
+    /// A non-clear sighting is stale if a clear for one of its systems arrived at
+    /// or after it — the hostiles have since left.
+    pub fn is_stale(&self, report: &IntelReport) -> bool {
+        if report.clear {
+            return false;
+        }
+        report.systems.iter().any(|(name, _)| {
+            self.cleared
+                .get(&name.to_lowercase())
+                .is_some_and(|&t| t >= report.received)
+        })
+    }
+
+    /// Drop reports and clear-marks older than `ttl` seconds.
     pub fn prune(&mut self, ttl: i64, now: i64) {
         self.reports.retain(|r| now - r.received <= ttl);
+        self.cleared.retain(|_, t| now - *t <= ttl);
     }
 }
 
@@ -101,4 +127,56 @@ pub fn parse_eve_time(s: &str) -> Option<i64> {
     chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y.%m.%d %H:%M:%S")
         .ok()
         .map(|dt| dt.and_utc().timestamp())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index() -> SystemIndex {
+        let mut m = SystemIndex::new();
+        m.insert("rancer".into(), ("Rancer".into(), 0.4));
+        m.insert("jita".into(), ("Jita".into(), 0.9));
+        m.insert("1dq1-a".into(), ("1DQ1-A".into(), -0.4));
+        m
+    }
+
+    #[test]
+    fn detects_systems_and_keywords() {
+        let i = index();
+
+        let hostile = analyze("hostile in Rancer, 3 Drake", &i, 100, "ch", "Scout");
+        assert_eq!(hostile.systems, vec![("Rancer".to_owned(), 0.4)]);
+        assert!(!hostile.clear && !hostile.no_visual);
+
+        assert!(analyze("Rancer clear", &i, 1, "ch", "Scout").clear);
+        assert!(analyze("nv in Jita", &i, 1, "ch", "Scout").no_visual);
+
+        // Null-sec codes with digits/hyphens are detected.
+        assert_eq!(analyze("red spike 1DQ1-A", &i, 1, "ch", "Scout").systems.len(), 1);
+
+        // Common lower-case words that happen to be system names are ignored.
+        assert!(analyze("clear in here", &i, 1, "ch", "Scout").systems.is_empty());
+    }
+
+    #[test]
+    fn clear_outdates_prior_sighting_but_not_later_ones() {
+        let i = index();
+        let mut st = IntelState::default();
+
+        let prior = analyze("hostile in Rancer", &i, 100, "ch", "A");
+        let clear = analyze("Rancer clear", &i, 112, "ch", "B");
+        let later = analyze("hostile back in Rancer", &i, 120, "ch", "C");
+        st.push(prior.clone());
+        st.push(clear.clone());
+        st.push(later.clone());
+
+        // "clear" does not remove anything.
+        assert_eq!(st.reports.len(), 3);
+        // The earlier sighting is outdated by the clear...
+        assert!(st.is_stale(&prior));
+        // ...but the clear itself and a later sighting are current.
+        assert!(!st.is_stale(&clear));
+        assert!(!st.is_stale(&later));
+    }
 }

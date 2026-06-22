@@ -155,7 +155,8 @@ impl SpaiApp {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for r in matches {
-                intel_row(ui, r, now);
+                let stale = state.is_stale(r);
+                intel_row(ui, r, now, stale);
                 ui.add_space(2.0);
             }
         });
@@ -495,6 +496,45 @@ impl SpaiApp {
 
                     ui.separator();
 
+                    // --- Configuration packs ---
+                    ui.label(egui::RichText::new("Configuration packs").strong());
+                    ui.label(
+                        egui::RichText::new("Apply a coalition's preset intel channels.").weak(),
+                    );
+                    for pack in crate::packs::PACKS {
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("Apply {}", pack.name)).clicked() {
+                                for ch in pack.channels {
+                                    if !self
+                                        .settings
+                                        .intel_channels
+                                        .iter()
+                                        .any(|c| c.eq_ignore_ascii_case(ch))
+                                    {
+                                        self.settings.intel_channels.push((*ch).to_owned());
+                                    }
+                                }
+                                self.settings.configuration_pack = pack.name.to_owned();
+                                changed = true;
+                            }
+                            ui.label(
+                                egui::RichText::new(format!("{} channels", pack.channels.len()))
+                                    .weak(),
+                            );
+                        });
+                    }
+                    if !self.settings.configuration_pack.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Applied: {}",
+                                self.settings.configuration_pack
+                            ))
+                            .weak(),
+                        );
+                    }
+
+                    ui.separator();
+
                     // --- Intel channels ---
                     ui.label(egui::RichText::new("Intel channels").strong());
                     let mut remove: Option<usize> = None;
@@ -562,16 +602,20 @@ impl eframe::App for SpaiApp {
     }
 }
 
-/// Render a single intel report row.
-fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64) {
+/// Render a single intel report row. `stale` means a later "clear" has outdated it.
+fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64, stale: bool) {
     let age = (now - r.received).max(0);
     let age_txt = if age < 60 {
         format!("{age}s")
     } else {
         format!("{}m", age / 60)
     };
-    // Fade older reports toward the background.
-    let fade = 1.0 - (age as f32 / crate::intel::DEFAULT_TTL_SECS as f32).clamp(0.0, 0.8);
+    // Fade older reports toward the background; outdated (cleared) ones fade hard.
+    let fade = if stale {
+        0.35
+    } else {
+        1.0 - (age as f32 / crate::intel::DEFAULT_TTL_SECS as f32).clamp(0.0, 0.8)
+    };
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -591,15 +635,21 @@ fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64) {
                 ui.label(egui::RichText::new("NV").color(crate::theme::standing::WARNING));
             }
             for (name, sec) in &r.systems {
-                ui.label(security_badge(*sec));
-                ui.label(egui::RichText::new(name).strong());
+                ui.label(security_badge(*sec).color(security_color(*sec).gamma_multiply(fade)));
+                ui.label(
+                    egui::RichText::new(name)
+                        .strong()
+                        .color(ui.visuals().text_color().gamma_multiply(fade)),
+                );
+            }
+            if stale {
+                ui.label(egui::RichText::new("· outdated").italics().weak());
             }
         });
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("{}:", r.reporter)).weak());
-            ui.label(egui::RichText::new(&r.text).color(
-                ui.visuals().text_color().gamma_multiply(fade.max(0.4)),
-            ));
+            let dim = ui.visuals().text_color().gamma_multiply(fade.max(0.4));
+            ui.label(egui::RichText::new(format!("{}:", r.reporter)).color(dim).weak());
+            ui.label(egui::RichText::new(&r.text).color(dim));
         });
     });
 }
@@ -614,17 +664,24 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
     }
 }
 
-/// A coloured security-status label, e.g. `0.9` (green) … `-0.3` (red).
-fn security_badge(security: f64) -> egui::RichText {
+/// Colour for a security status: green (hi-sec) / amber (lo-sec) / red (null).
+fn security_color(security: f64) -> egui::Color32 {
     let sec = (security * 10.0).round() / 10.0;
-    let color = if sec >= 0.5 {
+    if sec >= 0.5 {
         egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
     } else if sec > 0.0 {
         egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)
     } else {
         egui::Color32::from_rgb(0xD8, 0x4C, 0x4C)
-    };
-    egui::RichText::new(format!("{sec:.1}")).color(color).monospace()
+    }
+}
+
+/// A coloured security-status label, e.g. `0.9` (green) … `-0.3` (red).
+fn security_badge(security: f64) -> egui::RichText {
+    let sec = (security * 10.0).round() / 10.0;
+    egui::RichText::new(format!("{sec:.1}"))
+        .color(security_color(security))
+        .monospace()
 }
 
 /// A labelled sRGB colour picker row; returns true if the colour changed.

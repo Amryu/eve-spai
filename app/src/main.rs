@@ -10,6 +10,7 @@ mod chatlog;
 mod intel;
 mod logpaths;
 mod nav;
+mod packs;
 mod sde;
 mod settings;
 mod store;
