@@ -13,6 +13,8 @@ pub struct SystemInfo {
     pub security: f64,
     pub constellation: String,
     pub region: String,
+    /// NPC faction (sovereignty / rats), empty for unclaimed systems.
+    pub faction: String,
 }
 
 pub struct Systems {
@@ -108,6 +110,7 @@ mod tests {
                         security: 0.0,
                         constellation: String::new(),
                         region: String::new(),
+                        faction: String::new(),
                     },
                 )
             })

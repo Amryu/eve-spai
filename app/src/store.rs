@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::settings::Settings;
 
+/// Bump when the SDE schema/content changes, to force a re-download + re-bake.
+pub const SDE_SCHEMA_VERSION: &str = "3";
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
@@ -18,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sde_systems (
     name             TEXT NOT NULL,
     region_id        INTEGER,
     constellation_id INTEGER,
+    faction_id       INTEGER,
     security         REAL,
     x REAL, y REAL, z REAL
 );
@@ -36,10 +40,9 @@ CREATE TABLE IF NOT EXISTS characters (
 /// A solar system row for lookups/UI.
 #[derive(Clone, Debug)]
 pub struct SystemRow {
+    pub id: i64,
     pub name: String,
     pub security: f64,
-    pub constellation: String,
-    pub region: String,
 }
 
 /// A stored, SSO-authenticated character.
@@ -63,8 +66,9 @@ impl Store {
         let path = dir.join("eve-spai.db");
         let conn = Connection::open(&path)?;
         conn.execute_batch(SCHEMA)?;
-        // Add constellation_id to pre-existing SDE tables (no-op if already there).
+        // Add columns to pre-existing SDE tables (no-op if already there).
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN constellation_id INTEGER", []);
+        let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN faction_id INTEGER", []);
         migrate_plaintext_tokens(&conn);
         Ok(Self { conn, path })
     }
@@ -104,12 +108,12 @@ impl Store {
             .conn
             .query_row("SELECT COUNT(*) FROM sde_systems", [], |r| r.get(0))
             .ok()?;
-        // Require constellations too, so DBs from before that data was added re-bake.
-        let constellations: i64 = self
+        // Re-bake when the schema version changed (new columns/data added).
+        let schema: String = self
             .conn
-            .query_row("SELECT COUNT(*) FROM sde_constellations", [], |r| r.get(0))
-            .unwrap_or(0);
-        if systems == 0 || constellations == 0 {
+            .query_row("SELECT value FROM sde_meta WHERE key = 'schema'", [], |r| r.get(0))
+            .unwrap_or_default();
+        if systems == 0 || schema != SDE_SCHEMA_VERSION {
             return None;
         }
         let regions: i64 = self
@@ -134,18 +138,14 @@ impl Store {
         let pattern = format!("{q}%");
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT s.name, s.security, COALESCE(c.name, ''), COALESCE(r.name, '')
-             FROM sde_systems s
-             LEFT JOIN sde_constellations c ON c.id = s.constellation_id
-             LEFT JOIN sde_regions r ON r.id = s.region_id
-             WHERE s.name LIKE ?1 ORDER BY s.name LIMIT ?2",
+            "SELECT id, name, security FROM sde_systems
+             WHERE name LIKE ?1 ORDER BY name LIMIT ?2",
         ) {
             if let Ok(rows) = stmt.query_map(params![pattern, limit], |row| {
                 Ok(SystemRow {
-                    name: row.get(0)?,
-                    security: row.get(1)?,
-                    constellation: row.get(2)?,
-                    region: row.get(3)?,
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    security: row.get(2)?,
                 })
             }) {
                 out.extend(rows.flatten());
@@ -160,7 +160,7 @@ impl Store {
 
         let mut by_name: HashMap<String, crate::geo::SystemInfo> = HashMap::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT s.id, s.name, s.security, COALESCE(c.name,''), COALESCE(r.name,'')
+            "SELECT s.id, s.name, s.security, COALESCE(c.name,''), COALESCE(r.name,''), COALESCE(s.faction_id,0)
              FROM sde_systems s
              LEFT JOIN sde_constellations c ON c.id = s.constellation_id
              LEFT JOIN sde_regions r ON r.id = s.region_id",
@@ -172,6 +172,7 @@ impl Store {
                     security: r.get(2)?,
                     constellation: r.get(3)?,
                     region: r.get(4)?,
+                    faction: crate::factions::name(r.get::<_, i64>(5)?).to_owned(),
                 })
             }) {
                 for info in rows.flatten() {

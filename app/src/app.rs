@@ -39,6 +39,8 @@ pub struct SpaiApp {
     player: crate::esi::SharedPlayer,
     /// System graph for UI distance queries (set once the SDE is ready).
     systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    /// Live per-system status (incursion/FW/sov), shared with the ESI poller.
+    system_status: crate::systemstatus::SharedStatus,
 }
 
 impl SpaiApp {
@@ -106,6 +108,12 @@ impl SpaiApp {
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             player,
             systems: None,
+            system_status: {
+                let status: crate::systemstatus::SharedStatus =
+                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                crate::systemstatus::spawn(status.clone(), cc.egui_ctx.clone());
+                status
+            },
         }
     }
 
@@ -197,11 +205,12 @@ impl SpaiApp {
 
         let player_sys = self.player.lock().unwrap().system_id;
         let systems = self.systems.clone();
+        let status = self.system_status.lock().unwrap();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for r in matches {
                 let stale = state.is_stale(r);
                 let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                intel_row(ui, r, now, stale, from_you, &systems);
+                intel_row(ui, r, now, stale, from_you, &systems, &status);
                 ui.add_space(2.0);
             }
         });
@@ -238,6 +247,7 @@ impl SpaiApp {
         ui.add_space(4.0);
         let player_sys = self.player.lock().unwrap().system_id;
         let systems = self.systems.clone();
+        let status = self.system_status.lock().unwrap();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for b in shown {
                 // Nearest battle system to the player.
@@ -246,7 +256,7 @@ impl SpaiApp {
                     .iter()
                     .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
                     .min();
-                battle_row(ui, b, now, from_you, &systems);
+                battle_row(ui, b, now, from_you, &systems, &status);
                 ui.add_space(4.0);
             }
         });
@@ -380,19 +390,16 @@ impl SpaiApp {
                     .as_ref()
                     .map(|s| s.find_systems(&self.sde_query, 14))
                     .unwrap_or_default();
+                let systems = self.systems.clone();
+                let status = self.system_status.lock().unwrap();
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
                         for r in results {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(security_badge(r.security));
-                                ui.label(egui::RichText::new(r.name).strong());
-                                let loc = if r.constellation.is_empty() {
-                                    r.region.clone()
-                                } else {
-                                    format!("{} · {}", r.constellation, r.region)
-                                };
-                                ui.label(egui::RichText::new(loc).weak());
+                                ui.label(egui::RichText::new(&r.name).strong());
+                                system_chips(ui, &systems, &status, r.id);
                             });
                         }
                     });
@@ -709,21 +716,41 @@ fn jumps_from_you(
     sys.jumps(t, p, 50)
 }
 
-/// Weak "Constellation · Region" suffix for a system (looked up by id internally;
-/// no ids are ever shown). Omitted if unknown.
-fn region_chip(
+/// System suffix chips: in-game-style `< Constellation < Region`, NPC faction
+/// (rats/sov), and live status (incursion / FW / player sovereignty). Looked up by
+/// id internally — no ids are ever shown.
+fn system_chips(
     ui: &mut egui::Ui,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     system_id: i64,
 ) {
+    use crate::theme::standing;
     if let Some(info) = systems.as_ref().and_then(|s| s.info_of(system_id)) {
-        let text = match (info.constellation.as_str(), info.region.as_str()) {
-            ("", "") => return,
-            ("", r) => r.to_owned(),
-            (c, "") => c.to_owned(),
-            (c, r) => format!("{c} · {r}"),
+        let loc = match (info.constellation.as_str(), info.region.as_str()) {
+            ("", "") => String::new(),
+            ("", r) => format!("< {r}"),
+            (c, "") => format!("< {c}"),
+            (c, r) => format!("< {c} < {r}"),
         };
-        ui.label(egui::RichText::new(text).weak().small());
+        if !loc.is_empty() {
+            ui.label(egui::RichText::new(loc).weak().small());
+        }
+        // Faction = rats / NPC sov; only meaningful in low/null (highsec is CONCORD).
+        if !info.faction.is_empty() && info.security < 0.5 {
+            ui.label(egui::RichText::new(&info.faction).small().color(standing::NEUTRAL));
+        }
+    }
+    if let Some(f) = status.get(&system_id) {
+        if f.incursion {
+            ui.label(egui::RichText::new("INCURSION").small().color(standing::ALLIANCE));
+        }
+        if let Some(fw) = &f.fw {
+            ui.label(egui::RichText::new(format!("FW {fw}")).small().color(standing::WARNING));
+        }
+        if let Some(sov) = &f.sov {
+            ui.label(egui::RichText::new(format!("Sov: {sov}")).small().color(standing::CORP));
+        }
     }
 }
 
@@ -759,6 +786,7 @@ fn battle_row(
     now: i64,
     from_you: Option<u32>,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
 ) {
     let span_min = ((b.end - b.start) / 60).max(0);
     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -770,7 +798,7 @@ fn battle_row(
             for (id, name, sec) in &b.systems {
                 ui.label(security_badge(*sec));
                 ui.label(egui::RichText::new(name).strong());
-                region_chip(ui, systems, *id);
+                system_chips(ui, systems, status, *id);
             }
             ui.separator();
             ui.label(format!("{} kills", b.kills));
@@ -825,6 +853,7 @@ fn intel_row(
     stale: bool,
     from_you: Option<u32>,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
 ) {
     let age = (now - r.received).max(0);
     // Fade older reports toward the background; outdated (cleared) ones fade hard.
@@ -847,7 +876,7 @@ fn intel_row(
             for s in &r.systems {
                 ui.label(security_badge(s.security).color(dim(security_color(s.security))));
                 ui.label(egui::RichText::new(&s.name).strong().color(dim(text_col)));
-                region_chip(ui, systems, s.id);
+                system_chips(ui, systems, status, s.id);
             }
 
             if let Some(n) = r.count {

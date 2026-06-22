@@ -121,8 +121,8 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
             .has_headers(true)
             .from_reader(systems_csv.as_bytes());
         let mut stmt = tx.prepare(
-            "INSERT OR REPLACE INTO sde_systems(id, name, region_id, constellation_id, security, x, y, z)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO sde_systems(id, name, region_id, constellation_id, faction_id, security, x, y, z)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
         for rec in rdr.records() {
             let rec = rec?;
@@ -134,10 +134,12 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
             let constellation_id: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
             let name = rec.get(3).unwrap_or("");
             let security: f64 = rec.get(21).unwrap_or("").trim().parse().unwrap_or(0.0);
+            // factionID(22) is blank for unclaimed systems.
+            let faction_id: i64 = rec.get(22).unwrap_or("").trim().parse().unwrap_or(0);
             let x: f64 = rec.get(4).unwrap_or("").trim().parse().unwrap_or(0.0);
             let y: f64 = rec.get(5).unwrap_or("").trim().parse().unwrap_or(0.0);
             let z: f64 = rec.get(6).unwrap_or("").trim().parse().unwrap_or(0.0);
-            stmt.execute(params![id, name, region_id, constellation_id, security, x, y, z])?;
+            stmt.execute(params![id, name, region_id, constellation_id, faction_id, security, x, y, z])?;
             systems += 1;
         }
     }
@@ -163,6 +165,10 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<(i64, i64, String)> {
     tx.execute(
         "INSERT OR REPLACE INTO sde_meta(key, value) VALUES('version', ?1)",
         params![version],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO sde_meta(key, value) VALUES('schema', ?1)",
+        params![crate::store::SDE_SCHEMA_VERSION],
     )?;
     tx.commit()?;
 

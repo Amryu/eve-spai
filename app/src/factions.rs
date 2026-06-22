@@ -1,0 +1,31 @@
+//! NPC faction id -> name. Used for system NPC sovereignty / rats (from the SDE
+//! system faction), faction-warfare occupiers, and sovereignty-map NPC holders.
+//! Ids are internal only — never displayed.
+
+pub fn name(id: i64) -> &'static str {
+    match id {
+        500001 => "Caldari State",
+        500002 => "Minmatar Republic",
+        500003 => "Amarr Empire",
+        500004 => "Gallente Federation",
+        500005 => "Jove Empire",
+        500006 => "CONCORD",
+        500007 => "Ammatar Mandate",
+        500008 => "Khanid Kingdom",
+        500009 => "Syndicate",
+        500010 => "Guristas",
+        500011 => "Angel Cartel",
+        500012 => "Blood Raiders",
+        500013 => "InterBus",
+        500014 => "ORE",
+        500015 => "Thukker Tribe",
+        500016 => "Sisters of EVE",
+        500017 => "Society of Conscious Thought",
+        500018 => "Mordu's Legion",
+        500019 => "Sansha's Nation",
+        500020 => "Serpentis",
+        500024 => "EDENCOM",
+        500026 => "Triglavian Collective",
+        _ => "",
+    }
+}

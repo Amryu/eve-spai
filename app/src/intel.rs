@@ -248,6 +248,7 @@ mod tests {
                     security: sec,
                     constellation: String::new(),
                     region: String::new(),
+                    faction: String::new(),
                 },
             )
         })
