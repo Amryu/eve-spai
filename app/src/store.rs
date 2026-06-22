@@ -23,6 +23,12 @@ CREATE INDEX IF NOT EXISTS idx_sde_systems_name ON sde_systems(name);
 CREATE TABLE IF NOT EXISTS sde_jumps (from_id INTEGER, to_id INTEGER);
 CREATE INDEX IF NOT EXISTS idx_sde_jumps_from ON sde_jumps(from_id);
 CREATE TABLE IF NOT EXISTS sde_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS characters (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    expires_at INTEGER,
+    scopes     TEXT
+);
 ";
 
 /// A solar system row for lookups/UI.
@@ -31,6 +37,15 @@ pub struct SystemRow {
     pub name: String,
     pub security: f64,
     pub region: String,
+}
+
+/// A stored, SSO-authenticated character.
+#[derive(Clone, Debug)]
+pub struct CharacterRow {
+    pub id: i64,
+    pub name: String,
+    pub expires_at: i64,
+    pub scopes: String,
 }
 
 pub struct Store {
@@ -45,6 +60,7 @@ impl Store {
         let path = dir.join("eve-spai.db");
         let conn = Connection::open(&path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate_plaintext_tokens(&conn);
         Ok(Self { conn, path })
     }
 
@@ -123,6 +139,85 @@ impl Store {
             }
         }
         out
+    }
+
+    // --- Characters ---
+
+    pub fn list_characters(&self) -> Vec<CharacterRow> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT id, name, COALESCE(expires_at, 0), COALESCE(scopes, '')
+             FROM characters ORDER BY name",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok(CharacterRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    expires_at: row.get(2)?,
+                    scopes: row.get(3)?,
+                })
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    pub fn remove_character(&self, id: i64) -> Result<()> {
+        let _ = crate::tokens::delete(id);
+        self.conn
+            .execute("DELETE FROM characters WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+}
+
+/// One-time migration: if an older DB stored tokens in plaintext columns, move them
+/// into the keychain and drop the columns (scrubbing the DB file with VACUUM).
+fn migrate_plaintext_tokens(conn: &Connection) {
+    let has_legacy = conn
+        .prepare("PRAGMA table_info(characters)")
+        .and_then(|mut stmt| {
+            let cols: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(cols.iter().any(|c| c == "refresh_token"))
+        })
+        .unwrap_or(false);
+    if !has_legacy {
+        return;
+    }
+
+    let rows: Vec<(i64, Option<String>, Option<String>)> = conn
+        .prepare("SELECT id, refresh_token, access_token FROM characters")
+        .and_then(|mut stmt| {
+            let v = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(v)
+        })
+        .unwrap_or_default();
+
+    let mut all_migrated = true;
+    for (id, refresh, access) in rows {
+        if let Some(refresh) = refresh.filter(|s| !s.is_empty()) {
+            let tokens = crate::tokens::Tokens {
+                refresh_token: refresh,
+                access_token: access.unwrap_or_default(),
+            };
+            if let Err(e) = crate::tokens::save(id, &tokens) {
+                eprintln!("keychain migration failed for character {id}: {e:#}");
+                all_migrated = false;
+            }
+        }
+    }
+
+    // Only remove the plaintext once everything is safely in the keychain.
+    if all_migrated {
+        let _ = conn.execute("ALTER TABLE characters DROP COLUMN access_token", []);
+        let _ = conn.execute("ALTER TABLE characters DROP COLUMN refresh_token", []);
+        let _ = conn.execute("VACUUM", []);
     }
 }
 

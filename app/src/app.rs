@@ -1,10 +1,11 @@
 //! The application shell: window, nav rail, top/status bars, settings dialog,
 //! theme application, and persistence wiring (docs/DESIGN.md §6).
 
+use crate::auth::{self, AuthStatus, SharedAuth};
 use crate::nav::{self, View};
 use crate::sde::{self, SdeStatus, SharedStatus};
 use crate::settings::Settings;
-use crate::store::Store;
+use crate::store::{CharacterRow, Store};
 use crate::theme::{Rgb, Theme};
 use crate::views;
 
@@ -20,6 +21,10 @@ pub struct SpaiApp {
     sde_status: SharedStatus,
     /// Map-view system search box.
     sde_query: String,
+    /// SSO login state (shared with the background login worker).
+    auth_status: SharedAuth,
+    /// Authenticated characters, refreshed from the store each frame.
+    characters: Vec<CharacterRow>,
 }
 
 impl SpaiApp {
@@ -55,6 +60,11 @@ impl SpaiApp {
             }
         }
 
+        let characters = store
+            .as_ref()
+            .map(|s| s.list_characters())
+            .unwrap_or_default();
+
         Self {
             store,
             settings,
@@ -64,6 +74,109 @@ impl SpaiApp {
             needs_save: false,
             sde_status,
             sde_query: String::new(),
+            auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
+            characters,
+        }
+    }
+
+    fn refresh_characters(&mut self) {
+        if let Some(store) = &self.store {
+            self.characters = store.list_characters();
+        }
+        if self.active_character == "No character" {
+            if let Some(first) = self.characters.first() {
+                self.active_character = first.name.clone();
+            }
+        }
+    }
+
+    fn start_login(&self, ctx: &egui::Context) {
+        let client_id = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+        let callback = non_empty_or(&self.settings.sso_callback, auth::DEFAULT_CALLBACK);
+        let scopes = auth::DEFAULT_SCOPES.iter().map(|s| s.to_string()).collect();
+        if let Some(store) = &self.store {
+            auth::spawn_login(
+                client_id,
+                callback,
+                scopes,
+                store.path().to_path_buf(),
+                self.auth_status.clone(),
+                ctx.clone(),
+            );
+        }
+    }
+
+    /// The Characters view (M1: SSO login + token storage; live ESI data lands later).
+    fn characters_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.heading("Characters");
+        ui.separator();
+        ui.add_space(8.0);
+
+        match self.auth_status.lock().unwrap().clone() {
+            AuthStatus::Waiting(msg) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(msg);
+                });
+            }
+            AuthStatus::Success(name) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+                    format!("Logged in as {name}"),
+                );
+            }
+            AuthStatus::Failed(err) => {
+                ui.colored_label(crate::theme::standing::WARNING, format!("Login failed: {err}"));
+            }
+            AuthStatus::Idle => {}
+        }
+
+        ui.add_space(6.0);
+        if ui.button("Add character (EVE SSO)").clicked() {
+            self.start_login(&ui.ctx().clone());
+        }
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        if self.characters.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "No characters yet. Click \"Add character\" to log in with EVE SSO.",
+                )
+                .weak(),
+            );
+            return;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let mut remove: Option<i64> = None;
+        for c in &self.characters {
+            let scope_count = c.scopes.split(' ').filter(|s| !s.is_empty()).count();
+            let token_ok = c.expires_at > now;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&c.name).strong());
+                ui.label(egui::RichText::new(format!("· {scope_count} scopes")).weak());
+                let (col, txt) = if token_ok {
+                    (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "token valid")
+                } else {
+                    (crate::theme::standing::WARNING, "token expired")
+                };
+                ui.label(egui::RichText::new("·").weak());
+                ui.label(egui::RichText::new(txt).color(col));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(c.id);
+                    }
+                });
+            });
+        }
+        if let Some(id) = remove {
+            if let Some(store) = &self.store {
+                let _ = store.remove_character(id);
+            }
+            self.refresh_characters();
         }
     }
 
@@ -171,6 +284,13 @@ impl SpaiApp {
                                 "No character".to_owned(),
                                 "No character",
                             );
+                            for c in &self.characters {
+                                ui.selectable_value(
+                                    &mut self.active_character,
+                                    c.name.clone(),
+                                    &c.name,
+                                );
+                            }
                         });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -286,6 +406,19 @@ impl SpaiApp {
 
                     ui.separator();
 
+                    // --- EVE SSO ---
+                    ui.label(egui::RichText::new("EVE SSO").strong());
+                    ui.label(egui::RichText::new("Application client ID (PKCE)").weak());
+                    changed |= ui
+                        .text_edit_singleline(&mut self.settings.sso_client_id)
+                        .changed();
+                    ui.label(egui::RichText::new("Callback URL").weak());
+                    changed |= ui
+                        .text_edit_singleline(&mut self.settings.sso_callback)
+                        .changed();
+
+                    ui.separator();
+
                     // --- Intel channels ---
                     ui.label(egui::RichText::new("Intel channels").strong());
                     let mut remove: Option<usize> = None;
@@ -328,12 +461,14 @@ impl eframe::App for SpaiApp {
         // Re-apply the theme every frame so colour edits are reflected live (cheap).
         self.settings.theme.apply(&ctx);
 
+        self.refresh_characters();
         self.top_bar(ui);
         self.status_bar(ui);
         self.nav_rail(ui);
 
         egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
             View::Map => self.map_view(ui),
+            View::Characters => self.characters_view(ui),
             other => views::show(ui, other),
         });
 
@@ -346,6 +481,16 @@ impl eframe::App for SpaiApp {
 
     fn on_exit(&mut self) {
         self.persist();
+    }
+}
+
+/// Returns `value` trimmed if non-empty, otherwise the fallback.
+fn non_empty_or(value: &str, fallback: &str) -> String {
+    let v = value.trim();
+    if v.is_empty() {
+        fallback.to_owned()
+    } else {
+        v.to_owned()
     }
 }
 

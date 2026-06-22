@@ -25,12 +25,8 @@ pub fn show(ui: &mut egui::Ui, view: View) {
             "Live per-system intel feed and report list parsed from EVE chat logs — \
              the core of the tool. (Milestone M2.)",
         ),
-        View::Characters => placeholder(
-            ui,
-            "Characters",
-            "SSO-authenticated characters: online status, location, ship. \
-             (Milestone M1.)",
-        ),
+        // View::Characters is rendered by SpaiApp::characters_view (it needs app state).
+        View::Characters => {}
         View::Alerts => placeholder(
             ui,
             "Alerts",
