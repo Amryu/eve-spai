@@ -25,6 +25,14 @@ pub struct SpaiApp {
     auth_status: SharedAuth,
     /// Authenticated characters, refreshed from the store each frame.
     characters: Vec<CharacterRow>,
+    /// Live intel reports (shared with the chat-log watcher).
+    intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
+    /// Whether the chat-log watcher has been started (after the SDE is ready).
+    watcher_started: bool,
+    /// Resolved chat-logs directory, or None if EVE logs weren't found.
+    chat_dir: Option<std::path::PathBuf>,
+    /// Intel-view search box.
+    intel_query: String,
 }
 
 impl SpaiApp {
@@ -76,7 +84,81 @@ impl SpaiApp {
             sde_query: String::new(),
             auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
             characters,
+            intel_state: std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default())),
+            watcher_started: false,
+            chat_dir: None,
+            intel_query: String::new(),
         }
+    }
+
+    /// Start the chat-log watcher once the SDE is baked (it needs the system index).
+    fn maybe_start_watcher(&mut self, ctx: &egui::Context) {
+        if self.watcher_started {
+            return;
+        }
+        let ready = matches!(*self.sde_status.lock().unwrap(), SdeStatus::Ready { .. });
+        if !ready {
+            return;
+        }
+        let Some(store) = &self.store else { return };
+
+        self.chat_dir = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
+        self.watcher_started = true; // mark started regardless, so we don't re-detect every frame
+
+        if let Some(dir) = self.chat_dir.clone() {
+            let index = std::sync::Arc::new(store.system_index());
+            crate::watcher::spawn(
+                dir,
+                self.settings.intel_channels.clone(),
+                index,
+                self.intel_state.clone(),
+                ctx.clone(),
+            );
+        }
+    }
+
+    fn intel_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+
+        if self.chat_dir.is_none() {
+            ui.colored_label(
+                crate::theme::standing::WARNING,
+                "EVE chat logs not found. Set the logs directory in Settings.",
+            );
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Filter").weak());
+            ui.text_edit_singleline(&mut self.intel_query);
+        });
+        ui.add_space(6.0);
+
+        let now = chrono::Utc::now().timestamp();
+        let query = self.intel_query.trim().to_lowercase();
+        let state = self.intel_state.lock().unwrap();
+
+        let matches: Vec<&crate::intel::IntelReport> = state
+            .reports
+            .iter()
+            .rev()
+            .filter(|r| {
+                query.is_empty()
+                    || r.text.to_lowercase().contains(&query)
+                    || r.channel.to_lowercase().contains(&query)
+                    || r.systems.iter().any(|(n, _)| n.to_lowercase().contains(&query))
+            })
+            .collect();
+
+        ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for r in matches {
+                intel_row(ui, r, now);
+                ui.add_space(2.0);
+            }
+        });
     }
 
     fn refresh_characters(&mut self) {
@@ -456,6 +538,7 @@ impl eframe::App for SpaiApp {
         self.settings.theme.apply(&ctx);
 
         self.refresh_characters();
+        self.maybe_start_watcher(&ctx);
         self.top_bar(ui);
         self.status_bar(ui);
         self.nav_rail(ui);
@@ -463,6 +546,7 @@ impl eframe::App for SpaiApp {
         egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
             View::Map => self.map_view(ui),
             View::Characters => self.characters_view(ui),
+            View::Intel => self.intel_view(ui),
             other => views::show(ui, other),
         });
 
@@ -476,6 +560,48 @@ impl eframe::App for SpaiApp {
     fn on_exit(&mut self) {
         self.persist();
     }
+}
+
+/// Render a single intel report row.
+fn intel_row(ui: &mut egui::Ui, r: &crate::intel::IntelReport, now: i64) {
+    let age = (now - r.received).max(0);
+    let age_txt = if age < 60 {
+        format!("{age}s")
+    } else {
+        format!("{}m", age / 60)
+    };
+    // Fade older reports toward the background.
+    let fade = 1.0 - (age as f32 / crate::intel::DEFAULT_TTL_SECS as f32).clamp(0.0, 0.8);
+
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{age_txt:>4}")).monospace().weak());
+            ui.label(egui::RichText::new(&r.channel).weak());
+            ui.separator();
+
+            if r.clear {
+                ui.label(
+                    egui::RichText::new("CLEAR")
+                        .color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A))
+                        .strong(),
+                );
+            }
+            if r.no_visual {
+                ui.label(egui::RichText::new("NV").color(crate::theme::standing::WARNING));
+            }
+            for (name, sec) in &r.systems {
+                ui.label(security_badge(*sec));
+                ui.label(egui::RichText::new(name).strong());
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("{}:", r.reporter)).weak());
+            ui.label(egui::RichText::new(&r.text).color(
+                ui.visuals().text_color().gamma_multiply(fade.max(0.4)),
+            ));
+        });
+    });
 }
 
 /// Returns `value` trimmed if non-empty, otherwise the fallback.

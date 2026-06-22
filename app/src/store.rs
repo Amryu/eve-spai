@@ -141,6 +141,24 @@ impl Store {
         out
     }
 
+    /// Build a lower-cased system-name index for the intel parser.
+    pub fn system_index(&self) -> std::collections::HashMap<String, (String, f64)> {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT name, security FROM sde_systems")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+            }) {
+                for (name, sec) in rows.flatten() {
+                    map.insert(name.to_lowercase(), (name, sec));
+                }
+            }
+        }
+        map
+    }
+
     // --- Characters ---
 
     pub fn list_characters(&self) -> Vec<CharacterRow> {
