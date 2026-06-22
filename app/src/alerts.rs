@@ -88,6 +88,10 @@ mod tests {
             camp: false,
             bubble: false,
             killmail: false,
+            cyno: false,
+            wormhole: false,
+            ess: false,
+            skyhook: false,
             gate: None,
             movement: None,
         }

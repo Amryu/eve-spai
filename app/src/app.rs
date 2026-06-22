@@ -1021,6 +1021,18 @@ fn intel_row(
             if r.killmail {
                 tag(ui, "KILL", red);
             }
+            if r.cyno {
+                tag(ui, "CYNO", red);
+            }
+            if r.wormhole {
+                tag(ui, "WH", crate::theme::standing::ALLIANCE);
+            }
+            if r.ess {
+                tag(ui, "ESS", warn);
+            }
+            if r.skyhook {
+                tag(ui, "SKYHOOK", warn);
+            }
 
             if let Some(gate) = &r.gate {
                 ui.label(

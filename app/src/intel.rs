@@ -41,6 +41,10 @@ pub struct IntelReport {
     pub camp: bool,
     pub bubble: bool,
     pub killmail: bool,
+    pub cyno: bool,
+    pub wormhole: bool,
+    pub ess: bool,
+    pub skyhook: bool,
     /// Gate the hostiles are reported on, e.g. "78-" in "C-J +20 on 78- gate".
     pub gate: Option<String>,
     /// Where the subject was previously seen (set by the watcher).
@@ -154,6 +158,11 @@ pub fn analyze(
         camp: lower.contains("camp"),
         bubble: lower.contains("bubble"),
         killmail: lower.contains("zkillboard.com") || lower.contains("kill:"),
+        cyno: lower.contains("cyno"),
+        wormhole: lower.contains("wormhole")
+            || lower_tokens.iter().any(|t| t == "wh" || t == "k162"),
+        ess: lower_tokens.iter().any(|t| t == "ess"),
+        skyhook: lower.contains("skyhook"),
         gate,
         movement: None,
     }
@@ -270,6 +279,10 @@ mod tests {
         assert!(analyze("nv in Jita", &s, 1, "ch", "x").no_visual);
         assert!(analyze("gate camp 1DQ1-A bubble up", &s, 1, "ch", "x").camp);
         assert!(analyze("https://zkillboard.com/kill/123/", &s, 1, "ch", "x").killmail);
+        assert!(analyze("cyno up in Rancer", &s, 1, "ch", "x").cyno);
+        assert!(analyze("wh in Jita k162", &s, 1, "ch", "x").wormhole);
+        assert!(analyze("ess being robbed", &s, 1, "ch", "x").ess);
+        assert!(analyze("skyhook theft Rancer", &s, 1, "ch", "x").skyhook);
         // lower-case common words that are system names are not matched
         assert!(analyze("clear in here", &s, 1, "ch", "x").systems.is_empty());
     }
