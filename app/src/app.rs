@@ -771,6 +771,9 @@ impl SpaiApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
+        // Dot radius scales with zoom so a far-out universe view isn't a blob.
+        let dot = (1.1 * self.map_zoom).clamp(0.7, 3.5);
+
         // Gate links (each pair once).
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
         if let Some(graph) = &self.systems {
@@ -794,16 +797,34 @@ impl SpaiApp {
             .and_then(|id| self.map_systems.iter().find(|s| s.id == id));
         if let Some(h) = hovered {
             let hp = pos[&h.id];
-            let accent = ui.visuals().hyperlink_color;
-            for (i, (_, ly)) in crate::map::JUMP_RANGES.iter().enumerate() {
+            // One colour per jump-range band (capital / black ops / jump freighter).
+            let band_color = [
+                egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // capital — green
+                egui::Color32::from_rgb(0xE0, 0xA4, 0x3A), // black ops — amber
+                egui::Color32::from_rgb(0xD8, 0x4C, 0x4C), // jump freighter — red
+            ];
+            // Outer-to-inner so inner rings/labels draw on top.
+            for (i, (name, ly)) in crate::map::JUMP_RANGES.iter().enumerate().rev() {
+                let col = band_color.get(i).copied().unwrap_or(band_color[2]);
                 let r = crate::map::ly_to_pixels(*ly, &bounds, rect, self.map_zoom);
-                let a = 0.5 - 0.1 * i as f32;
-                painter.circle_stroke(hp, r, egui::Stroke::new(1.0, accent.gamma_multiply(a)));
+                painter.circle_stroke(hp, r, egui::Stroke::new(1.5, col.gamma_multiply(0.85)));
+                painter.text(
+                    hp + egui::vec2(0.0, -r),
+                    egui::Align2::CENTER_BOTTOM,
+                    format!("{name} {ly:.0} ly"),
+                    egui::FontId::proportional(12.0),
+                    col,
+                );
             }
-            let max_ly = crate::map::JUMP_RANGES.last().map_or(0.0, |(_, ly)| *ly);
+            // Highlight each in-range system in the colour of the tightest band.
             for s in &self.map_systems {
-                if s.id != h.id && crate::map::ly_distance(h, s) <= max_ly {
-                    painter.circle_stroke(pos[&s.id], 4.0, egui::Stroke::new(1.0, accent.gamma_multiply(0.7)));
+                if s.id == h.id {
+                    continue;
+                }
+                let d = crate::map::ly_distance(h, s);
+                if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
+                    let col = band_color.get(b).copied().unwrap_or(band_color[2]);
+                    painter.circle_stroke(pos[&s.id], dot + 2.0, egui::Stroke::new(1.5, col));
                 }
             }
         }
@@ -817,8 +838,6 @@ impl SpaiApp {
                 .filter_map(|r| r.primary_system().map(|s| s.id))
                 .collect()
         };
-        // Dot radius scales with zoom so a far-out universe view isn't a blob.
-        let dot = (1.1 * self.map_zoom).clamp(0.7, 3.5);
         // System labels only when zoomed in enough (or a small region), and culled
         // to the visible rect to avoid drawing thousands at once.
         let show_sys_labels = self.map_systems.len() < 200 || self.map_zoom > 4.0;
