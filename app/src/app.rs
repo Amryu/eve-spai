@@ -104,6 +104,7 @@ pub struct SpaiApp {
     /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
     map_search: String,
+    map_search_sel: usize,
     /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
     /// Ship-info window: the ship type currently shown (if any).
@@ -205,6 +206,7 @@ impl SpaiApp {
             map_layout_computing: None,
             map_focus: None,
             map_search: String::new(),
+            map_search_sel: 0,
             system_window: None,
             ship_window: None,
         }
@@ -1059,6 +1061,7 @@ impl SpaiApp {
         }
 
         self.map_controls_overlay(ui, rect);
+        self.map_search_overlay(ui, rect);
     }
 
     /// Floating controls over the map (scope, navigation, follow, pop-out).
@@ -1131,43 +1134,103 @@ impl SpaiApp {
                             self.map_popped = true;
                         }
                     });
-                    // Search with live dropdown.
+                });
+            });
+    }
+
+    /// Search panel (own panel, top-centre) with a keyboard-navigable dropdown.
+    /// Selecting a system focuses it on the map (swapping region if in region scope).
+    fn map_search_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use egui_phosphor::regular as icon;
+        let mut chosen: Option<i64> = None;
+        egui::Area::new(egui::Id::new("map_search"))
+            .fixed_pos(rect.center_top() + egui::vec2(-130.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    let has_query = !self.map_search.trim().is_empty();
+                    // Capture nav keys before the text field so it can't swallow them.
+                    let (down, up, enter, esc) = if has_query {
+                        ui.input_mut(|i| {
+                            use egui::Key;
+                            (
+                                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
+                                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
+                                i.consume_key(egui::Modifiers::NONE, Key::Enter),
+                                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+                            )
+                        })
+                    } else {
+                        (false, false, false, false)
+                    };
+
                     ui.horizontal(|ui| {
                         ui.label(icon::MAGNIFYING_GLASS);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.map_search)
-                                .hint_text("Find system")
-                                .desired_width(160.0),
+                                .hint_text("Search system")
+                                .desired_width(220.0),
                         );
-                        if !self.map_search.is_empty() && ui.button(icon::X).clicked() {
+                        if has_query && ui.button(icon::X).clicked() {
                             self.map_search.clear();
                         }
                     });
-                    if !self.map_search.trim().is_empty() {
+
+                    if esc {
+                        self.map_search.clear();
+                    }
+                    let query = self.map_search.trim().to_owned();
+                    if !query.is_empty() {
                         let results = self
                             .store
                             .as_ref()
-                            .map(|s| s.search_systems(&self.map_search, 8))
+                            .map(|s| s.search_systems(&query, 8))
                             .unwrap_or_default();
-                        let mut open: Option<i64> = None;
-                        for (id, name, sec) in results {
-                            if ui
-                                .add(egui::Button::new(
-                                    egui::RichText::new(format!("{:.1}  {name}", (sec * 10.0).round() / 10.0))
-                                        .color(security_color(sec)),
-                                ).frame(false))
-                                .clicked()
-                            {
-                                open = Some(id);
+                        if results.is_empty() {
+                            ui.label(egui::RichText::new("No match").weak());
+                        } else {
+                            if down {
+                                self.map_search_sel = (self.map_search_sel + 1).min(results.len() - 1);
+                            }
+                            if up {
+                                self.map_search_sel = self.map_search_sel.saturating_sub(1);
+                            }
+                            self.map_search_sel = self.map_search_sel.min(results.len() - 1);
+                            if enter {
+                                chosen = Some(results[self.map_search_sel].0);
+                            }
+                            ui.separator();
+                            for (i, (id, name, sec)) in results.iter().enumerate() {
+                                let text = egui::RichText::new(format!(
+                                    "{:.1}  {name}",
+                                    (sec * 10.0).round() / 10.0
+                                ))
+                                .color(security_color(*sec));
+                                if ui.selectable_label(i == self.map_search_sel, text).clicked() {
+                                    chosen = Some(*id);
+                                }
                             }
                         }
-                        if let Some(id) = open {
-                            self.map_search.clear();
-                            self.open_system(id);
-                        }
+                    } else {
+                        self.map_search_sel = 0;
                     }
                 });
             });
+        if let Some(id) = chosen {
+            self.map_search.clear();
+            self.map_search_sel = 0;
+            self.focus_map_on_select(id);
+        }
+    }
+
+    /// Focus a system on the map; if currently in a region view, swap to its region.
+    fn focus_map_on_select(&mut self, id: i64) {
+        if matches!(self.map_view, crate::map::MapView::Region(_)) {
+            if let Some(r) = self.store.as_ref().and_then(|s| s.region_of_system(id)) {
+                self.map_go(crate::map::MapView::Region(r));
+            }
+        }
+        self.map_focus = Some(id);
     }
 
     /// Render the popped-out map in its own OS window.
