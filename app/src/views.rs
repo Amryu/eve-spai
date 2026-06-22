@@ -1,0 +1,54 @@
+//! View content. M0 ships placeholders — each becomes a real Essential feature in
+//! later milestones (docs/DESIGN.md §7.1). The shell already routes to them so the
+//! nav rail, theming, and layout can be exercised end-to-end.
+
+use crate::nav::View;
+
+pub fn show(ui: &mut egui::Ui, view: View) {
+    ui.add_space(8.0);
+    ui.heading(view.label());
+    ui.separator();
+    ui.add_space(8.0);
+
+    match view {
+        View::Dashboard => placeholder(
+            ui,
+            "Overview",
+            "At-a-glance situational summary: active alerts, nearby hostiles, \
+             tracked-character locations. (Milestone M2+.)",
+        ),
+        View::Map => placeholder(
+            ui,
+            "Map",
+            "Lean 2D region map with intel + character-location overlays and basic \
+             routing. Needs the SDE download and SSO. (Milestone M3.)",
+        ),
+        View::Intel => placeholder(
+            ui,
+            "Intel",
+            "Live per-system intel feed and report list parsed from EVE chat logs — \
+             the core of the tool. (Milestone M2.)",
+        ),
+        View::Characters => placeholder(
+            ui,
+            "Characters",
+            "SSO-authenticated characters: online status, location, ship. \
+             (Milestone M1.)",
+        ),
+        View::Alerts => placeholder(
+            ui,
+            "Alerts",
+            "Rules over intel/log events firing sound + desktop notifications. \
+             (Milestone M4.)",
+        ),
+    }
+}
+
+fn placeholder(ui: &mut egui::Ui, title: &str, body: &str) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(egui::RichText::new(title).strong());
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(body).weak());
+    });
+}
