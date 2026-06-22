@@ -740,9 +740,8 @@ impl SpaiApp {
         }
         let player_sys = self.player.lock().unwrap().system_id;
         if !self.map_initialized {
-            let region = player_sys
-                .and_then(|s| self.store.as_ref().and_then(|st| st.region_of_system(s)));
-            self.map_view = region.map(MapView::Region).unwrap_or(MapView::Universe);
+            // Open on the full universe map (in-game style); navigate in from there.
+            self.map_view = MapView::Universe;
             self.map_initialized = true;
         }
 
@@ -861,21 +860,42 @@ impl SpaiApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-        // Dot radius scales with zoom so a far-out universe view isn't a blob.
-        let dot = (1.1 * self.map_zoom).clamp(0.7, 3.5);
+        // Small uniform dots like the in-game star map.
+        let dot = (0.7 * self.map_zoom).clamp(0.6, 2.2);
 
-        // Gate links (each pair once).
+        // Configured jump bridges (drawn distinctly, in green, like in-game).
+        let bridges: std::collections::HashSet<(i64, i64)> = if let Some(g) = &self.systems {
+            self.settings
+                .jump_bridges
+                .iter()
+                .filter_map(|b| {
+                    let a = g.lookup(&b.from)?.id;
+                    let c = g.lookup(&b.to)?.id;
+                    Some((a.min(c), a.max(c)))
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
+
+        // Gate links (each pair once); bridges are drawn separately below.
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
         if let Some(graph) = &self.systems {
             for s in &self.map_draw {
                 let p1 = pos[&s.id];
                 for &n in graph.neighbors(s.id) {
-                    if s.id < n {
+                    if s.id < n && !bridges.contains(&(s.id, n)) {
                         if let Some(p2) = pos.get(&n) {
                             painter.line_segment([p1, *p2], egui::Stroke::new(1.0, line_col));
                         }
                     }
                 }
+            }
+        }
+        let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
+        for &(a, c) in &bridges {
+            if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
+                painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
             }
         }
 
@@ -1772,14 +1792,16 @@ fn intel_row(
 
     let mut clicked: Option<i64> = None;
     let resp = egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::symmetric(8, 4))
         .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                let row_h = ui.spacing().interact_size.y;
+                // Keep all items on one baseline and tight vertically.
+                ui.spacing_mut().interact_size.y = 0.0;
                 let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(w, row_h),
+                        egui::vec2(w, 0.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| add(ui),
                     );
@@ -1788,7 +1810,7 @@ fn intel_row(
                 col(ui, 16.0, &|ui| {
                     ui.label(egui::RichText::new(type_icon).color(tint));
                 });
-                col(ui, 60.0, &|ui| {
+                col(ui, 58.0, &|ui| {
                     ui.label(egui::RichText::new(fmt_age(age)).monospace().weak());
                 });
                 col(ui, 40.0, &|ui| {
@@ -1880,9 +1902,9 @@ fn intel_row(
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
-                });
+                ui.label(
+                    egui::RichText::new(format!("— {} · {}", r.reporter, r.channel)).weak(),
+                );
             });
         })
         .response;
