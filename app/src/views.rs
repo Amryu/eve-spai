@@ -5,10 +5,7 @@
 use crate::nav::View;
 
 pub fn show(ui: &mut egui::Ui, view: View) {
-    ui.add_space(8.0);
-    ui.heading(view.label());
-    ui.separator();
-    ui.add_space(8.0);
+    ui.add_space(10.0);
 
     match view {
         View::Dashboard => placeholder(

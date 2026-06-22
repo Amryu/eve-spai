@@ -108,10 +108,7 @@ impl SpaiApp {
 
     /// The Characters view (M1: SSO login + token storage; live ESI data lands later).
     fn characters_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.heading("Characters");
-        ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
         match self.auth_status.lock().unwrap().clone() {
             AuthStatus::Waiting(msg) => {
@@ -188,10 +185,7 @@ impl SpaiApp {
 
     /// The Map view (M1: SDE status + system lookup; the rendered map lands in M3).
     fn map_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.heading("Map");
-        ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
         let status = self.sde_status.lock().unwrap().clone();
         match status {
