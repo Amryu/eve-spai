@@ -7,7 +7,7 @@ use egui::{Pos2, Rect, Vec2};
 use crate::store::MapSystem;
 
 /// What the map is showing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MapView {
     Universe,
     Region(i64),
@@ -77,11 +77,13 @@ pub fn ly_to_pixels(ly: f64, b: &Bounds, rect: Rect, zoom: f32) -> f32 {
     (ly * LY_METERS) as f32 * b.base_scale(rect, 30.0) * zoom
 }
 
-/// Force-directed (Fruchterman–Reingold) layout that spreads systems by gate
-/// topology rather than true distance — uniform-ish spacing, connections clear.
-/// Returns clones of `systems` with `x`/`z` replaced by the layout coordinates
-/// (in the same order; real coords are kept elsewhere for light-year maths).
-pub fn schematic_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> Vec<MapSystem> {
+/// A flattened 2D layout like EVE's in-game star map: seeded from the true
+/// geographic x/z (so it keeps the New Eden shape) then relaxed so neighbouring
+/// systems gain a minimum spacing instead of overlapping (which they otherwise do
+/// when 3D coordinates collapse onto the x/z plane). Local repulsion via a uniform
+/// grid keeps it O(n) so it scales to the whole cluster. Returns clones of
+/// `systems` with `x`/`z` replaced by the layout coordinates (same order).
+pub fn spaced_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> Vec<MapSystem> {
     let n = systems.len();
     if n == 0 {
         return Vec::new();
@@ -89,13 +91,15 @@ pub fn schematic_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> V
     let idx: std::collections::HashMap<i64, usize> =
         systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
-    // Seed on a circle (deterministic, no RNG) so the result reads as a distinct
-    // topology layout rather than a nudged geographic map.
-    let mut pos: Vec<(f64, f64)> = (0..n)
-        .map(|i| {
-            let t = std::f64::consts::TAU * i as f64 / n as f64;
-            (0.5 + 0.4 * t.cos(), 0.5 + 0.4 * t.sin())
-        })
+    // Seed from normalised geographic coords so the result stays recognisable.
+    let Some(b) = Bounds::of(systems) else {
+        return systems.to_vec();
+    };
+    let sx = (b.max_x - b.min_x).max(1.0);
+    let sz = (b.max_z - b.min_z).max(1.0);
+    let mut pos: Vec<(f64, f64)> = systems
+        .iter()
+        .map(|s| ((s.x - b.min_x) / sx, (s.z - b.min_z) / sz))
         .collect();
 
     let mut edges: Vec<(usize, usize)> = Vec::new();
@@ -110,40 +114,57 @@ pub fn schematic_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> V
         }
     }
 
-    let k = (1.0 / n as f64).sqrt(); // ideal edge length in a unit square
-    let iters = 140;
+    let k = (1.0 / n as f64).sqrt(); // target spacing in the unit square
+    let cell = k; // grid cell ≈ interaction radius
+    let cutoff = 2.0 * k;
+    let iters = 80;
     for it in 0..iters {
+        // Bucket nodes into a uniform grid for local-neighbour queries.
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, p) in pos.iter().enumerate() {
+            grid.entry(((p.0 / cell) as i32, (p.1 / cell) as i32)).or_default().push(i);
+        }
         let mut disp = vec![(0.0f64, 0.0f64); n];
-        // Repulsion between every pair.
+        // Local repulsion: only against nodes in the 3x3 cell neighbourhood.
         for i in 0..n {
-            for j in (i + 1)..n {
-                let dx = pos[i].0 - pos[j].0;
-                let dy = pos[i].1 - pos[j].1;
-                let d = (dx * dx + dy * dy).sqrt().max(1e-4);
-                let f = k * k / d;
-                let (ux, uy) = (dx / d, dy / d);
-                disp[i].0 += ux * f;
-                disp[i].1 += uy * f;
-                disp[j].0 -= ux * f;
-                disp[j].1 -= uy * f;
+            let (cx, cy) = ((pos[i].0 / cell) as i32, (pos[i].1 / cell) as i32);
+            for gx in (cx - 1)..=(cx + 1) {
+                for gy in (cy - 1)..=(cy + 1) {
+                    let Some(bucket) = grid.get(&(gx, gy)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        if j == i {
+                            continue;
+                        }
+                        let dx = pos[i].0 - pos[j].0;
+                        let dy = pos[i].1 - pos[j].1;
+                        let d = (dx * dx + dy * dy).sqrt().max(1e-5);
+                        if d < cutoff {
+                            let f = k * k / d;
+                            disp[i].0 += dx / d * f;
+                            disp[i].1 += dy / d * f;
+                        }
+                    }
+                }
             }
         }
-        // Attraction along gate edges.
-        for &(a, b) in &edges {
-            let dx = pos[a].0 - pos[b].0;
-            let dy = pos[a].1 - pos[b].1;
-            let d = (dx * dx + dy * dy).sqrt().max(1e-4);
+        // Weak attraction along gate edges keeps neighbours chained.
+        for &(a, c) in &edges {
+            let dx = pos[a].0 - pos[c].0;
+            let dy = pos[a].1 - pos[c].1;
+            let d = (dx * dx + dy * dy).sqrt().max(1e-5);
             let f = d * d / k;
-            let (ux, uy) = (dx / d, dy / d);
-            disp[a].0 -= ux * f;
-            disp[a].1 -= uy * f;
-            disp[b].0 += ux * f;
-            disp[b].1 += uy * f;
+            disp[a].0 -= dx / d * f;
+            disp[a].1 -= dy / d * f;
+            disp[c].0 += dx / d * f;
+            disp[c].1 += dy / d * f;
         }
         // Cap displacement, cooling over time.
-        let temp = 0.1 * (1.0 - it as f64 / iters as f64);
+        let temp = 0.05 * (1.0 - it as f64 / iters as f64);
         for i in 0..n {
-            let dl = (disp[i].0 * disp[i].0 + disp[i].1 * disp[i].1).sqrt().max(1e-4);
+            let dl = (disp[i].0 * disp[i].0 + disp[i].1 * disp[i].1).sqrt().max(1e-5);
             let lim = dl.min(temp);
             pos[i].0 += disp[i].0 / dl * lim;
             pos[i].1 += disp[i].1 / dl * lim;
