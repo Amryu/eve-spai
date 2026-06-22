@@ -77,109 +77,122 @@ pub fn ly_to_pixels(ly: f64, b: &Bounds, rect: Rect, zoom: f32) -> f32 {
     (ly * LY_METERS) as f32 * b.base_scale(rect, 30.0) * zoom
 }
 
-/// A flattened 2D layout like EVE's in-game star map: seeded from the true
-/// geographic x/z (so it keeps the New Eden shape) then relaxed so neighbouring
-/// systems gain a minimum spacing instead of overlapping (which they otherwise do
-/// when 3D coordinates collapse onto the x/z plane). Local repulsion via a uniform
-/// grid keeps it O(n) so it scales to the whole cluster. Returns clones of
-/// `systems` with `x`/`z` replaced by the layout coordinates (same order).
+/// A flattened 2D layout in the spirit of EVE's in-game star map. EVE ships a
+/// precomputed `position2D` per system; lacking that here, we approximate it: each
+/// **region** stays anchored at its true geographic centroid (so the big
+/// inter-region distances and the New Eden shape are preserved), and only the
+/// systems *within* a region are relaxed to gain a minimum spacing — that local
+/// crowding is the real artefact of collapsing 3D coordinates onto the x/z plane.
+/// Returns clones of `systems` with `x`/`z` replaced (same order).
 pub fn spaced_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> Vec<MapSystem> {
-    let n = systems.len();
-    if n == 0 {
+    if systems.is_empty() {
         return Vec::new();
     }
-    let idx: std::collections::HashMap<i64, usize> =
-        systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+    let mut out = systems.to_vec();
 
-    // Seed from normalised geographic coords so the result stays recognisable.
-    let Some(b) = Bounds::of(systems) else {
-        return systems.to_vec();
-    };
-    let sx = (b.max_x - b.min_x).max(1.0);
-    let sz = (b.max_z - b.min_z).max(1.0);
-    let mut pos: Vec<(f64, f64)> = systems
-        .iter()
-        .map(|s| ((s.x - b.min_x) / sx, (s.z - b.min_z) / sz))
-        .collect();
-
-    let mut edges: Vec<(usize, usize)> = Vec::new();
-    for s in systems {
-        let a = idx[&s.id];
-        for &nb in graph.neighbors(s.id) {
-            if let Some(&b) = idx.get(&nb) {
-                if a < b {
-                    edges.push((a, b));
-                }
-            }
-        }
+    // Group system indices by region.
+    let mut by_region: std::collections::HashMap<i64, Vec<usize>> = std::collections::HashMap::new();
+    for (i, s) in systems.iter().enumerate() {
+        by_region.entry(s.region_id).or_default().push(i);
     }
 
-    let k = (1.0 / n as f64).sqrt(); // target spacing in the unit square
-    let cell = k; // grid cell ≈ interaction radius
-    let cutoff = 2.0 * k;
-    let iters = 80;
-    for it in 0..iters {
-        // Bucket nodes into a uniform grid for local-neighbour queries.
-        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, p) in pos.iter().enumerate() {
-            grid.entry(((p.0 / cell) as i32, (p.1 / cell) as i32)).or_default().push(i);
+    for idxs in by_region.values() {
+        let m = idxs.len();
+        if m < 2 {
+            continue;
         }
-        let mut disp = vec![(0.0f64, 0.0f64); n];
-        // Local repulsion: only against nodes in the 3x3 cell neighbourhood.
-        for i in 0..n {
-            let (cx, cy) = ((pos[i].0 / cell) as i32, (pos[i].1 / cell) as i32);
-            for gx in (cx - 1)..=(cx + 1) {
-                for gy in (cy - 1)..=(cy + 1) {
-                    let Some(bucket) = grid.get(&(gx, gy)) else {
-                        continue;
-                    };
-                    for &j in bucket {
-                        if j == i {
-                            continue;
-                        }
-                        let dx = pos[i].0 - pos[j].0;
-                        let dy = pos[i].1 - pos[j].1;
-                        let d = (dx * dx + dy * dy).sqrt().max(1e-5);
-                        if d < cutoff {
-                            let f = k * k / d;
-                            disp[i].0 += dx / d * f;
-                            disp[i].1 += dy / d * f;
-                        }
+        // Geographic centroid + extent of the region (the anchor + scale).
+        let (mut cx, mut cz) = (0.0f64, 0.0f64);
+        for &i in idxs {
+            cx += systems[i].x;
+            cz += systems[i].z;
+        }
+        cx /= m as f64;
+        cz /= m as f64;
+        let mut ext = 1.0f64;
+        for &i in idxs {
+            ext = ext.max(((systems[i].x - cx).powi(2) + (systems[i].z - cz).powi(2)).sqrt());
+        }
+
+        // Local positions in a roughly [-1, 1] frame, seeded geographically.
+        let mut pos: Vec<(f64, f64)> =
+            idxs.iter().map(|&i| ((systems[i].x - cx) / ext, (systems[i].z - cz) / ext)).collect();
+        let local: std::collections::HashMap<i64, usize> =
+            idxs.iter().enumerate().map(|(li, &i)| (systems[i].id, li)).collect();
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for (li, &i) in idxs.iter().enumerate() {
+            for &nb in graph.neighbors(systems[i].id) {
+                if let Some(&lj) = local.get(&nb) {
+                    if li < lj {
+                        edges.push((li, lj));
                     }
                 }
             }
         }
-        // Weak attraction along gate edges keeps neighbours chained.
-        for &(a, c) in &edges {
-            let dx = pos[a].0 - pos[c].0;
-            let dy = pos[a].1 - pos[c].1;
-            let d = (dx * dx + dy * dy).sqrt().max(1e-5);
-            let f = d * d / k;
-            disp[a].0 -= dx / d * f;
-            disp[a].1 -= dy / d * f;
-            disp[c].0 += dx / d * f;
-            disp[c].1 += dy / d * f;
+
+        let k = 2.0 / (m as f64).sqrt(); // target spacing within the region frame
+        let cell = k;
+        let cutoff = 2.0 * k;
+        let iters = 90;
+        for it in 0..iters {
+            let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
+                std::collections::HashMap::new();
+            for (li, p) in pos.iter().enumerate() {
+                grid.entry(((p.0 / cell) as i32, (p.1 / cell) as i32)).or_default().push(li);
+            }
+            let mut disp = vec![(0.0f64, 0.0f64); m];
+            // Local repulsion enforces the minimum spacing (de-overlap).
+            for li in 0..m {
+                let (gx0, gy0) = ((pos[li].0 / cell) as i32, (pos[li].1 / cell) as i32);
+                for gx in (gx0 - 1)..=(gx0 + 1) {
+                    for gy in (gy0 - 1)..=(gy0 + 1) {
+                        let Some(bucket) = grid.get(&(gx, gy)) else {
+                            continue;
+                        };
+                        for &lj in bucket {
+                            if lj == li {
+                                continue;
+                            }
+                            let dx = pos[li].0 - pos[lj].0;
+                            let dy = pos[li].1 - pos[lj].1;
+                            let d = (dx * dx + dy * dy).sqrt().max(1e-5);
+                            if d < cutoff {
+                                let f = k * k / d;
+                                disp[li].0 += dx / d * f;
+                                disp[li].1 += dy / d * f;
+                            }
+                        }
+                    }
+                }
+            }
+            // Weak springs along intra-region gates keep neighbours chained.
+            for &(a, c) in &edges {
+                let dx = pos[a].0 - pos[c].0;
+                let dy = pos[a].1 - pos[c].1;
+                let d = (dx * dx + dy * dy).sqrt().max(1e-5);
+                let f = d * d / k * 0.5;
+                disp[a].0 -= dx / d * f;
+                disp[a].1 -= dy / d * f;
+                disp[c].0 += dx / d * f;
+                disp[c].1 += dy / d * f;
+            }
+            let temp = 0.1 * (1.0 - it as f64 / iters as f64);
+            for li in 0..m {
+                let dl = (disp[li].0 * disp[li].0 + disp[li].1 * disp[li].1).sqrt().max(1e-5);
+                let lim = dl.min(temp);
+                pos[li].0 += disp[li].0 / dl * lim;
+                pos[li].1 += disp[li].1 / dl * lim;
+            }
         }
-        // Cap displacement, cooling over time.
-        let temp = 0.05 * (1.0 - it as f64 / iters as f64);
-        for i in 0..n {
-            let dl = (disp[i].0 * disp[i].0 + disp[i].1 * disp[i].1).sqrt().max(1e-5);
-            let lim = dl.min(temp);
-            pos[i].0 += disp[i].0 / dl * lim;
-            pos[i].1 += disp[i].1 / dl * lim;
+
+        // Map the local frame back to geographic coords (anchor + region scale).
+        for (li, &i) in idxs.iter().enumerate() {
+            out[i].x = cx + pos[li].0 * ext;
+            out[i].z = cz + pos[li].1 * ext;
         }
     }
 
-    systems
-        .iter()
-        .enumerate()
-        .map(|(i, s)| MapSystem {
-            x: pos[i].0 * 1000.0,
-            z: pos[i].1 * 1000.0,
-            ..s.clone()
-        })
-        .collect()
+    out
 }
 
 pub fn project(x: f64, z: f64, b: &Bounds, rect: Rect, zoom: f32, pan: Vec2) -> Pos2 {

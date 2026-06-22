@@ -373,6 +373,18 @@ from their recent **losses**, shown prominently: weapon type + optimal/falloff
 and **resist profile**. Requires the ship-attribute (dogma) data + zKill character
 losses + fit parsing (overlaps the deferred ship/character intelligence work).
 
+## 9c. Map 2D layout — `position2D` (future)
+EVE's in-game 2D star map uses a **precomputed `position2D`** per system (and per
+constellation/region): the "schematic" layout that keeps regions clustered while
+preserving the big inter-region distances. It is NOT in the Fuzzwork CSV dump
+(only 3D `x/y/z`); it lives in the **modern JSONL SDE** as
+`mapSolarSystems.jsonl` → `position2D.x` / `position2D.y` (X follows 3D X, Y
+follows 3D Z). Until we ingest the JSONL SDE, the map approximates it: anchor each
+region at its geographic centroid and de-overlap systems only *within* a region
+(`map::spaced_layout`). TODO: add a JSONL-SDE fetch and bake `position2D` for a
+pixel-faithful in-game layout. Refs: developers.eveonline.com map-data guide;
+everef.net schema.
+
 ## 9. External integrations
 EVE **SSO** (OAuth2 PKCE) · EVE **ESI** (REST, rate-limit aware) · EVE **image
 server** (small sizes only) · **zKillboard** (+ redisq/stream for live kills) ·
