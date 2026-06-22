@@ -1955,7 +1955,7 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
 /// Anything <= 0.0 is the null-sec red.
 fn security_color(security: f64) -> egui::Color32 {
     const COLORS: [(u8, u8, u8); 11] = [
-        (0x9B, 0x4F, 0xD8), // 0.0 and below — null-sec purple
+        (0xB0, 0x3A, 0x9A), // 0.0 and below — null-sec reddish purple
         (0xD7, 0x30, 0x00), // 0.1
         (0xF0, 0x48, 0x00), // 0.2
         (0xF0, 0x60, 0x00), // 0.3
