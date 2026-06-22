@@ -19,6 +19,12 @@ pub struct SpaiApp {
 
 impl SpaiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Load the Phosphor icon font into the proportional family so icons render
+        // inline with text everywhere (nav rail, buttons).
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
+
         let store = Store::open().map_err(|e| eprintln!("store: {e:#}")).ok();
         let settings = store
             .as_ref()
@@ -47,51 +53,61 @@ impl SpaiApp {
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("top_bar").show_inside(ui, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("EVE Spai").strong());
-                ui.separator();
-                egui::ComboBox::from_id_salt("active_character")
-                    .selected_text(&self.active_character)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.active_character,
-                            "No character".to_owned(),
-                            "No character",
+        egui::Panel::top("top_bar")
+            .exact_size(40.0)
+            .show_inside(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Character").weak());
+                    egui::ComboBox::from_id_salt("active_character")
+                        .selected_text(&self.active_character)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.active_character,
+                                "No character".to_owned(),
+                                "No character",
+                            );
+                        });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        let clock = if self.settings.use_eve_time {
+                            format!("{} EVE", chrono::Utc::now().format("%H:%M"))
+                        } else {
+                            format!("{} Local", chrono::Local::now().format("%H:%M"))
+                        };
+                        ui.label(egui::RichText::new(clock).monospace());
+                        ui.separator();
+                        let dim = ui.visuals().weak_text_color();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  ESI offline",
+                                egui_phosphor::regular::PLUGS
+                            ))
+                            .color(dim),
                         );
                     });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let clock = if self.settings.use_eve_time {
-                        format!("EVE {}", chrono::Utc::now().format("%H:%M"))
-                    } else {
-                        format!("Local {}", chrono::Local::now().format("%H:%M"))
-                    };
-                    ui.label(clock);
-                    ui.separator();
-                    ui.label(egui::RichText::new("ESI: offline").weak());
                 });
             });
-            ui.add_space(2.0);
-        });
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status_bar").show_inside(ui, |ui| {
-            ui.add_space(1.0);
-            ui.horizontal(|ui| {
-                ui.label("Intel: 0");
-                ui.separator();
-                ui.label(egui::RichText::new("M0 scaffold — no live data yet").weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Settings").clicked() {
-                        self.settings_open = true;
-                    }
+        egui::Panel::bottom("status_bar")
+            .exact_size(30.0)
+            .show_inside(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.label("Intel: 0");
+                    ui.separator();
+                    ui.label(egui::RichText::new("M0 scaffold — no live data yet").weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        if ui.small_button("Settings").clicked() {
+                            self.settings_open = true;
+                        }
+                    });
                 });
             });
-            ui.add_space(1.0);
-        });
     }
 
     fn nav_rail(&mut self, ui: &mut egui::Ui) {

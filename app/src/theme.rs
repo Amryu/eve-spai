@@ -157,6 +157,14 @@ impl Theme {
         v.widgets.open.fg_stroke = Stroke::new(1.0, fg);
 
         ctx.set_visuals(v);
+
+        // Spacing/density polish — a little more breathing room than egui defaults.
+        ctx.all_styles_mut(|style| {
+            style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+            style.spacing.interact_size.y = 26.0;
+            style.spacing.menu_margin = egui::Margin::same(8);
+        });
     }
 }
 
