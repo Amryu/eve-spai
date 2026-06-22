@@ -1,0 +1,252 @@
+//! Live killmail feed (zKillboard RedisQ) → battle reports (docs/DESIGN.md §7.2).
+//!
+//! Long-polls zKillboard's RedisQ stream for killmails, keeps only those near the
+//! systems currently in the intel feed ("an area"), resolves party names via ESI's
+//! public `/universe/names` endpoint, and clusters them into battles. The clustered
+//! result is shared with the UI.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::Result;
+use serde::Deserialize;
+
+use crate::battle::{self, Battle, Engagement, Party, PartyKind};
+use crate::geo::Systems;
+use crate::intel::IntelState;
+
+const REDISQ: &str = "https://redisq.zkillboard.com/listen.php";
+const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
+/// Keep kills within this many jumps of a tracked intel system.
+const ANCHOR_JUMPS: u32 = 6;
+/// Retain engagements for 30 minutes for clustering.
+const ENGAGEMENT_TTL: i64 = 1800;
+
+pub type SharedBattles = Arc<Mutex<Vec<Battle>>>;
+
+pub fn spawn(
+    systems: Arc<Systems>,
+    intel: Arc<Mutex<IntelState>>,
+    battles: SharedBattles,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .timeout(Duration::from_secs(30))
+            .build()
+        else {
+            return;
+        };
+        let queue_id = format!("eve-spai-{}", std::process::id());
+        let mut names: HashMap<i64, String> = HashMap::new();
+        let mut buffer: Vec<Engagement> = Vec::new();
+
+        loop {
+            match poll(&client, &queue_id, &systems, &intel, &mut names) {
+                Ok(Some(engagement)) => {
+                    // RedisQ can repeat a kill; dedup by id.
+                    if buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
+                        continue;
+                    }
+                    buffer.push(engagement);
+                    let now = chrono::Utc::now().timestamp();
+                    buffer.retain(|e| now - e.time <= ENGAGEMENT_TTL);
+                    let clustered = battle::cluster(
+                        &buffer,
+                        battle::BATTLE_WINDOW_SECS,
+                        battle::BATTLE_MAX_JUMPS,
+                        |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
+                    );
+                    *battles.lock().unwrap() = clustered;
+                    ctx.request_repaint();
+                }
+                Ok(None) => {} // no kill, or not in the tracked area
+                Err(_) => std::thread::sleep(Duration::from_secs(5)),
+            }
+        }
+    });
+}
+
+#[derive(Deserialize)]
+struct RedisQ {
+    package: Option<Package>,
+}
+
+#[derive(Deserialize)]
+struct Package {
+    #[serde(rename = "killID")]
+    kill_id: i64,
+    killmail: Killmail,
+    zkb: Zkb,
+}
+
+#[derive(Deserialize)]
+struct Killmail {
+    killmail_time: String,
+    solar_system_id: i64,
+    victim: Combatant,
+    #[serde(default)]
+    attackers: Vec<Combatant>,
+}
+
+#[derive(Deserialize)]
+struct Combatant {
+    alliance_id: Option<i64>,
+    corporation_id: Option<i64>,
+    character_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct Zkb {
+    #[serde(rename = "totalValue", default)]
+    total_value: f64,
+}
+
+fn poll(
+    client: &reqwest::blocking::Client,
+    queue_id: &str,
+    systems: &Systems,
+    intel: &Mutex<IntelState>,
+    names: &mut HashMap<i64, String>,
+) -> Result<Option<Engagement>> {
+    // queue_id is alphanumeric ("eve-spai-<pid>"), safe to inline in the URL.
+    let url = format!("{REDISQ}?queueID={queue_id}");
+    let resp: RedisQ = client.get(url).send()?.json()?;
+    let Some(pkg) = resp.package else {
+        return Ok(None);
+    };
+
+    // Only keep kills near a system currently in the intel feed.
+    if !in_tracked_area(systems, intel, pkg.killmail.solar_system_id) {
+        return Ok(None);
+    }
+    let Some(sys) = systems.info_of(pkg.killmail.solar_system_id) else {
+        return Ok(None);
+    };
+    let time = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+
+    resolve_names(client, &pkg, names);
+
+    let victim = party_of(&pkg.killmail.victim, names);
+    let attackers: Vec<Party> = pkg
+        .killmail
+        .attackers
+        .iter()
+        .map(|a| party_of(a, names))
+        .collect();
+
+    Ok(Some(Engagement {
+        kill_id: pkg.kill_id,
+        time,
+        system_id: sys.id,
+        system_name: sys.name.clone(),
+        security: sys.security,
+        victim,
+        attackers,
+        isk: pkg.zkb.total_value,
+    }))
+}
+
+fn in_tracked_area(systems: &Systems, intel: &Mutex<IntelState>, kill_system: i64) -> bool {
+    let intel_systems: Vec<i64> = {
+        let state = intel.lock().unwrap();
+        let mut ids: Vec<i64> = state
+            .reports
+            .iter()
+            .flat_map(|r| r.systems.iter().map(|s| s.id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    intel_systems
+        .iter()
+        .any(|&s| systems.jumps(kill_system, s, ANCHOR_JUMPS).is_some())
+}
+
+/// The party for a combatant: prefer alliance, then corporation, then character.
+fn party_of(c: &Combatant, names: &HashMap<i64, String>) -> Party {
+    let (id, kind) = if let Some(id) = c.alliance_id {
+        (id, PartyKind::Alliance)
+    } else if let Some(id) = c.corporation_id {
+        (id, PartyKind::Corporation)
+    } else if let Some(id) = c.character_id {
+        (id, PartyKind::Character)
+    } else {
+        (0, PartyKind::Unknown)
+    };
+    Party {
+        id,
+        name: names.get(&id).cloned().unwrap_or_else(|| format!("#{id}")),
+        kind,
+    }
+}
+
+#[derive(Deserialize)]
+struct NameEntry {
+    id: i64,
+    name: String,
+}
+
+/// Resolve any not-yet-cached ids referenced by this kill via ESI /universe/names.
+fn resolve_names(
+    client: &reqwest::blocking::Client,
+    pkg: &Package,
+    names: &mut HashMap<i64, String>,
+) {
+    let mut wanted: Vec<i64> = Vec::new();
+    let mut add = |c: &Combatant| {
+        for id in [c.alliance_id, c.corporation_id, c.character_id].into_iter().flatten() {
+            if id != 0 && !names.contains_key(&id) {
+                wanted.push(id);
+            }
+        }
+    };
+    add(&pkg.killmail.victim);
+    pkg.killmail.attackers.iter().for_each(&mut add);
+    wanted.sort_unstable();
+    wanted.dedup();
+    if wanted.is_empty() {
+        return;
+    }
+
+    if let Ok(resp) = client.post(NAMES_URL).json(&wanted).send() {
+        if let Ok(entries) = resp.json::<Vec<NameEntry>>() {
+            for e in entries {
+                names.insert(e.id, e.name);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_redisq_package() {
+        // A minimal, real-shaped RedisQ payload.
+        let json = r#"{"package":{"killID":12345,"killmail":{
+            "killmail_id":12345,"killmail_time":"2026-06-22T18:30:45Z",
+            "solar_system_id":30000142,
+            "victim":{"alliance_id":99,"corporation_id":98,"character_id":97,"ship_type_id":670},
+            "attackers":[{"alliance_id":1,"corporation_id":2,"character_id":3}]},
+            "zkb":{"totalValue":12345.6}}}"#;
+        let parsed: RedisQ = serde_json::from_str(json).unwrap();
+        let pkg = parsed.package.expect("package present");
+        assert_eq!(pkg.kill_id, 12345);
+        assert_eq!(pkg.killmail.solar_system_id, 30000142);
+        assert_eq!(pkg.killmail.attackers.len(), 1);
+        assert_eq!(pkg.zkb.total_value, 12345.6);
+        assert_eq!(pkg.killmail.victim.alliance_id, Some(99));
+        // An empty poll ("no kill") parses to None.
+        assert!(serde_json::from_str::<RedisQ>(r#"{"package":null}"#)
+            .unwrap()
+            .package
+            .is_none());
+    }
+}

@@ -16,8 +16,9 @@ pub fn show(ui: &mut egui::Ui, view: View) {
         ),
         // View::Map is rendered by SpaiApp::map_view (it needs app state).
         View::Map => {}
-        // View::Intel is rendered by SpaiApp::intel_view (it needs app state).
+        // Intel and Battles are rendered by SpaiApp (they need app state).
         View::Intel => {}
+        View::Battles => {}
         // View::Characters is rendered by SpaiApp::characters_view (it needs app state).
         View::Characters => {}
         View::Alerts => placeholder(

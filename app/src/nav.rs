@@ -16,6 +16,7 @@ pub enum View {
     Dashboard,
     Map,
     Intel,
+    Battles,
     Characters,
     Alerts,
 }
@@ -27,6 +28,7 @@ impl View {
             View::Dashboard,
             View::Map,
             View::Intel,
+            View::Battles,
             View::Characters,
             View::Alerts,
         ]
@@ -37,6 +39,7 @@ impl View {
             View::Dashboard => "Overview",
             View::Map => "Map",
             View::Intel => "Intel",
+            View::Battles => "Battles",
             View::Characters => "Characters",
             View::Alerts => "Alerts",
         }
@@ -47,6 +50,7 @@ impl View {
             View::Dashboard => icon::SQUARES_FOUR,
             View::Map => icon::MAP_TRIFOLD,
             View::Intel => icon::BROADCAST,
+            View::Battles => icon::SWORD,
             View::Characters => icon::USERS,
             View::Alerts => icon::BELL,
         }

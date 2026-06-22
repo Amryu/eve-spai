@@ -33,6 +33,8 @@ pub struct SpaiApp {
     chat_dir: Option<std::path::PathBuf>,
     /// Intel-view search box.
     intel_query: String,
+    /// Clustered battle reports (shared with the zKill feed worker).
+    battles: crate::zkill::SharedBattles,
 }
 
 impl SpaiApp {
@@ -88,6 +90,7 @@ impl SpaiApp {
             watcher_started: false,
             chat_dir: None,
             intel_query: String::new(),
+            battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -105,8 +108,31 @@ impl SpaiApp {
         self.chat_dir = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
         self.watcher_started = true; // mark started regardless, so we don't re-detect every frame
 
+        // Build the system graph once, adding any configured jump bridges, and
+        // share it with both the chat watcher and the battle (zKill) feed.
+        let mut systems = store.load_systems();
+        let bridges: Vec<(i64, i64)> = self
+            .settings
+            .jump_bridges
+            .iter()
+            .filter_map(|b| {
+                let from = systems.lookup(&b.from)?.id;
+                let to = systems.lookup(&b.to)?.id;
+                Some((from, to))
+            })
+            .collect();
+        systems.add_bridges(&bridges);
+        let systems = std::sync::Arc::new(systems);
+
+        // The battle feed runs whenever the SDE is ready (independent of logs).
+        crate::zkill::spawn(
+            systems.clone(),
+            self.intel_state.clone(),
+            self.battles.clone(),
+            ctx.clone(),
+        );
+
         if let Some(dir) = self.chat_dir.clone() {
-            let systems = std::sync::Arc::new(store.load_systems());
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
@@ -158,6 +184,43 @@ impl SpaiApp {
                 let stale = state.is_stale(r);
                 intel_row(ui, r, now, stale);
                 ui.add_space(2.0);
+            }
+        });
+    }
+
+    /// The Battle Report view: clusters of killmails near the tracked area.
+    fn battles_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+
+        if self.chat_dir.is_none() && self.settings.intel_channels.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "Battle reports cluster killmails near systems seen in intel. \
+                     Configure intel channels (Settings) so there's an area to watch.",
+                )
+                .weak(),
+            );
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let battles = self.battles.lock().unwrap();
+        // Only multi-kill clusters count as a "battle".
+        let shown: Vec<&crate::battle::Battle> =
+            battles.iter().filter(|b| b.kills >= 2).collect();
+
+        if shown.is_empty() {
+            ui.label(
+                egui::RichText::new("No active battles near the tracked area.").weak(),
+            );
+            return;
+        }
+
+        ui.label(egui::RichText::new(format!("{} battles", shown.len())).weak());
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for b in shown {
+                battle_row(ui, b, now);
+                ui.add_space(4.0);
             }
         });
     }
@@ -587,6 +650,7 @@ impl eframe::App for SpaiApp {
             View::Map => self.map_view(ui),
             View::Characters => self.characters_view(ui),
             View::Intel => self.intel_view(ui),
+            View::Battles => self.battles_view(ui),
             other => views::show(ui, other),
         });
 
@@ -600,6 +664,50 @@ impl eframe::App for SpaiApp {
     fn on_exit(&mut self) {
         self.persist();
     }
+}
+
+/// Format ISK compactly: 1.2B / 340M / 5.0k.
+fn fmt_isk(isk: f64) -> String {
+    if isk >= 1e9 {
+        format!("{:.1}B", isk / 1e9)
+    } else if isk >= 1e6 {
+        format!("{:.0}M", isk / 1e6)
+    } else if isk >= 1e3 {
+        format!("{:.0}k", isk / 1e3)
+    } else {
+        format!("{isk:.0}")
+    }
+}
+
+/// Render one clustered battle.
+fn battle_row(ui: &mut egui::Ui, b: &crate::battle::Battle, now: i64) {
+    let span_min = ((b.end - b.start) / 60).max(0);
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - b.end))).monospace().weak());
+            // systems involved (with security colour)
+            for (id, name, sec) in &b.systems {
+                let _ = id;
+                ui.label(security_badge(*sec));
+                ui.label(egui::RichText::new(name).strong());
+            }
+            ui.separator();
+            ui.label(format!("{} kills", b.kills));
+            ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
+            if span_min > 0 {
+                ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
+            }
+        });
+        // Top parties by involvement: name (kills/losses).
+        ui.horizontal_wrapped(|ui| {
+            for p in b.parties.iter().take(6) {
+                ui.label(
+                    egui::RichText::new(format!("{} ({}/{})", p.name, p.kills, p.losses)).small(),
+                );
+            }
+        });
+    });
 }
 
 /// Age as s / m+s / h+m pairs (only seconds when under a minute).

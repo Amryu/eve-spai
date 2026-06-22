@@ -6,6 +6,7 @@
 
 mod app;
 mod auth;
+mod battle;
 mod chatlog;
 mod geo;
 mod intel;
@@ -19,6 +20,7 @@ mod theme;
 mod tokens;
 mod views;
 mod watcher;
+mod zkill;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {

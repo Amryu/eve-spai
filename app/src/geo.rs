@@ -15,12 +15,32 @@ pub struct SystemInfo {
 
 pub struct Systems {
     by_name: HashMap<String, SystemInfo>,
+    by_id: HashMap<i64, SystemInfo>,
     adjacency: HashMap<i64, Vec<i64>>,
 }
 
 impl Systems {
     pub fn new(by_name: HashMap<String, SystemInfo>, adjacency: HashMap<i64, Vec<i64>>) -> Self {
-        Self { by_name, adjacency }
+        let by_id = by_name.values().map(|s| (s.id, s.clone())).collect();
+        Self {
+            by_name,
+            by_id,
+            adjacency,
+        }
+    }
+
+    /// Look up a system by id.
+    pub fn info_of(&self, id: i64) -> Option<&SystemInfo> {
+        self.by_id.get(&id)
+    }
+
+    /// Add bidirectional jump-bridge edges (configured by the user) so distance and
+    /// battle clustering can travel them like gates.
+    pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {
+        for &(a, b) in pairs {
+            self.adjacency.entry(a).or_default().push(b);
+            self.adjacency.entry(b).or_default().push(a);
+        }
     }
 
     /// Look up a system by (case-insensitive) name token.

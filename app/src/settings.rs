@@ -26,6 +26,15 @@ pub struct Settings {
     /// Name of the last-applied configuration pack (empty = none).
     #[serde(default)]
     pub configuration_pack: String,
+    /// Configured jump bridges (system name pairs) — used for distance & battles.
+    #[serde(default)]
+    pub jump_bridges: Vec<JumpBridge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JumpBridge {
+    pub from: String,
+    pub to: String,
 }
 
 fn default_client_id() -> String {
@@ -48,6 +57,7 @@ impl Default for Settings {
             sso_client_id: default_client_id(),
             sso_callback: default_callback(),
             configuration_pack: String::new(),
+            jump_bridges: Vec::new(),
         }
     }
 }
