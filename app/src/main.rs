@@ -4,6 +4,7 @@
 //! a three-colour theme engine, a settings dialog, and SQLite-backed persistence.
 //! No EVE data yet — views are placeholders (see docs/DESIGN.md §10, milestone M0).
 
+mod alerts;
 mod app;
 mod auth;
 mod battle;

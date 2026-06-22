@@ -41,6 +41,12 @@ pub struct SpaiApp {
     systems: Option<std::sync::Arc<crate::geo::Systems>>,
     /// Live per-system status (incursion/FW/sov), shared with the ESI poller.
     system_status: crate::systemstatus::SharedStatus,
+    /// Only alert on reports newer than this (set to launch time to skip backlog).
+    last_alert_time: i64,
+    /// Per-system alert cooldown (system id -> last alert unix seconds).
+    alert_cooldown: std::collections::HashMap<i64, i64>,
+    /// Recent fired alerts (unix, text) for the Alerts view.
+    recent_alerts: Vec<(i64, String)>,
 }
 
 impl SpaiApp {
@@ -114,7 +120,89 @@ impl SpaiApp {
                 crate::systemstatus::spawn(status.clone(), cc.egui_ctx.clone());
                 status
             },
+            last_alert_time: chrono::Utc::now().timestamp(),
+            alert_cooldown: std::collections::HashMap::new(),
+            recent_alerts: Vec::new(),
         }
+    }
+
+    /// Evaluate new intel against alert rules; fire desktop notifications (cooldown
+    /// 60 s per system). Only reports newer than launch are considered.
+    fn check_alerts(&mut self) {
+        let cfg = crate::alerts::AlertConfig {
+            enabled: self.settings.alert_enabled,
+            within_jumps: self.settings.alert_within_jumps,
+        };
+        if !cfg.enabled {
+            return;
+        }
+        let player = self.player.lock().unwrap().system_id;
+        let systems = self.systems.clone();
+        let now = chrono::Utc::now().timestamp();
+        let mut hits: Vec<(i64, String)> = Vec::new();
+        let mut newest = self.last_alert_time;
+
+        {
+            let state = self.intel_state.lock().unwrap();
+            for r in &state.reports {
+                if r.received <= self.last_alert_time {
+                    continue;
+                }
+                newest = newest.max(r.received);
+                if let Some(text) = crate::alerts::evaluate(r, player, systems.as_deref(), &cfg) {
+                    let sys_id = r.primary_system().map_or(0, |s| s.id);
+                    let last = self.alert_cooldown.get(&sys_id).copied().unwrap_or(0);
+                    if now - last >= 60 {
+                        hits.push((sys_id, text));
+                    }
+                }
+            }
+        }
+        self.last_alert_time = newest;
+
+        for (sys_id, text) in hits {
+            self.alert_cooldown.insert(sys_id, now);
+            self.recent_alerts.push((now, text.clone()));
+            notify(text);
+        }
+        if self.recent_alerts.len() > 50 {
+            let drop = self.recent_alerts.len() - 50;
+            self.recent_alerts.drain(0..drop);
+        }
+    }
+
+    fn alerts_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Rule").strong());
+        if self.settings.alert_enabled && self.settings.alert_within_jumps > 0 {
+            ui.label(format!(
+                "Desktop alert on hostiles within {} jumps of the active character.",
+                self.settings.alert_within_jumps
+            ));
+        } else {
+            ui.label(egui::RichText::new("Alerts disabled (enable in Settings).").weak());
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Recent alerts").strong());
+        if self.recent_alerts.is_empty() {
+            ui.label(egui::RichText::new("None yet.").weak());
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (t, text) in self.recent_alerts.iter().rev() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{:>7}", fmt_age(now - t)))
+                            .monospace()
+                            .weak(),
+                    );
+                    ui.label(text);
+                });
+            }
+        });
     }
 
     /// Start the chat-log watcher once the SDE is baked (it needs the system index).
@@ -598,6 +686,20 @@ impl SpaiApp {
 
                     ui.separator();
 
+                    // --- Alerts ---
+                    ui.label(egui::RichText::new("Alerts").strong());
+                    changed |= ui
+                        .checkbox(&mut self.settings.alert_enabled, "Desktop alert on nearby hostiles")
+                        .changed();
+                    ui.horizontal(|ui| {
+                        ui.label("Within jumps:");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut self.settings.alert_within_jumps).range(0..=20))
+                            .changed();
+                    });
+
+                    ui.separator();
+
                     // --- Configuration packs ---
                     ui.label(egui::RichText::new("Configuration packs").strong());
                     ui.label(
@@ -682,6 +784,7 @@ impl eframe::App for SpaiApp {
         self.refresh_characters();
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
+        self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);
         self.nav_rail(ui);
@@ -691,6 +794,7 @@ impl eframe::App for SpaiApp {
             View::Characters => self.characters_view(ui),
             View::Intel => self.intel_view(ui),
             View::Battles => self.battles_view(ui),
+            View::Alerts => self.alerts_view(ui),
             other => views::show(ui, other),
         });
 
@@ -704,6 +808,16 @@ impl eframe::App for SpaiApp {
     fn on_exit(&mut self) {
         self.persist();
     }
+}
+
+/// Fire a desktop notification off the UI thread (dbus can block).
+fn notify(text: String) {
+    std::thread::spawn(move || {
+        let _ = notify_rust::Notification::new()
+            .summary("EVE Spai")
+            .body(&text)
+            .show();
+    });
 }
 
 /// Jumps from the player's system to a target system, if both are known.

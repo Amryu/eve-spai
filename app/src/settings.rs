@@ -29,6 +29,19 @@ pub struct Settings {
     /// Configured jump bridges (system name pairs) — used for distance & battles.
     #[serde(default)]
     pub jump_bridges: Vec<JumpBridge>,
+    /// Raise alerts on hostiles near the active character.
+    #[serde(default = "default_true")]
+    pub alert_enabled: bool,
+    /// Alert when hostiles are within this many jumps of you (0 = off).
+    #[serde(default = "default_alert_jumps")]
+    pub alert_within_jumps: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_alert_jumps() -> u32 {
+    5
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -58,6 +71,8 @@ impl Default for Settings {
             sso_callback: default_callback(),
             configuration_pack: String::new(),
             jump_bridges: Vec::new(),
+            alert_enabled: true,
+            alert_within_jumps: 5,
         }
     }
 }

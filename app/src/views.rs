@@ -16,17 +16,12 @@ pub fn show(ui: &mut egui::Ui, view: View) {
         ),
         // View::Map is rendered by SpaiApp::map_view (it needs app state).
         View::Map => {}
-        // Intel and Battles are rendered by SpaiApp (they need app state).
+        // Intel, Battles, Alerts are rendered by SpaiApp (they need app state).
         View::Intel => {}
         View::Battles => {}
+        View::Alerts => {}
         // View::Characters is rendered by SpaiApp::characters_view (it needs app state).
         View::Characters => {}
-        View::Alerts => placeholder(
-            ui,
-            "Alerts",
-            "Rules over intel/log events firing sound + desktop notifications. \
-             (Milestone M4.)",
-        ),
     }
 }
 

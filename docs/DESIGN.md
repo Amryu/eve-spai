@@ -373,6 +373,10 @@ server** (small sizes only) · **zKillboard** (+ redisq/stream for live kills) �
 adashboard** *(adv)* · **Pushover / ntfy** *(adv)* · **NTP** *(adv, clock-sync
 warning)*. Every integration is lazy and failure-tolerant; none block the UI.
 
+> **eve-scout** (`api.eve-scout.com`) — TODO/deferred. Covers metaliminal **storms**
+> and Thera/Turnur wormholes, which ESI does NOT expose. When added, feed the same
+> per-system condition chips as incursions/FW/sovereignty.
+
 ---
 
 ## 10. Milestones
