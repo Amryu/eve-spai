@@ -89,17 +89,14 @@ pub fn schematic_layout(systems: &[MapSystem], graph: &crate::geo::Systems) -> V
     let idx: std::collections::HashMap<i64, usize> =
         systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
-    // Seed from normalised geographic coords for a stable, untangled start.
-    let mut pos: Vec<(f64, f64)> = if let Some(b) = Bounds::of(systems) {
-        let sx = (b.max_x - b.min_x).max(1.0);
-        let sz = (b.max_z - b.min_z).max(1.0);
-        systems
-            .iter()
-            .map(|s| ((s.x - b.min_x) / sx, (s.z - b.min_z) / sz))
-            .collect()
-    } else {
-        (0..n).map(|i| (i as f64 / n as f64, 0.0)).collect()
-    };
+    // Seed on a circle (deterministic, no RNG) so the result reads as a distinct
+    // topology layout rather than a nudged geographic map.
+    let mut pos: Vec<(f64, f64)> = (0..n)
+        .map(|i| {
+            let t = std::f64::consts::TAU * i as f64 / n as f64;
+            (0.5 + 0.4 * t.cos(), 0.5 + 0.4 * t.sin())
+        })
+        .collect();
 
     let mut edges: Vec<(usize, usize)> = Vec::new();
     for s in systems {

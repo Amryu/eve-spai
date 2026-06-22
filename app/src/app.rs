@@ -1031,16 +1031,24 @@ impl SpaiApp {
                         if let Some(id) = goto {
                             self.map_go(MapView::Region(id));
                         }
-                        if ui.selectable_label(self.map_follow, "Follow").clicked() {
+                        if ui.add(egui::Button::new("Follow").selected(self.map_follow)).clicked() {
                             self.map_follow = !self.map_follow;
                         }
-                        if ui
-                            .selectable_label(self.map_schematic, "Schematic")
-                            .on_hover_text("Gate-topology layout (uniform spacing, region-scale)")
-                            .clicked()
-                        {
-                            self.map_schematic = !self.map_schematic;
-                        }
+                        // Schematic is region-scale only (a force layout of the whole
+                        // universe isn't practical), so disable it in Universe view.
+                        let in_region = matches!(self.map_view, MapView::Region(_));
+                        ui.add_enabled_ui(in_region, |ui| {
+                            let resp = ui
+                                .add(egui::Button::new("Schematic").selected(self.map_schematic))
+                                .on_hover_text(if in_region {
+                                    "Gate-topology layout (uniform spacing)"
+                                } else {
+                                    "Open a region first — schematic is region-scale"
+                                });
+                            if resp.clicked() {
+                                self.map_schematic = !self.map_schematic;
+                            }
+                        });
                         if ui.button("Reset").clicked() {
                             self.map_pan = egui::Vec2::ZERO;
                             self.map_zoom = 1.0;
@@ -1943,15 +1951,25 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
 }
 
 /// Colour for a security status: green (hi-sec) / amber (lo-sec) / red (null).
+/// EVE's in-game security-status colours, keyed by security rounded to 0.1.
+/// Anything <= 0.0 is the null-sec red.
 fn security_color(security: f64) -> egui::Color32 {
-    let sec = (security * 10.0).round() / 10.0;
-    if sec >= 0.5 {
-        egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
-    } else if sec > 0.0 {
-        egui::Color32::from_rgb(0xE0, 0xA4, 0x3A)
-    } else {
-        egui::Color32::from_rgb(0xD8, 0x4C, 0x4C)
-    }
+    const COLORS: [(u8, u8, u8); 11] = [
+        (0xF0, 0x00, 0x00), // 0.0
+        (0xD7, 0x30, 0x00), // 0.1
+        (0xF0, 0x48, 0x00), // 0.2
+        (0xF0, 0x60, 0x00), // 0.3
+        (0xD7, 0x77, 0x00), // 0.4
+        (0xEF, 0xEF, 0x00), // 0.5
+        (0x8F, 0xEF, 0x2F), // 0.6
+        (0x00, 0xF0, 0x00), // 0.7
+        (0x00, 0xEF, 0x47), // 0.8
+        (0x48, 0xF0, 0xC0), // 0.9
+        (0x2F, 0xEF, 0xEF), // 1.0
+    ];
+    let idx = (security * 10.0).round().clamp(0.0, 10.0) as usize;
+    let (r, g, b) = COLORS[idx];
+    egui::Color32::from_rgb(r, g, b)
 }
 
 /// A coloured security-status label, e.g. `0.9` (green) … `-0.3` (red).
