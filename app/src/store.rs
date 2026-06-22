@@ -43,7 +43,9 @@ pub struct MapSystem {
     pub id: i64,
     pub name: String,
     pub security: f64,
+    pub region_id: i64,
     pub x: f64,
+    pub y: f64,
     pub z: f64,
 }
 
@@ -137,17 +139,29 @@ impl Store {
 
     /// Systems in a region with map coordinates (EVE x/z plane, top-down).
     pub fn region_systems(&self, region_id: i64) -> Vec<MapSystem> {
+        self.map_systems("WHERE region_id = ?1", params![region_id])
+    }
+
+    /// All systems with map coordinates (universe view).
+    pub fn all_map_systems(&self) -> Vec<MapSystem> {
+        self.map_systems("", params![])
+    }
+
+    fn map_systems(&self, filter: &str, p: impl rusqlite::Params) -> Vec<MapSystem> {
+        let sql = format!(
+            "SELECT id, name, security, COALESCE(region_id,0), x, y, z FROM sde_systems {filter}"
+        );
         let mut out = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, name, security, x, z FROM sde_systems WHERE region_id = ?1",
-        ) {
-            if let Ok(rows) = stmt.query_map(params![region_id], |r| {
+        if let Ok(mut stmt) = self.conn.prepare(&sql) {
+            if let Ok(rows) = stmt.query_map(p, |r| {
                 Ok(MapSystem {
                     id: r.get(0)?,
                     name: r.get(1)?,
                     security: r.get(2)?,
-                    x: r.get(3)?,
-                    z: r.get(4)?,
+                    region_id: r.get(3)?,
+                    x: r.get(4)?,
+                    y: r.get(5)?,
+                    z: r.get(6)?,
                 })
             }) {
                 out.extend(rows.flatten());

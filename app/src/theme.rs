@@ -65,6 +65,15 @@ impl Theme {
         }
     }
 
+    pub fn minmatar() -> Self {
+        Self {
+            name: "Minmatar".into(),
+            background: Rgb::new(0x12, 0x0A, 0x08),
+            foreground: Rgb::new(0xE2, 0xD2, 0xC6),
+            accent: Rgb::new(0xB7, 0x4A, 0x36),
+        }
+    }
+
     pub fn gallente() -> Self {
         Self {
             name: "Gallente".into(),
@@ -88,6 +97,7 @@ impl Theme {
         vec![
             Self::caldari(),
             Self::amarr(),
+            Self::minmatar(),
             Self::gallente(),
             Self::daylight(),
         ]

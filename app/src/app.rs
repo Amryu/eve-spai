@@ -13,6 +13,7 @@ pub struct SpaiApp {
     settings: Settings,
     view: View,
     settings_open: bool,
+    intel_channels_open: bool,
     active_character: String,
     /// Settings changed this frame and should be persisted.
     needs_save: bool,
@@ -45,12 +46,17 @@ pub struct SpaiApp {
     /// Recent fired alerts (unix, text) — shared with the game-log watcher.
     recent_alerts: crate::gamewatcher::AlertLog,
     // --- Map view state ---
-    map_region: Option<i64>,
+    map_view: crate::map::MapView,
+    map_initialized: bool,
+    map_history: Vec<crate::map::MapView>,
+    map_forward: Vec<crate::map::MapView>,
     map_regions: Vec<(i64, String)>,
     map_systems: Vec<crate::store::MapSystem>,
-    map_loaded_region: Option<i64>,
+    map_loaded: Option<crate::map::MapView>,
     map_pan: egui::Vec2,
     map_zoom: f32,
+    map_follow: bool,
+    map_popped: bool,
 }
 
 impl SpaiApp {
@@ -101,6 +107,7 @@ impl SpaiApp {
             settings,
             view: View::Dashboard,
             settings_open: false,
+            intel_channels_open: false,
             active_character: "No character".to_owned(),
             needs_save: false,
             sde_status,
@@ -122,12 +129,17 @@ impl SpaiApp {
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            map_region: None,
+            map_view: crate::map::MapView::Universe,
+            map_initialized: false,
+            map_history: Vec::new(),
+            map_forward: Vec::new(),
             map_regions: Vec::new(),
             map_systems: Vec::new(),
-            map_loaded_region: None,
+            map_loaded: None,
             map_pan: egui::Vec2::ZERO,
             map_zoom: 1.0,
+            map_follow: false,
+            map_popped: false,
         }
     }
 
@@ -546,25 +558,36 @@ impl SpaiApp {
         }
     }
 
-    /// The Map view (M1: SDE status + system lookup; the rendered map lands in M3).
     fn map_view(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
         let status = self.sde_status.lock().unwrap().clone();
         match status {
-            SdeStatus::Ready { .. } => self.render_map(ui),
+            SdeStatus::Ready => {
+                if self.map_popped {
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("Map is in its own window.").weak());
+                    if ui.button("Dock map").clicked() {
+                        self.map_popped = false;
+                    }
+                } else {
+                    self.draw_map(ui);
+                }
+            }
             SdeStatus::Downloading(msg) => {
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(msg);
                 });
             }
             SdeStatus::NotReady => {
+                ui.add_space(10.0);
                 ui.label("Static data has not been downloaded yet.");
                 if ui.button("Download static data").clicked() {
                     self.start_sde(&ui.ctx().clone());
                 }
             }
             SdeStatus::Failed(err) => {
+                ui.add_space(10.0);
                 ui.colored_label(crate::theme::standing::WARNING, format!("SDE download failed: {err}"));
                 if ui.button("Retry").clicked() {
                     self.start_sde(&ui.ctx().clone());
@@ -573,77 +596,137 @@ impl SpaiApp {
         }
     }
 
-    /// Render the 2D region map (systems, gates, intel + player overlays).
-    fn render_map(&mut self, ui: &mut egui::Ui) {
+    fn set_map_view(&mut self, v: crate::map::MapView) {
+        self.map_view = v;
+        self.map_pan = egui::Vec2::ZERO;
+        self.map_zoom = 1.0;
+        self.map_follow = false;
+    }
+    fn map_go(&mut self, v: crate::map::MapView) {
+        if self.map_view == v {
+            return;
+        }
+        self.map_history.push(self.map_view);
+        self.map_forward.clear();
+        self.set_map_view(v);
+    }
+    fn map_back(&mut self) {
+        if let Some(v) = self.map_history.pop() {
+            self.map_forward.push(self.map_view);
+            self.set_map_view(v);
+        }
+    }
+    fn map_forward_nav(&mut self) {
+        if let Some(v) = self.map_forward.pop() {
+            self.map_history.push(self.map_view);
+            self.set_map_view(v);
+        }
+    }
+
+    /// Render the interactive map into `ui` (used in the main panel and the pop-out
+    /// window). Full-panel canvas with floating controls.
+    fn draw_map(&mut self, ui: &mut egui::Ui) {
+        use crate::map::MapView;
         if self.map_regions.is_empty() {
             if let Some(store) = &self.store {
                 self.map_regions = store.regions();
             }
         }
-        if self.map_region.is_none() {
-            let psys = self.player.lock().unwrap().system_id;
-            self.map_region = psys
-                .and_then(|s| self.store.as_ref().and_then(|st| st.region_of_system(s)))
-                .or_else(|| self.map_regions.first().map(|(id, _)| *id));
+        let player_sys = self.player.lock().unwrap().system_id;
+        if !self.map_initialized {
+            let region = player_sys
+                .and_then(|s| self.store.as_ref().and_then(|st| st.region_of_system(s)));
+            self.map_view = region.map(MapView::Region).unwrap_or(MapView::Universe);
+            self.map_initialized = true;
         }
 
-        ui.horizontal(|ui| {
-            let current = self
-                .map_region
-                .and_then(|id| self.map_regions.iter().find(|(rid, _)| *rid == id))
-                .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "—".to_owned());
-            egui::ComboBox::from_id_salt("map_region")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for (id, name) in &self.map_regions {
-                        if ui.selectable_label(self.map_region == Some(*id), name).clicked() {
-                            self.map_region = Some(*id);
-                            self.map_pan = egui::Vec2::ZERO;
-                            self.map_zoom = 1.0;
-                        }
+        // Follow: keep the view on the player's region.
+        if self.map_follow {
+            if let (MapView::Region(r), Some(psys)) = (self.map_view, player_sys) {
+                if let Some(pr) = self.store.as_ref().and_then(|s| s.region_of_system(psys)) {
+                    if pr != r {
+                        self.map_view = MapView::Region(pr);
                     }
-                });
-            if ui.small_button("Reset view").clicked() {
-                self.map_pan = egui::Vec2::ZERO;
-                self.map_zoom = 1.0;
+                }
             }
-            ui.label(
-                egui::RichText::new("drag to pan · scroll to zoom").weak().small(),
-            );
-        });
+        }
 
-        if self.map_loaded_region != self.map_region {
-            self.map_systems = self
-                .map_region
-                .and_then(|id| self.store.as_ref().map(|s| s.region_systems(id)))
-                .unwrap_or_default();
-            self.map_loaded_region = self.map_region;
+        // (Re)load systems for the current view.
+        if self.map_loaded != Some(self.map_view) {
+            self.map_systems = match self.map_view {
+                MapView::Universe => self.store.as_ref().map(|s| s.all_map_systems()),
+                MapView::Region(id) => self.store.as_ref().map(|s| s.region_systems(id)),
+            }
+            .unwrap_or_default();
+            self.map_loaded = Some(self.map_view);
         }
         let Some(bounds) = crate::map::Bounds::of(&self.map_systems) else {
-            ui.label(egui::RichText::new("No systems in this region.").weak());
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("No systems to show.").weak());
             return;
         };
 
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+
+        // Mouse back/forward buttons.
+        if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra1)) {
+            self.map_back();
+        }
+        if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra2)) {
+            self.map_forward_nav();
+        }
+        // Drag pans (and disables follow).
         if resp.dragged() {
             self.map_pan += resp.drag_delta();
+            self.map_follow = false;
         }
+        // Zoom centred on the cursor.
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                self.map_zoom = (self.map_zoom * (1.0 + scroll * 0.001)).clamp(0.2, 8.0);
+            if scroll.abs() > 0.0 {
+                if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
+                    let old = self.map_zoom;
+                    let new = (old * (scroll * 0.0015).exp()).clamp(0.1, 40.0);
+                    let q = cursor - (rect.center() + self.map_pan);
+                    self.map_pan += q * (1.0 - new / old);
+                    self.map_zoom = new;
+                }
+            }
+        }
+        // Follow: centre the player's system.
+        if self.map_follow {
+            if let Some(ps) = player_sys.and_then(|id| self.map_systems.iter().find(|s| s.id == id)) {
+                let base = crate::map::project(ps.x, ps.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
+                self.map_pan = rect.center() - base;
+            }
+        }
+
+        // Project all systems.
+        let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
+        for s in &self.map_systems {
+            pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
+        }
+
+        // Click: zoom into a region (universe) or centre on a system (region).
+        if resp.clicked() {
+            if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
+                if let Some(id) = nearest_system(click, &pos, 10.0) {
+                    if let Some(s) = self.map_systems.iter().find(|s| s.id == id).cloned() {
+                        match self.map_view {
+                            MapView::Universe => self.map_go(MapView::Region(s.region_id)),
+                            MapView::Region(_) => {
+                                let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
+                                self.map_pan = rect.center() - base;
+                            }
+                        }
+                    }
+                }
             }
         }
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
-
-        let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
-        for s in &self.map_systems {
-            pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
-        }
 
         // Gate links (each pair once).
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
@@ -660,7 +743,29 @@ impl SpaiApp {
             }
         }
 
-        // Overlays.
+        // Jump-range hover: rings + in-range highlight around the hovered system.
+        let hovered = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|_| resp.hovered())
+            .and_then(|p| nearest_system(p, &pos, 8.0))
+            .and_then(|id| self.map_systems.iter().find(|s| s.id == id));
+        if let Some(h) = hovered {
+            let hp = pos[&h.id];
+            let accent = ui.visuals().hyperlink_color;
+            for (i, (_, ly)) in crate::map::JUMP_RANGES.iter().enumerate() {
+                let r = crate::map::ly_to_pixels(*ly, &bounds, rect, self.map_zoom);
+                let a = 0.5 - 0.1 * i as f32;
+                painter.circle_stroke(hp, r, egui::Stroke::new(1.0, accent.gamma_multiply(a)));
+            }
+            let max_ly = crate::map::JUMP_RANGES.last().map_or(0.0, |(_, ly)| *ly);
+            for s in &self.map_systems {
+                if s.id != h.id && crate::map::ly_distance(h, s) <= max_ly {
+                    painter.circle_stroke(pos[&s.id], 4.0, egui::Stroke::new(1.0, accent.gamma_multiply(0.7)));
+                }
+            }
+        }
+
+        // Systems + overlays.
         let intel_ids: std::collections::HashSet<i64> = {
             let st = self.intel_state.lock().unwrap();
             st.reports
@@ -669,9 +774,7 @@ impl SpaiApp {
                 .filter_map(|r| r.primary_system().map(|s| s.id))
                 .collect()
         };
-        let player_sys = self.player.lock().unwrap().system_id;
-        let label = self.map_zoom > 0.8 || self.map_systems.len() < 80;
-
+        let show_labels = self.map_systems.len() < 150 || self.map_zoom > 2.5;
         for s in &self.map_systems {
             let p = pos[&s.id];
             painter.circle_filled(p, 3.0, security_color(s.security));
@@ -681,15 +784,98 @@ impl SpaiApp {
             if player_sys == Some(s.id) {
                 painter.circle_stroke(p, 7.0, egui::Stroke::new(2.0, ui.visuals().hyperlink_color));
             }
-            if label {
+            if show_labels {
                 painter.text(
-                    p + egui::vec2(5.0, -2.0),
+                    p + egui::vec2(6.0, -2.0),
                     egui::Align2::LEFT_CENTER,
                     &s.name,
-                    egui::FontId::proportional(10.0),
-                    ui.visuals().weak_text_color(),
+                    egui::FontId::proportional(13.0),
+                    ui.visuals().text_color(),
                 );
             }
+        }
+
+        self.map_controls_overlay(ui, rect);
+    }
+
+    /// Floating controls over the map (scope, navigation, follow, pop-out).
+    fn map_controls_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use crate::map::MapView;
+        egui::Area::new(egui::Id::new("map_controls"))
+            .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Universe").clicked() {
+                            self.map_go(MapView::Universe);
+                        }
+                        ui.add_enabled_ui(!self.map_history.is_empty(), |ui| {
+                            if ui.button("\u{2190}").on_hover_text("Back").clicked() {
+                                self.map_back();
+                            }
+                        });
+                        ui.add_enabled_ui(!self.map_forward.is_empty(), |ui| {
+                            if ui.button("\u{2192}").on_hover_text("Forward").clicked() {
+                                self.map_forward_nav();
+                            }
+                        });
+                        let current = match self.map_view {
+                            MapView::Universe => "Universe".to_owned(),
+                            MapView::Region(id) => self
+                                .map_regions
+                                .iter()
+                                .find(|(rid, _)| *rid == id)
+                                .map(|(_, n)| n.clone())
+                                .unwrap_or_else(|| "Region".to_owned()),
+                        };
+                        let mut goto: Option<i64> = None;
+                        egui::ComboBox::from_id_salt("map_region")
+                            .selected_text(current)
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &self.map_regions {
+                                    if ui.selectable_label(self.map_view == MapView::Region(*id), name).clicked() {
+                                        goto = Some(*id);
+                                    }
+                                }
+                            });
+                        if let Some(id) = goto {
+                            self.map_go(MapView::Region(id));
+                        }
+                        if ui.selectable_label(self.map_follow, "Follow").clicked() {
+                            self.map_follow = !self.map_follow;
+                        }
+                        if ui.button("Reset").clicked() {
+                            self.map_pan = egui::Vec2::ZERO;
+                            self.map_zoom = 1.0;
+                            self.map_follow = false;
+                        }
+                        if ui.button("Pop out").clicked() {
+                            self.map_popped = true;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Render the popped-out map in its own OS window.
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    fn show_map_viewport(&mut self, ctx: &egui::Context) {
+        let mut keep = true;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("map_window"),
+            egui::ViewportBuilder::default()
+                .with_title("EVE Spai — Map")
+                .with_inner_size([960.0, 720.0]),
+            |ctx, _class| {
+                egui::CentralPanel::default().show(ctx, |ui| self.draw_map(ui));
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    keep = false;
+                }
+            },
+        );
+        if !keep {
+            self.map_popped = false;
         }
     }
 
@@ -754,15 +940,10 @@ impl SpaiApp {
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(8.0);
-                    ui.label("Intel: 0");
+                    let intel = self.intel_state.lock().unwrap().reports.len();
+                    ui.label(format!("Intel: {intel}"));
                     ui.separator();
-                    ui.label(egui::RichText::new("M0 scaffold — no live data yet").weak());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(8.0);
-                        if ui.small_button("Settings").clicked() {
-                            self.settings_open = true;
-                        }
-                    });
+                    ui.label(egui::RichText::new(&self.active_character).weak());
                 });
             });
     }
@@ -787,6 +968,53 @@ impl SpaiApp {
                     self.needs_save = true;
                 }
             });
+    }
+
+    fn intel_channels_window(&mut self, ctx: &egui::Context) {
+        if !self.intel_channels_open {
+            return;
+        }
+        let mut open = self.intel_channels_open;
+        let mut changed = false;
+        egui::Window::new("Intel channels")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "EVE chat channels to watch for intel. Match the in-game channel name.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    let mut remove: Option<usize> = None;
+                    for (i, ch) in self.settings.intel_channels.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            if ui.text_edit_singleline(ch).changed() {
+                                changed = true;
+                            }
+                            if ui.button("Remove").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        self.settings.intel_channels.remove(i);
+                        changed = true;
+                    }
+                });
+                ui.add_space(4.0);
+                if ui.button("Add channel").clicked() {
+                    self.settings.intel_channels.push(String::new());
+                    changed = true;
+                }
+            });
+        if changed {
+            self.needs_save = true;
+        }
+        self.intel_channels_open = open;
     }
 
     fn settings_dialog(&mut self, ctx: &egui::Context) {
@@ -828,26 +1056,22 @@ impl SpaiApp {
                         .changed();
 
                     ui.add_space(6.0);
+                    let logs_hint = crate::logpaths::chat_logs_dir("")
+                        .and_then(|p| p.parent().map(|p| p.display().to_string()))
+                        .unwrap_or_else(|| "auto-detect".to_owned());
                     ui.label("EVE chat-log directory");
                     changed |= ui
-                        .text_edit_singleline(&mut self.settings.eve_logs_dir)
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.eve_logs_dir)
+                                .hint_text(logs_hint),
+                        )
                         .changed();
                     ui.label("EVE settings directory");
                     changed |= ui
-                        .text_edit_singleline(&mut self.settings.eve_settings_dir)
-                        .changed();
-
-                    ui.separator();
-
-                    // --- EVE SSO ---
-                    ui.label(egui::RichText::new("EVE SSO").strong());
-                    ui.label(egui::RichText::new("Application client ID (PKCE)").weak());
-                    changed |= ui
-                        .text_edit_singleline(&mut self.settings.sso_client_id)
-                        .changed();
-                    ui.label(egui::RichText::new("Callback URL").weak());
-                    changed |= ui
-                        .text_edit_singleline(&mut self.settings.sso_callback)
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.eve_settings_dir)
+                                .hint_text("auto-detect"),
+                        )
                         .changed();
 
                     ui.separator();
@@ -909,25 +1133,15 @@ impl SpaiApp {
                     ui.separator();
 
                     // --- Intel channels ---
-                    ui.label(egui::RichText::new("Intel channels").strong());
-                    let mut remove: Option<usize> = None;
-                    for (i, ch) in self.settings.intel_channels.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            if ui.text_edit_singleline(ch).changed() {
-                                changed = true;
-                            }
-                            if ui.button("Remove").clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                    }
-                    if let Some(i) = remove {
-                        self.settings.intel_channels.remove(i);
-                        changed = true;
-                    }
-                    if ui.button("Add channel").clicked() {
-                        self.settings.intel_channels.push(String::new());
-                        changed = true;
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Intel channels").strong());
+                        ui.label(
+                            egui::RichText::new(format!("{} configured", self.settings.intel_channels.len()))
+                                .weak(),
+                        );
+                    });
+                    if ui.button("Configure intel channels…").clicked() {
+                        self.intel_channels_open = true;
                     }
                 });
             });
@@ -968,6 +1182,10 @@ impl eframe::App for SpaiApp {
         });
 
         self.settings_dialog(&ctx);
+        self.intel_channels_window(&ctx);
+        if self.map_popped {
+            self.show_map_viewport(&ctx);
+        }
 
         if self.needs_save {
             self.persist();
@@ -987,6 +1205,22 @@ fn notify(text: String) {
             .body(&text)
             .show();
     });
+}
+
+/// Nearest projected system to a point within `threshold` pixels.
+fn nearest_system(
+    p: egui::Pos2,
+    pos: &std::collections::HashMap<i64, egui::Pos2>,
+    threshold: f32,
+) -> Option<i64> {
+    let mut best: Option<(i64, f32)> = None;
+    for (id, sp) in pos {
+        let d = sp.distance(p);
+        if d <= threshold && best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((*id, d));
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 /// Jumps from the player's system to a target system, if both are known.
@@ -1017,22 +1251,22 @@ fn system_chips(
             (c, r) => format!("< {c} < {r}"),
         };
         if !loc.is_empty() {
-            ui.label(egui::RichText::new(loc).weak().small());
+            ui.label(egui::RichText::new(loc).weak());
         }
         // Faction = rats / NPC sov; only meaningful in low/null (highsec is CONCORD).
         if !info.faction.is_empty() && info.security < 0.5 {
-            ui.label(egui::RichText::new(&info.faction).small().color(standing::NEUTRAL));
+            ui.label(egui::RichText::new(&info.faction).color(standing::NEUTRAL));
         }
     }
     if let Some(f) = status.get(&system_id) {
         if f.incursion {
-            ui.label(egui::RichText::new("INCURSION").small().color(standing::ALLIANCE));
+            ui.label(egui::RichText::new("INCURSION").color(standing::ALLIANCE));
         }
         if let Some(fw) = &f.fw {
-            ui.label(egui::RichText::new(format!("FW {fw}")).small().color(standing::WARNING));
+            ui.label(egui::RichText::new(format!("FW {fw}")).color(standing::WARNING));
         }
         if let Some(sov) = &f.sov {
-            ui.label(egui::RichText::new(format!("Sov: {sov}")).small().color(standing::CORP));
+            ui.label(egui::RichText::new(format!("Sov: {sov}")).color(standing::CORP));
         }
     }
 }
@@ -1045,7 +1279,7 @@ fn from_you_chip(ui: &mut egui::Ui, from_you: Option<u32>) {
         } else {
             format!("{j}j")
         };
-        ui.label(egui::RichText::new(txt).weak().small());
+        ui.label(egui::RichText::new(txt).weak());
     }
 }
 
@@ -1108,7 +1342,7 @@ fn battle_row(
                         side.losses,
                         fmt_isk(side.isk_lost)
                     ))
-                    .small(),
+                    ,
                 );
             }
         });
@@ -1227,8 +1461,8 @@ fn intel_row(
         // Secondary, de-emphasised raw message (the exact words matter less).
         ui.horizontal_wrapped(|ui| {
             let faint = text_col.gamma_multiply((fade * 0.7).max(0.3));
-            ui.label(egui::RichText::new(format!("{}:", r.reporter)).small().color(faint));
-            ui.label(egui::RichText::new(&r.text).small().color(faint));
+            ui.label(egui::RichText::new(format!("{}:", r.reporter)).color(faint));
+            ui.label(egui::RichText::new(&r.text).color(faint));
         });
     });
 }

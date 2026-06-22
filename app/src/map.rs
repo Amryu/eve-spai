@@ -6,6 +6,13 @@ use egui::{Pos2, Rect, Vec2};
 
 use crate::store::MapSystem;
 
+/// What the map is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapView {
+    Universe,
+    Region(i64),
+}
+
 pub struct Bounds {
     min_x: f64,
     max_x: f64,
@@ -48,6 +55,28 @@ impl Bounds {
     }
 }
 
+/// Metres per light-year (EVE map distances).
+pub const LY_METERS: f64 = 9.460_730_472_580_8e15;
+
+/// Max jump-drive ranges (light-years) at maxed skills (Jump Drive Calibration V).
+/// Capitals share a 5 ly base; Black Ops reach further; Jump Freighters furthest.
+pub const JUMP_RANGES: &[(&str, f64)] = &[
+    ("Capital", 5.0),
+    ("Black Ops", 8.0),
+    ("Jump Freighter", 10.0),
+];
+
+/// True 3D distance between two systems, in light-years.
+pub fn ly_distance(a: &MapSystem, b: &MapSystem) -> f64 {
+    let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+    d / LY_METERS
+}
+
+/// Screen length (pixels) of `ly` light-years at the current projection scale.
+pub fn ly_to_pixels(ly: f64, b: &Bounds, rect: Rect, zoom: f32) -> f32 {
+    (ly * LY_METERS) as f32 * b.base_scale(rect, 30.0) * zoom
+}
+
 pub fn project(x: f64, z: f64, b: &Bounds, rect: Rect, zoom: f32, pan: Vec2) -> Pos2 {
     let scale = b.base_scale(rect, 30.0) * zoom;
     let center = rect.center() + pan;
@@ -66,7 +95,9 @@ mod tests {
             id: 0,
             name: String::new(),
             security: 0.0,
+            region_id: 0,
             x,
+            y: 0.0,
             z,
         }
     }
