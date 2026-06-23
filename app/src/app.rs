@@ -1084,7 +1084,8 @@ impl SpaiApp {
                     let d = crate::map::ly_distance(real_h, &self.map_systems[i]);
                     if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
                         let col = band_color.get(b).copied().unwrap_or(band_color[2]);
-                        painter.circle_stroke(pos[&s.id], dot + 2.0, egui::Stroke::new(1.5, col));
+                        // Faint backglow behind the dot (drawn on top later).
+                        painter.circle_filled(pos[&s.id], dot + 4.0, col.gamma_multiply(0.30));
                     }
                 }
             }
@@ -1227,13 +1228,13 @@ impl SpaiApp {
             });
     }
 
-    /// Search panel (own panel, top-centre) with a keyboard-navigable dropdown.
-    /// Selecting a system focuses it on the map (swapping region if in region scope).
-    fn map_search_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    /// Search panel at the bottom centre, with a keyboard-navigable dropdown that
+    /// opens upward. Selecting a system focuses it (swapping region in region scope).
+    fn map_search_overlay(&mut self, ui: &mut egui::Ui, _rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         let mut chosen: Option<i64> = None;
         egui::Area::new(egui::Id::new("map_search"))
-            .fixed_pos(rect.center_top() + egui::vec2(-130.0, 8.0))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -10.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1252,22 +1253,11 @@ impl SpaiApp {
                     } else {
                         (false, false, false, false)
                     };
-
-                    ui.horizontal(|ui| {
-                        ui.label(icon::MAGNIFYING_GLASS);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.map_search)
-                                .hint_text("Search system")
-                                .desired_width(220.0),
-                        );
-                        if has_query && ui.button(icon::X).clicked() {
-                            self.map_search.clear();
-                        }
-                    });
-
                     if esc {
                         self.map_search.clear();
                     }
+
+                    // Results render above the input (dropdown opens upward).
                     let query = self.map_search.trim().to_owned();
                     if !query.is_empty() {
                         let results = self
@@ -1288,8 +1278,8 @@ impl SpaiApp {
                             if enter {
                                 chosen = Some(results[self.map_search_sel].0);
                             }
-                            ui.separator();
-                            for (i, (id, name, sec)) in results.iter().enumerate() {
+                            // Top item nearest the input: render in reverse.
+                            for (i, (id, name, sec)) in results.iter().enumerate().rev() {
                                 let text = egui::RichText::new(format!(
                                     "{:.1}  {name}",
                                     (sec * 10.0).round() / 10.0
@@ -1299,10 +1289,23 @@ impl SpaiApp {
                                     chosen = Some(*id);
                                 }
                             }
+                            ui.separator();
                         }
                     } else {
                         self.map_search_sel = 0;
                     }
+
+                    ui.horizontal(|ui| {
+                        ui.label(icon::MAGNIFYING_GLASS);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.map_search)
+                                .hint_text("Search system")
+                                .desired_width(220.0),
+                        );
+                        if has_query && ui.button(icon::X).clicked() {
+                            self.map_search.clear();
+                        }
+                    });
                 });
             });
         if let Some(id) = chosen {
@@ -2204,30 +2207,71 @@ fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
 }
 
 /// Resists / tank / hardpoints / drones / speed for a ship.
+/// Effective HP of a layer against an even (omni) damage profile.
+fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
+    if hp <= 0.0 {
+        return 0.0;
+    }
+    let avg_resist = (r[0] + r[1] + r[2] + r[3]) as f64 / 4.0 / 100.0;
+    hp / (1.0 - avg_resist).max(0.01)
+}
+
 fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
-    let resist_line = |ui: &mut egui::Ui, label: &str, hp: f64, r: [u32; 4]| {
-        if hp <= 0.0 {
-            return;
+    // Damage-type colours (EM / thermal / kinetic / explosive), aligned in columns.
+    let dmg_col = [
+        egui::Color32::from_rgb(0x5A, 0xA9, 0xE0), // EM — blue
+        egui::Color32::from_rgb(0xD6, 0x45, 0x45), // Thermal — red
+        egui::Color32::from_rgb(0x9A, 0xA3, 0xA8), // Kinetic — grey
+        egui::Color32::from_rgb(0xD6, 0xA6, 0x45), // Explosive — orange
+    ];
+    let dmg_lbl = ["EM", "Th", "Kin", "Exp"];
+    let layers = [
+        ("Shield", d.shield_hp, d.shield_resist),
+        ("Armor", d.armor_hp, d.armor_resist),
+        ("Hull", d.hull_hp, d.hull_resist),
+    ];
+
+    egui::Grid::new("ship_resists").num_columns(7).spacing([10.0, 2.0]).show(ui, |ui| {
+        ui.label("");
+        ui.label(egui::RichText::new("HP").weak());
+        for (i, lbl) in dmg_lbl.iter().enumerate() {
+            ui.label(egui::RichText::new(*lbl).color(dmg_col[i]).strong());
         }
-        ui.label(format!(
-            "{label}: {hp:.0} hp · em {} th {} kin {} exp {}",
-            r[0], r[1], r[2], r[3]
-        ));
-    };
-    resist_line(ui, "Shield", d.shield_hp, d.shield_resist);
-    resist_line(ui, "Armor", d.armor_hp, d.armor_resist);
-    resist_line(ui, "Hull", d.hull_hp, d.hull_resist);
+        ui.label(egui::RichText::new("EHP").strong());
+        ui.end_row();
+        for (name, hp, r) in layers {
+            if hp <= 0.0 {
+                continue;
+            }
+            ui.label(egui::RichText::new(name).strong());
+            ui.label(format!("{hp:.0}"));
+            for i in 0..4 {
+                ui.label(egui::RichText::new(format!("{}%", r[i])).color(dmg_col[i]));
+            }
+            ui.label(format!("{:.0}", layer_ehp(hp, r)));
+            ui.end_row();
+        }
+    });
+    let total = layer_ehp(d.shield_hp, d.shield_resist)
+        + layer_ehp(d.armor_hp, d.armor_resist)
+        + layer_ehp(d.hull_hp, d.hull_resist);
+    ui.label(egui::RichText::new(format!("Total EHP {total:.0}")).strong());
+
     ui.separator();
     let mut hp = Vec::new();
     if d.turret_hardpoints > 0 {
-        hp.push(format!("{} turrets", d.turret_hardpoints));
+        hp.push(format!("{} turret", d.turret_hardpoints));
     }
     if d.launcher_hardpoints > 0 {
-        hp.push(format!("{} launchers", d.launcher_hardpoints));
+        hp.push(format!("{} launcher", d.launcher_hardpoints));
     }
     if !hp.is_empty() {
-        ui.label(hp.join(" · "));
+        ui.label(format!("Hardpoints: {}", hp.join(" · ")));
     }
+    ui.label(format!(
+        "Slots: {} high · {} mid · {} low",
+        d.high_slots, d.mid_slots, d.low_slots
+    ));
     if d.drone_cap > 0.0 {
         ui.label(format!("Drones: {:.0} m³ / {:.0} Mbit", d.drone_cap, d.drone_bw));
     }

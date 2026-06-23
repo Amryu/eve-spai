@@ -67,6 +67,9 @@ pub struct ShipDetails {
     pub drone_bw: f64,
     pub turret_hardpoints: i64,
     pub launcher_hardpoints: i64,
+    pub high_slots: i64,
+    pub mid_slots: i64,
+    pub low_slots: i64,
     pub max_velocity: f64,
 }
 
@@ -280,6 +283,9 @@ impl Store {
             drone_bw: val(1271),
             turret_hardpoints: val(102) as i64,
             launcher_hardpoints: val(101) as i64,
+            high_slots: val(14) as i64,
+            mid_slots: val(13) as i64,
+            low_slots: val(12) as i64,
             max_velocity: val(37),
         })
     }
