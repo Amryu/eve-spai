@@ -3567,28 +3567,7 @@ impl SpaiApp {
                                 self.map_forward_nav();
                             }
                         });
-                        let current = match self.map_view {
-                            MapView::Universe => "Universe".to_owned(),
-                            MapView::Region(id) => self
-                                .map_regions
-                                .iter()
-                                .find(|(rid, _)| *rid == id)
-                                .map(|(_, n)| n.clone())
-                                .unwrap_or_else(|| "Region".to_owned()),
-                        };
-                        let mut goto: Option<i64> = None;
-                        egui::ComboBox::from_id_salt("map_region")
-                            .selected_text(current)
-                            .show_ui(ui, |ui| {
-                                for (id, name) in &self.map_regions {
-                                    if ui.selectable_label(self.map_view == MapView::Region(*id), name).clicked() {
-                                        goto = Some(*id);
-                                    }
-                                }
-                            });
-                        if let Some(id) = goto {
-                            self.map_go(MapView::Region(id));
-                        }
+                        // (Region/constellation navigation moved to the search box.)
                         if ui
                             .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
                             .on_hover_text("Follow active character")
@@ -3600,10 +3579,10 @@ impl SpaiApp {
                         use crate::map::MapLayout;
                         egui::ComboBox::from_id_salt("map_layout")
                             .selected_text(match self.map_layout {
-                                MapLayout::Geographic => icon::CUBE,
-                                MapLayout::Spaced => icon::GRID_NINE,
-                                MapLayout::Radial => icon::CIRCLES_THREE_PLUS,
-                                MapLayout::Tree => icon::TREE_STRUCTURE,
+                                MapLayout::Geographic => "3D",
+                                MapLayout::Spaced => "2D",
+                                MapLayout::Radial => "Radial",
+                                MapLayout::Tree => "Tree",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
@@ -3666,91 +3645,115 @@ impl SpaiApp {
             });
     }
 
-    /// Search panel at the bottom centre, with a keyboard-navigable dropdown that
-    /// opens upward. Selecting a system focuses it (swapping region in region scope).
+    /// Search panel at the bottom-left of the map: systems, constellations and
+    /// regions. The input is in its own fixed-size area so it never jitters; the
+    /// keyboard-navigable results dropdown opens upward above it.
     fn map_search_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use crate::map::MapView;
         use egui_phosphor::regular as icon;
-        let mut chosen: Option<i64> = None;
-        // Anchor to the map rect's bottom-left corner.
+
+        enum Hit {
+            System { id: i64, name: String, sec: f64 },
+            Constellation { name: String, region: i64 },
+            Region { id: i64, name: String },
+        }
+        enum Action {
+            Focus(i64),
+            Region(i64),
+        }
+        let hit_action = |h: &Hit| match h {
+            Hit::System { id, .. } => Action::Focus(*id),
+            Hit::Constellation { region, .. } => Action::Region(*region),
+            Hit::Region { id, .. } => Action::Region(*id),
+        };
+
         let screen = ui.ctx().content_rect();
-        let offset = egui::vec2(
-            rect.left() - screen.left() + 8.0,
-            rect.bottom() - screen.bottom() - 10.0,
-        );
-        egui::Area::new(egui::Id::new("map_search"))
-            .anchor(egui::Align2::LEFT_BOTTOM, offset)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    let has_query = !self.map_search.trim().is_empty();
-                    // Read nav keys (single-line edit ignores up/down, so no conflict).
-                    let (down, up, enter, esc) = if has_query {
-                        ui.input(|i| {
-                            use egui::Key;
-                            (
-                                i.key_pressed(Key::ArrowDown),
-                                i.key_pressed(Key::ArrowUp),
-                                i.key_pressed(Key::Enter),
-                                i.key_pressed(Key::Escape),
-                            )
-                        })
-                    } else {
-                        (false, false, false, false)
-                    };
-                    if esc {
-                        self.map_search.clear();
-                    }
+        let query = self.map_search.trim().to_owned();
+        let has_query = !query.is_empty();
+        let (down, up, enter, esc) = if has_query {
+            ui.input(|i| {
+                use egui::Key;
+                (
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::ArrowUp),
+                    i.key_pressed(Key::Enter),
+                    i.key_pressed(Key::Escape),
+                )
+            })
+        } else {
+            (false, false, false, false)
+        };
 
-                    // Results render above the input (dropdown opens upward).
-                    let query = self.map_search.trim().to_owned();
-                    if !query.is_empty() {
-                        let results = self
-                            .store
-                            .as_ref()
-                            .map(|s| s.search_systems(&query, 8))
-                            .unwrap_or_default();
-                        if results.is_empty() {
-                            ui.label(egui::RichText::new("No match").weak());
-                        } else {
-                            if down {
-                                self.map_search_sel = (self.map_search_sel + 1).min(results.len() - 1);
+        // Combined results: systems, then constellations, then regions.
+        let mut hits: Vec<Hit> = Vec::new();
+        if has_query {
+            if let Some(store) = &self.store {
+                for (id, name, sec) in store.search_systems(&query, 6) {
+                    hits.push(Hit::System { id, name, sec });
+                }
+                for (_c, name, region) in store.search_constellations(&query, 4) {
+                    hits.push(Hit::Constellation { name, region });
+                }
+                for (id, name) in store.search_regions(&query, 4) {
+                    hits.push(Hit::Region { id, name });
+                }
+            }
+        }
+        let mut sel = self.map_search_sel;
+        if hits.is_empty() {
+            sel = 0;
+        } else {
+            if down {
+                sel = (sel + 1).min(hits.len() - 1);
+            }
+            if up {
+                sel = sel.saturating_sub(1);
+            }
+            sel = sel.min(hits.len() - 1);
+        }
+
+        let mut action: Option<Action> = None;
+        if esc {
+            self.map_search.clear();
+        }
+        if enter && !hits.is_empty() {
+            action = Some(hit_action(&hits[sel]));
+        }
+        let mut chosen_upgrade: Option<String> = None;
+        let mut clear_upgrade = false;
+        let mut clear_search = false;
+
+        // Results dropdown (variable size) — a SEPARATE area above the input, so the
+        // input box never moves when results change.
+        const INPUT_H: f32 = 40.0;
+        if has_query {
+            let roff = egui::vec2(
+                rect.left() - screen.left() + 8.0,
+                rect.bottom() - screen.bottom() - 10.0 - INPUT_H,
+            );
+            egui::Area::new(egui::Id::new("map_search_results"))
+                .anchor(egui::Align2::LEFT_BOTTOM, roff)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        // Sov-upgrade matches (highlight every system that has one).
+                        if let Some(up) = self.map_highlight_upgrade.clone() {
+                            if ui
+                                .button(format!("{}  {up}  {}", icon::MAP_PIN_LINE, icon::X))
+                                .on_hover_text("Clear upgrade highlight")
+                                .clicked()
+                            {
+                                clear_upgrade = true;
                             }
-                            if up {
-                                self.map_search_sel = self.map_search_sel.saturating_sub(1);
-                            }
-                            self.map_search_sel = self.map_search_sel.min(results.len() - 1);
-                            if enter {
-                                chosen = Some(results[self.map_search_sel].0);
-                            }
-                            // Top item nearest the input: render in reverse.
-                            for (i, (id, name, sec)) in results.iter().enumerate().rev() {
-                                let text = egui::RichText::new(format!(
-                                    "{:.1}  {name}",
-                                    (sec * 10.0).round() / 10.0
-                                ))
-                                .color(security_color(*sec));
-                                if ui.selectable_label(i == self.map_search_sel, text).clicked() {
-                                    chosen = Some(*id);
-                                }
-                            }
-                            ui.separator();
                         }
-                    } else {
-                        self.map_search_sel = 0;
-                    }
-
-                    // Sov-upgrade matches: selecting one faint-highlights every
-                    // system that has it.
-                    if !query.is_empty() {
                         let ql = query.to_lowercase();
-                        let mut names: std::collections::BTreeSet<String> =
-                            std::collections::BTreeSet::new();
+                        let mut names: std::collections::BTreeSet<String> = Default::default();
                         for u in &self.settings.sov_upgrades {
                             if u.upgrade.to_lowercase().contains(&ql) {
                                 names.insert(u.upgrade.clone());
                             }
                         }
-                        for up in names.into_iter().take(6) {
+                        for up in names.into_iter().take(5) {
                             if ui
                                 .selectable_label(
                                     self.map_highlight_upgrade.as_deref() == Some(up.as_str()),
@@ -3758,40 +3761,86 @@ impl SpaiApp {
                                 )
                                 .clicked()
                             {
-                                self.map_highlight_upgrade = Some(up);
-                                self.map_search.clear();
+                                chosen_upgrade = Some(up);
+                                clear_search = true;
                             }
                         }
-                    }
-                    // Active upgrade highlight — click to clear.
-                    if let Some(up) = self.map_highlight_upgrade.clone() {
-                        if ui
-                            .button(format!("{}  {up}  {}", icon::MAP_PIN_LINE, icon::X))
-                            .on_hover_text("Clear upgrade highlight")
-                            .clicked()
-                        {
-                            self.map_highlight_upgrade = None;
+                        // Results: best match (sel 0) rendered last = nearest the input.
+                        if hits.is_empty() {
+                            ui.label(egui::RichText::new("No match").weak());
+                        } else {
+                            for (i, h) in hits.iter().enumerate().rev() {
+                                let label = match h {
+                                    Hit::System { name, sec, .. } => egui::RichText::new(
+                                        format!("{:.1}  {name}", (sec * 10.0).round() / 10.0),
+                                    )
+                                    .color(security_color(*sec)),
+                                    Hit::Constellation { name, .. } => {
+                                        egui::RichText::new(format!("{}  {name}", icon::POLYGON))
+                                            .weak()
+                                    }
+                                    Hit::Region { name, .. } => {
+                                        egui::RichText::new(format!("{}  {name}", icon::MAP_TRIFOLD))
+                                            .weak()
+                                    }
+                                };
+                                if ui.selectable_label(i == sel, label).clicked() {
+                                    action = Some(hit_action(h));
+                                }
+                            }
                         }
-                    }
+                    });
+                });
+        }
 
+        // Search input — its own fixed-size area, so it never jitters.
+        let ioff = egui::vec2(
+            rect.left() - screen.left() + 8.0,
+            rect.bottom() - screen.bottom() - 10.0,
+        );
+        egui::Area::new(egui::Id::new("map_search"))
+            .anchor(egui::Align2::LEFT_BOTTOM, ioff)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(icon::MAGNIFYING_GLASS);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.map_search)
                                 .id(egui::Id::new("map_search_input"))
-                                .hint_text("Search system")
-                                .desired_width(220.0),
+                                .hint_text("Search system / constellation / region")
+                                .desired_width(240.0),
                         );
                         if has_query && ui.button(icon::X).clicked() {
-                            self.map_search.clear();
+                            clear_search = true;
                         }
                     });
                 });
             });
-        if let Some(id) = chosen {
-            self.map_search.clear();
-            self.map_search_sel = 0;
-            self.focus_map_on_select(id);
+
+        if clear_upgrade {
+            self.map_highlight_upgrade = None;
+        }
+        if let Some(up) = chosen_upgrade {
+            self.map_highlight_upgrade = Some(up);
+        }
+        self.map_search_sel = sel;
+        match action {
+            Some(Action::Focus(id)) => {
+                self.map_search.clear();
+                self.map_search_sel = 0;
+                self.focus_map_on_select(id);
+            }
+            Some(Action::Region(id)) => {
+                self.map_search.clear();
+                self.map_search_sel = 0;
+                self.map_go(MapView::Region(id));
+            }
+            None if clear_search => {
+                self.map_search.clear();
+                self.map_search_sel = 0;
+            }
+            None => {}
         }
     }
 

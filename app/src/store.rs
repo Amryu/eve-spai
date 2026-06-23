@@ -217,6 +217,47 @@ impl Store {
         out
     }
 
+    /// Region name search (id, name).
+    pub fn search_regions(&self, query: &str, limit: i64) -> Vec<(i64, String)> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT id, name FROM sde_regions WHERE name LIKE ?1 ORDER BY name LIMIT ?2")
+        {
+            if let Ok(rows) =
+                stmt.query_map(params![format!("{q}%"), limit], |r| Ok((r.get(0)?, r.get(1)?)))
+            {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Constellation name search (constellation id, name, its region id).
+    pub fn search_constellations(&self, query: &str, limit: i64) -> Vec<(i64, String, i64)> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT c.id, c.name,
+                    (SELECT region_id FROM sde_systems WHERE constellation_id = c.id LIMIT 1)
+             FROM sde_constellations c WHERE c.name LIKE ?1 ORDER BY c.name LIMIT ?2",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![format!("{q}%"), limit], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0)))
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
     /// Regions (id, name) for the map picker.
     pub fn regions(&self) -> Vec<(i64, String)> {
         let mut out = Vec::new();
