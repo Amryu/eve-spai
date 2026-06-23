@@ -82,9 +82,11 @@ pub type Resolver = Arc<dyn Fn(&str) -> Option<i64> + Send + Sync>;
 pub type CmdSender = tokio::sync::mpsc::UnboundedSender<Cmd>;
 
 /// Spawn the background XMPP client. Returns a sender for outgoing commands.
+/// `server` is the host to connect to directly (empty = resolve from the JID).
 pub fn spawn(
     jid: String,
     password: String,
+    server: String,
     resolve: Resolver,
     state: SharedJabber,
     ctx: egui::Context,
@@ -95,7 +97,7 @@ pub fn spawn(
             state.lock().unwrap().status = "Failed to start runtime".to_owned();
             return;
         };
-        rt.block_on(run(jid, password, resolve, state, rx, ctx));
+        rt.block_on(run(jid, password, server, resolve, state, rx, ctx));
     });
     tx
 }
@@ -111,6 +113,7 @@ fn push_msg(state: &SharedJabber, key: &str, msg: ChatMsg, mark_unread: bool) {
 async fn run(
     jid: String,
     password: String,
+    server: String,
     resolve: Resolver,
     state: SharedJabber,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
@@ -118,6 +121,7 @@ async fn run(
 ) {
     use xmpp::jid::BareJid;
     use xmpp::message::send::MessageSettings;
+    use xmpp::tokio_xmpp::connect::{DnsConfig, StartTlsServerConnector};
     use xmpp::{ClientBuilder, ClientFeature, ClientType};
 
     let bare: BareJid = match jid.parse() {
@@ -131,20 +135,28 @@ async fn run(
     };
     state.lock().unwrap().running = true;
 
-    loop {
+    'reconnect: loop {
         if !state.lock().unwrap().enabled {
             break;
         }
-        {
-            let mut s = state.lock().unwrap();
-            s.status = "Connecting…".to_owned();
-        }
+        state.lock().unwrap().status = "Connecting…".to_owned();
         ctx.request_repaint();
 
-        let mut agent = ClientBuilder::new(bare.clone(), &password)
-            .set_client(ClientType::Bot, "EVE Spai")
-            .enable_feature(ClientFeature::ContactList)
-            .build();
+        // Connect to the configured server directly (the JID domain usually has no
+        // SRV record); fall back to SRV from the JID domain when no server is set.
+        let dns = if server.trim().is_empty() {
+            DnsConfig::srv_default_client(bare.domain().as_str())
+        } else {
+            DnsConfig::NoSrv { host: server.trim().to_owned(), port: 5222, resolver: None }
+        };
+        let mut agent = ClientBuilder::new_with_connector(
+            bare.clone(),
+            &password,
+            StartTlsServerConnector(dns),
+        )
+        .set_client(ClientType::Bot, "EVE Spai")
+        .enable_feature(ClientFeature::ContactList)
+        .build();
 
         loop {
             if !state.lock().unwrap().enabled {
@@ -152,11 +164,10 @@ async fn run(
                 state.lock().unwrap().running = false;
                 return;
             }
-            // Wait for either inbound events or an outbound command.
             tokio::select! {
                 events = agent.wait_for_events() => {
                     if events.is_empty() {
-                        break;
+                        break; // stream ended → reconnect (after a clean shutdown)
                     }
                     for event in events {
                         handle_event(event, &state, resolve.as_ref(), &ctx);
@@ -182,12 +193,17 @@ async fn run(
             }
         }
 
+        // Cleanly shut the worker down before dropping the agent — otherwise it
+        // panics ("All clients have been dropped") when it next tries to send.
+        let _ = agent.disconnect().await;
+
         {
             let mut s = state.lock().unwrap();
             s.connected = false;
-            if s.enabled && s.status == "Connected" {
-                s.status = "Reconnecting…".to_owned();
+            if !s.enabled {
+                break 'reconnect;
             }
+            s.status = "Reconnecting…".to_owned();
         }
         ctx.request_repaint();
         tokio::time::sleep(Duration::from_secs(15)).await;

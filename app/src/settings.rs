@@ -82,6 +82,14 @@ pub struct Settings {
     /// Jabber bare JID, e.g. "MyCharacter@goonfleet.com" (password in the keychain).
     #[serde(default)]
     pub jabber_jid: String,
+    /// XMPP server host to connect to directly (the JID domain often doesn't have an
+    /// SRV record). Empty = resolve from the JID domain.
+    #[serde(default = "default_jabber_server")]
+    pub jabber_server: String,
+}
+
+fn default_jabber_server() -> String {
+    "jabber-server.goonfleet.com".to_owned()
 }
 
 fn default_overlay_opacity() -> f32 {
@@ -400,6 +408,7 @@ impl Default for Settings {
             map_overlay_smart: false,
             jabber_enabled: false,
             jabber_jid: String::new(),
+            jabber_server: default_jabber_server(),
         }
     }
 }

@@ -725,8 +725,9 @@ impl SpaiApp {
         let resolve: crate::jabber::Resolver = std::sync::Arc::new(move |t: &str| {
             systems.lookup(t).or_else(|| systems.lookup_prefix(t)).map(|i| i.id)
         });
+        let server = self.settings.jabber_server.clone();
         self.jabber_tx =
-            Some(crate::jabber::spawn(jid, pw, resolve, self.jabber.clone(), ctx.clone()));
+            Some(crate::jabber::spawn(jid, pw, server, resolve, self.jabber.clone(), ctx.clone()));
     }
 
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
@@ -771,6 +772,14 @@ impl SpaiApp {
                         .hint_text("MyCharacter@goonfleet.com")
                         .desired_width(260.0),
                 );
+                ui.end_row();
+                ui.label("Server");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.settings.jabber_server)
+                        .hint_text("jabber-server.goonfleet.com")
+                        .desired_width(260.0),
+                )
+                .on_hover_text("XMPP server host (the JID domain usually has no SRV record)");
                 ui.end_row();
                 ui.label("Password");
                 ui.add(
