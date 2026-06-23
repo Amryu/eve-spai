@@ -41,7 +41,11 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("EVE Spai")
             .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([720.0, 460.0]),
+            .with_min_inner_size([720.0, 460.0])
+            // Enables a transparent backbuffer for ALL viewports (eframe gates this on
+            // the root window). The main window stays opaque via its panels; the map
+            // overlay + the idle alert window use the transparency.
+            .with_transparent(true),
         ..Default::default()
     };
 

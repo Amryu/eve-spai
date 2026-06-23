@@ -210,10 +210,6 @@ pub struct SpaiApp {
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
     eve_focus_checked: Option<std::time::Instant>,
-    /// Last externally-focused (non-EVE-Spai) X11 window id — so the alert window can
-    /// hand focus back when it pops up (winit ignores active(false) on X11).
-    ext_window: Option<String>,
-    ext_window_checked: Option<std::time::Instant>,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -404,8 +400,6 @@ impl SpaiApp {
             jabber_pw_input: String::new(),
             eve_focused: true,
             eve_focus_checked: None,
-            ext_window: None,
-            ext_window_checked: None,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -1724,38 +1718,28 @@ impl SpaiApp {
 
     /// Track the last externally-focused window (throttled), so the alert window can
     /// return focus to it. Only meaningful when the custom window is enabled.
-    fn track_external_window(&mut self) {
-        // Only needed when a rule can pop the custom window.
-        let wants_window = self.settings.alert_enabled
-            && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window && !r.suppress);
-        if !wants_window {
-            return;
-        }
-        let due = self.ext_window_checked.map(|t| t.elapsed().as_millis() > 400).unwrap_or(true);
-        if !due {
-            return;
-        }
-        self.ext_window_checked = Some(std::time::Instant::now());
-        if let Some((id, name)) = active_window() {
-            // Remember it only if it isn't one of our own windows.
-            if !name.to_lowercase().contains("eve spai") {
-                self.ext_window = Some(id);
-            }
-        }
-    }
-
     /// Custom notification window: a floating, always-on-top feed of intel that
     /// passed the alert filters. Auto-hides `window_timeout` s after the last alert;
     /// hovering pauses the countdown (and bumps it to ≥3 s).
     #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn alert_window(&mut self, ctx: &egui::Context) {
-        if self.alert_window_secs <= 0.0 {
+        // The window stays alive whenever the feature is in use; we never destroy it
+        // (which is what made it steal focus on each alert). When idle it's fully
+        // transparent and click-through; an alert just makes it opaque + interactive.
+        let feature = self.settings.alert_enabled
+            && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window);
+        if !feature {
+            self.alert_window_secs = 0.0;
             self.alert_window_open = false;
-            self.alert_window_pinned = false; // auto-clear the pin when it closes
+            self.alert_window_pinned = false;
             return;
         }
-        let just_opened = !self.alert_window_open;
-        self.alert_window_open = true;
+        let active = self.alert_window_secs > 0.0;
+        let just_opened = active && !self.alert_window_open;
+        self.alert_window_open = active;
+        if !active {
+            self.alert_window_pinned = false;
+        }
         // For "smart" on-top, refresh whether EVE is focused (throttled to ~1 s).
         if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
             let due = self
@@ -1768,9 +1752,9 @@ impl SpaiApp {
             }
         }
         let pos = self.settings.alerts.window_pos.unwrap_or((80.0, 80.0));
-        // Card data for the feed (same panels as the intel page).
+        // Card data for the feed (built only when there's something to show).
         let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
-            self.alert_feed.iter().rev().take(20).cloned().collect();
+            if active { self.alert_feed.iter().rev().take(20).cloned().collect() } else { Vec::new() };
         let ship_ids: std::collections::HashSet<i64> =
             feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
@@ -1787,8 +1771,13 @@ impl SpaiApp {
                 })
                 .collect()
         };
-        let status_snapshot = self.system_status.lock().unwrap().clone();
-        let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
+        let status_snapshot = if active {
+            self.system_status.lock().unwrap().clone()
+        } else {
+            Default::default()
+        };
+        let last_ship =
+            if active { build_last_ship(&self.intel_state.lock().unwrap().reports) } else { Default::default() };
         let systems = self.systems.clone();
         let player_sys = self.player.lock().unwrap().system_id;
         let now_ts = chrono::Utc::now().timestamp();
@@ -1810,26 +1799,29 @@ impl SpaiApp {
                 } else {
                     egui::WindowLevel::Normal
                 })
-                .with_active(false) // never steal focus when it appears
+                .with_active(false)
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
+                .with_transparent(true)
+                .with_mouse_passthrough(!active) // click-through while idle
                 .with_position([pos.0, pos.1])
                 .with_inner_size(self.settings.alerts.window_size.map_or([360.0, 240.0].into(), |(w, h)| egui::vec2(w, h))),
             |ctx, _| {
-                // Re-apply the saved geometry whenever the window (re)appears — the
-                // builder values aren't reliably honoured on a reopened viewport.
+                if !active {
+                    // Invisible + click-through: draw nothing on a transparent surface.
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |_ui| {});
+                    return;
+                }
+                // Re-apply the saved geometry when an alert first appears.
                 if just_opened {
                     if let Some((w, h)) = self.settings.alerts.window_size {
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
                     }
                     if let Some((x, y)) = self.settings.alerts.window_pos {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
-                    }
-                    // winit ignores active(false) on X11/KWin, so the window steals
-                    // focus on map — hand it straight back to whatever was active.
-                    if let Some(id) = self.ext_window.clone() {
-                        refocus_window(id);
                     }
                 }
                 egui::CentralPanel::default()
@@ -1963,6 +1955,9 @@ impl SpaiApp {
             self.alert_window_secs = 0.0;
             return;
         }
+        if !active {
+            return; // idle: nothing to count down; window stays transparent
+        }
         // Countdown (paused while hovered; floor of 3 s when hovered). An infinite
         // value never hides; we only repaint slowly to refresh the ages.
         let dt = ctx.input(|i| i.stable_dt).min(0.5);
@@ -1973,7 +1968,7 @@ impl SpaiApp {
             // Pinned: hold open without counting down.
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         } else if self.alert_window_secs.is_finite() {
-            self.alert_window_secs -= dt;
+            self.alert_window_secs = (self.alert_window_secs - dt).max(0.0);
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
@@ -2567,15 +2562,29 @@ impl SpaiApp {
             });
         }
 
-        // Systems + overlays.
-        let intel_ids: std::collections::HashSet<i64> = {
+        // Systems + overlays. Per system, the highest active severity + latest time.
+        let now_ts = chrono::Utc::now().timestamp();
+        let sev_rules = self.settings.severity.clone();
+        let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
             let st = self.intel_state.lock().unwrap();
-            st.reports
-                .iter()
-                .filter(|r| !r.clear && !st.is_stale(r))
-                .filter_map(|r| r.primary_system().map(|s| s.id))
-                .collect()
+            let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
+                std::collections::HashMap::new();
+            for r in &st.reports {
+                if r.clear || st.is_stale(r) {
+                    continue;
+                }
+                if let Some(s) = r.primary_system() {
+                    let sev = severity_of(r, &sev_rules);
+                    let e = m.entry(s.id).or_insert((sev, r.received));
+                    e.0 = e.0.max(sev);
+                    e.1 = e.1.max(r.received);
+                }
+            }
+            m
         };
+        // Blink phase for fresh intel (≈3 Hz).
+        let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
+        let mut any_fresh = false;
         // System labels appear once zoomed in past region level (so they're spaced
         // enough to read); a collision check then drops any that would still overlap.
         let show_sys_labels = self.map_zoom >= 17.0;
@@ -2583,8 +2592,18 @@ impl SpaiApp {
         for s in &self.map_draw {
             let p = pos[&s.id];
             painter.circle_filled(p, dot, security_color(s.security));
-            if intel_ids.contains(&s.id) {
-                painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(2.0, crate::theme::standing::HOSTILE));
+            if let Some((sev, received)) = intel_map.get(&s.id) {
+                let base = severity_color(*sev);
+                let fresh = now_ts - received < 15;
+                let (fill_a, ring_w) = if fresh {
+                    any_fresh = true;
+                    (0.45 + 0.45 * blink, 3.0)
+                } else {
+                    (0.40, 2.5)
+                };
+                // A solid glow behind the dot + an opaque severity-coloured ring.
+                painter.circle_filled(p, dot + 5.0, base.gamma_multiply(fill_a));
+                painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(ring_w, base));
             }
             if player_sys == Some(s.id) {
                 // A larger blue ring than the red intel ring so the two coexist.
@@ -2615,6 +2634,10 @@ impl SpaiApp {
                     );
                 }
             }
+        }
+        // Keep animating while any fresh intel is blinking.
+        if any_fresh {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
         }
 
         // Low zoom: label regions (centroid) instead of every system.
@@ -5156,7 +5179,6 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
-        self.track_external_window();
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -5211,10 +5233,13 @@ impl eframe::App for SpaiApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // In map overlay mode the surface is cleared fully transparent so the panel's
-        // opacity reveals whatever is behind the window (the game). Opaque panels
-        // cover the clear everywhere else, so this is safe for the main window too.
-        if self.map_overlay_mode {
+        // The surface is cleared fully transparent when a translucent/transparent
+        // viewport needs it (map overlay mode, or the always-alive alert window which
+        // is invisible+click-through when idle). Opaque panels cover the clear on the
+        // main window, so this is safe there.
+        let alert_window = self.settings.alert_enabled
+            && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window);
+        if self.map_overlay_mode || alert_window {
             [0.0, 0.0, 0.0, 0.0]
         } else {
             egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
@@ -5236,15 +5261,6 @@ fn active_window() -> Option<(String, String)> {
     }
     let name = Command::new("xdotool").args(["getwindowname", &id]).output().ok()?;
     Some((id, String::from_utf8_lossy(&name.stdout).trim().to_owned()))
-}
-
-/// Re-activate an X11 window by id (after a short delay so the alert window has
-/// finished mapping first). Works around winit ignoring `active(false)` on X11.
-fn refocus_window(id: String) {
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let _ = std::process::Command::new("xdotool").args(["windowactivate", &id]).status();
-    });
 }
 
 /// Best-effort check whether the EVE client is the focused window (X11 via
