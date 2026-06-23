@@ -491,6 +491,78 @@ fn lowercase_tail_names(
 }
 
 /// Analyse one message into a structured report (movement is added later).
+/// Parse EVE in-game "<url=showinfo:TYPE//ID>Name</url>" links (present when intel
+/// is pasted straight from the client) — chat-log intel has the tags stripped, so
+/// this only matters for pastes. Returns the cleaned text (each tag replaced by its
+/// inner name) plus authoritatively classified pilots / ships / systems.
+struct UrlTags {
+    /// Readable text: each tag replaced by its inner name (for display).
+    display: String,
+    /// Parse text: tagged spans blanked out (their entities are classified here, so
+    /// the heuristic must not re-read them and merge adjacent names into one run).
+    masked: String,
+    pilots: Vec<String>,
+    ships: Vec<(i64, String)>,
+    systems: Vec<String>,
+}
+
+fn parse_url_tags(
+    text: &str,
+    systems: &Systems,
+    ship_index: &std::collections::HashMap<String, (i64, String)>,
+) -> UrlTags {
+    let mut t = UrlTags {
+        display: String::with_capacity(text.len()),
+        masked: String::with_capacity(text.len()),
+        pilots: Vec::new(),
+        ships: Vec::new(),
+        systems: Vec::new(),
+    };
+    let mut rest = text;
+    while let Some(start) = rest.find("<url=") {
+        t.display.push_str(&rest[..start]);
+        t.masked.push_str(&rest[..start]);
+        let after = &rest[start + 5..];
+        let bail = |t: &mut UrlTags| {
+            t.display.push_str(&rest[start..]);
+            t.masked.push_str(&rest[start..]);
+        };
+        let Some(gt) = after.find('>') else {
+            bail(&mut t);
+            rest = "";
+            break;
+        };
+        let attr = &after[..gt];
+        let body = &after[gt + 1..];
+        let Some(end) = body.find("</url>") else {
+            bail(&mut t);
+            rest = "";
+            break;
+        };
+        let inner = body[..end].trim();
+        t.display.push_str(inner);
+        t.display.push(' ');
+        t.masked.push(' '); // blank the linked span for the heuristic
+        if let Some(rest_attr) = attr.strip_prefix("showinfo:") {
+            let type_id: i64 = rest_attr.split("//").next().unwrap_or("").parse().unwrap_or(0);
+            if !inner.is_empty() {
+                if type_id == 5 || resolve(systems, inner).is_some() {
+                    t.systems.push(inner.to_owned());
+                } else if let Some((id, name)) = ship_index.get(&inner.to_lowercase()) {
+                    t.ships.push((*id, name.clone()));
+                } else {
+                    // A linked entity that isn't a system or hull is a character.
+                    t.pilots.push(inner.to_owned());
+                }
+            }
+        }
+        rest = &body[end + 6..];
+    }
+    t.display.push_str(rest);
+    t.masked.push_str(rest);
+    t
+}
+
 pub fn analyze(
     text: &str,
     systems: &Systems,
@@ -500,6 +572,11 @@ pub fn analyze(
     channel: &str,
     reporter: &str,
 ) -> IntelReport {
+    // Resolve in-game showinfo links first; parse the masked text, display the names.
+    let tags = parse_url_tags(text, systems, ship_index);
+    let display_text = tags.display.trim().to_owned();
+    let (si_pilots, si_ships, si_systems) = (tags.pilots, tags.ships, tags.systems);
+    let text = tags.masked.as_str();
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
@@ -567,6 +644,12 @@ pub fn analyze(
             pilots.push((*t).to_owned());
         }
     }
+    // Characters from in-game showinfo links are authoritative.
+    for p in &si_pilots {
+        if !pilots.iter().any(|x| x.eq_ignore_ascii_case(p)) {
+            pilots.push(p.clone());
+        }
+    }
     // Drop a candidate that is a contiguous sub-phrase of a longer candidate (so a
     // short known name doesn't false-parse inside a longer reported name), and drop
     // a single-word candidate that is actually a ship (prefer the ship).
@@ -579,13 +662,15 @@ pub fn analyze(
             let is_subphrase = lc.iter().enumerate().any(|(j, other)| {
                 j != *i && other.len() > me.len() && format!(" {other} ").contains(&format!(" {me} "))
             });
-            let single_ship = !p.contains(' ') && ship_index.contains_key(me);
+            // A candidate that is exactly a hull name is the ship, never a pilot —
+            // single- or multi-word (e.g. "Harbinger Navy Issue").
+            let is_ship_name = ship_index.contains_key(me);
             // A status shorthand ("clr", "nv", …) is never a pilot, even if some
             // character happens to share that name.
             let single_stop = !p.contains(' ')
                 && !quoted.contains(me)
                 && (PILOT_STOP.contains(&me.as_str()) || CLEAR_WORDS.contains(&me.as_str()));
-            !is_subphrase && !single_ship && !single_stop
+            !is_subphrase && !is_ship_name && !single_stop
         })
         .map(|(_, p)| p.clone())
         .collect();
@@ -644,6 +729,10 @@ pub fn analyze(
     for (_, _, id, name) in mw_ships {
         add_ship(id, &name, &mut ships);
     }
+    // Ships from in-game showinfo links.
+    for (id, name) in &si_ships {
+        add_ship(*id, name, &mut ships);
+    }
 
     let mut detected: Vec<DetectedSystem> = Vec::new();
     // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
@@ -690,6 +779,19 @@ pub fn analyze(
         }
     }
 
+    // Systems from in-game showinfo links.
+    for name in &si_systems {
+        if let Some(info) = resolve(systems, name) {
+            if !detected.iter().any(|d| d.id == info.id) {
+                detected.push(DetectedSystem {
+                    id: info.id,
+                    name: info.name.clone(),
+                    security: info.security,
+                });
+            }
+        }
+    }
+
     // Gate: "... <System> gate" — hostiles are on the gate *to* <System>. Record it
     // (resolved name, or the raw token if abbreviated/unknown) and don't also list
     // it as a plain system.
@@ -721,7 +823,7 @@ pub fn analyze(
         received,
         channel: channel.to_owned(),
         reporter: reporter.to_owned(),
-        text: text.to_owned(),
+        text: display_text,
         pilots,
         systems: detected,
         ships,
@@ -1057,6 +1159,46 @@ mod tests {
         let r = analyze("78-0R6 Exequror Navy Issue", &s, &ships, &noknown(), 1, "ch", "x");
         assert!(r.ships.iter().any(|sh| sh.name == "Exequror Navy Issue"));
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Exequror Navy Issue")));
+    }
+
+    #[test]
+    fn showinfo_links_classify_entities() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("sleipnir".to_string(), (22444i64, "Sleipnir".to_string()))].into_iter().collect();
+        let r = analyze(
+            "x > <url=showinfo:5//30001242>Rancer</url> \
+             <url=showinfo:1375//625637028>Catastrophic</url> \
+             <url=showinfo:22444//1054499194005>Sleipnir</url>",
+            &s,
+            &ships,
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(r.pilots.iter().any(|p| p == "Catastrophic"));
+        assert!(r.ships.iter().any(|sh| sh.name == "Sleipnir"));
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"));
+        assert!(!r.pilots.iter().any(|p| p == "Sleipnir"));
+    }
+
+    #[test]
+    fn multiword_ship_via_known_cache_is_not_a_pilot() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [(
+            "harbinger navy issue".to_string(),
+            (24692i64, "Harbinger Navy Issue".to_string()),
+        )]
+        .into_iter()
+        .collect();
+        // Even if the name is (wrongly) in the known-pilot cache, an exact hull name
+        // is the ship, not a pilot.
+        let known: std::collections::HashMap<String, i64> =
+            [("harbinger navy issue".to_string(), 1i64)].into_iter().collect();
+        let r = analyze("J5A-IX Harbinger Navy Issue", &s, &ships, &known, 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Harbinger Navy Issue"));
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Harbinger Navy Issue")));
     }
 
     #[test]

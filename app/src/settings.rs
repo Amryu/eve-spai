@@ -99,6 +99,9 @@ pub struct AlertRule {
     pub min_count: Option<u32>,
     /// Required condition tags (any of): bubble/camp/cyno/kill/ess/wormhole/spike/threat.
     pub require: Vec<String>,
+    /// Only apply for these characters (by name); empty = any enabled character.
+    #[serde(default)]
+    pub characters: Vec<String>,
     // --- actions ---
     /// Suppress the alert entirely (takes precedence over the action toggles).
     pub suppress: bool,
@@ -120,6 +123,7 @@ impl Default for AlertRule {
             max_jumps: None,
             min_count: None,
             require: Vec::new(),
+            characters: Vec::new(),
             suppress: false,
             system_notification: true,
             custom_window: true,
