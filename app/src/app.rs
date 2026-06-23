@@ -78,9 +78,16 @@ impl Default for MapOverlays {
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 struct PersistedView {
     overlays: MapOverlays,
-    map_spaced: bool,
+    #[serde(default)]
+    map_layout: crate::map::MapLayout,
+    #[serde(default = "default_threat_jumps")]
+    map_threat_jumps: u32,
     intel_max_jumps: u32,
     intel_type: IntelTypeFilter,
+}
+
+fn default_threat_jumps() -> u32 {
+    5
 }
 
 /// A click on an intel card panel.
@@ -234,8 +241,12 @@ pub struct SpaiApp {
     map_overlay_locked: bool,
     /// A window-move drag is in progress (so the map doesn't also pan).
     map_overlay_drag: bool,
-    /// Use EVE's flattened 2D layout (position2D, in-game look) vs raw geographic x/z.
-    map_spaced: bool,
+    /// How systems are laid out (geographic / spaced / radial / tree).
+    map_layout: crate::map::MapLayout,
+    /// Jumps shown in the radial/tree threat views.
+    map_threat_jumps: u32,
+    /// Centre system for the threat views (None = active character's system).
+    map_threat_center: Option<i64>,
     /// Coordinates actually drawn (geographic or the 2D layout).
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
@@ -305,7 +316,8 @@ impl SpaiApp {
         // Restore persisted map/intel options (or defaults).
         let pv: PersistedView = serde_json::from_str(&settings.view_options).unwrap_or(PersistedView {
             overlays: MapOverlays::default(),
-            map_spaced: true,
+            map_layout: crate::map::MapLayout::Spaced,
+            map_threat_jumps: 5,
             intel_max_jumps: 0,
             intel_type: IntelTypeFilter::All,
         });
@@ -410,7 +422,9 @@ impl SpaiApp {
             map_overlay_mode: false,
             map_overlay_locked: false,
             map_overlay_drag: false,
-            map_spaced: pv.map_spaced,
+            map_layout: pv.map_layout,
+            map_threat_jumps: pv.map_threat_jumps,
+            map_threat_center: None,
             map_draw: Vec::new(),
             map_draw_spaced: false,
             map_draw_key: None,
@@ -1937,7 +1951,8 @@ impl SpaiApp {
     fn persist_view_options(&mut self) {
         let pv = PersistedView {
             overlays: self.map_overlays,
-            map_spaced: self.map_spaced,
+            map_layout: self.map_layout,
+            map_threat_jumps: self.map_threat_jumps,
             intel_max_jumps: self.intel_max_jumps,
             intel_type: self.intel_type,
         };
@@ -2064,6 +2079,19 @@ impl SpaiApp {
             }
         }
 
+        // Threat views (radial / tree) are laid out from a centre system by jumps;
+        // they don't use the geographic projection at all.
+        if self.map_layout.is_threat() {
+            let rect = ui.available_rect_before_wrap();
+            self.map_last_rect = Some(rect);
+            if self.map_overlay_mode {
+                ui.set_opacity(self.settings.map_overlay_opacity.clamp(0.2, 1.0));
+            }
+            self.draw_threat_view(ui, rect, player_sys);
+            self.map_chrome(ui, rect);
+            return;
+        }
+
         // (Re)load systems for the current view, keeping only gate-connected systems
         // (drops wormhole / abyssal islands that have no K-space connections).
         if self.map_loaded != Some(self.map_view) {
@@ -2088,9 +2116,10 @@ impl SpaiApp {
 
         // Drawn coordinates: EVE's flattened 2D layout (position2D) when "Spaced" is
         // on, else raw geographic x/z. The 2D coords are baked, so this is instant.
-        let want = (self.map_view, self.map_spaced);
+        let spaced = self.map_layout == crate::map::MapLayout::Spaced;
+        let want = (self.map_view, spaced);
         if self.map_draw_key != Some(want) {
-            self.map_draw = if self.map_spaced {
+            self.map_draw = if spaced {
                 self.map_systems
                     .iter()
                     .map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() })
@@ -2098,7 +2127,7 @@ impl SpaiApp {
             } else {
                 self.map_systems.clone()
             };
-            self.map_draw_spaced = self.map_spaced;
+            self.map_draw_spaced = spaced;
             self.map_draw_key = Some(want);
         }
         let schematic = self.map_draw_spaced;
@@ -2596,6 +2625,166 @@ impl SpaiApp {
             }
         }
 
+        self.map_chrome(ui, rect);
+    }
+
+    /// Radial / tree "threat" view: lay systems out by jumps from a centre system
+    /// (the active character, or one chosen by right-click), out to N jumps.
+    fn draw_threat_view(&mut self, ui: &mut egui::Ui, rect: egui::Rect, player_sys: Option<i64>) {
+        use crate::map::MapLayout;
+        let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+        let painter = ui.painter_at(rect);
+        let visuals = ui.visuals().clone();
+
+        if resp.dragged() {
+            self.map_pan += resp.drag_delta();
+        }
+        if resp.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll.abs() > 0.0 {
+                self.map_zoom = (self.map_zoom * (scroll * 0.0015).exp()).clamp(0.3, 6.0);
+            }
+        }
+
+        let Some(graph) = self.systems.clone() else {
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "SDE not ready.", egui::FontId::proportional(14.0), visuals.weak_text_color());
+            return;
+        };
+        let Some(center) = self.map_threat_center.or(player_sys) else {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "No centre system — set an active character, or right-click a system on the map.",
+                egui::FontId::proportional(13.0),
+                visuals.weak_text_color(),
+            );
+            return;
+        };
+        let depth = self.map_threat_jumps.max(1);
+
+        // BFS tree from the centre.
+        let (dist, children, order) = bfs_tree(&graph, center, depth);
+        let leaves = order.iter().filter(|id| children.get(id).map_or(true, |c| c.is_empty())).count();
+        let mut frac: std::collections::HashMap<i64, f32> = std::collections::HashMap::new();
+        let mut next = 0u32;
+        assign_fracs(center, &children, leaves.max(1) as f32, &mut next, &mut frac);
+
+        // Lay out.
+        let zoom = self.map_zoom;
+        let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
+        match self.map_layout {
+            MapLayout::Radial => {
+                let c = rect.center() + self.map_pan;
+                let ring = (rect.size().min_elem() * 0.44 / depth as f32) * zoom;
+                for &id in &order {
+                    let d = dist[&id];
+                    if d == 0 {
+                        pos.insert(id, c);
+                    } else {
+                        let ang =
+                            frac[&id] * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+                        pos.insert(id, c + egui::Vec2::angled(ang) * (d as f32 * ring));
+                    }
+                }
+            }
+            _ => {
+                // Tree: root at top, levels descend, leaves spread across the width.
+                let level = (rect.height() * 0.82 / (depth as f32 + 0.5)) * zoom;
+                let width = rect.width() * 0.92 * zoom;
+                let cx = rect.center().x + self.map_pan.x;
+                let top = rect.top() + 34.0 + self.map_pan.y;
+                for &id in &order {
+                    let x = cx + (frac[&id] - 0.5) * width;
+                    let y = top + dist[&id] as f32 * level;
+                    pos.insert(id, egui::pos2(x, y));
+                }
+            }
+        }
+
+        // Systems with live (non-clear, non-stale) intel get a red glow.
+        let intel_sys: std::collections::HashSet<i64> = {
+            let st = self.intel_state.lock().unwrap();
+            let mut set = std::collections::HashSet::new();
+            for r in &st.reports {
+                if !r.clear && !st.is_stale(r) {
+                    set.extend(r.systems.iter().map(|s| s.id));
+                }
+            }
+            set
+        };
+
+        // Edges (each undirected pair once).
+        let edge = visuals.weak_text_color().gamma_multiply(0.5);
+        for &a in &order {
+            for &b in graph.neighbors(a) {
+                if a < b {
+                    if let (Some(&pa), Some(&pb)) = (pos.get(&a), pos.get(&b)) {
+                        painter.line_segment([pa, pb], egui::Stroke::new(1.0, edge));
+                    }
+                }
+            }
+        }
+
+        // Nodes + labels.
+        let node_r = (5.5 * zoom.clamp(0.6, 1.6)).max(3.5);
+        let font = egui::FontId::proportional((12.0 * zoom).clamp(9.0, 15.0));
+        for &id in &order {
+            let p = pos[&id];
+            let info = graph.info_of(id);
+            let sec = info.map(|i| i.security).unwrap_or(0.0);
+            let is_center = id == center;
+            let r = if is_center { node_r + 2.5 } else { node_r };
+            if intel_sys.contains(&id) {
+                painter.circle_filled(p, r + 5.0, crate::theme::standing::HOSTILE.gamma_multiply(0.45));
+            }
+            painter.circle_filled(p, r, security_color(sec));
+            let outline = if is_center {
+                egui::Color32::WHITE
+            } else if Some(id) == player_sys {
+                crate::theme::standing::ALLIANCE
+            } else {
+                visuals.window_stroke.color
+            };
+            painter.circle_stroke(p, r, egui::Stroke::new(if is_center { 2.0 } else { 1.0 }, outline));
+            if let Some(info) = info {
+                painter.text(
+                    p - egui::vec2(0.0, r + 2.0),
+                    egui::Align2::CENTER_BOTTOM,
+                    &info.name,
+                    font.clone(),
+                    visuals.text_color(),
+                );
+            }
+        }
+
+        // Interaction: left-click opens a system; right-click re-centres on it.
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        if resp.clicked() {
+            if let Some(id) = pointer.and_then(|p| nearest_system(p, &pos, 12.0)) {
+                self.open_system(id);
+            }
+        }
+        if resp.secondary_clicked() {
+            if let Some(id) = pointer.and_then(|p| nearest_system(p, &pos, 12.0)) {
+                self.map_threat_center = Some(id);
+                self.map_pan = egui::Vec2::ZERO;
+                self.map_zoom = 1.0;
+            }
+        }
+
+        // Title chip: centre name + jumps.
+        let cname = graph.info_of(center).map(|i| i.name.clone()).unwrap_or_default();
+        painter.text(
+            rect.left_bottom() + egui::vec2(10.0, -10.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("◎ {cname}  ·  ≤{depth} jumps  ·  {} systems", order.len()),
+            egui::FontId::proportional(12.0),
+            visuals.weak_text_color(),
+        );
+    }
+
+    /// The map control overlays (or the minimal overlay-mode bar / hidden state).
+    fn map_chrome(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         if self.map_overlay_mode {
             self.map_overlay_controls(ui, rect);
         } else if self.map_controls_hidden {
@@ -2616,7 +2805,10 @@ impl SpaiApp {
                 });
         } else {
             self.map_controls_overlay(ui, rect);
-            self.map_overlay_menu(ui, rect);
+            // The overlays menu is geographic-only (sov areas etc.).
+            if !self.map_layout.is_threat() {
+                self.map_overlay_menu(ui, rect);
+            }
             self.map_search_overlay(ui, rect);
         }
     }
@@ -2878,13 +3070,24 @@ impl SpaiApp {
                         if ui.add(egui::Button::new("Follow").selected(self.map_follow)).clicked() {
                             self.map_follow = !self.map_follow;
                         }
-                        // EVE's flattened 2D layout (position2D) vs raw geographic x/z.
-                        if ui
-                            .add(egui::Button::new("Spaced").selected(self.map_spaced))
-                            .on_hover_text("EVE's in-game flattened 2D layout")
-                            .clicked()
-                        {
-                            self.map_spaced = !self.map_spaced;
+                        // Layout: geographic / 2D / radial / tree.
+                        use crate::map::MapLayout;
+                        egui::ComboBox::from_id_salt("map_layout")
+                            .selected_text(match self.map_layout {
+                                MapLayout::Geographic => "3D",
+                                MapLayout::Spaced => "2D",
+                                MapLayout::Radial => "Radial",
+                                MapLayout::Tree => "Tree",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
+                                ui.selectable_value(&mut self.map_layout, MapLayout::Spaced, "2D (in-game layout)");
+                                ui.selectable_value(&mut self.map_layout, MapLayout::Radial, "Radial (jumps)");
+                                ui.selectable_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
+                            });
+                        if self.map_layout.is_threat() {
+                            ui.label("≤ jumps");
+                            ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15));
                         }
                         if ui.button("Reset").clicked() {
                             self.map_pan = egui::Vec2::ZERO;
@@ -5099,6 +5302,70 @@ fn nearest_system(
         }
     }
     best.map(|(id, _)| id)
+}
+
+/// BFS tree from `center` out to `depth` jumps. Returns (distance per system,
+/// children in the discovery tree, systems in BFS order).
+#[allow(clippy::type_complexity)]
+fn bfs_tree(
+    graph: &crate::geo::Systems,
+    center: i64,
+    depth: u32,
+) -> (
+    std::collections::HashMap<i64, u32>,
+    std::collections::HashMap<i64, Vec<i64>>,
+    Vec<i64>,
+) {
+    use std::collections::{HashMap, VecDeque};
+    let mut dist: HashMap<i64, u32> = HashMap::from([(center, 0)]);
+    let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut order = vec![center];
+    let mut queue = VecDeque::from([center]);
+    while let Some(s) = queue.pop_front() {
+        let d = dist[&s];
+        if d >= depth {
+            continue;
+        }
+        let mut ns: Vec<i64> = graph.neighbors(s).to_vec();
+        ns.sort_unstable(); // deterministic layout
+        for n in ns {
+            if let std::collections::hash_map::Entry::Vacant(e) = dist.entry(n) {
+                e.insert(d + 1);
+                children.entry(s).or_default().push(n);
+                order.push(n);
+                queue.push_back(n);
+            }
+        }
+    }
+    (dist, children, order)
+}
+
+/// Assign each node a fraction in [0,1] for its angular/horizontal position:
+/// leaves are spread evenly, internal nodes sit at the mean of their children.
+fn assign_fracs(
+    node: i64,
+    children: &std::collections::HashMap<i64, Vec<i64>>,
+    total_leaves: f32,
+    next_leaf: &mut u32,
+    out: &mut std::collections::HashMap<i64, f32>,
+) -> f32 {
+    match children.get(&node) {
+        Some(kids) if !kids.is_empty() => {
+            let mut sum = 0.0;
+            for &k in kids {
+                sum += assign_fracs(k, children, total_leaves, next_leaf, out);
+            }
+            let f = sum / kids.len() as f32;
+            out.insert(node, f);
+            f
+        }
+        _ => {
+            let f = (*next_leaf as f32 + 0.5) / total_leaves;
+            *next_leaf += 1;
+            out.insert(node, f);
+            f
+        }
+    }
 }
 
 /// Jumps from the player's system to a target system, if both are known.

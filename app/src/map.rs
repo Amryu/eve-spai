@@ -13,6 +13,33 @@ pub enum MapView {
     Region(i64),
 }
 
+/// How systems are laid out. The first two are geographic (the existing 3D and
+/// flattened-2D projections); the last two are jump-distance "threat" views
+/// centred on a system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum MapLayout {
+    /// Raw geographic x/z ("3D").
+    Geographic,
+    /// EVE's flattened 2D layout (position2D).
+    Spaced,
+    /// Concentric rings by jumps from the centre system.
+    Radial,
+    /// A jump-distance tree rooted at the centre system.
+    Tree,
+}
+
+impl Default for MapLayout {
+    fn default() -> Self {
+        MapLayout::Spaced
+    }
+}
+
+impl MapLayout {
+    pub fn is_threat(self) -> bool {
+        matches!(self, MapLayout::Radial | MapLayout::Tree)
+    }
+}
+
 pub struct Bounds {
     min_x: f64,
     max_x: f64,
