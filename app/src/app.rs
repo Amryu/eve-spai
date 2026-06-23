@@ -1770,29 +1770,35 @@ impl SpaiApp {
                 e.0 += pos[&s.id].to_vec2();
                 e.1 += 1;
             }
-            for (rid, (sum, n)) in acc {
-                let c = (sum / n as f32).to_pos2();
+            // Deterministic order (HashMap iteration flickers which label wins) and
+            // skip any label that would overlap an already-placed one (no z-fighting).
+            let mut labels: Vec<(i64, egui::Pos2)> =
+                acc.into_iter().map(|(rid, (sum, n))| (rid, (sum / n as f32).to_pos2())).collect();
+            labels.sort_by_key(|(rid, _)| *rid);
+            let font = egui::FontId::proportional(16.0);
+            let mut placed: Vec<egui::Rect> = Vec::new();
+            for (rid, c) in labels {
                 if !rect.contains(c) {
                     continue;
                 }
-                if let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) {
-                    let font = egui::FontId::proportional(16.0);
-                    // Shadow for legibility over the starfield, then a bright label.
-                    painter.text(
-                        c + egui::vec2(1.0, 1.0),
-                        egui::Align2::CENTER_CENTER,
-                        name,
-                        font.clone(),
-                        egui::Color32::from_black_alpha(180),
-                    );
-                    painter.text(
-                        c,
-                        egui::Align2::CENTER_CENTER,
-                        name,
-                        font,
-                        egui::Color32::from_gray(220),
-                    );
+                let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) else {
+                    continue;
+                };
+                let half = egui::vec2(name.len() as f32 * 4.5, 9.0);
+                let area = egui::Rect::from_center_size(c, half * 2.0);
+                if placed.iter().any(|r| r.intersects(area)) {
+                    continue;
                 }
+                placed.push(area);
+                // Shadow for legibility over the starfield, then a bright label.
+                painter.text(
+                    c + egui::vec2(1.0, 1.0),
+                    egui::Align2::CENTER_CENTER,
+                    name,
+                    font.clone(),
+                    egui::Color32::from_black_alpha(180),
+                );
+                painter.text(c, egui::Align2::CENTER_CENTER, name, font.clone(), egui::Color32::from_gray(220));
             }
         }
 
