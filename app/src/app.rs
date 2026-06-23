@@ -129,8 +129,6 @@ pub struct SpaiApp {
     settings: Settings,
     view: View,
     intel_channels_open: bool,
-    /// Listener names whose logs the watcher skips (live per-character intel toggle).
-    watcher_skip: crate::watcher::SkipListeners,
     jump_bridges_open: bool,
     jb_paste: String,
     sov_upgrades_open: bool,
@@ -299,7 +297,6 @@ impl SpaiApp {
             settings,
             view: View::Dashboard,
             intel_channels_open: false,
-            watcher_skip: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             jump_bridges_open: false,
             jb_paste: String::new(),
             sov_upgrades_open: false,
@@ -403,6 +400,19 @@ impl SpaiApp {
             within_jumps: self.settings.alert_within_jumps,
         };
         if !cfg.enabled {
+            return;
+        }
+        // Only alert for characters the user enabled (a disabled spy/alt shouldn't
+        // spam alerts based on where it's parked).
+        if self
+            .settings
+            .intel_disabled_chars
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(&self.active_character))
+        {
+            if let Some(r) = self.intel_state.lock().unwrap().reports.last() {
+                self.last_alert_time = self.last_alert_time.max(r.received);
+            }
             return;
         }
         // Optionally suppress intel alerts while docked.
@@ -544,7 +554,6 @@ impl SpaiApp {
                 ships,
                 self.pilots.clone(),
                 self.intel_state.clone(),
-                self.watcher_skip.clone(),
                 ctx.clone(),
             );
         }
@@ -930,8 +939,8 @@ impl SpaiApp {
                         remove = Some(c.id);
                     }
                     if ui
-                        .checkbox(&mut intel_on, "Check intel")
-                        .on_hover_text("Use this character's chat logs for intel")
+                        .checkbox(&mut intel_on, "Alert")
+                        .on_hover_text("Raise intel alerts while this character is active")
                         .changed()
                     {
                         toggle = Some((c.name.clone(), intel_on));
@@ -2416,7 +2425,7 @@ impl SpaiApp {
         let (sys_reports, stale_flags, sys_last_ship): (
             Vec<crate::intel::IntelReport>,
             Vec<bool>,
-            std::collections::HashMap<String, (String, i64)>,
+            std::collections::HashMap<String, (i64, String, i64)>,
         ) = {
             let st = self.intel_state.lock().unwrap();
             let mut reps = Vec::new();
@@ -3753,8 +3762,6 @@ impl eframe::App for SpaiApp {
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
-        *self.watcher_skip.lock().unwrap() =
-            self.settings.intel_disabled_chars.iter().map(|c| c.to_lowercase()).collect();
         self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);
@@ -4122,19 +4129,22 @@ fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
     }
 }
 
-/// Latest reported ship per pilot (lower-cased name → (ship name, time)), so a
-/// later sighting without a ship can show "Last seen in: <ship>".
+/// Latest reported ship per pilot (lower-cased name → (ship id, name, time)), so a
+/// later sighting without a ship can show a "last seen" ship badge. Only recorded
+/// when a report ties exactly one pilot to one ship (a clear 1:1 association).
 fn build_last_ship(
     reports: &[crate::intel::IntelReport],
-) -> std::collections::HashMap<String, (String, i64)> {
-    let mut out: std::collections::HashMap<String, (String, i64)> = std::collections::HashMap::new();
+) -> std::collections::HashMap<String, (i64, String, i64)> {
+    let mut out: std::collections::HashMap<String, (i64, String, i64)> =
+        std::collections::HashMap::new();
     for r in reports {
-        if let Some(sh) = r.ships.first() {
-            for p in &r.pilots {
-                let e = out.entry(p.to_lowercase()).or_insert((sh.name.clone(), r.received));
-                if r.received >= e.1 {
-                    *e = (sh.name.clone(), r.received);
-                }
+        if r.pilots.len() == 1 && r.ships.len() == 1 {
+            let sh = &r.ships[0];
+            let e = out
+                .entry(r.pilots[0].to_lowercase())
+                .or_insert((sh.id, sh.name.clone(), r.received));
+            if r.received >= e.2 {
+                *e = (sh.id, sh.name.clone(), r.received);
             }
         }
     }
@@ -4168,7 +4178,7 @@ fn intel_row(
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
-    last_ship: &std::collections::HashMap<String, (String, i64)>,
+    last_ship: &std::collections::HashMap<String, (i64, String, i64)>,
     sev: crate::settings::Severity,
     show_reporter: bool,
 ) -> Option<IntelClick> {
@@ -4274,17 +4284,23 @@ fn intel_row(
                     }
                 }
 
-                // No ship reported now, but a recent (≤60 min) sighting had one.
+                // No ship reported now: show each pilot's most recent (≤60 min) hull
+                // as a clickable badge (one per pilot, 1:1 association).
                 if r.ships.is_empty() {
                     for name in &r.pilots {
-                        if let Some((ship, t)) = last_ship.get(&name.to_lowercase()) {
+                        if let Some((id, ship, t)) = last_ship.get(&name.to_lowercase()) {
                             if now - t <= 3600 {
-                                ui.label(
-                                    egui::RichText::new(format!("last seen in {ship}"))
-                                        .italics()
-                                        .weak(),
-                                );
-                                break;
+                                let url =
+                                    format!("https://images.evetech.net/types/{id}/icon?size=32");
+                                let img = egui::Image::new(url)
+                                    .fit_to_exact_size(egui::Vec2::splat(ship_icon));
+                                let panel = ui.add(egui::Button::image_and_text(
+                                    img,
+                                    egui::RichText::new(ship).italics().weak(),
+                                ));
+                                if panel.on_hover_text(format!("{name} — last seen here")).clicked() {
+                                    clicked = Some(IntelClick::Ship(*id));
+                                }
                             }
                         }
                     }
