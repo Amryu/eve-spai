@@ -125,22 +125,20 @@ mod linux {
         ksni::Icon { width: w, height: h, data }
     }
 
-    /// Start the tray (runs on ksni's own background thread). Returns the command
-    /// channel, or None if no tray host is available.
+    /// Start the tray. Registration is done on a background thread so a slow/absent
+    /// tray host never delays app startup. Returns the command channel immediately.
     pub fn spawn() -> Option<TrayCmd> {
-        use ksni::blocking::TrayMethods;
         let cmd = TrayCmd::default();
-        match (SpaiTray { cmd: cmd.clone() }).spawn() {
-            Ok(handle) => {
-                // The tray lives for the whole process; keep the handle alive.
-                std::mem::forget(handle);
-                Some(cmd)
+        let cmd_for_thread = cmd.clone();
+        std::thread::spawn(move || {
+            use ksni::blocking::TrayMethods;
+            match (SpaiTray { cmd: cmd_for_thread }).spawn() {
+                // ksni runs the tray on its own executor; keep the handle alive.
+                Ok(handle) => std::mem::forget(handle),
+                Err(e) => eprintln!("[tray] unavailable: {e}"),
             }
-            Err(e) => {
-                eprintln!("[tray] unavailable: {e}");
-                None
-            }
-        }
+        });
+        Some(cmd)
     }
 }
 
