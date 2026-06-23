@@ -633,11 +633,11 @@ impl SpaiApp {
         let ttl = self.settings.intel_ttl_secs;
         {
             let status = self.system_status.lock().unwrap();
-            // Virtualise: only build the cards actually scrolled into view.
-            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 18.0;
-            egui::ScrollArea::vertical().show_rows(ui, row_h, matches.len(), |ui, range| {
-                for i in range {
-                    let r = matches[i];
+            // Cards are variable-height (badges wrap), so render normally rather than
+            // with fixed-row virtualisation; cap the count to keep it cheap.
+            const CARD_CAP: usize = 250;
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for r in matches.iter().take(CARD_CAP) {
                     // Outdated: superseded by a clear, or older than the configured TTL.
                     let stale = state.is_stale(r) || (now - r.received) > ttl;
                     let from_you =
@@ -648,6 +648,11 @@ impl SpaiApp {
                     ) {
                         action = Some(a);
                     }
+                }
+                if matches.len() > CARD_CAP {
+                    ui.label(
+                        egui::RichText::new(format!("+{} older", matches.len() - CARD_CAP)).weak(),
+                    );
                 }
             });
         }
