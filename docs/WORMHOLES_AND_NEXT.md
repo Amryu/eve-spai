@@ -68,9 +68,12 @@ the map**, but the system-info window must open for them.
       login, theme preset), **dismissable** ("Skip setup"), re-runnable from a "Run
       setup wizard" button in Settings. Gated on `settings.wizard_done`.
 
-## A9 — D-scan clipboard upload
-- [ ] Watch the clipboard; when it holds valid d-scan data, prompt to upload it to a
-      sharer (dscan.info / adashboard) and return a shareable link.
+- [x] **A9 — D-scan clipboard upload.** `dscan` module watches the clipboard
+      (arboard, throttled, gated on `settings.dscan_autoprompt`); when it newly holds
+      a d-scan (strict tab-row detection), a bottom-right prompt offers to share it.
+      Upload POSTs `paste=<text>` to dscan.info → `OK;<id>` → link `dscan.info/v/<id>`
+      (API reverse-engineered from the site's form + verified live), shown with Copy.
+      Dismiss remembers the content hash so it won't re-prompt the same scan.
 
 ## 9b — zKill fit-from-losses lookup
 - [ ] Pilot search → recent zKill losses → inferred fit (weapon + range, speed, tank
@@ -78,7 +81,7 @@ the map**, but the system-info window must open for them.
 
 ## Integrations to wire
 - [ ] **EVE-Scout** — via W2 (signatures) + storms endpoint → condition chips.
-- [ ] **dscan.info / adashboard** — via A9.
+- [x] **dscan.info** — via A9 (clipboard share).
 - [ ] **EveWho** — corp/alliance membership lookups.
 - [ ] **NTP** — clock-sync drift warning (EVE-time accuracy).
 

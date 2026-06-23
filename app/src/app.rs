@@ -220,6 +220,15 @@ pub struct SpaiApp {
     wizard_open: bool,
     wizard_step: u8,
     wizard_checked: bool,
+    /// D-scan clipboard sharing.
+    dscan_clip: Option<arboard::Clipboard>,
+    dscan_checked: Option<std::time::Instant>,
+    /// Hash of the last clipboard text we examined / the dismissed one.
+    dscan_seen_hash: u64,
+    dscan_dismissed_hash: u64,
+    /// Pending prompt: (dscan text, row count).
+    dscan_prompt: Option<(String, usize)>,
+    dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
     /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
     /// poller and the intel watcher).
     wh_cache: Vec<crate::wormholes::Wormhole>,
@@ -428,6 +437,12 @@ impl SpaiApp {
             wizard_open: false,
             wizard_step: 0,
             wizard_checked: false,
+            dscan_clip: None,
+            dscan_checked: None,
+            dscan_seen_hash: 0,
+            dscan_dismissed_hash: 0,
+            dscan_prompt: None,
+            dscan_share: std::sync::Arc::new(std::sync::Mutex::new(DscanShare::default())),
             wh_cache: Vec::new(),
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
@@ -4649,6 +4664,115 @@ impl SpaiApp {
         }
     }
 
+    /// Watch the clipboard (throttled); when it newly holds a d-scan, queue a prompt.
+    fn poll_dscan_clipboard(&mut self) {
+        if !self.settings.dscan_autoprompt {
+            return;
+        }
+        let due = self.dscan_checked.map(|t| t.elapsed().as_millis() > 1200).unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.dscan_checked = Some(std::time::Instant::now());
+        // A prompt or upload already in flight — don't poll over it.
+        if self.dscan_prompt.is_some() || self.dscan_share.lock().unwrap().uploading {
+            return;
+        }
+        if self.dscan_clip.is_none() {
+            self.dscan_clip = arboard::Clipboard::new().ok();
+        }
+        let Some(clip) = self.dscan_clip.as_mut() else { return };
+        let Ok(text) = clip.get_text() else { return };
+        let h = hash_str(&text);
+        if h == self.dscan_seen_hash || h == self.dscan_dismissed_hash {
+            return;
+        }
+        self.dscan_seen_hash = h;
+        if let Some(n) = crate::dscan::looks_like_dscan(&text) {
+            self.dscan_prompt = Some((text, n));
+        }
+    }
+
+    /// Prompt to share a detected d-scan, and show the resulting link.
+    fn dscan_dialog(&mut self, ctx: &egui::Context) {
+        let share = {
+            let s = self.dscan_share.lock().unwrap();
+            (s.uploading, s.link.clone(), s.error.clone())
+        };
+        // Nothing to show unless a prompt is pending or an upload is active/done.
+        if self.dscan_prompt.is_none() && !share.0 && share.1.is_none() && share.2.is_none() {
+            return;
+        }
+        use egui_phosphor::regular as icon;
+        let mut start_upload = false;
+        let mut dismiss = false;
+        egui::Window::new(format!("{}  D-scan", icon::BROADCAST))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+            .show(ctx, |ui| {
+                let (uploading, link, error) = share;
+                if let Some(link) = link {
+                    ui.label("Shared:");
+                    ui.hyperlink(&link);
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("{}  Copy link", icon::COPY)).clicked() {
+                            ui.ctx().copy_text(link.clone());
+                        }
+                        if ui.button("Close").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                    return;
+                }
+                if uploading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Uploading to dscan.info…");
+                    });
+                    return;
+                }
+                if let Some(e) = &error {
+                    ui.colored_label(crate::theme::standing::WARNING, format!("Upload failed: {e}"));
+                }
+                if let Some((_, n)) = &self.dscan_prompt {
+                    ui.label(format!("D-scan detected on the clipboard ({n} rows)."));
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("{}  Share on dscan.info", icon::UPLOAD_SIMPLE)).clicked() {
+                            start_upload = true;
+                        }
+                        if ui.button("Dismiss").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                }
+            });
+
+        if start_upload {
+            if let Some((text, _)) = self.dscan_prompt.take() {
+                self.dscan_share.lock().unwrap().uploading = true;
+                let (share, ctx2) = (self.dscan_share.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let res = crate::dscan::upload(&text);
+                    let mut s = share.lock().unwrap();
+                    s.uploading = false;
+                    match res {
+                        Ok(link) => s.link = Some(link),
+                        Err(e) => s.error = Some(e.to_string()),
+                    }
+                    ctx2.request_repaint();
+                });
+            }
+        }
+        if dismiss {
+            if let Some((text, _)) = &self.dscan_prompt {
+                self.dscan_dismissed_hash = hash_str(text);
+            }
+            self.dscan_prompt = None;
+            *self.dscan_share.lock().unwrap() = DscanShare::default();
+        }
+    }
+
     /// First-run setup wizard (docs/WORMHOLES_AND_NEXT.md A8). Dismissable; can be
     /// re-run from Settings. Walks logs → channels → character → theme.
     fn setup_wizard(&mut self, ctx: &egui::Context) {
@@ -5653,6 +5777,12 @@ impl SpaiApp {
                     changed |= ui
                         .checkbox(&mut self.settings.use_eve_time, "Show EVE time (UTC)")
                         .changed();
+                    changed |= ui
+                        .checkbox(
+                            &mut self.settings.dscan_autoprompt,
+                            "Offer to share d-scans from the clipboard",
+                        )
+                        .changed();
 
                     ui.add_space(6.0);
                     ui.label("Fit preview site").on_hover_text("Where the fit window's \"Open in\" button sends a loss");
@@ -5897,6 +6027,8 @@ impl eframe::App for SpaiApp {
             self.wizard_open = !self.settings.wizard_done;
         }
         self.setup_wizard(&ctx);
+        self.poll_dscan_clipboard();
+        self.dscan_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -6312,6 +6444,22 @@ impl WhOverlay {
         chains.truncate(MAX_CHAINS);
         WhOverlay { direct, chains, jspace_holes }
     }
+}
+
+/// State of an in-flight / completed d-scan upload.
+#[derive(Default)]
+struct DscanShare {
+    uploading: bool,
+    link: Option<String>,
+    error: Option<String>,
+}
+
+/// Stable hash of a string (to detect clipboard changes).
+fn hash_str(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
 }
 
 /// Compact "time ago" — minutes under an hour, hours under a day, else days.

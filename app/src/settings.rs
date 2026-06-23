@@ -92,6 +92,9 @@ pub struct Settings {
     /// First-run setup wizard has been completed or dismissed.
     #[serde(default)]
     pub wizard_done: bool,
+    /// Watch the clipboard for d-scans and offer to share them.
+    #[serde(default = "default_true")]
+    pub dscan_autoprompt: bool,
 }
 
 fn default_jabber_server() -> String {
@@ -417,6 +420,7 @@ impl Default for Settings {
             jabber_server: default_jabber_server(),
             update_skip_version: String::new(),
             wizard_done: false,
+            dscan_autoprompt: true,
         }
     }
 }

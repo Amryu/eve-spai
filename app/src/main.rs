@@ -8,6 +8,7 @@ mod app;
 mod auth;
 mod battle;
 mod chatlog;
+mod dscan;
 mod esi;
 mod factions;
 mod gamelog;
