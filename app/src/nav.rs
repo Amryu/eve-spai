@@ -19,6 +19,7 @@ pub enum View {
     Battles,
     Characters,
     Alerts,
+    Jabber,
     Settings,
 }
 
@@ -32,6 +33,7 @@ impl View {
             View::Battles,
             View::Characters,
             View::Alerts,
+            View::Jabber,
         ]
     }
 
@@ -43,6 +45,7 @@ impl View {
             View::Battles => "Battles",
             View::Characters => "Characters",
             View::Alerts => "Alerts",
+            View::Jabber => "Jabber",
             View::Settings => "Settings",
         }
     }
@@ -55,6 +58,7 @@ impl View {
             View::Battles => icon::SWORD,
             View::Characters => icon::USERS,
             View::Alerts => icon::BELL,
+            View::Jabber => icon::CHAT_TEXT,
             View::Settings => icon::GEAR_SIX,
         }
     }

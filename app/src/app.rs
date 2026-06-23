@@ -189,6 +189,16 @@ pub struct SpaiApp {
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Self process resource usage (status bar).
     proc_monitor: crate::procstat::Monitor,
+    /// Jabber (XMPP) chat + fleet-ping client state.
+    jabber: crate::jabber::SharedJabber,
+    jabber_tx: Option<crate::jabber::CmdSender>,
+    jabber_popped: bool,
+    /// Selected conversation (bare JID) in the Jabber view.
+    jabber_chat: Option<String>,
+    /// Message composer text.
+    jabber_input: String,
+    /// Password field in the Jabber connect form (transient).
+    jabber_pw_input: String,
     /// Whether the EVE client is the focused window (for "smart" always-on-top).
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
@@ -370,6 +380,12 @@ impl SpaiApp {
             alert_window_pinned: false,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
+            jabber: std::sync::Arc::new(std::sync::Mutex::new(crate::jabber::JabberState::default())),
+            jabber_tx: None,
+            jabber_popped: false,
+            jabber_chat: None,
+            jabber_input: String::new(),
+            jabber_pw_input: String::new(),
             eve_focused: true,
             eve_focus_checked: None,
             map_overlays: pv.overlays,
@@ -672,6 +688,250 @@ impl SpaiApp {
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             None => {}
+        }
+    }
+
+    /// Start (or reflect the enabled state of) the Jabber client. Spawns once the
+    /// SDE is loaded (formup locations resolve to systems) and a password is stored.
+    fn maybe_start_jabber(&mut self, ctx: &egui::Context) {
+        let enabled = self.settings.jabber_enabled && !self.settings.jabber_jid.trim().is_empty();
+        {
+            let mut s = self.jabber.lock().unwrap();
+            s.enabled = enabled;
+            if s.running || !enabled {
+                return;
+            }
+        }
+        let Some(systems) = self.systems.clone() else { return };
+        let jid = self.settings.jabber_jid.trim().to_owned();
+        let Some(pw) = crate::jabber::load_password(&jid) else { return };
+        let resolve: crate::jabber::Resolver = std::sync::Arc::new(move |t: &str| {
+            systems.lookup(t).or_else(|| systems.lookup_prefix(t)).map(|i| i.id)
+        });
+        self.jabber_tx =
+            Some(crate::jabber::spawn(jid, pw, resolve, self.jabber.clone(), ctx.clone()));
+    }
+
+    fn jabber_view(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.heading("Jabber");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.jabber_popped && ui.button("Pop out").clicked() {
+                    self.jabber_popped = true;
+                }
+            });
+        });
+        ui.separator();
+        if self.jabber_popped {
+            ui.add_space(20.0);
+            ui.label(egui::RichText::new("Jabber is open in a separate window.").weak());
+            return;
+        }
+        self.jabber_ui(ui);
+    }
+
+    /// The Jabber chat client: connection form, conversation list, messages +
+    /// composer, and a fleet-ping feed.
+    fn jabber_ui(&mut self, ui: &mut egui::Ui) {
+        // Connection form when not enabled / no password yet.
+        let configured = self.settings.jabber_enabled
+            && !self.settings.jabber_jid.trim().is_empty()
+            && crate::jabber::has_password(self.settings.jabber_jid.trim());
+        if !configured {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Connect to your alliance Jabber (XMPP) for chat and fleet pings.",
+                )
+                .weak(),
+            );
+            ui.label(egui::RichText::new("Imperium: jabber-server.goonfleet.com").weak());
+            ui.add_space(6.0);
+            egui::Grid::new("jabber_login").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                ui.label("JID");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.settings.jabber_jid)
+                        .hint_text("MyCharacter@goonfleet.com")
+                        .desired_width(260.0),
+                );
+                ui.end_row();
+                ui.label("Password");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.jabber_pw_input)
+                        .password(true)
+                        .desired_width(260.0),
+                );
+                ui.end_row();
+            });
+            if ui.button("Connect").clicked() {
+                let jid = self.settings.jabber_jid.trim().to_owned();
+                if !jid.is_empty() && !self.jabber_pw_input.is_empty() {
+                    if let Err(e) = crate::jabber::save_password(&jid, &self.jabber_pw_input) {
+                        self.jabber.lock().unwrap().status = format!("Keychain error: {e}");
+                    } else {
+                        self.jabber_pw_input.clear();
+                        self.settings.jabber_enabled = true;
+                        self.needs_save = true;
+                    }
+                }
+            }
+            // Show any error/status from the client.
+            let status = self.jabber.lock().unwrap().status.clone();
+            if !status.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(status).weak());
+            }
+            return;
+        }
+
+        // Snapshot what we need, then render (so we don't hold the lock during UI).
+        let (connected, status, convos, sel_msgs, pings) = {
+            let st = self.jabber.lock().unwrap();
+            let mut set: std::collections::BTreeMap<String, (String, bool)> =
+                std::collections::BTreeMap::new();
+            for (jid, c) in &st.roster {
+                set.entry(jid.clone()).or_insert((c.name.clone().unwrap_or_else(|| jid.clone()), false));
+            }
+            for jid in st.chats.keys() {
+                set.entry(jid.clone()).or_insert_with(|| (jid.clone(), false));
+            }
+            for jid in &st.unread {
+                if let Some(e) = set.get_mut(jid) {
+                    e.1 = true;
+                }
+            }
+            let convos: Vec<(String, String, bool)> =
+                set.into_iter().map(|(j, (n, u))| (j, n, u)).collect();
+            let sel_msgs = self
+                .jabber_chat
+                .as_ref()
+                .and_then(|j| st.chats.get(j))
+                .cloned()
+                .unwrap_or_default();
+            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone())
+        };
+
+        ui.horizontal(|ui| {
+            let (col, txt) = if connected {
+                (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "online")
+            } else {
+                (crate::theme::standing::WARNING, status.as_str())
+            };
+            ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(col).size(10.0));
+            ui.label(egui::RichText::new(txt).weak());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Disconnect").clicked() {
+                    self.settings.jabber_enabled = false;
+                    self.needs_save = true;
+                }
+            });
+        });
+        ui.separator();
+
+        let systems = self.systems.clone();
+        let avail = ui.available_height();
+        ui.horizontal_top(|ui| {
+            // Left: conversations + pings count.
+            ui.vertical(|ui| {
+                ui.set_width(190.0);
+                ui.set_height(avail);
+                if ui
+                    .selectable_label(self.jabber_chat.is_none(), format!("{}  Fleet pings ({})", egui_phosphor::regular::MEGAPHONE, pings.len()))
+                    .clicked()
+                {
+                    self.jabber_chat = None;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
+                    for (jid, name, unread) in &convos {
+                        let sel = self.jabber_chat.as_deref() == Some(jid.as_str());
+                        let label = if *unread {
+                            egui::RichText::new(format!("{} {name}", egui_phosphor::regular::DOT)).strong()
+                        } else {
+                            egui::RichText::new(name)
+                        };
+                        if ui.selectable_label(sel, label).clicked() {
+                            self.jabber_chat = Some(jid.clone());
+                            self.jabber.lock().unwrap().unread.remove(jid);
+                        }
+                    }
+                });
+            });
+            ui.separator();
+            // Right: messages + composer, or the pings feed.
+            ui.vertical(|ui| {
+                ui.set_height(avail);
+                match self.jabber_chat.clone() {
+                    None => {
+                        egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
+                            if pings.is_empty() {
+                                ui.label(egui::RichText::new("No pings yet.").weak());
+                            }
+                            for p in pings.iter().rev() {
+                                render_ping(ui, p, &systems);
+                            }
+                        });
+                    }
+                    Some(jid) => {
+                        let composer_h = 32.0;
+                        egui::ScrollArea::vertical()
+                            .id_salt("msgs")
+                            .auto_shrink([false, false])
+                            .max_height(avail - composer_h - 8.0)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                for m in &sel_msgs {
+                                    ui.horizontal_wrapped(|ui| {
+                                        let who = if m.outgoing {
+                                            egui::RichText::new("me").color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A))
+                                        } else {
+                                            let n = m.from.split('@').next().unwrap_or(&m.from);
+                                            egui::RichText::new(n).strong()
+                                        };
+                                        ui.label(who);
+                                        ui.label(&m.body);
+                                    });
+                                }
+                            });
+                        ui.horizontal(|ui| {
+                            let send = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.jabber_input)
+                                        .hint_text("Message")
+                                        .desired_width(ui.available_width() - 60.0),
+                                )
+                                .lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if (ui.button("Send").clicked() || send) && !self.jabber_input.trim().is_empty() {
+                                let body = std::mem::take(&mut self.jabber_input);
+                                if let Some(tx) = &self.jabber_tx {
+                                    let _ = tx.send(crate::jabber::Cmd::Send { to: jid.clone(), body });
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        });
+    }
+
+    /// The Jabber chat in its own OS window.
+    #[allow(deprecated)]
+    fn show_jabber_viewport(&mut self, ctx: &egui::Context) {
+        let mut keep = true;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("jabber_window"),
+            egui::ViewportBuilder::default().with_title("EVE Spai — Jabber").with_inner_size([720.0, 560.0]),
+            |ctx, _| {
+                egui::CentralPanel::default().show(ctx, |ui| self.jabber_ui(ui));
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    keep = false;
+                }
+            },
+        );
+        if !keep {
+            self.jabber_popped = false;
         }
     }
 
@@ -1528,7 +1788,9 @@ impl SpaiApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
                     .show(ctx, |ui| {
-                        // The whole top row is a drag handle (no window decorations).
+                        // The top row is a drag handle, up to where the buttons begin
+                        // (so it doesn't sit on top of the X / pin hitboxes).
+                        let mut buttons_left = f32::INFINITY;
                         let row = ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(
@@ -1558,13 +1820,16 @@ impl SpaiApp {
                                 {
                                     self.alert_window_pinned = !self.alert_window_pinned;
                                 }
+                                buttons_left = ui.min_rect().left();
                             });
                         });
-                        let drag = ui.interact(
-                            row.response.rect,
-                            ui.id().with("titledrag"),
-                            egui::Sense::drag(),
+                        let row_rect = row.response.rect;
+                        let drag_rect = egui::Rect::from_min_max(
+                            row_rect.min,
+                            egui::pos2(buttons_left - 6.0, row_rect.max.y),
                         );
+                        let drag =
+                            ui.interact(drag_rect, ui.id().with("titledrag"), egui::Sense::drag());
                         if drag.drag_started() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
@@ -2525,6 +2790,14 @@ impl SpaiApp {
                         if self.map_overlay_locked {
                             if ui.button(icon::LOCK).on_hover_text("Unlock").clicked() {
                                 self.map_overlay_locked = false;
+                            }
+                            // Re-center is still useful while locked.
+                            if ui
+                                .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
+                                .on_hover_text("Follow active character")
+                                .clicked()
+                            {
+                                self.map_follow = !self.map_follow;
                             }
                             return;
                         }
@@ -4605,6 +4878,7 @@ impl eframe::App for SpaiApp {
         self.refresh_characters();
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
+        self.maybe_start_jabber(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -4622,6 +4896,7 @@ impl eframe::App for SpaiApp {
             View::Intel => self.intel_view(ui),
             View::Battles => self.battles_view(ui),
             View::Alerts => self.alerts_view(ui),
+            View::Jabber => self.jabber_view(ui),
             View::Settings => self.settings_view(ui),
         });
 
@@ -4644,6 +4919,9 @@ impl eframe::App for SpaiApp {
         if self.map_popped {
             self.show_map_viewport(&ctx);
         }
+        if self.jabber_popped {
+            self.show_jabber_viewport(&ctx);
+        }
 
         if self.needs_save {
             self.persist();
@@ -4652,6 +4930,17 @@ impl eframe::App for SpaiApp {
 
     fn on_exit(&mut self) {
         self.persist();
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // In map overlay mode the surface is cleared fully transparent so the panel's
+        // opacity reveals whatever is behind the window (the game). Opaque panels
+        // cover the clear everywhere else, so this is safe for the main window too.
+        if self.map_overlay_mode {
+            [0.0, 0.0, 0.0, 0.0]
+        } else {
+            egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+        }
     }
 }
 
@@ -5071,6 +5360,84 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
         parts.push(r.text.clone());
     }
     parts.join(" · ")
+}
+
+/// Render a parsed fleet ping (or plain broadcast) as a card.
+fn render_ping(
+    ui: &mut egui::Ui,
+    p: &crate::pings::Ping,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+) {
+    use crate::pings::{Comms, Formup, PapType, Ping};
+    use egui_phosphor::regular as icon;
+    let sys_name = |id: i64| -> String {
+        systems
+            .as_ref()
+            .and_then(|g| g.info_of(id))
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| "?".to_owned())
+    };
+    let formup_str = |fs: &[Formup]| {
+        fs.iter()
+            .map(|f| match f {
+                Formup::System(id) => sys_name(*id),
+                Formup::Text(t) => t.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        match p {
+            Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, description, source, target, .. } => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("{}  Fleet ping", icon::MEGAPHONE)).strong());
+                    if let Some(f) = fleet {
+                        ui.label(egui::RichText::new(f).strong());
+                    }
+                    if let Some(p) = pap {
+                        let (t, c) = match p {
+                            PapType::Strategic => ("STRAT", crate::theme::standing::HOSTILE),
+                            PapType::Peacetime => ("PEACE", crate::theme::standing::WARNING),
+                            PapType::Text(s) => (s.as_str(), ui.visuals().weak_text_color()),
+                        };
+                        ui.label(egui::RichText::new(t).color(c).strong());
+                    }
+                });
+                ui.label(format!("FC: {fc}"));
+                if !formup.is_empty() {
+                    ui.label(format!("Formup: {}", formup_str(formup)));
+                }
+                if let Some(c) = comms {
+                    match c {
+                        Comms::Mumble { channel, link } => {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Comms: {channel}"));
+                                ui.hyperlink_to(icon::LINK, link);
+                            });
+                        }
+                        Comms::Text(t) => {
+                            ui.label(format!("Comms: {t}"));
+                        }
+                    }
+                }
+                if let Some(d) = doctrine {
+                    ui.label(format!("Doctrine: {d}"));
+                }
+                if !description.is_empty() {
+                    ui.label(egui::RichText::new(description).weak());
+                }
+                let from = source.as_deref().unwrap_or("?");
+                let to = target.as_deref().unwrap_or("?");
+                ui.label(egui::RichText::new(format!("— {from} → {to}")).weak().small());
+            }
+            Ping::Plain { text, sender, target, .. } => {
+                let from = sender.as_deref().unwrap_or("ping");
+                let to = target.as_deref().map(|t| format!(" → {t}")).unwrap_or_default();
+                ui.label(egui::RichText::new(format!("{from}{to}")).strong());
+                ui.label(text);
+            }
+        }
+    });
 }
 
 /// Compute an intel report's severity from the configurable rules (highest match).

@@ -76,6 +76,12 @@ pub struct Settings {
     /// Overlay mode follows "smart" on-top (above only while EVE is focused).
     #[serde(default)]
     pub map_overlay_smart: bool,
+    /// Connect to Jabber (XMPP) for fleet pings.
+    #[serde(default)]
+    pub jabber_enabled: bool,
+    /// Jabber bare JID, e.g. "MyCharacter@goonfleet.com" (password in the keychain).
+    #[serde(default)]
+    pub jabber_jid: String,
 }
 
 fn default_overlay_opacity() -> f32 {
@@ -392,6 +398,8 @@ impl Default for Settings {
             alerts: AlertSettings::default(),
             map_overlay_opacity: 0.9,
             map_overlay_smart: false,
+            jabber_enabled: false,
+            jabber_jid: String::new(),
         }
     }
 }
