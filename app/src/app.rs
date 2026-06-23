@@ -2723,7 +2723,7 @@ impl SpaiApp {
                 }
             });
         }
-        system_chips_ex(ui, &self.systems, &status, id, false);
+        system_chips_ex(ui, &self.systems, &status, id, true, false);
         if let Some(f) = status.get(&id) {
             if f.jumps + f.ship_kills + f.pod_kills + f.npc_kills > 0 {
                 ui.label(
@@ -3371,8 +3371,8 @@ impl SpaiApp {
                                 });
                             });
                     }
-                    // Location + conditions (sov shown as the logo instead).
-                    system_chips_ex(ui, &self.systems, &status, id, false);
+                    // Conditions only — the clickable breadcrumb below shows location.
+                    system_chips_ex(ui, &self.systems, &status, id, false, false);
                     // Breadcrumb: navigate up to the constellation / region.
                     ui.horizontal_wrapped(|ui| {
                         if let Some((cid, cname)) = &constellation {
@@ -3713,18 +3713,6 @@ impl SpaiApp {
                 }
                 self.dominant_logos(ui, &sys_ids, "constellation_dom");
                 Self::rat_line(ui, &region_name);
-                ui.separator();
-                ui.label(egui::RichText::new(format!("Systems ({})", systems.len())).strong());
-                egui::ScrollArea::vertical().max_height(220.0).id_salt("const_sys").show(ui, |ui| {
-                    for s in &systems {
-                        ui.horizontal(|ui| {
-                            ui.label(security_badge(s.security));
-                            if ui.link(&s.name).clicked() {
-                                open_system = Some(s.id);
-                            }
-                        });
-                    }
-                });
                 if !neighbours.is_empty() {
                     ui.separator();
                     ui.label(egui::RichText::new("Neighbouring constellations").strong());
@@ -3736,6 +3724,24 @@ impl SpaiApp {
                         }
                     });
                 }
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Systems ({})", systems.len())).strong());
+                // Fill the remaining height; full width; recomputed each frame.
+                let h = ui.available_height();
+                egui::ScrollArea::vertical()
+                    .id_salt("const_sys")
+                    .auto_shrink([false, false])
+                    .max_height(h)
+                    .show(ui, |ui| {
+                        for s in &systems {
+                            ui.horizontal(|ui| {
+                                ui.label(security_badge(s.security));
+                                if ui.link(&s.name).clicked() {
+                                    open_system = Some(s.id);
+                                }
+                            });
+                        }
+                    });
             },
         );
         if let Some(r) = open_region {
@@ -3779,15 +3785,6 @@ impl SpaiApp {
                 if ui.button("Show on map").clicked() {
                     show_map = true;
                 }
-                ui.separator();
-                ui.label(egui::RichText::new(format!("Constellations ({})", constellations.len())).strong());
-                egui::ScrollArea::vertical().max_height(220.0).id_salt("region_const").show(ui, |ui| {
-                    for (cid, cname) in &constellations {
-                        if ui.link(cname).clicked() {
-                            open_constellation = Some(*cid);
-                        }
-                    }
-                });
                 if !neighbours.is_empty() {
                     ui.separator();
                     ui.label(egui::RichText::new("Neighbouring regions").strong());
@@ -3799,6 +3796,20 @@ impl SpaiApp {
                         }
                     });
                 }
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Constellations ({})", constellations.len())).strong());
+                let h = ui.available_height();
+                egui::ScrollArea::vertical()
+                    .id_salt("region_const")
+                    .auto_shrink([false, false])
+                    .max_height(h)
+                    .show(ui, |ui| {
+                        for (cid, cname) in &constellations {
+                            if ui.link(cname).clicked() {
+                                open_constellation = Some(*cid);
+                            }
+                        }
+                    });
             },
         );
         if let Some(c) = open_constellation {
@@ -5129,7 +5140,7 @@ fn system_chips(
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     system_id: i64,
 ) {
-    system_chips_ex(ui, systems, status, system_id, true);
+    system_chips_ex(ui, systems, status, system_id, true, true);
 }
 
 /// As `system_chips`, but `show_sov=false` omits the sov text chip (the system
@@ -5139,6 +5150,7 @@ fn system_chips_ex(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     system_id: i64,
+    show_location: bool,
     show_sov: bool,
 ) {
     use crate::theme::standing;
@@ -5149,7 +5161,7 @@ fn system_chips_ex(
             (c, "") => format!("< {c}"),
             (c, r) => format!("< {c} < {r}"),
         };
-        if !loc.is_empty() {
+        if show_location && !loc.is_empty() {
             ui.label(egui::RichText::new(loc).weak());
         }
         // Faction = rats / NPC sov; only meaningful in low/null (highsec is CONCORD).
