@@ -91,6 +91,10 @@ fn scan(
             let known = pilots.lock().unwrap().confirmed();
             let mut st = state.lock().unwrap();
             for m in &messages[start..] {
+                // Never parse the channel MOTD / system notices (posted by EVE System).
+                if m.author.eq_ignore_ascii_case("EVE System") {
+                    continue;
+                }
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
                 let mut report =
                     intel::analyze(&m.text, systems, ships, &known, received, &meta.channel, &m.author);

@@ -3898,19 +3898,13 @@ fn intel_row(
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
             };
+            // Badges always wrap within the available width (never stretch wider).
+            ui.horizontal_wrapped(|ui| render(ui));
             if show_reporter {
-                // Intel feed: reporter·channel pinned right, badges fill from the left.
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            render(ui)
-                        });
-                    });
+                // Reporter·channel on its own right-aligned line, always readable.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
                 });
-            } else {
-                // System window (narrower): no reporter text, badges wrap.
-                ui.horizontal_wrapped(|ui| render(ui));
             }
         })
         .response;
