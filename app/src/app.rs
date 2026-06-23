@@ -1347,7 +1347,19 @@ impl SpaiApp {
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
                     .show(ctx, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Intel alerts").strong());
+                            // The title is a drag handle (the window has no decorations).
+                            let h = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        format!("{}  Intel alerts", egui_phosphor::regular::DOTS_SIX),
+                                    )
+                                    .strong(),
+                                )
+                                .sense(egui::Sense::drag()),
+                            );
+                            if h.dragged() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                            }
                             ui.label(
                                 egui::RichText::new(format!("{:.0}s", self.alert_window_secs)).weak(),
                             );
