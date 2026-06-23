@@ -145,52 +145,61 @@ pub enum OnTop {
     Never,
 }
 
-fn default_on_top() -> OnTop {
-    OnTop::Always
+/// The seeded default rule: any intel ≥ Warning within 10 jumps of an enabled
+/// character → system notification + sound + custom window.
+pub fn default_rule() -> AlertRule {
+    AlertRule {
+        name: "Nearby intel".to_owned(),
+        enabled: true,
+        min_severity: Severity::Warning,
+        max_jumps: Some(10),
+        custom_window: true,
+        ..AlertRule::default()
+    }
 }
 
-/// Intel alerting configuration.
+/// Intel alerting configuration. Fully rule-based: a report alerts only if a rule
+/// matches it (top rule wins). The seeded default rule covers the common case.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AlertSettings {
-    /// Severities at or above this alert by default (default: Warning).
-    pub min_severity: Severity,
     /// Per-severity default sound preset/path: [Info, Warning, Danger, Critical].
     pub sounds: Vec<String>,
-    pub system_notifications: bool,
-    pub use_custom_window: bool,
     /// Custom-window top-left position (screen pixels); None = auto.
     pub window_pos: Option<(f32, f32)>,
+    /// Custom-window size; None = default.
+    pub window_size: Option<(f32, f32)>,
     /// Seconds the custom window stays after the last alert.
     pub window_timeout: f32,
     /// Always-on-top behaviour for the custom window.
-    #[serde(default = "default_on_top")]
     pub on_top: OnTop,
     pub push_enabled: bool,
     pub pushover_token: String,
     pub pushover_user: String,
     /// Ordered rules (top = highest precedence).
     pub rules: Vec<AlertRule>,
+    /// Whether the default rule has been seeded (so we only do it once).
+    pub seeded: bool,
 }
 
 impl Default for AlertSettings {
     fn default() -> Self {
         Self {
-            min_severity: Severity::Warning,
             sounds: vec![
                 "off".to_owned(),      // Info
                 "warning".to_owned(),  // Warning
                 "danger".to_owned(),   // Danger
                 "critical".to_owned(), // Critical
             ],
-            system_notifications: true,
-            use_custom_window: false,
             window_pos: None,
+            window_size: None,
             window_timeout: 30.0,
             on_top: OnTop::Always,
             push_enabled: false,
             pushover_token: String::new(),
             pushover_user: String::new(),
-            rules: Vec::new(),
+            rules: vec![default_rule()],
+            seeded: true,
         }
     }
 }

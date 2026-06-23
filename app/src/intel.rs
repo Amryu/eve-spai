@@ -843,7 +843,14 @@ pub fn analyze(
         wormhole: lower.contains("wormhole")
             || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
         ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
-        ess_time: if lower.contains("ess") { parse_time_left(text) } else { None },
+        // The ESS hack timer maxes at 6 min for the main bank, 45 min for the
+        // reserve. A larger "Xm" is an ISK amount (e.g. "77m bank"), not a time.
+        ess_time: if lower.contains("ess") {
+            let max = if lower.contains("reserve") { 45 } else { 6 };
+            parse_time_left(text, max)
+        } else {
+            None
+        },
         skyhook: lower.contains("skyhook"),
         gate,
         movement: None,
@@ -851,29 +858,46 @@ pub fn analyze(
     }
 }
 
-/// Parse a "time left" callout: "M:SS" (e.g. "5:30") or "Xm"/"Xm Ys"/"Xs".
-fn parse_time_left(text: &str) -> Option<String> {
-    for raw in text.split_whitespace() {
+/// Parse a "time left" callout: "M:SS" (e.g. "5:30"), or a number followed by a
+/// minute/second unit — attached ("5m", "30s") or spaced ("5 min", "30 sec").
+/// Minutes over `max_min` are rejected (a big "Xm" is an ISK amount, e.g. "77m
+/// bank", not a hack timer).
+fn parse_time_left(text: &str, max_min: u32) -> Option<String> {
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    // "M:SS" minutes:seconds.
+    for raw in &toks {
         let t = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
-        // "5:30" — minutes:seconds.
         if let Some((m, s)) = t.split_once(':') {
             if (1..=2).contains(&m.len())
                 && s.len() == 2
-                && m.chars().all(|c| c.is_ascii_digit())
-                && s.chars().all(|c| c.is_ascii_digit())
+                && m.bytes().all(|b| b.is_ascii_digit())
+                && s.bytes().all(|b| b.is_ascii_digit())
+                && m.parse::<u32>().is_ok_and(|v| v <= max_min)
             {
                 return Some(format!("{m}:{s}"));
             }
         }
-        // "5m", "5m30s", "30s" — minute/second suffixes.
-        let lower = t.to_lowercase();
-        if (lower.ends_with('m') || lower.ends_with('s'))
-            && lower.len() >= 2
-            && lower.len() <= 6
-            && lower.chars().any(|c| c.is_ascii_digit())
-            && lower.chars().all(|c| c.is_ascii_digit() || c == 'm' || c == 's')
+    }
+    // A number with a minute/second unit (the unit may be the next token).
+    for (i, raw) in toks.iter().enumerate() {
+        let digits: String = raw.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() || digits.len() > 3 {
+            continue;
+        }
+        let Ok(n) = digits.parse::<u32>() else { continue };
+        let tail = raw[digits.len()..].to_lowercase();
+        let unit = if !tail.is_empty() {
+            tail
+        } else {
+            toks.get(i + 1).map(|t| t.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_lowercase()).unwrap_or_default()
+        };
+        if matches!(unit.as_str(), "m" | "min" | "mins" | "minute" | "minutes") {
+            if (1..=max_min).contains(&n) {
+                return Some(format!("{n}m"));
+            }
+        } else if matches!(unit.as_str(), "s" | "sec" | "secs" | "second" | "seconds") && (1..=599).contains(&n)
         {
-            return Some(lower);
+            return Some(format!("{n}s"));
         }
     }
     None
@@ -1206,6 +1230,20 @@ mod tests {
         let s = systems();
         let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
+    }
+
+    #[test]
+    fn ess_time_ignores_isk_amount() {
+        let s = systems();
+        // "5 min" is the timer; "77m bank" is ISK, not 77 minutes.
+        let r = analyze("TPG-DD ESS 5 min 77m bank", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.ess_time.as_deref(), Some("5m"));
+        // Reserve allows up to 45 min.
+        let r2 = analyze("ESS reserve 30 min", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r2.ess_time.as_deref(), Some("30m"));
+        // Normal bank rejects an over-max minute value.
+        let r3 = analyze("ESS robbed 30m", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r3.ess_time, None);
     }
 
     #[test]

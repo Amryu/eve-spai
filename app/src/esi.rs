@@ -23,6 +23,8 @@ pub struct Player {
     pub system_id: Option<i64>,
     /// True when docked in a station/structure (ESI location has a station id).
     pub docked: bool,
+    /// All linked characters' locations: name → (system id, docked).
+    pub locations: std::collections::HashMap<String, (i64, bool)>,
 }
 
 pub type SharedPlayer = Arc<Mutex<Player>>;
@@ -38,18 +40,26 @@ pub fn spawn_location_poller(client_id: String, player: SharedPlayer, ctx: egui:
         };
         loop {
             std::thread::sleep(POLL);
-            let name = player.lock().unwrap().active_name.clone();
-            if name.is_empty() || name == "No character" {
-                continue;
-            }
+            let active = player.lock().unwrap().active_name.clone();
             let Ok(store) = Store::open() else { continue };
-            if let Some((sys, docked)) = location_for(&client, &store, &client_id, &name) {
-                let mut p = player.lock().unwrap();
-                if p.system_id != Some(sys) || p.docked != docked {
-                    p.system_id = Some(sys);
-                    p.docked = docked;
-                    ctx.request_repaint();
+            // Poll every linked character so rules can alert on any of them.
+            let mut fresh: std::collections::HashMap<String, (i64, bool)> =
+                std::collections::HashMap::new();
+            for ch in store.list_characters() {
+                if let Some((sys, docked)) = location_for(&client, &store, &client_id, &ch.name) {
+                    fresh.insert(ch.name, (sys, docked));
                 }
+            }
+            let mut p = player.lock().unwrap();
+            let active_loc = fresh.get(&active).copied();
+            let changed = p.locations != fresh
+                || p.system_id != active_loc.map(|(s, _)| s)
+                || p.docked != active_loc.map(|(_, d)| d).unwrap_or(false);
+            p.locations = fresh;
+            p.system_id = active_loc.map(|(s, _)| s);
+            p.docked = active_loc.map(|(_, d)| d).unwrap_or(false);
+            if changed {
+                ctx.request_repaint();
             }
         }
     });
