@@ -42,6 +42,8 @@ pub struct IntelReport {
     /// Approximate hostile/ship count parsed from the message, if any.
     pub count: Option<u32>,
     pub clear: bool,
+    /// Someone explicitly asking for intel ("status?") — informational, not a threat.
+    pub status: bool,
     pub no_visual: bool,
     pub spike: bool,
     pub camp: bool,
@@ -258,7 +260,7 @@ const PILOT_STOP: &[&str] = &[
     "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
-    "afk", "warpin", "system", "and", "for",
+    "afk", "warpin", "system", "and", "for", "status", "stat", "report", "intel",
 ];
 
 /// Quoted spans (delimited by `"`, `'` or `` ` ``, openings/closings may be mixed)
@@ -829,7 +831,13 @@ pub fn analyze(
         // An explicit "<x> gate" keyword is authoritative for a resolvable code, but
         // a bare number that doesn't resolve is never a gate name (a single digit
         // never is, and e.g. "5 gate" means five hostiles).
-        let resolved = resolve(systems, cand);
+        let resolved = resolve(systems, cand).or_else(|| {
+            // "<X> gate" strongly implies X is a system — accept an unambiguous
+            // abbreviation even without a hyphen (e.g. "YPW" → YPW-M2).
+            let abbrev = cand.len() >= 2
+                && cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
+            if abbrev { systems.lookup_prefix(cand) } else { None }
+        });
         if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
             break;
         }
@@ -855,13 +863,16 @@ pub fn analyze(
         clear: lower_tokens
             .iter()
             .any(|t| CLEAR_WORDS.contains(&t.as_str()) && !pilot_tokens.contains(t)),
+        status: lower_tokens
+            .iter()
+            .any(|t| matches!(t.as_str(), "status" | "stat") && !pilot_tokens.contains(t)),
         no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
             || lower.contains("no visual"),
-        spike: lower.contains("spike"),
-        camp: lower.contains("camp"),
-        bubble: lower.contains("bubble"),
+        spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
+        camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]),
+        bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail) || lower.contains("kill:"),
-        cyno: lower.contains("cyno"),
+        cyno: flagged(&lower_tokens, &pilot_tokens, &["cyno"]),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         wormhole: lower.contains("wormhole")
             || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
@@ -958,6 +969,22 @@ fn detect_cap_tackled(
     let cap = lower_tokens.iter().any(|t| !pilot_tokens.contains(t) && is_cap_word(t));
     let tackle = lower_tokens.iter().any(|t| !pilot_tokens.contains(t) && is_tackle_word(t));
     cap && tackle
+}
+
+/// True if any token starts with one of `stems` and is neither part of a pilot name
+/// nor preceded by a negation ("no", "not", "without") — so "no bubble" doesn't set
+/// `bubble`.
+fn flagged(
+    lower_tokens: &[String],
+    pilot_tokens: &std::collections::HashSet<String>,
+    stems: &[&str],
+) -> bool {
+    const NEG: &[&str] = &["no", "not", "without", "n0", "negative"];
+    lower_tokens.iter().enumerate().any(|(i, t)| {
+        stems.iter().any(|s| t.starts_with(s))
+            && !pilot_tokens.contains(t)
+            && !(i > 0 && NEG.contains(&lower_tokens[i - 1].as_str()))
+    })
 }
 
 /// A bare 1–2 digit number — ambiguous between a system/gate code and a count.
@@ -1064,6 +1091,7 @@ mod tests {
             ("1dq1-a", "1DQ1-A", 3, -0.4),
             ("78-aaa", "78-AAA", 4, -0.5),
             ("c-j6mt", "C-J6MT", 5, -0.6),
+            ("ypw-m2", "YPW-M2", 7, -0.5),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -1325,6 +1353,27 @@ mod tests {
         let s = systems();
         let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
+    }
+
+    #[test]
+    fn negation_gate_abbrev_and_status() {
+        let s = systems();
+        // "no bubble" must not set bubble; "YPW gate" resolves to the full system name.
+        let r = analyze(
+            "C-J6MT YPW gate clear,no bubble,where the neuts went?",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(!r.bubble, "negated bubble");
+        assert_eq!(r.gate.as_deref(), Some("YPW-M2"));
+        // "status" is a request keyword: not a pilot, and stays informational.
+        let q = analyze("status in Rancer?", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(q.status);
+        assert!(!q.pilots.iter().any(|p| p.eq_ignore_ascii_case("status")));
     }
 
     #[test]

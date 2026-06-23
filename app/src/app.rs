@@ -5829,8 +5829,10 @@ fn severity_of(
     let mut s = Info;
     if let Some(n) = r.count {
         s = s.max(if n >= rules.big_gang_threshold { rules.big_gang } else { rules.small_gang });
-    } else if !r.systems.is_empty() && !r.clear && !r.killmail {
-        s = s.max(rules.small_gang); // a sighting with no count
+    } else if !r.systems.is_empty() && !r.clear && !r.killmail && !r.status {
+        // A sighting with no count — but not a bare status request ("status?"), which
+        // stays Info.
+        s = s.max(rules.small_gang);
     }
     if r.bubble {
         s = s.max(rules.bubble);
