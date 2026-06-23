@@ -4656,9 +4656,31 @@ impl SpaiApp {
             return;
         }
         use egui_phosphor::regular as icon;
-        const LAST: u8 = 4;
-        let mut step = self.wizard_step;
-        let mut close = false; // skip/dismiss
+
+        // The active step list — Imperium adds optional jump-bridge / sov-upgrade /
+        // jabber steps once that pack is applied.
+        #[derive(Clone, Copy, PartialEq)]
+        enum S {
+            Welcome,
+            Logs,
+            Channels,
+            JumpBridges,
+            SovUpgrades,
+            Jabber,
+            Character,
+            Theme,
+        }
+        let mut steps = vec![S::Welcome, S::Logs, S::Channels];
+        if self.settings.configuration_pack == "The Imperium" {
+            steps.extend([S::JumpBridges, S::SovUpgrades, S::Jabber]);
+        }
+        steps.extend([S::Character, S::Theme]);
+        let last = steps.len() - 1;
+        let mut idx = (self.wizard_step as usize).min(last);
+        let cur = steps[idx];
+        let total = steps.len();
+
+        let mut close = false;
         let mut finish = false;
         egui::Window::new(format!("{}  Setup", icon::MAGIC_WAND))
             .collapsible(false)
@@ -4667,18 +4689,18 @@ impl SpaiApp {
             .default_width(460.0)
             .show(ctx, |ui| {
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(format!("Step {} of {}", step + 1, LAST + 1)).weak().small());
+                ui.label(egui::RichText::new(format!("Step {} of {total}", idx + 1)).weak().small());
                 ui.separator();
                 ui.add_space(4.0);
-                match step {
-                    0 => {
+                match cur {
+                    S::Welcome => {
                         ui.heading("Welcome to EVE Spai");
                         ui.label(
                             "A quick setup to get intel flowing. Everything here can be changed \
                              later in Settings, and you can re-run this wizard from there.",
                         );
                     }
-                    1 => {
+                    S::Logs => {
                         ui.heading(format!("{}  EVE chat logs", icon::FOLDER_OPEN));
                         ui.label(
                             "EVE Spai reads your in-game intel-channel logs. Leave blank to \
@@ -4694,7 +4716,7 @@ impl SpaiApp {
                                 .desired_width(420.0),
                         );
                     }
-                    2 => {
+                    S::Channels => {
                         ui.heading(format!("{}  Intel channels", icon::BROADCAST));
                         ui.label("Apply your coalition's preset channels, or add them manually.");
                         ui.add_space(4.0);
@@ -4728,7 +4750,103 @@ impl SpaiApp {
                             .weak(),
                         );
                     }
-                    3 => {
+                    S::JumpBridges => {
+                        ui.heading(format!("{}  Jump bridges (optional)", icon::MAP_TRIFOLD));
+                        ui.label(
+                            "Import your alliance's jump-bridge network so it's drawn on the map \
+                             and used for jump-range filters.",
+                        );
+                        ui.add_space(4.0);
+                        if ui.button("Configure jump bridges…").clicked() {
+                            self.jump_bridges_open = true;
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} bridge(s) configured",
+                                self.settings.jump_bridges.len()
+                            ))
+                            .weak(),
+                        );
+                    }
+                    S::SovUpgrades => {
+                        ui.heading(format!("{}  Sov upgrades (optional)", icon::GEAR_SIX));
+                        ui.label(
+                            "Paste your alliance's iHub sov-upgrade data for the map overlay \
+                             (cyno jammers, Ansiblex enablement, …).",
+                        );
+                        ui.add_space(4.0);
+                        if ui.button("Configure sov upgrades…").clicked() {
+                            self.sov_upgrades_open = true;
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} system(s) configured",
+                                self.settings.sov_upgrades.len()
+                            ))
+                            .weak(),
+                        );
+                    }
+                    S::Jabber => {
+                        ui.heading(format!("{}  Jabber (optional)", icon::CHAT_TEXT));
+                        ui.label("Connect to alliance Jabber (XMPP) for chat and fleet pings.");
+                        ui.add_space(4.0);
+                        let connected = self.settings.jabber_enabled
+                            && crate::jabber::has_password(self.settings.jabber_jid.trim());
+                        if connected {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}  Connected as {}",
+                                    icon::CHECK_CIRCLE,
+                                    self.settings.jabber_jid
+                                ))
+                                .color(crate::theme::standing::ALLIANCE),
+                            );
+                        } else {
+                            egui::Grid::new("wiz_jabber").num_columns(2).spacing([8.0, 6.0]).show(
+                                ui,
+                                |ui| {
+                                    ui.label("JID");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.settings.jabber_jid)
+                                            .hint_text("MyCharacter@goonfleet.com")
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+                                    ui.label("Server");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.settings.jabber_server)
+                                            .hint_text("jabber-server.goonfleet.com")
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+                                    ui.label("Password");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.jabber_pw_input)
+                                            .password(true)
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+                                },
+                            );
+                            if ui.button("Connect").clicked() {
+                                let jid = self.settings.jabber_jid.trim().to_owned();
+                                if !jid.is_empty() && !self.jabber_pw_input.is_empty() {
+                                    match crate::jabber::save_password(&jid, &self.jabber_pw_input) {
+                                        Ok(()) => {
+                                            self.jabber_pw_input.clear();
+                                            self.settings.jabber_enabled = true;
+                                            self.needs_save = true;
+                                        }
+                                        Err(e) => {
+                                            self.jabber.lock().unwrap().status =
+                                                format!("Keychain error: {e}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    S::Character => {
                         ui.heading(format!("{}  Log in a character", icon::SIGN_IN));
                         ui.label(
                             "Log in with EVE SSO so EVE Spai knows your location for \
@@ -4749,7 +4867,7 @@ impl SpaiApp {
                             );
                         }
                     }
-                    _ => {
+                    S::Theme => {
                         ui.heading(format!("{}  Theme", icon::PALETTE));
                         ui.label("Pick a colour preset (fine-tune fully in Settings).");
                         ui.add_space(4.0);
@@ -4770,20 +4888,20 @@ impl SpaiApp {
                         close = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if step >= LAST {
+                        if idx >= last {
                             if ui.button(format!("{}  Finish", icon::CHECK_CIRCLE)).clicked() {
                                 finish = true;
                             }
                         } else if ui.button("Next").clicked() {
-                            step += 1;
+                            idx += 1;
                         }
-                        if step > 0 && ui.button("Back").clicked() {
-                            step = step.saturating_sub(1);
+                        if idx > 0 && ui.button("Back").clicked() {
+                            idx -= 1;
                         }
                     });
                 });
             });
-        self.wizard_step = step;
+        self.wizard_step = idx.min(last) as u8;
         if finish || close {
             self.settings.wizard_done = true;
             self.needs_save = true;
