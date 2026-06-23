@@ -182,6 +182,8 @@ pub struct SpaiApp {
     /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
     /// the combat-log watcher.
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Self process resource usage (status bar).
+    proc_monitor: crate::procstat::Monitor,
     /// Whether the EVE client is the focused window (for "smart" always-on-top).
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
@@ -354,6 +356,7 @@ impl SpaiApp {
             alert_feed: Vec::new(),
             alert_window_secs: 0.0,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
+            proc_monitor: crate::procstat::Monitor::new(),
             eve_focused: true,
             eve_focus_checked: None,
             map_overlays: pv.overlays,
@@ -2780,12 +2783,28 @@ impl SpaiApp {
         egui::Panel::bottom("status_bar")
             .exact_size(30.0)
             .show_inside(ui, |ui| {
+                self.proc_monitor.tick();
                 ui.horizontal_centered(|ui| {
                     ui.add_space(8.0);
                     let intel = self.intel_state.lock().unwrap().reports.len();
                     ui.label(format!("Intel: {intel}"));
                     ui.separator();
                     ui.label(egui::RichText::new(&self.active_character).weak());
+                    // Resource usage, right-aligned.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  {:.0}%   {}  {}",
+                                egui_phosphor::regular::CPU,
+                                self.proc_monitor.cpu_percent,
+                                egui_phosphor::regular::MEMORY,
+                                self.proc_monitor.rss_human(),
+                            ))
+                            .weak(),
+                        )
+                        .on_hover_text("CPU (share of one core) · resident memory");
+                    });
                 });
             });
     }
