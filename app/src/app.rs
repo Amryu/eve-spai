@@ -2242,28 +2242,8 @@ impl SpaiApp {
                             }
                         });
                         hovered = ui.ui_contains_pointer();
-                        // Bottom-right resize grip.
-                        let gr = egui::Rect::from_min_size(
-                            ui.max_rect().right_bottom() - egui::vec2(16.0, 16.0),
-                            egui::vec2(16.0, 16.0),
-                        );
-                        let grip = ui.interact(gr, ui.id().with("resize"), egui::Sense::drag());
-                        let col = ui.visuals().weak_text_color();
-                        for k in 1..=3 {
-                            let o = k as f32 * 4.0;
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(gr.right() - o, gr.bottom() - 2.0),
-                                    egui::pos2(gr.right() - 2.0, gr.bottom() - o),
-                                ],
-                                egui::Stroke::new(1.5, col),
-                            );
-                        }
-                        if grip.drag_started() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
-                                egui::ResizeDirection::SouthEast,
-                            ));
-                        }
+                        // Bottom-right resize grip (hover highlight + resize cursor).
+                        resize_grip(ui);
                     });
                 if let Some(p) = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y))) {
                     moved = Some(p);
@@ -3898,7 +3878,15 @@ impl SpaiApp {
                 } else {
                     egui::Frame::central_panel(&ctx.style())
                 };
-                egui::CentralPanel::default().frame(frame).show(ctx, |ui| self.draw_map(ui));
+                let locked = self.map_overlay_locked;
+                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+                    self.draw_map(ui);
+                    // Borderless overlay has no native resize edge — draw a grip
+                    // (hidden when locked, which also disables resizing).
+                    if overlay && !locked {
+                        resize_grip(ui);
+                    }
+                });
                 // Re-apply decorations/resizable on change — the builder only sets
                 // them at creation, so toggling overlay↔bordered otherwise left the
                 // restored window borderless / non-resizable.
@@ -7134,6 +7122,39 @@ fn fmt_age(secs: i64) -> String {
 /// later "clear" has outdated it; `from_you` is jumps from the active character.
 /// Render one intel report as typed, clickable panels (no raw message inline; the
 /// raw text is available on hover). Returns a clicked system id to focus the map.
+/// A bottom-right resize grip for a borderless viewport (the map overlay, the alert
+/// window): hover highlights the diagonal ticks and shows the resize cursor; dragging
+/// begins a window resize. Call last so it paints over the content.
+fn resize_grip(ui: &mut egui::Ui) {
+    const SZ: f32 = 18.0;
+    let corner = ui.max_rect().right_bottom();
+    let rect = egui::Rect::from_min_max(corner - egui::vec2(SZ, SZ), corner);
+    let resp = ui.interact(rect, ui.id().with("resize_grip"), egui::Sense::drag());
+    let hot = resp.hovered() || resp.dragged();
+    let col = if hot {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    let painter = ui.painter();
+    let br = corner - egui::vec2(3.0, 3.0);
+    for i in 0..3 {
+        let o = 4.0 * (i as f32 + 1.0);
+        painter.line_segment(
+            [egui::pos2(br.x - o, br.y), egui::pos2(br.x, br.y - o)],
+            egui::Stroke::new(1.5, col),
+        );
+    }
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+    if resp.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::BeginResize(
+            egui::ResizeDirection::SouthEast,
+        ));
+    }
+}
+
 fn intel_row(
     ui: &mut egui::Ui,
     r: &crate::intel::IntelReport,
