@@ -3777,6 +3777,23 @@ fn intel_row(
                     );
                 }
 
+                // External link badges (killmail / battle report / dscan).
+                for link in &r.links {
+                    use crate::intel::LinkKind;
+                    let (lic, label) = match link.kind {
+                        LinkKind::Killmail => (icon::SKULL, "killmail"),
+                        LinkKind::BattleReport => (icon::CHART_LINE, "battle report"),
+                        LinkKind::Dscan => (icon::RADIO, "dscan"),
+                    };
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new(format!("{lic} {label}")).color(accent)))
+                        .on_hover_text(&link.url)
+                        .clicked()
+                    {
+                        let _ = open::that(&link.url);
+                    }
+                }
+
                 // Status flags.
                 let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
                     ui.label(egui::RichText::new(txt).color(col).strong());

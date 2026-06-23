@@ -96,6 +96,7 @@ mod tests {
             skyhook: false,
             gate: None,
             movement: None,
+            links: vec![],
         }
     }
 

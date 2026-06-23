@@ -55,6 +55,53 @@ pub struct IntelReport {
     pub gate: Option<String>,
     /// Where the subject was previously seen (set by the watcher).
     pub movement: Option<Movement>,
+    /// External links pasted into the message (killmail / battle report / dscan).
+    pub links: Vec<IntelLink>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkKind {
+    Killmail,
+    BattleReport,
+    Dscan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntelLink {
+    pub kind: LinkKind,
+    pub url: String,
+    /// zKillboard kill id, when this is a killmail link (for dedup with the feed).
+    pub kill_id: Option<i64>,
+}
+
+/// Find pasted killmail / battle-report / dscan URLs in a message.
+pub fn extract_links(text: &str) -> Vec<IntelLink> {
+    let mut out = Vec::new();
+    for raw in text.split_whitespace() {
+        let url = raw.trim_matches(|c: char| "<>()[]\"'".contains(c));
+        if !url.starts_with("http") {
+            continue;
+        }
+        let lower = url.to_lowercase();
+        let link = if lower.contains("zkillboard.com/kill/") {
+            let kill_id = lower
+                .split("zkillboard.com/kill/")
+                .nth(1)
+                .and_then(|s| s.split('/').next())
+                .and_then(|s| s.parse::<i64>().ok());
+            IntelLink { kind: LinkKind::Killmail, url: url.to_owned(), kill_id }
+        } else if lower.contains("br.evetools.org") || lower.contains("zkillboard.com/related/") {
+            IntelLink { kind: LinkKind::BattleReport, url: url.to_owned(), kill_id: None }
+        } else if lower.contains("dscan.me") || lower.contains("dscan.org") {
+            IntelLink { kind: LinkKind::Dscan, url: url.to_owned(), kill_id: None }
+        } else {
+            continue;
+        };
+        if !out.contains(&link) {
+            out.push(link);
+        }
+    }
+    out
 }
 
 impl IntelReport {
@@ -108,17 +155,25 @@ impl IntelState {
             return false;
         }
         let new_sys = new.primary_system().map(|s| s.id);
+        let new_pilots: std::collections::HashSet<String> =
+            new.pilots.iter().map(|p| p.to_lowercase()).collect();
         for prev in self.reports.iter_mut().rev() {
-            if prev.reporter != new.reporter {
+            // Link by the same reporter (split message) OR a shared pilot name (one
+            // scout reports the hostile, another adds the ship/route on the same
+            // pilot — not linked by system, but by player).
+            let same_reporter = prev.reporter == new.reporter;
+            let shares_pilot = !new_pilots.is_empty()
+                && prev.pilots.iter().any(|p| new_pilots.contains(&p.to_lowercase()));
+            if !same_reporter && !shares_pilot {
                 continue;
             }
-            // Most-recent report by this reporter; only amend within the grace window.
+            // Only amend within the grace window (keep scanning older ones otherwise).
             if new.received < prev.received || new.received - prev.received > grace {
-                return false;
+                continue;
             }
             let prev_sys = prev.primary_system().map(|s| s.id);
             if new_sys.is_some() && new_sys != prev_sys {
-                return false; // a different system is a new sighting
+                continue; // a different system is a new sighting / movement
             }
             for sh in &new.ships {
                 if !prev.ships.iter().any(|s| s.id == sh.id) {
@@ -233,12 +288,46 @@ fn extract_quoted(text: &str) -> Vec<String> {
 /// Candidate pilot names: runs of 2–3 Title-Case alphabetic words in the *raw*
 /// text (punctuation and numbers break a run), minus obvious intel/English words.
 /// ESI confirms which are real characters later.
+/// A token that can be part of an EVE character name. Names can contain digits
+/// ("Pericle No1") — allow alphanumeric so long as there's a letter (a bare number
+/// is never a name part), but no hyphens (those mark system codes like "GPLB-C").
+fn name_part(t: &str) -> bool {
+    t.len() >= 2
+        && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'')
+        && t.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+/// Drag-and-drop dscan reports are always "<pilot> (<ship>)". Extract the pilot
+/// name (the trailing name run before each parenthesis) — this catches single-word
+/// names like "SokoleOko" that the general heuristic misses.
+fn extract_dscan_drops(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut search = 0;
+    while let Some(open_rel) = text[search..].find('(') {
+        let open = search + open_rel;
+        let close = match text[open + 1..].find(')') {
+            Some(c) => open + 1 + c,
+            None => break,
+        };
+        let name: Vec<&str> = text[..open]
+            .split_whitespace()
+            .rev()
+            .take_while(|t| name_part(t))
+            .collect();
+        if (1..=3).contains(&name.len()) {
+            let pilot = name.into_iter().rev().collect::<Vec<_>>().join(" ");
+            if !out.contains(&pilot) {
+                out.push(pilot);
+            }
+        }
+        search = close + 1;
+    }
+    out
+}
+
 fn extract_pilots(text: &str) -> Vec<String> {
-    let is_namepart = |t: &str| {
-        t.len() >= 2
-            && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-            && t.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
-    };
+    let is_namepart = name_part;
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
@@ -281,11 +370,18 @@ pub fn analyze(
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+    let links = extract_links(text);
 
     // Candidate pilot names first: their tokens must not be parsed as ships or
     // systems (player names often contain hull/system names, e.g. "Sabre Pilot" or
     // "Jita Trader"). Quoted spans are forced to be names.
     let mut pilots = extract_pilots(text);
+    // Drag-and-drop dscan names "<pilot> (<ship>)" — catches single-word names.
+    for d in extract_dscan_drops(text) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&d)) {
+            pilots.push(d);
+        }
+    }
     for q in extract_quoted(text) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&q)) {
             pilots.push(q);
@@ -428,7 +524,7 @@ pub fn analyze(
         spike: lower.contains("spike"),
         camp: lower.contains("camp"),
         bubble: lower.contains("bubble"),
-        killmail: lower.contains("zkillboard.com") || lower.contains("kill:"),
+        killmail: links.iter().any(|l| l.kind == LinkKind::Killmail) || lower.contains("kill:"),
         cyno: lower.contains("cyno"),
         wormhole: lower.contains("wormhole")
             || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
@@ -436,6 +532,7 @@ pub fn analyze(
         skyhook: lower.contains("skyhook"),
         gate,
         movement: None,
+        links,
     }
 }
 
@@ -596,6 +693,28 @@ mod tests {
         // A clear is never amended into a sighting (it must not wipe ship info).
         let clear = analyze("Rancer clear", &s, &noships(), 150, "ch", "Scout");
         assert!(!state.try_amend(&clear, 60));
+    }
+
+    #[test]
+    fn dscan_drop_extracts_pilot_name() {
+        assert_eq!(extract_dscan_drops("YI-GV6 SokoleOko (鱼鹰级海军型)"), vec!["SokoleOko".to_string()]);
+        assert_eq!(extract_dscan_drops("Pericle No1 (Loki)"), vec!["Pericle No1".to_string()]);
+    }
+
+    #[test]
+    fn amends_by_shared_pilot_across_reporters() {
+        let s = systems();
+        let loki: std::collections::HashMap<String, (i64, String)> =
+            [("loki".to_string(), (29990i64, "Loki".to_string()))].into_iter().collect();
+        let mut state = IntelState::default();
+        // Scout A: a hyphenated system + a pilot with a digit in the name.
+        state.push(analyze("C-J6MT Pericle No1", &s, &noships(), 100, "ch", "Kobayashi Mika"));
+        assert_eq!(state.reports[0].pilots, vec!["Pericle No1".to_string()]);
+        // Scout B (different reporter): same pilot, no system, adds the ship.
+        let follow = analyze("Pericle No1 loki", &s, &loki, 130, "ch", "Wallie Warptunnel");
+        assert!(state.try_amend(&follow, 60));
+        assert_eq!(state.reports.len(), 1);
+        assert!(state.reports[0].ships.iter().any(|sh| sh.name == "Loki"));
     }
 
     #[test]
