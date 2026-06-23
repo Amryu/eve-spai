@@ -58,6 +58,16 @@ pub struct IntelReport {
     pub wormhole: bool,
     /// Detected wormhole signature code (e.g. "K162"), when one was named.
     pub wh_type: Option<String>,
+    /// Destination class guessed from the message text. This is only a guess — the
+    /// wormhole *type's* own class (and EVE-Scout data) are authoritative facts and
+    /// override it; it's used only when the type doesn't pin the class.
+    pub wh_dest: Option<crate::wormholes::DestClass>,
+    /// "EOL" / end-of-life was called out.
+    pub wh_eol: bool,
+    /// "drifter" was called out.
+    pub wh_drifter: bool,
+    /// Cosmic signature id (e.g. "ABC-123"), if named.
+    pub wh_sig: Option<String>,
     pub ess: bool,
     /// Time left until the ESS is hacked, when called out (e.g. "5:30", "3m").
     pub ess_time: Option<String>,
@@ -217,6 +227,10 @@ impl IntelState {
             prev.killmail |= new.killmail;
             prev.wormhole |= new.wormhole;
             prev.wh_type = new.wh_type.clone().or_else(|| prev.wh_type.clone());
+            prev.wh_dest = new.wh_dest.or(prev.wh_dest);
+            prev.wh_eol |= new.wh_eol;
+            prev.wh_drifter |= new.wh_drifter;
+            prev.wh_sig = new.wh_sig.clone().or_else(|| prev.wh_sig.clone());
             prev.ess |= new.ess;
             prev.ess_time = new.ess_time.clone().or_else(|| prev.ess_time.clone());
             prev.skyhook |= new.skyhook;
@@ -736,6 +750,21 @@ pub fn analyze(
     let wh_code =
         tokens.iter().find(|t| crate::wormholes::is_wh_code(t)).map(|t| t.to_uppercase());
 
+    // Extra wormhole detail, parsed only for an actual wormhole sighting.
+    let is_wh_msg = lower.contains("wormhole")
+        || wh_code.is_some()
+        || lower_tokens.iter().any(|t| t == "wh" && !pilot_tokens.contains(t));
+    let (wh_dest, wh_eol, wh_drifter, wh_sig) = if is_wh_msg {
+        (
+            parse_wh_dest(&lower, &lower_tokens),
+            lower.contains("eol") || lower.contains("end of life") || lower.contains("dying"),
+            lower.contains("drifter"),
+            tokens.iter().find(|t| looks_like_sig(t)).map(|t| t.to_uppercase()),
+        )
+    } else {
+        (None, false, false, None)
+    };
+
     // Ships: hull names / nicknames / acronyms (case-insensitive), or an unambiguous
     // typo. A token that belongs to a pilot name is never also parsed as a ship.
     let mut ships: Vec<DetectedShip> = Vec::new();
@@ -938,10 +967,12 @@ pub fn analyze(
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail) || lower.contains("kill:"),
         cyno: flagged(&lower_tokens, &pilot_tokens, &["cyno"]),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
-        wormhole: lower.contains("wormhole")
-            || wh_code.is_some()
-            || lower_tokens.iter().any(|t| t == "wh" && !pilot_tokens.contains(t)),
+        wormhole: is_wh_msg,
         wh_type: wh_code,
+        wh_dest,
+        wh_eol,
+        wh_drifter,
+        wh_sig,
         ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
         // The ESS hack timer maxes at 6 min for the main bank, 45 min for the
         // reserve. A larger "Xm" is an ISK amount (e.g. "77m bank"), not a time.
@@ -1148,6 +1179,45 @@ fn tokenize(text: &str) -> Vec<&str> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '\''))
         .filter(|t| t.len() >= 2)
         .collect()
+}
+
+/// Destination class guessed from a wormhole message's text. Only a guess — the
+/// wormhole *type's* own class (and EVE-Scout data) override it. None if no class
+/// keyword is present.
+fn parse_wh_dest(lower: &str, lower_tokens: &[String]) -> Option<crate::wormholes::DestClass> {
+    use crate::wormholes::DestClass;
+    let has = |w: &str| lower_tokens.iter().any(|t| t == w);
+    if lower.contains("thera") {
+        Some(DestClass::Thera)
+    } else if lower.contains("turnur") {
+        Some(DestClass::Turnur)
+    } else if lower.contains("highsec") || lower.contains("hisec") || has("hs") {
+        Some(DestClass::Highsec)
+    } else if lower.contains("lowsec") || lower.contains("losec") || has("ls") {
+        Some(DestClass::Lowsec)
+    } else if lower.contains("nullsec") || lower.contains("0.0") || has("ns") || has("null") {
+        Some(DestClass::Nullsec)
+    } else if lower.contains("wspace")
+        || lower.contains("w-space")
+        || lower.contains("jspace")
+        || lower.contains("j-space")
+        || lower_tokens
+            .iter()
+            .any(|t| t.len() >= 2 && t.starts_with('c') && t[1..].bytes().all(|c| c.is_ascii_digit()))
+    {
+        Some(DestClass::Wspace)
+    } else {
+        None
+    }
+}
+
+/// An EVE cosmic-signature id, "ABC-123".
+fn looks_like_sig(t: &str) -> bool {
+    let b = t.as_bytes();
+    b.len() == 7
+        && b[3] == b'-'
+        && b[..3].iter().all(u8::is_ascii_alphabetic)
+        && b[4..].iter().all(u8::is_ascii_digit)
 }
 
 /// Parse an EVE timestamp ("2026.06.22 18:30:45", UTC) to unix seconds.

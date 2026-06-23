@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS wormholes (
     wh_type         TEXT,
     dest_class      TEXT NOT NULL,
     dest_system_id  INTEGER,
+    dest_signature  TEXT,
+    dest_wh_type    TEXT,
     size            TEXT,
     is_drifter      INTEGER NOT NULL DEFAULT 0,
     reported_at     INTEGER NOT NULL,
@@ -147,6 +149,8 @@ impl Store {
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN faction_id INTEGER", []);
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN x2d REAL", []);
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN z2d REAL", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_signature TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
         migrate_plaintext_tokens(&conn);
         Ok(Self { conn, path })
     }
@@ -402,49 +406,79 @@ impl Store {
 
     // --- Wormholes ---------------------------------------------------------
 
-    /// Insert a wormhole, or merge a fresher report into the existing one (matched on
-    /// its dedup key — the first-seen key stays fixed). Returns the row id.
+    const WH_COLS: &'static str = "id, system_id, signature, wh_type, dest_class,
+        dest_system_id, dest_signature, dest_wh_type, size, is_drifter, reported_at,
+        explicit_expiry, source, updated_at";
+
+    /// Insert a wormhole connection, or merge a report into the existing connection.
+    /// A signature that matches *either* endpoint of a known connection pairs with it
+    /// (so a hole reported from both sides is one connection, not two); otherwise the
+    /// (system, type, dest) dedup key is used. Returns the row id.
     pub fn upsert_wormhole(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
-        let key = incoming.dedup_key();
-        if let Some(mut existing) = self.wormhole_by_dedup(&key) {
-            existing.merge_from(incoming);
-            let _ = self.conn.execute(
-                "UPDATE wormholes SET system_id=?2, signature=?3, wh_type=?4, dest_class=?5,
-                    dest_system_id=?6, size=?7, is_drifter=?8, reported_at=?9,
-                    explicit_expiry=?10, source=?11, updated_at=?12 WHERE id=?1",
-                params![
-                    existing.id, existing.system_id, existing.signature, existing.wh_type,
-                    existing.dest.code(), existing.dest.system_id(),
-                    existing.size.map(|s| s.code()), existing.is_drifter as i64,
-                    existing.reported_at, existing.explicit_expiry, existing.source.code(),
-                    existing.updated_at,
-                ],
-            );
-            existing.id
-        } else {
-            let _ = self.conn.execute(
-                "INSERT INTO wormholes(dedup, system_id, signature, wh_type, dest_class,
-                    dest_system_id, size, is_drifter, reported_at, explicit_expiry, source, updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                params![
-                    key, incoming.system_id, incoming.signature, incoming.wh_type,
-                    incoming.dest.code(), incoming.dest.system_id(),
-                    incoming.size.map(|s| s.code()), incoming.is_drifter as i64,
-                    incoming.reported_at, incoming.explicit_expiry, incoming.source.code(),
-                    incoming.updated_at,
-                ],
-            );
-            self.conn.last_insert_rowid()
+        // Signature-based pairing against either endpoint.
+        if let Some(sig) = incoming.signature.as_deref().filter(|s| !s.is_empty()) {
+            if let Some(mut near) = self.wormhole_where(
+                "system_id=?1 AND signature=?2",
+                params![incoming.system_id, sig],
+            ) {
+                near.merge_from(incoming);
+                self.write_wormhole(&near);
+                return near.id;
+            }
+            if let Some(mut owner) = self.wormhole_where(
+                "dest_system_id=?1 AND dest_signature=?2",
+                params![incoming.system_id, sig],
+            ) {
+                // Incoming's near side IS this connection's far side → confirm it.
+                owner.confirm_far(incoming);
+                self.write_wormhole(&owner);
+                return owner.id;
+            }
         }
+        let key = incoming.dedup_key();
+        if let Some(mut existing) = self.wormhole_where("dedup=?1", params![key]) {
+            existing.merge_from(incoming);
+            self.write_wormhole(&existing);
+            return existing.id;
+        }
+        let _ = self.conn.execute(
+            "INSERT INTO wormholes(dedup, system_id, signature, wh_type, dest_class,
+                dest_system_id, dest_signature, dest_wh_type, size, is_drifter, reported_at,
+                explicit_expiry, source, updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![
+                key, incoming.system_id, incoming.signature, incoming.wh_type,
+                incoming.dest.code(), incoming.dest_system_id, incoming.dest_signature,
+                incoming.dest_wh_type, incoming.size.map(|s| s.code()), incoming.is_drifter as i64,
+                incoming.reported_at, incoming.explicit_expiry, incoming.source.code(),
+                incoming.updated_at,
+            ],
+        );
+        self.conn.last_insert_rowid()
     }
 
-    fn wormhole_by_dedup(&self, key: &str) -> Option<crate::wormholes::Wormhole> {
+    fn write_wormhole(&self, w: &crate::wormholes::Wormhole) {
+        let _ = self.conn.execute(
+            "UPDATE wormholes SET system_id=?2, signature=?3, wh_type=?4, dest_class=?5,
+                dest_system_id=?6, dest_signature=?7, dest_wh_type=?8, size=?9, is_drifter=?10,
+                reported_at=?11, explicit_expiry=?12, source=?13, updated_at=?14 WHERE id=?1",
+            params![
+                w.id, w.system_id, w.signature, w.wh_type, w.dest.code(), w.dest_system_id,
+                w.dest_signature, w.dest_wh_type, w.size.map(|s| s.code()), w.is_drifter as i64,
+                w.reported_at, w.explicit_expiry, w.source.code(), w.updated_at,
+            ],
+        );
+    }
+
+    fn wormhole_where(
+        &self,
+        cond: &str,
+        params: impl rusqlite::Params,
+    ) -> Option<crate::wormholes::Wormhole> {
         self.conn
             .query_row(
-                "SELECT id, system_id, signature, wh_type, dest_class, dest_system_id, size,
-                    is_drifter, reported_at, explicit_expiry, source, updated_at
-                 FROM wormholes WHERE dedup=?1",
-                params![key],
+                &format!("SELECT {} FROM wormholes WHERE {cond}", Self::WH_COLS),
+                params,
                 Self::row_to_wormhole,
             )
             .ok()
@@ -453,10 +487,9 @@ impl Store {
     /// All known wormholes (callers prune/filter by expiry as needed).
     pub fn wormholes(&self) -> Vec<crate::wormholes::Wormhole> {
         let mut out = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, system_id, signature, wh_type, dest_class, dest_system_id, size,
-                is_drifter, reported_at, explicit_expiry, source, updated_at FROM wormholes",
-        ) {
+        if let Ok(mut stmt) =
+            self.conn.prepare(&format!("SELECT {} FROM wormholes", Self::WH_COLS))
+        {
             if let Ok(rows) = stmt.query_map([], Self::row_to_wormhole) {
                 out.extend(rows.flatten());
             }
@@ -476,21 +509,23 @@ impl Store {
     fn row_to_wormhole(row: &rusqlite::Row) -> rusqlite::Result<crate::wormholes::Wormhole> {
         use crate::wormholes::{DestClass, ShipSize, Source, Wormhole};
         let dest_code: String = row.get(4)?;
-        let dest_sys: Option<i64> = row.get(5)?;
-        let size_code: Option<String> = row.get(6)?;
-        let source_code: String = row.get(10)?;
+        let size_code: Option<String> = row.get(8)?;
+        let source_code: String = row.get(12)?;
         Ok(Wormhole {
             id: row.get(0)?,
             system_id: row.get(1)?,
             signature: row.get(2)?,
             wh_type: row.get(3)?,
-            dest: DestClass::from_code(&dest_code, dest_sys),
+            dest: DestClass::from_code(&dest_code),
+            dest_system_id: row.get(5)?,
+            dest_signature: row.get(6)?,
+            dest_wh_type: row.get(7)?,
             size: size_code.and_then(|c| ShipSize::from_code(&c)),
-            is_drifter: row.get::<_, i64>(7)? != 0,
-            reported_at: row.get(8)?,
-            explicit_expiry: row.get(9)?,
+            is_drifter: row.get::<_, i64>(9)? != 0,
+            reported_at: row.get(10)?,
+            explicit_expiry: row.get(11)?,
             source: Source::from_code(&source_code),
-            updated_at: row.get(11)?,
+            updated_at: row.get(13)?,
         })
     }
 

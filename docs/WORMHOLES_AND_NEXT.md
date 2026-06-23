@@ -41,12 +41,15 @@ the map**, but the system-info window must open for them.
       list/prune.
 - [x] **W2. EVE-Scout seeding.** Polls `api.eve-scout.com/v2/public/signatures` every
       5 min → records (verified live: 24 Thera/Turnur connections).
-- [~] **W3. Intel extraction.** Static catalogue of all 96 WH codes
-      (`wormholes::WH_TYPES`, EVE-Uni wiki) with nominal destination/size/drifter;
-      parser recognises a code → `IntelReport.wh_type`; watcher creates intel-sourced
-      records (dest/size/drifter from the catalogue). **Done.** TODO: parse extra
-      detail from the *text* — explicit destination ("to null"/scouted system), EOL /
-      lifetime, "drifter", signature id — to override the type's nominal values.
+- [x] **W3. Intel extraction.** Static catalogue of all 96 WH codes
+      (`wormholes::WH_TYPES`); parser recognises a code → `wh_type`, plus text detail
+      (destination class, EOL, drifter, signature). Watcher creates intel records.
+      **Facts win:** the type's class/size/drifter and EVE-Scout data are never
+      overridden by an intel guess (source-ranked merge); intel only fills genuine
+      gaps (e.g. K162's destination). **Connections are paired** — each holds both
+      endpoints + both signatures, and a signature matching either endpoint pairs with
+      the existing connection instead of creating a second one. (Scouted-specific-
+      system from free text is still TODO.)
 - [~] **W4. Wormholes view.** Nav item + table (system, type, destination, size, life
       or "reported N ago", source, drifter) with clickable system + scouted-dest
       breadcrumbs **done**. TODO: filters (destination class, source, expiring soon).

@@ -16,13 +16,11 @@ pub enum DestClass {
     Wspace,
     Thera,
     Turnur,
-    /// A specific system, known because someone scouted through.
-    System(i64),
     Unknown,
 }
 
 impl DestClass {
-    /// Short tag stored in the DB (paired with a system id for `System`).
+    /// Short tag stored in the DB.
     pub fn code(self) -> &'static str {
         match self {
             DestClass::Highsec => "hs",
@@ -31,12 +29,11 @@ impl DestClass {
             DestClass::Wspace => "wspace",
             DestClass::Thera => "thera",
             DestClass::Turnur => "turnur",
-            DestClass::System(_) => "system",
             DestClass::Unknown => "unknown",
         }
     }
 
-    pub fn from_code(code: &str, system_id: Option<i64>) -> DestClass {
+    pub fn from_code(code: &str) -> DestClass {
         match code {
             "hs" => DestClass::Highsec,
             "ls" => DestClass::Lowsec,
@@ -44,21 +41,10 @@ impl DestClass {
             "wspace" => DestClass::Wspace,
             "thera" => DestClass::Thera,
             "turnur" => DestClass::Turnur,
-            "system" => system_id.map_or(DestClass::Unknown, DestClass::System),
             _ => DestClass::Unknown,
         }
     }
 
-    /// The specific destination system id, if known.
-    pub fn system_id(self) -> Option<i64> {
-        match self {
-            DestClass::System(id) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Short human label (the specific-system case is rendered by the caller, which
-    /// has the name lookup).
     pub fn label(self) -> &'static str {
         match self {
             DestClass::Highsec => "Highsec",
@@ -67,7 +53,6 @@ impl DestClass {
             DestClass::Wspace => "J-space",
             DestClass::Thera => "Thera",
             DestClass::Turnur => "Turnur",
-            DestClass::System(_) => "System",
             DestClass::Unknown => "Unknown",
         }
     }
@@ -279,16 +264,33 @@ pub static WH_TYPES: &[Wh] = &[
     Wh("Z971", DestClass::Wspace, Some(ShipSize::Medium), false),
 ];
 
-/// One known wormhole.
+/// Source authority: a fact from a higher-ranked source is never overwritten by a
+/// lower one (EVE-Scout > manual > intel).
+fn rank(s: Source) -> u8 {
+    match s {
+        Source::EveScout => 2,
+        Source::Manual => 1,
+        Source::Intel => 0,
+    }
+}
+
+/// One known wormhole *connection*. It has two endpoints — the near side (where we
+/// primarily know it) and the far side — so a hole reported from both ends is a
+/// single connection, not two.
 #[derive(Clone, Debug)]
 pub struct Wormhole {
     /// DB row id (0 before insert).
     pub id: i64,
-    /// System the wormhole is located in.
+    // Near side.
     pub system_id: i64,
     pub signature: Option<String>,
     pub wh_type: Option<String>,
+    // Far side.
     pub dest: DestClass,
+    pub dest_system_id: Option<i64>,
+    pub dest_signature: Option<String>,
+    pub dest_wh_type: Option<String>,
+    // Shared.
     pub size: Option<ShipSize>,
     pub is_drifter: bool,
     pub reported_at: i64,
@@ -323,8 +325,8 @@ impl Wormhole {
         (s > 0).then(|| (s + 3599) / 3600)
     }
 
-    /// Identity for de-duplication: the signature pins it exactly; without one we fall
-    /// back to the (system, type, destination) triple.
+    /// Identity for de-duplication: the near signature pins it exactly; without one we
+    /// fall back to the (system, type, destination) triple.
     pub fn dedup_key(&self) -> String {
         match &self.signature {
             Some(sig) if !sig.is_empty() => format!("{}|sig:{}", self.system_id, sig.to_uppercase()),
@@ -337,27 +339,50 @@ impl Wormhole {
         }
     }
 
-    /// Merge a fresher report of the same hole into this one: fill in optional fields
-    /// we didn't have, and advance the freshness/expiry.
+    /// Merge another report of the *same near side* into this one. Optional gaps are
+    /// filled; facts from an equal-or-higher source win; a guess never overrides them.
     pub fn merge_from(&mut self, other: &Wormhole) {
-        self.signature = self.signature.clone().or_else(|| other.signature.clone());
-        self.wh_type = self.wh_type.clone().or_else(|| other.wh_type.clone());
-        self.size = self.size.or(other.size);
-        self.is_drifter |= other.is_drifter;
-        // A more specific destination wins (a scouted system beats a bare class).
-        if matches!(self.dest, DestClass::Unknown)
-            || (self.dest.system_id().is_none() && other.dest.system_id().is_some())
-        {
+        let auth = rank(other.source) >= rank(self.source);
+        self.signature = self.signature.take().or_else(|| other.signature.clone());
+        self.wh_type = self.wh_type.take().or_else(|| other.wh_type.clone());
+        // Far side (pairs the endpoints).
+        self.dest_system_id = self.dest_system_id.or(other.dest_system_id);
+        self.dest_signature = self.dest_signature.take().or_else(|| other.dest_signature.clone());
+        self.dest_wh_type = self.dest_wh_type.take().or_else(|| other.dest_wh_type.clone());
+        // Destination class: a known class is a fact — only a >= source overrides it,
+        // and a guess only fills an Unknown.
+        if !matches!(other.dest, DestClass::Unknown) && (auth || matches!(self.dest, DestClass::Unknown)) {
             self.dest = other.dest;
         }
-        if other.explicit_expiry.is_some() {
+        self.merge_shared(other);
+    }
+
+    /// Merge only the *shared* facts (used when `other` confirms the far side, so its
+    /// near-side detail belongs to a different endpoint and must not be copied here).
+    pub fn merge_shared(&mut self, other: &Wormhole) {
+        let auth = rank(other.source) >= rank(self.source);
+        if other.size.is_some() && (self.size.is_none() || auth) {
+            self.size = other.size;
+        }
+        self.is_drifter |= other.is_drifter;
+        if other.explicit_expiry.is_some() && (auth || self.explicit_expiry.is_none()) {
             self.explicit_expiry = other.explicit_expiry;
         }
         self.updated_at = self.updated_at.max(other.updated_at);
-        // EVE-Scout is authoritative over an intel guess for the source label.
-        if matches!(other.source, Source::EveScout) {
-            self.source = Source::EveScout;
+        if rank(other.source) > rank(self.source) {
+            self.source = other.source;
         }
+    }
+
+    /// Record the far-side endpoint from a report whose near side matched our far side.
+    pub fn confirm_far(&mut self, far: &Wormhole) {
+        if self.dest_signature.is_none() {
+            self.dest_signature = far.signature.clone();
+        }
+        if self.dest_wh_type.is_none() {
+            self.dest_wh_type = far.wh_type.clone();
+        }
+        self.merge_shared(far);
     }
 }
 
@@ -372,6 +397,7 @@ struct ScoutSig {
     in_signature: Option<String>,
     out_system_id: i64,
     out_system_name: Option<String>,
+    out_signature: Option<String>,
     wh_type: Option<String>,
     max_ship_size: Option<String>,
     remaining_hours: Option<i64>,
@@ -415,11 +441,11 @@ fn scout_to_wormhole(s: &ScoutSig, now: i64) -> Option<Wormhole> {
     if s.signature_type.as_deref() != Some("wormhole") {
         return None;
     }
-    // The hole sits in the connected system (`in_system`) and leads to the hub.
+    // The hole sits in the connected system (`in_system`) and leads to the hub; we
+    // keep both endpoints (both signatures) so it's one connection.
     let dest = match s.out_system_name.as_deref() {
-        Some("Thera") => DestClass::Thera,
         Some("Turnur") => DestClass::Turnur,
-        _ => DestClass::System(s.out_system_id),
+        _ => DestClass::Thera,
     };
     let reported = s.created_at.as_deref().and_then(parse_rfc3339).unwrap_or(now);
     Some(Wormhole {
@@ -428,6 +454,9 @@ fn scout_to_wormhole(s: &ScoutSig, now: i64) -> Option<Wormhole> {
         signature: s.in_signature.clone(),
         wh_type: s.wh_type.clone(),
         dest,
+        dest_system_id: Some(s.out_system_id),
+        dest_signature: s.out_signature.clone(),
+        dest_wh_type: None,
         size: s.max_ship_size.as_deref().and_then(ShipSize::from_code),
         is_drifter: false,
         reported_at: reported,
@@ -452,6 +481,9 @@ mod tests {
             signature: None,
             wh_type: Some("K162".into()),
             dest: DestClass::Nullsec,
+            dest_system_id: None,
+            dest_signature: None,
+            dest_wh_type: None,
             size: None,
             is_drifter: drifter,
             reported_at: reported,
@@ -490,17 +522,60 @@ mod tests {
     }
 
     #[test]
-    fn merge_fills_optionals_and_specializes_destination() {
-        let mut base = wh(false, 1000); // dest Nullsec, no size
-        let mut scouted = wh(false, 2000);
-        scouted.dest = DestClass::System(31000005);
-        scouted.size = Some(ShipSize::Large);
-        scouted.source = Source::EveScout;
-        base.merge_from(&scouted);
-        assert_eq!(base.dest, DestClass::System(31000005));
-        assert_eq!(base.size, Some(ShipSize::Large));
+    fn evescout_facts_win_over_intel() {
+        // EVE-Scout established a Thera connection (Large). Intel later guesses a
+        // different class with no size — the facts must survive.
+        let mut fact = wh(false, 1000);
+        fact.dest = DestClass::Thera;
+        fact.size = Some(ShipSize::Large);
+        fact.source = Source::EveScout;
+        let mut guess = wh(false, 2000); // dest Nullsec, no size, Intel
+        guess.dest = DestClass::Nullsec;
+        fact.merge_from(&guess);
+        assert_eq!(fact.dest, DestClass::Thera, "intel must not override the fact");
+        assert_eq!(fact.size, Some(ShipSize::Large));
+        assert_eq!(fact.source, Source::EveScout);
+        assert_eq!(fact.updated_at, 2000); // freshness still advances
+    }
+
+    #[test]
+    fn intel_fills_unknown_then_evescout_upgrades() {
+        // Intel-only Unknown destination is filled by a guess, then EVE-Scout wins.
+        let mut base = wh(false, 1000);
+        base.dest = DestClass::Unknown;
+        let mut intel = wh(false, 1500);
+        intel.dest = DestClass::Nullsec; // a guess fills the gap
+        base.merge_from(&intel);
+        assert_eq!(base.dest, DestClass::Nullsec);
+        let mut scout = wh(false, 2000);
+        scout.dest = DestClass::Thera;
+        scout.size = Some(ShipSize::XLarge);
+        scout.source = Source::EveScout;
+        base.merge_from(&scout);
+        assert_eq!(base.dest, DestClass::Thera); // fact overrides the earlier guess
+        assert_eq!(base.size, Some(ShipSize::XLarge));
         assert_eq!(base.source, Source::EveScout);
-        assert_eq!(base.updated_at, 2000);
+    }
+
+    #[test]
+    fn confirm_far_pairs_endpoints() {
+        // A connection known from the near side; the far side gets reported and is
+        // recorded as the same connection's far endpoint, not a new one.
+        let mut conn = wh(false, 1000);
+        conn.system_id = 30000142;
+        conn.signature = Some("ABC-123".into());
+        conn.dest = DestClass::Thera;
+        conn.dest_system_id = Some(31000005);
+        let mut far = wh(false, 1200);
+        far.system_id = 31000005;
+        far.signature = Some("XYZ-789".into());
+        far.wh_type = Some("K162".into());
+        conn.confirm_far(&far);
+        assert_eq!(conn.dest_signature.as_deref(), Some("XYZ-789"));
+        assert_eq!(conn.dest_wh_type.as_deref(), Some("K162"));
+        // Near side untouched.
+        assert_eq!(conn.signature.as_deref(), Some("ABC-123"));
+        assert_eq!(conn.system_id, 30000142);
     }
 
     #[test]
@@ -539,8 +614,7 @@ mod tests {
             DestClass::Turnur,
             DestClass::Unknown,
         ] {
-            assert_eq!(DestClass::from_code(d.code(), None), d);
+            assert_eq!(DestClass::from_code(d.code()), d);
         }
-        assert_eq!(DestClass::from_code("system", Some(42)), DestClass::System(42));
     }
 }

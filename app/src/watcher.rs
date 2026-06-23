@@ -151,21 +151,30 @@ fn scan(
                     }
                 }
 
-                // Wormhole sighting → record it. The named code (if any) gives the
-                // nominal destination / size / drifter from the static catalogue.
+                // Wormhole sighting → record it. The named code's catalogue facts
+                // (destination class, size, drifter) win over intel-text guesses; the
+                // text only fills what the type leaves open (e.g. K162's destination).
                 if report.wormhole {
                     if let Some(sys) = report.primary_system() {
-                        let t = report.wh_type.as_deref().and_then(crate::wormholes::lookup_type);
+                        use crate::wormholes::DestClass;
+                        let cat = report.wh_type.as_deref().and_then(crate::wormholes::lookup_type);
+                        let dest = match cat.map(|w| w.dest()) {
+                            Some(d) if !matches!(d, DestClass::Unknown) => d,
+                            _ => report.wh_dest.unwrap_or(DestClass::Unknown),
+                        };
                         let wh = crate::wormholes::Wormhole {
                             id: 0,
                             system_id: sys.id,
-                            signature: None,
+                            signature: report.wh_sig.clone(),
                             wh_type: report.wh_type.clone(),
-                            dest: t.map_or(crate::wormholes::DestClass::Unknown, |w| w.dest()),
-                            size: t.and_then(|w| w.size()),
-                            is_drifter: t.is_some_and(|w| w.is_drifter()),
+                            dest,
+                            dest_system_id: None,
+                            dest_signature: None,
+                            dest_wh_type: None,
+                            size: cat.and_then(|w| w.size()),
+                            is_drifter: cat.is_some_and(|w| w.is_drifter()) || report.wh_drifter,
                             reported_at: received,
-                            explicit_expiry: None,
+                            explicit_expiry: report.wh_eol.then_some(received + 4 * 3600),
                             source: crate::wormholes::Source::Intel,
                             updated_at: received,
                         };

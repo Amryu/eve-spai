@@ -1030,7 +1030,6 @@ impl SpaiApp {
     /// The Wormholes view (docs/WORMHOLES_AND_NEXT.md W4): a table of known holes
     /// seeded from EVE-Scout (Thera/Turnur) and intel channels.
     fn wormholes_view(&mut self, ui: &mut egui::Ui) {
-        use crate::wormholes::DestClass;
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.heading(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL));
@@ -1068,12 +1067,14 @@ impl SpaiApp {
             .wh_cache
             .iter()
             .map(|w| {
-                let sys = name_of(w.system_id).unwrap_or_else(|| format!("#{}", w.system_id));
-                let dest = match w.dest {
-                    DestClass::System(id) => {
-                        name_of(id).map(|n| format!("→ {n}")).unwrap_or_else(|| "→ system".into())
-                    }
-                    d => format!("→ {}", d.label()),
+                let mut sys = name_of(w.system_id).unwrap_or_else(|| format!("#{}", w.system_id));
+                if let Some(sig) = &w.signature {
+                    sys = format!("{sys}  [{sig}]");
+                }
+                // Prefer the actual far system name when known, else the class label.
+                let dest = match w.dest_system_id.and_then(name_of) {
+                    Some(n) => format!("→ {n}"),
+                    None => format!("→ {}", w.dest.label()),
                 };
                 let mut wh_type = w.wh_type.clone().unwrap_or_else(|| "—".into());
                 if w.is_drifter {
@@ -1092,7 +1093,7 @@ impl SpaiApp {
                     sys,
                     wh_type,
                     dest,
-                    dest_click: w.dest.system_id(),
+                    dest_click: w.dest_system_id,
                     size: w.size.map(|s| s.label().to_string()).unwrap_or_else(|| "—".into()),
                     life,
                     source: w.source.label().to_string(),
