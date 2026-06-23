@@ -59,20 +59,26 @@ pub struct Coalition {
     pub alliances: Vec<String>,
 }
 
-fn default_coalitions() -> Vec<Coalition> {
-    // A starter Imperium roster; editable in Settings.
-    vec![Coalition {
-        name: "Imperium".to_owned(),
-        alliances: [
-            "Goonswarm Federation",
-            "Tactical Narcotics Team",
-            "The Bastion",
-            "Get Off My Lawn",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect(),
-    }]
+pub fn default_coalitions() -> Vec<Coalition> {
+    // Best-effort snapshot of the major null-sec coalitions; the political map
+    // shifts often, so edit/reset in Settings to keep it current. Alliance names
+    // must match the sov holder name exactly (some end with a period).
+    let coal = |name: &str, members: &[&str]| Coalition {
+        name: name.to_owned(),
+        alliances: members.iter().map(|s| s.to_string()).collect(),
+    };
+    vec![
+        coal(
+            "The Imperium",
+            &["Goonswarm Federation", "Tactical Narcotics Team", "The Bastion", "Get Off My Lawn"],
+        ),
+        coal(
+            "Winter Coalition",
+            &["Fraternity.", "Northern Coalition.", "Solyaris Chtonium"],
+        ),
+        coal("The Initiative", &["The Initiative.", "Initiative Mercenaries"]),
+        coal("PanFam", &["Pandemic Legion", "Pandemic Horde"]),
+    ]
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

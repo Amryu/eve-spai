@@ -86,6 +86,8 @@ pub struct SpaiApp {
     sov_upgrades_open: bool,
     sov_paste: String,
     coalitions_open: bool,
+    /// Live edit buffers for the coalition editor: (name, alliances-one-per-line).
+    coal_edit: Vec<(String, String)>,
     active_character: String,
     /// Settings changed this frame and should be persisted.
     needs_save: bool,
@@ -226,6 +228,7 @@ impl SpaiApp {
             sov_upgrades_open: false,
             sov_paste: String::new(),
             coalitions_open: false,
+            coal_edit: Vec::new(),
             active_character: "No character".to_owned(),
             needs_save: false,
             sde_status,
@@ -2325,65 +2328,77 @@ impl SpaiApp {
         if !self.coalitions_open {
             return;
         }
-        let mut changed = false;
+        let mut remove: Option<usize> = None;
+        let mut add = false;
+        let mut reset = false;
         let keep = Self::dialog_viewport(
             ctx,
             "coalitions_window",
             "EVE Spai — Coalitions",
-            [460.0, 560.0],
+            [480.0, 600.0],
             |ui| {
                 ui.label(
                     egui::RichText::new(
                         "Group alliances into coalitions for the map's sovereignty overlay. \
-                         Use the alliance names exactly as they appear on the map. Unlisted \
-                         alliances are shown as independent.",
+                         Alliance names must match the sov holder exactly (some end with a \
+                         period). Unlisted alliances are shown as independent.",
                     )
                     .weak(),
                 );
-                ui.add_space(6.0);
-                let mut remove: Option<usize> = None;
+                ui.horizontal(|ui| {
+                    if ui.button("Add coalition").clicked() {
+                        add = true;
+                    }
+                    if ui.button("Reset to defaults").clicked() {
+                        reset = true;
+                    }
+                });
+                ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (i, c) in self.settings.coalitions.iter_mut().enumerate() {
+                    for (i, (name, alliances)) in self.coal_edit.iter_mut().enumerate() {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Coalition").weak());
-                                if ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(180.0)).changed() {
-                                    changed = true;
-                                }
+                                ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
                                 if ui.button("Remove").clicked() {
                                     remove = Some(i);
                                 }
                             });
-                            let mut text = c.alliances.join("\n");
-                            if ui
-                                .add(
-                                    egui::TextEdit::multiline(&mut text)
-                                        .desired_rows(3)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("Goonswarm Federation\nThe Bastion"),
-                                )
-                                .changed()
-                            {
-                                c.alliances = text.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect();
-                                changed = true;
-                            }
+                            ui.add(
+                                egui::TextEdit::multiline(alliances)
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("One alliance name per line\nGoonswarm Federation"),
+                            );
                         });
                     }
                 });
-                if let Some(i) = remove {
-                    self.settings.coalitions.remove(i);
-                    changed = true;
-                }
-                if ui.button("Add coalition").clicked() {
-                    self.settings.coalitions.push(crate::settings::Coalition {
-                        name: "New coalition".to_owned(),
-                        alliances: Vec::new(),
-                    });
-                    changed = true;
-                }
             },
         );
-        if changed {
+        if add {
+            self.coal_edit.push(("New coalition".to_owned(), String::new()));
+        }
+        if reset {
+            self.coal_edit = crate::settings::default_coalitions()
+                .into_iter()
+                .map(|c| (c.name, c.alliances.join("\n")))
+                .collect();
+        }
+        if let Some(i) = remove {
+            self.coal_edit.remove(i);
+        }
+        // Sync edit buffers back into settings.
+        let parsed: Vec<crate::settings::Coalition> = self
+            .coal_edit
+            .iter()
+            .filter(|(n, _)| !n.trim().is_empty())
+            .map(|(n, a)| crate::settings::Coalition {
+                name: n.trim().to_owned(),
+                alliances: a.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect(),
+            })
+            .collect();
+        if parsed != self.settings.coalitions {
+            self.settings.coalitions = parsed;
             self.needs_save = true;
         }
         if !keep {
@@ -2739,6 +2754,12 @@ impl SpaiApp {
                         self.sov_upgrades_open = true;
                     }
                     if ui.button("Configure coalitions…").clicked() {
+                        self.coal_edit = self
+                            .settings
+                            .coalitions
+                            .iter()
+                            .map(|c| (c.name.clone(), c.alliances.join("\n")))
+                            .collect();
                         self.coalitions_open = true;
                     }
                 });
