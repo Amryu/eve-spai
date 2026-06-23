@@ -339,8 +339,16 @@ pub fn analyze(
     // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
     // "on 78 gate" is a gate, not 78 hostiles).
     let mut consumed: Vec<String> = Vec::new();
+    // A bare 1–2 digit number is ambiguous: it could be a system/gate code prefix
+    // (e.g. "78" → 78-) or a hostile count (e.g. "10 neut"). Defer these and accept
+    // them as a system only if they're a direct neighbour of a named system.
+    let mut deferred: Vec<&str> = Vec::new();
     for tok in &tokens {
         if pilot_tokens.contains(&tok.to_lowercase()) {
+            continue;
+        }
+        if is_short_number(tok) {
+            deferred.push(tok);
             continue;
         }
         if let Some(info) = resolve(systems, tok) {
@@ -351,6 +359,23 @@ pub fn analyze(
                     name: info.name.clone(),
                     security: info.security,
                 });
+            }
+        }
+    }
+    // Neighbours of the confidently-named systems.
+    let neighbours: std::collections::HashSet<i64> =
+        detected.iter().flat_map(|d| systems.neighbors(d.id).iter().copied()).collect();
+    for tok in &deferred {
+        if let Some(info) = resolve(systems, tok) {
+            if neighbours.contains(&info.id) {
+                consumed.push(tok.to_lowercase());
+                if !detected.iter().any(|d| d.id == info.id) {
+                    detected.push(DetectedSystem {
+                        id: info.id,
+                        name: info.name.clone(),
+                        security: info.security,
+                    });
+                }
             }
         }
     }
@@ -367,6 +392,8 @@ pub fn analyze(
         if cand.eq_ignore_ascii_case("on") || cand.eq_ignore_ascii_case("the") {
             continue;
         }
+        // An explicit "<x> gate" keyword is authoritative — even a bare number is
+        // the gate code here (the ambiguity only applies to bare numbers elsewhere).
         let resolved = resolve(systems, cand);
         gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
         consumed.push(cand.to_lowercase());
@@ -404,6 +431,11 @@ pub fn analyze(
         gate,
         movement: None,
     }
+}
+
+/// A bare 1–2 digit number — ambiguous between a system/gate code and a count.
+fn is_short_number(t: &str) -> bool {
+    (1..=2).contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Resolve a token to a system: exact name, or an unambiguous null-sec abbreviation

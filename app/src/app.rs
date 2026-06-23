@@ -988,7 +988,7 @@ impl SpaiApp {
             ui.label(egui::RichText::new("No relevant losses.").weak());
             return;
         }
-        egui::ScrollArea::vertical().id_salt("pilot_ships").show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("pilot_ships").auto_shrink([false, false]).show(ui, |ui| {
             for (ship_id, count, _) in ships {
                 let name = self
                     .ship_details_cached(ship_id)
@@ -1074,7 +1074,7 @@ impl SpaiApp {
                 return;
             };
 
-            egui::ScrollArea::vertical().max_height(330.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(330.0).auto_shrink([false, false]).show(ui, |ui| {
                 use crate::lookup::Slot;
                 let section = |ui: &mut egui::Ui, title: &str, slot: Slot| {
                     let items: Vec<&crate::lookup::Item> =
@@ -3636,12 +3636,9 @@ fn intel_row(
         .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                // Reporter + channel pinned to the right; everything else fills from
-                // the left and stays vertically centred.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            // Wrap so a long row of badges flows to the next line instead of
+            // overflowing the card. (Reporter/channel is on the hover text.)
+            ui.horizontal_wrapped(|ui| {
                 let h = ui.text_style_height(&egui::TextStyle::Body);
                 let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
                     ui.allocate_ui_with_layout(
@@ -3763,14 +3760,12 @@ fn intel_row(
                 if stale {
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
-                    });
-                });
             });
         })
         .response;
 
-    // Raw message available on hover, never shown inline.
-    resp.on_hover_text(&r.text);
+    // Raw message (and who reported it) available on hover, never shown inline.
+    resp.on_hover_text(format!("{}\n— {} · {}", r.text, r.reporter, r.channel));
     clicked
 }
 
