@@ -70,6 +70,37 @@ fn location_for(
     Some(loc.solar_system_id)
 }
 
+/// Set the in-game autopilot destination (`clear` = true) or add a waypoint
+/// (`clear` = false) for the active character, via ESI. Requires the
+/// `esi-ui.write_waypoint.v1` scope. Runs on a background thread.
+pub fn set_waypoint(
+    client_id: String,
+    char_name: String,
+    system_id: i64,
+    clear: bool,
+) {
+    std::thread::spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) =
+            current_access_token(&store, &client_id, character.id, character.expires_at)
+        else {
+            return;
+        };
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .timeout(Duration::from_secs(20))
+            .build()
+        else {
+            return;
+        };
+        let url = format!(
+            "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={system_id}"
+        );
+        let _ = client.post(url).bearer_auth(token).send();
+    });
+}
+
 /// Return a valid access token, refreshing via the keychain refresh token if the
 /// stored one is within a minute of expiry.
 fn current_access_token(

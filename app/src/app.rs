@@ -1700,16 +1700,39 @@ impl SpaiApp {
                     ui.label(security_badge(info.security));
                     ui.heading(&info.name);
                 });
-                ui.label(
-                    egui::RichText::new(format!("< {} < {}", info.constellation, info.region)).weak(),
-                );
                 {
+                    // system_chips already shows "< Constellation < Region" + conditions.
                     let status = self.system_status.lock().unwrap();
                     system_chips(ui, &self.systems, &status, id);
+                    // ESI activity (last hour).
+                    if let Some(f) = status.get(&id) {
+                        if f.npc_kills + f.ship_kills + f.pod_kills + f.jumps > 0 {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Last hour — jumps {} · ship kills {} · pod kills {} · NPC kills {}",
+                                    f.jumps, f.ship_kills, f.pod_kills, f.npc_kills
+                                ))
+                                .weak(),
+                            );
+                        }
+                    }
                 }
-                if ui.button("Show on map").clicked() {
-                    show_on_map = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Show on map").clicked() {
+                        show_on_map = true;
+                    }
+                    let has_char = self.active_character != "No character";
+                    let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                    let cname = self.active_character.clone();
+                    ui.add_enabled_ui(has_char, |ui| {
+                        if ui.button("Set Destination").clicked() {
+                            crate::esi::set_waypoint(cid.clone(), cname.clone(), id, true);
+                        }
+                        if ui.button("Add Waypoint").clicked() {
+                            crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
+                        }
+                    });
+                });
                 ui.separator();
 
                 // Active-intel counts per system (density proxy) + this system's reports.

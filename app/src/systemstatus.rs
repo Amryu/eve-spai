@@ -14,6 +14,8 @@ const INCURSIONS_URL: &str = "https://esi.evetech.net/latest/incursions/";
 const FW_URL: &str = "https://esi.evetech.net/latest/fw/systems/";
 const SOV_URL: &str = "https://esi.evetech.net/latest/sovereignty/map/";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
+const KILLS_URL: &str = "https://esi.evetech.net/latest/universe/system_kills/";
+const JUMPS_URL: &str = "https://esi.evetech.net/latest/universe/system_jumps/";
 const POLL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Default)]
@@ -23,6 +25,11 @@ pub struct SysFlags {
     pub fw: Option<String>,
     /// Sovereignty holder — player alliance name or NPC faction name.
     pub sov: Option<String>,
+    /// ESI activity in the last hour.
+    pub ship_kills: u32,
+    pub pod_kills: u32,
+    pub npc_kills: u32,
+    pub jumps: u32,
 }
 
 pub type SharedStatus = Arc<Mutex<HashMap<i64, SysFlags>>>;
@@ -65,6 +72,24 @@ struct SovSystem {
     system_id: i64,
     alliance_id: Option<i64>,
     faction_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SystemKills {
+    system_id: i64,
+    #[serde(default)]
+    ship_kills: u32,
+    #[serde(default)]
+    pod_kills: u32,
+    #[serde(default)]
+    npc_kills: u32,
+}
+
+#[derive(Deserialize)]
+struct SystemJumps {
+    system_id: i64,
+    #[serde(default)]
+    ship_jumps: u32,
 }
 
 fn fetch(
@@ -117,6 +142,21 @@ fn fetch(
             if let Some(h) = holder {
                 map.entry(s.system_id).or_default().sov = Some(h);
             }
+        }
+    }
+
+    if let Ok(kills) = get::<Vec<SystemKills>>(client, KILLS_URL) {
+        for k in kills {
+            let e = map.entry(k.system_id).or_default();
+            e.ship_kills = k.ship_kills;
+            e.pod_kills = k.pod_kills;
+            e.npc_kills = k.npc_kills;
+        }
+    }
+
+    if let Ok(jumps) = get::<Vec<SystemJumps>>(client, JUMPS_URL) {
+        for j in jumps {
+            map.entry(j.system_id).or_default().jumps = j.ship_jumps;
         }
     }
 

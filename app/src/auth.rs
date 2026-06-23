@@ -35,6 +35,7 @@ pub const DEFAULT_SCOPES: &[&str] = &[
     "esi-location.read_online.v1",
     "esi-location.read_ship_type.v1",
     "esi-characters.read_contacts.v1",
+    "esi-ui.write_waypoint.v1",
 ];
 
 /// Observable state of a login attempt, shared with the UI.
