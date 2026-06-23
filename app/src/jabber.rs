@@ -6,7 +6,6 @@
 //! pings each frame (for the Pings view and the alert framework).
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::pings::Ping;
 
@@ -134,79 +133,59 @@ async fn run(
         }
     };
     state.lock().unwrap().running = true;
+    state.lock().unwrap().status = "Connecting…".to_owned();
+    ctx.request_repaint();
+    eprintln!(
+        "[jabber] connecting jid={bare} server={}",
+        if server.trim().is_empty() { bare.domain().as_str() } else { server.trim() }
+    );
 
-    'reconnect: loop {
+    // Connect to the configured server directly (the JID domain usually has no SRV
+    // record); fall back to SRV from the JID domain when no server is set.
+    let dns = if server.trim().is_empty() {
+        DnsConfig::srv_default_client(bare.domain().as_str())
+    } else {
+        DnsConfig::NoSrv { host: server.trim().to_owned(), port: 5222, resolver: None }
+    };
+    let mut agent =
+        ClientBuilder::new_with_connector(bare.clone(), &password, StartTlsServerConnector(dns))
+            .set_client(ClientType::Bot, "EVE Spai")
+            .enable_feature(ClientFeature::ContactList)
+            .build();
+
+    // tokio-xmpp reconnects transparently, so we simply process events until the user
+    // disables Jabber. An *empty* event batch is normal (a stanza that produced no
+    // high-level event, e.g. the roster reply) — it does NOT mean the stream ended,
+    // so we must not tear the connection down on it.
+    loop {
         if !state.lock().unwrap().enabled {
+            let _ = agent.disconnect().await;
             break;
         }
-        state.lock().unwrap().status = "Connecting…".to_owned();
-        ctx.request_repaint();
-
-        // Connect to the configured server directly (the JID domain usually has no
-        // SRV record); fall back to SRV from the JID domain when no server is set.
-        let dns = if server.trim().is_empty() {
-            DnsConfig::srv_default_client(bare.domain().as_str())
-        } else {
-            DnsConfig::NoSrv { host: server.trim().to_owned(), port: 5222, resolver: None }
-        };
-        let mut agent = ClientBuilder::new_with_connector(
-            bare.clone(),
-            &password,
-            StartTlsServerConnector(dns),
-        )
-        .set_client(ClientType::Bot, "EVE Spai")
-        .enable_feature(ClientFeature::ContactList)
-        .build();
-
-        loop {
-            if !state.lock().unwrap().enabled {
-                let _ = agent.disconnect().await;
-                state.lock().unwrap().running = false;
-                return;
+        tokio::select! {
+            events = agent.wait_for_events() => {
+                for event in events {
+                    handle_event(event, &state, resolve.as_ref(), &ctx);
+                }
             }
-            tokio::select! {
-                events = agent.wait_for_events() => {
-                    if events.is_empty() {
-                        break; // stream ended → reconnect (after a clean shutdown)
-                    }
-                    for event in events {
-                        handle_event(event, &state, resolve.as_ref(), &ctx);
+            Some(cmd) = rx.recv() => match cmd {
+                Cmd::Send { to, body } => {
+                    if let Ok(recipient) = to.parse::<BareJid>() {
+                        agent
+                            .send_message(MessageSettings { recipient, message: &body, lang: None })
+                            .await;
+                        let now = chrono::Utc::now().timestamp();
+                        push_msg(
+                            &state,
+                            &to,
+                            ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true },
+                            false,
+                        );
+                        ctx.request_repaint();
                     }
                 }
-                Some(cmd) = rx.recv() => match cmd {
-                    Cmd::Send { to, body } => {
-                        if let Ok(recipient) = to.parse::<BareJid>() {
-                            agent
-                                .send_message(MessageSettings { recipient, message: &body, lang: None })
-                                .await;
-                            let now = chrono::Utc::now().timestamp();
-                            push_msg(
-                                &state,
-                                &to,
-                                ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true },
-                                false,
-                            );
-                            ctx.request_repaint();
-                        }
-                    }
-                },
-            }
+            },
         }
-
-        // Cleanly shut the worker down before dropping the agent — otherwise it
-        // panics ("All clients have been dropped") when it next tries to send.
-        let _ = agent.disconnect().await;
-
-        {
-            let mut s = state.lock().unwrap();
-            s.connected = false;
-            if !s.enabled {
-                break 'reconnect;
-            }
-            s.status = "Reconnecting…".to_owned();
-        }
-        ctx.request_repaint();
-        tokio::time::sleep(Duration::from_secs(15)).await;
     }
     state.lock().unwrap().running = false;
 }
@@ -221,11 +200,13 @@ fn handle_event(
     let now = chrono::Utc::now().timestamp();
     match event {
         Event::Online => {
+            eprintln!("[jabber] online");
             let mut s = state.lock().unwrap();
             s.connected = true;
             s.status = "Connected".to_owned();
         }
         Event::Disconnected(e) => {
+            eprintln!("[jabber] disconnected: {e}");
             let mut s = state.lock().unwrap();
             s.connected = false;
             s.status = format!("Disconnected: {e}");
