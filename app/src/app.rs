@@ -194,6 +194,8 @@ pub struct SpaiApp {
     route_destination: Option<i64>,
     map_search: String,
     map_search_sel: usize,
+    /// An upgrade name to faint-highlight on the map (from the search).
+    map_highlight_upgrade: Option<String>,
     /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
     /// Open constellation / region info windows (by id).
@@ -327,6 +329,7 @@ impl SpaiApp {
             route_destination: None,
             map_search: String::new(),
             map_search_sel: 0,
+            map_highlight_upgrade: None,
             system_window: None,
             constellation_window: None,
             region_window: None,
@@ -1497,6 +1500,24 @@ impl SpaiApp {
             }
         }
 
+        // Search highlight: faint background on systems that have a chosen upgrade.
+        if let Some(up) = &self.map_highlight_upgrade {
+            let upl = up.to_lowercase();
+            let hi: std::collections::HashSet<String> = self
+                .settings
+                .sov_upgrades
+                .iter()
+                .filter(|u| u.upgrade.to_lowercase() == upl)
+                .map(|u| u.system.to_lowercase())
+                .collect();
+            let col = ui.visuals().hyperlink_color;
+            for s in &self.map_draw {
+                if hi.contains(&s.name.to_lowercase()) {
+                    painter.circle_filled(pos[&s.id], dot + 9.0, col.gamma_multiply(0.28));
+                }
+            }
+        }
+
         // Configured jump bridges (drawn distinctly, in green, like in-game).
         let bridges: std::collections::HashSet<(i64, i64)> = if let Some(g) = &self.systems {
             self.settings
@@ -2053,6 +2074,41 @@ impl SpaiApp {
                         }
                     } else {
                         self.map_search_sel = 0;
+                    }
+
+                    // Sov-upgrade matches: selecting one faint-highlights every
+                    // system that has it.
+                    if !query.is_empty() {
+                        let ql = query.to_lowercase();
+                        let mut names: std::collections::BTreeSet<String> =
+                            std::collections::BTreeSet::new();
+                        for u in &self.settings.sov_upgrades {
+                            if u.upgrade.to_lowercase().contains(&ql) {
+                                names.insert(u.upgrade.clone());
+                            }
+                        }
+                        for up in names.into_iter().take(6) {
+                            if ui
+                                .selectable_label(
+                                    self.map_highlight_upgrade.as_deref() == Some(up.as_str()),
+                                    format!("{}  {up}", icon::MAP_PIN_LINE),
+                                )
+                                .clicked()
+                            {
+                                self.map_highlight_upgrade = Some(up);
+                                self.map_search.clear();
+                            }
+                        }
+                    }
+                    // Active upgrade highlight — click to clear.
+                    if let Some(up) = self.map_highlight_upgrade.clone() {
+                        if ui
+                            .button(format!("{}  {up}  {}", icon::MAP_PIN_LINE, icon::X))
+                            .on_hover_text("Clear upgrade highlight")
+                            .clicked()
+                        {
+                            self.map_highlight_upgrade = None;
+                        }
                     }
 
                     ui.horizontal(|ui| {

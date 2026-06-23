@@ -20,8 +20,9 @@ const REDISQ: &str = "https://redisq.zkillboard.com/listen.php";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 /// Keep kills within this many jumps of a tracked intel system.
 const ANCHOR_JUMPS: u32 = 6;
-/// Retain engagements for 30 minutes for clustering.
-const ENGAGEMENT_TTL: i64 = 1800;
+/// Retain engagements for a day — zKillboard can deliver kills hours late, so a
+/// battle report keeps getting updated as stragglers arrive.
+const ENGAGEMENT_TTL: i64 = 86_400;
 
 pub type SharedBattles = Arc<Mutex<Vec<Battle>>>;
 
@@ -43,27 +44,53 @@ pub fn spawn(
         let mut names: HashMap<i64, String> = HashMap::new();
         let mut buffer: Vec<Engagement> = Vec::new();
 
+        let mut seen_links: std::collections::HashSet<i64> = std::collections::HashSet::new();
         loop {
+            let mut changed = false;
             match poll(&client, &queue_id, &systems, &intel, &mut names) {
                 Ok(Some(engagement)) => {
                     // RedisQ can repeat a kill; dedup by id.
-                    if buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
-                        continue;
+                    if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
+                        buffer.push(engagement);
+                        changed = true;
                     }
-                    buffer.push(engagement);
-                    let now = chrono::Utc::now().timestamp();
-                    buffer.retain(|e| now - e.time <= ENGAGEMENT_TTL);
-                    let clustered = battle::cluster(
-                        &buffer,
-                        battle::BATTLE_WINDOW_SECS,
-                        battle::BATTLE_MAX_JUMPS,
-                        |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
-                    );
-                    *battles.lock().unwrap() = clustered;
-                    ctx.request_repaint();
                 }
                 Ok(None) => {} // no kill, or not in the tracked area
                 Err(_) => std::thread::sleep(Duration::from_secs(5)),
+            }
+
+            // Pull in killmails posted as links in intel so battle reports include
+            // already-posted kills (fetched once each).
+            let posted: Vec<i64> = {
+                let st = intel.lock().unwrap();
+                st.reports
+                    .iter()
+                    .flat_map(|r| r.links.iter())
+                    .filter_map(|l| l.kill_id)
+                    .collect()
+            };
+            for id in posted {
+                if seen_links.contains(&id) || buffer.iter().any(|e| e.kill_id == id) {
+                    continue;
+                }
+                seen_links.insert(id);
+                if let Some(eng) = fetch_posted_kill(&client, id, &systems, &mut names) {
+                    buffer.push(eng);
+                    changed = true;
+                }
+            }
+
+            if changed {
+                let now = chrono::Utc::now().timestamp();
+                buffer.retain(|e| now - e.time <= ENGAGEMENT_TTL);
+                let clustered = battle::cluster(
+                    &buffer,
+                    battle::BATTLE_WINDOW_SECS,
+                    battle::BATTLE_MAX_JUMPS,
+                    |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
+                );
+                *battles.lock().unwrap() = clustered;
+                ctx.request_repaint();
             }
         }
     });
@@ -129,7 +156,7 @@ fn poll(
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
 
-    resolve_names(client, &pkg, names);
+    resolve_names(client, &pkg.killmail, names);
 
     let victim = party_of(&pkg.killmail.victim, names);
     let attackers: Vec<Party> = pkg
@@ -192,10 +219,66 @@ struct NameEntry {
     name: String,
 }
 
+/// zKillboard API entry (`/api/killID/<id>/`) — gives the hash + value for a kill
+/// we only know by id (a pasted link).
+#[derive(Deserialize)]
+struct ZkApiEntry {
+    zkb: ZkApiZkb,
+}
+#[derive(Deserialize)]
+struct ZkApiZkb {
+    hash: String,
+    #[serde(rename = "totalValue", default)]
+    total_value: f64,
+}
+
+/// Fetch a kill we only know by id (from a pasted intel link) and turn it into an
+/// engagement so it joins the battle clustering. Posted kills are always included
+/// (no tracked-area filter).
+fn fetch_posted_kill(
+    client: &reqwest::blocking::Client,
+    id: i64,
+    systems: &Systems,
+    names: &mut HashMap<i64, String>,
+) -> Option<Engagement> {
+    let zk: Vec<ZkApiEntry> = client
+        .get(format!("https://zkillboard.com/api/killID/{id}/"))
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()?;
+    let entry = zk.into_iter().next()?;
+    let km: Killmail = client
+        .get(format!("https://esi.evetech.net/latest/killmails/{id}/{}/", entry.zkb.hash))
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()?;
+    let sys = systems.info_of(km.solar_system_id)?;
+    let time = chrono::DateTime::parse_from_rfc3339(&km.killmail_time)
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+    resolve_names(client, &km, names);
+    Some(Engagement {
+        kill_id: id,
+        time,
+        system_id: sys.id,
+        system_name: sys.name.clone(),
+        security: sys.security,
+        victim: party_of(&km.victim, names),
+        attackers: km.attackers.iter().map(|a| party_of(a, names)).collect(),
+        isk: entry.zkb.total_value,
+    })
+}
+
 /// Resolve any not-yet-cached ids referenced by this kill via ESI /universe/names.
 fn resolve_names(
     client: &reqwest::blocking::Client,
-    pkg: &Package,
+    km: &Killmail,
     names: &mut HashMap<i64, String>,
 ) {
     let mut wanted: Vec<i64> = Vec::new();
@@ -206,8 +289,8 @@ fn resolve_names(
             }
         }
     };
-    add(&pkg.killmail.victim);
-    pkg.killmail.attackers.iter().for_each(&mut add);
+    add(&km.victim);
+    km.attackers.iter().for_each(&mut add);
     wanted.sort_unstable();
     wanted.dedup();
     if wanted.is_empty() {
