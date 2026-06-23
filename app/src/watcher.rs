@@ -18,6 +18,8 @@ const POLL: Duration = Duration::from_millis(1500);
 const FIRST_SIGHT_BACKLOG: usize = 20;
 /// Cap movement-distance search (a hostile won't have "moved" further sensibly).
 const MAX_MOVE_JUMPS: u32 = 15;
+/// Grace window (seconds) for amending a reporter's previous intel post.
+const AMEND_GRACE: i64 = 60;
 
 pub fn spawn(
     chat_dir: PathBuf,
@@ -92,17 +94,23 @@ fn scan(
                 let mut report =
                     intel::analyze(&m.text, systems, ships, received, &meta.channel, &m.author);
 
-                // Ignore non-placeable chatter: nothing to anchor without a system/gate.
-                if report.systems.is_empty() && report.gate.is_none() {
-                    continue;
-                }
-
                 // Queue candidate pilot names for background ESI confirmation.
                 if !report.pilots.is_empty() {
                     let mut cache = pilots.lock().unwrap();
                     for name in &report.pilots {
                         cache.queue(name);
                     }
+                }
+
+                // Successive messages from the same reporter (same/no system, ≤1 min)
+                // amend their previous report rather than adding a new one.
+                if st.try_amend(&report, AMEND_GRACE) {
+                    continue;
+                }
+
+                // Ignore non-placeable chatter: nothing to anchor without a system/gate.
+                if report.systems.is_empty() && report.gate.is_none() {
+                    continue;
                 }
 
                 // Movement: only inferred when the new sighting shares a named pilot

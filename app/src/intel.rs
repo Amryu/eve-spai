@@ -85,6 +85,81 @@ impl IntelState {
         self.reports.push(report);
     }
 
+    /// Amend the reporter's most recent report (within `grace` seconds) instead of
+    /// adding a new one — for intel split across successive messages. Only when the
+    /// new message mentions the **same system or no system** (a gate is not a
+    /// system) and actually adds something. Returns true if it amended.
+    pub fn try_amend(&mut self, new: &IntelReport, grace: i64) -> bool {
+        let adds = !new.ships.is_empty()
+            || !new.pilots.is_empty()
+            || new.gate.is_some()
+            || new.count.is_some()
+            || new.clear
+            || new.no_visual
+            || new.spike
+            || new.camp
+            || new.bubble
+            || new.cyno;
+        if !adds {
+            return false;
+        }
+        let new_sys = new.primary_system().map(|s| s.id);
+        for prev in self.reports.iter_mut().rev() {
+            if prev.reporter != new.reporter {
+                continue;
+            }
+            // Most-recent report by this reporter; only amend within the grace window.
+            if new.received < prev.received || new.received - prev.received > grace {
+                return false;
+            }
+            let prev_sys = prev.primary_system().map(|s| s.id);
+            if new_sys.is_some() && new_sys != prev_sys {
+                return false; // a different system is a new sighting
+            }
+            for sh in &new.ships {
+                if !prev.ships.iter().any(|s| s.id == sh.id) {
+                    prev.ships.push(sh.clone());
+                }
+            }
+            for p in &new.pilots {
+                if !prev.pilots.contains(p) {
+                    prev.pilots.push(p.clone());
+                }
+            }
+            if prev.gate.is_none() {
+                prev.gate = new.gate.clone();
+            }
+            if prev.systems.is_empty() {
+                prev.systems = new.systems.clone();
+            }
+            prev.count = match (prev.count, new.count) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            prev.clear |= new.clear;
+            prev.no_visual |= new.no_visual;
+            prev.spike |= new.spike;
+            prev.camp |= new.camp;
+            prev.bubble |= new.bubble;
+            prev.cyno |= new.cyno;
+            prev.killmail |= new.killmail;
+            prev.wormhole |= new.wormhole;
+            prev.ess |= new.ess;
+            prev.skyhook |= new.skyhook;
+            prev.received = new.received; // refresh so it re-alerts and reads as fresh
+            prev.text = format!("{}  ·  {}", prev.text, new.text);
+            if prev.clear {
+                for s in &prev.systems {
+                    let slot =
+                        self.cleared.entry(s.name.to_lowercase()).or_insert(prev.received);
+                    *slot = (*slot).max(prev.received);
+                }
+            }
+            return true;
+        }
+        false
+    }
+
     /// A non-clear sighting is stale if a clear for one of its systems arrived at
     /// or after it — the hostiles have since left.
     pub fn is_stale(&self, report: &IntelReport) -> bool {
@@ -441,6 +516,21 @@ mod tests {
         // Common Title-Case intel phrases are not pilot candidates.
         let r2 = analyze("Gate Camp in Rancer", &s, &noships(), 1, "ch", "x");
         assert!(r2.pilots.is_empty());
+    }
+
+    #[test]
+    fn amends_successive_reporter_messages() {
+        let s = systems();
+        let mut state = IntelState::default();
+        state.push(analyze("hostile in Rancer", &s, &noships(), 100, "ch", "Scout"));
+        // Same reporter, no system (gate only), within grace -> amends.
+        let follow = analyze("on 78- gate", &s, &noships(), 130, "ch", "Scout");
+        assert!(state.try_amend(&follow, 60));
+        assert_eq!(state.reports.len(), 1);
+        assert!(state.reports[0].gate.is_some());
+        // A different system is a new sighting, not an amendment.
+        let other = analyze("hostile in Jita", &s, &noships(), 140, "ch", "Scout");
+        assert!(!state.try_amend(&other, 60));
     }
 
     #[test]
