@@ -101,6 +101,44 @@ pub fn set_waypoint(
     });
 }
 
+/// Save a fitting to the active character's in-game fitting list, via ESI.
+/// Requires `esi-fittings.write_fittings.v1`. `items` = (type_id, flag, quantity).
+/// Runs on a background thread.
+pub fn save_fitting(
+    client_id: String,
+    char_name: String,
+    name: String,
+    ship_type_id: i64,
+    items: Vec<(i64, i64, i64)>,
+) {
+    std::thread::spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) =
+            current_access_token(&store, &client_id, character.id, character.expires_at)
+        else {
+            return;
+        };
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .timeout(Duration::from_secs(20))
+            .build()
+        else {
+            return;
+        };
+        let body = serde_json::json!({
+            "name": name,
+            "description": "Saved by EVE Spai",
+            "ship_type_id": ship_type_id,
+            "items": items.iter().map(|(t, f, q)| serde_json::json!({
+                "type_id": t, "flag": f, "quantity": q
+            })).collect::<Vec<_>>(),
+        });
+        let url = format!("https://esi.evetech.net/latest/characters/{}/fittings/", character.id);
+        let _ = client.post(url).bearer_auth(token).json(&body).send();
+    });
+}
+
 /// Return a valid access token, refreshing via the keychain refresh token if the
 /// stored one is within a minute of expiry.
 fn current_access_token(

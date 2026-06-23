@@ -639,7 +639,7 @@ impl SpaiApp {
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
                     if let Some(a) = intel_row(
                         ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                        &ship_roles, &resolved_pilots,
+                        &ship_roles, &resolved_pilots, true,
                     ) {
                         action = Some(a);
                     }
@@ -1076,20 +1076,21 @@ impl SpaiApp {
 
             egui::ScrollArea::vertical().max_height(330.0).auto_shrink([false, false]).show(ui, |ui| {
                 use crate::lookup::Slot;
+                // Modules sit in their slots (qty 1); loaded charges (qty > 1 in a
+                // fitted slot) and cargo are collected into the cargo hold, stacked.
+                let cargo = fit_cargo(loss);
                 let section = |ui: &mut egui::Ui, title: &str, slot: Slot| {
-                    let items: Vec<&crate::lookup::Item> =
-                        loss.items.iter().filter(|i| crate::lookup::slot_of(i.flag) == slot).collect();
-                    if items.is_empty() {
+                    let mods: Vec<&crate::lookup::Item> = loss
+                        .items
+                        .iter()
+                        .filter(|i| crate::lookup::slot_of(i.flag) == slot && i.qty == 1)
+                        .collect();
+                    if mods.is_empty() {
                         return;
                     }
                     ui.label(egui::RichText::new(title).strong().color(ui.visuals().hyperlink_color));
-                    for it in items {
-                        let n = names.get(&it.type_id).cloned().unwrap_or_else(|| "…".to_owned());
-                        if it.qty > 1 {
-                            ui.label(format!("{n}  ×{}", it.qty));
-                        } else {
-                            ui.label(n);
-                        }
+                    for it in mods {
+                        ui.label(names.get(&it.type_id).cloned().unwrap_or_else(|| "…".to_owned()));
                     }
                     ui.add_space(4.0);
                 };
@@ -1098,7 +1099,19 @@ impl SpaiApp {
                 section(ui, "Low", Slot::Low);
                 section(ui, "Rigs", Slot::Rig);
                 section(ui, "Subsystems", Slot::Subsystem);
-                section(ui, "Cargo & drones", Slot::Cargo);
+                if !cargo.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Cargo & drones").strong().color(ui.visuals().hyperlink_color),
+                    );
+                    for (tid, q) in &cargo {
+                        let n = names.get(tid).cloned().unwrap_or_else(|| "…".to_owned());
+                        if *q > 1 {
+                            ui.label(format!("{n}  ×{q}"));
+                        } else {
+                            ui.label(n);
+                        }
+                    }
+                }
             });
 
             ui.separator();
@@ -1106,6 +1119,34 @@ impl SpaiApp {
                 if ui.button("Copy EFT").clicked() {
                     ui.ctx().copy_text(eft_string(&ship_name, loss, &names));
                 }
+                // Save to the active character's in-game fittings.
+                let has_char = self.active_character != "No character";
+                ui.add_enabled_ui(has_char, |ui| {
+                    if ui.button("Save Fit").on_hover_text("Save to your in-game fittings").clicked() {
+                        use crate::lookup::Slot;
+                        let mut items: Vec<(i64, i64, i64)> = loss
+                            .items
+                            .iter()
+                            .filter(|i| {
+                                !matches!(crate::lookup::slot_of(i.flag), Slot::Cargo | Slot::Other)
+                                    && i.qty == 1
+                            })
+                            .map(|i| (i.type_id, i.flag, 1))
+                            .collect();
+                        for (tid, q) in fit_cargo(loss) {
+                            items.push((tid, 5, q)); // flag 5 = cargo
+                        }
+                        let cid =
+                            non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID).to_owned();
+                        crate::esi::save_fitting(
+                            cid,
+                            self.active_character.clone(),
+                            format!("{}'s {ship_name} Fit", self.active_character),
+                            ship_id,
+                            items,
+                        );
+                    }
+                });
                 let site = self.settings.fit_site.clone();
                 if site.is_empty() {
                     ui.label("Open in:");
@@ -1741,6 +1782,8 @@ impl SpaiApp {
             .anchor(egui::Align2::RIGHT_TOP, offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                // Right-align so the wider popover doesn't shove the button left.
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                 // The button sits in its own framed container.
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     let btn = ui.add(
@@ -1783,6 +1826,7 @@ impl SpaiApp {
                         );
                     });
                 }
+                });
             });
     }
 
@@ -2461,7 +2505,7 @@ impl SpaiApp {
                             jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id));
                         if let Some(c) = intel_row(
                             ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                            &ship_details, &ship_roles, &resolved_pilots,
+                            &ship_details, &ship_roles, &resolved_pilots, false,
                         ) {
                             intel_click = Some(c);
                         }
@@ -3622,6 +3666,7 @@ fn intel_row(
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
+    show_reporter: bool,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
@@ -3652,9 +3697,7 @@ fn intel_row(
         .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            // Wrap so a long row of badges flows to the next line instead of
-            // overflowing the card. (Reporter/channel is on the hover text.)
-            ui.horizontal_wrapped(|ui| {
+            let mut render = |ui: &mut egui::Ui| {
                 let h = ui.text_style_height(&egui::TextStyle::Body);
                 let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
                     ui.allocate_ui_with_layout(
@@ -3776,7 +3819,21 @@ fn intel_row(
                 if stale {
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
-            });
+            };
+            if show_reporter {
+                // Intel feed: reporter·channel pinned right, badges fill from the left.
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            render(ui)
+                        });
+                    });
+                });
+            } else {
+                // System window (narrower): no reporter text, badges wrap.
+                ui.horizontal_wrapped(|ui| render(ui));
+            }
         })
         .response;
 
@@ -3820,7 +3877,23 @@ fn pick_loss(
     }
 }
 
+/// Cargo contents of a loss (type_id → quantity), auto-stacked: cargo/drone-bay
+/// items plus any loaded charges (qty > 1 items found in fitted slots).
+fn fit_cargo(loss: &crate::lookup::Loss) -> std::collections::BTreeMap<i64, i64> {
+    use crate::lookup::Slot;
+    let mut cargo: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+    for it in &loss.items {
+        match crate::lookup::slot_of(it.flag) {
+            Slot::Cargo | Slot::Other => *cargo.entry(it.type_id).or_insert(0) += it.qty.max(1),
+            _ if it.qty > 1 => *cargo.entry(it.type_id).or_insert(0) += it.qty,
+            _ => {}
+        }
+    }
+    cargo
+}
+
 /// EFT (paste-able) fit string. Slot order: low, mid, high, rig, subsystem, cargo.
+/// Loaded charges are moved to cargo (stacked) rather than left on modules.
 fn eft_string(
     ship: &str,
     loss: &crate::lookup::Loss,
@@ -3828,38 +3901,34 @@ fn eft_string(
 ) -> String {
     use crate::lookup::Slot;
     let name = |id: i64| names.get(&id).cloned().unwrap_or_else(|| format!("Type {id}"));
-    let mut sections: Vec<Vec<String>> = vec![Vec::new(); 6];
+    let mut sections: Vec<Vec<String>> = vec![Vec::new(); 5];
     let idx = |s: Slot| match s {
         Slot::Low => 0,
         Slot::Mid => 1,
         Slot::High => 2,
         Slot::Rig => 3,
-        Slot::Subsystem => 4,
-        _ => 5,
+        _ => 4, // subsystem
     };
     for it in &loss.items {
         let s = crate::lookup::slot_of(it.flag);
-        let bucket = &mut sections[idx(s)];
-        if matches!(s, Slot::Cargo | Slot::Other) {
-            bucket.push(if it.qty > 1 {
-                format!("{} x{}", name(it.type_id), it.qty)
-            } else {
-                name(it.type_id)
-            });
-        } else {
-            for _ in 0..it.qty.max(1) {
-                bucket.push(name(it.type_id));
-            }
+        // Only modules (qty 1) belong in a fitted slot; charges go to cargo below.
+        if !matches!(s, Slot::Cargo | Slot::Other) && it.qty == 1 {
+            sections[idx(s)].push(name(it.type_id));
         }
     }
     let mut out = format!("[{ship}, EVE Spai]\n");
-    for (i, sec) in sections.iter().enumerate() {
+    for sec in &sections {
         for line in sec {
             out.push_str(line);
             out.push('\n');
         }
-        if i < 5 {
-            out.push('\n');
+        out.push('\n');
+    }
+    for (tid, q) in fit_cargo(loss) {
+        if q > 1 {
+            out.push_str(&format!("{} x{}\n", name(tid), q));
+        } else {
+            out.push_str(&format!("{}\n", name(tid)));
         }
     }
     out
