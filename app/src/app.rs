@@ -164,6 +164,11 @@ pub struct SpaiApp {
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
+    /// System targeted by the map right-click context menu.
+    ctx_menu_system: Option<i64>,
+    /// Jump-route planner endpoints (seeded from the map; planner is WIP).
+    jump_plan_from: Option<i64>,
+    jump_plan_to: Option<i64>,
     map_view: crate::map::MapView,
     map_initialized: bool,
     map_history: Vec<crate::map::MapView>,
@@ -296,6 +301,9 @@ impl SpaiApp {
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             map_overlays: MapOverlays::default(),
             overlay_menu_open: false,
+            ctx_menu_system: None,
+            jump_plan_from: None,
+            jump_plan_to: None,
             map_view: crate::map::MapView::Universe,
             map_initialized: false,
             map_history: Vec::new(),
@@ -1341,6 +1349,45 @@ impl SpaiApp {
                 }
             }
         }
+
+        // Right-click a system: context menu (destination / waypoint / jump route).
+        if resp.secondary_clicked() {
+            self.ctx_menu_system =
+                ui.input(|i| i.pointer.interact_pos()).and_then(|p| nearest_system(p, &pos, 10.0));
+        }
+        let ctx_sys = self.ctx_menu_system;
+        resp.context_menu(|ui| {
+            let Some(sid) = ctx_sys else {
+                ui.close_menu();
+                return;
+            };
+            if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
+                ui.label(egui::RichText::new(&info.name).strong());
+            }
+            let has_char = self.active_character != "No character";
+            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+            let cname = self.active_character.clone();
+            ui.add_enabled_ui(has_char, |ui| {
+                if ui.button("Set Destination").clicked() {
+                    crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, true);
+                    self.route_destination = Some(sid);
+                    ui.close_menu();
+                }
+                if ui.button("Add Waypoint").clicked() {
+                    crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, false);
+                    ui.close_menu();
+                }
+            });
+            ui.separator();
+            if ui.button("Plan Jump Route From Here").clicked() {
+                self.jump_plan_from = Some(sid);
+                ui.close_menu();
+            }
+            if ui.button("Plan Jump Route To Here").clicked() {
+                self.jump_plan_to = Some(sid);
+                ui.close_menu();
+            }
+        });
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
