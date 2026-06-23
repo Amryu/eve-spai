@@ -1265,6 +1265,27 @@ mod tests {
     }
 
     #[test]
+    fn showinfo_full_card_has_system_ship_pilot() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("hecate".to_string(), (35683i64, "Hecate".to_string()))].into_iter().collect();
+        let r = analyze(
+            "<url=showinfo:5//30002187>Rancer</url> \
+             <url=showinfo:1375//91643796>Venum Einherjar's</url> \
+             <url=showinfo:35683//1054509319774>Hecate</url>",
+            &s,
+            &ships,
+            &noknown(),
+            1,
+            "ch",
+            "Masiell Hinken",
+        );
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"), "system missing: {:?}", r.systems);
+        assert!(r.ships.iter().any(|sh| sh.name == "Hecate"), "ship missing: {:?}", r.ships);
+        assert!(r.pilots.iter().any(|p| p == "Venum Einherjar's"), "pilot missing: {:?}", r.pilots);
+    }
+
+    #[test]
     fn showinfo_character_typeid_makes_pilot() {
         let s = systems();
         // typeID 1380 is a character bloodline → "Sindend" is a character, even
