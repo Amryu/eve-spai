@@ -26,9 +26,12 @@ case "$arch" in
   arm64|aarch64) a="aarch64" ;;
   *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
 esac
-# Linux only ships x86_64 today.
+# Linux ships x86_64; macOS ships Apple Silicon (arm64) only.
 if [ "$plat" = "linux" ] && [ "$a" != "x86_64" ]; then
   echo "No Linux build for $arch yet." >&2; exit 1
+fi
+if [ "$plat" = "macos" ] && [ "$a" != "aarch64" ]; then
+  echo "Only Apple Silicon (arm64) macOS builds are provided." >&2; exit 1
 fi
 asset="eve-spai-$plat-$a"
 

@@ -67,6 +67,21 @@ CREATE TABLE IF NOT EXISTS characters (
     expires_at INTEGER,
     scopes     TEXT
 );
+CREATE TABLE IF NOT EXISTS wormholes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedup           TEXT NOT NULL UNIQUE,
+    system_id       INTEGER NOT NULL,
+    signature       TEXT,
+    wh_type         TEXT,
+    dest_class      TEXT NOT NULL,
+    dest_system_id  INTEGER,
+    size            TEXT,
+    is_drifter      INTEGER NOT NULL DEFAULT 0,
+    reported_at     INTEGER NOT NULL,
+    explicit_expiry INTEGER,
+    source          TEXT NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
 ";
 
 /// A ship type with computed resist/tank/fitting stats.
@@ -383,6 +398,100 @@ impl Store {
             "INSERT OR IGNORE INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)",
             params![name.to_lowercase(), name, char_id],
         );
+    }
+
+    // --- Wormholes ---------------------------------------------------------
+
+    /// Insert a wormhole, or merge a fresher report into the existing one (matched on
+    /// its dedup key — the first-seen key stays fixed). Returns the row id.
+    pub fn upsert_wormhole(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
+        let key = incoming.dedup_key();
+        if let Some(mut existing) = self.wormhole_by_dedup(&key) {
+            existing.merge_from(incoming);
+            let _ = self.conn.execute(
+                "UPDATE wormholes SET system_id=?2, signature=?3, wh_type=?4, dest_class=?5,
+                    dest_system_id=?6, size=?7, is_drifter=?8, reported_at=?9,
+                    explicit_expiry=?10, source=?11, updated_at=?12 WHERE id=?1",
+                params![
+                    existing.id, existing.system_id, existing.signature, existing.wh_type,
+                    existing.dest.code(), existing.dest.system_id(),
+                    existing.size.map(|s| s.code()), existing.is_drifter as i64,
+                    existing.reported_at, existing.explicit_expiry, existing.source.code(),
+                    existing.updated_at,
+                ],
+            );
+            existing.id
+        } else {
+            let _ = self.conn.execute(
+                "INSERT INTO wormholes(dedup, system_id, signature, wh_type, dest_class,
+                    dest_system_id, size, is_drifter, reported_at, explicit_expiry, source, updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![
+                    key, incoming.system_id, incoming.signature, incoming.wh_type,
+                    incoming.dest.code(), incoming.dest.system_id(),
+                    incoming.size.map(|s| s.code()), incoming.is_drifter as i64,
+                    incoming.reported_at, incoming.explicit_expiry, incoming.source.code(),
+                    incoming.updated_at,
+                ],
+            );
+            self.conn.last_insert_rowid()
+        }
+    }
+
+    fn wormhole_by_dedup(&self, key: &str) -> Option<crate::wormholes::Wormhole> {
+        self.conn
+            .query_row(
+                "SELECT id, system_id, signature, wh_type, dest_class, dest_system_id, size,
+                    is_drifter, reported_at, explicit_expiry, source, updated_at
+                 FROM wormholes WHERE dedup=?1",
+                params![key],
+                Self::row_to_wormhole,
+            )
+            .ok()
+    }
+
+    /// All known wormholes (callers prune/filter by expiry as needed).
+    pub fn wormholes(&self) -> Vec<crate::wormholes::Wormhole> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT id, system_id, signature, wh_type, dest_class, dest_system_id, size,
+                is_drifter, reported_at, explicit_expiry, source, updated_at FROM wormholes",
+        ) {
+            if let Ok(rows) = stmt.query_map([], Self::row_to_wormhole) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Drop wormholes past their (explicit or derived) lifetime.
+    pub fn prune_wormholes(&self, now: i64) {
+        let _ = self.conn.execute(
+            "DELETE FROM wormholes WHERE
+                COALESCE(explicit_expiry, reported_at + (CASE WHEN is_drifter THEN 86400 ELSE 172800 END)) <= ?1",
+            params![now],
+        );
+    }
+
+    fn row_to_wormhole(row: &rusqlite::Row) -> rusqlite::Result<crate::wormholes::Wormhole> {
+        use crate::wormholes::{DestClass, ShipSize, Source, Wormhole};
+        let dest_code: String = row.get(4)?;
+        let dest_sys: Option<i64> = row.get(5)?;
+        let size_code: Option<String> = row.get(6)?;
+        let source_code: String = row.get(10)?;
+        Ok(Wormhole {
+            id: row.get(0)?,
+            system_id: row.get(1)?,
+            signature: row.get(2)?,
+            wh_type: row.get(3)?,
+            dest: DestClass::from_code(&dest_code, dest_sys),
+            size: size_code.and_then(|c| ShipSize::from_code(&c)),
+            is_drifter: row.get::<_, i64>(7)? != 0,
+            reported_at: row.get(8)?,
+            explicit_expiry: row.get(9)?,
+            source: Source::from_code(&source_code),
+            updated_at: row.get(11)?,
+        })
     }
 
     /// Whether ship traits (role bonuses) have been baked.

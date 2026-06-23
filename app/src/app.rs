@@ -216,6 +216,10 @@ pub struct SpaiApp {
     update: crate::update::SharedUpdate,
     update_checked: bool,
     update_dismissed: bool,
+    /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
+    /// poller and the intel watcher).
+    wh_cache: Vec<crate::wormholes::Wormhole>,
+    wh_reloaded: Option<std::time::Instant>,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -335,6 +339,7 @@ impl SpaiApp {
             SdeStatus::default()
         };
         let sde_status: SharedStatus = std::sync::Arc::new(std::sync::Mutex::new(initial));
+        crate::wormholes::spawn_scout(cc.egui_ctx.clone());
         if let Some(store) = &store {
             if matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
                 sde::spawn_download(store.path().to_path_buf(), sde_status.clone(), cc.egui_ctx.clone());
@@ -410,6 +415,8 @@ impl SpaiApp {
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked: false,
             update_dismissed: false,
+            wh_cache: Vec::new(),
+            wh_reloaded: None,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -1001,6 +1008,126 @@ impl SpaiApp {
                 }
             }
         }
+    }
+
+    /// Reload the wormhole cache from the store (throttled), dropping expired holes.
+    fn reload_wormholes(&mut self) {
+        let due = self.wh_reloaded.map(|t| t.elapsed().as_millis() > 2000).unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.wh_reloaded = Some(std::time::Instant::now());
+        if let Some(store) = &self.store {
+            let now = chrono::Utc::now().timestamp();
+            store.prune_wormholes(now);
+            let mut whs = store.wormholes();
+            whs.retain(|w| !w.is_expired(now));
+            whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            self.wh_cache = whs;
+        }
+    }
+
+    /// The Wormholes view (docs/WORMHOLES_AND_NEXT.md W4): a table of known holes
+    /// seeded from EVE-Scout (Thera/Turnur) and intel channels.
+    fn wormholes_view(&mut self, ui: &mut egui::Ui) {
+        use crate::wormholes::DestClass;
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.heading(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL));
+            ui.label(egui::RichText::new(format!("· {} known", self.wh_cache.len())).weak());
+        });
+        ui.separator();
+        if self.wh_cache.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No wormholes known yet.").weak());
+                ui.label(
+                    egui::RichText::new("Seeded from EVE-Scout (Thera/Turnur) and intel channels.")
+                        .weak()
+                        .small(),
+                );
+            });
+            return;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        // Precompute display strings so the table closure only borrows &mut self for
+        // the click handlers.
+        struct Row {
+            sys_id: i64,
+            sys: String,
+            wh_type: String,
+            dest: String,
+            dest_click: Option<i64>,
+            size: String,
+            life: String,
+            source: String,
+        }
+        let name_of = |id: i64| self.systems.as_ref().and_then(|s| s.info_of(id)).map(|i| i.name.clone());
+        let rows: Vec<Row> = self
+            .wh_cache
+            .iter()
+            .map(|w| {
+                let sys = name_of(w.system_id).unwrap_or_else(|| format!("#{}", w.system_id));
+                let dest = match w.dest {
+                    DestClass::System(id) => {
+                        name_of(id).map(|n| format!("→ {n}")).unwrap_or_else(|| "→ system".into())
+                    }
+                    d => format!("→ {}", d.label()),
+                };
+                let mut wh_type = w.wh_type.clone().unwrap_or_else(|| "—".into());
+                if w.is_drifter {
+                    wh_type.push_str("  ⚠ drifter");
+                }
+                let life = if w.explicit_expiry.is_some() {
+                    match w.hours_left(now) {
+                        Some(h) => format!("{h}h left"),
+                        None => "expired".into(),
+                    }
+                } else {
+                    format!("reported {} ago", human_ago(now - w.reported_at))
+                };
+                Row {
+                    sys_id: w.system_id,
+                    sys,
+                    wh_type,
+                    dest,
+                    dest_click: w.dest.system_id(),
+                    size: w.size.map(|s| s.label().to_string()).unwrap_or_else(|| "—".into()),
+                    life,
+                    source: w.source.label().to_string(),
+                }
+            })
+            .collect();
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            egui::Grid::new("wh_grid").striped(true).num_columns(6).spacing([18.0, 6.0]).show(
+                ui,
+                |ui| {
+                    for h in ["System", "Type", "Destination", "Size", "Life", "Source"] {
+                        ui.label(egui::RichText::new(h).strong().small());
+                    }
+                    ui.end_row();
+                    for r in &rows {
+                        if ui.link(&r.sys).clicked() {
+                            self.open_system(r.sys_id);
+                        }
+                        ui.label(&r.wh_type);
+                        if let Some(id) = r.dest_click {
+                            if ui.link(&r.dest).clicked() {
+                                self.open_system(id);
+                            }
+                        } else {
+                            ui.label(&r.dest);
+                        }
+                        ui.label(&r.size);
+                        ui.label(&r.life);
+                        ui.label(&r.source);
+                        ui.end_row();
+                    }
+                },
+            );
+        });
     }
 
     /// Start the chat-log watcher once the SDE is baked (it needs the system index).
@@ -4407,9 +4534,10 @@ impl SpaiApp {
             .weak(),
         );
         if ui.button("Add rule").clicked() {
-            let mut r = crate::settings::AlertRule::default();
-            r.expanded = true;
-            self.settings.alerts.rules.push(r);
+            self.settings
+                .alerts
+                .rules
+                .push(crate::settings::AlertRule { expanded: true, ..Default::default() });
             changed = true;
         }
         let mut move_down: Option<usize> = None;
@@ -5354,6 +5482,7 @@ impl eframe::App for SpaiApp {
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
         self.reconcile_unresolved_pilots();
+        self.reload_wormholes();
         if !self.update_checked {
             self.update_checked = true;
             crate::update::cleanup_old();
@@ -5379,6 +5508,7 @@ impl eframe::App for SpaiApp {
             View::Map => self.map_view(ui),
             View::Characters => self.characters_view(ui),
             View::Intel => self.intel_view(ui),
+            View::Wormholes => self.wormholes_view(ui),
             View::Battles => self.battles_view(ui),
             View::Alerts => self.alerts_view(ui),
             View::Jabber => self.jabber_view(ui),
@@ -5682,6 +5812,18 @@ fn min_jumps_from(
             }
         })
         .min()
+}
+
+/// Compact "time ago" — minutes under an hour, hours under a day, else days.
+fn human_ago(secs: i64) -> String {
+    let s = secs.max(0);
+    if s < 3600 {
+        format!("{}m", s / 60)
+    } else if s < 86_400 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86_400)
+    }
 }
 
 /// System suffix chips: in-game-style `< Constellation < Region`, NPC faction

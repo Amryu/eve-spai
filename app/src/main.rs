@@ -35,6 +35,7 @@ mod theme;
 mod tokens;
 mod update;
 mod watcher;
+mod wormholes;
 mod zkill;
 
 fn main() -> eframe::Result<()> {
