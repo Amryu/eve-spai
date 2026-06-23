@@ -212,6 +212,10 @@ pub struct SpaiApp {
     eve_focus_checked: Option<std::time::Instant>,
     /// Throttle for reconciling pilot candidates that turned out not to be characters.
     pilot_reconcile_checked: Option<std::time::Instant>,
+    /// Update-checker state + one-shot startup check + per-session "ask later" flag.
+    update: crate::update::SharedUpdate,
+    update_checked: bool,
+    update_dismissed: bool,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -403,6 +407,9 @@ impl SpaiApp {
             eve_focused: true,
             eve_focus_checked: None,
             pilot_reconcile_checked: None,
+            update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
+            update_checked: false,
+            update_dismissed: false,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -4301,6 +4308,90 @@ impl SpaiApp {
     /// line's first two SDE systems become a bridge. Drawn green on the map.
     /// Coalition editor: name + member alliance names (one per line). Unlisted
     /// alliances are independent.
+    /// "Update available" prompt: Yes (download + self-replace), No (don't ask again
+    /// for this version), or Ask Me Again Later (re-prompt next launch).
+    fn update_dialog(&mut self, ctx: &egui::Context) {
+        let st = self.update.lock().unwrap().clone();
+        let Some(av) = st.available.clone() else { return };
+        if self.update_dismissed || av.version == self.settings.update_skip_version {
+            return;
+        }
+        let mut close = false;
+        let mut start_install = false;
+        egui::Window::new(format!("{}  Update available", egui_phosphor::regular::DOWNLOAD_SIMPLE))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
+            .show(ctx, |ui| {
+                if st.done {
+                    ui.label(format!("Updated to v{}. Restart EVE Spai to apply.", av.version));
+                    if ui.button("OK").clicked() {
+                        close = true;
+                    }
+                    return;
+                }
+                if st.installing {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Downloading update…");
+                    });
+                    return;
+                }
+                if let Some(e) = &st.error {
+                    ui.colored_label(crate::theme::standing::WARNING, format!("Update failed: {e}"));
+                    ui.hyperlink_to("Download manually", &av.html_url);
+                    ui.add_space(4.0);
+                }
+                ui.label(format!(
+                    "EVE Spai v{} is available — you have v{}.",
+                    av.version,
+                    crate::update::current()
+                ));
+                ui.hyperlink_to("Release notes", &av.html_url);
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Yes, update").clicked() {
+                        start_install = true;
+                    }
+                    if ui.button("No").clicked() {
+                        self.settings.update_skip_version = av.version.clone();
+                        self.needs_save = true;
+                        close = true;
+                    }
+                    if ui.button("Ask me again later").clicked() {
+                        self.update_dismissed = true;
+                    }
+                });
+            });
+
+        if start_install {
+            match &av.asset_api_url {
+                Some(url) => {
+                    self.update.lock().unwrap().installing = true;
+                    let (upd, url, ctx2) = (self.update.clone(), url.clone(), ctx.clone());
+                    std::thread::spawn(move || {
+                        let res = crate::update::download_and_replace(&url);
+                        let mut s = upd.lock().unwrap();
+                        s.installing = false;
+                        match res {
+                            Ok(()) => s.done = true,
+                            Err(e) => s.error = Some(e.to_string()),
+                        }
+                        ctx2.request_repaint();
+                    });
+                }
+                // No binary for this platform — send them to the release page.
+                None => {
+                    let _ = open::that(&av.html_url);
+                    close = true;
+                }
+            }
+        }
+        if close {
+            self.update.lock().unwrap().available = None;
+        }
+    }
+
     /// Alert-rules editor (inline). Rules are evaluated top-first; the first matching
     /// enabled rule decides the actions (or suppresses the alert).
     fn alert_rules_ui(&mut self, ui: &mut egui::Ui) {
@@ -5263,6 +5354,16 @@ impl eframe::App for SpaiApp {
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
         self.reconcile_unresolved_pilots();
+        if !self.update_checked {
+            self.update_checked = true;
+            crate::update::cleanup_old();
+            crate::update::spawn_check(
+                self.update.clone(),
+                self.settings.update_skip_version.clone(),
+                ctx.clone(),
+            );
+        }
+        self.update_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();

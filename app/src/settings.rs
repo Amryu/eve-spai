@@ -86,6 +86,9 @@ pub struct Settings {
     /// SRV record). Empty = resolve from the JID domain.
     #[serde(default = "default_jabber_server")]
     pub jabber_server: String,
+    /// A version the user chose not to be reminded about ("No" on the update prompt).
+    #[serde(default)]
+    pub update_skip_version: String,
 }
 
 fn default_jabber_server() -> String {
@@ -409,6 +412,7 @@ impl Default for Settings {
             jabber_enabled: false,
             jabber_jid: String::new(),
             jabber_server: default_jabber_server(),
+            update_skip_version: String::new(),
         }
     }
 }
