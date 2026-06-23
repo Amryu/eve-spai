@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS sde_ship_attrs (
     value   REAL,
     PRIMARY KEY (ship_id, attr_id)
 );
+CREATE TABLE IF NOT EXISTS sde_ship_traits (
+    ship_id  INTEGER,
+    skill_id INTEGER,
+    bonus    REAL,
+    text     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sde_traits_ship ON sde_ship_traits(ship_id);
 CREATE TABLE IF NOT EXISTS characters (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -251,6 +258,29 @@ impl Store {
             map.entry(slug).or_insert(entry);
         }
         map
+    }
+
+    /// Whether ship traits (role bonuses) have been baked.
+    pub fn traits_baked(&self) -> bool {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM sde_ship_traits", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0)
+            > 0
+    }
+
+    /// Role bonuses for a ship (skill_id, bonus value, text). skill_id -1 = role.
+    pub fn ship_traits(&self, id: i64) -> Vec<(i64, f64, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT skill_id, bonus, text FROM sde_ship_traits WHERE ship_id = ?1 ORDER BY skill_id",
+        ) {
+            if let Ok(rows) =
+                stmt.query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            {
+                out.extend(rows.flatten());
+            }
+        }
+        out
     }
 
     /// Computed ship details (resists, hp, drones, hardpoints, speed).

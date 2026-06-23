@@ -40,6 +40,71 @@ pub enum SdeStatus {
 
 pub type SharedStatus = Arc<Mutex<SdeStatus>>;
 
+/// Bake ship role bonuses (invTraits) lazily — small, separate from the main SDE
+/// so it doesn't force a re-download. No-op if already baked.
+pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
+    std::thread::spawn(move || {
+        let Ok(mut conn) = Connection::open(&path) else { return };
+        let baked: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sde_ship_traits", [], |r| r.get(0))
+            .unwrap_or(0);
+        if baked > 0 {
+            return;
+        }
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+        else {
+            return;
+        };
+        let Ok(csv) = client
+            .get(format!("{BASE}/invTraits.csv"))
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.text())
+        else {
+            return;
+        };
+        let Ok(tx) = conn.transaction() else { return };
+        {
+            let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_reader(csv.as_bytes());
+            let Ok(mut stmt) = tx.prepare(
+                "INSERT INTO sde_ship_traits(ship_id, skill_id, bonus, text) VALUES(?1,?2,?3,?4)",
+            ) else {
+                return;
+            };
+            // traitID(0), typeID(1), skillID(2), bonus(3), bonusText(4), unitID(5)
+            for rec in rdr.records().flatten() {
+                let type_id: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
+                let skill_id: i64 = rec.get(2).unwrap_or("").trim().parse().unwrap_or(-1);
+                let bonus: f64 = rec.get(3).unwrap_or("").trim().parse().unwrap_or(0.0);
+                let text = strip_html(rec.get(4).unwrap_or(""));
+                if type_id != 0 && !text.is_empty() {
+                    let _ = stmt.execute(params![type_id, skill_id, bonus, text]);
+                }
+            }
+        }
+        let _ = tx.commit();
+        ctx.request_repaint();
+    });
+}
+
+/// Strip simple HTML (`<a href=…>Name</a>` → `Name`) from SDE bonus text.
+fn strip_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim().to_owned()
+}
+
 /// Kick off a background download + bake. Updates `status` and repaints the UI as
 /// it progresses. Safe to call again to refresh.
 pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {

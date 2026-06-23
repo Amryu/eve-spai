@@ -161,6 +161,8 @@ pub struct SpaiApp {
     pilots: crate::pilot::SharedPilots,
     /// Static ship-detail cache (avoids per-frame DB queries).
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
+    /// Cached role badges per ship id.
+    ship_roles_cache: std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
     /// Type-id → name cache for fit modules (filled on demand via ESI).
     type_names: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>,
     type_names_loading: std::sync::Arc<std::sync::Mutex<bool>>,
@@ -274,6 +276,7 @@ impl SpaiApp {
             pilot_sort: PilotSort::MostLost,
             fit_view: None,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             type_names_loading: std::sync::Arc::new(std::sync::Mutex::new(false)),
             pilots: {
@@ -410,6 +413,13 @@ impl SpaiApp {
         let systems = std::sync::Arc::new(systems);
         self.systems = Some(systems.clone());
 
+        // Bake ship role bonuses (invTraits) lazily, once.
+        if let Some(store) = &self.store {
+            if !store.traits_baked() {
+                sde::spawn_traits_bake(store.path().to_path_buf(), ctx.clone());
+            }
+        }
+
         // The battle feed runs whenever the SDE is ready (independent of logs).
         crate::zkill::spawn(
             systems.clone(),
@@ -530,6 +540,13 @@ impl SpaiApp {
             .into_iter()
             .filter_map(|id| self.ship_details_cached(id).map(|d| (id, d)))
             .collect();
+        let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> = matches
+            .iter()
+            .flat_map(|r| r.ships.iter().map(|s| s.id))
+            .collect::<std::collections::HashSet<i64>>()
+            .into_iter()
+            .map(|id| (id, self.ship_roles_cached(id)))
+            .collect();
         // Pilot names confirmed as real characters (by the background resolver).
         let resolved_pilots: std::collections::HashMap<String, i64> = {
             let cache = self.pilots.lock().unwrap();
@@ -557,7 +574,7 @@ impl SpaiApp {
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
                     if let Some(a) = intel_row(
                         ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                        &resolved_pilots,
+                        &ship_roles, &resolved_pilots,
                     ) {
                         action = Some(a);
                     }
@@ -799,6 +816,17 @@ impl SpaiApp {
 
     /// Pilot lookup: resolve a name, pull recent zKill losses, and show the hulls
     /// the pilot flies (click a hull for its ship window).
+    /// Cached role badges for a ship (derived from its baked role bonuses).
+    fn ship_roles_cached(&self, id: i64) -> Vec<(&'static str, &'static str)> {
+        if let Some(r) = self.ship_roles_cache.borrow().get(&id) {
+            return r.clone();
+        }
+        let traits = self.store.as_ref().map(|s| s.ship_traits(id)).unwrap_or_default();
+        let roles = derive_roles(&traits);
+        self.ship_roles_cache.borrow_mut().insert(id, roles.clone());
+        roles
+    }
+
     /// Cached static ship details (avoids a DB query per ship every frame).
     fn ship_details_cached(&self, id: i64) -> Option<crate::store::ShipDetails> {
         if let Some(d) = self.ship_cache.borrow().get(&id) {
@@ -2172,24 +2200,44 @@ impl SpaiApp {
             return;
         };
         let details = self.store.as_ref().and_then(|s| s.ship_details(id));
-        let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai — Ship", [360.0, 540.0], |ui| {
+        let traits = self.store.as_ref().map(|s| s.ship_traits(id)).unwrap_or_default();
+        let roles = derive_roles(&traits);
+        let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai — Ship", [380.0, 600.0], |ui| {
             ui.horizontal(|ui| {
                 let url = format!("https://images.evetech.net/types/{id}/render?size=128");
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(96.0)));
-                ui.vertical(|ui| match &details {
-                    Some(d) => {
-                        ui.heading(&d.name);
-                        ui.label(egui::RichText::new(&d.group).weak());
+                ui.vertical(|ui| {
+                    match &details {
+                        Some(d) => {
+                            ui.heading(&d.name);
+                            ui.label(egui::RichText::new(&d.group).weak());
+                        }
+                        None => {
+                            ui.heading("Ship");
+                            ui.label(egui::RichText::new("No SDE details.").weak());
+                        }
                     }
-                    None => {
-                        ui.heading("Ship");
-                        ui.label(egui::RichText::new("No SDE details.").weak());
-                    }
+                    role_badges(ui, &roles);
                 });
             });
             ui.separator();
             if let Some(d) = &details {
                 ship_stats(ui, d);
+            }
+            if !traits.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Role bonuses").strong());
+                egui::ScrollArea::vertical().max_height(160.0).id_salt("ship_traits").show(ui, |ui| {
+                    for (skill, bonus, text) in &traits {
+                        let line = if *bonus != 0.0 {
+                            format!("{bonus:.0}% {text}")
+                        } else {
+                            text.clone()
+                        };
+                        let suffix = if *skill > 0 { " (per level)" } else { "" };
+                        ui.label(egui::RichText::new(format!("• {line}{suffix}")));
+                    }
+                });
             }
         });
         if !keep {
@@ -2974,6 +3022,7 @@ fn intel_row(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
+    ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
@@ -3061,7 +3110,8 @@ fn intel_row(
                     let mut panel = ui
                         .add(egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()));
                     if let Some(d) = ship_details.get(&sh.id) {
-                        panel = panel.on_hover_ui(|ui| ship_hover(ui, d));
+                        let roles = ship_roles.get(&sh.id).map(|v| v.as_slice()).unwrap_or(&[]);
+                        panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
                     }
                     if panel.clicked() {
                         clicked = Some(IntelClick::Ship(sh.id));
@@ -3143,9 +3193,10 @@ fn intel_row(
 }
 
 /// Hover tooltip for a ship panel: group, resists, tank, drones, hardpoints, speed.
-fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
+fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails, roles: &[(&'static str, &'static str)]) {
     ui.label(egui::RichText::new(&d.name).strong());
     ui.label(egui::RichText::new(&d.group).weak());
+    role_badges(ui, roles); // icons only — bonus text is in the ship window
     ui.separator();
     ship_stats(ui, d);
 }
@@ -3252,6 +3303,60 @@ fn fit_url(site: &str, ship_id: i64, loss: &crate::lookup::Loss) -> String {
         "osmium" => format!("https://o.smium.org/loadout/dna/{}", dna_string(ship_id, loss)),
         _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
     }
+}
+
+/// Derive the ship's role badges (tank / weapon / utility) from its bonus text.
+fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static str)> {
+    use egui_phosphor::regular as i;
+    let t: String = traits.iter().map(|x| x.2.to_lowercase()).collect::<Vec<_>>().join(" | ");
+    let has = |k: &str| t.contains(k);
+    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+    if has("shield") {
+        out.push((i::SHIELD, "Shield"));
+    }
+    if has("armor") {
+        out.push((i::SHIELD_CHEVRON, "Armor"));
+    }
+    if has("hybrid") || has("railgun") || has("blaster") {
+        out.push((i::CROSSHAIR_SIMPLE, "Hybrid turrets"));
+    }
+    if has("laser") || has("energy turret") || has("beam") || has("pulse") {
+        out.push((i::SUN, "Energy turrets"));
+    }
+    if has("projectile") || has("autocannon") || has("artillery") {
+        out.push((i::CROSSHAIR, "Projectile turrets"));
+    }
+    if has("missile") || has("rocket") || has("torpedo") {
+        out.push((i::ROCKET, "Missiles"));
+    }
+    if has("drone") {
+        out.push((i::DRONE, "Drones"));
+    }
+    if has("neutralizer") || has("nosferatu") || has("energy vampire") || has("nos ") {
+        out.push((i::LIGHTNING, "Energy neut / nos"));
+    }
+    if has("remote ") || has("logistics") {
+        out.push((i::FIRST_AID, "Remote reps"));
+    }
+    if has("disrupt") || has("scrambl") || has("web") || has("stasis") || has("target paint")
+        || has("dampen") || has("ecm") || has("jam") || has("tracking")
+    {
+        out.push((i::EYE_SLASH, "EWAR"));
+    }
+    out
+}
+
+/// Render the role badges as a row of icons with hover labels.
+fn role_badges(ui: &mut egui::Ui, roles: &[(&'static str, &'static str)]) {
+    if roles.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        for (icon, label) in roles {
+            ui.label(egui::RichText::new(*icon).size(18.0).color(ui.visuals().hyperlink_color))
+                .on_hover_text(*label);
+        }
+    });
 }
 
 /// Effective HP of a layer against an even (omni) damage profile.
