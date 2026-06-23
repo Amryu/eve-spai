@@ -47,8 +47,16 @@ impl Systems {
     /// battle clustering can travel them like gates.
     pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {
         for &(a, b) in pairs {
-            self.adjacency.entry(a).or_default().push(b);
-            self.adjacency.entry(b).or_default().push(a);
+            // Don't duplicate an edge that already exists as a gate (or another
+            // bridge) — that would list the neighbour twice.
+            let av = self.adjacency.entry(a).or_default();
+            if !av.contains(&b) {
+                av.push(b);
+            }
+            let bv = self.adjacency.entry(b).or_default();
+            if !bv.contains(&a) {
+                bv.push(a);
+            }
         }
     }
 

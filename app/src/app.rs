@@ -2434,10 +2434,11 @@ impl SpaiApp {
                                 btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.10));
                             }
                             let mut resp = ui.add(btn);
+                            let arrow = egui_phosphor::regular::ARROW_RIGHT;
                             if cross_region {
-                                resp = resp.on_hover_text(format!("→ {} ({})", ni.constellation, ni.region));
+                                resp = resp.on_hover_text(format!("{arrow} {} ({})", ni.constellation, ni.region));
                             } else if cross_const {
-                                resp = resp.on_hover_text(format!("→ {}", ni.constellation));
+                                resp = resp.on_hover_text(format!("{arrow} {}", ni.constellation));
                             }
                             if cnt > 0 {
                                 resp = resp.on_hover_text(format!("{cnt} active intel"));
