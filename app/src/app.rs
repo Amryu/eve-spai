@@ -1653,7 +1653,7 @@ impl SpaiApp {
         };
         // System labels appear once zoomed in past region level (so they're spaced
         // enough to read); a collision check then drops any that would still overlap.
-        let show_sys_labels = self.map_zoom >= 12.0;
+        let show_sys_labels = self.map_zoom >= 17.0;
         let mut placed_labels: Vec<egui::Rect> = Vec::new();
         for s in &self.map_draw {
             let p = pos[&s.id];
@@ -1707,12 +1707,21 @@ impl SpaiApp {
                     continue;
                 }
                 if let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) {
+                    let font = egui::FontId::proportional(16.0);
+                    // Shadow for legibility over the starfield, then a bright label.
+                    painter.text(
+                        c + egui::vec2(1.0, 1.0),
+                        egui::Align2::CENTER_CENTER,
+                        name,
+                        font.clone(),
+                        egui::Color32::from_black_alpha(180),
+                    );
                     painter.text(
                         c,
                         egui::Align2::CENTER_CENTER,
                         name,
-                        egui::FontId::proportional(14.0),
-                        ui.visuals().weak_text_color(),
+                        font,
+                        egui::Color32::from_gray(220),
                     );
                 }
             }
@@ -2029,7 +2038,7 @@ impl SpaiApp {
             }
         }
         // Zoom in enough that system names show, centre + highlight the selection.
-        self.map_zoom = 12.0;
+        self.map_zoom = 18.0;
         self.map_focus = Some(id);
         self.map_selected = Some(id);
     }
