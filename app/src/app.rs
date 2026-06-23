@@ -566,12 +566,25 @@ impl SpaiApp {
 
     fn alerts_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
+        if ui
+            .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
+            .on_hover_text("Master switch for all intel alerts")
+            .changed()
+        {
+            self.needs_save = true;
+        }
         if !self.settings.alert_enabled {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                "Intel alerts are disabled (enable in Settings).",
+                "Intel alerts are off — no rule will fire until this is enabled.",
+            );
+        } else if !self.settings.alerts.rules.iter().any(|r| r.enabled) {
+            ui.colored_label(
+                crate::theme::standing::WARNING,
+                "No alert rule is enabled — nothing will fire. Enable or add a rule below.",
             );
         }
+        ui.add_space(4.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.label(egui::RichText::new("Alert rules").strong());
             self.alert_rules_ui(ui);
@@ -3472,26 +3485,53 @@ impl SpaiApp {
             .weak(),
         );
         if ui.button("Add rule").clicked() {
-            self.settings.alerts.rules.push(crate::settings::AlertRule::default());
+            let mut r = crate::settings::AlertRule::default();
+            r.expanded = true;
+            self.settings.alerts.rules.push(r);
             changed = true;
         }
+        let mut move_down: Option<usize> = None;
         use crate::settings::Severity::*;
+        let n_rules = self.settings.alerts.rules.len();
         for (i, ru) in self.settings.alerts.rules.iter_mut().enumerate() {
             ui.group(|ui| {
+                use egui_phosphor::regular as ic;
                 ui.horizontal(|ui| {
                     changed |= ui.checkbox(&mut ru.enabled, "").changed();
-                    changed |= ui
-                        .add(egui::TextEdit::singleline(&mut ru.name).desired_width(180.0))
-                        .changed();
+                    let toggle = if ru.expanded { ic::CARET_DOWN } else { ic::CARET_RIGHT };
+                    if ui.button(toggle).on_hover_text("Expand / collapse").clicked() {
+                        ru.expanded = !ru.expanded;
+                    }
+                    if ru.expanded {
+                        changed |= ui
+                            .add(egui::TextEdit::singleline(&mut ru.name).desired_width(180.0))
+                            .changed();
+                    } else {
+                        let name = if ru.name.is_empty() { "(unnamed rule)" } else { &ru.name };
+                        let txt = if ru.enabled {
+                            egui::RichText::new(name).strong()
+                        } else {
+                            egui::RichText::new(name).weak().strikethrough()
+                        };
+                        if ui.add(egui::Label::new(txt).sense(egui::Sense::click())).clicked() {
+                            ru.expanded = true;
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(egui_phosphor::regular::X).clicked() {
+                        if ui.button(ic::X).on_hover_text("Delete").clicked() {
                             remove = Some(i);
                         }
-                        if i > 0 && ui.button(egui_phosphor::regular::ARROW_UP).clicked() {
+                        if i + 1 < n_rules && ui.button(ic::ARROW_DOWN).on_hover_text("Move down").clicked() {
+                            move_down = Some(i);
+                        }
+                        if i > 0 && ui.button(ic::ARROW_UP).on_hover_text("Move up").clicked() {
                             move_up = Some(i);
                         }
                     });
                 });
+                if !ru.expanded {
+                    return;
+                }
                 // Conditions.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("if severity ≥");
@@ -3609,6 +3649,10 @@ impl SpaiApp {
         }
         if let Some(i) = move_up {
             self.settings.alerts.rules.swap(i, i - 1);
+            changed = true;
+        }
+        if let Some(i) = move_down {
+            self.settings.alerts.rules.swap(i, i + 1);
             changed = true;
         }
         if changed {

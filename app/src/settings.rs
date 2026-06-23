@@ -117,6 +117,9 @@ pub struct AlertRule {
     /// Sound override: "" = the severity default, "off" = silent, else preset/path.
     pub sound: String,
     pub cooldown_secs: i64,
+    /// UI-only: whether the rule is expanded in the editor (not persisted).
+    #[serde(skip)]
+    pub expanded: bool,
 }
 
 impl Default for AlertRule {
@@ -138,6 +141,7 @@ impl Default for AlertRule {
             push: false,
             sound: String::new(),
             cooldown_secs: 60,
+            expanded: false,
         }
     }
 }
