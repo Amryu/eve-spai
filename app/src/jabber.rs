@@ -50,6 +50,57 @@ pub struct Contact {
     #[allow(dead_code)] // the map key is the JID; this mirrors it for convenience
     pub jid: String,
     pub name: Option<String>,
+    /// Roster groups the server places this contact in (e.g. "Directors").
+    pub groups: Vec<String>,
+    pub presence: Presence,
+    /// Free-text status message, if the contact set one.
+    pub status_text: String,
+}
+
+/// A contact's availability, from their presence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Presence {
+    #[default]
+    Offline,
+    Online,
+    Away,
+    /// Extended away.
+    Xa,
+    Dnd,
+}
+
+impl Presence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Presence::Offline => "Offline",
+            Presence::Online => "Online",
+            Presence::Away => "Away",
+            Presence::Xa => "Away (long)",
+            Presence::Dnd => "Do not disturb",
+        }
+    }
+    /// Dot colour (R, G, B).
+    pub fn color(self) -> (u8, u8, u8) {
+        match self {
+            Presence::Online => (0x4C, 0xC2, 0x6A),
+            Presence::Away | Presence::Xa => (0xE0, 0xA4, 0x3A),
+            Presence::Dnd => (0xD8, 0x4C, 0x4C),
+            Presence::Offline => (0x6A, 0x6A, 0x6A),
+        }
+    }
+    pub fn online(self) -> bool {
+        !matches!(self, Presence::Offline)
+    }
+    /// Sort rank: online first.
+    pub fn rank(self) -> u8 {
+        match self {
+            Presence::Online => 0,
+            Presence::Away => 1,
+            Presence::Xa => 2,
+            Presence::Dnd => 3,
+            Presence::Offline => 4,
+        }
+    }
 }
 
 /// Commands sent from the UI to the background client.
@@ -190,6 +241,21 @@ async fn run(
     state.lock().unwrap().running = false;
 }
 
+/// Map an XMPP presence stanza to our availability enum.
+fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
+    use xmpp::parsers::presence::{Show, Type};
+    match p.type_ {
+        Type::Unavailable => Presence::Offline,
+        Type::None => match p.show {
+            Some(Show::Away) => Presence::Away,
+            Some(Show::Xa) => Presence::Xa,
+            Some(Show::Dnd) => Presence::Dnd,
+            _ => Presence::Online, // no <show> or "chat" = available
+        },
+        _ => Presence::Offline, // subscribe/error/etc.
+    }
+}
+
 fn handle_event(
     event: xmpp::Event,
     state: &SharedJabber,
@@ -213,11 +279,34 @@ fn handle_event(
         }
         Event::ContactAdded(item) | Event::ContactChanged(item) => {
             let jid = item.jid.to_string();
-            let name = item.name.clone();
-            state.lock().unwrap().roster.insert(jid.clone(), Contact { jid, name });
+            let groups: Vec<String> = item.groups.iter().map(|g| g.0.clone()).collect();
+            let mut s = state.lock().unwrap();
+            // Keep any presence we've already learned for this contact.
+            let entry = s.roster.entry(jid.clone()).or_insert_with(|| Contact {
+                jid: jid.clone(),
+                name: None,
+                groups: Vec::new(),
+                presence: Presence::default(),
+                status_text: String::new(),
+            });
+            entry.name = item.name.clone();
+            entry.groups = groups;
         }
         Event::ContactRemoved(item) => {
             state.lock().unwrap().roster.remove(&item.jid.to_string());
+        }
+        // Raw presence stanzas (escape-hatch): update the contact's availability.
+        Event::Presence(p) => {
+            if let Some(from) = &p.from {
+                let bare = from.to_bare().to_string();
+                let presence = presence_from(&p);
+                let status = p.statuses.values().next().cloned().unwrap_or_default();
+                let mut s = state.lock().unwrap();
+                if let Some(c) = s.roster.get_mut(&bare) {
+                    c.presence = presence;
+                    c.status_text = status;
+                }
+            }
         }
         Event::ChatMessage(_, from, body, _) => {
             let key = from.to_string();

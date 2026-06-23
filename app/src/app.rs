@@ -864,21 +864,34 @@ impl SpaiApp {
         // Snapshot what we need, then render (so we don't hold the lock during UI).
         let (connected, status, convos, sel_msgs, pings) = {
             let st = self.jabber.lock().unwrap();
-            let mut set: std::collections::BTreeMap<String, (String, bool)> =
+            let mut set: std::collections::BTreeMap<String, Convo> =
                 std::collections::BTreeMap::new();
             for (jid, c) in &st.roster {
-                set.entry(jid.clone()).or_insert((c.name.clone().unwrap_or_else(|| jid.clone()), false));
+                set.entry(jid.clone()).or_insert_with(|| Convo {
+                    jid: jid.clone(),
+                    name: c.name.clone().unwrap_or_else(|| jid.clone()),
+                    unread: false,
+                    group: c.groups.first().cloned().unwrap_or_else(|| "Other".to_owned()),
+                    presence: c.presence,
+                    status_text: c.status_text.clone(),
+                });
             }
             for jid in st.chats.keys() {
-                set.entry(jid.clone()).or_insert_with(|| (jid.clone(), false));
+                set.entry(jid.clone()).or_insert_with(|| Convo {
+                    jid: jid.clone(),
+                    name: jid.clone(),
+                    unread: false,
+                    group: "Other".to_owned(),
+                    presence: crate::jabber::Presence::Offline,
+                    status_text: String::new(),
+                });
             }
             for jid in &st.unread {
                 if let Some(e) = set.get_mut(jid) {
-                    e.1 = true;
+                    e.unread = true;
                 }
             }
-            let convos: Vec<(String, String, bool)> =
-                set.into_iter().map(|(j, (n, u))| (j, n, u)).collect();
+            let convos: Vec<Convo> = set.into_values().collect();
             let sel_msgs = self
                 .jabber_chat
                 .as_ref()
@@ -919,17 +932,52 @@ impl SpaiApp {
                     self.jabber_chat = None;
                 }
                 ui.separator();
+                // Group contacts by their server-assigned roster group, online first.
+                let mut groups: std::collections::BTreeMap<&str, Vec<&Convo>> =
+                    std::collections::BTreeMap::new();
+                for c in &convos {
+                    groups.entry(c.group.as_str()).or_default().push(c);
+                }
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
-                    for (jid, name, unread) in &convos {
-                        let sel = self.jabber_chat.as_deref() == Some(jid.as_str());
-                        let label = if *unread {
-                            egui::RichText::new(format!("{} {name}", egui_phosphor::regular::DOT)).strong()
-                        } else {
-                            egui::RichText::new(name)
-                        };
-                        if ui.selectable_label(sel, label).clicked() {
-                            self.jabber_chat = Some(jid.clone());
-                            self.jabber.lock().unwrap().unread.remove(jid);
+                    for (group, mut members) in groups {
+                        members.sort_by(|a, b| {
+                            a.presence.rank().cmp(&b.presence.rank()).then_with(|| a.name.cmp(&b.name))
+                        });
+                        let online = members.iter().filter(|c| c.presence.online()).count();
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new(format!("{group}  ({online}/{})", members.len()))
+                                .strong()
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        for c in members {
+                            let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
+                            let (r, g, b) = c.presence.color();
+                            let dot = egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                .color(egui::Color32::from_rgb(r, g, b))
+                                .size(9.0);
+                            let name = if c.unread {
+                                egui::RichText::new(&c.name).strong()
+                            } else if c.presence.online() {
+                                egui::RichText::new(&c.name)
+                            } else {
+                                egui::RichText::new(&c.name).weak()
+                            };
+                            let resp = ui.horizontal(|ui| {
+                                ui.label(dot);
+                                ui.selectable_label(sel, name).clicked()
+                            });
+                            let tip = if c.status_text.is_empty() {
+                                c.presence.label().to_owned()
+                            } else {
+                                format!("{} — {}", c.presence.label(), c.status_text)
+                            };
+                            resp.response.on_hover_text(tip);
+                            if resp.inner {
+                                self.jabber_chat = Some(c.jid.clone());
+                                self.jabber.lock().unwrap().unread.remove(&c.jid);
+                            }
                         }
                     }
                 });
@@ -6531,6 +6579,16 @@ impl WhOverlay {
         chains.truncate(MAX_CHAINS);
         WhOverlay { direct, chains, jspace_holes }
     }
+}
+
+/// A Jabber roster entry / conversation for the contact list.
+struct Convo {
+    jid: String,
+    name: String,
+    unread: bool,
+    group: String,
+    presence: crate::jabber::Presence,
+    status_text: String,
 }
 
 /// State of an in-flight / completed d-scan upload.
