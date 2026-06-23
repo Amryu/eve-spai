@@ -4834,11 +4834,55 @@ impl SpaiApp {
                         let hint = crate::logpaths::chat_logs_dir("")
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "auto-detect".into());
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.settings.eve_logs_dir)
-                                .hint_text(hint)
-                                .desired_width(420.0),
-                        );
+                        // Validate the entered (or auto-detected) location and show a
+                        // check / cross.
+                        let resolved = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.settings.eve_logs_dir)
+                                    .hint_text(hint)
+                                    .desired_width(380.0),
+                            );
+                            if resolved.is_some() {
+                                ui.label(
+                                    egui::RichText::new(icon::CHECK_CIRCLE)
+                                        .color(crate::theme::standing::FRIENDLY),
+                                )
+                                .on_hover_text("Valid EVE chat-log folder");
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(icon::X_CIRCLE)
+                                        .color(crate::theme::standing::HOSTILE),
+                                )
+                                .on_hover_text("No EVE chat-log folder found here");
+                            }
+                        });
+                        match &resolved {
+                            Some(p) => {
+                                ui.label(
+                                    egui::RichText::new(format!("Using {}", p.display()))
+                                        .weak()
+                                        .small(),
+                                );
+                            }
+                            None if self.settings.eve_logs_dir.trim().is_empty() => {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Couldn't auto-detect — enter the path to your EVE \
+                                         Chatlogs folder.",
+                                    )
+                                    .color(crate::theme::standing::WARNING)
+                                    .small(),
+                                );
+                            }
+                            None => {
+                                ui.label(
+                                    egui::RichText::new("That folder has no EVE chat logs.")
+                                        .color(crate::theme::standing::WARNING)
+                                        .small(),
+                                );
+                            }
+                        }
                     }
                     S::Channels => {
                         ui.heading(format!("{}  Intel channels", icon::BROADCAST));
