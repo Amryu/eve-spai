@@ -2167,12 +2167,14 @@ impl SpaiApp {
                     );
                     ui.hyperlink_to("Imperium stargates", "https://wiki.goonswarm.org/w/Alliance:Stargate");
                 });
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.jb_paste)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("1DQ1-A » O-EIMK\nT5ZI-S - 5-CQDA"),
-                );
+                egui::ScrollArea::vertical().max_height(110.0).id_salt("jb_scroll").show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.jb_paste)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Paste the bridge list (or whole wiki page)"),
+                    );
+                });
                 if ui.button("Add from paste").clicked() {
                     if let Some(g) = self.systems.clone() {
                         let added = parse_bridges(&self.jb_paste, &g);
@@ -2236,12 +2238,14 @@ impl SpaiApp {
                         "https://goonfleet.com/index.php/topic/371770-equinox-upgrade-information-station",
                     );
                 });
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.sov_paste)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("1DQ1-A Cynosural Suppression\nO-EIMK Advanced Logistics Network"),
-                );
+                egui::ScrollArea::vertical().max_height(110.0).id_salt("sov_scroll").show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.sov_paste)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Paste the in-game I-Hub window (Sovereignty Hub …)"),
+                    );
+                });
                 if ui.button("Add from paste").clicked() {
                     if let Some(g) = self.systems.clone() {
                         for u in parse_sov_upgrades(&self.sov_paste, &g) {
@@ -2571,12 +2575,14 @@ fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
         .map(|i| i.name.clone())
 }
 
-/// Parse a pasted jump-bridge list: each line's first two SDE systems = a bridge.
+/// Parse a pasted jump-bridge list (standard): the first two systems found on a
+/// line are a bridge. Tolerant of arrows/punctuation glued to system codes, so the
+/// user can paste a whole wiki page.
 fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::JumpBridge> {
     let mut out = Vec::new();
     for line in text.lines() {
         let mut ends: Vec<String> = Vec::new();
-        for raw in line.split_whitespace() {
+        for raw in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '\'')) {
             if let Some(name) = resolve_system(graph, raw) {
                 if !ends.contains(&name) {
                     ends.push(name);
@@ -2593,10 +2599,34 @@ fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings
     out
 }
 
-/// Parse pasted sov upgrades: first system on a line, rest = the upgrade label.
+/// Parse pasted sov upgrades. Primary: the in-game I-Hub copy — a header
+/// "Sovereignty Hub <System>" followed by tab-separated "N⇥Upgrade⇥Online/Offline"
+/// rows. Fallback: per-line "<system> <upgrade…>".
 fn parse_sov_upgrades(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::SovUpgrade> {
+    let lines: Vec<&str> = text.lines().collect();
+    if let Some(rest) = lines.first().and_then(|l| l.trim().strip_prefix("Sovereignty Hub ")) {
+        if let Some(name) = resolve_system(graph, rest.trim()) {
+            let mut out = Vec::new();
+            for l in &lines[1..] {
+                let parts: Vec<&str> = l.split('\t').collect();
+                if parts.len() >= 2 && parts[0].trim().chars().all(|c| c.is_ascii_digit()) {
+                    let upgrade = parts[1].trim();
+                    if !upgrade.is_empty() {
+                        out.push(crate::settings::SovUpgrade {
+                            system: name.clone(),
+                            upgrade: upgrade.to_owned(),
+                        });
+                    }
+                }
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
+    // Generic fallback.
     let mut out = Vec::new();
-    for line in text.lines() {
+    for line in lines {
         let words: Vec<&str> = line.split_whitespace().collect();
         let Some((idx, name)) =
             words.iter().enumerate().find_map(|(i, w)| resolve_system(graph, w).map(|n| (i, n)))

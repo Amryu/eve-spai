@@ -385,6 +385,33 @@ region at its geographic centroid and de-overlap systems only *within* a region
 pixel-faithful in-game layout. Refs: developers.eveonline.com map-data guide;
 everef.net schema.
 
+## 9d. Deferred — Jump planner (A1 extension)
+A capital jump-route planner. We already have true 3D coordinates → light-year
+distances and the jump-range bands (capital 5 / black-ops 8 / JF 10 ly), so range
+maths is done. Open work:
+- **Structure awareness.** Routing must know which structures can be jumped to and
+  which can dock capitals. ESI exposes only *your* corp structures
+  (`/corporations/{id}/structures`, auth) and limited public ones — coalition-wide
+  cap-dockable/cyno structures are **not** fully public. So: import a structure
+  list (paste/parse, like jump bridges) + use ESI for own structures.
+- **Configurable skills** (Jump Drive Calibration etc.) → range/fuel.
+- **Auto-pathfinding** (Dijkstra over jump-reachable structures within range) +
+  **manual path** building by ship type/skills.
+- **Alternative systems** (same range / same jumps / valid structure exists).
+- **High-activity warnings** along the route (intel in the last 4 h + capsuleer
+  kills from `/universe/system_kills`).
+Estimate: its own milestone; structure import is the gating piece.
+
+## 9e. Deferred — Jabber / XMPP comms (A4)
+Embedded XMPP client (poppable out), one window combining the buddy list and chat:
+active chats at the top, a divider, then visible contacts with director/commander
+groups first (folders). Parses + notifies **Imperium pings**; normal MUC/DM chat;
+online presence/roster. No conversation persistence for now.
+- **Feasibility.** Needs an async XMPP stack (e.g. `tokio-xmpp`), which pulls in
+  tokio + TLS — a real dependency-weight increase vs. the current lean build. The
+  Imperium Jabber server + ping message format must be handled. This is a full
+  subsystem and its own milestone, not an incremental add.
+
 ## 9. External integrations
 EVE **SSO** (OAuth2 PKCE) · EVE **ESI** (REST, rate-limit aware) · EVE **image
 server** (small sizes only) · **zKillboard** (+ redisq/stream for live kills) ·
