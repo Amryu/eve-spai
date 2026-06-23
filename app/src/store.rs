@@ -211,6 +211,90 @@ impl Store {
         self.map_systems("WHERE region_id = ?1", params![region_id])
     }
 
+    /// Systems in a constellation.
+    pub fn constellation_systems(&self, cid: i64) -> Vec<MapSystem> {
+        self.map_systems("WHERE constellation_id = ?1", params![cid])
+    }
+
+    fn name_of(&self, sql: &str, id: i64) -> Option<String> {
+        self.conn.query_row(sql, params![id], |r| r.get(0)).ok()
+    }
+
+    pub fn region_name(&self, id: i64) -> Option<String> {
+        self.name_of("SELECT name FROM sde_regions WHERE id = ?1", id)
+    }
+
+    pub fn constellation_name(&self, id: i64) -> Option<String> {
+        self.name_of("SELECT name FROM sde_constellations WHERE id = ?1", id)
+    }
+
+    /// The constellation (id, name) a system belongs to.
+    pub fn constellation_of_system(&self, id: i64) -> Option<(i64, String)> {
+        self.conn
+            .query_row(
+                "SELECT c.id, c.name FROM sde_systems s \
+                 JOIN sde_constellations c ON c.id = s.constellation_id WHERE s.id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+    }
+
+    /// The region a constellation belongs to.
+    pub fn region_of_constellation(&self, cid: i64) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT region_id FROM sde_systems WHERE constellation_id = ?1 LIMIT 1",
+                params![cid],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    fn id_name_list(&self, sql: &str, id: i64) -> Vec<(i64, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(sql) {
+            if let Ok(rows) = stmt.query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?))) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Constellations within a region.
+    pub fn constellations_in_region(&self, rid: i64) -> Vec<(i64, String)> {
+        self.id_name_list(
+            "SELECT DISTINCT c.id, c.name FROM sde_systems s \
+             JOIN sde_constellations c ON c.id = s.constellation_id \
+             WHERE s.region_id = ?1 ORDER BY c.name",
+            rid,
+        )
+    }
+
+    /// Constellations gate-adjacent to this one.
+    pub fn constellation_neighbours(&self, cid: i64) -> Vec<(i64, String)> {
+        self.id_name_list(
+            "SELECT DISTINCT c.id, c.name FROM sde_jumps j \
+             JOIN sde_systems a ON a.id = j.from_id \
+             JOIN sde_systems b ON b.id = j.to_id \
+             JOIN sde_constellations c ON c.id = b.constellation_id \
+             WHERE a.constellation_id = ?1 AND b.constellation_id <> ?1 ORDER BY c.name",
+            cid,
+        )
+    }
+
+    /// Regions gate-adjacent to this one.
+    pub fn region_neighbours(&self, rid: i64) -> Vec<(i64, String)> {
+        self.id_name_list(
+            "SELECT DISTINCT r.id, r.name FROM sde_jumps j \
+             JOIN sde_systems a ON a.id = j.from_id \
+             JOIN sde_systems b ON b.id = j.to_id \
+             JOIN sde_regions r ON r.id = b.region_id \
+             WHERE a.region_id = ?1 AND b.region_id <> ?1 ORDER BY r.name",
+            rid,
+        )
+    }
+
     /// All systems with map coordinates (universe view).
     pub fn all_map_systems(&self) -> Vec<MapSystem> {
         self.map_systems("", params![])

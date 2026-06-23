@@ -196,6 +196,9 @@ pub struct SpaiApp {
     map_search_sel: usize,
     /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
+    /// Open constellation / region info windows (by id).
+    constellation_window: Option<i64>,
+    region_window: Option<i64>,
     /// A viewport to bring to the foreground this frame (a click updated its data).
     focus_window: Option<egui::ViewportId>,
     /// Ship-info window: the ship type currently shown (if any).
@@ -325,6 +328,8 @@ impl SpaiApp {
             map_search: String::new(),
             map_search_sel: 0,
             system_window: None,
+            constellation_window: None,
+            region_window: None,
             focus_window: None,
             ship_window: None,
             pilot_query: String::new(),
@@ -1534,7 +1539,8 @@ impl SpaiApp {
                 if ov.upgrades && zoomed {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
                         for (k, up) in ups.iter().take(6).enumerate() {
-                            let ip = p + egui::vec2(dot + 3.0 + k as f32 * 20.0, -(dot + 4.0));
+                            // Sit the icons in a row above the system name.
+                            let ip = p + egui::vec2(6.0 + k as f32 * 20.0, -15.0);
                             let (kind, level) = upgrade_info(up);
                             let lcol = level_color(level);
                             match kind {
@@ -1648,16 +1654,6 @@ impl SpaiApp {
         // System labels appear once zoomed in past region level (so they're spaced
         // enough to read); a collision check then drops any that would still overlap.
         let show_sys_labels = self.map_zoom >= 12.0;
-        let upgrade_counts: std::collections::HashMap<String, usize> =
-            if self.map_overlays.upgrades && zoomed {
-                let mut m = std::collections::HashMap::new();
-                for u in &self.settings.sov_upgrades {
-                    *m.entry(u.system.to_lowercase()).or_insert(0) += 1;
-                }
-                m
-            } else {
-                std::collections::HashMap::new()
-            };
         let mut placed_labels: Vec<egui::Rect> = Vec::new();
         for s in &self.map_draw {
             let p = pos[&s.id];
@@ -1677,10 +1673,8 @@ impl SpaiApp {
                 painter.circle_stroke(p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             }
             if show_sys_labels && rect.contains(p) {
-                // Shift the label clear of any sov-upgrade icons to the right.
-                let n_up = upgrade_counts.get(&s.name.to_lowercase()).copied().unwrap_or(0);
-                let icon_w = if n_up > 0 { dot + 3.0 + n_up.min(6) as f32 * 20.0 } else { 0.0 };
-                let anchor = p + egui::vec2(6.0 + icon_w, -2.0);
+                // Name sits next to the dot; sov-upgrade icons sit above it.
+                let anchor = p + egui::vec2(6.0, -2.0);
                 let approx = egui::Rect::from_min_size(
                     anchor,
                     egui::vec2(s.name.len() as f32 * 7.0, 14.0),
@@ -1752,6 +1746,7 @@ impl SpaiApp {
                 if self.overlay_menu_open {
                     ui.add_space(6.0);
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(190.0);
                         ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
@@ -2231,6 +2226,10 @@ impl SpaiApp {
         };
         let status_snapshot = self.system_status.lock().unwrap().clone();
         let mut intel_click: Option<IntelClick> = None;
+        let constellation = self.store.as_ref().and_then(|s| s.constellation_of_system(id));
+        let region_loc = self.store.as_ref().and_then(|s| s.region_of_system(id));
+        let mut open_const: Option<i64> = None;
+        let mut open_region: Option<i64> = None;
 
         let keep = Self::dialog_viewport(
             ctx,
@@ -2292,6 +2291,20 @@ impl SpaiApp {
                     }
                     // Location + conditions (sov shown as the logo instead).
                     system_chips_ex(ui, &self.systems, &status, id, false);
+                    // Breadcrumb: navigate up to the constellation / region.
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some((cid, cname)) = &constellation {
+                            if ui.link(egui::RichText::new(cname).weak()).clicked() {
+                                open_const = Some(*cid);
+                            }
+                        }
+                        if let Some(r) = region_loc {
+                            ui.label(egui::RichText::new("‹").weak());
+                            if ui.link(egui::RichText::new(&info.region).weak()).clicked() {
+                                open_region = Some(r);
+                            }
+                        }
+                    });
                     // Last-hour activity, highlighted vs the region average.
                     let region_ids: Vec<i64> = self
                         .store
@@ -2451,6 +2464,14 @@ impl SpaiApp {
         if let Some(nid) = nav {
             self.system_window = Some(nid);
         }
+        if let Some(c) = open_const {
+            self.constellation_window = Some(c);
+            self.focus_window = Some(egui::ViewportId::from_hash_of("constellation_window"));
+        }
+        if let Some(r) = open_region {
+            self.region_window = Some(r);
+            self.focus_window = Some(egui::ViewportId::from_hash_of("region_window"));
+        }
         // A click inside an intel card (ship / pilot / system).
         match intel_click {
             Some(IntelClick::System(sid)) => self.open_system(sid),
@@ -2472,6 +2493,205 @@ impl SpaiApp {
         }
         if !keep {
             self.system_window = None;
+        }
+    }
+
+    /// Top sov-holding alliances over a set of systems: (alliance id, name, count).
+    fn dominant_alliances(&self, ids: &[i64]) -> Vec<(i64, Option<String>, usize)> {
+        let status = self.system_status.lock().unwrap();
+        let mut counts: std::collections::HashMap<i64, (Option<String>, usize)> =
+            std::collections::HashMap::new();
+        for &id in ids {
+            if let Some(f) = status.get(&id) {
+                if let Some(aid) = f.sov_alliance {
+                    let e = counts.entry(aid).or_insert((f.sov.clone(), 0));
+                    e.1 += 1;
+                    if e.0.is_none() {
+                        e.0 = f.sov.clone();
+                    }
+                }
+            }
+        }
+        let mut v: Vec<(i64, Option<String>, usize)> =
+            counts.into_iter().map(|(k, (n, c))| (k, n, c)).collect();
+        v.sort_by(|a, b| b.2.cmp(&a.2));
+        v.truncate(3);
+        v
+    }
+
+    /// Top-right column of dominant alliance logos (largest first), with the count.
+    fn dominant_logos(&self, ui: &mut egui::Ui, ids: &[i64], area_id: &str) {
+        let dom = self.dominant_alliances(ids);
+        if dom.is_empty() {
+            return;
+        }
+        egui::Area::new(egui::Id::new(area_id.to_owned()))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.vertical_centered(|ui| {
+                    for (i, (aid, name, count)) in dom.iter().enumerate() {
+                        let sz = if i == 0 { 56.0 } else { 34.0 };
+                        let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=128");
+                        let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(sz)));
+                        let label = name.clone().unwrap_or_else(|| "Alliance".to_owned());
+                        r.on_hover_text(format!("{label} — {count} systems"));
+                    }
+                });
+            });
+    }
+
+    /// Rat-faction summary line (shared by system/constellation/region windows).
+    fn rat_line(ui: &mut egui::Ui, region_name: &str) {
+        if let Some(rp) = crate::rats::rat_profile(region_name) {
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
+                ui.label(egui::RichText::new(rp.faction).strong());
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "Deals {} / {}   ·   weak to {} / {}",
+                    rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
+                ))
+                .weak(),
+            );
+            if rp.ewar != "None" {
+                ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
+            }
+        }
+    }
+
+    /// Constellation info window — navigates up to its region, down to its systems,
+    /// and across to neighbouring constellations.
+    fn constellation_window(&mut self, ctx: &egui::Context) {
+        let Some(cid) = self.constellation_window else { return };
+        let Some(store) = &self.store else { return };
+        let name = store.constellation_name(cid).unwrap_or_else(|| "Constellation".to_owned());
+        let region = store.region_of_constellation(cid);
+        let region_name = region.and_then(|r| store.region_name(r)).unwrap_or_default();
+        let systems = store.constellation_systems(cid);
+        let neighbours = store.constellation_neighbours(cid);
+        let sys_ids: Vec<i64> = systems.iter().map(|s| s.id).collect();
+
+        let mut open_region: Option<i64> = None;
+        let mut open_constellation: Option<i64> = None;
+        let mut open_system: Option<i64> = None;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "constellation_window",
+            "EVE Spai — Constellation",
+            [420.0, 560.0],
+            |ui| {
+                ui.heading(&name);
+                if let Some(r) = region {
+                    if ui.link(egui::RichText::new(format!("◤ {region_name}")).weak()).clicked() {
+                        open_region = Some(r);
+                    }
+                }
+                self.dominant_logos(ui, &sys_ids, "constellation_dom");
+                Self::rat_line(ui, &region_name);
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Systems ({})", systems.len())).strong());
+                egui::ScrollArea::vertical().max_height(220.0).id_salt("const_sys").show(ui, |ui| {
+                    for s in &systems {
+                        ui.horizontal(|ui| {
+                            ui.label(security_badge(s.security));
+                            if ui.link(&s.name).clicked() {
+                                open_system = Some(s.id);
+                            }
+                        });
+                    }
+                });
+                if !neighbours.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Neighbouring constellations").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        for (nid, nname) in &neighbours {
+                            if ui.button(nname).clicked() {
+                                open_constellation = Some(*nid);
+                            }
+                        }
+                    });
+                }
+            },
+        );
+        if let Some(r) = open_region {
+            self.region_window = Some(r);
+            self.focus_window = Some(egui::ViewportId::from_hash_of("region_window"));
+        }
+        if let Some(c) = open_constellation {
+            self.constellation_window = Some(c);
+        }
+        if let Some(s) = open_system {
+            self.open_system(s);
+        }
+        if !keep {
+            self.constellation_window = None;
+        }
+    }
+
+    /// Region info window — navigates down to its constellations and across to
+    /// neighbouring regions.
+    fn region_window(&mut self, ctx: &egui::Context) {
+        let Some(rid) = self.region_window else { return };
+        let Some(store) = &self.store else { return };
+        let name = store.region_name(rid).unwrap_or_else(|| "Region".to_owned());
+        let constellations = store.constellations_in_region(rid);
+        let neighbours = store.region_neighbours(rid);
+        let sys_ids: Vec<i64> = store.region_systems(rid).iter().map(|s| s.id).collect();
+
+        let mut open_constellation: Option<i64> = None;
+        let mut open_region: Option<i64> = None;
+        let mut show_map = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "region_window",
+            "EVE Spai — Region",
+            [420.0, 580.0],
+            |ui| {
+                ui.heading(&name);
+                self.dominant_logos(ui, &sys_ids, "region_dom");
+                Self::rat_line(ui, &name);
+                ui.separator();
+                if ui.button("Show on map").clicked() {
+                    show_map = true;
+                }
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Constellations ({})", constellations.len())).strong());
+                egui::ScrollArea::vertical().max_height(220.0).id_salt("region_const").show(ui, |ui| {
+                    for (cid, cname) in &constellations {
+                        if ui.link(cname).clicked() {
+                            open_constellation = Some(*cid);
+                        }
+                    }
+                });
+                if !neighbours.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Neighbouring regions").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        for (nid, nname) in &neighbours {
+                            if ui.button(nname).clicked() {
+                                open_region = Some(*nid);
+                            }
+                        }
+                    });
+                }
+            },
+        );
+        if let Some(c) = open_constellation {
+            self.constellation_window = Some(c);
+            self.focus_window = Some(egui::ViewportId::from_hash_of("constellation_window"));
+        }
+        if let Some(r) = open_region {
+            self.region_window = Some(r);
+        }
+        if show_map {
+            self.view = View::Map;
+            self.map_go(crate::map::MapView::Region(rid));
+        }
+        if !keep {
+            self.region_window = None;
         }
     }
 
@@ -3057,6 +3277,8 @@ impl eframe::App for SpaiApp {
         self.sov_upgrades_window(&ctx);
         self.coalitions_window(&ctx);
         self.system_window(&ctx);
+        self.constellation_window(&ctx);
+        self.region_window(&ctx);
         self.ship_window(&ctx);
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
