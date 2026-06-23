@@ -11,10 +11,18 @@ enum IntelTypeFilter {
     Threat,
 }
 
+/// Sovereignty territory colouring mode.
+#[derive(Clone, Copy, PartialEq)]
+enum SovMode {
+    Off,
+    Alliance,
+    Coalition,
+}
+
 /// Toggleable map overlays (the top-right Layers menu).
 #[derive(Clone, Copy)]
 struct MapOverlays {
-    sov: bool,
+    sov: SovMode,
     bridges: bool,
     activity: bool,
     adm: bool,
@@ -23,7 +31,7 @@ struct MapOverlays {
 
 impl Default for MapOverlays {
     fn default() -> Self {
-        Self { sov: false, bridges: true, activity: false, adm: false, upgrades: true }
+        Self { sov: SovMode::Off, bridges: true, activity: false, adm: false, upgrades: true }
     }
 }
 
@@ -77,6 +85,7 @@ pub struct SpaiApp {
     jb_paste: String,
     sov_upgrades_open: bool,
     sov_paste: String,
+    coalitions_open: bool,
     active_character: String,
     /// Settings changed this frame and should be persisted.
     needs_save: bool,
@@ -212,6 +221,7 @@ impl SpaiApp {
             jb_paste: String::new(),
             sov_upgrades_open: false,
             sov_paste: String::new(),
+            coalitions_open: false,
             active_character: "No character".to_owned(),
             needs_save: false,
             sde_status,
@@ -1229,6 +1239,50 @@ impl SpaiApp {
         // Small uniform dots like the in-game star map.
         let dot = (0.7 * self.map_zoom).clamp(0.6, 2.2);
 
+        // Sovereignty territory: filled blobs covering each holder's systems. Radius
+        // ≈ the gate spacing so adjacent owned systems merge into a contiguous shape.
+        if self.map_overlays.sov != SovMode::Off {
+            // Coalition lookup: alliance name (lower) -> coalition name.
+            let coal: std::collections::HashMap<String, String> = self
+                .settings
+                .coalitions
+                .iter()
+                .flat_map(|c| c.alliances.iter().map(move |a| (a.to_lowercase(), c.name.clone())))
+                .collect();
+            // Adaptive radius from the median gate-edge length on screen.
+            let mut edge_len: Vec<f32> = Vec::new();
+            if let Some(graph) = &self.systems {
+                for s in self.map_draw.iter().take(600) {
+                    let p1 = pos[&s.id];
+                    for &n in graph.neighbors(s.id) {
+                        if s.id < n {
+                            if let Some(p2) = pos.get(&n) {
+                                edge_len.push(p1.distance(*p2));
+                            }
+                        }
+                    }
+                }
+            }
+            edge_len.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let terr = edge_len.get(edge_len.len() / 2).copied().unwrap_or(dot * 6.0).max(dot * 3.0) * 0.62;
+            let status = self.system_status.lock().unwrap();
+            for s in &self.map_draw {
+                if let Some(f) = status.get(&s.id) {
+                    if let (SovMode::Alliance, Some(aid)) = (self.map_overlays.sov, f.sov_alliance) {
+                        painter.circle_filled(pos[&s.id], terr, alliance_color(aid).gamma_multiply(0.75));
+                    } else if self.map_overlays.sov == SovMode::Coalition {
+                        if let Some(name) = &f.sov {
+                            let col = match coal.get(&name.to_lowercase()) {
+                                Some(cname) => alliance_color(coalition_hash(cname)),
+                                None => egui::Color32::from_rgb(0x55, 0x55, 0x55), // independent
+                            };
+                            painter.circle_filled(pos[&s.id], terr, col.gamma_multiply(0.75));
+                        }
+                    }
+                }
+            }
+        }
+
         // Configured jump bridges (drawn distinctly, in green, like in-game).
         let bridges: std::collections::HashSet<(i64, i64)> = if let Some(g) = &self.systems {
             self.settings
@@ -1267,9 +1321,10 @@ impl SpaiApp {
             }
         }
 
-        // Map overlays (sov tint / ADM / activity / sov upgrades), behind the dots.
+        // Map overlays (ADM / activity / sov upgrades) as rings/markers behind dots.
+        // (Sovereignty territory is drawn separately, below.)
         let ov = self.map_overlays;
-        if ov.sov || ov.adm || ov.activity || ov.upgrades {
+        if ov.adm || ov.activity || ov.upgrades {
             let status = self.system_status.lock().unwrap();
             let upgrade_systems: std::collections::HashSet<String> = if ov.upgrades {
                 self.settings.sov_upgrades.iter().map(|u| u.system.to_lowercase()).collect()
@@ -1279,11 +1334,6 @@ impl SpaiApp {
             for s in &self.map_draw {
                 let p = pos[&s.id];
                 if let Some(f) = status.get(&s.id) {
-                    if ov.sov {
-                        if let Some(aid) = f.sov_alliance {
-                            painter.circle_filled(p, dot + 7.0, alliance_color(aid).gamma_multiply(0.22));
-                        }
-                    }
                     if ov.adm {
                         if let Some(adm) = f.adm {
                             let c = if adm >= 5.0 {
@@ -1462,7 +1512,11 @@ impl SpaiApp {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.menu_button(format!("{}  Overlays", icon::STACK_SIMPLE), |ui| {
-                        ui.checkbox(&mut self.map_overlays.sov, format!("{}  Sovereignty", icon::FLAG));
+                        ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
+                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
+                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
+                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
+                        ui.separator();
                         ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
                         ui.checkbox(
                             &mut self.map_overlays.activity,
@@ -2145,6 +2199,78 @@ impl SpaiApp {
 
     /// Jump-bridge configuration: paste a coalition list (any separator); each
     /// line's first two SDE systems become a bridge. Drawn green on the map.
+    /// Coalition editor: name + member alliance names (one per line). Unlisted
+    /// alliances are independent.
+    fn coalitions_window(&mut self, ctx: &egui::Context) {
+        if !self.coalitions_open {
+            return;
+        }
+        let mut changed = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "coalitions_window",
+            "EVE Spai — Coalitions",
+            [460.0, 560.0],
+            |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Group alliances into coalitions for the map's sovereignty overlay. \
+                         Use the alliance names exactly as they appear on the map. Unlisted \
+                         alliances are shown as independent.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                let mut remove: Option<usize> = None;
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for (i, c) in self.settings.coalitions.iter_mut().enumerate() {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Coalition").weak());
+                                if ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(180.0)).changed() {
+                                    changed = true;
+                                }
+                                if ui.button("Remove").clicked() {
+                                    remove = Some(i);
+                                }
+                            });
+                            let mut text = c.alliances.join("\n");
+                            if ui
+                                .add(
+                                    egui::TextEdit::multiline(&mut text)
+                                        .desired_rows(3)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Goonswarm Federation\nThe Bastion"),
+                                )
+                                .changed()
+                            {
+                                c.alliances = text.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect();
+                                changed = true;
+                            }
+                        });
+                    }
+                });
+                if let Some(i) = remove {
+                    self.settings.coalitions.remove(i);
+                    changed = true;
+                }
+                if ui.button("Add coalition").clicked() {
+                    self.settings.coalitions.push(crate::settings::Coalition {
+                        name: "New coalition".to_owned(),
+                        alliances: Vec::new(),
+                    });
+                    changed = true;
+                }
+            },
+        );
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.coalitions_open = false;
+        }
+    }
+
     fn jump_bridges_window(&mut self, ctx: &egui::Context) {
         if !self.jump_bridges_open {
             return;
@@ -2492,6 +2618,9 @@ impl SpaiApp {
                     if ui.button("Configure sov upgrades…").clicked() {
                         self.sov_upgrades_open = true;
                     }
+                    if ui.button("Configure coalitions…").clicked() {
+                        self.coalitions_open = true;
+                    }
                 });
 
         if let Some(theme) = new_theme {
@@ -2532,6 +2661,7 @@ impl eframe::App for SpaiApp {
         self.intel_channels_window(&ctx);
         self.jump_bridges_window(&ctx);
         self.sov_upgrades_window(&ctx);
+        self.coalitions_window(&ctx);
         self.system_window(&ctx);
         self.ship_window(&ctx);
         self.pilot_window(&ctx);
@@ -3220,6 +3350,15 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
 }
 
 /// Colour for a security status: green (hi-sec) / amber (lo-sec) / red (null).
+/// Stable pseudo-id from a coalition name (so it gets a consistent colour).
+fn coalition_hash(name: &str) -> i64 {
+    let mut h: u64 = 1469598103934665603;
+    for b in name.to_lowercase().bytes() {
+        h = (h ^ b as u64).wrapping_mul(1099511628211);
+    }
+    h as i64
+}
+
 /// A stable, distinct-ish colour for an alliance id (sovereignty overlay tint).
 fn alliance_color(id: i64) -> egui::Color32 {
     let h = (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);

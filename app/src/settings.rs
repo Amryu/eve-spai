@@ -47,6 +47,32 @@ pub struct Settings {
     /// Configured sovereignty upgrades per system (pasted from a coalition site).
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
+    /// Coalitions (member alliance names). Unlisted alliances are independent.
+    #[serde(default = "default_coalitions")]
+    pub coalitions: Vec<Coalition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Coalition {
+    pub name: String,
+    /// Member alliance names (matched against the sov holder name).
+    pub alliances: Vec<String>,
+}
+
+fn default_coalitions() -> Vec<Coalition> {
+    // A starter Imperium roster; editable in Settings.
+    vec![Coalition {
+        name: "Imperium".to_owned(),
+        alliances: [
+            "Goonswarm Federation",
+            "Tactical Narcotics Team",
+            "The Bastion",
+            "Get Off My Lawn",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+    }]
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -99,6 +125,7 @@ impl Default for Settings {
             intel_ttl_secs: 300,
             fit_site: String::new(),
             sov_upgrades: Vec::new(),
+            coalitions: default_coalitions(),
         }
     }
 }
