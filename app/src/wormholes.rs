@@ -146,6 +146,139 @@ impl Source {
     }
 }
 
+// --- Static wormhole-type catalogue ----------------------------------------
+
+/// A wormhole signature code and what it nominally tells us. `dest`/`size` are the
+/// type's nominal attributes (the real destination can be more specific once
+/// scouted, and is `Unknown` for codes that vary, like K162 / k-space / LS-NS holes).
+/// Sourced from the EVE University wiki (`Wormhole_attributes`).
+pub struct Wh(pub &'static str, pub DestClass, pub Option<ShipSize>, pub bool);
+
+impl Wh {
+    pub fn dest(&self) -> DestClass {
+        self.1
+    }
+    pub fn size(&self) -> Option<ShipSize> {
+        self.2
+    }
+    pub fn is_drifter(&self) -> bool {
+        self.3
+    }
+}
+
+/// Look up a wormhole code (case-insensitive); `None` if it isn't a known code.
+pub fn lookup_type(code: &str) -> Option<&'static Wh> {
+    let code = code.trim();
+    WH_TYPES.iter().find(|w| w.0.eq_ignore_ascii_case(code))
+}
+
+/// Is this token a valid wormhole signature code (e.g. "K162")?
+pub fn is_wh_code(token: &str) -> bool {
+    lookup_type(token).is_some()
+}
+
+/// Every CCP wormhole signature code. `K162` is the generic exit (real type known
+/// only from the far side).
+#[rustfmt::skip]
+pub static WH_TYPES: &[Wh] = &[
+    Wh("A009", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("A239", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("A641", DestClass::Highsec, Some(ShipSize::XLarge), false),
+    Wh("A982", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("B041", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("B274", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("B449", DestClass::Highsec, Some(ShipSize::XLarge), false),
+    Wh("B520", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("B735", DestClass::Wspace, Some(ShipSize::Large), true),
+    Wh("C008", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("C125", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("C140", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("C247", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("C248", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("C391", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("C414", DestClass::Wspace, Some(ShipSize::Large), true),
+    Wh("C729", DestClass::Unknown, Some(ShipSize::Large), false),
+    Wh("D364", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("D382", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("D792", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("D845", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("E004", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("E175", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("E545", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("E587", DestClass::Thera, Some(ShipSize::XLarge), false),
+    Wh("F135", DestClass::Thera, Some(ShipSize::Large), false),
+    Wh("F216", DestClass::Unknown, Some(ShipSize::Large), false),
+    Wh("F353", DestClass::Thera, Some(ShipSize::Medium), false),
+    Wh("G008", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("G024", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("H121", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("H296", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("H900", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("I182", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("J244", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("J377", DestClass::Turnur, Some(ShipSize::Medium), false),
+    Wh("K162", DestClass::Unknown, None, false),
+    Wh("K329", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("K346", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("L005", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("L031", DestClass::Thera, Some(ShipSize::XLarge), false),
+    Wh("L477", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("L614", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("M001", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("M164", DestClass::Thera, Some(ShipSize::Large), false),
+    Wh("M267", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("M555", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("M609", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("N062", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("N110", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("N290", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("N432", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("N766", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("N770", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("N944", DestClass::Unknown, Some(ShipSize::XLarge), false),
+    Wh("N968", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("O128", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("O477", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("O883", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("P060", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("Q003", DestClass::Nullsec, Some(ShipSize::Frigate), false),
+    Wh("Q063", DestClass::Thera, Some(ShipSize::Medium), false),
+    Wh("Q317", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("R051", DestClass::Lowsec, Some(ShipSize::XLarge), false),
+    Wh("R081", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("R259", DestClass::Wspace, Some(ShipSize::Large), true),
+    Wh("R474", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("R943", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("S047", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("S199", DestClass::Unknown, Some(ShipSize::XLarge), false),
+    Wh("S804", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("S877", DestClass::Wspace, Some(ShipSize::Large), true),
+    Wh("T405", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("T458", DestClass::Thera, Some(ShipSize::Medium), false),
+    Wh("U210", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("U319", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("U372", DestClass::Unknown, Some(ShipSize::Large), false),
+    Wh("U574", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("V283", DestClass::Nullsec, Some(ShipSize::XLarge), false),
+    Wh("V301", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("V753", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("V898", DestClass::Thera, Some(ShipSize::Large), false),
+    Wh("V911", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("V928", DestClass::Wspace, Some(ShipSize::Large), true),
+    Wh("W237", DestClass::Wspace, Some(ShipSize::XLarge), false),
+    Wh("X450", DestClass::Nullsec, Some(ShipSize::Large), false),
+    Wh("X702", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("X877", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("Y683", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("Y790", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("Z006", DestClass::Wspace, Some(ShipSize::Frigate), false),
+    Wh("Z060", DestClass::Nullsec, Some(ShipSize::Medium), false),
+    Wh("Z142", DestClass::Nullsec, Some(ShipSize::XLarge), false),
+    Wh("Z457", DestClass::Wspace, Some(ShipSize::Large), false),
+    Wh("Z647", DestClass::Wspace, Some(ShipSize::Medium), false),
+    Wh("Z971", DestClass::Wspace, Some(ShipSize::Medium), false),
+];
+
 /// One known wormhole.
 #[derive(Clone, Debug)]
 pub struct Wormhole {
@@ -368,6 +501,31 @@ mod tests {
         assert_eq!(base.size, Some(ShipSize::Large));
         assert_eq!(base.source, Source::EveScout);
         assert_eq!(base.updated_at, 2000);
+    }
+
+    #[test]
+    fn wh_catalogue_lookup() {
+        // K162 is the generic exit: known code, no inferable size/destination.
+        let k = lookup_type("k162").expect("K162 present");
+        assert_eq!(k.dest(), DestClass::Unknown);
+        assert!(k.size().is_none());
+        // J377 leads to Turnur, medium (matches the live EVE-Scout sizing).
+        let j = lookup_type("J377").unwrap();
+        assert_eq!(j.dest(), DestClass::Turnur);
+        assert_eq!(j.size(), Some(ShipSize::Medium));
+        // Drifter flag is set for the five drifter holes.
+        assert!(lookup_type("B735").unwrap().is_drifter());
+        assert!(!lookup_type("N968").unwrap().is_drifter());
+        // Negatives.
+        assert!(!is_wh_code("hello"));
+        assert!(!is_wh_code("1DQ1"));
+        assert!(is_wh_code("e587"));
+        // No duplicate codes.
+        let mut codes: Vec<&str> = WH_TYPES.iter().map(|w| w.0).collect();
+        codes.sort_unstable();
+        let n = codes.len();
+        codes.dedup();
+        assert_eq!(codes.len(), n, "duplicate wormhole codes");
     }
 
     #[test]

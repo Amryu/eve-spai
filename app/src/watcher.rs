@@ -151,6 +151,30 @@ fn scan(
                     }
                 }
 
+                // Wormhole sighting → record it. The named code (if any) gives the
+                // nominal destination / size / drifter from the static catalogue.
+                if report.wormhole {
+                    if let Some(sys) = report.primary_system() {
+                        let t = report.wh_type.as_deref().and_then(crate::wormholes::lookup_type);
+                        let wh = crate::wormholes::Wormhole {
+                            id: 0,
+                            system_id: sys.id,
+                            signature: None,
+                            wh_type: report.wh_type.clone(),
+                            dest: t.map_or(crate::wormholes::DestClass::Unknown, |w| w.dest()),
+                            size: t.and_then(|w| w.size()),
+                            is_drifter: t.is_some_and(|w| w.is_drifter()),
+                            reported_at: received,
+                            explicit_expiry: None,
+                            source: crate::wormholes::Source::Intel,
+                            updated_at: received,
+                        };
+                        if let Ok(store) = crate::store::Store::open() {
+                            store.upsert_wormhole(&wh);
+                        }
+                    }
+                }
+
                 st.push(report);
             }
             // Keep reports up to an hour so outdated ones still show (greyed) past

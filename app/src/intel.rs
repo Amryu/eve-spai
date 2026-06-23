@@ -56,6 +56,8 @@ pub struct IntelReport {
     /// A capital ship (cap / rorqual / dread / carrier / …) reported tackled.
     pub cap_tackled: bool,
     pub wormhole: bool,
+    /// Detected wormhole signature code (e.g. "K162"), when one was named.
+    pub wh_type: Option<String>,
     pub ess: bool,
     /// Time left until the ESS is hacked, when called out (e.g. "5:30", "3m").
     pub ess_time: Option<String>,
@@ -214,6 +216,7 @@ impl IntelState {
             prev.cap_tackled |= new.cap_tackled;
             prev.killmail |= new.killmail;
             prev.wormhole |= new.wormhole;
+            prev.wh_type = new.wh_type.clone().or_else(|| prev.wh_type.clone());
             prev.ess |= new.ess;
             prev.ess_time = new.ess_time.clone().or_else(|| prev.ess_time.clone());
             prev.skyhook |= new.skyhook;
@@ -720,11 +723,18 @@ pub fn analyze(
         })
         .map(|(_, p)| p.clone())
         .collect();
+    // A wormhole signature code (e.g. "K162") is never part of a pilot name.
+    pilots.retain(|p| !p.split_whitespace().any(crate::wormholes::is_wh_code));
+
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
         .flat_map(|n| n.split_whitespace())
         .map(|w| w.to_lowercase())
         .collect();
+
+    // Wormhole signature code (e.g. "K162") named anywhere in the message.
+    let wh_code =
+        tokens.iter().find(|t| crate::wormholes::is_wh_code(t)).map(|t| t.to_uppercase());
 
     // Ships: hull names / nicknames / acronyms (case-insensitive), or an unambiguous
     // typo. A token that belongs to a pilot name is never also parsed as a ship.
@@ -929,7 +939,9 @@ pub fn analyze(
         cyno: flagged(&lower_tokens, &pilot_tokens, &["cyno"]),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         wormhole: lower.contains("wormhole")
-            || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
+            || wh_code.is_some()
+            || lower_tokens.iter().any(|t| t == "wh" && !pilot_tokens.contains(t)),
+        wh_type: wh_code,
         ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
         // The ESS hack timer maxes at 6 min for the main bank, 45 min for the
         // reserve. A larger "Xm" is an ISK amount (e.g. "77m bank"), not a time.
@@ -1477,6 +1489,22 @@ mod tests {
         assert!(r.pilots.iter().any(|p| p == "Amarr slave 3424"), "pilots: {:?}", r.pilots);
         assert!(!r.systems.iter().any(|d| d.name == "Amarr"), "systems: {:?}", r.systems);
         assert!(r.systems.iter().any(|d| d.name == "SV5-8N"));
+    }
+
+    #[test]
+    fn detects_wormhole_code() {
+        let s = systems();
+        let r = analyze("Rancer K162 just appeared", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.wormhole, "wormhole flag");
+        assert_eq!(r.wh_type.as_deref(), Some("K162"));
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"));
+        // A specific code is recognised too.
+        let r2 = analyze("Jita N968 sig", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r2.wh_type.as_deref(), Some("N968"));
+        // Plain intel isn't a wormhole.
+        let r3 = analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r3.wormhole);
+        assert!(r3.wh_type.is_none());
     }
 
     #[test]
