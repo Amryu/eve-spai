@@ -13,6 +13,7 @@ use serde::Deserialize;
 const INCURSIONS_URL: &str = "https://esi.evetech.net/latest/incursions/";
 const FW_URL: &str = "https://esi.evetech.net/latest/fw/systems/";
 const SOV_URL: &str = "https://esi.evetech.net/latest/sovereignty/map/";
+const SOV_STRUCT_URL: &str = "https://esi.evetech.net/latest/sovereignty/structures/";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 const KILLS_URL: &str = "https://esi.evetech.net/latest/universe/system_kills/";
 const JUMPS_URL: &str = "https://esi.evetech.net/latest/universe/system_jumps/";
@@ -25,6 +26,10 @@ pub struct SysFlags {
     pub fw: Option<String>,
     /// Sovereignty holder — player alliance name or NPC faction name.
     pub sov: Option<String>,
+    /// Sovereignty alliance id (Some only for player-held sov) — for the logo.
+    pub sov_alliance: Option<i64>,
+    /// Activity Defense Multiplier (IHub vulnerability_occupancy_level), 1.0–6.0.
+    pub adm: Option<f64>,
     /// ESI activity in the last hour.
     pub ship_kills: u32,
     pub pod_kills: u32,
@@ -72,6 +77,12 @@ struct SovSystem {
     system_id: i64,
     alliance_id: Option<i64>,
     faction_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SovStructure {
+    solar_system_id: i64,
+    vulnerability_occupancy_level: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -140,7 +151,20 @@ fn fetch(
                     .map(str::to_owned)
             };
             if let Some(h) = holder {
-                map.entry(s.system_id).or_default().sov = Some(h);
+                let e = map.entry(s.system_id).or_default();
+                e.sov = Some(h);
+                e.sov_alliance = s.alliance_id;
+            }
+        }
+    }
+
+    // Activity Defense Multiplier from the I-Hub's vulnerability_occupancy_level.
+    if let Ok(structs) = get::<Vec<SovStructure>>(client, SOV_STRUCT_URL) {
+        for st in structs {
+            if let Some(adm) = st.vulnerability_occupancy_level {
+                let e = map.entry(st.solar_system_id).or_default();
+                // Prefer the higher (I-Hub) value when several structures exist.
+                e.adm = Some(e.adm.map_or(adm, |cur| cur.max(adm)));
             }
         }
     }

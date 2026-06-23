@@ -1718,26 +1718,69 @@ impl SpaiApp {
                     return;
                 };
 
-                ui.horizontal(|ui| {
-                    ui.label(security_badge(info.security));
-                    ui.heading(&info.name);
-                });
                 {
-                    // system_chips already shows "< Constellation < Region" + conditions.
                     let status = self.system_status.lock().unwrap();
-                    system_chips(ui, &self.systems, &status, id);
-                    // ESI activity (last hour).
-                    if let Some(f) = status.get(&id) {
-                        if f.npc_kills + f.ship_kills + f.pod_kills + f.jumps > 0 {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Last hour — jumps {} · ship kills {} · pod kills {} · NPC kills {}",
-                                    f.jumps, f.ship_kills, f.pod_kills, f.npc_kills
-                                ))
-                                .weak(),
-                            );
+                    let flags = status.get(&id).cloned().unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(security_badge(info.security));
+                        ui.heading(&info.name);
+                        // Sovereignty alliance logo, top-right.
+                        if let Some(aid) = flags.sov_alliance {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=64");
+                                let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(40.0)));
+                                if let Some(sov) = &flags.sov {
+                                    r.on_hover_text(sov);
+                                }
+                            });
                         }
+                    });
+                    // Location + conditions (sov shown as the logo above instead).
+                    system_chips_ex(ui, &self.systems, &status, id, false);
+                    if let Some(adm) = flags.adm {
+                        // Higher ADM = better defended (harder to attack).
+                        let col = if adm >= 5.0 {
+                            egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
+                        } else if adm >= 3.0 {
+                            crate::theme::standing::WARNING
+                        } else {
+                            crate::theme::standing::HOSTILE
+                        };
+                        ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(col).strong())
+                            .on_hover_text("Activity Defense Multiplier");
                     }
+                    // Last-hour activity, highlighted vs the region average.
+                    let region_ids: Vec<i64> = self
+                        .store
+                        .as_ref()
+                        .and_then(|s| s.region_of_system(id).map(|r| s.region_systems(r)))
+                        .map(|v| v.into_iter().map(|m| m.id).collect())
+                        .unwrap_or_default();
+                    let avg = |sel: &dyn Fn(&crate::systemstatus::SysFlags) -> u32| -> f64 {
+                        if region_ids.is_empty() {
+                            return 0.0;
+                        }
+                        let sum: u64 = region_ids.iter().filter_map(|s| status.get(s)).map(|f| sel(f) as u64).sum();
+                        sum as f64 / region_ids.len() as f64
+                    };
+                    let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Last hour:").weak());
+                        let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
+                            let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
+                                crate::theme::standing::HOSTILE
+                            } else if avg > 0.0 && v as f64 > avg {
+                                crate::theme::standing::WARNING
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            ui.label(egui::RichText::new(format!("{v} {label}")).color(col));
+                        };
+                        stat(ui, "jumps", flags.jumps, aj);
+                        stat(ui, "ship kills", flags.ship_kills, ak);
+                        stat(ui, "pod kills", flags.pod_kills, ak);
+                        stat(ui, "NPC kills", flags.npc_kills, an);
+                    });
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Show on map").clicked() {
@@ -1775,20 +1818,31 @@ impl SpaiApp {
                     for &nid in graph.neighbors(id) {
                         if let Some(ni) = graph.info_of(nid) {
                             let cnt = counts.get(&nid).copied().unwrap_or(0);
-                            let label = if cnt > 0 {
-                                format!(
-                                    "{:.1} {} ({cnt})",
-                                    (ni.security * 10.0).round() / 10.0,
-                                    ni.name
-                                )
-                            } else {
-                                format!("{:.1} {}", (ni.security * 10.0).round() / 10.0, ni.name)
-                            };
-                            let mut text = egui::RichText::new(label);
+                            let sec = (ni.security * 10.0).round() / 10.0;
+                            let mut label = format!("{sec:.1} {}", ni.name);
                             if cnt > 0 {
-                                text = text.color(crate::theme::standing::HOSTILE);
+                                label.push_str(&format!(" ({cnt})"));
                             }
-                            if ui.button(text).clicked() {
+                            let text = egui::RichText::new(label).color(security_color(ni.security)).strong();
+                            let mut btn = egui::Button::new(text);
+                            // Highlight a jump that leaves the constellation/region.
+                            let cross_region = ni.region != info.region && !ni.region.is_empty();
+                            let cross_const = ni.constellation != info.constellation;
+                            if cross_region {
+                                btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.22));
+                            } else if cross_const {
+                                btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.10));
+                            }
+                            let mut resp = ui.add(btn);
+                            if cross_region {
+                                resp = resp.on_hover_text(format!("→ {} ({})", ni.constellation, ni.region));
+                            } else if cross_const {
+                                resp = resp.on_hover_text(format!("→ {}", ni.constellation));
+                            }
+                            if cnt > 0 {
+                                resp = resp.on_hover_text(format!("{cnt} active intel"));
+                            }
+                            if resp.clicked() {
                                 nav = Some(nid);
                             }
                         }
@@ -2182,6 +2236,18 @@ fn system_chips(
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     system_id: i64,
 ) {
+    system_chips_ex(ui, systems, status, system_id, true);
+}
+
+/// As `system_chips`, but `show_sov=false` omits the sov text chip (the system
+/// window shows the alliance logo instead).
+fn system_chips_ex(
+    ui: &mut egui::Ui,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
+    system_id: i64,
+    show_sov: bool,
+) {
     use crate::theme::standing;
     if let Some(info) = systems.as_ref().and_then(|s| s.info_of(system_id)) {
         let loc = match (info.constellation.as_str(), info.region.as_str()) {
@@ -2205,8 +2271,10 @@ fn system_chips(
         if let Some(fw) = &f.fw {
             ui.label(egui::RichText::new(format!("FW {fw}")).color(standing::WARNING));
         }
-        if let Some(sov) = &f.sov {
-            ui.label(egui::RichText::new(format!("Sov: {sov}")).color(standing::CORP));
+        if show_sov {
+            if let Some(sov) = &f.sov {
+                ui.label(egui::RichText::new(format!("Sov: {sov}")).color(standing::CORP));
+            }
         }
     }
 }
