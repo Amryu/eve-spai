@@ -467,7 +467,11 @@ pub fn analyze(
             drop_ships.push((*id, name.clone()));
         }
     }
-    for q in extract_quoted(text) {
+    // Quoted spans are forced to be names (so "'clear'" is a pilot, not a keyword).
+    let quoted_raw = extract_quoted(text);
+    let quoted: std::collections::HashSet<String> =
+        quoted_raw.iter().map(|q| q.to_lowercase()).collect();
+    for q in quoted_raw {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&q)) {
             pilots.push(q);
         }
@@ -495,7 +499,12 @@ pub fn analyze(
                 j != *i && other.len() > me.len() && format!(" {other} ").contains(&format!(" {me} "))
             });
             let single_ship = !p.contains(' ') && ship_index.contains_key(me);
-            !is_subphrase && !single_ship
+            // A status shorthand ("clr", "nv", …) is never a pilot, even if some
+            // character happens to share that name.
+            let single_stop = !p.contains(' ')
+                && !quoted.contains(me)
+                && (PILOT_STOP.contains(&me.as_str()) || CLEAR_WORDS.contains(&me.as_str()));
+            !is_subphrase && !single_ship && !single_stop
         })
         .map(|(_, p)| p.clone())
         .collect();

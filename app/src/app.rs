@@ -3044,6 +3044,12 @@ impl SpaiApp {
             .map(|(n, a)| crate::settings::Coalition {
                 name: n.trim().to_owned(),
                 alliances: a.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect(),
+                color: self
+                    .settings
+                    .coalitions
+                    .iter()
+                    .find(|c| c.name == n.trim())
+                    .and_then(|c| c.color),
             })
             .collect();
         if parsed != self.settings.coalitions {

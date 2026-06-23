@@ -54,6 +54,10 @@ pub struct Settings {
     /// UI layer). Empty = use defaults.
     #[serde(default)]
     pub view_options: String,
+    /// Sov-holding alliances seen (auto-discovered + manual), with colour overrides.
+    /// Never auto-pruned when an alliance stops holding sov.
+    #[serde(default)]
+    pub alliances: Vec<AllianceConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -61,6 +65,18 @@ pub struct Coalition {
     pub name: String,
     /// Member alliance names (matched against the sov holder name).
     pub alliances: Vec<String>,
+    /// Map colour override; None = auto-generated from the name.
+    #[serde(default)]
+    pub color: Option<(u8, u8, u8)>,
+}
+
+/// A sov-holding alliance the app has seen (auto-discovered from ESI or added by
+/// hand), with an optional map-colour override.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AllianceConfig {
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<(u8, u8, u8)>,
 }
 
 pub fn default_coalitions() -> Vec<Coalition> {
@@ -70,6 +86,7 @@ pub fn default_coalitions() -> Vec<Coalition> {
     let coal = |name: &str, members: &[&str]| Coalition {
         name: name.to_owned(),
         alliances: members.iter().map(|s| s.to_string()).collect(),
+        color: None,
     };
     vec![
         coal(
@@ -137,6 +154,7 @@ impl Default for Settings {
             sov_upgrades: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),
+            alliances: Vec::new(),
         }
     }
 }
