@@ -70,6 +70,16 @@ pub struct Settings {
     /// Alerting configuration (rules, sounds, custom window, push).
     #[serde(default = "default_alerts")]
     pub alerts: AlertSettings,
+    /// Map overlay-mode window opacity (0.3–1.0).
+    #[serde(default = "default_overlay_opacity")]
+    pub map_overlay_opacity: f32,
+    /// Overlay mode follows "smart" on-top (above only while EVE is focused).
+    #[serde(default)]
+    pub map_overlay_smart: bool,
+}
+
+fn default_overlay_opacity() -> f32 {
+    0.9
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -375,6 +385,8 @@ impl Default for Settings {
             alliances: Vec::new(),
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
+            map_overlay_opacity: 0.9,
+            map_overlay_smart: false,
         }
     }
 }

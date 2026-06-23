@@ -216,6 +216,12 @@ pub struct SpaiApp {
     map_window_on_top: bool,
     /// Hide all map control overlays (leaving just a "show" button).
     map_controls_hidden: bool,
+    /// Overlay mode: borderless, on-top, draggable-on-empty, minimal controls.
+    map_overlay_mode: bool,
+    /// Overlay mode locked (no moving or resizing).
+    map_overlay_locked: bool,
+    /// A window-move drag is in progress (so the map doesn't also pan).
+    map_overlay_drag: bool,
     /// Use EVE's flattened 2D layout (position2D, in-game look) vs raw geographic x/z.
     map_spaced: bool,
     /// Coordinates actually drawn (geographic or the 2D layout).
@@ -382,6 +388,9 @@ impl SpaiApp {
             map_popped: false,
             map_window_on_top: false,
             map_controls_hidden: false,
+            map_overlay_mode: false,
+            map_overlay_locked: false,
+            map_overlay_drag: false,
             map_spaced: pv.map_spaced,
             map_draw: Vec::new(),
             map_draw_spaced: false,
@@ -1805,6 +1814,10 @@ impl SpaiApp {
             return;
         };
 
+        // Overlay mode fades the whole map to the configured opacity.
+        if self.map_overlay_mode {
+            ui.set_opacity(self.settings.map_overlay_opacity.clamp(0.2, 1.0));
+        }
         let rect = ui.available_rect_before_wrap();
         // On window resize, rescale the pan so the same world point stays centred.
         if let Some(prev) = self.map_last_rect {
@@ -1827,10 +1840,13 @@ impl SpaiApp {
         if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra2)) {
             self.map_forward_nav();
         }
-        // Drag pans (and disables follow).
-        if resp.dragged() {
+        // Drag pans (and disables follow) — unless an overlay window-move is active.
+        if resp.dragged() && !self.map_overlay_drag {
             self.map_pan += resp.drag_delta();
             self.map_follow = false;
+        }
+        if !resp.dragged() {
+            self.map_overlay_drag = false;
         }
         // Zoom centred on the cursor.
         if resp.hovered() {
@@ -1866,6 +1882,18 @@ impl SpaiApp {
             if let Some(s) = self.map_draw.iter().find(|s| s.id == fid) {
                 let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
                 self.map_pan = rect.center() - base;
+            }
+        }
+
+        // Overlay mode: a drag that doesn't start on a system moves the window.
+        if self.map_overlay_mode && !self.map_overlay_locked && resp.drag_started() {
+            let on_obj = ui
+                .input(|i| i.pointer.press_origin())
+                .and_then(|p| nearest_system(p, &pos, 10.0))
+                .is_some();
+            if !on_obj {
+                self.map_overlay_drag = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
         }
 
@@ -2273,7 +2301,9 @@ impl SpaiApp {
             }
         }
 
-        if self.map_controls_hidden {
+        if self.map_overlay_mode {
+            self.map_overlay_controls(ui, rect);
+        } else if self.map_controls_hidden {
             // Just a small button to bring the controls back.
             egui::Area::new(egui::Id::new("map_show_controls"))
                 .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
@@ -2452,6 +2482,51 @@ impl SpaiApp {
         }
     }
 
+    /// Minimal overlay-mode controls: exit, lock, smart-on-top, opacity. When
+    /// locked, only an unlock button shows (everything else hidden).
+    fn map_overlay_controls(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use egui_phosphor::regular as icon;
+        egui::Area::new(egui::Id::new("map_overlay_bar"))
+            .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if self.map_overlay_locked {
+                            if ui.button(icon::LOCK).on_hover_text("Unlock").clicked() {
+                                self.map_overlay_locked = false;
+                            }
+                            return;
+                        }
+                        if ui.button(icon::FRAME_CORNERS).on_hover_text("Exit overlay mode").clicked() {
+                            self.map_overlay_mode = false;
+                        }
+                        if ui.button(icon::LOCK_OPEN).on_hover_text("Lock (no move/resize)").clicked() {
+                            self.map_overlay_locked = true;
+                        }
+                        if ui
+                            .add(egui::Button::new(icon::CPU).selected(self.settings.map_overlay_smart))
+                            .on_hover_text("Smart on-top (above only while EVE is active)")
+                            .clicked()
+                        {
+                            self.settings.map_overlay_smart = !self.settings.map_overlay_smart;
+                            self.needs_save = true;
+                        }
+                        ui.label("Opacity");
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.3..=1.0)
+                                    .show_value(false),
+                            )
+                            .changed()
+                        {
+                            self.needs_save = true;
+                        }
+                    });
+                });
+            });
+    }
+
     /// Floating controls over the map (scope, navigation, follow, pop-out).
     fn map_controls_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use crate::map::MapView;
@@ -2513,18 +2588,25 @@ impl SpaiApp {
                             self.map_zoom = 1.0;
                             self.map_follow = false;
                         }
-                        if ui.button("Pop out").clicked() {
-                            self.map_popped = true;
-                        }
-                        if self.map_popped
-                            && ui
-                                .add(
-                                    egui::Button::new(icon::PUSH_PIN).selected(self.map_window_on_top),
-                                )
+                        if !self.map_popped {
+                            if ui.button("Pop out").clicked() {
+                                self.map_popped = true;
+                            }
+                        } else {
+                            if ui
+                                .add(egui::Button::new(icon::PUSH_PIN).selected(self.map_window_on_top))
                                 .on_hover_text("Keep window on top")
                                 .clicked()
-                        {
-                            self.map_window_on_top = !self.map_window_on_top;
+                            {
+                                self.map_window_on_top = !self.map_window_on_top;
+                            }
+                            if ui
+                                .button(icon::FRAME_CORNERS)
+                                .on_hover_text("Overlay mode (borderless, on top)")
+                                .clicked()
+                            {
+                                self.map_overlay_mode = true;
+                            }
                         }
                         if ui.button(icon::EYE_SLASH).on_hover_text("Hide controls").clicked() {
                             self.map_controls_hidden = true;
@@ -2682,19 +2764,45 @@ impl SpaiApp {
     /// Render the popped-out map in its own OS window.
     #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn show_map_viewport(&mut self, ctx: &egui::Context) {
+        let overlay = self.map_overlay_mode;
+        // Overlay mode forces on-top; "smart" keeps it on top only while EVE is the
+        // focused window (refreshed throttled, like the alert window).
+        if overlay && self.settings.map_overlay_smart {
+            let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
+            if due {
+                self.eve_focused = eve_is_focused();
+                self.eve_focus_checked = Some(std::time::Instant::now());
+            }
+        }
+        let on_top = if overlay {
+            !self.settings.map_overlay_smart || self.eve_focused
+        } else {
+            self.map_window_on_top
+        };
         let mut keep = true;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("map_window"),
             egui::ViewportBuilder::default()
                 .with_title("EVE Spai — Map")
                 .with_inner_size([960.0, 720.0])
-                .with_window_level(if self.map_window_on_top {
+                .with_decorations(!overlay)
+                .with_transparent(overlay)
+                .with_resizable(!(overlay && self.map_overlay_locked))
+                .with_window_level(if on_top {
                     egui::WindowLevel::AlwaysOnTop
                 } else {
                     egui::WindowLevel::Normal
                 }),
             |ctx, _class| {
-                egui::CentralPanel::default().show(ctx, |ui| self.draw_map(ui));
+                // Translucent backdrop in overlay mode (the content opacity is set
+                // inside draw_map); a solid panel otherwise.
+                let frame = if overlay {
+                    let a = (self.settings.map_overlay_opacity.clamp(0.2, 1.0) * 255.0) as u8;
+                    egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(0x0A, 0x0C, 0x10, a))
+                } else {
+                    egui::Frame::central_panel(&ctx.style())
+                };
+                egui::CentralPanel::default().frame(frame).show(ctx, |ui| self.draw_map(ui));
                 if ctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
@@ -2702,6 +2810,7 @@ impl SpaiApp {
         );
         if !keep {
             self.map_popped = false;
+            self.map_overlay_mode = false;
         }
     }
 
