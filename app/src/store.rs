@@ -246,6 +246,10 @@ impl Store {
                 }
             }
         }
+        // Nicknames / abbreviations / acronyms (e.g. "vaga", "cfi") as extra keys.
+        for (slug, entry) in crate::shipnames::aliases(&map) {
+            map.entry(slug).or_insert(entry);
+        }
         map
     }
 

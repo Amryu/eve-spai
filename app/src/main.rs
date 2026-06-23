@@ -23,6 +23,7 @@ mod nav;
 mod packs;
 mod sde;
 mod settings;
+mod shipnames;
 mod store;
 mod systemstatus;
 mod theme;

@@ -1980,7 +1980,7 @@ impl SpaiApp {
                          list, and paste it here. Each line's first two systems form a bridge \
                          (any separator works).",
                     );
-                    ui.hyperlink_to("Imperium services", "https://goonfleet.com");
+                    ui.hyperlink_to("Imperium stargates", "https://wiki.goonswarm.org/w/Alliance:Stargate");
                 });
                 ui.add(
                     egui::TextEdit::multiline(&mut self.jb_paste)
@@ -2046,7 +2046,10 @@ impl SpaiApp {
                          paste it here. The first system matched on each line is used; the rest \
                          of the line becomes the upgrade label.",
                     );
-                    ui.hyperlink_to("Imperium services", "https://goonfleet.com");
+                    ui.hyperlink_to(
+                        "Equinox upgrades",
+                        "https://goonfleet.com/index.php/topic/371770-equinox-upgrade-information-station",
+                    );
                 });
                 ui.add(
                     egui::TextEdit::multiline(&mut self.sov_paste)

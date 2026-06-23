@@ -203,17 +203,40 @@ pub fn analyze(
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
 
-    // Ships: single-token proper-noun hull names (e.g. "Drake", "Tornado").
+    // Ships: single-token proper-noun hull names, nicknames/acronyms (in the
+    // index), or an unambiguous typo (exactly one close match).
     let mut ships: Vec<DetectedShip> = Vec::new();
+    let add_ship = |id: i64, name: &str, ships: &mut Vec<DetectedShip>| {
+        if !ships.iter().any(|s| s.id == id) {
+            ships.push(DetectedShip { id, name: name.to_owned() });
+        }
+    };
     for tok in &tokens {
-        if tok.chars().next().is_some_and(|c| c.is_uppercase()) {
-            if let Some((id, name)) = ship_index.get(&tok.to_lowercase()) {
-                if !ships.iter().any(|s| s.id == *id) {
-                    ships.push(DetectedShip {
-                        id: *id,
-                        name: name.clone(),
-                    });
+        if !tok.chars().next().is_some_and(|c| c.is_uppercase()) {
+            continue;
+        }
+        let lower = tok.to_lowercase();
+        if let Some((id, name)) = ship_index.get(&lower) {
+            add_ship(*id, name, &mut ships);
+        } else if lower.len() >= 5 {
+            // Typo: accept only if exactly one ship name is within edit distance 1.
+            let max = if lower.len() >= 8 { 2 } else { 1 };
+            let mut hit: Option<(i64, String)> = None;
+            let mut ambiguous = false;
+            for (key, (id, name)) in ship_index.iter() {
+                if key.len() + 1 < lower.len() || lower.len() + 1 < key.len() {
+                    continue;
                 }
+                if crate::shipnames::edit_distance(&lower, key) <= max {
+                    if hit.as_ref().is_some_and(|(hid, _)| *hid != *id) {
+                        ambiguous = true;
+                        break;
+                    }
+                    hit = Some((*id, name.clone()));
+                }
+            }
+            if let (Some((id, name)), false) = (hit, ambiguous) {
+                add_ship(id, &name, &mut ships);
             }
         }
     }
