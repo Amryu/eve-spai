@@ -241,16 +241,21 @@ pub fn analyze(
         systems: detected,
         ships,
         count: parse_count(text, &consumed),
-        clear: lower_tokens.iter().any(|t| CLEAR_WORDS.contains(&t.as_str())),
-        no_visual: lower_tokens.iter().any(|t| t == "nv") || lower.contains("no visual"),
+        // Status keywords ignore words that belong to a pilot-name run, so a pilot
+        // named e.g. "Clear Skies" can't spoof a "clear" status.
+        clear: lower_tokens
+            .iter()
+            .any(|t| CLEAR_WORDS.contains(&t.as_str()) && !pilot_tokens.contains(t)),
+        no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
+            || lower.contains("no visual"),
         spike: lower.contains("spike"),
         camp: lower.contains("camp"),
         bubble: lower.contains("bubble"),
         killmail: lower.contains("zkillboard.com") || lower.contains("kill:"),
         cyno: lower.contains("cyno"),
         wormhole: lower.contains("wormhole")
-            || lower_tokens.iter().any(|t| t == "wh" || t == "k162"),
-        ess: lower_tokens.iter().any(|t| t == "ess"),
+            || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
+        ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
         skyhook: lower.contains("skyhook"),
         gate,
         movement: None,
