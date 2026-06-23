@@ -11,6 +11,22 @@ enum IntelTypeFilter {
     Threat,
 }
 
+/// Toggleable map overlays (the top-right Layers menu).
+#[derive(Clone, Copy)]
+struct MapOverlays {
+    sov: bool,
+    bridges: bool,
+    activity: bool,
+    adm: bool,
+    upgrades: bool,
+}
+
+impl Default for MapOverlays {
+    fn default() -> Self {
+        Self { sov: false, bridges: true, activity: false, adm: false, upgrades: true }
+    }
+}
+
 /// A click on an intel card panel.
 #[derive(Clone)]
 enum IntelClick {
@@ -95,6 +111,7 @@ pub struct SpaiApp {
     /// Recent fired alerts (unix, text) — shared with the game-log watcher.
     recent_alerts: crate::gamewatcher::AlertLog,
     // --- Map view state ---
+    map_overlays: MapOverlays,
     map_view: crate::map::MapView,
     map_initialized: bool,
     map_history: Vec<crate::map::MapView>,
@@ -218,6 +235,7 @@ impl SpaiApp {
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            map_overlays: MapOverlays::default(),
             map_view: crate::map::MapView::Universe,
             map_initialized: false,
             map_history: Vec::new(),
@@ -1240,10 +1258,56 @@ impl SpaiApp {
                 }
             }
         }
-        let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
-        for &(a, c) in &bridges {
-            if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
-                painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
+        if self.map_overlays.bridges {
+            let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
+            for &(a, c) in &bridges {
+                if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
+                    painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
+                }
+            }
+        }
+
+        // Map overlays (sov tint / ADM / activity / sov upgrades), behind the dots.
+        let ov = self.map_overlays;
+        if ov.sov || ov.adm || ov.activity || ov.upgrades {
+            let status = self.system_status.lock().unwrap();
+            let upgrade_systems: std::collections::HashSet<String> = if ov.upgrades {
+                self.settings.sov_upgrades.iter().map(|u| u.system.to_lowercase()).collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            for s in &self.map_draw {
+                let p = pos[&s.id];
+                if let Some(f) = status.get(&s.id) {
+                    if ov.sov {
+                        if let Some(aid) = f.sov_alliance {
+                            painter.circle_filled(p, dot + 7.0, alliance_color(aid).gamma_multiply(0.22));
+                        }
+                    }
+                    if ov.adm {
+                        if let Some(adm) = f.adm {
+                            let c = if adm >= 5.0 {
+                                egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
+                            } else if adm >= 3.0 {
+                                crate::theme::standing::WARNING
+                            } else {
+                                crate::theme::standing::HOSTILE
+                            };
+                            painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(1.5, c));
+                        }
+                    }
+                    if ov.activity {
+                        let act = f.ship_kills + f.pod_kills + f.npc_kills / 4 + f.jumps / 20;
+                        if act > 0 {
+                            let heat = (act as f32 / 40.0).min(1.0);
+                            let col = egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30);
+                            painter.circle_filled(p, dot + 3.0 + heat * 6.0, col.gamma_multiply(0.30));
+                        }
+                    }
+                }
+                if ov.upgrades && upgrade_systems.contains(&s.name.to_lowercase()) {
+                    painter.circle_stroke(p, dot + 4.0, egui::Stroke::new(1.5, crate::theme::standing::CORP));
+                }
             }
         }
 
@@ -1383,12 +1447,46 @@ impl SpaiApp {
         }
 
         self.map_controls_overlay(ui, rect);
+        self.map_overlay_menu(ui, rect);
         self.map_search_overlay(ui, rect);
+    }
+
+    /// Top-right "Overlays" menu (sovereignty, ADM, activity, bridges, upgrades).
+    fn map_overlay_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use egui_phosphor::regular as icon;
+        let screen = ui.ctx().content_rect();
+        let offset = egui::vec2(rect.right() - screen.right() - 8.0, rect.top() - screen.top() + 8.0);
+        egui::Area::new(egui::Id::new("map_overlays"))
+            .anchor(egui::Align2::RIGHT_TOP, offset)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.menu_button(format!("{}  Overlays", icon::STACK_SIMPLE), |ui| {
+                        ui.checkbox(&mut self.map_overlays.sov, format!("{}  Sovereignty", icon::FLAG));
+                        ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
+                        ui.checkbox(
+                            &mut self.map_overlays.activity,
+                            format!("{}  Activity", icon::FIRE),
+                        );
+                        ui.checkbox(
+                            &mut self.map_overlays.bridges,
+                            format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
+                        );
+                        ui.checkbox(
+                            &mut self.map_overlays.upgrades,
+                            format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
+                        );
+                    });
+                });
+            });
     }
 
     /// Hover tooltip for a map system: name/security/location, ESI activity, and
     /// any current intel. (Click the system for the full interactive window.)
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
+        // Compact + translucent so it doesn't hide nearby/jumpable systems.
+        ui.set_max_width(270.0);
+        ui.set_opacity(0.82);
         if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(id)) {
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
@@ -1440,7 +1538,8 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(format!("— {}", r.reporter)).weak());
             });
             shown += 1;
-            if shown >= 8 {
+            if shown >= 4 {
+                ui.label(egui::RichText::new("…").weak());
                 break;
             }
         }
@@ -3073,6 +3172,16 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
 }
 
 /// Colour for a security status: green (hi-sec) / amber (lo-sec) / red (null).
+/// A stable, distinct-ish colour for an alliance id (sovereignty overlay tint).
+fn alliance_color(id: i64) -> egui::Color32 {
+    let h = (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    egui::Color32::from_rgb(
+        0x50 | ((h >> 16) as u8 >> 1),
+        0x50 | ((h >> 8) as u8 >> 1),
+        0x50 | ((h) as u8 >> 1),
+    )
+}
+
 /// EVE's in-game security-status colours, keyed by security rounded to 0.1.
 /// Anything <= 0.0 is the null-sec red.
 fn security_color(security: f64) -> egui::Color32 {
