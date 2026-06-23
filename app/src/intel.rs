@@ -289,20 +289,54 @@ fn extract_quoted(text: &str) -> Vec<String> {
 /// text (punctuation and numbers break a run), minus obvious intel/English words.
 /// ESI confirms which are real characters later.
 /// A token that can be part of an EVE character name. Names can contain digits
-/// ("Pericle No1") — allow alphanumeric so long as there's a letter (a bare number
-/// is never a name part), but no hyphens (those mark system codes like "GPLB-C").
+/// ("Pericle No1"), apostrophes, and hyphens ("I-Pustelga"). A hyphenated token
+/// must have a lower-case letter, else it's an all-caps system code ("67Y-NR").
 fn name_part(t: &str) -> bool {
     t.len() >= 2
         && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'')
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
         && t.chars().any(|c| c.is_ascii_alphabetic())
+        && (!t.contains('-') || t.chars().any(|c| c.is_ascii_lowercase()))
 }
 
-/// Drag-and-drop dscan reports are always "<pilot> (<ship>)". Extract the pilot
-/// name (the trailing name run before each parenthesis) — this catches single-word
-/// names like "SokoleOko" that the general heuristic misses.
-fn extract_dscan_drops(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// A single token distinctive enough to be a name candidate on its own (worth an
+/// ESI lookup): a hyphen/apostrophe, internal capital ("SokoleOko"), or a digit —
+/// patterns that plain words/ship names don't have.
+fn is_distinctive_name(t: &str) -> bool {
+    name_part(t)
+        && (t.contains('-')
+            || t.contains('\'')
+            || t.chars().skip(1).any(|c| c.is_ascii_uppercase())
+            || t.chars().any(|c| c.is_ascii_digit()))
+}
+
+/// Replace each parenthesised span's contents with spaces (so a drag-drop ship name
+/// inside "(…)" isn't mistaken for a pilot by the general heuristic).
+fn mask_parens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0u32;
+    for c in text.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                out.push(' ');
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                out.push(' ');
+            }
+            _ if depth > 0 => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Drag-and-drop dscan reports are always "<pilot> (<ship>)". Return each
+/// (pilot, ship-text) pair — catches single-word/lower-case names like "SokoleOko"
+/// and the (possibly non-English) ship inside the parentheses.
+fn extract_dscan_drops(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
     let mut search = 0;
     while let Some(open_rel) = text[search..].find('(') {
         let open = search + open_rel;
@@ -310,22 +344,22 @@ fn extract_dscan_drops(text: &str) -> Vec<String> {
             Some(c) => open + 1 + c,
             None => break,
         };
+        let ship = text[open + 1..close].trim().to_owned();
         // The "(ship)" context proves the preceding run is a pilot name, so accept
-        // any case (catches lower-case names like "bigfoott"); just skip system
-        // codes (hyphens) and status keywords.
+        // any case (catches "bigfoott"); skip all-caps system codes (e.g. "0UBC-R")
+        // and status keywords.
         let drop_part = |t: &str| {
             t.len() >= 2
-                && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'')
+                && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
                 && t.chars().any(|c| c.is_ascii_alphabetic())
+                && (!t.contains('-') || t.chars().any(|c| c.is_ascii_lowercase()))
                 && !PILOT_STOP.contains(&t.to_lowercase().as_str())
         };
         let name: Vec<&str> =
             text[..open].split_whitespace().rev().take_while(|t| drop_part(t)).collect();
-        if (1..=3).contains(&name.len()) {
+        if (1..=3).contains(&name.len()) && !ship.is_empty() {
             let pilot = name.into_iter().rev().collect::<Vec<_>>().join(" ");
-            if !out.contains(&pilot) {
-                out.push(pilot);
-            }
+            out.push((pilot, ship));
         }
         search = close + 1;
     }
@@ -412,22 +446,40 @@ pub fn analyze(
     // Candidate pilot names first: their tokens must not be parsed as ships or
     // systems (player names often contain hull/system names, e.g. "Sabre Pilot" or
     // "Jita Trader"). Quoted spans are forced to be names.
-    let mut pilots = extract_pilots(text);
+    // Run the general heuristic on text with parenthesised spans masked, so a
+    // drag-drop ship name inside "(…)" isn't read as a pilot.
+    let masked = mask_parens(text);
+    let mut pilots = extract_pilots(&masked);
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
     for k in match_known_pilots(text, known_pilots) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
             pilots.push(k);
         }
     }
-    // Drag-and-drop dscan names "<pilot> (<ship>)" — catches single-word names.
-    for d in extract_dscan_drops(text) {
-        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&d)) {
-            pilots.push(d);
+    // Drag-and-drop dscan "<pilot> (<ship>)": the name and the ship (by full name,
+    // incl. translations) — catches single-word names and multi-word hull names.
+    let mut drop_ships: Vec<(i64, String)> = Vec::new();
+    for (pilot, ship_text) in extract_dscan_drops(text) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&pilot)) {
+            pilots.push(pilot);
+        }
+        if let Some((id, name)) = ship_index.get(&ship_text.to_lowercase()) {
+            drop_ships.push((*id, name.clone()));
         }
     }
     for q in extract_quoted(text) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&q)) {
             pilots.push(q);
+        }
+    }
+    // Distinctive single tokens (hyphen/apostrophe/internal-caps/digit) that aren't
+    // a system — candidates worth an ESI lookup (e.g. "I-Pustelga").
+    for t in &tokens {
+        if is_distinctive_name(t)
+            && resolve(systems, t).is_none()
+            && !pilots.iter().any(|p| p.eq_ignore_ascii_case(t))
+        {
+            pilots.push((*t).to_owned());
         }
     }
     // Drop a candidate that is a contiguous sub-phrase of a longer candidate (so a
@@ -493,6 +545,10 @@ pub fn analyze(
                 add_ship(id, &name, &mut ships);
             }
         }
+    }
+    // Ships named inside drag-drop parentheses (resolved by full name above).
+    for (id, name) in drop_ships {
+        add_ship(id, &name, &mut ships);
     }
 
     let mut detected: Vec<DetectedSystem> = Vec::new();
@@ -778,9 +834,39 @@ mod tests {
     }
 
     #[test]
+    fn dscan_drop_ship_is_not_a_pilot() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [(
+            "council diplomatic shuttle".to_string(),
+            (670i64, "Council Diplomatic Shuttle".to_string()),
+        )]
+        .into_iter()
+        .collect();
+        let r = analyze(
+            "I-Pustelga (Council Diplomatic Shuttle)",
+            &s,
+            &ships,
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(r.pilots.iter().any(|p| p == "I-Pustelga"));
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Council Diplomatic Shuttle")));
+        assert!(r.ships.iter().any(|sh| sh.name == "Council Diplomatic Shuttle"));
+    }
+
+    #[test]
     fn dscan_drop_extracts_pilot_name() {
-        assert_eq!(extract_dscan_drops("YI-GV6 SokoleOko (鱼鹰级海军型)"), vec!["SokoleOko".to_string()]);
-        assert_eq!(extract_dscan_drops("Pericle No1 (Loki)"), vec!["Pericle No1".to_string()]);
+        assert_eq!(
+            extract_dscan_drops("YI-GV6 SokoleOko (鱼鹰级海军型)"),
+            vec![("SokoleOko".to_string(), "鱼鹰级海军型".to_string())]
+        );
+        // System code before the name is excluded; the ship is the parens content.
+        assert_eq!(
+            extract_dscan_drops("0UBC-R I-Pustelga (Council Diplomatic Shuttle)"),
+            vec![("I-Pustelga".to_string(), "Council Diplomatic Shuttle".to_string())]
+        );
     }
 
     #[test]
