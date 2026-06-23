@@ -38,6 +38,9 @@ pub struct Settings {
     /// Desktop alerts on combat events (under attack / scrambled) from game logs.
     #[serde(default = "default_true")]
     pub alert_combat: bool,
+    /// Only raise intel alerts while the active character is undocked.
+    #[serde(default)]
+    pub alert_only_undocked: bool,
     /// Seconds until an intel report is considered outdated (and pruned).
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
@@ -149,6 +152,7 @@ impl Default for Settings {
             alert_enabled: true,
             alert_within_jumps: 5,
             alert_combat: true,
+            alert_only_undocked: false,
             intel_ttl_secs: 300,
             fit_site: String::new(),
             sov_upgrades: Vec::new(),

@@ -430,6 +430,66 @@ fn extract_pilots(text: &str) -> Vec<String> {
     out
 }
 
+/// Multi-word hull names ("Exequror Navy Issue", "Stabber Fleet Issue") matched
+/// against the full ship name, longest run first. Returns (start_word, len, id,
+/// name). Checked before pilot detection so they aren't read as 3-word names.
+fn multiword_ships(
+    text: &str,
+    ship_index: &HashMap<String, (i64, String)>,
+) -> Vec<(usize, usize, i64, String)> {
+    let punct = |c: char| ",.;:!?\"()".contains(c);
+    let words: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let mut adv = 1;
+        let max = 4.min(words.len() - i);
+        for len in (2..=max).rev() {
+            let phrase = words[i..i + len].join(" ").to_lowercase();
+            if let Some((id, name)) = ship_index.get(&phrase) {
+                out.push((i, len, *id, name.clone()));
+                adv = len;
+                break;
+            }
+        }
+        i += adv;
+    }
+    out
+}
+
+/// Candidate "Title-Case + one lower-case word" names ("Psychopathic beemaster") —
+/// EVE family names can be lower-case. Only when the first word isn't a system and
+/// the second isn't a ship/keyword; ESI confirmation filters false positives.
+fn lowercase_tail_names(
+    text: &str,
+    systems: &Systems,
+    ship_index: &HashMap<String, (i64, String)>,
+) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    for w in words.windows(2) {
+        let punct = |c: char| ",.;:!?\"()".contains(c);
+        let a = w[0].trim_matches(punct);
+        let b = w[1].trim_matches(punct);
+        let b_lc = b.to_lowercase();
+        let a_ok = name_part(a)
+            && a.len() >= 3
+            && resolve(systems, a).is_none()
+            && !PILOT_STOP.contains(&a.to_lowercase().as_str())
+            && !CLEAR_WORDS.contains(&a.to_lowercase().as_str());
+        let b_ok = b.len() >= 3
+            && b.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && b.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+            && !PILOT_STOP.contains(&b_lc.as_str())
+            && !CLEAR_WORDS.contains(&b_lc.as_str())
+            && !ship_index.contains_key(&b_lc);
+        if a_ok && b_ok {
+            out.push(format!("{a} {b}"));
+        }
+    }
+    out
+}
+
 /// Analyse one message into a structured report (movement is added later).
 pub fn analyze(
     text: &str,
@@ -448,10 +508,29 @@ pub fn analyze(
     // Candidate pilot names first: their tokens must not be parsed as ships or
     // systems (player names often contain hull/system names, e.g. "Sabre Pilot" or
     // "Jita Trader"). Quoted spans are forced to be names.
-    // Run the general heuristic on text with parenthesised spans masked, so a
-    // drag-drop ship name inside "(…)" isn't read as a pilot.
-    let masked = mask_parens(text);
+    // Multi-word hull names are ships, not 3-word pilot names — find and mask them
+    // before pilot detection.
+    let mw_ships = multiword_ships(text, ship_index);
+    let masked_words: String = {
+        let punct = |c: char| ",.;:!?\"()".contains(c);
+        let mut wv: Vec<String> =
+            text.split_whitespace().map(|w| w.trim_matches(punct).to_string()).collect();
+        for (start, len, _, _) in &mw_ships {
+            for k in *start..(*start + *len).min(wv.len()) {
+                wv[k].clear();
+            }
+        }
+        wv.join(" ")
+    };
+    // Run the general heuristic with parenthesised spans (drag-drop ships) and the
+    // multi-word ship spans masked, so neither is read as a pilot.
+    let masked = mask_parens(&masked_words);
     let mut pilots = extract_pilots(&masked);
+    for n in lowercase_tail_names(&masked, systems, ship_index) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&n)) {
+            pilots.push(n);
+        }
+    }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
     for k in match_known_pilots(text, known_pilots) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
@@ -559,6 +638,10 @@ pub fn analyze(
     }
     // Ships named inside drag-drop parentheses (resolved by full name above).
     for (id, name) in drop_ships {
+        add_ship(id, &name, &mut ships);
+    }
+    // Multi-word hull names ("Exequror Navy Issue") detected before pilot parsing.
+    for (_, _, id, name) in mw_ships {
         add_ship(id, &name, &mut ships);
     }
 
@@ -739,11 +822,13 @@ fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
             continue;
         }
         let t = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != 'x');
-        let digits = t.trim_start_matches(['+', 'x']).trim_end_matches('x');
+        let digits = t.trim_start_matches(['+', 'x']).trim_end_matches(['x', '+']);
         if digits.is_empty() || digits.len() > 3 {
             continue;
         }
-        let decorated = t.starts_with('+') || t.starts_with('x') || t.ends_with('x');
+        // "+9", "9+", "x9", "9x" all decorate a count.
+        let decorated =
+            t.starts_with('+') || t.starts_with('x') || t.ends_with('x') || t.ends_with('+');
         let bare_number = t.chars().all(|c| c.is_ascii_digit());
         if !(decorated || bare_number) {
             continue;
@@ -958,6 +1043,27 @@ mod tests {
         assert!(analyze("skyhook theft Rancer", &s, &noships(), &noknown(), 1, "ch", "x").skyhook);
         // lower-case common words that are system names are not matched
         assert!(analyze("clear in here", &s, &noships(), &noknown(), 1, "ch", "x").systems.is_empty());
+    }
+
+    #[test]
+    fn multiword_ship_is_not_a_pilot() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [(
+            "exequror navy issue".to_string(),
+            (29344i64, "Exequror Navy Issue".to_string()),
+        )]
+        .into_iter()
+        .collect();
+        let r = analyze("78-0R6 Exequror Navy Issue", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Exequror Navy Issue"));
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Exequror Navy Issue")));
+    }
+
+    #[test]
+    fn lowercase_family_name_recognised() {
+        let s = systems();
+        let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
     }
 
     #[test]

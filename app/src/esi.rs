@@ -21,6 +21,8 @@ const POLL: Duration = Duration::from_secs(20);
 pub struct Player {
     pub active_name: String,
     pub system_id: Option<i64>,
+    /// True when docked in a station/structure (ESI location has a station id).
+    pub docked: bool,
 }
 
 pub type SharedPlayer = Arc<Mutex<Player>>;
@@ -41,10 +43,11 @@ pub fn spawn_location_poller(client_id: String, player: SharedPlayer, ctx: egui:
                 continue;
             }
             let Ok(store) = Store::open() else { continue };
-            if let Some(sys) = location_for(&client, &store, &client_id, &name) {
+            if let Some((sys, docked)) = location_for(&client, &store, &client_id, &name) {
                 let mut p = player.lock().unwrap();
-                if p.system_id != Some(sys) {
+                if p.system_id != Some(sys) || p.docked != docked {
                     p.system_id = Some(sys);
+                    p.docked = docked;
                     ctx.request_repaint();
                 }
             }
@@ -57,17 +60,20 @@ fn location_for(
     store: &Store,
     client_id: &str,
     name: &str,
-) -> Option<i64> {
+) -> Option<(i64, bool)> {
     let character = store.character_by_name(name)?;
     let token = current_access_token(store, client_id, character.id, character.expires_at)?;
 
     #[derive(Deserialize)]
     struct Location {
         solar_system_id: i64,
+        station_id: Option<i64>,
+        structure_id: Option<i64>,
     }
     let url = format!("{LOCATION_URL}/{}/location/", character.id);
     let loc: Location = client.get(url).bearer_auth(token).send().ok()?.json().ok()?;
-    Some(loc.solar_system_id)
+    let docked = loc.station_id.is_some() || loc.structure_id.is_some();
+    Some((loc.solar_system_id, docked))
 }
 
 /// Set the in-game autopilot destination (`clear` = true) or add a waypoint

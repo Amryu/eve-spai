@@ -400,6 +400,14 @@ impl SpaiApp {
         if !cfg.enabled {
             return;
         }
+        // Optionally suppress intel alerts while docked.
+        if self.settings.alert_only_undocked && self.player.lock().unwrap().docked {
+            // Still advance the watermark so we don't backlog-alert on undock.
+            if let Some(r) = self.intel_state.lock().unwrap().reports.last() {
+                self.last_alert_time = self.last_alert_time.max(r.received);
+            }
+            return;
+        }
         let player = self.player.lock().unwrap().system_id;
         let systems = self.systems.clone();
         let now = chrono::Utc::now().timestamp();
@@ -3517,6 +3525,9 @@ impl SpaiApp {
                     changed |= ui
                         .checkbox(&mut self.settings.alert_combat, "Combat alerts (under attack / scrambled)")
                         .changed();
+                    changed |= ui
+                        .checkbox(&mut self.settings.alert_only_undocked, "Only alert while undocked")
+                        .changed();
 
                     ui.separator();
 
@@ -4009,9 +4020,21 @@ fn intel_row(
                     ui.label(egui::RichText::new(t).monospace().color(jumps_color));
                 }
 
-                // Hostile-count panel.
+                // Hostile-count badge — prominent; the number is what matters most.
                 if let Some(n) = r.count {
-                    ui.label(egui::RichText::new(format!("{} {n}", icon::USERS)).color(red).strong())
+                    egui::Frame::new()
+                        .fill(red)
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} {n}", icon::USERS))
+                                    .color(egui::Color32::WHITE)
+                                    .strong()
+                                    .size(16.0),
+                            );
+                        })
+                        .response
                         .on_hover_text("hostiles");
                 }
 
