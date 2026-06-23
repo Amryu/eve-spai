@@ -3889,14 +3889,17 @@ fn intel_row(
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
             };
-            // Badges always wrap within the available width (never stretch wider).
-            ui.horizontal_wrapped(|ui| render(ui));
-            if show_reporter {
-                // Reporter·channel on its own right-aligned line, always readable.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("{} · {}", r.reporter, r.channel)).weak());
-                });
-            }
+            // Everything in one wrapping row: badges then reporter·channel at the
+            // end (wraps to the next line only if it doesn't fit — no forced row,
+            // no vertical stretch).
+            ui.horizontal_wrapped(|ui| {
+                render(ui);
+                if show_reporter {
+                    ui.label(
+                        egui::RichText::new(format!("·  {} · {}", r.reporter, r.channel)).weak(),
+                    );
+                }
+            });
         })
         .response;
 
