@@ -19,6 +19,7 @@ pub enum View {
     Battles,
     Characters,
     Alerts,
+    Settings,
 }
 
 impl View {
@@ -42,6 +43,7 @@ impl View {
             View::Battles => "Battles",
             View::Characters => "Characters",
             View::Alerts => "Alerts",
+            View::Settings => "Settings",
         }
     }
 
@@ -53,6 +55,7 @@ impl View {
             View::Battles => icon::SWORD,
             View::Characters => icon::USERS,
             View::Alerts => icon::BELL,
+            View::Settings => icon::GEAR_SIX,
         }
     }
 }
@@ -63,12 +66,7 @@ pub const WIDTH_EXPANDED: f32 = 196.0;
 const ROW_HEIGHT: f32 = 38.0;
 
 /// Render the rail. Returns the (possibly changed) selected view.
-pub fn rail(
-    ui: &mut egui::Ui,
-    current: View,
-    expanded: &mut bool,
-    open_settings: &mut bool,
-) -> View {
+pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool) -> View {
     let mut selected = current;
     let accent = ui.visuals().hyperlink_color;
     let weak = ui.visuals().weak_text_color();
@@ -120,8 +118,8 @@ pub fn rail(
     // --- Settings pinned to the bottom ---
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.add_space(10.0);
-        if nav_item(ui, icon::GEAR_SIX, "Settings", false, *expanded) {
-            *open_settings = true;
+        if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded) {
+            selected = View::Settings;
         }
         ui.add_space(8.0);
         ui.separator();

@@ -56,7 +56,6 @@ pub struct SpaiApp {
     store: Option<Store>,
     settings: Settings,
     view: View,
-    settings_open: bool,
     intel_channels_open: bool,
     jump_bridges_open: bool,
     jb_paste: String,
@@ -191,7 +190,6 @@ impl SpaiApp {
             store,
             settings,
             view: View::Dashboard,
-            settings_open: false,
             intel_channels_open: false,
             jump_bridges_open: false,
             jb_paste: String::new(),
@@ -1690,7 +1688,7 @@ impl SpaiApp {
             .exact_size(width)
             .show_inside(ui, |ui| {
                 let mut expanded = self.settings.nav_expanded;
-                let selected = nav::rail(ui, self.view, &mut expanded, &mut self.settings_open);
+                let selected = nav::rail(ui, self.view, &mut expanded);
                 if selected != self.view {
                     self.view = selected;
                 }
@@ -2142,20 +2140,11 @@ impl SpaiApp {
         }
     }
 
-    fn settings_dialog(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
+    fn settings_view(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let mut new_theme: Option<Theme> = None;
-
-        let keep = Self::dialog_viewport(
-            ctx,
-            "settings_window",
-            "EVE Spai — Settings",
-            [470.0, 700.0],
-            |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().show(ui, |ui| {
                     // --- Theme ---
                     ui.label(egui::RichText::new("Theme (3 colours)").strong());
                     ui.horizontal_wrapped(|ui| {
@@ -2289,8 +2278,6 @@ impl SpaiApp {
                         self.sov_upgrades_open = true;
                     }
                 });
-            },
-        );
 
         if let Some(theme) = new_theme {
             self.settings.theme = theme;
@@ -2298,9 +2285,6 @@ impl SpaiApp {
         }
         if changed {
             self.needs_save = true;
-        }
-        if !keep {
-            self.settings_open = false;
         }
     }
 }
@@ -2327,9 +2311,9 @@ impl eframe::App for SpaiApp {
             View::Intel => self.intel_view(ui),
             View::Battles => self.battles_view(ui),
             View::Alerts => self.alerts_view(ui),
+            View::Settings => self.settings_view(ui),
         });
 
-        self.settings_dialog(&ctx);
         self.intel_channels_window(&ctx);
         self.jump_bridges_window(&ctx);
         self.sov_upgrades_window(&ctx);
