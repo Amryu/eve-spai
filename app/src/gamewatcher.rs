@@ -13,12 +13,17 @@ const POLL: Duration = Duration::from_millis(1500);
 /// Shared log of fired alerts (unix seconds, text), shared with the Alerts view.
 pub type AlertLog = Arc<Mutex<Vec<(i64, String)>>>;
 
-pub fn spawn(game_dir: PathBuf, alerts: AlertLog, ctx: egui::Context) {
+pub fn spawn(
+    game_dir: PathBuf,
+    alerts: AlertLog,
+    notify_on: Arc<std::sync::atomic::AtomicBool>,
+    ctx: egui::Context,
+) {
     std::thread::spawn(move || {
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
         let mut cooldown: HashMap<CombatKind, i64> = HashMap::new();
         loop {
-            scan(&game_dir, &alerts, &ctx, &mut processed, &mut cooldown);
+            scan(&game_dir, &alerts, &notify_on, &ctx, &mut processed, &mut cooldown);
             std::thread::sleep(POLL);
         }
     });
@@ -34,6 +39,7 @@ fn cooldown_secs(kind: CombatKind) -> i64 {
 fn scan(
     game_dir: &PathBuf,
     alerts: &AlertLog,
+    notify_on: &std::sync::atomic::AtomicBool,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     cooldown: &mut HashMap<CombatKind, i64>,
@@ -65,7 +71,9 @@ fn scan(
             }
             cooldown.insert(kind, now);
             let text = kind.message().to_owned();
-            notify(&text);
+            if notify_on.load(std::sync::atomic::Ordering::Relaxed) {
+                notify(&text);
+            }
             alerts.lock().unwrap().push((now, text));
             fired = true;
         }

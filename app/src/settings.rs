@@ -130,6 +130,21 @@ impl Default for AlertRule {
     }
 }
 
+/// Custom alert window "always on top" behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OnTop {
+    /// Always above other windows.
+    Always,
+    /// Above only while the EVE client is the focused window.
+    Smart,
+    /// Never forced on top.
+    Never,
+}
+
+fn default_on_top() -> OnTop {
+    OnTop::Always
+}
+
 /// Intel alerting configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlertSettings {
@@ -143,6 +158,9 @@ pub struct AlertSettings {
     pub window_pos: Option<(f32, f32)>,
     /// Seconds the custom window stays after the last alert.
     pub window_timeout: f32,
+    /// Always-on-top behaviour for the custom window.
+    #[serde(default = "default_on_top")]
+    pub on_top: OnTop,
     pub push_enabled: bool,
     pub pushover_token: String,
     pub pushover_user: String,
@@ -164,6 +182,7 @@ impl Default for AlertSettings {
             use_custom_window: false,
             window_pos: None,
             window_timeout: 30.0,
+            on_top: OnTop::Always,
             push_enabled: false,
             pushover_token: String::new(),
             pushover_user: String::new(),

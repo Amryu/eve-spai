@@ -175,11 +175,18 @@ pub struct SpaiApp {
     alert_cooldown: std::collections::HashMap<i64, i64>,
     /// Recent fired alerts (unix, text) — shared with the game-log watcher.
     recent_alerts: crate::gamewatcher::AlertLog,
-    /// Recent alerts shown in the custom notification window: (time, text, severity).
-    alert_feed: Vec<(i64, String, crate::settings::Severity)>,
+    /// Reports shown in the custom notification window, with their severity.
+    alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     /// Seconds the custom notification window stays visible (counts down; 0 = hidden,
     /// paused while hovered).
     alert_window_secs: f32,
+    /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
+    /// the combat-log watcher.
+    os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the EVE client is the focused window (for "smart" always-on-top).
+    eve_focused: bool,
+    /// Throttle for the EVE-focus check.
+    eve_focus_checked: Option<std::time::Instant>,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -263,6 +270,7 @@ impl SpaiApp {
 
         settings.theme.apply(&cc.egui_ctx);
 
+        let sysnotif = settings.alerts.system_notifications;
         // Restore persisted map/intel options (or defaults).
         let pv: PersistedView = serde_json::from_str(&settings.view_options).unwrap_or(PersistedView {
             overlays: MapOverlays::default(),
@@ -338,6 +346,9 @@ impl SpaiApp {
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             alert_feed: Vec::new(),
             alert_window_secs: 0.0,
+            os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(sysnotif)),
+            eve_focused: true,
+            eve_focus_checked: None,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -434,6 +445,7 @@ impl SpaiApp {
             title: String,
             text: String,
             body: String,
+            report: crate::intel::IntelReport,
             sev: crate::settings::Severity,
             sound: String,
             sys: bool,
@@ -487,7 +499,18 @@ impl SpaiApp {
                 };
                 let text = alert_text(r);
                 let body = format!("{text}\n— {} · {}", r.reporter, r.channel);
-                fired.push(Fire { sys_id, title, text, body, sev, sound, sys, win, push });
+                fired.push(Fire {
+                    sys_id,
+                    title,
+                    text,
+                    body,
+                    report: r.clone(),
+                    sev,
+                    sound,
+                    sys,
+                    win,
+                    push,
+                });
             }
         }
         self.last_alert_time = newest;
@@ -506,7 +529,7 @@ impl SpaiApp {
                 crate::sound::play(&f.sound);
             }
             if f.win {
-                self.alert_feed.push((now, f.text.clone(), f.sev));
+                self.alert_feed.push((f.report.clone(), f.sev));
                 let n = self.alert_feed.len();
                 if n > 100 {
                     self.alert_feed.drain(0..n - 100);
@@ -623,7 +646,12 @@ impl SpaiApp {
         // Combat alerts from game logs.
         if self.settings.alert_combat {
             if let Some(game_dir) = crate::logpaths::game_logs_dir(&self.settings.eve_logs_dir) {
-                crate::gamewatcher::spawn(game_dir, self.recent_alerts.clone(), ctx.clone());
+                crate::gamewatcher::spawn(
+                    game_dir,
+                    self.recent_alerts.clone(),
+                    self.os_notify.clone(),
+                    ctx.clone(),
+                );
             }
         }
     }
@@ -1328,20 +1356,65 @@ impl SpaiApp {
         if !self.settings.alerts.use_custom_window || self.alert_window_secs <= 0.0 {
             return;
         }
+        // For "smart" on-top, refresh whether EVE is focused (throttled to ~1 s).
+        if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
+            let due = self
+                .eve_focus_checked
+                .map(|t| t.elapsed().as_millis() > 800)
+                .unwrap_or(true);
+            if due {
+                self.eve_focused = eve_is_focused();
+                self.eve_focus_checked = Some(std::time::Instant::now());
+            }
+        }
         let pos = self.settings.alerts.window_pos.unwrap_or((80.0, 80.0));
+        // Card data for the feed (same panels as the intel page).
+        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
+            self.alert_feed.iter().rev().take(20).cloned().collect();
+        let ship_ids: std::collections::HashSet<i64> =
+            feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
+        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
+            ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
+        let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
+            ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
+        let resolved_pilots: std::collections::HashMap<String, i64> = {
+            let cache = self.pilots.lock().unwrap();
+            feed.iter()
+                .flat_map(|(r, _)| r.pilots.iter())
+                .filter_map(|n| match cache.get(n) {
+                    Some(Some(id)) => Some((n.clone(), id)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let status_snapshot = self.system_status.lock().unwrap().clone();
+        let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
+        let systems = self.systems.clone();
+        let player_sys = self.player.lock().unwrap().system_id;
+        let now_ts = chrono::Utc::now().timestamp();
+
+        let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
+            && (self.settings.alerts.on_top == crate::settings::OnTop::Always || self.eve_focused);
+
         let mut hovered = false;
         let mut dismiss = false;
         let mut moved: Option<(f32, f32)> = None;
+        let mut click: Option<IntelClick> = None;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("alert_window"),
             egui::ViewportBuilder::default()
                 .with_title("EVE Spai — alerts")
-                .with_always_on_top()
+                .with_window_level(if on_top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                })
+                .with_active(false) // never steal focus when it appears
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_taskbar(false)
                 .with_position([pos.0, pos.1])
-                .with_inner_size([340.0, 220.0]),
+                .with_inner_size([360.0, 240.0]),
             |ctx, _| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
@@ -1357,7 +1430,7 @@ impl SpaiApp {
                                 )
                                 .sense(egui::Sense::drag()),
                             );
-                            if h.dragged() {
+                            if h.drag_started() {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                             }
                             ui.label(
@@ -1371,16 +1444,19 @@ impl SpaiApp {
                         });
                         ui.separator();
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                            for (t, text, sev) in self.alert_feed.iter().rev().take(20) {
-                                ui.horizontal_wrapped(|ui| {
-                                    let age = (chrono::Utc::now().timestamp() - t).max(0);
-                                    ui.label(
-                                        egui::RichText::new(format!("{:>5}", fmt_age(age)))
-                                            .monospace()
-                                            .color(severity_color(*sev)),
-                                    );
-                                    ui.label(text);
-                                });
+                            for (r, sev) in &feed {
+                                let from_you = jumps_from_you(
+                                    &systems,
+                                    player_sys,
+                                    r.primary_system().map(|s| s.id),
+                                );
+                                if let Some(c) = intel_row(
+                                    ui, r, now_ts, false, from_you, &systems, &status_snapshot,
+                                    &ship_details, &ship_roles, &resolved_pilots, &last_ship, *sev,
+                                    false,
+                                ) {
+                                    click = Some(c);
+                                }
                             }
                         });
                         hovered = ui.ui_contains_pointer();
@@ -1393,6 +1469,18 @@ impl SpaiApp {
                 }
             },
         );
+        // A click in the feed opens the relevant window (in the main viewport).
+        match click {
+            Some(IntelClick::System(id)) => self.open_system(id),
+            Some(IntelClick::Ship(id)) => self.open_ship(id),
+            Some(IntelClick::Pilot(name)) => {
+                self.pilot_query = name;
+                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
+                self.pilot_window_open = true;
+                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
+            }
+            None => {}
+        }
         // Save a moved position.
         if let Some(p) = moved {
             if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
@@ -1408,11 +1496,10 @@ impl SpaiApp {
         let dt = ctx.input(|i| i.stable_dt).min(0.5);
         if hovered {
             self.alert_window_secs = self.alert_window_secs.max(3.0);
-            ctx.request_repaint();
         } else {
             self.alert_window_secs -= dt;
-            ctx.request_repaint();
         }
+        ctx.request_repaint();
     }
 
     /// Persist map overlay + intel-filter options when they change.
@@ -3968,6 +4055,23 @@ impl SpaiApp {
                                 .add(egui::DragValue::new(&mut a.window_timeout).range(3.0..=300.0).suffix("s"))
                                 .changed();
                         });
+                        if a.use_custom_window {
+                            use crate::settings::OnTop;
+                            ui.horizontal(|ui| {
+                                ui.label("Always on top");
+                                egui::ComboBox::from_id_salt("on_top")
+                                    .selected_text(match a.on_top {
+                                        OnTop::Always => "Always",
+                                        OnTop::Smart => "Smart (only when EVE is active)",
+                                        OnTop::Never => "Never",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        changed |= ui.selectable_value(&mut a.on_top, OnTop::Always, "Always").changed();
+                                        changed |= ui.selectable_value(&mut a.on_top, OnTop::Smart, "Smart (only when EVE is active)").changed();
+                                        changed |= ui.selectable_value(&mut a.on_top, OnTop::Never, "Never").changed();
+                                    });
+                            });
+                        }
                         // Per-severity sounds (preset name or file path) + test.
                         ui.label(egui::RichText::new("Sounds (preset: off/info/warning/danger/critical/beep/chime, or a file path)").weak());
                         for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
@@ -3975,11 +4079,17 @@ impl SpaiApp {
                                 a.sounds.resize(i + 1, "off".to_owned());
                             }
                             ui.horizontal(|ui| {
-                                ui.label(format!("{lbl:>9}"));
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(64.0, ui.spacing().interact_size.y),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(*lbl);
+                                    },
+                                );
                                 changed |= ui
                                     .add(egui::TextEdit::singleline(&mut a.sounds[i]).desired_width(180.0))
                                     .changed();
-                                if ui.button("▶").on_hover_text("Test").clicked() {
+                                if ui.button(egui_phosphor::regular::PLAY).on_hover_text("Test").clicked() {
                                     crate::sound::play(&a.sounds[i]);
                                 }
                             });
@@ -4111,6 +4221,10 @@ impl eframe::App for SpaiApp {
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
+        self.os_notify.store(
+            self.settings.alerts.system_notifications,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);
@@ -4158,6 +4272,21 @@ impl eframe::App for SpaiApp {
 }
 
 /// Fire a desktop notification off the UI thread (dbus can block).
+/// Best-effort check whether the EVE client is the focused window (X11 via
+/// xdotool/xprop). Returns true when it can't tell (so "smart" ≈ always-on-top).
+fn eve_is_focused() -> bool {
+    use std::process::Command;
+    if let Ok(out) = Command::new("xdotool").args(["getactivewindow", "getwindowname"]).output() {
+        if out.status.success() {
+            let name = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            if !name.is_empty() {
+                return name.contains("eve") && !name.contains("eve spai");
+            }
+        }
+    }
+    true
+}
+
 fn notify(summary: String, body: String) {
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new()
