@@ -1812,53 +1812,59 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         let screen = ui.ctx().content_rect();
         let offset = egui::vec2(rect.right() - screen.right() - 8.0, rect.top() - screen.top() + 8.0);
-        egui::Area::new(egui::Id::new("map_overlays"))
+        // The button is its own right-anchored area (so it stays in the corner), and
+        // the popover is a second right-anchored area below it — each sized to its
+        // own content rather than stretched to align.
+        let btn_area = egui::Area::new(egui::Id::new("map_overlays_btn"))
             .anchor(egui::Align2::RIGHT_TOP, offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                // Right-align so the wider popover doesn't shove the button left.
-                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                // The button sits in its own framed container.
+                egui::Frame::popup(ui.style())
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Button::new(format!("{}  Overlays", icon::STACK_SIMPLE))
+                                .selected(self.overlay_menu_open),
+                        )
+                    })
+                    .inner
+            });
+        if btn_area.inner.clicked() {
+            self.overlay_menu_open = !self.overlay_menu_open;
+        }
+        if !self.overlay_menu_open {
+            return;
+        }
+        let pop_offset = offset + egui::vec2(0.0, btn_area.response.rect.height() + 6.0);
+        egui::Area::new(egui::Id::new("map_overlays_pop"))
+            .anchor(egui::Align2::RIGHT_TOP, pop_offset)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    let btn = ui.add(
-                        egui::Button::new(format!("{}  Overlays", icon::STACK_SIMPLE))
-                            .selected(self.overlay_menu_open),
+                    ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
+                    ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
+                    ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
+                    ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
+                    ui.separator();
+                    ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
+                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
+                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
+                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
+                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
+                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
+                    ui.separator();
+                    ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
+                    ui.checkbox(
+                        &mut self.map_overlays.bridges,
+                        format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
                     );
-                    if btn.clicked() {
-                        self.overlay_menu_open = !self.overlay_menu_open;
-                    }
-                });
-                // The toggles open as their own overlay, spaced below the button.
-                if self.overlay_menu_open {
-                    ui.add_space(6.0);
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
-                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
-                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
-                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
-                        ui.separator();
-                        ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
-                        ui.separator();
-                        ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
-                        ui.checkbox(
-                            &mut self.map_overlays.bridges,
-                            format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
-                        );
-                        ui.checkbox(
-                            &mut self.map_overlays.upgrades,
-                            format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
-                        );
-                        ui.checkbox(
-                            &mut self.map_overlays.jump_range,
-                            format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
-                        );
-                    });
-                }
+                    ui.checkbox(
+                        &mut self.map_overlays.upgrades,
+                        format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
+                    );
+                    ui.checkbox(
+                        &mut self.map_overlays.jump_range,
+                        format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
+                    );
                 });
             });
     }
