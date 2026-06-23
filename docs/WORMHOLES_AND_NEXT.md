@@ -36,17 +36,17 @@ auto-populated from intel channels.
 the map**, but the system-info window must open for them.
 
 ### Steps
-- [ ] **W1. Model + store.** `Wormhole` struct, `DestClass`, `ShipSize`, `Source`;
-      lifetime/expiry + dedup logic (unit-tested); `wormholes` table + upsert/list/prune.
-- [ ] **W2. EVE-Scout seeding.** Poll `api.eve-scout.com/v2/public/signatures` (~5 min);
-      map fields → records (`in_system`→system, `out_system`→Thera/Turnur dest,
-      `wh_type`, `max_ship_size`→size, `remaining_hours`→expiry, reporter→source).
+- [x] **W1. Model + store.** `Wormhole`/`DestClass`/`ShipSize`/`Source`; lifetime
+      (2 days, 1 drifter), dedup + merge (unit-tested); `wormholes` table + upsert/
+      list/prune.
+- [x] **W2. EVE-Scout seeding.** Polls `api.eve-scout.com/v2/public/signatures` every
+      5 min → records (verified live: 24 Thera/Turnur connections).
 - [ ] **W3. Intel extraction.** Upgrade the parser's `wormhole: bool` to a structured
       detection: existence, type (`K162`/J-codes), destination class or system, size,
       lifetime, drifter. Feed records (source=intel).
-- [ ] **W4. Wormholes view.** `View::Wormholes` nav item + list/table: system, type,
-      destination, size, life-left or "reported Nh ago", drifter, source. Filters
-      (destination class, source, expiring soon); clickable system breadcrumbs.
+- [~] **W4. Wormholes view.** Nav item + table (system, type, destination, size, life
+      or "reported N ago", source, drifter) with clickable system + scouted-dest
+      breadcrumbs **done**. TODO: filters (destination class, source, expiring soon).
 - [ ] **W5. Map integration.** Connected-destination WHs shown on the map; J-space
       destinations excluded from the map but clickable → system-info window. Verify
       J-space systems exist in the SDE for the info window.
