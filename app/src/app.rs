@@ -179,6 +179,9 @@ pub struct SpaiApp {
     /// Seconds the custom notification window stays visible (counts down; 0 = hidden,
     /// paused while hovered).
     alert_window_secs: f32,
+    /// True while the alert window is currently shown (to detect re-opening so the
+    /// saved geometry is re-applied each time it appears).
+    alert_window_open: bool,
     /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
     /// the combat-log watcher.
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -355,6 +358,7 @@ impl SpaiApp {
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             alert_feed: Vec::new(),
             alert_window_secs: 0.0,
+            alert_window_open: false,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
             eve_focused: true,
@@ -1428,8 +1432,11 @@ impl SpaiApp {
     #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn alert_window(&mut self, ctx: &egui::Context) {
         if self.alert_window_secs <= 0.0 {
+            self.alert_window_open = false;
             return;
         }
+        let just_opened = !self.alert_window_open;
+        self.alert_window_open = true;
         // For "smart" on-top, refresh whether EVE is focused (throttled to ~1 s).
         if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
             let due = self
@@ -1491,6 +1498,16 @@ impl SpaiApp {
                 .with_position([pos.0, pos.1])
                 .with_inner_size(self.settings.alerts.window_size.map_or([360.0, 240.0].into(), |(w, h)| egui::vec2(w, h))),
             |ctx, _| {
+                // Re-apply the saved geometry whenever the window (re)appears — the
+                // builder values aren't reliably honoured on a reopened viewport.
+                if just_opened {
+                    if let Some((w, h)) = self.settings.alerts.window_size {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+                    }
+                    if let Some((x, y)) = self.settings.alerts.window_pos {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+                    }
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
                     .show(ctx, |ui| {
