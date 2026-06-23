@@ -1079,6 +1079,7 @@ impl SpaiApp {
 
     /// Render the interactive map into `ui` (used in the main panel and the pop-out
     /// window). Full-panel canvas with floating controls.
+    #[allow(deprecated)] // show_tooltip_at_pointer: replacement API is heavier
     fn draw_map(&mut self, ui: &mut egui::Ui) {
         use crate::map::MapView;
         if self.map_regions.is_empty() {
@@ -1308,6 +1309,14 @@ impl SpaiApp {
             }
         }
 
+        // Hover tooltip: system info + ESI activity + intel for the hovered system.
+        if let Some(h_id) = hovered_id {
+            let layer = ui.layer_id();
+            egui::show_tooltip_at_pointer(ui.ctx(), layer, egui::Id::new("map_hover_tip"), |ui| {
+                self.map_system_tooltip(ui, h_id);
+            });
+        }
+
         // Systems + overlays.
         let intel_ids: std::collections::HashSet<i64> = {
             let st = self.intel_state.lock().unwrap();
@@ -1375,6 +1384,69 @@ impl SpaiApp {
 
         self.map_controls_overlay(ui, rect);
         self.map_search_overlay(ui, rect);
+    }
+
+    /// Hover tooltip for a map system: name/security/location, ESI activity, and
+    /// any current intel. (Click the system for the full interactive window.)
+    fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
+        if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(id)) {
+            ui.horizontal(|ui| {
+                ui.label(security_badge(info.security));
+                ui.label(egui::RichText::new(&info.name).strong());
+            });
+        }
+        let status = self.system_status.lock().unwrap();
+        system_chips(ui, &self.systems, &status, id);
+        if let Some(f) = status.get(&id) {
+            if f.jumps + f.ship_kills + f.pod_kills + f.npc_kills > 0 {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Last hour — {} jumps · {} ship · {} pod · {} NPC kills",
+                        f.jumps, f.ship_kills, f.pod_kills, f.npc_kills
+                    ))
+                    .weak(),
+                );
+            }
+        }
+        drop(status);
+
+        // Current intel for this system (compact).
+        let now = chrono::Utc::now().timestamp();
+        let state = self.intel_state.lock().unwrap();
+        let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+        let mut shown = 0;
+        for r in state.reports.iter().rev() {
+            if !r.systems.iter().any(|s| s.id == id) {
+                continue;
+            }
+            if shown == 0 {
+                ui.separator();
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{:>6}", fmt_age((now - r.received).max(0))))
+                        .monospace()
+                        .weak(),
+                );
+                if let Some(n) = r.count {
+                    ui.label(egui::RichText::new(format!("{n}x")).strong());
+                }
+                if r.clear {
+                    ui.label(egui::RichText::new("CLEAR").color(green));
+                }
+                for sh in &r.ships {
+                    ui.label(egui::RichText::new(&sh.name).weak());
+                }
+                ui.label(egui::RichText::new(format!("— {}", r.reporter)).weak());
+            });
+            shown += 1;
+            if shown >= 8 {
+                break;
+            }
+        }
+        if shown == 0 {
+            ui.label(egui::RichText::new("Click for details.").weak());
+        }
     }
 
     /// Floating controls over the map (scope, navigation, follow, pop-out).
@@ -1734,31 +1806,45 @@ impl SpaiApp {
                     ui.horizontal(|ui| {
                         ui.label(security_badge(info.security));
                         ui.heading(&info.name);
-                        // Sovereignty alliance logo, top-right.
-                        if let Some(aid) = flags.sov_alliance {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=64");
-                                let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(40.0)));
-                                if let Some(sov) = &flags.sov {
-                                    r.on_hover_text(sov);
-                                }
-                            });
-                        }
                     });
-                    // Location + conditions (sov shown as the logo above instead).
-                    system_chips_ex(ui, &self.systems, &status, id, false);
-                    if let Some(adm) = flags.adm {
-                        // Higher ADM = better defended (harder to attack).
-                        let col = if adm >= 5.0 {
-                            egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
-                        } else if adm >= 3.0 {
-                            crate::theme::standing::WARNING
-                        } else {
-                            crate::theme::standing::HOSTILE
-                        };
-                        ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(col).strong())
-                            .on_hover_text("Activity Defense Multiplier");
+                    // Sovereignty alliance logo + ADM, floated top-right so they don't
+                    // affect the name's line height.
+                    if flags.sov_alliance.is_some() || flags.adm.is_some() {
+                        egui::Area::new(egui::Id::new("sys_sov"))
+                            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
+                            .order(egui::Order::Foreground)
+                            .show(ui.ctx(), |ui| {
+                                ui.vertical_centered(|ui| {
+                                    if let Some(aid) = flags.sov_alliance {
+                                        let url = format!(
+                                            "https://images.evetech.net/alliances/{aid}/logo?size=128"
+                                        );
+                                        let r = ui.add(
+                                            egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(64.0)),
+                                        );
+                                        if let Some(sov) = &flags.sov {
+                                            r.on_hover_text(sov);
+                                        }
+                                    }
+                                    if let Some(adm) = flags.adm {
+                                        let col = if adm >= 5.0 {
+                                            egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
+                                        } else if adm >= 3.0 {
+                                            crate::theme::standing::WARNING
+                                        } else {
+                                            crate::theme::standing::HOSTILE
+                                        };
+                                        ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(col).strong())
+                                            .on_hover_text(
+                                                "Activity Defense Multiplier (ESI gives only the \
+                                                 total, not the military/industry/strategic split)",
+                                            );
+                                    }
+                                });
+                            });
                     }
+                    // Location + conditions (sov shown as the logo instead).
+                    system_chips_ex(ui, &self.systems, &status, id, false);
                     // Last-hour activity, highlighted vs the region average.
                     let region_ids: Vec<i64> = self
                         .store
