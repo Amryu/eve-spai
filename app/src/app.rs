@@ -129,6 +129,8 @@ pub struct SpaiApp {
     settings: Settings,
     view: View,
     intel_channels_open: bool,
+    /// Listener names whose logs the watcher skips (live per-character intel toggle).
+    watcher_skip: crate::watcher::SkipListeners,
     jump_bridges_open: bool,
     jb_paste: String,
     sov_upgrades_open: bool,
@@ -297,6 +299,7 @@ impl SpaiApp {
             settings,
             view: View::Dashboard,
             intel_channels_open: false,
+            watcher_skip: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             jump_bridges_open: false,
             jb_paste: String::new(),
             sov_upgrades_open: false,
@@ -541,6 +544,7 @@ impl SpaiApp {
                 ships,
                 self.pilots.clone(),
                 self.intel_state.clone(),
+                self.watcher_skip.clone(),
                 ctx.clone(),
             );
         }
@@ -905,9 +909,12 @@ impl SpaiApp {
 
         let now = chrono::Utc::now().timestamp();
         let mut remove: Option<i64> = None;
+        let mut toggle: Option<(String, bool)> = None;
         for c in &self.characters {
             let scope_count = c.scopes.split(' ').filter(|s| !s.is_empty()).count();
             let token_ok = c.expires_at > now;
+            let mut intel_on =
+                !self.settings.intel_disabled_chars.iter().any(|d| d.eq_ignore_ascii_case(&c.name));
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(&c.name).strong());
                 ui.label(egui::RichText::new(format!("· {scope_count} scopes")).weak());
@@ -922,8 +929,22 @@ impl SpaiApp {
                     if ui.small_button("Remove").clicked() {
                         remove = Some(c.id);
                     }
+                    if ui
+                        .checkbox(&mut intel_on, "Check intel")
+                        .on_hover_text("Use this character's chat logs for intel")
+                        .changed()
+                    {
+                        toggle = Some((c.name.clone(), intel_on));
+                    }
                 });
             });
+        }
+        if let Some((name, on)) = toggle {
+            self.settings.intel_disabled_chars.retain(|d| !d.eq_ignore_ascii_case(&name));
+            if !on {
+                self.settings.intel_disabled_chars.push(name);
+            }
+            self.needs_save = true;
         }
         if let Some(id) = remove {
             if let Some(store) = &self.store {
@@ -3732,6 +3753,8 @@ impl eframe::App for SpaiApp {
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
+        *self.watcher_skip.lock().unwrap() =
+            self.settings.intel_disabled_chars.iter().map(|c| c.to_lowercase()).collect();
         self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);

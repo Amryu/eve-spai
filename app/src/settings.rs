@@ -17,6 +17,9 @@ pub struct Settings {
     pub eve_settings_dir: String,
     /// Intel chat channels to watch.
     pub intel_channels: Vec<String>,
+    /// Characters whose chat logs are NOT used for intel (by listener name).
+    #[serde(default)]
+    pub intel_disabled_chars: Vec<String>,
     /// EVE SSO application client ID (PKCE public client).
     #[serde(default = "default_client_id")]
     pub sso_client_id: String,
@@ -202,6 +205,7 @@ impl Default for Settings {
             eve_logs_dir: String::new(),
             eve_settings_dir: String::new(),
             intel_channels: Vec::new(),
+            intel_disabled_chars: Vec::new(),
             sso_client_id: default_client_id(),
             sso_callback: default_callback(),
             configuration_pack: String::new(),

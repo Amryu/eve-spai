@@ -21,6 +21,8 @@ const MAX_MOVE_JUMPS: u32 = 15;
 /// Grace window (seconds) for amending a reporter's previous intel post.
 const AMEND_GRACE: i64 = 60;
 
+pub type SkipListeners = Arc<Mutex<std::collections::HashSet<String>>>;
+
 pub fn spawn(
     chat_dir: PathBuf,
     channels: Vec<String>,
@@ -28,6 +30,7 @@ pub fn spawn(
     ships: Arc<HashMap<String, (i64, String)>>,
     pilots: crate::pilot::SharedPilots,
     state: Arc<Mutex<IntelState>>,
+    skip: SkipListeners,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -43,6 +46,7 @@ pub fn spawn(
                 &ships,
                 &pilots,
                 &state,
+                &skip,
                 &ctx,
                 &mut processed,
                 &mut last_system,
@@ -60,6 +64,7 @@ fn scan(
     ships: &HashMap<String, (i64, String)>,
     pilots: &crate::pilot::SharedPilots,
     state: &Mutex<IntelState>,
+    skip: &Mutex<std::collections::HashSet<String>>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     last_system: &mut HashMap<String, (i64, String, Vec<String>)>,
@@ -79,6 +84,10 @@ fn scan(
         };
         // Empty channel list = watch everything (useful before channels are set).
         if !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
+            continue;
+        }
+        // Skip logs from characters the user disabled for intel.
+        if skip.lock().unwrap().contains(&meta.listener.to_lowercase()) {
             continue;
         }
 
