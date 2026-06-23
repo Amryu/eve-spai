@@ -50,12 +50,16 @@ the map**, but the system-info window must open for them.
       endpoints + both signatures, and a signature matching either endpoint pairs with
       the existing connection instead of creating a second one. (Scouted-specific-
       system from free text is still TODO.)
-- [~] **W4. Wormholes view.** Nav item + table (system, type, destination, size, life
-      or "reported N ago", source, drifter) with clickable system + scouted-dest
-      breadcrumbs **done**. TODO: filters (destination class, source, expiring soon).
-- [ ] **W5. Map integration.** Connected-destination WHs shown on the map; J-space
-      destinations excluded from the map but clickable → system-info window. Verify
-      J-space systems exist in the SDE for the info window.
+- [x] **W4. Wormholes view.** Nav item + table: system [sig], type (+ drifter),
+      destination with the **target system's constellation + region**, size, life or
+      "reported N ago", source. Clickable system + scouted-dest breadcrumbs. Filters:
+      destination class, source, expiring <4h.
+- [x] **W5. Map integration.** Direct k-space↔k-space holes drawn as teal lines;
+      chains linking two k-space systems through J-space drawn as purple dashed lines
+      labelled with the J-space hop count (BFS through J-space only, skipping public
+      hubs by degree so Thera spokes aren't bogus chains); a spiral marker on systems
+      with a hole into J-space (J-space itself stays off the map but opens in the
+      system-info window).
 
 ---
 
