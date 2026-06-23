@@ -48,6 +48,7 @@ pub fn slot_of(flag: i64) -> Slot {
 #[derive(Clone, Debug)]
 pub struct Loss {
     pub killmail_id: i64,
+    pub hash: String,
     pub time: i64,
     pub ship_type_id: i64,
     pub items: Vec<Item>,
@@ -194,7 +195,7 @@ fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<L
             items.push(Item { type_id, flag, qty: qty.max(1) });
         }
     }
-    Some(Loss { killmail_id: id, time, ship_type_id, items })
+    Some(Loss { killmail_id: id, hash: hash.to_owned(), time, ship_type_id, items })
 }
 
 /// Bulk-resolve type ids to names via ESI `/universe/names` (≤1000 per call).

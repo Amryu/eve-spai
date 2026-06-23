@@ -392,9 +392,13 @@ pub fn analyze(
         if cand.eq_ignore_ascii_case("on") || cand.eq_ignore_ascii_case("the") {
             continue;
         }
-        // An explicit "<x> gate" keyword is authoritative — even a bare number is
-        // the gate code here (the ambiguity only applies to bare numbers elsewhere).
+        // An explicit "<x> gate" keyword is authoritative for a resolvable code, but
+        // a bare number that doesn't resolve is never a gate name (a single digit
+        // never is, and e.g. "5 gate" means five hostiles).
         let resolved = resolve(systems, cand);
+        if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
         gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
         consumed.push(cand.to_lowercase());
         if let Some(info) = resolved {
@@ -450,11 +454,16 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
     if let Some(info) = systems.lookup(token) {
         return Some(info);
     }
-    // Null-sec codes: uppercase/digit/hyphen, e.g. "78-", "C-J", or a bare "78".
+    // A bare 2-digit number is only a system if it's a "<digits>-…" null-sec code
+    // (e.g. "78" → 78-AAA), never an arbitrary prefix — safer, may drop some intel.
+    if token.len() == 2 && token.chars().all(|c| c.is_ascii_digit()) {
+        return systems.lookup_prefix(&format!("{token}-"));
+    }
+    // Null-sec codes: uppercase/digit/hyphen, e.g. "78-", "C-J".
     let all_codey = token
         .chars()
         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-' || c == '\'');
-    let codey = token.len() >= 2 && all_codey && (token.contains('-') || token.chars().all(|c| c.is_ascii_digit()));
+    let codey = token.len() >= 2 && all_codey && token.contains('-');
     if codey {
         systems.lookup_prefix(token)
     } else {

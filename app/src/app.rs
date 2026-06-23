@@ -1109,9 +1109,9 @@ impl SpaiApp {
                 let site = self.settings.fit_site.clone();
                 if site.is_empty() {
                     ui.label("Open in:");
-                    for (id, label) in [("zkillboard", "zKillboard"), ("osmium", "o.smium")] {
-                        if ui.button(label).clicked() {
-                            self.settings.fit_site = id.to_owned();
+                    for (id, label) in FIT_SITES {
+                        if ui.button(*label).clicked() {
+                            self.settings.fit_site = (*id).to_owned();
                             self.needs_save = true;
                         }
                     }
@@ -3126,6 +3126,21 @@ impl SpaiApp {
                         .changed();
 
                     ui.add_space(6.0);
+                    ui.label("Fit preview site").on_hover_text("Where the fit window's \"Open in\" button sends a loss");
+                    ui.horizontal_wrapped(|ui| {
+                        for (id, label) in FIT_SITES {
+                            if ui.selectable_label(self.settings.fit_site == *id, *label).clicked() {
+                                self.settings.fit_site = (*id).to_owned();
+                                changed = true;
+                            }
+                        }
+                        if ui.selectable_label(self.settings.fit_site.is_empty(), "Ask each time").clicked() {
+                            self.settings.fit_site.clear();
+                            changed = true;
+                        }
+                    });
+
+                    ui.add_space(6.0);
                     let logs_hint = crate::logpaths::chat_logs_dir("")
                         .and_then(|p| p.parent().map(|p| p.display().to_string()))
                         .unwrap_or_else(|| "auto-detect".to_owned());
@@ -3849,35 +3864,20 @@ fn eft_string(
     out
 }
 
-/// EVE "DNA" fitting string (fitted slots only) for o.smium and similar.
-fn dna_string(ship_id: i64, loss: &crate::lookup::Loss) -> String {
-    use crate::lookup::Slot;
-    let mut counts: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
-    for it in &loss.items {
-        if matches!(crate::lookup::slot_of(it.flag), Slot::Cargo | Slot::Other) {
-            continue;
-        }
-        *counts.entry(it.type_id).or_insert(0) += it.qty.max(1);
-    }
-    let mut s = format!("{ship_id}:");
-    for (t, q) in counts {
-        s.push_str(&format!("{t};{q}:"));
-    }
-    s.push(':');
-    s
-}
+/// Online fit sites the user can open a loss in. (id, label.)
+const FIT_SITES: &[(&str, &str)] =
+    &[("eveship", "EVEShip.fit"), ("workbench", "EVE Workbench"), ("zkillboard", "zKillboard")];
 
 fn site_label(site: &str) -> &str {
-    match site {
-        "zkillboard" => "zKillboard",
-        "osmium" => "o.smium",
-        other => other,
-    }
+    FIT_SITES.iter().find(|(id, _)| *id == site).map(|(_, l)| *l).unwrap_or(site)
 }
 
-fn fit_url(site: &str, ship_id: i64, loss: &crate::lookup::Loss) -> String {
+fn fit_url(site: &str, _ship_id: i64, loss: &crate::lookup::Loss) -> String {
     match site {
-        "osmium" => format!("https://o.smium.org/loadout/dna/{}", dna_string(ship_id, loss)),
+        // EVEShip.fit imports a killmail directly and renders the full fit.
+        "eveship" => format!("https://eveship.fit/?fit=killmail:{}/{}", loss.killmail_id, loss.hash),
+        // EVE Workbench has no kill-import URL; open the importer (paste the EFT).
+        "workbench" => "https://eveworkbench.com/fitting".to_owned(),
         _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
     }
 }
