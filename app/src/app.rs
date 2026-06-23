@@ -19,19 +19,57 @@ enum SovMode {
     Coalition,
 }
 
+/// Which ESI activity metric the heat overlay shows.
+#[derive(Clone, Copy, PartialEq)]
+enum ActivityMode {
+    Off,
+    ShipKills,
+    PodKills,
+    NpcKills,
+    Jumps,
+}
+
+impl ActivityMode {
+    fn value(self, f: &crate::systemstatus::SysFlags) -> u32 {
+        match self {
+            ActivityMode::Off => 0,
+            ActivityMode::ShipKills => f.ship_kills,
+            ActivityMode::PodKills => f.pod_kills,
+            ActivityMode::NpcKills => f.npc_kills,
+            ActivityMode::Jumps => f.jumps,
+        }
+    }
+    /// Approximate "busy" value for scaling the heat colour.
+    fn scale(self) -> f32 {
+        match self {
+            ActivityMode::Jumps => 400.0,
+            ActivityMode::NpcKills => 200.0,
+            _ => 30.0,
+        }
+    }
+}
+
 /// Toggleable map overlays (the top-right Layers menu).
 #[derive(Clone, Copy)]
 struct MapOverlays {
     sov: SovMode,
     bridges: bool,
-    activity: bool,
+    activity: ActivityMode,
     adm: bool,
     upgrades: bool,
+    jump_range: bool,
 }
 
 impl Default for MapOverlays {
     fn default() -> Self {
-        Self { sov: SovMode::Off, bridges: true, activity: false, adm: false, upgrades: true }
+        Self {
+            sov: SovMode::Off,
+            bridges: true,
+            activity: ActivityMode::Off,
+            adm: false,
+            upgrades: true,
+            jump_range: true,
+        }
     }
 }
 
@@ -125,6 +163,7 @@ pub struct SpaiApp {
     recent_alerts: crate::gamewatcher::AlertLog,
     // --- Map view state ---
     map_overlays: MapOverlays,
+    overlay_menu_open: bool,
     map_view: crate::map::MapView,
     map_initialized: bool,
     map_history: Vec<crate::map::MapView>,
@@ -254,6 +293,7 @@ impl SpaiApp {
             alert_cooldown: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             map_overlays: MapOverlays::default(),
+            overlay_menu_open: false,
             map_view: crate::map::MapView::Universe,
             map_initialized: false,
             map_history: Vec::new(),
@@ -1296,8 +1336,10 @@ impl SpaiApp {
         // Small uniform dots like the in-game star map.
         let dot = (0.7 * self.map_zoom).clamp(0.6, 2.2);
 
-        // Sovereignty territory: filled blobs covering each holder's systems. Radius
-        // ≈ the gate spacing so adjacent owned systems merge into a contiguous shape.
+        // Sovereignty territory: opaque filled regions per holder. Drawing opaque
+        // (rather than translucent) means same-colour overlaps merge into one
+        // uniform region instead of darkening per system. Only player-sov nullsec
+        // is coloured — NPC sov (no alliance) and hi/low-sec are left clear.
         if self.map_overlays.sov != SovMode::Off {
             // Coalition lookup: alliance name (lower) -> coalition name.
             let coal: std::collections::HashMap<String, String> = self
@@ -1321,22 +1363,30 @@ impl SpaiApp {
                 }
             }
             edge_len.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let terr = edge_len.get(edge_len.len() / 2).copied().unwrap_or(dot * 6.0).max(dot * 3.0) * 0.62;
+            let terr =
+                edge_len.get(edge_len.len() / 2).copied().unwrap_or(dot * 6.0).max(dot * 3.0) * 0.72;
+            // Muted, opaque region colour (keeps dots/labels readable on top).
+            let region = |c: egui::Color32| {
+                egui::Color32::from_rgb(
+                    (c.r() as f32 * 0.5) as u8,
+                    (c.g() as f32 * 0.5) as u8,
+                    (c.b() as f32 * 0.5) as u8,
+                )
+            };
             let status = self.system_status.lock().unwrap();
             for s in &self.map_draw {
-                if let Some(f) = status.get(&s.id) {
-                    if let (SovMode::Alliance, Some(aid)) = (self.map_overlays.sov, f.sov_alliance) {
-                        painter.circle_filled(pos[&s.id], terr, alliance_color(aid).gamma_multiply(0.75));
-                    } else if self.map_overlays.sov == SovMode::Coalition {
-                        if let Some(name) = &f.sov {
-                            let col = match coal.get(&name.to_lowercase()) {
-                                Some(cname) => alliance_color(coalition_hash(cname)),
-                                None => egui::Color32::from_rgb(0x55, 0x55, 0x55), // independent
-                            };
-                            painter.circle_filled(pos[&s.id], terr, col.gamma_multiply(0.75));
-                        }
-                    }
-                }
+                let Some(f) = status.get(&s.id) else { continue };
+                // Player sovereignty only (NPC sov has no alliance id).
+                let Some(aid) = f.sov_alliance else { continue };
+                let col = match self.map_overlays.sov {
+                    SovMode::Alliance => alliance_color(aid),
+                    SovMode::Coalition => match f.sov.as_deref().and_then(|n| coal.get(&n.to_lowercase())) {
+                        Some(cname) => alliance_color(coalition_hash(cname)),
+                        None => egui::Color32::from_rgb(0x60, 0x60, 0x60), // independent
+                    },
+                    SovMode::Off => continue,
+                };
+                painter.circle_filled(pos[&s.id], terr, region(col));
             }
         }
 
@@ -1381,7 +1431,8 @@ impl SpaiApp {
         // Map overlays (ADM / activity / sov upgrades) as rings/markers behind dots.
         // (Sovereignty territory is drawn separately, below.)
         let ov = self.map_overlays;
-        if ov.adm || ov.activity || ov.upgrades {
+        let zoomed = self.map_zoom > 3.0;
+        if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {
             let status = self.system_status.lock().unwrap();
             let upgrade_systems: std::collections::HashSet<String> = if ov.upgrades {
                 self.settings.sov_upgrades.iter().map(|u| u.system.to_lowercase()).collect()
@@ -1403,17 +1454,25 @@ impl SpaiApp {
                             painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(1.5, c));
                         }
                     }
-                    if ov.activity {
-                        let act = f.ship_kills + f.pod_kills + f.npc_kills / 4 + f.jumps / 20;
-                        if act > 0 {
-                            let heat = (act as f32 / 40.0).min(1.0);
-                            let col = egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30);
-                            painter.circle_filled(p, dot + 3.0 + heat * 6.0, col.gamma_multiply(0.30));
+                    if ov.activity != ActivityMode::Off {
+                        let v = ov.activity.value(f);
+                        if v > 0 {
+                            let heat = (v as f32 / ov.activity.scale()).min(1.0);
+                            let col =
+                                egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30);
+                            painter.circle_filled(p, dot + 3.0 + heat * 6.0, col.gamma_multiply(0.32));
                         }
                     }
                 }
-                if ov.upgrades && upgrade_systems.contains(&s.name.to_lowercase()) {
-                    painter.circle_stroke(p, dot + 4.0, egui::Stroke::new(1.5, crate::theme::standing::CORP));
+                // Sov upgrades: a small icon near the system when zoomed in (not a ring).
+                if ov.upgrades && zoomed && upgrade_systems.contains(&s.name.to_lowercase()) {
+                    painter.text(
+                        p + egui::vec2(dot + 3.0, -(dot + 3.0)),
+                        egui::Align2::LEFT_BOTTOM,
+                        egui_phosphor::regular::WRENCH,
+                        egui::FontId::proportional(12.0),
+                        crate::theme::standing::CORP,
+                    );
                 }
             }
         }
@@ -1441,7 +1500,7 @@ impl SpaiApp {
             .input(|i| i.pointer.hover_pos())
             .filter(|_| resp.hovered())
             .and_then(|p| nearest_system(p, &pos, 8.0));
-        if let Some(h_id) = hovered_id {
+        if let (true, Some(h_id)) = (self.map_overlays.jump_range, hovered_id) {
             if let Some(real_h) = self.map_systems.iter().find(|s| s.id == h_id) {
                 let hp = pos[&h_id];
                 // One colour per band (capital / black ops / jump freighter).
@@ -1508,7 +1567,8 @@ impl SpaiApp {
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(2.0, crate::theme::standing::HOSTILE));
             }
             if player_sys == Some(s.id) {
-                painter.circle_stroke(p, dot + 4.0, egui::Stroke::new(2.0, ui.visuals().hyperlink_color));
+                // A larger ring than the intel ring so the two always coexist.
+                painter.circle_stroke(p, dot + 8.0, egui::Stroke::new(2.5, ui.visuals().hyperlink_color));
             }
             if Some(s.id) == hovered_id {
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
@@ -1567,18 +1627,33 @@ impl SpaiApp {
             .anchor(egui::Align2::RIGHT_TOP, offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
+                // The button sits in its own framed container.
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.menu_button(format!("{}  Overlays", icon::STACK_SIMPLE), |ui| {
+                    let btn = ui.add(
+                        egui::Button::new(format!("{}  Overlays", icon::STACK_SIMPLE))
+                            .selected(self.overlay_menu_open),
+                    );
+                    if btn.clicked() {
+                        self.overlay_menu_open = !self.overlay_menu_open;
+                    }
+                });
+                // The toggles open as their own overlay, spaced below the button.
+                if self.overlay_menu_open {
+                    ui.add_space(6.0);
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
                         ui.separator();
+                        ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
+                        ui.separator();
                         ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
-                        ui.checkbox(
-                            &mut self.map_overlays.activity,
-                            format!("{}  Activity", icon::FIRE),
-                        );
                         ui.checkbox(
                             &mut self.map_overlays.bridges,
                             format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
@@ -1587,8 +1662,12 @@ impl SpaiApp {
                             &mut self.map_overlays.upgrades,
                             format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
                         );
+                        ui.checkbox(
+                            &mut self.map_overlays.jump_range,
+                            format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
+                        );
                     });
-                });
+                }
             });
     }
 
