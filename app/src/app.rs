@@ -220,6 +220,9 @@ pub struct SpaiApp {
     wizard_open: bool,
     wizard_step: u8,
     wizard_checked: bool,
+    /// System tray (Show / Exit) + whether a real quit was requested.
+    tray: Option<crate::tray::TrayCmd>,
+    really_exit: bool,
     /// D-scan clipboard sharing.
     dscan_clip: Option<arboard::Clipboard>,
     dscan_checked: Option<std::time::Instant>,
@@ -437,6 +440,8 @@ impl SpaiApp {
             wizard_open: false,
             wizard_step: 0,
             wizard_checked: false,
+            tray: crate::tray::spawn(),
+            really_exit: false,
             dscan_clip: None,
             dscan_checked: None,
             dscan_seen_hash: 0,
@@ -5827,6 +5832,21 @@ impl SpaiApp {
                             "Offer to share d-scans from the clipboard",
                         )
                         .changed();
+                    changed |= ui
+                        .checkbox(
+                            &mut self.settings.minimize_to_tray,
+                            "Close to system tray (keep running)",
+                        )
+                        .changed();
+                    if ui
+                        .checkbox(&mut self.settings.autostart, "Start automatically on login")
+                        .changed()
+                    {
+                        if let Err(e) = crate::tray::set_autostart(self.settings.autostart) {
+                            eprintln!("[autostart] {e}");
+                        }
+                        changed = true;
+                    }
 
                     ui.add_space(6.0);
                     ui.label("Fit preview site").on_hover_text("Where the fit window's \"Open in\" button sends a loss");
@@ -6046,6 +6066,29 @@ impl SpaiApp {
 impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // System tray: Show brings the window back; Exit quits for real. Closing the
+        // window hides to the tray instead of quitting (when enabled).
+        if let Some(tray) = self.tray.clone() {
+            if tray.take_show() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            if tray.exit_requested() {
+                self.really_exit = true;
+            }
+        }
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.really_exit
+            && self.settings.minimize_to_tray
+            && self.tray.is_some()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if self.really_exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         // Re-apply the theme every frame so colour edits are reflected live (cheap).
         self.settings.theme.apply(&ctx);

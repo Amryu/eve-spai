@@ -37,3 +37,6 @@ keyring = "4"
 notify-rust = "4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 arboard = { version = "3", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", features = ["blocking"] }

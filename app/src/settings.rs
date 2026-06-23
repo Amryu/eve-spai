@@ -95,6 +95,12 @@ pub struct Settings {
     /// Watch the clipboard for d-scans and offer to share them.
     #[serde(default = "default_true")]
     pub dscan_autoprompt: bool,
+    /// Hide to the system tray instead of quitting when the window is closed.
+    #[serde(default = "default_true")]
+    pub minimize_to_tray: bool,
+    /// Launch EVE Spai automatically on login.
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 fn default_jabber_server() -> String {
@@ -421,6 +427,8 @@ impl Default for Settings {
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,
+            minimize_to_tray: true,
+            autostart: false,
         }
     }
 }
