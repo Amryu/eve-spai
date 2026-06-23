@@ -31,8 +31,8 @@ pub fn spawn(
     std::thread::spawn(move || {
         let channels: Vec<String> = channels.iter().map(|c| c.to_lowercase()).collect();
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
-        // Last system a sighting was reported in, per channel (id, name).
-        let mut last_system: HashMap<String, (i64, String)> = HashMap::new();
+        // Last sighting per channel: (system id, system name, pilot names lower-cased).
+        let mut last_system: HashMap<String, (i64, String, Vec<String>)> = HashMap::new();
         loop {
             scan(
                 &chat_dir,
@@ -60,7 +60,7 @@ fn scan(
     state: &Mutex<IntelState>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
-    last_system: &mut HashMap<String, (i64, String)>,
+    last_system: &mut HashMap<String, (i64, String, Vec<String>)>,
 ) {
     let Ok(entries) = std::fs::read_dir(chat_dir) else {
         return;
@@ -105,20 +105,26 @@ fn scan(
                     }
                 }
 
-                // Movement: link to the channel's previous sighting in a different
-                // system, recording direction + jump distance.
+                // Movement: only inferred when the new sighting shares a named pilot
+                // with the channel's previous sighting (the only reliable identifier;
+                // consecutive reports otherwise needn't be the same group).
                 if !report.clear {
-                    let primary = report.primary_system().map(|s| (s.id, s.name.clone()));
-                    if let Some((pid, pname)) = primary {
-                        if let Some((prev_id, prev_name)) = last_system.get(&meta.channel) {
-                            if *prev_id != pid {
+                    if let Some(sys) = report.primary_system() {
+                        let (pid, pname) = (sys.id, sys.name.clone());
+                        let cur_pilots: Vec<String> =
+                            report.pilots.iter().map(|p| p.to_lowercase()).collect();
+                        if let Some((prev_id, prev_name, prev_pilots)) = last_system.get(&meta.channel)
+                        {
+                            let same_pilot =
+                                cur_pilots.iter().any(|p| prev_pilots.contains(p));
+                            if *prev_id != pid && same_pilot {
                                 report.movement = Some(Movement {
                                     from: prev_name.clone(),
                                     jumps: systems.jumps(*prev_id, pid, MAX_MOVE_JUMPS),
                                 });
                             }
                         }
-                        last_system.insert(meta.channel.clone(), (pid, pname));
+                        last_system.insert(meta.channel.clone(), (pid, pname, cur_pilots));
                     }
                 }
 
