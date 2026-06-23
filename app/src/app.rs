@@ -3764,28 +3764,14 @@ fn intel_row(
             // competes with (or hides) the ship/system/pilot panel tooltips.
             let msg = format!("{}\n— {} · {}", r.text, r.reporter, r.channel);
             let mut render = |ui: &mut egui::Ui| {
-                let h = ui.text_style_height(&egui::TextStyle::Body);
-                let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(w, h),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| add(ui),
-                    );
-                };
-                // Fixed columns so time/jumps line up across rows.
-                col(ui, 16.0, &|ui| {
-                    ui.label(egui::RichText::new(type_icon).color(tint)).on_hover_text(&msg);
-                });
-                col(ui, 58.0, &|ui| {
-                    ui.label(egui::RichText::new(fmt_age(age)).monospace().weak()).on_hover_text(&msg);
-                });
-                col(ui, 40.0, &|ui| {
-                    if let Some(j) = from_you {
-                        let t = if j == 0 { "here".to_owned() } else { format!("{j}j") };
-                        // Distinct from the (weak) time column.
-                        ui.label(egui::RichText::new(t).monospace().color(jumps_color));
-                    }
-                });
+                // Plain inline widgets (no fixed-size sub-uis — those break wrapping
+                // inside horizontal_wrapped and make the card grow vertically).
+                ui.label(egui::RichText::new(type_icon).color(tint)).on_hover_text(&msg);
+                ui.label(egui::RichText::new(fmt_age(age)).monospace().weak()).on_hover_text(&msg);
+                if let Some(j) = from_you {
+                    let t = if j == 0 { "here".to_owned() } else { format!("{j}j") };
+                    ui.label(egui::RichText::new(t).monospace().color(jumps_color));
+                }
 
                 // Hostile-count panel.
                 if let Some(n) = r.count {
