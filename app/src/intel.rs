@@ -90,11 +90,15 @@ impl IntelState {
     /// new message mentions the **same system or no system** (a gate is not a
     /// system) and actually adds something. Returns true if it amended.
     pub fn try_amend(&mut self, new: &IntelReport, grace: i64) -> bool {
+        // A clear is always its own report — it must never merge into (and overwrite
+        // the threat info of) a prior sighting.
+        if new.clear {
+            return false;
+        }
         let adds = !new.ships.is_empty()
             || !new.pilots.is_empty()
             || new.gate.is_some()
             || new.count.is_some()
-            || new.clear
             || new.no_visual
             || new.spike
             || new.camp
@@ -531,6 +535,9 @@ mod tests {
         // A different system is a new sighting, not an amendment.
         let other = analyze("hostile in Jita", &s, &noships(), 140, "ch", "Scout");
         assert!(!state.try_amend(&other, 60));
+        // A clear is never amended into a sighting (it must not wipe ship info).
+        let clear = analyze("Rancer clear", &s, &noships(), 150, "ch", "Scout");
+        assert!(!state.try_amend(&clear, 60));
     }
 
     #[test]
