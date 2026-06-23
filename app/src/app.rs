@@ -6219,13 +6219,14 @@ impl eframe::App for SpaiApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // The surface is cleared fully transparent when a translucent/transparent
-        // viewport needs it (map overlay mode, or the always-alive alert window which
-        // is invisible+click-through when idle). Opaque panels cover the clear on the
-        // main window, so this is safe there.
-        let alert_window = self.settings.alert_enabled
-            && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window);
-        if self.map_overlay_mode || alert_window {
+        // Only the borderless map-overlay needs a *fully* transparent backbuffer. The
+        // normal window always clears with its (slightly translucent) background.
+        //
+        // The alert window is a SEPARATE viewport that handles its own transparency —
+        // clearing the *main* window fully transparent just because an alert rule
+        // exists made the entire UI render black on non-conformant GPUs (radv), which
+        // is exactly the "window opens but doesn't render" trap.
+        if self.map_overlay_mode {
             [0.0, 0.0, 0.0, 0.0]
         } else {
             egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
