@@ -207,6 +207,10 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
+    /// Pop-out map window kept above other windows.
+    map_window_on_top: bool,
+    /// Hide all map control overlays (leaving just a "show" button).
+    map_controls_hidden: bool,
     /// Use EVE's flattened 2D layout (position2D, in-game look) vs raw geographic x/z.
     map_spaced: bool,
     /// Coordinates actually drawn (geographic or the 2D layout).
@@ -369,6 +373,8 @@ impl SpaiApp {
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
+            map_window_on_top: false,
+            map_controls_hidden: false,
             map_spaced: pv.map_spaced,
             map_draw: Vec::new(),
             map_draw_spaced: false,
@@ -2232,9 +2238,27 @@ impl SpaiApp {
             }
         }
 
-        self.map_controls_overlay(ui, rect);
-        self.map_overlay_menu(ui, rect);
-        self.map_search_overlay(ui, rect);
+        if self.map_controls_hidden {
+            // Just a small button to bring the controls back.
+            egui::Area::new(egui::Id::new("map_show_controls"))
+                .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        if ui
+                            .button(egui_phosphor::regular::EYE)
+                            .on_hover_text("Show controls")
+                            .clicked()
+                        {
+                            self.map_controls_hidden = false;
+                        }
+                    });
+                });
+        } else {
+            self.map_controls_overlay(ui, rect);
+            self.map_overlay_menu(ui, rect);
+            self.map_search_overlay(ui, rect);
+        }
     }
 
     /// Top-right "Overlays" menu (sovereignty, ADM, activity, bridges, upgrades).
@@ -2441,6 +2465,19 @@ impl SpaiApp {
                         if ui.button("Pop out").clicked() {
                             self.map_popped = true;
                         }
+                        if self.map_popped
+                            && ui
+                                .add(
+                                    egui::Button::new(icon::PUSH_PIN).selected(self.map_window_on_top),
+                                )
+                                .on_hover_text("Keep window on top")
+                                .clicked()
+                        {
+                            self.map_window_on_top = !self.map_window_on_top;
+                        }
+                        if ui.button(icon::EYE_SLASH).on_hover_text("Hide controls").clicked() {
+                            self.map_controls_hidden = true;
+                        }
                         if self.route_destination.is_some() && ui.button("Clear route").clicked() {
                             self.route_destination = None;
                         }
@@ -2599,7 +2636,12 @@ impl SpaiApp {
             egui::ViewportId::from_hash_of("map_window"),
             egui::ViewportBuilder::default()
                 .with_title("EVE Spai — Map")
-                .with_inner_size([960.0, 720.0]),
+                .with_inner_size([960.0, 720.0])
+                .with_window_level(if self.map_window_on_top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                }),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| self.draw_map(ui));
                 if ctx.input(|i| i.viewport().close_requested()) {
