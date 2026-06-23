@@ -1832,7 +1832,6 @@ impl SpaiApp {
                 if self.overlay_menu_open {
                     ui.add_space(6.0);
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(190.0);
                         ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
                         ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
