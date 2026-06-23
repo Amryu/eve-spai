@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "4";
+pub const SDE_SCHEMA_VERSION: &str = "5";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS sde_systems (
     constellation_id INTEGER,
     faction_id       INTEGER,
     security         REAL,
-    x REAL, y REAL, z REAL
+    x REAL, y REAL, z REAL,
+    x2d REAL, z2d REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_systems_name ON sde_systems(name);
 CREATE TABLE IF NOT EXISTS sde_jumps (from_id INTEGER, to_id INTEGER);
@@ -83,6 +84,9 @@ pub struct MapSystem {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    /// EVE's precomputed 2D "schematic" map position (in-game flattened layout).
+    pub x2d: f64,
+    pub z2d: f64,
 }
 
 /// A stored, SSO-authenticated character.
@@ -109,6 +113,8 @@ impl Store {
         // Add columns to pre-existing SDE tables (no-op if already there).
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN constellation_id INTEGER", []);
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN faction_id INTEGER", []);
+        let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN x2d REAL", []);
+        let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN z2d REAL", []);
         migrate_plaintext_tokens(&conn);
         Ok(Self { conn, path })
     }
@@ -204,8 +210,10 @@ impl Store {
     }
 
     fn map_systems(&self, filter: &str, p: impl rusqlite::Params) -> Vec<MapSystem> {
+        // Fall back to 3D x/z when a system has no 2D position (rare; filtered out).
         let sql = format!(
-            "SELECT id, name, security, COALESCE(region_id,0), x, y, z FROM sde_systems {filter}"
+            "SELECT id, name, security, COALESCE(region_id,0), x, y, z, \
+             COALESCE(x2d, x), COALESCE(z2d, z) FROM sde_systems {filter}"
         );
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(&sql) {
@@ -218,6 +226,8 @@ impl Store {
                     x: r.get(4)?,
                     y: r.get(5)?,
                     z: r.get(6)?,
+                    x2d: r.get(7)?,
+                    z2d: r.get(8)?,
                 })
             }) {
                 out.extend(rows.flatten());

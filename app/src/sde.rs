@@ -241,6 +241,45 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
     }
 
+    // --- EVE's flattened 2D map positions (position2D) from the modern JSONL SDE ---
+    // (Fuzzwork's CSV only has 3D x/y/z.) Used for the in-game-style map layout.
+    set(SdeStatus::Downloading("Downloading 2D map layout…".to_owned()));
+    {
+        use std::io::Read as _;
+        let zip_bytes = client
+            .get("https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip")
+            .send()?
+            .error_for_status()
+            .context("fetching JSONL SDE")?
+            .bytes()
+            .context("reading JSONL SDE")?;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+            .map_err(|e| anyhow::anyhow!("opening JSONL SDE: {e}"))?;
+        let mut jsonl = String::new();
+        archive
+            .by_name("mapSolarSystems.jsonl")
+            .map_err(|e| anyhow::anyhow!("mapSolarSystems.jsonl: {e}"))?
+            .read_to_string(&mut jsonl)
+            .context("reading mapSolarSystems.jsonl")?;
+
+        set(SdeStatus::Downloading("Building 2D map layout…".to_owned()));
+        let mut stmt = tx.prepare("UPDATE sde_systems SET x2d = ?2, z2d = ?3 WHERE id = ?1")?;
+        for line in jsonl.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let (Some(id), Some(p)) = (v.get("_key").and_then(|k| k.as_i64()), v.get("position2D"))
+            else {
+                continue;
+            };
+            if let (Some(x), Some(y)) =
+                (p.get("x").and_then(|n| n.as_f64()), p.get("y").and_then(|n| n.as_f64()))
+            {
+                stmt.execute(params![id, x, y])?;
+            }
+        }
+    }
+
     let version = chrono::Utc::now().format("%Y-%m-%d").to_string();
     tx.execute(
         "INSERT OR REPLACE INTO sde_meta(key, value) VALUES('version', ?1)",

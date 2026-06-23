@@ -90,17 +90,12 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
-    /// Use the flattened/spaced 2D layout (in-game look) vs raw geographic x/z.
+    /// Use EVE's flattened 2D layout (position2D, in-game look) vs raw geographic x/z.
     map_spaced: bool,
-    /// Coordinates actually drawn (geographic clone or spaced layout).
+    /// Coordinates actually drawn (geographic or the 2D layout).
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
-    map_draw_key: Option<(crate::map::MapView, bool, bool)>,
-    /// Spaced layouts computed per view (so we don't recompute each frame).
-    map_layout_cache: std::collections::HashMap<crate::map::MapView, Vec<crate::store::MapSystem>>,
-    /// Background layout result (view, coords), set by the worker thread.
-    map_layout_pending: std::sync::Arc<std::sync::Mutex<Option<(crate::map::MapView, Vec<crate::store::MapSystem>)>>>,
-    map_layout_computing: Option<crate::map::MapView>,
+    map_draw_key: Option<(crate::map::MapView, bool)>,
     /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
     map_search: String,
@@ -204,9 +199,6 @@ impl SpaiApp {
             map_draw: Vec::new(),
             map_draw_spaced: false,
             map_draw_key: None,
-            map_layout_cache: std::collections::HashMap::new(),
-            map_layout_pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            map_layout_computing: None,
             map_focus: None,
             map_search: String::new(),
             map_search_sel: 0,
@@ -848,22 +840,6 @@ impl SpaiApp {
         }
     }
 
-    /// Compute the spaced (in-game-style) layout for a view on a worker thread.
-    fn spawn_layout(&mut self, view: crate::map::MapView, ctx: &egui::Context) {
-        let Some(graph) = self.systems.clone() else {
-            return;
-        };
-        let systems = self.map_systems.clone();
-        let pending = self.map_layout_pending.clone();
-        let ctx = ctx.clone();
-        self.map_layout_computing = Some(view);
-        std::thread::spawn(move || {
-            let layout = crate::map::spaced_layout(&systems, &graph);
-            *pending.lock().unwrap() = Some((view, layout));
-            ctx.request_repaint();
-        });
-    }
-
     /// Render the interactive map into `ui` (used in the main panel and the pop-out
     /// window). Full-panel canvas with floating controls.
     fn draw_map(&mut self, ui: &mut egui::Ui) {
@@ -904,35 +880,23 @@ impl SpaiApp {
             } else {
                 raw
             };
-            self.map_layout_cache.remove(&self.map_view); // systems changed
             self.map_loaded = Some(self.map_view);
         }
 
-        // Collect any finished background layout into the cache.
-        if let Some((view, layout)) = self.map_layout_pending.lock().unwrap().take() {
-            self.map_layout_cache.insert(view, layout);
-            if self.map_layout_computing == Some(view) {
-                self.map_layout_computing = None;
-            }
-        }
-
-        // Drawn coordinates: the flattened/spaced layout (in-game look) when
-        // available, else raw geographic while the layout computes in the
-        // background. Cached per view so we never recompute or stall the UI.
-        let has_layout = self.map_spaced && self.map_layout_cache.contains_key(&self.map_view);
-        let want = (self.map_view, self.map_spaced, has_layout);
+        // Drawn coordinates: EVE's flattened 2D layout (position2D) when "Spaced" is
+        // on, else raw geographic x/z. The 2D coords are baked, so this is instant.
+        let want = (self.map_view, self.map_spaced);
         if self.map_draw_key != Some(want) {
-            self.map_draw = if has_layout {
-                self.map_layout_cache[&self.map_view].clone()
+            self.map_draw = if self.map_spaced {
+                self.map_systems
+                    .iter()
+                    .map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() })
+                    .collect()
             } else {
                 self.map_systems.clone()
             };
-            self.map_draw_spaced = has_layout;
+            self.map_draw_spaced = self.map_spaced;
             self.map_draw_key = Some(want);
-        }
-        // Kick off the background layout for this view if needed.
-        if self.map_spaced && !has_layout && self.map_layout_computing != Some(self.map_view) {
-            self.spawn_layout(self.map_view, ui.ctx());
         }
         let schematic = self.map_draw_spaced;
 
@@ -1202,15 +1166,10 @@ impl SpaiApp {
                         if ui.add(egui::Button::new("Follow").selected(self.map_follow)).clicked() {
                             self.map_follow = !self.map_follow;
                         }
-                        // Flattened in-game-style layout (default) vs raw geographic
-                        // x/z. Computed in the background and cached per view.
-                        let mut label = egui::RichText::new("Spaced");
-                        if self.map_spaced && self.map_layout_computing == Some(self.map_view) {
-                            label = egui::RichText::new("Spaced…"); // computing
-                        }
+                        // EVE's flattened 2D layout (position2D) vs raw geographic x/z.
                         if ui
-                            .add(egui::Button::new(label).selected(self.map_spaced))
-                            .on_hover_text("Flattened 2D layout with minimum spacing (in-game style)")
+                            .add(egui::Button::new("Spaced").selected(self.map_spaced))
+                            .on_hover_text("EVE's in-game flattened 2D layout")
                             .clicked()
                         {
                             self.map_spaced = !self.map_spaced;

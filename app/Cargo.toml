@@ -30,3 +30,4 @@ base64 = "0.22"
 getrandom = "0.2"
 keyring = "4"
 notify-rust = "4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
