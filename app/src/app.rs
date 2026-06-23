@@ -136,6 +136,8 @@ pub struct SpaiApp {
     coalitions_open: bool,
     /// Live edit buffers for the coalition editor: (name, alliances-one-per-line).
     coal_edit: Vec<(String, String)>,
+    /// Text input for manually adding an alliance to the sov list.
+    alliance_add: String,
     active_character: String,
     /// Settings changed this frame and should be persisted.
     needs_save: bool,
@@ -300,6 +302,7 @@ impl SpaiApp {
             sov_paste: String::new(),
             coalitions_open: false,
             coal_edit: Vec::new(),
+            alliance_add: String::new(),
             active_character: "No character".to_owned(),
             needs_save: false,
             sde_status,
@@ -603,10 +606,9 @@ impl SpaiApp {
         let max_jumps = self.intel_max_jumps;
         let state = self.intel_state.lock().unwrap();
 
-        let matches: Vec<&crate::intel::IntelReport> = state
+        let mut matches: Vec<&crate::intel::IntelReport> = state
             .reports
             .iter()
-            .rev()
             .filter(|r| type_filter.matches(r))
             .filter(|r| {
                 max_jumps == 0
@@ -620,6 +622,9 @@ impl SpaiApp {
                     || r.systems.iter().any(|s| s.name.to_lowercase().contains(&query))
             })
             .collect();
+        // Strictly newest-first by report time (insertion order can drift once a
+        // report is amended and its time refreshed).
+        matches.sort_by(|a, b| b.received.cmp(&a.received));
 
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
@@ -1505,13 +1510,6 @@ impl SpaiApp {
         // uniform region instead of darkening per system. Only player-sov nullsec
         // is coloured — NPC sov (no alliance) and hi/low-sec are left clear.
         if self.map_overlays.sov != SovMode::Off {
-            // Coalition lookup: alliance name (lower) -> coalition name.
-            let coal: std::collections::HashMap<String, String> = self
-                .settings
-                .coalitions
-                .iter()
-                .flat_map(|c| c.alliances.iter().map(move |a| (a.to_lowercase(), c.name.clone())))
-                .collect();
             // Adaptive radius from the median gate-edge length on screen.
             let mut edge_len: Vec<f32> = Vec::new();
             if let Some(graph) = &self.systems {
@@ -1541,13 +1539,19 @@ impl SpaiApp {
             for s in &self.map_draw {
                 let Some(f) = status.get(&s.id) else { continue };
                 // Player sovereignty only (NPC sov has no alliance id).
-                let Some(aid) = f.sov_alliance else { continue };
+                if f.sov_alliance.is_none() {
+                    continue;
+                }
+                let Some(name) = f.sov.as_deref() else { continue };
                 let col = match self.map_overlays.sov {
-                    SovMode::Alliance => alliance_color(aid),
-                    SovMode::Coalition => match f.sov.as_deref().and_then(|n| coal.get(&n.to_lowercase())) {
-                        Some(cname) => alliance_color(coalition_hash(cname)),
-                        None => egui::Color32::from_rgb(0x60, 0x60, 0x60), // independent
-                    },
+                    SovMode::Alliance => self.alliance_paint(name),
+                    SovMode::Coalition => self
+                        .settings
+                        .coalitions
+                        .iter()
+                        .find(|c| c.alliances.iter().any(|a| a.eq_ignore_ascii_case(name)))
+                        .map(Self::coalition_paint)
+                        .unwrap_or(egui::Color32::from_rgb(0x60, 0x60, 0x60)), // independent
                     SovMode::Off => continue,
                 };
                 painter.circle_filled(pos[&s.id], terr, region(col));
@@ -2673,6 +2677,44 @@ impl SpaiApp {
         }
     }
 
+    /// Map colour for an alliance (override from settings, else auto from name).
+    fn alliance_paint(&self, name: &str) -> egui::Color32 {
+        self.settings
+            .alliances
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+            .and_then(|a| a.color)
+            .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
+            .unwrap_or_else(|| name_color(name))
+    }
+
+    /// Map colour for a coalition (override, else auto from name).
+    fn coalition_paint(c: &crate::settings::Coalition) -> egui::Color32 {
+        c.color
+            .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
+            .unwrap_or_else(|| name_color(&c.name))
+    }
+
+    /// Record any newly-seen sov-holding alliance (from ESI) in the settings list.
+    /// Never prunes — alliances persist after they stop holding sov.
+    fn discover_sov_alliances(&mut self) {
+        let names: std::collections::HashSet<String> = {
+            let st = self.system_status.lock().unwrap();
+            st.values().filter_map(|f| f.sov.clone()).collect()
+        };
+        let mut added = false;
+        for name in names {
+            if !self.settings.alliances.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
+                self.settings.alliances.push(crate::settings::AllianceConfig { name, color: None });
+                added = true;
+            }
+        }
+        if added {
+            self.settings.alliances.sort_by(|a, b| a.name.cmp(&b.name));
+            self.needs_save = true;
+        }
+    }
+
     /// Top sov-holding alliances over a set of systems: (alliance id, name, count).
     fn dominant_alliances(&self, ids: &[i64]) -> Vec<(i64, Option<String>, usize)> {
         let status = self.system_status.lock().unwrap();
@@ -2980,11 +3022,17 @@ impl SpaiApp {
         let mut remove: Option<usize> = None;
         let mut add = false;
         let mut reset = false;
+        // Deferred edits (avoid borrowing settings.* mutably mid-iteration).
+        let mut coal_color: Vec<(String, Option<(u8, u8, u8)>)> = Vec::new();
+        let mut ally_color: Vec<(usize, Option<(u8, u8, u8)>)> = Vec::new();
+        let mut ally_remove: Option<usize> = None;
+        let mut ally_assign: Option<(String, Option<String>)> = None;
+        let mut ally_add = false;
         let keep = Self::dialog_viewport(
             ctx,
             "coalitions_window",
             "EVE Spai — Coalitions",
-            [480.0, 600.0],
+            [520.0, 680.0],
             |ui| {
                 ui.label(
                     egui::RichText::new(
@@ -3003,22 +3051,93 @@ impl SpaiApp {
                     }
                 });
                 ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("coal_scroll").max_height(280.0).show(ui, |ui| {
                     for (i, (name, alliances)) in self.coal_edit.iter_mut().enumerate() {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Coalition").weak());
-                                ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
+                                ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                                // Colour (override or auto from name).
+                                let cur = self
+                                    .settings
+                                    .coalitions
+                                    .iter()
+                                    .find(|c| c.name == name.trim())
+                                    .and_then(|c| c.color);
+                                let mut rgb = cur.map(|(r, g, b)| [r, g, b]).unwrap_or_else(|| {
+                                    let c = name_color(name);
+                                    [c.r(), c.g(), c.b()]
+                                });
+                                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                    coal_color.push((name.trim().to_owned(), Some((rgb[0], rgb[1], rgb[2]))));
+                                }
                                 if ui.button("Remove").clicked() {
                                     remove = Some(i);
                                 }
                             });
                             ui.add(
                                 egui::TextEdit::multiline(alliances)
-                                    .desired_rows(4)
+                                    .desired_rows(3)
                                     .desired_width(f32::INFINITY)
                                     .hint_text("One alliance name per line\nGoonswarm Federation"),
                             );
+                        });
+                    }
+                });
+
+                // --- Alliances holding sov (auto-discovered from ESI) ---
+                ui.separator();
+                ui.label(egui::RichText::new("Alliances (sov holders)").strong());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.alliance_add)
+                            .desired_width(220.0)
+                            .hint_text("Add alliance by name"),
+                    );
+                    if ui.button("Add").clicked() {
+                        ally_add = true;
+                    }
+                });
+                egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("ally_scroll").show(ui, |ui| {
+                    for (i, a) in self.settings.alliances.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let mut rgb = a.color.map(|(r, g, b)| [r, g, b]).unwrap_or_else(|| {
+                                let c = name_color(&a.name);
+                                [c.r(), c.g(), c.b()]
+                            });
+                            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                ally_color.push((i, Some((rgb[0], rgb[1], rgb[2]))));
+                            }
+                            ui.label(&a.name);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui_phosphor::regular::X).clicked() {
+                                    ally_remove = Some(i);
+                                }
+                                let current = self
+                                    .settings
+                                    .coalitions
+                                    .iter()
+                                    .find(|c| c.alliances.iter().any(|x| x.eq_ignore_ascii_case(&a.name)))
+                                    .map(|c| c.name.clone());
+                                egui::ComboBox::from_id_salt(("coal_of", i))
+                                    .selected_text(current.clone().unwrap_or_else(|| "—".to_owned()))
+                                    .show_ui(ui, |ui| {
+                                        if ui.selectable_label(current.is_none(), "— independent").clicked() {
+                                            ally_assign = Some((a.name.clone(), None));
+                                        }
+                                        for c in &self.settings.coalitions {
+                                            if ui
+                                                .selectable_label(
+                                                    current.as_deref() == Some(c.name.as_str()),
+                                                    &c.name,
+                                                )
+                                                .clicked()
+                                            {
+                                                ally_assign = Some((a.name.clone(), Some(c.name.clone())));
+                                            }
+                                        }
+                                    });
+                            });
                         });
                     }
                 });
@@ -3035,6 +3154,54 @@ impl SpaiApp {
         }
         if let Some(i) = remove {
             self.coal_edit.remove(i);
+        }
+        // Apply deferred alliance/coalition colour + membership edits.
+        for (name, col) in coal_color {
+            if let Some(c) = self.settings.coalitions.iter_mut().find(|c| c.name == name) {
+                c.color = col;
+                self.needs_save = true;
+            }
+        }
+        for (i, col) in ally_color {
+            if let Some(a) = self.settings.alliances.get_mut(i) {
+                a.color = col;
+                self.needs_save = true;
+            }
+        }
+        if let Some(i) = ally_remove {
+            if i < self.settings.alliances.len() {
+                self.settings.alliances.remove(i);
+                self.needs_save = true;
+            }
+        }
+        if let Some((ally, target)) = ally_assign {
+            for c in &mut self.settings.coalitions {
+                c.alliances.retain(|x| !x.eq_ignore_ascii_case(&ally));
+            }
+            if let Some(t) = target {
+                if let Some(c) = self.settings.coalitions.iter_mut().find(|c| c.name == t) {
+                    c.alliances.push(ally);
+                }
+            }
+            // Keep the editor buffers in step with the changed membership.
+            self.coal_edit = self
+                .settings
+                .coalitions
+                .iter()
+                .map(|c| (c.name.clone(), c.alliances.join("\n")))
+                .collect();
+            self.needs_save = true;
+        }
+        if ally_add {
+            let name = self.alliance_add.trim().to_owned();
+            if !name.is_empty()
+                && !self.settings.alliances.iter().any(|a| a.name.eq_ignore_ascii_case(&name))
+            {
+                self.settings.alliances.push(crate::settings::AllianceConfig { name, color: None });
+                self.settings.alliances.sort_by(|a, b| a.name.cmp(&b.name));
+                self.needs_save = true;
+            }
+            self.alliance_add.clear();
         }
         // Sync edit buffers back into settings.
         let parsed: Vec<crate::settings::Coalition> = self
@@ -3456,6 +3623,7 @@ impl eframe::App for SpaiApp {
         self.maybe_start_watcher(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
+        self.discover_sov_alliances();
         self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);
@@ -4358,6 +4526,11 @@ fn alliance_color(id: i64) -> egui::Color32 {
         0x50 | ((h >> 8) as u8 >> 1),
         0x50 | ((h) as u8 >> 1),
     )
+}
+
+/// Auto colour generated from a name (alliance / coalition) when not overridden.
+fn name_color(name: &str) -> egui::Color32 {
+    alliance_color(coalition_hash(name))
 }
 
 /// EVE's in-game security-status colours, keyed by security rounded to 0.1.
