@@ -99,9 +99,19 @@ fn scan(
                 let mut report =
                     intel::analyze(&m.text, systems, ships, &known, received, &meta.channel, &m.author);
 
-                // Queue candidate pilot names for background ESI confirmation.
-                if !report.pilots.is_empty() {
+                // Characters from in-game showinfo links already carry their id —
+                // confirm them at once (and persist), then queue the rest for ESI.
+                if !report.pilots.is_empty() || !report.char_ids.is_empty() {
                     let mut cache = pilots.lock().unwrap();
+                    if !report.char_ids.is_empty() {
+                        let store = crate::store::Store::open().ok();
+                        for (name, id) in &report.char_ids {
+                            cache.confirm(name, *id);
+                            if let Some(s) = &store {
+                                let _ = s.add_known_pilot(name, *id);
+                            }
+                        }
+                    }
                     for name in &report.pilots {
                         cache.queue(name);
                     }

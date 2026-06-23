@@ -39,6 +39,9 @@ pub struct IntelReport {
     pub ships: Vec<DetectedShip>,
     /// Candidate pilot names (Title-Case word runs); confirmed by ESI later.
     pub pilots: Vec<String>,
+    /// Characters with their id already known (from in-game showinfo links) — no
+    /// ESI lookup needed to display/link them.
+    pub char_ids: Vec<(String, i64)>,
     /// Approximate hostile/ship count parsed from the message, if any.
     pub count: Option<u32>,
     pub clear: bool,
@@ -514,6 +517,8 @@ struct UrlTags {
     /// the heuristic must not re-read them and merge adjacent names into one run).
     masked: String,
     pilots: Vec<String>,
+    /// Characters whose id is known from the link (name, character id).
+    char_ids: Vec<(String, i64)>,
     ships: Vec<(i64, String)>,
     systems: Vec<String>,
 }
@@ -527,6 +532,7 @@ fn parse_url_tags(
         display: String::with_capacity(text.len()),
         masked: String::with_capacity(text.len()),
         pilots: Vec::new(),
+        char_ids: Vec::new(),
         ships: Vec::new(),
         systems: Vec::new(),
     };
@@ -565,6 +571,12 @@ fn parse_url_tags(
                     t.systems.push(inner.to_owned());
                 } else if (1373..=1390).contains(&type_id) {
                     t.pilots.push(inner.to_owned());
+                    // The itemID after "//" is the character id.
+                    if let Some(cid) =
+                        rest_attr.split("//").nth(1).and_then(|v| v.parse::<i64>().ok())
+                    {
+                        t.char_ids.push((inner.to_owned(), cid));
+                    }
                 } else if let Some((id, name)) = ship_index.get(&inner.to_lowercase()) {
                     t.ships.push((*id, name.clone()));
                 } else if resolve(systems, inner).is_some() {
@@ -593,6 +605,7 @@ pub fn analyze(
     // Resolve in-game showinfo links first; parse the masked text, display the names.
     let tags = parse_url_tags(text, systems, ship_index);
     let display_text = tags.display.trim().to_owned();
+    let si_char_ids = tags.char_ids;
     let (si_pilots, si_ships, si_systems) = (tags.pilots, tags.ships, tags.systems);
     let text = tags.masked.as_str();
     let lower = text.to_lowercase();
@@ -855,6 +868,7 @@ pub fn analyze(
         reporter: reporter.to_owned(),
         text: display_text,
         pilots,
+        char_ids: si_char_ids,
         systems: detected,
         ships,
         count: parse_count(text, &consumed),
@@ -1311,6 +1325,22 @@ mod tests {
         assert!(r.systems.iter().any(|d| d.name == "Rancer"), "system missing: {:?}", r.systems);
         assert!(r.ships.iter().any(|sh| sh.name == "Hecate"), "ship missing: {:?}", r.ships);
         assert!(r.pilots.iter().any(|p| p == "Venum Einherjar's"), "pilot missing: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn showinfo_name_with_space_and_hyphen() {
+        let s = systems();
+        // "Nine -3" (typeID 1375 = character) — a name with an internal space + hyphen.
+        let r = analyze(
+            "<url=showinfo:1375//2121803366>Nine -3</url> <url=showinfo:5//30000469>9-02G0</url>",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
     }
 
     #[test]

@@ -35,6 +35,14 @@ impl PilotCache {
         self.queue.push_back(name.to_owned());
     }
 
+    /// Mark a name as a confirmed character (e.g. from an in-game showinfo link that
+    /// carries the character id) — resolved immediately, no ESI round-trip.
+    pub fn confirm(&mut self, name: &str, id: i64) {
+        let lw = name.to_lowercase();
+        self.resolved.insert(lw.clone(), Some(id));
+        self.queued.remove(&lw);
+    }
+
     /// Pre-load the known (persisted) pilot names so they're recognised at once.
     pub fn preload(&mut self, known: &HashMap<String, i64>) {
         for (lc, id) in known {
