@@ -2758,10 +2758,9 @@ impl SpaiApp {
             }
         }
 
-        // Labels: out to a few jumps (more for radial, which has room); the outermost
-        // labelled ring is height-staggered to avoid overlaps; further-out systems
-        // reveal their name only on hover.
-        let label_max = if self.map_layout == MapLayout::Radial { 4 } else { 3 };
+        // Labels: out to 3 jumps; the outermost labelled ring is height-staggered to
+        // reduce overlaps; further-out systems reveal their name only on hover.
+        let label_max = 3;
         let line_h = 13.0;
         let stagger: std::collections::HashMap<i64, f32> = {
             let mut ring: Vec<i64> = order.iter().copied().filter(|id| dist[id] == label_max).collect();
