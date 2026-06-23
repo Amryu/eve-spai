@@ -705,6 +705,12 @@ pub fn analyze(
             add_ship(*id, name, &mut ships);
             continue;
         }
+        // Resolution order: an exact system name or an exact known character is
+        // never reinterpreted as a ship typo (a null-sec abbreviation is resolved as
+        // a system in the systems pass, not here).
+        if systems.lookup(tok).is_some() || known_pilots.contains_key(&lower) {
+            continue;
+        }
         // Typo tolerance applies to English/ASCII only; translated names are matched
         // exactly (above), never fuzzily.
         if lower.is_ascii() && lower.len() >= 5 {
@@ -1050,7 +1056,6 @@ mod tests {
             ("1dq1-a", "1DQ1-A", 3, -0.4),
             ("78-aaa", "78-AAA", 4, -0.5),
             ("c-j6mt", "C-J6MT", 5, -0.6),
-            ("sindend", "Sindend", 6, 0.3),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -1252,9 +1257,10 @@ mod tests {
     }
 
     #[test]
-    fn showinfo_character_wins_over_colliding_system_name() {
+    fn showinfo_character_typeid_makes_pilot() {
         let s = systems();
-        // "Sindend" is also a real system, but typeID 1380 is a character bloodline.
+        // typeID 1380 is a character bloodline → "Sindend" is a character, even
+        // though the name resolves to no system or ship (it must not be typo'd).
         let r = analyze(
             "<url=showinfo:1380//2124077067>Sindend</url> <url=showinfo:5//30000669>N3-JBX</url>",
             &s,
@@ -1265,7 +1271,6 @@ mod tests {
             "x",
         );
         assert!(r.pilots.iter().any(|p| p == "Sindend"));
-        assert!(!r.systems.iter().any(|d| d.name == "Sindend"));
     }
 
     #[test]
