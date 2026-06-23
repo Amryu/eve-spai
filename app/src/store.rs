@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "5";
+pub const SDE_SCHEMA_VERSION: &str = "6";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS known_pilots (
     name      TEXT NOT NULL,
     char_id   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sde_ship_i18n (
+    ship_id INTEGER,
+    name    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_ship_i18n ON sde_ship_i18n(ship_id);
 CREATE TABLE IF NOT EXISTS characters (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -345,6 +350,18 @@ impl Store {
         // Nicknames / abbreviations / acronyms (e.g. "vaga", "cfi") as extra keys.
         for (slug, entry) in crate::shipnames::aliases(&map) {
             map.entry(slug).or_insert(entry);
+        }
+        // Localized hull names (zh/ru/…) as exact-match keys.
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT t.name, s.id, s.name FROM sde_ship_i18n t JOIN sde_ships s ON s.id = t.ship_id",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            }) {
+                for (loc, id, en) in rows.flatten() {
+                    map.entry(loc.to_lowercase()).or_insert((id, en));
+                }
+            }
         }
         map
     }

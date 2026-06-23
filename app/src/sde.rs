@@ -343,6 +343,47 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
                 stmt.execute(params![id, x, y])?;
             }
         }
+        drop(stmt);
+
+        // Localized ship names (so intel from non-English clients resolves, e.g. a
+        // Chinese hull name). Stream types.jsonl (large) and keep only ship types.
+        set(SdeStatus::Downloading("Indexing ship translations…".to_owned()));
+        let ship_ids: HashSet<i64> = {
+            let mut s = HashSet::new();
+            let mut q = tx.prepare("SELECT id FROM sde_ships")?;
+            for id in q.query_map([], |r| r.get::<_, i64>(0))?.flatten() {
+                s.insert(id);
+            }
+            s
+        };
+        let mut types_jsonl = String::new();
+        let _ = archive
+            .by_name("types.jsonl")
+            .map(|mut e| e.read_to_string(&mut types_jsonl));
+        if !types_jsonl.is_empty() {
+            tx.execute("DELETE FROM sde_ship_i18n", [])?;
+            let mut ins = tx.prepare("INSERT INTO sde_ship_i18n(ship_id, name) VALUES(?1, ?2)")?;
+            for line in types_jsonl.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Some(id) = v.get("_key").and_then(|k| k.as_i64()) else { continue };
+                if !ship_ids.contains(&id) {
+                    continue;
+                }
+                let Some(names) = v.get("name").and_then(|n| n.as_object()) else { continue };
+                let en = names.get("en").and_then(|n| n.as_str()).unwrap_or("");
+                for (lang, val) in names {
+                    if lang == "en" {
+                        continue;
+                    }
+                    if let Some(loc) = val.as_str() {
+                        // Skip languages that just repeat the English name.
+                        if !loc.is_empty() && loc != en {
+                            ins.execute(params![id, loc])?;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let version = chrono::Utc::now().format("%Y-%m-%d").to_string();

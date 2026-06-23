@@ -470,7 +470,9 @@ pub fn analyze(
             add_ship(*id, name, &mut ships);
             continue;
         }
-        if lower.len() >= 5 {
+        // Typo tolerance applies to English/ASCII only; translated names are matched
+        // exactly (above), never fuzzily.
+        if lower.is_ascii() && lower.len() >= 5 {
             // Typo: accept only if exactly one ship name is within edit distance 1.
             let max = if lower.len() >= 8 { 2 } else { 1 };
             let mut hit: Option<(i64, String)> = None;
