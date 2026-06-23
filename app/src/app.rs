@@ -633,6 +633,7 @@ impl SpaiApp {
         // Strictly newest-first by report time (insertion order can drift once a
         // report is amended and its time refreshed).
         matches.sort_by(|a, b| b.received.cmp(&a.received));
+        let last_ship = build_last_ship(&state.reports);
 
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
@@ -678,7 +679,7 @@ impl SpaiApp {
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
                     if let Some(a) = intel_row(
                         ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                        &ship_roles, &resolved_pilots, true,
+                        &ship_roles, &resolved_pilots, &last_ship, true,
                     ) {
                         action = Some(a);
                     }
@@ -2383,7 +2384,11 @@ impl SpaiApp {
         // Build the data the proper intel cards need (same as the intel feed).
         let ttl = self.settings.intel_ttl_secs;
         let player_sys = self.player.lock().unwrap().system_id;
-        let (sys_reports, stale_flags): (Vec<crate::intel::IntelReport>, Vec<bool>) = {
+        let (sys_reports, stale_flags, sys_last_ship): (
+            Vec<crate::intel::IntelReport>,
+            Vec<bool>,
+            std::collections::HashMap<String, (String, i64)>,
+        ) = {
             let st = self.intel_state.lock().unwrap();
             let mut reps = Vec::new();
             let mut stale = Vec::new();
@@ -2393,7 +2398,7 @@ impl SpaiApp {
                     reps.push(r.clone());
                 }
             }
-            (reps, stale)
+            (reps, stale, build_last_ship(&st.reports))
         };
         let ship_ids: std::collections::HashSet<i64> =
             sys_reports.iter().flat_map(|r| r.ships.iter().map(|s| s.id)).collect();
@@ -2640,7 +2645,7 @@ impl SpaiApp {
                             jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id));
                         if let Some(c) = intel_row(
                             ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                            &ship_details, &ship_roles, &resolved_pilots, false,
+                            &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, false,
                         ) {
                             intel_click = Some(c);
                         }
@@ -3949,6 +3954,25 @@ fn battle_row(
     });
 }
 
+/// Latest reported ship per pilot (lower-cased name → (ship name, time)), so a
+/// later sighting without a ship can show "Last seen in: <ship>".
+fn build_last_ship(
+    reports: &[crate::intel::IntelReport],
+) -> std::collections::HashMap<String, (String, i64)> {
+    let mut out: std::collections::HashMap<String, (String, i64)> = std::collections::HashMap::new();
+    for r in reports {
+        if let Some(sh) = r.ships.first() {
+            for p in &r.pilots {
+                let e = out.entry(p.to_lowercase()).or_insert((sh.name.clone(), r.received));
+                if r.received >= e.1 {
+                    *e = (sh.name.clone(), r.received);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Age as s / m+s / h+m pairs (only seconds when under a minute).
 fn fmt_age(secs: i64) -> String {
     let s = secs.max(0);
@@ -3976,6 +4000,7 @@ fn intel_row(
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
+    last_ship: &std::collections::HashMap<String, (String, i64)>,
     show_reporter: bool,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
@@ -4075,6 +4100,22 @@ fn intel_row(
                     let txt = egui::RichText::new(format!("{} {name}", icon::USER));
                     if ui.add(egui::Button::new(txt)).on_hover_text("Look up pilot").clicked() {
                         clicked = Some(IntelClick::Pilot(name.clone()));
+                    }
+                }
+
+                // No ship reported now, but a recent (≤60 min) sighting had one.
+                if r.ships.is_empty() {
+                    for name in &r.pilots {
+                        if let Some((ship, t)) = last_ship.get(&name.to_lowercase()) {
+                            if now - t <= 3600 {
+                                ui.label(
+                                    egui::RichText::new(format!("last seen in {ship}"))
+                                        .italics()
+                                        .weak(),
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
 

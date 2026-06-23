@@ -124,7 +124,9 @@ pub fn aliases(by_name: &HashMap<String, (i64, String)>) -> Vec<(String, (i64, S
             continue;
         }
         let a: String = words.iter().filter_map(|w| w.chars().next()).collect();
-        if a.len() < 2 {
+        // Require >= 3 letters — 2-letter acronyms collide with common words
+        // ("is" = InterBus Shuttle, matching the English word "is").
+        if a.len() < 3 {
             continue;
         }
         acro.entry(a)
