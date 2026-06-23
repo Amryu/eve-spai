@@ -91,16 +91,6 @@ impl Presence {
     pub fn online(self) -> bool {
         !matches!(self, Presence::Offline)
     }
-    /// Sort rank: online first.
-    pub fn rank(self) -> u8 {
-        match self {
-            Presence::Online => 0,
-            Presence::Away => 1,
-            Presence::Xa => 2,
-            Presence::Dnd => 3,
-            Presence::Offline => 4,
-        }
-    }
 }
 
 /// Commands sent from the UI to the background client.

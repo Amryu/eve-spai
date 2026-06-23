@@ -271,6 +271,12 @@ pub struct SpaiApp {
     map_overlay_mode: bool,
     /// Overlay mode locked (no moving or resizing).
     map_overlay_locked: bool,
+    /// Last (decorations, resizable) applied to the popped map window, so toggling
+    /// overlay↔bordered re-applies them live (the builder only sets them on creation).
+    map_vp_props: Option<(bool, bool)>,
+    /// Last on-top state applied to the alert window (re-applied when it changes, so
+    /// "smart" mode tracks EVE focus and the level is maintained while shown).
+    alert_level_applied: Option<bool>,
     /// A window-move drag is in progress (so the map doesn't also pan).
     map_overlay_drag: bool,
     /// How systems are laid out (geographic / spaced / radial / tree).
@@ -474,6 +480,8 @@ impl SpaiApp {
             map_window_on_top: false,
             map_controls_hidden: false,
             map_overlay_mode: false,
+            map_vp_props: None,
+            alert_level_applied: None,
             map_overlay_locked: false,
             map_overlay_drag: false,
             map_layout: pv.map_layout,
@@ -932,25 +940,26 @@ impl SpaiApp {
                     self.jabber_chat = None;
                 }
                 ui.separator();
-                // Group contacts by their server-assigned roster group, online first.
+                // Group contacts by their server-assigned roster group (empty = Other).
                 let mut groups: std::collections::BTreeMap<&str, Vec<&Convo>> =
                     std::collections::BTreeMap::new();
                 for c in &convos {
-                    groups.entry(c.group.as_str()).or_default().push(c);
+                    let g = if c.group.trim().is_empty() { "Other" } else { c.group.as_str() };
+                    groups.entry(g).or_default().push(c);
                 }
+                let accent = ui.visuals().hyperlink_color;
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
                     for (group, mut members) in groups {
-                        members.sort_by(|a, b| {
-                            a.presence.rank().cmp(&b.presence.rank()).then_with(|| a.name.cmp(&b.name))
-                        });
+                        // Sort A–Z within each group (case-insensitive).
+                        members.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         let online = members.iter().filter(|c| c.presence.online()).count();
-                        ui.add_space(2.0);
-                        ui.label(
-                            egui::RichText::new(format!("{group}  ({online}/{})", members.len()))
-                                .strong()
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
-                        );
+                        ui.add_space(7.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(group).strong().size(15.0).color(accent));
+                            ui.label(
+                                egui::RichText::new(format!("{online}/{}", members.len())).weak(),
+                            );
+                        });
                         for c in members {
                             let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
                             let (r, g, b) = c.presence.color();
@@ -2144,8 +2153,8 @@ impl SpaiApp {
                         .show(ctx, |_ui| {});
                     return;
                 }
-                // Re-apply the saved geometry + on-top level when an alert appears
-                // (the builder values aren't reliably re-applied after unmapping).
+                // Re-apply the saved geometry when an alert appears (the builder values
+                // aren't reliably re-applied after unmapping).
                 if just_opened {
                     if let Some((w, h)) = self.settings.alerts.window_size {
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -2153,11 +2162,17 @@ impl SpaiApp {
                     if let Some((x, y)) = self.settings.alerts.window_pos {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
                     }
+                    self.alert_level_applied = None; // force the level to be re-applied
+                }
+                // Keep the always-on-top level current: re-apply whenever it changes, so
+                // "smart" mode follows EVE focus and the level isn't lost while shown.
+                if self.alert_level_applied != Some(on_top) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
                         egui::WindowLevel::AlwaysOnTop
                     } else {
                         egui::WindowLevel::Normal
                     }));
+                    self.alert_level_applied = Some(on_top);
                 }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
@@ -3533,7 +3548,11 @@ impl SpaiApp {
                 use egui_phosphor::regular as icon;
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if ui.button("Universe").clicked() {
+                        if ui
+                            .button(icon::GLOBE_HEMISPHERE_WEST)
+                            .on_hover_text("Universe map")
+                            .clicked()
+                        {
                             self.map_go(MapView::Universe);
                         }
                         ui.add_enabled_ui(!self.map_history.is_empty(), |ui| {
@@ -3568,17 +3587,21 @@ impl SpaiApp {
                         if let Some(id) = goto {
                             self.map_go(MapView::Region(id));
                         }
-                        if ui.add(egui::Button::new("Follow").selected(self.map_follow)).clicked() {
+                        if ui
+                            .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
+                            .on_hover_text("Follow active character")
+                            .clicked()
+                        {
                             self.map_follow = !self.map_follow;
                         }
                         // Layout: geographic / 2D / radial / tree.
                         use crate::map::MapLayout;
                         egui::ComboBox::from_id_salt("map_layout")
                             .selected_text(match self.map_layout {
-                                MapLayout::Geographic => "3D",
-                                MapLayout::Spaced => "2D",
-                                MapLayout::Radial => "Radial",
-                                MapLayout::Tree => "Tree",
+                                MapLayout::Geographic => icon::CUBE,
+                                MapLayout::Spaced => icon::GRID_NINE,
+                                MapLayout::Radial => icon::CIRCLES_THREE_PLUS,
+                                MapLayout::Tree => icon::TREE_STRUCTURE,
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
@@ -3587,16 +3610,29 @@ impl SpaiApp {
                                 ui.selectable_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
                             });
                         if self.map_layout.is_threat() {
-                            ui.label("≤ jumps");
-                            ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15));
+                            ui.add(
+                                egui::DragValue::new(&mut self.map_threat_jumps)
+                                    .range(1..=15)
+                                    .prefix("≤")
+                                    .suffix("j"),
+                            )
+                            .on_hover_text("Max jumps shown");
                         }
-                        if ui.button("Reset").clicked() {
+                        if ui
+                            .button(icon::ARROW_COUNTER_CLOCKWISE)
+                            .on_hover_text("Reset view")
+                            .clicked()
+                        {
                             self.map_pan = egui::Vec2::ZERO;
                             self.map_zoom = 1.0;
                             self.map_follow = false;
                         }
                         if !self.map_popped {
-                            if ui.button("Pop out").clicked() {
+                            if ui
+                                .button(icon::ARROW_SQUARE_OUT)
+                                .on_hover_text("Pop out map window")
+                                .clicked()
+                            {
                                 self.map_popped = true;
                             }
                         } else {
@@ -3618,7 +3654,9 @@ impl SpaiApp {
                         if ui.button(icon::EYE_SLASH).on_hover_text("Hide controls").clicked() {
                             self.map_controls_hidden = true;
                         }
-                        if self.route_destination.is_some() && ui.button("Clear route").clicked() {
+                        if self.route_destination.is_some()
+                            && ui.button(icon::X).on_hover_text("Clear route").clicked()
+                        {
                             self.route_destination = None;
                         }
                     });
@@ -3810,6 +3848,15 @@ impl SpaiApp {
                     egui::Frame::central_panel(&ctx.style())
                 };
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| self.draw_map(ui));
+                // Re-apply decorations/resizable on change — the builder only sets
+                // them at creation, so toggling overlay↔bordered otherwise left the
+                // restored window borderless / non-resizable.
+                let want = (!overlay, !(overlay && self.map_overlay_locked));
+                if self.map_vp_props != Some(want) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(want.0));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(want.1));
+                    self.map_vp_props = Some(want);
+                }
                 if ctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
@@ -3818,6 +3865,7 @@ impl SpaiApp {
         if !keep {
             self.map_popped = false;
             self.map_overlay_mode = false;
+            self.map_vp_props = None; // re-apply when the window is re-opened
         }
     }
 
