@@ -548,12 +548,18 @@ fn parse_url_tags(
         if let Some(rest_attr) = attr.strip_prefix("showinfo:") {
             let type_id: i64 = rest_attr.split("//").next().unwrap_or("").parse().unwrap_or(0);
             if !inner.is_empty() {
-                if type_id == 5 || resolve(systems, inner).is_some() {
+                // The typeID disambiguates: 5 = solar system; a character bloodline
+                // (1373–1390) = a character (authoritative even when the name also
+                // happens to be a system, e.g. "Sindend"); a hull typeID = a ship.
+                if type_id == 5 {
                     t.systems.push(inner.to_owned());
+                } else if (1373..=1390).contains(&type_id) {
+                    t.pilots.push(inner.to_owned());
                 } else if let Some((id, name)) = ship_index.get(&inner.to_lowercase()) {
                     t.ships.push((*id, name.clone()));
+                } else if resolve(systems, inner).is_some() {
+                    t.systems.push(inner.to_owned());
                 } else {
-                    // A linked entity that isn't a system or hull is a character.
                     t.pilots.push(inner.to_owned());
                 }
             }
@@ -1044,6 +1050,7 @@ mod tests {
             ("1dq1-a", "1DQ1-A", 3, -0.4),
             ("78-aaa", "78-AAA", 4, -0.5),
             ("c-j6mt", "C-J6MT", 5, -0.6),
+            ("sindend", "Sindend", 6, 0.3),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -1242,6 +1249,23 @@ mod tests {
         assert!(r.ships.iter().any(|sh| sh.name == "Sleipnir"));
         assert!(r.systems.iter().any(|d| d.name == "Rancer"));
         assert!(!r.pilots.iter().any(|p| p == "Sleipnir"));
+    }
+
+    #[test]
+    fn showinfo_character_wins_over_colliding_system_name() {
+        let s = systems();
+        // "Sindend" is also a real system, but typeID 1380 is a character bloodline.
+        let r = analyze(
+            "<url=showinfo:1380//2124077067>Sindend</url> <url=showinfo:5//30000669>N3-JBX</url>",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(r.pilots.iter().any(|p| p == "Sindend"));
+        assert!(!r.systems.iter().any(|d| d.name == "Sindend"));
     }
 
     #[test]
