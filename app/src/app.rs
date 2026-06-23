@@ -1078,8 +1078,10 @@ impl SpaiApp {
         }
         self.pilot_reconcile_checked = Some(std::time::Instant::now());
         let Some(geo) = self.systems.clone() else { return };
-        let cache = self.pilots.lock().unwrap();
+        // Lock order MUST match the watcher (intel_state → pilots); the reverse order
+        // here deadlocked the UI thread against the watcher (ABBA).
         let mut st = self.intel_state.lock().unwrap();
+        let cache = self.pilots.lock().unwrap();
         for r in &mut st.reports {
             let mut i = 0;
             while i < r.pilots.len() {
@@ -6267,18 +6269,16 @@ impl eframe::App for SpaiApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Only the borderless map-overlay needs a *fully* transparent backbuffer. The
-        // normal window always clears with its (slightly translucent) background.
-        //
-        // The alert window is a SEPARATE viewport that handles its own transparency —
-        // clearing the *main* window fully transparent just because an alert rule
-        // exists made the entire UI render black on non-conformant GPUs (radv), which
-        // is exactly the "window opens but doesn't render" trap.
-        if self.map_overlay_mode {
-            [0.0, 0.0, 0.0, 0.0]
-        } else {
-            egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+        // Opaque by default (radv mis-presents a transparent backbuffer). A fully
+        // transparent clear is only used for the borderless overlay, and only when
+        // transparency is explicitly enabled.
+        if crate::transparency_enabled() {
+            if self.map_overlay_mode {
+                return [0.0, 0.0, 0.0, 0.0];
+            }
+            return egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32();
         }
+        egui::Color32::from_rgb(12, 12, 12).to_normalized_gamma_f32()
     }
 }
 

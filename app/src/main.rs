@@ -40,23 +40,30 @@ mod watcher;
 mod wormholes;
 mod zkill;
 
+/// Whether to request a transparent backbuffer (see-through map overlay + click-
+/// through idle alert window). Off by default — it breaks rendering on radv.
+pub fn transparency_enabled() -> bool {
+    std::env::var_os("EVE_SPAI_TRANSPARENCY").is_some()
+}
+
 fn main() -> eframe::Result<()> {
     // rustls 0.23 needs a process-wide default crypto provider; with both reqwest
     // and tokio-xmpp pulling rustls there's no unambiguous default, so install one
     // (otherwise the Jabber TLS handshake panics → "stuck at connecting").
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let mut native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("EVE Spai")
-            .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([720.0, 460.0])
-            // Enables a transparent backbuffer for ALL viewports (eframe gates this on
-            // the root window). The main window stays opaque via its panels; the map
-            // overlay + the idle alert window use the transparency.
-            .with_transparent(true),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("EVE Spai")
+        .with_inner_size([1100.0, 720.0])
+        .with_min_inner_size([720.0, 460.0]);
+    // A transparent backbuffer (gated on the root window) is what lets the map overlay
+    // and idle alert window be see-through / click-through. But some drivers (notably
+    // radv) mis-present an ARGB backbuffer as *fully* transparent, making the whole
+    // app invisible — so it's opt-in via EVE_SPAI_TRANSPARENCY, opaque by default.
+    if transparency_enabled() {
+        viewport = viewport.with_transparent(true);
+    }
+    let mut native_options = eframe::NativeOptions { viewport, ..Default::default() };
 
     // Native Wayland forbids a client from setting its own window position or
     // suppressing focus, which the alert / map-overlay windows need. When running
