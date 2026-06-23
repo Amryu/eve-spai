@@ -2725,7 +2725,19 @@ impl SpaiApp {
             }
         }
 
-        // Nodes + labels.
+        // Labels: out to a few jumps (more for radial, which has room); the outermost
+        // labelled ring is height-staggered to avoid overlaps; further-out systems
+        // reveal their name only on hover.
+        let label_max = if self.map_layout == MapLayout::Radial { 4 } else { 3 };
+        let line_h = 13.0;
+        let stagger: std::collections::HashMap<i64, f32> = {
+            let mut ring: Vec<i64> = order.iter().copied().filter(|id| dist[id] == label_max).collect();
+            ring.sort_by(|a, b| frac[a].partial_cmp(&frac[b]).unwrap_or(std::cmp::Ordering::Equal));
+            ring.iter().enumerate().map(|(i, id)| (*id, (i % 3) as f32 * line_h)).collect()
+        };
+        let hovered = ui.input(|i| i.pointer.hover_pos()).and_then(|hp| nearest_system(hp, &pos, 12.0));
+
+        // Nodes.
         let node_r = (5.5 * zoom.clamp(0.6, 1.6)).max(3.5);
         let font = egui::FontId::proportional((12.0 * zoom).clamp(9.0, 15.0));
         for &id in &order {
@@ -2746,14 +2758,33 @@ impl SpaiApp {
                 visuals.window_stroke.color
             };
             painter.circle_stroke(p, r, egui::Stroke::new(if is_center { 2.0 } else { 1.0 }, outline));
-            if let Some(info) = info {
+            if let (Some(info), true) = (info, dist[&id] <= label_max) {
+                let extra = stagger.get(&id).copied().unwrap_or(0.0);
                 painter.text(
-                    p - egui::vec2(0.0, r + 2.0),
+                    p - egui::vec2(0.0, r + 2.0 + extra),
                     egui::Align2::CENTER_BOTTOM,
                     &info.name,
                     font.clone(),
                     visuals.text_color(),
                 );
+            }
+        }
+
+        // Hovered far-out system: reveal its name with a small backdrop.
+        if let Some(hid) = hovered {
+            if dist[&hid] > label_max {
+                if let Some(info) = graph.info_of(hid) {
+                    let p = pos[&hid];
+                    let anchor = p - egui::vec2(0.0, node_r + 3.0);
+                    let g = painter.layout_no_wrap(info.name.clone(), font.clone(), visuals.text_color());
+                    let r = egui::Rect::from_min_size(
+                        anchor - egui::vec2(g.size().x / 2.0, g.size().y),
+                        g.size(),
+                    )
+                    .expand(3.0);
+                    painter.rect_filled(r, 3.0, visuals.window_fill.gamma_multiply(0.92));
+                    painter.galley(r.min + egui::vec2(3.0, 3.0), g, visuals.text_color());
+                }
             }
         }
 
