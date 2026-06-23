@@ -2,7 +2,7 @@
 //! theme application, and persistence wiring (docs/DESIGN.md §6).
 
 /// Intel feed type filter.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum IntelTypeFilter {
     All,
     Hostile,
@@ -12,7 +12,7 @@ enum IntelTypeFilter {
 }
 
 /// Sovereignty territory colouring mode.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum SovMode {
     Off,
     Alliance,
@@ -20,7 +20,7 @@ enum SovMode {
 }
 
 /// Which ESI activity metric the heat overlay shows.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum ActivityMode {
     Off,
     ShipKills,
@@ -50,7 +50,7 @@ impl ActivityMode {
 }
 
 /// Toggleable map overlays (the top-right Layers menu).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 struct MapOverlays {
     sov: SovMode,
     bridges: bool,
@@ -71,6 +71,16 @@ impl Default for MapOverlays {
             jump_range: true,
         }
     }
+}
+
+/// Map + intel-filter options persisted between sessions (as a JSON blob in
+/// settings, so settings.rs needn't know these app types).
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+struct PersistedView {
+    overlays: MapOverlays,
+    map_spaced: bool,
+    intel_max_jumps: u32,
+    intel_type: IntelTypeFilter,
 }
 
 /// A click on an intel card panel.
@@ -244,6 +254,14 @@ impl SpaiApp {
 
         settings.theme.apply(&cc.egui_ctx);
 
+        // Restore persisted map/intel options (or defaults).
+        let pv: PersistedView = serde_json::from_str(&settings.view_options).unwrap_or(PersistedView {
+            overlays: MapOverlays::default(),
+            map_spaced: true,
+            intel_max_jumps: 0,
+            intel_type: IntelTypeFilter::All,
+        });
+
         // Resolve SDE state from what's already baked; otherwise download on first run.
         let initial = if store.as_ref().map(|s| s.sde_ready()).unwrap_or(false) {
             SdeStatus::Ready
@@ -291,8 +309,8 @@ impl SpaiApp {
             watcher_started: false,
             chat_dir: None,
             intel_query: String::new(),
-            intel_max_jumps: 0,
-            intel_type: IntelTypeFilter::All,
+            intel_max_jumps: pv.intel_max_jumps,
+            intel_type: pv.intel_type,
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             player,
             systems: None,
@@ -306,7 +324,7 @@ impl SpaiApp {
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            map_overlays: MapOverlays::default(),
+            map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
             jump_plan_from: None,
@@ -323,7 +341,7 @@ impl SpaiApp {
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
-            map_spaced: true,
+            map_spaced: pv.map_spaced,
             map_draw: Vec::new(),
             map_draw_spaced: false,
             map_draw_key: None,
@@ -1185,6 +1203,22 @@ impl SpaiApp {
     fn start_sde(&self, ctx: &egui::Context) {
         if let Some(store) = &self.store {
             sde::spawn_download(store.path().to_path_buf(), self.sde_status.clone(), ctx.clone());
+        }
+    }
+
+    /// Persist map overlay + intel-filter options when they change.
+    fn persist_view_options(&mut self) {
+        let pv = PersistedView {
+            overlays: self.map_overlays,
+            map_spaced: self.map_spaced,
+            intel_max_jumps: self.intel_max_jumps,
+            intel_type: self.intel_type,
+        };
+        if let Ok(s) = serde_json::to_string(&pv) {
+            if s != self.settings.view_options {
+                self.settings.view_options = s;
+                self.needs_save = true;
+            }
         }
     }
 
@@ -3415,6 +3449,7 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_rebuild_graph(&ctx);
+        self.persist_view_options();
         self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);

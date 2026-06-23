@@ -50,6 +50,10 @@ pub struct Settings {
     /// Coalitions (member alliance names). Unlisted alliances are independent.
     #[serde(default = "default_coalitions")]
     pub coalitions: Vec<Coalition>,
+    /// Persisted map overlay + intel-filter options (opaque JSON blob owned by the
+    /// UI layer). Empty = use defaults.
+    #[serde(default)]
+    pub view_options: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -132,6 +136,7 @@ impl Default for Settings {
             fit_site: String::new(),
             sov_upgrades: Vec::new(),
             coalitions: default_coalitions(),
+            view_options: String::new(),
         }
     }
 }
