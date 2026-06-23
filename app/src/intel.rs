@@ -48,6 +48,8 @@ pub struct IntelReport {
     pub bubble: bool,
     pub killmail: bool,
     pub cyno: bool,
+    /// A capital ship (cap / rorqual / dread / carrier / …) reported tackled.
+    pub cap_tackled: bool,
     pub wormhole: bool,
     pub ess: bool,
     /// Time left until the ESS is hacked, when called out (e.g. "5:30", "3m").
@@ -840,6 +842,7 @@ pub fn analyze(
         bubble: lower.contains("bubble"),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail) || lower.contains("kill:"),
         cyno: lower.contains("cyno"),
+        cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         wormhole: lower.contains("wormhole")
             || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
         ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
@@ -901,6 +904,40 @@ fn parse_time_left(text: &str, max_min: u32) -> Option<String> {
         }
     }
     None
+}
+
+/// True if a token names a capital ship class.
+fn is_cap_word(t: &str) -> bool {
+    matches!(
+        t,
+        "cap" | "caps" | "capital" | "capitals" | "rorq" | "rorqs" | "rorqual" | "rorquals"
+            | "dread" | "dreads" | "dreadnought" | "dreadnoughts" | "carrier" | "carriers"
+            | "fax" | "faxes" | "titan" | "titans" | "super" | "supers" | "supercap"
+            | "supercaps" | "supercarrier" | "supercarriers"
+    )
+}
+
+/// True if a token is a tackle verb (prefix-matched for typo/tense robustness:
+/// tackl*, takl*, scram*, scrambl*, point*).
+fn is_tackle_word(t: &str) -> bool {
+    t.starts_with("tackl")
+        || t.starts_with("takl")
+        || t.starts_with("tackel")
+        || t.starts_with("scram")
+        || t.starts_with("scrambl")
+        || t.starts_with("point")
+}
+
+/// A capital reported tackled: a cap-class word AND a tackle word both appear
+/// anywhere in the message (robust to word order, spacing, and tense/typos). Words
+/// that belong to a pilot name are ignored.
+fn detect_cap_tackled(
+    lower_tokens: &[String],
+    pilot_tokens: &std::collections::HashSet<String>,
+) -> bool {
+    let cap = lower_tokens.iter().any(|t| !pilot_tokens.contains(t) && is_cap_word(t));
+    let tackle = lower_tokens.iter().any(|t| !pilot_tokens.contains(t) && is_tackle_word(t));
+    cap && tackle
 }
 
 /// A bare 1–2 digit number — ambiguous between a system/gate code and a count.
@@ -1230,6 +1267,20 @@ mod tests {
         let s = systems();
         let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
+    }
+
+    #[test]
+    fn detects_cap_tackled_variations() {
+        let s = systems();
+        let cap = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x").cap_tackled;
+        assert!(cap("Rancer cap tackled"));
+        assert!(cap("rorqual  pointed in Jita")); // double space, words apart
+        assert!(cap("dread scrammed on gate"));
+        assert!(cap("carrier takled")); // typo
+        assert!(cap("super got scram"));
+        // Both a cap word and a tackle word are required.
+        assert!(!cap("cap stable"));
+        assert!(!cap("tackled a frigate"));
     }
 
     #[test]

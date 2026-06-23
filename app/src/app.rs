@@ -483,8 +483,10 @@ impl SpaiApp {
                 // the rule's relevant characters).
                 let mut chosen: Option<(&crate::settings::AlertRule, Option<u32>)> = None;
                 for ru in acfg.rules.iter().filter(|ru| ru.enabled) {
-                    let jumps = min_jumps_from(&systems, &char_systems(&ru.characters), target);
-                    if rule_matches(ru, r, sev, jumps) {
+                    let srcs = char_systems(&ru.characters);
+                    let measurable = !srcs.is_empty() && target.is_some();
+                    let jumps = min_jumps_from(&systems, &srcs, target);
+                    if rule_matches(ru, r, sev, jumps, measurable) {
                         chosen = Some((ru, jumps));
                         break;
                     }
@@ -3507,9 +3509,12 @@ impl SpaiApp {
                 // Condition tags.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("requires:");
-                    for tag in ["bubble", "camp", "cyno", "kill", "ess", "spike", "wormhole"] {
+                    for tag in
+                        ["bubble", "camp", "cyno", "captackled", "kill", "ess", "spike", "wormhole"]
+                    {
+                        let label = if tag == "captackled" { "cap tackled" } else { tag };
                         let mut on = ru.require.iter().any(|t| t == tag);
-                        if ui.selectable_label(on, tag).clicked() {
+                        if ui.selectable_label(on, label).clicked() {
                             on = !on;
                             ru.require.retain(|t| t != tag);
                             if on {
@@ -3631,6 +3636,7 @@ impl SpaiApp {
                 changed |= combo(ui, "Gate camp", &mut sv.gate_camp);
                 changed |= combo(ui, "Spike (local)", &mut sv.spike);
                 changed |= combo(ui, "Cyno", &mut sv.cyno);
+                changed |= combo(ui, "Capital tackled", &mut sv.cap_tackled);
                 changed |= combo(ui, "Kill", &mut sv.kill);
                 changed |= combo(ui, "No visual", &mut sv.no_visual);
                 changed |= combo(ui, "Wormhole", &mut sv.wormhole);
@@ -4685,12 +4691,15 @@ fn rule_matches(
     r: &crate::intel::IntelReport,
     sev: crate::settings::Severity,
     jumps: Option<u32>,
+    measurable: bool,
 ) -> bool {
     if sev < ru.min_severity {
         return false;
     }
     if let Some(mj) = ru.max_jumps {
-        if !jumps.is_some_and(|j| j <= mj) {
+        // Only filter on distance when it can actually be measured (a character
+        // location is known and the report has a system) — otherwise don't drop it.
+        if measurable && !jumps.is_some_and(|j| j <= mj) {
             return false;
         }
     }
@@ -4709,6 +4718,7 @@ fn rule_matches(
             "bubble" => r.bubble,
             "camp" => r.camp,
             "cyno" => r.cyno,
+            "captackled" | "cap" => r.cap_tackled,
             "kill" | "killmail" => r.killmail,
             "ess" => r.ess,
             "wormhole" | "wh" => r.wormhole,
@@ -4741,6 +4751,9 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
     }
     if r.cyno {
         parts.push("CYNO".into());
+    }
+    if r.cap_tackled {
+        parts.push("CAP TACKLED".into());
     }
     for sh in r.ships.iter().take(4) {
         parts.push(sh.name.clone());
@@ -4777,6 +4790,9 @@ fn severity_of(
     }
     if r.cyno {
         s = s.max(rules.cyno);
+    }
+    if r.cap_tackled {
+        s = s.max(rules.cap_tackled);
     }
     if r.killmail {
         s = s.max(rules.kill);
@@ -5032,6 +5048,9 @@ fn intel_row(
                 }
                 if r.cyno {
                     tag(ui, "CYNO", red);
+                }
+                if r.cap_tackled {
+                    tag(ui, "CAP TACKLED", red);
                 }
                 if r.wormhole {
                     tag(ui, "WH", crate::theme::standing::ALLIANCE);
