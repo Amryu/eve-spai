@@ -115,35 +115,37 @@ const PILOT_STOP: &[&str] = &[
     "afk", "warpin", "system", "and", "for",
 ];
 
-/// Candidate pilot names: runs of 2–3 Title-Case alphabetic words, minus obvious
-/// intel/English words and tokens already consumed as systems. ESI confirms which
-/// are real characters later.
-fn extract_pilots(tokens: &[&str], consumed: &[String]) -> Vec<String> {
-    let is_word = |t: &str| {
+/// Candidate pilot names: runs of 2–3 Title-Case alphabetic words in the *raw*
+/// text (punctuation and numbers break a run), minus obvious intel/English words.
+/// ESI confirms which are real characters later.
+fn extract_pilots(text: &str) -> Vec<String> {
+    let is_namepart = |t: &str| {
         t.len() >= 2
             && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             && t.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
     };
     let mut out: Vec<String> = Vec::new();
-    let mut run: Vec<&str> = Vec::new();
-    let flush = |run: &mut Vec<&str>, out: &mut Vec<String>| {
-        if (2..=3).contains(&run.len()) {
-            let bad = run.iter().any(|w| {
-                let lw = w.to_lowercase();
-                PILOT_STOP.contains(&lw.as_str()) || consumed.contains(&lw)
-            });
-            if !bad {
-                let name = run.join(" ");
-                if !out.contains(&name) {
-                    out.push(name);
-                }
+    let mut run: Vec<String> = Vec::new();
+    let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
+        if (2..=3).contains(&run.len())
+            && !run.iter().any(|w| PILOT_STOP.contains(&w.to_lowercase().as_str()))
+        {
+            let name = run.join(" ");
+            if !out.contains(&name) {
+                out.push(name);
             }
         }
         run.clear();
     };
-    for &t in tokens {
-        if is_word(t) {
-            run.push(t);
+    for raw in text.split_whitespace() {
+        let punct = |c: char| ",.;:!?\"()".contains(c);
+        let trailing = raw.ends_with(punct);
+        let core = raw.trim_matches(punct);
+        if is_namepart(core) {
+            run.push(core.to_owned());
+            if trailing {
+                flush(&mut run, &mut out);
+            }
         } else {
             flush(&mut run, &mut out);
         }
@@ -180,11 +182,23 @@ pub fn analyze(
         }
     }
 
+    // Candidate pilot names first: their tokens must not be parsed as systems
+    // (player names often contain system names, e.g. "Jita Trader").
+    let pilots = extract_pilots(text);
+    let pilot_tokens: std::collections::HashSet<String> = pilots
+        .iter()
+        .flat_map(|n| n.split_whitespace())
+        .map(|w| w.to_lowercase())
+        .collect();
+
     let mut detected: Vec<DetectedSystem> = Vec::new();
     // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
     // "on 78 gate" is a gate, not 78 hostiles).
     let mut consumed: Vec<String> = Vec::new();
     for tok in &tokens {
+        if pilot_tokens.contains(&tok.to_lowercase()) {
+            continue;
+        }
         if let Some(info) = resolve(systems, tok) {
             consumed.push(tok.to_lowercase());
             if !detected.iter().any(|d| d.id == info.id) {
@@ -223,7 +237,7 @@ pub fn analyze(
         channel: channel.to_owned(),
         reporter: reporter.to_owned(),
         text: text.to_owned(),
-        pilots: extract_pilots(&tokens, &consumed),
+        pilots,
         systems: detected,
         ships,
         count: parse_count(text, &consumed),

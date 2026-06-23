@@ -1,32 +1,79 @@
 //! Built-in pilot lookup (docs/DESIGN.md §9b).
 //!
 //! Resolves a character name to its id (ESI), pulls recent **losses** from
-//! zKillboard, fetches each killmail from ESI, and aggregates which ship hulls the
-//! pilot tends to lose — i.e. what they fly. Module-level fit analysis (weapons,
-//! active-vs-buffer tank, fitted EHP) needs the full module/dogma SDE and is a
-//! follow-up; this first cut works at the hull level from the ship data we bake.
+//! zKillboard, and fetches each killmail (ship + fitted items) from ESI. The UI
+//! aggregates which hulls the pilot flies and reconstructs their fits.
 
 use std::sync::{Arc, Mutex};
 
 const ESI: &str = "https://esi.evetech.net/latest";
 const ZKILL: &str = "https://zkillboard.com/api";
 /// Cap how many killmails we resolve per lookup (keep zKill/ESI load gentle).
-const MAX_LOSSES: usize = 30;
+const MAX_LOSSES: usize = 50;
 
-/// One hull the pilot has lost, with how many times (in the sampled window).
+/// A fitted/cargo item from a killmail.
 #[derive(Clone, Debug)]
-pub struct PilotShip {
+pub struct Item {
+    pub type_id: i64,
+    pub flag: i64,
+    pub qty: i64,
+}
+
+/// Slot group an item flag belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Slot {
+    High,
+    Mid,
+    Low,
+    Rig,
+    Subsystem,
+    Cargo,
+    Other,
+}
+
+pub fn slot_of(flag: i64) -> Slot {
+    match flag {
+        27..=34 => Slot::High,
+        19..=26 => Slot::Mid,
+        11..=18 => Slot::Low,
+        92..=94 => Slot::Rig,
+        125..=132 => Slot::Subsystem,
+        5 => Slot::Cargo,
+        87 => Slot::Cargo, // drone bay
+        _ => Slot::Other,
+    }
+}
+
+/// One lost ship (a killmail) with its fit.
+#[derive(Clone, Debug)]
+pub struct Loss {
+    pub killmail_id: i64,
+    pub time: i64,
     pub ship_type_id: i64,
-    pub count: u32,
+    pub items: Vec<Item>,
+}
+
+impl Loss {
+    /// Type ids fitted in high/mid/low/rig/subsystem slots, sorted — the fit's
+    /// identity for grouping (cargo ignored).
+    pub fn signature(&self) -> Vec<i64> {
+        let mut v: Vec<i64> = self
+            .items
+            .iter()
+            .filter(|i| !matches!(slot_of(i.flag), Slot::Cargo | Slot::Other))
+            .flat_map(|i| std::iter::repeat_n(i.type_id, i.qty.max(1) as usize))
+            .collect();
+        v.sort_unstable();
+        v
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct PilotReport {
     pub name: String,
     pub character_id: i64,
-    pub losses_analyzed: usize,
-    /// Hulls lost, most-flown first.
-    pub ships: Vec<PilotShip>,
+    /// Recent losses, newest first.
+    pub losses: Vec<Loss>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -68,17 +115,15 @@ fn run(name: &str) -> Result<PilotReport, String> {
 
     let (character_id, resolved) = resolve_name(&client, name)?;
 
-    // Recent losses from zKillboard (newest first).
-    let losses: serde_json::Value = client
+    let zk: serde_json::Value = client
         .get(format!("{ZKILL}/losses/characterID/{character_id}/"))
         .send()
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.json())
         .map_err(|e| format!("zKillboard: {e}"))?;
-    let entries = losses.as_array().cloned().unwrap_or_default();
+    let entries = zk.as_array().cloned().unwrap_or_default();
 
-    let mut counts: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
-    let mut analyzed = 0usize;
+    let mut losses = Vec::new();
     for km in entries.iter().take(MAX_LOSSES) {
         let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else {
             continue;
@@ -86,23 +131,15 @@ fn run(name: &str) -> Result<PilotReport, String> {
         let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str()) else {
             continue;
         };
-        if let Some(ship) = killmail_ship(&client, id, hash) {
-            *counts.entry(ship).or_default() += 1;
-            analyzed += 1;
+        if let Some(loss) = killmail(&client, id, hash) {
+            losses.push(loss);
         }
     }
-
-    let mut ships: Vec<PilotShip> = counts
-        .into_iter()
-        .map(|(ship_type_id, count)| PilotShip { ship_type_id, count })
-        .collect();
-    ships.sort_by(|a, b| b.count.cmp(&a.count).then(a.ship_type_id.cmp(&b.ship_type_id)));
 
     Ok(PilotReport {
         name: resolved,
         character_id,
-        losses_analyzed: analyzed,
-        ships,
+        losses,
     })
 }
 
@@ -126,8 +163,8 @@ fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, 
         .ok_or_else(|| format!("No character named \"{name}\""))
 }
 
-/// Fetch a killmail and return the victim's ship type id.
-fn killmail_ship(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<i64> {
+/// Fetch a killmail and reconstruct the lost ship + its fit.
+fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<Loss> {
     let km: serde_json::Value = client
         .get(format!("{ESI}/killmails/{id}/{hash}/"))
         .send()
@@ -136,5 +173,60 @@ fn killmail_ship(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Opt
         .ok()?
         .json()
         .ok()?;
-    km.get("victim")?.get("ship_type_id")?.as_i64()
+    let victim = km.get("victim")?;
+    let ship_type_id = victim.get("ship_type_id")?.as_i64()?;
+    let time = km
+        .get("killmail_time")
+        .and_then(|t| t.as_str())
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.timestamp())
+        .unwrap_or(0);
+
+    let mut items = Vec::new();
+    if let Some(arr) = victim.get("items").and_then(|i| i.as_array()) {
+        for it in arr {
+            let Some(type_id) = it.get("item_type_id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            let flag = it.get("flag").and_then(|v| v.as_i64()).unwrap_or(0);
+            let qty = it.get("quantity_destroyed").and_then(|v| v.as_i64()).unwrap_or(0)
+                + it.get("quantity_dropped").and_then(|v| v.as_i64()).unwrap_or(0);
+            items.push(Item { type_id, flag, qty: qty.max(1) });
+        }
+    }
+    Some(Loss { killmail_id: id, time, ship_type_id, items })
+}
+
+/// Bulk-resolve type ids to names via ESI `/universe/names` (≤1000 per call).
+pub fn resolve_type_names(ids: &[i64]) -> std::collections::HashMap<i64, String> {
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return out;
+    }
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .user_agent("eve-spai/0.1 (EVE intel tool)")
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+    else {
+        return out;
+    };
+    for chunk in ids.chunks(1000) {
+        let resp: Option<serde_json::Value> = client
+            .post(format!("{ESI}/universe/names/"))
+            .json(chunk)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.json())
+            .ok();
+        if let Some(arr) = resp.as_ref().and_then(|v| v.as_array()) {
+            for e in arr {
+                if let (Some(id), Some(name)) =
+                    (e.get("id").and_then(|i| i.as_i64()), e.get("name").and_then(|n| n.as_str()))
+                {
+                    out.insert(id, name.to_owned());
+                }
+            }
+        }
+    }
+    out
 }

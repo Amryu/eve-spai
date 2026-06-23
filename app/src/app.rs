@@ -19,6 +19,18 @@ enum IntelClick {
     Pilot(String),
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum PilotSort {
+    MostLost,
+    Recent,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum FitMode {
+    Recent,
+    MostUsed,
+}
+
 impl IntelTypeFilter {
     fn matches(self, r: &crate::intel::IntelReport) -> bool {
         match self {
@@ -110,8 +122,17 @@ pub struct SpaiApp {
     /// Pilot lookup (zKill) input + shared result.
     pilot_query: String,
     pilot_lookup: crate::lookup::SharedLookup,
+    pilot_window_open: bool,
+    pilot_sort: PilotSort,
+    /// Fit window: (ship type id, which fit).
+    fit_view: Option<(i64, FitMode)>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
+    /// Static ship-detail cache (avoids per-frame DB queries).
+    ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
+    /// Type-id → name cache for fit modules (filled on demand via ESI).
+    type_names: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>,
+    type_names_loading: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 impl SpaiApp {
@@ -212,6 +233,12 @@ impl SpaiApp {
             ship_window: None,
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
+            pilot_window_open: false,
+            pilot_sort: PilotSort::MostLost,
+            fit_view: None,
+            ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            type_names_loading: std::sync::Arc::new(std::sync::Mutex::new(false)),
             pilots: {
                 let cache: crate::pilot::SharedPilots = std::sync::Arc::new(std::sync::Mutex::new(
                     crate::pilot::PilotCache::default(),
@@ -458,14 +485,14 @@ impl SpaiApp {
 
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
-        // Computed details for any ships mentioned in the visible reports.
-        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = {
-            let ids: std::collections::HashSet<i64> =
-                matches.iter().flat_map(|r| r.ships.iter().map(|s| s.id)).collect();
-            ids.into_iter()
-                .filter_map(|id| self.store.as_ref().and_then(|s| s.ship_details(id)).map(|d| (id, d)))
-                .collect()
-        };
+        // Ship details (cached) for hull names/icons mentioned in the reports.
+        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = matches
+            .iter()
+            .flat_map(|r| r.ships.iter().map(|s| s.id))
+            .collect::<std::collections::HashSet<i64>>()
+            .into_iter()
+            .filter_map(|id| self.ship_details_cached(id).map(|d| (id, d)))
+            .collect();
         // Pilot names confirmed as real characters (by the background resolver).
         let resolved_pilots: std::collections::HashMap<String, i64> = {
             let cache = self.pilots.lock().unwrap();
@@ -482,8 +509,11 @@ impl SpaiApp {
         let ttl = self.settings.intel_ttl_secs;
         {
             let status = self.system_status.lock().unwrap();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for r in matches {
+            // Virtualise: only build the cards actually scrolled into view.
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 18.0;
+            egui::ScrollArea::vertical().show_rows(ui, row_h, matches.len(), |ui, range| {
+                for i in range {
+                    let r = matches[i];
                     // Outdated: superseded by a clear, or older than the configured TTL.
                     let stale = state.is_stale(r) || (now - r.received) > ttl;
                     let from_you =
@@ -494,7 +524,6 @@ impl SpaiApp {
                     ) {
                         action = Some(a);
                     }
-                    ui.add_space(2.0);
                 }
             });
         }
@@ -505,7 +534,7 @@ impl SpaiApp {
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
                 crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ui.ctx().clone());
-                self.view = View::Characters;
+                self.pilot_window_open = true;
             }
             None => {}
         }
@@ -691,11 +720,6 @@ impl SpaiApp {
         ui.separator();
         ui.add_space(6.0);
 
-        self.pilot_lookup_section(ui);
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(6.0);
-
         if self.characters.is_empty() {
             ui.label(
                 egui::RichText::new(
@@ -738,80 +762,238 @@ impl SpaiApp {
 
     /// Pilot lookup: resolve a name, pull recent zKill losses, and show the hulls
     /// the pilot flies (click a hull for its ship window).
-    fn pilot_lookup_section(&mut self, ui: &mut egui::Ui) {
-        use crate::lookup::LookupState;
-        ui.label(egui::RichText::new("Pilot lookup (zKill)").strong());
-        ui.horizontal(|ui| {
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.pilot_query)
-                    .hint_text("Character name")
-                    .desired_width(240.0),
-            );
-            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Look up").clicked() || enter {
-                crate::lookup::spawn_lookup(
-                    self.pilot_query.clone(),
-                    self.pilot_lookup.clone(),
-                    ui.ctx().clone(),
-                );
-            }
-        });
+    /// Cached static ship details (avoids a DB query per ship every frame).
+    fn ship_details_cached(&self, id: i64) -> Option<crate::store::ShipDetails> {
+        if let Some(d) = self.ship_cache.borrow().get(&id) {
+            return d.clone();
+        }
+        let d = self.store.as_ref().and_then(|s| s.ship_details(id));
+        self.ship_cache.borrow_mut().insert(id, d.clone());
+        d
+    }
 
-        let state = self.pilot_lookup.lock().unwrap().clone();
-        match state {
-            LookupState::Idle => {}
-            LookupState::Loading(n) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Looking up {n}…"));
-                });
-            }
-            LookupState::Failed(e) => {
-                ui.colored_label(crate::theme::standing::WARNING, e);
-            }
-            LookupState::Done(report) => {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} — {} recent losses",
-                            report.name, report.losses_analyzed
-                        ))
-                        .strong(),
+    /// Pilot lookup window (zKill): hulls flown + fits, in its own OS window.
+    fn pilot_window(&mut self, ctx: &egui::Context) {
+        use crate::lookup::LookupState;
+        if !self.pilot_window_open {
+            return;
+        }
+        let keep = Self::dialog_viewport(ctx, "pilot_window", "EVE Spai — Pilot", [420.0, 560.0], |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.pilot_query)
+                        .hint_text("Character name")
+                        .desired_width(200.0),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("Look up").clicked() || enter {
+                    crate::lookup::spawn_lookup(
+                        self.pilot_query.clone(),
+                        self.pilot_lookup.clone(),
+                        ui.ctx().clone(),
                     );
-                    if ui.button("Open on zKillboard").clicked() {
-                        let _ = open::that(format!(
-                            "https://zkillboard.com/character/{}/",
-                            report.character_id
-                        ));
-                    }
-                });
-                if report.ships.is_empty() {
-                    ui.label(egui::RichText::new("No recent losses to analyse.").weak());
-                } else {
-                    ui.label(egui::RichText::new("Hulls flown (most-lost first):").weak());
-                    egui::ScrollArea::vertical().max_height(240.0).id_salt("pilot_ships").show(ui, |ui| {
-                        for ps in &report.ships {
-                            let details = self.store.as_ref().and_then(|s| s.ship_details(ps.ship_type_id));
-                            let name = details
-                                .as_ref()
-                                .map(|d| d.name.clone())
-                                .unwrap_or_else(|| "Other".to_owned());
-                            ui.horizontal(|ui| {
-                                let url = format!(
-                                    "https://images.evetech.net/types/{}/icon?size=32",
-                                    ps.ship_type_id
-                                );
-                                ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0)));
-                                let label = format!("{name}  ×{}", ps.count);
-                                if ui.add(egui::Button::new(label).frame(false)).clicked() {
-                                    self.ship_window = Some(ps.ship_type_id);
-                                }
-                            });
-                        }
+                }
+            });
+            ui.separator();
+
+            let state = self.pilot_lookup.lock().unwrap().clone();
+            match state {
+                LookupState::Idle => {
+                    ui.label(egui::RichText::new("Enter a pilot name.").weak());
+                }
+                LookupState::Loading(n) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Looking up {n}…"));
                     });
                 }
+                LookupState::Failed(e) => {
+                    ui.colored_label(crate::theme::standing::WARNING, e);
+                }
+                LookupState::Done(report) => self.pilot_report_ui(ui, &report),
             }
+        });
+        if !keep {
+            self.pilot_window_open = false;
+        }
+    }
+
+    fn pilot_report_ui(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(&report.name).strong());
+            ui.label(egui::RichText::new(format!("· {} losses", report.losses.len())).weak());
+            if ui.button("zKillboard").clicked() {
+                let _ = open::that(format!("https://zkillboard.com/character/{}/", report.character_id));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Sort:");
+            ui.selectable_value(&mut self.pilot_sort, PilotSort::MostLost, "Most lost");
+            ui.selectable_value(&mut self.pilot_sort, PilotSort::Recent, "Recent");
+        });
+
+        // Aggregate hulls (excluding pods, corvettes and shuttles).
+        let mut agg: std::collections::HashMap<i64, (u32, i64)> = std::collections::HashMap::new();
+        for l in &report.losses {
+            let skip = self
+                .ship_details_cached(l.ship_type_id)
+                .map(|d| matches!(d.group.as_str(), "Capsule" | "Corvette" | "Shuttle"))
+                .unwrap_or(false);
+            if skip {
+                continue;
+            }
+            let e = agg.entry(l.ship_type_id).or_insert((0, 0));
+            e.0 += 1;
+            e.1 = e.1.max(l.time);
+        }
+        let mut ships: Vec<(i64, u32, i64)> = agg.into_iter().map(|(id, (c, t))| (id, c, t)).collect();
+        match self.pilot_sort {
+            PilotSort::MostLost => ships.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2))),
+            PilotSort::Recent => ships.sort_by(|a, b| b.2.cmp(&a.2)),
+        }
+
+        ui.add_space(4.0);
+        if ships.is_empty() {
+            ui.label(egui::RichText::new("No relevant losses.").weak());
+            return;
+        }
+        egui::ScrollArea::vertical().id_salt("pilot_ships").show(ui, |ui| {
+            for (ship_id, count, _) in ships {
+                let name = self
+                    .ship_details_cached(ship_id)
+                    .map(|d| d.name)
+                    .unwrap_or_else(|| "Other".to_owned());
+                ui.horizontal(|ui| {
+                    let url = format!("https://images.evetech.net/types/{ship_id}/icon?size=32");
+                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0)));
+                    if ui
+                        .add(egui::Button::new(format!("{name}  ×{count}")).frame(false))
+                        .on_hover_text("View fits")
+                        .clicked()
+                    {
+                        self.fit_view = Some((ship_id, FitMode::Recent));
+                    }
+                });
+            }
+        });
+    }
+
+    /// Ensure module type names are resolved (background ESI bulk lookup).
+    fn ensure_type_names(&self, ids: &[i64], ctx: &egui::Context) {
+        let missing: Vec<i64> = {
+            let names = self.type_names.lock().unwrap();
+            ids.iter().copied().filter(|id| !names.contains_key(id)).collect()
+        };
+        if missing.is_empty() {
+            return;
+        }
+        {
+            let mut loading = self.type_names_loading.lock().unwrap();
+            if *loading {
+                return;
+            }
+            *loading = true;
+        }
+        let cache = self.type_names.clone();
+        let loading = self.type_names_loading.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let resolved = crate::lookup::resolve_type_names(&missing);
+            cache.lock().unwrap().extend(resolved);
+            *loading.lock().unwrap() = false;
+            ctx.request_repaint();
+        });
+    }
+
+    /// Fit window: the pilot's chosen fit for a hull, with EFT copy + open-in-site.
+    fn fit_window(&mut self, ctx: &egui::Context) {
+        let Some((ship_id, mode)) = self.fit_view else {
+            return;
+        };
+        let loss = {
+            let state = self.pilot_lookup.lock().unwrap();
+            match &*state {
+                crate::lookup::LookupState::Done(report) => pick_loss(report, ship_id, mode),
+                _ => None,
+            }
+        };
+        if let Some(l) = &loss {
+            let mut ids: Vec<i64> = l.items.iter().map(|i| i.type_id).collect();
+            ids.push(ship_id);
+            self.ensure_type_names(&ids, ctx);
+        }
+        let ship_name = self.ship_details_cached(ship_id).map(|d| d.name).unwrap_or_default();
+        let names = self.type_names.lock().unwrap().clone();
+        let mut new_mode = mode;
+
+        let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai — Fit", [380.0, 560.0], |ui| {
+            ui.horizontal(|ui| {
+                let url = format!("https://images.evetech.net/types/{ship_id}/icon?size=32");
+                ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
+                ui.heading(&ship_name);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fit:");
+                ui.selectable_value(&mut new_mode, FitMode::Recent, "Most recent");
+                ui.selectable_value(&mut new_mode, FitMode::MostUsed, "Most used");
+            });
+            ui.separator();
+            let Some(loss) = &loss else {
+                ui.label(egui::RichText::new("No fit found.").weak());
+                return;
+            };
+
+            egui::ScrollArea::vertical().max_height(330.0).show(ui, |ui| {
+                use crate::lookup::Slot;
+                let section = |ui: &mut egui::Ui, title: &str, slot: Slot| {
+                    let items: Vec<&crate::lookup::Item> =
+                        loss.items.iter().filter(|i| crate::lookup::slot_of(i.flag) == slot).collect();
+                    if items.is_empty() {
+                        return;
+                    }
+                    ui.label(egui::RichText::new(title).strong().color(ui.visuals().hyperlink_color));
+                    for it in items {
+                        let n = names.get(&it.type_id).cloned().unwrap_or_else(|| "…".to_owned());
+                        if it.qty > 1 {
+                            ui.label(format!("{n}  ×{}", it.qty));
+                        } else {
+                            ui.label(n);
+                        }
+                    }
+                    ui.add_space(4.0);
+                };
+                section(ui, "High", Slot::High);
+                section(ui, "Mid", Slot::Mid);
+                section(ui, "Low", Slot::Low);
+                section(ui, "Rigs", Slot::Rig);
+                section(ui, "Subsystems", Slot::Subsystem);
+                section(ui, "Cargo & drones", Slot::Cargo);
+            });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Copy EFT").clicked() {
+                    ui.ctx().copy_text(eft_string(&ship_name, loss, &names));
+                }
+                let site = self.settings.fit_site.clone();
+                if site.is_empty() {
+                    ui.label("Open in:");
+                    for (id, label) in [("zkillboard", "zKillboard"), ("osmium", "o.smium")] {
+                        if ui.button(label).clicked() {
+                            self.settings.fit_site = id.to_owned();
+                            self.needs_save = true;
+                        }
+                    }
+                } else if ui.button(format!("Open in {}", site_label(&site))).clicked() {
+                    let _ = open::that(fit_url(&site, ship_id, loss));
+                }
+            });
+        });
+
+        if new_mode != mode {
+            self.fit_view = Some((ship_id, new_mode));
+        } else if !keep {
+            self.fit_view = None;
         }
     }
 
@@ -1244,14 +1426,14 @@ impl SpaiApp {
     fn map_search_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         let mut chosen: Option<i64> = None;
-        // Anchor to the map rect's bottom-centre (not the whole window).
+        // Anchor to the map rect's bottom-left corner.
         let screen = ui.ctx().content_rect();
         let offset = egui::vec2(
-            rect.center().x - screen.center().x,
+            rect.left() - screen.left() + 8.0,
             rect.bottom() - screen.bottom() - 10.0,
         );
         egui::Area::new(egui::Id::new("map_search"))
-            .anchor(egui::Align2::CENTER_BOTTOM, offset)
+            .anchor(egui::Align2::LEFT_BOTTOM, offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1871,6 +2053,8 @@ impl eframe::App for SpaiApp {
         self.intel_channels_window(&ctx);
         self.system_window(&ctx);
         self.ship_window(&ctx);
+        self.pilot_window(&ctx);
+        self.fit_window(&ctx);
         if self.map_popped {
             self.show_map_viewport(&ctx);
         }
@@ -2239,6 +2423,109 @@ fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
 }
 
 /// Resists / tank / hardpoints / drones / speed for a ship.
+/// Pick the loss whose fit to show: latest, or the most common fit signature.
+fn pick_loss(
+    report: &crate::lookup::PilotReport,
+    ship_id: i64,
+    mode: FitMode,
+) -> Option<crate::lookup::Loss> {
+    let losses: Vec<&crate::lookup::Loss> =
+        report.losses.iter().filter(|l| l.ship_type_id == ship_id).collect();
+    match mode {
+        FitMode::Recent => losses.iter().max_by_key(|l| l.time).map(|l| (*l).clone()),
+        FitMode::MostUsed => {
+            let mut groups: std::collections::HashMap<Vec<i64>, (u32, &crate::lookup::Loss)> =
+                std::collections::HashMap::new();
+            for l in &losses {
+                let e = groups.entry(l.signature()).or_insert((0, l));
+                e.0 += 1;
+                if l.time > e.1.time {
+                    e.1 = l;
+                }
+            }
+            groups.into_values().max_by_key(|(c, _)| *c).map(|(_, l)| l.clone())
+        }
+    }
+}
+
+/// EFT (paste-able) fit string. Slot order: low, mid, high, rig, subsystem, cargo.
+fn eft_string(
+    ship: &str,
+    loss: &crate::lookup::Loss,
+    names: &std::collections::HashMap<i64, String>,
+) -> String {
+    use crate::lookup::Slot;
+    let name = |id: i64| names.get(&id).cloned().unwrap_or_else(|| format!("Type {id}"));
+    let mut sections: Vec<Vec<String>> = vec![Vec::new(); 6];
+    let idx = |s: Slot| match s {
+        Slot::Low => 0,
+        Slot::Mid => 1,
+        Slot::High => 2,
+        Slot::Rig => 3,
+        Slot::Subsystem => 4,
+        _ => 5,
+    };
+    for it in &loss.items {
+        let s = crate::lookup::slot_of(it.flag);
+        let bucket = &mut sections[idx(s)];
+        if matches!(s, Slot::Cargo | Slot::Other) {
+            bucket.push(if it.qty > 1 {
+                format!("{} x{}", name(it.type_id), it.qty)
+            } else {
+                name(it.type_id)
+            });
+        } else {
+            for _ in 0..it.qty.max(1) {
+                bucket.push(name(it.type_id));
+            }
+        }
+    }
+    let mut out = format!("[{ship}, EVE Spai]\n");
+    for (i, sec) in sections.iter().enumerate() {
+        for line in sec {
+            out.push_str(line);
+            out.push('\n');
+        }
+        if i < 5 {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// EVE "DNA" fitting string (fitted slots only) for o.smium and similar.
+fn dna_string(ship_id: i64, loss: &crate::lookup::Loss) -> String {
+    use crate::lookup::Slot;
+    let mut counts: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+    for it in &loss.items {
+        if matches!(crate::lookup::slot_of(it.flag), Slot::Cargo | Slot::Other) {
+            continue;
+        }
+        *counts.entry(it.type_id).or_insert(0) += it.qty.max(1);
+    }
+    let mut s = format!("{ship_id}:");
+    for (t, q) in counts {
+        s.push_str(&format!("{t};{q}:"));
+    }
+    s.push(':');
+    s
+}
+
+fn site_label(site: &str) -> &str {
+    match site {
+        "zkillboard" => "zKillboard",
+        "osmium" => "o.smium",
+        other => other,
+    }
+}
+
+fn fit_url(site: &str, ship_id: i64, loss: &crate::lookup::Loss) -> String {
+    match site {
+        "osmium" => format!("https://o.smium.org/loadout/dna/{}", dna_string(ship_id, loss)),
+        _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
+    }
+}
+
 /// Effective HP of a layer against an even (omni) damage profile.
 fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
     if hp <= 0.0 {

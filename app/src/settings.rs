@@ -41,6 +41,9 @@ pub struct Settings {
     /// Seconds until an intel report is considered outdated (and pruned).
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
+    /// Preferred online fitting site for "open fit" ("" = ask on first use).
+    #[serde(default)]
+    pub fit_site: String,
 }
 
 fn default_intel_ttl() -> i64 {
@@ -85,6 +88,7 @@ impl Default for Settings {
             alert_within_jumps: 5,
             alert_combat: true,
             intel_ttl_secs: 300,
+            fit_site: String::new(),
         }
     }
 }
