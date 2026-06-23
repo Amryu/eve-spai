@@ -3697,6 +3697,9 @@ fn intel_row(
         .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // The raw message lives on the non-interactive left columns so it never
+            // competes with (or hides) the ship/system/pilot panel tooltips.
+            let msg = format!("{}\n— {} · {}", r.text, r.reporter, r.channel);
             let mut render = |ui: &mut egui::Ui| {
                 let h = ui.text_style_height(&egui::TextStyle::Body);
                 let col = |ui: &mut egui::Ui, w: f32, add: &dyn Fn(&mut egui::Ui)| {
@@ -3708,10 +3711,10 @@ fn intel_row(
                 };
                 // Fixed columns so time/jumps line up across rows.
                 col(ui, 16.0, &|ui| {
-                    ui.label(egui::RichText::new(type_icon).color(tint));
+                    ui.label(egui::RichText::new(type_icon).color(tint)).on_hover_text(&msg);
                 });
                 col(ui, 58.0, &|ui| {
-                    ui.label(egui::RichText::new(fmt_age(age)).monospace().weak());
+                    ui.label(egui::RichText::new(fmt_age(age)).monospace().weak()).on_hover_text(&msg);
                 });
                 col(ui, 40.0, &|ui| {
                     if let Some(j) = from_you {
@@ -3837,8 +3840,7 @@ fn intel_row(
         })
         .response;
 
-    // Raw message (and who reported it) available on hover, never shown inline.
-    resp.on_hover_text(format!("{}\n— {} · {}", r.text, r.reporter, r.channel));
+    let _ = resp;
     clicked
 }
 
@@ -4068,7 +4070,8 @@ fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static st
         out.push((i::SHIELD, "Shield"));
     }
     if has("armor") {
-        out.push((i::SHIELD_CHEVRON, "Armor"));
+        // A helmet — clearly distinct from the shield glyph (like the in-game icon).
+        out.push((i::HARD_HAT, "Armor"));
     }
     if has("hybrid") || has("railgun") || has("blaster") {
         out.push((i::CROSSHAIR_SIMPLE, "Hybrid turrets"));
