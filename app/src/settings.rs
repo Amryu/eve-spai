@@ -61,6 +61,9 @@ pub struct Settings {
     /// Never auto-pruned when an alliance stops holding sov.
     #[serde(default)]
     pub alliances: Vec<AllianceConfig>,
+    /// Intel severity rules (condition → level → card colour).
+    #[serde(default = "default_severity")]
+    pub severity: SeverityRules,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,6 +74,60 @@ pub struct Coalition {
     /// Map colour override; None = auto-generated from the name.
     #[serde(default)]
     pub color: Option<(u8, u8, u8)>,
+}
+
+/// Intel severity levels (drive the card colour, lowest → highest).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Severity {
+    Info,
+    Warning,
+    Danger,
+    Critical,
+}
+
+/// Configurable mapping of intel conditions → severity level.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SeverityRules {
+    /// A "gang" this size or larger is treated as `big_gang`.
+    pub big_gang_threshold: u32,
+    pub small_gang: Severity,
+    pub big_gang: Severity,
+    pub bubble: Severity,
+    pub gate_camp: Severity,
+    pub spike: Severity,
+    pub cyno: Severity,
+    pub kill: Severity,
+    pub no_visual: Severity,
+    pub wormhole: Severity,
+    pub ess: Severity,
+    /// High-threat hull names (matched against reported ships).
+    pub threat_ships: Vec<String>,
+    pub threat_ship: Severity,
+}
+
+impl Default for SeverityRules {
+    fn default() -> Self {
+        use Severity::*;
+        Self {
+            big_gang_threshold: 5,
+            small_gang: Warning,
+            big_gang: Danger,
+            bubble: Danger,
+            gate_camp: Danger,
+            spike: Danger,
+            cyno: Critical,
+            kill: Danger,
+            no_visual: Warning,
+            wormhole: Warning,
+            ess: Warning,
+            threat_ships: ["Kikimora", "Cenotaph"].iter().map(|s| s.to_string()).collect(),
+            threat_ship: Danger,
+        }
+    }
+}
+
+fn default_severity() -> SeverityRules {
+    SeverityRules::default()
 }
 
 /// A sov-holding alliance the app has seen (auto-discovered from ESI or added by
@@ -159,6 +216,7 @@ impl Default for Settings {
             coalitions: default_coalitions(),
             view_options: String::new(),
             alliances: Vec::new(),
+            severity: SeverityRules::default(),
         }
     }
 }

@@ -134,6 +134,7 @@ pub struct SpaiApp {
     sov_upgrades_open: bool,
     sov_paste: String,
     coalitions_open: bool,
+    severity_open: bool,
     /// Live edit buffers for the coalition editor: (name, alliances-one-per-line).
     coal_edit: Vec<(String, String)>,
     /// Text input for manually adding an alliance to the sov list.
@@ -301,6 +302,7 @@ impl SpaiApp {
             sov_upgrades_open: false,
             sov_paste: String::new(),
             coalitions_open: false,
+            severity_open: false,
             coal_edit: Vec::new(),
             alliance_add: String::new(),
             active_character: "No character".to_owned(),
@@ -599,6 +601,10 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             ui.separator();
+            if ui.button("Severity…").on_hover_text("Configure intel severity colours").clicked() {
+                self.severity_open = true;
+            }
+            ui.separator();
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add_sized(
                 [ui.available_width(), ui.spacing().interact_size.y],
@@ -612,6 +618,7 @@ impl SpaiApp {
         let query = self.intel_query.trim().to_lowercase();
         let type_filter = self.intel_type;
         let max_jumps = self.intel_max_jumps;
+        let sev_rules = self.settings.severity.clone();
         let state = self.intel_state.lock().unwrap();
 
         let mut matches: Vec<&crate::intel::IntelReport> = state
@@ -677,9 +684,10 @@ impl SpaiApp {
                     let stale = state.is_stale(r) || (now - r.received) > ttl;
                     let from_you =
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+                    let sev = severity_of(r, &sev_rules);
                     if let Some(a) = intel_row(
                         ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                        &ship_roles, &resolved_pilots, &last_ship, true,
+                        &ship_roles, &resolved_pilots, &last_ship, sev, true,
                     ) {
                         action = Some(a);
                     }
@@ -2643,9 +2651,10 @@ impl SpaiApp {
                     for (i, r) in sys_reports.iter().enumerate() {
                         let from_you =
                             jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id));
+                        let sev = severity_of(r, &self.settings.severity);
                         if let Some(c) = intel_row(
                             ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                            &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, false,
+                            &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, sev, false,
                         ) {
                             intel_click = Some(c);
                         }
@@ -3028,6 +3037,88 @@ impl SpaiApp {
     /// line's first two SDE systems become a bridge. Drawn green on the map.
     /// Coalition editor: name + member alliance names (one per line). Unlisted
     /// alliances are independent.
+    /// Intel severity configuration dialog.
+    fn severity_window(&mut self, ctx: &egui::Context) {
+        if !self.severity_open {
+            return;
+        }
+        let mut changed = false;
+        let mut threat_text = self.settings.severity.threat_ships.join("\n");
+        let keep = Self::dialog_viewport(
+            ctx,
+            "severity_window",
+            "EVE Spai — Intel severity",
+            [420.0, 560.0],
+            |ui| {
+                ui.label(
+                    egui::RichText::new("Pick the severity (card colour) for each condition.")
+                        .weak(),
+                );
+                ui.add_space(4.0);
+                let sv = &mut self.settings.severity;
+                let combo = |ui: &mut egui::Ui, label: &str, val: &mut crate::settings::Severity| -> bool {
+                    use crate::settings::Severity::*;
+                    let mut ch = false;
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt(label)
+                                .selected_text(format!("{val:?}"))
+                                .show_ui(ui, |ui| {
+                                    for lvl in [Info, Warning, Danger, Critical] {
+                                        if ui.selectable_value(val, lvl, format!("{lvl:?}")).changed() {
+                                            ch = true;
+                                        }
+                                    }
+                                });
+                        });
+                    });
+                    ch
+                };
+                ui.horizontal(|ui| {
+                    ui.label("Big-gang threshold (≥)");
+                    changed |=
+                        ui.add(egui::DragValue::new(&mut sv.big_gang_threshold).range(2..=100)).changed();
+                });
+                changed |= combo(ui, "Small gang (< threshold)", &mut sv.small_gang);
+                changed |= combo(ui, "Big gang (≥ threshold)", &mut sv.big_gang);
+                changed |= combo(ui, "Bubble", &mut sv.bubble);
+                changed |= combo(ui, "Gate camp", &mut sv.gate_camp);
+                changed |= combo(ui, "Spike (local)", &mut sv.spike);
+                changed |= combo(ui, "Cyno", &mut sv.cyno);
+                changed |= combo(ui, "Kill", &mut sv.kill);
+                changed |= combo(ui, "No visual", &mut sv.no_visual);
+                changed |= combo(ui, "Wormhole", &mut sv.wormhole);
+                changed |= combo(ui, "ESS", &mut sv.ess);
+                ui.separator();
+                changed |= combo(ui, "High-threat ships", &mut sv.threat_ship);
+                ui.label(egui::RichText::new("High-threat hulls (one per line)").weak());
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut threat_text)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed()
+                {
+                    sv.threat_ships =
+                        threat_text.lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect();
+                    changed = true;
+                }
+                if ui.button("Reset to defaults").clicked() {
+                    *sv = crate::settings::SeverityRules::default();
+                    changed = true;
+                }
+            },
+        );
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.severity_open = false;
+        }
+    }
+
     fn coalitions_window(&mut self, ctx: &egui::Context) {
         if !self.coalitions_open {
             return;
@@ -3660,6 +3751,7 @@ impl eframe::App for SpaiApp {
         self.jump_bridges_window(&ctx);
         self.sov_upgrades_window(&ctx);
         self.coalitions_window(&ctx);
+        self.severity_window(&ctx);
         self.system_window(&ctx);
         self.constellation_window(&ctx);
         self.region_window(&ctx);
@@ -3954,6 +4046,59 @@ fn battle_row(
     });
 }
 
+/// Compute an intel report's severity from the configurable rules (highest match).
+fn severity_of(
+    r: &crate::intel::IntelReport,
+    rules: &crate::settings::SeverityRules,
+) -> crate::settings::Severity {
+    use crate::settings::Severity::*;
+    let mut s = Info;
+    if let Some(n) = r.count {
+        s = s.max(if n >= rules.big_gang_threshold { rules.big_gang } else { rules.small_gang });
+    } else if !r.systems.is_empty() && !r.clear && !r.killmail {
+        s = s.max(rules.small_gang); // a sighting with no count
+    }
+    if r.bubble {
+        s = s.max(rules.bubble);
+    }
+    if r.camp {
+        s = s.max(rules.gate_camp);
+    }
+    if r.spike {
+        s = s.max(rules.spike);
+    }
+    if r.cyno {
+        s = s.max(rules.cyno);
+    }
+    if r.killmail {
+        s = s.max(rules.kill);
+    }
+    if r.no_visual {
+        s = s.max(rules.no_visual);
+    }
+    if r.wormhole {
+        s = s.max(rules.wormhole);
+    }
+    if r.ess {
+        s = s.max(rules.ess);
+    }
+    if r.ships.iter().any(|sh| rules.threat_ships.iter().any(|t| t.eq_ignore_ascii_case(&sh.name))) {
+        s = s.max(rules.threat_ship);
+    }
+    s
+}
+
+/// Card tint colour for a severity level.
+fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
+    use crate::settings::Severity::*;
+    match s {
+        Info => egui::Color32::from_rgb(0x6E, 0x7A, 0x86),
+        Warning => crate::theme::standing::WARNING,
+        Danger => egui::Color32::from_rgb(0xE6, 0x6A, 0x2A),
+        Critical => crate::theme::standing::HOSTILE,
+    }
+}
+
 /// Latest reported ship per pilot (lower-cased name → (ship name, time)), so a
 /// later sighting without a ship can show "Last seen in: <ship>".
 fn build_last_ship(
@@ -4001,6 +4146,7 @@ fn intel_row(
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
     last_ship: &std::collections::HashMap<String, (String, i64)>,
+    sev: crate::settings::Severity,
     show_reporter: bool,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
@@ -4012,19 +4158,21 @@ fn intel_row(
     let jumps_color = crate::theme::standing::CORP;
 
     // Report type drives the background tint and a leading icon.
-    let (tint, type_icon) = if r.clear {
-        (green, icon::CHECK_CIRCLE)
+    // Leading icon by report kind; the card tint is the configurable severity.
+    let type_icon = if r.clear {
+        icon::CHECK_CIRCLE
     } else if r.killmail {
-        (egui::Color32::from_rgb(0x8A, 0x2A, 0x2A), icon::SKULL)
+        icon::SKULL
     } else if r.spike || r.camp || r.bubble || r.cyno {
-        (red, icon::WARNING_OCTAGON)
+        icon::WARNING_OCTAGON
     } else if r.no_visual {
-        (warn, icon::EYE_SLASH)
+        icon::EYE_SLASH
     } else if !r.systems.is_empty() || r.count.is_some() {
-        (red, icon::WARNING)
+        icon::WARNING
     } else {
-        (ui.visuals().weak_text_color(), icon::INFO)
+        icon::INFO
     };
+    let tint = if r.clear { green } else { severity_color(sev) };
 
     let mut clicked: Option<IntelClick> = None;
     let resp = egui::Frame::group(ui.style())
