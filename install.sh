@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # EVE Spai installer for Linux and macOS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/eve-spai/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Amryu/eve-spai/main/install.sh | sh
 #
 # For a PRIVATE repo, export a GitHub token with `repo` scope first:
 #   export GITHUB_TOKEN=ghp_xxx
@@ -9,7 +9,7 @@
 # Override the install dir with PREFIX (default: ~/.local/bin).
 set -eu
 
-REPO="OWNER/eve-spai"          # <-- set to your owner/repo
+REPO="Amryu/eve-spai"          # <-- set to your owner/repo
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 API="https://api.github.com/repos/$REPO"
 

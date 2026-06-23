@@ -1,6 +1,6 @@
 # EVE Spai installer for Windows.
 #
-#   irm https://raw.githubusercontent.com/OWNER/eve-spai/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Amryu/eve-spai/main/install.ps1 | iex
 #
 # For a PRIVATE repo, set a GitHub token with `repo` scope first:
 #   $env:GITHUB_TOKEN = "ghp_xxx"
@@ -8,7 +8,7 @@
 # Override the install dir with $env:EVE_SPAI_DIR.
 $ErrorActionPreference = "Stop"
 
-$Repo   = "OWNER/eve-spai"   # <-- set to your owner/repo
+$Repo   = "Amryu/eve-spai"   # <-- set to your owner/repo
 $Dir    = if ($env:EVE_SPAI_DIR) { $env:EVE_SPAI_DIR } else { "$env:LOCALAPPDATA\Programs\eve-spai" }
 $Api    = "https://api.github.com/repos/$Repo"
 $Asset  = "eve-spai-windows-x86_64.exe"

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// GitHub `owner/repo` to check. Set this to your repository.
-const REPO: &str = "OWNER/eve-spai";
+const REPO: &str = "Amryu/eve-spai";
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
