@@ -568,7 +568,11 @@ impl SpaiApp {
                 self.alert_feed.drain(0..n - 100);
             }
             if f.win {
-                self.alert_window_secs = self.settings.alerts.window_timeout.max(3.0);
+                self.alert_window_secs = if self.settings.alerts.window_timeout <= 0.0 {
+                    f32::INFINITY // never auto-hide
+                } else {
+                    self.settings.alerts.window_timeout.max(3.0)
+                };
             }
             if f.push && acfg.push_enabled {
                 crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
@@ -1529,7 +1533,12 @@ impl SpaiApp {
                                 .strong(),
                             );
                             ui.label(
-                                egui::RichText::new(format!("{:.0}s", self.alert_window_secs)).weak(),
+                                egui::RichText::new(if self.alert_window_secs.is_finite() {
+                                    format!("{:.0}s", self.alert_window_secs)
+                                } else {
+                                    "\u{221E}".to_owned() // ∞
+                                })
+                                .weak(),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(egui_phosphor::regular::X).on_hover_text("Dismiss").clicked() {
@@ -1628,14 +1637,18 @@ impl SpaiApp {
             self.alert_window_secs = 0.0;
             return;
         }
-        // Countdown (paused while hovered; floor of 3 s when hovered).
+        // Countdown (paused while hovered; floor of 3 s when hovered). An infinite
+        // value never hides; we only repaint slowly to refresh the ages.
         let dt = ctx.input(|i| i.stable_dt).min(0.5);
         if hovered {
             self.alert_window_secs = self.alert_window_secs.max(3.0);
-        } else {
+            ctx.request_repaint();
+        } else if self.alert_window_secs.is_finite() {
             self.alert_window_secs -= dt;
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
-        ctx.request_repaint();
     }
 
     /// Persist map overlay + intel-filter options when they change.
@@ -4397,7 +4410,15 @@ impl SpaiApp {
                         ui.horizontal(|ui| {
                             ui.label("Alert window stays");
                             changed |= ui
-                                .add(egui::DragValue::new(&mut a.window_timeout).range(3.0..=300.0).suffix("s"))
+                                .add(
+                                    egui::DragValue::new(&mut a.window_timeout)
+                                        .range(0.0..=300.0)
+                                        .suffix("s")
+                                        .custom_formatter(|n, _| {
+                                            if n <= 0.0 { "never hides".to_owned() } else { format!("{n}s") }
+                                        }),
+                                )
+                                .on_hover_text("0 = never auto-hide")
                                 .changed();
                             ui.label("· on top");
                             egui::ComboBox::from_id_salt("on_top")
