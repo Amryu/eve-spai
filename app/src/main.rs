@@ -40,10 +40,11 @@ mod watcher;
 mod wormholes;
 mod zkill;
 
-/// Whether to request a transparent backbuffer (see-through map overlay + click-
-/// through idle alert window). Off by default — it breaks rendering on radv.
+/// Whether to request a transparent backbuffer (needed for the see-through map
+/// overlay + click-through idle alert window). On by default; set EVE_SPAI_OPAQUE to
+/// force an opaque surface if a driver mis-presents transparency.
 pub fn transparency_enabled() -> bool {
-    std::env::var_os("EVE_SPAI_TRANSPARENCY").is_some()
+    std::env::var_os("EVE_SPAI_OPAQUE").is_none()
 }
 
 fn main() -> eframe::Result<()> {
@@ -57,9 +58,8 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1100.0, 720.0])
         .with_min_inner_size([720.0, 460.0]);
     // A transparent backbuffer (gated on the root window) is what lets the map overlay
-    // and idle alert window be see-through / click-through. But some drivers (notably
-    // radv) mis-present an ARGB backbuffer as *fully* transparent, making the whole
-    // app invisible — so it's opt-in via EVE_SPAI_TRANSPARENCY, opaque by default.
+    // and idle alert window be see-through / click-through. On by default; force opaque
+    // with EVE_SPAI_OPAQUE if a driver mis-presents transparency.
     if transparency_enabled() {
         viewport = viewport.with_transparent(true);
     }
