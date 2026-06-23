@@ -99,6 +99,10 @@ pub struct AlertRule {
     /// Regions by name — a report in any of them matches.
     #[serde(default)]
     pub regions: Vec<String>,
+    /// Intel channels — a report from any matching channel passes (each entry is a
+    /// case-insensitive regex/substring; empty = any channel).
+    #[serde(default)]
+    pub channels: Vec<String>,
     /// Within this many jumps of an alerting character (None = any distance).
     pub max_jumps: Option<u32>,
     /// At least this many hostiles (None = any).
@@ -131,6 +135,7 @@ impl Default for AlertRule {
             systems: Vec::new(),
             constellations: Vec::new(),
             regions: Vec::new(),
+            channels: Vec::new(),
             max_jumps: None,
             min_count: None,
             require: Vec::new(),

@@ -3625,6 +3625,7 @@ impl SpaiApp {
                 changed |= loc_field(ui, "systems:", &mut ru.systems, true);
                 changed |= loc_field(ui, "constellations:", &mut ru.constellations, false);
                 changed |= loc_field(ui, "regions:", &mut ru.regions, false);
+                changed |= loc_field(ui, "channels:", &mut ru.channels, false);
                 // Characters this rule applies to (empty = any enabled character).
                 ui.horizontal(|ui| {
                     ui.label("characters:");
@@ -4788,6 +4789,21 @@ fn rule_matches(
 ) -> bool {
     if sev < ru.min_severity {
         return false;
+    }
+    // Channel filter: each entry is a case-insensitive regex (falls back to a plain
+    // substring match if it isn't a valid regex).
+    if !ru.channels.is_empty() {
+        let ch = r.channel.to_lowercase();
+        let matched = ru.channels.iter().any(|pat| {
+            let p = pat.to_lowercase();
+            match regex::Regex::new(&format!("(?i){pat}")) {
+                Ok(re) => re.is_match(&r.channel),
+                Err(_) => ch.contains(&p),
+            }
+        });
+        if !matched {
+            return false;
+        }
     }
     if let Some(mj) = ru.max_jumps {
         // Only filter on distance when it can actually be measured (a character
