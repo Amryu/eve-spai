@@ -271,8 +271,9 @@ impl Store {
     /// Role bonuses for a ship (skill_id, bonus value, text). skill_id -1 = role.
     pub fn ship_traits(&self, id: i64) -> Vec<(i64, f64, String)> {
         let mut out = Vec::new();
+        // Natural SDE order (specialized skills first; role bonuses placed last in UI).
         if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT skill_id, bonus, text FROM sde_ship_traits WHERE ship_id = ?1 ORDER BY skill_id",
+            "SELECT skill_id, bonus, text FROM sde_ship_traits WHERE ship_id = ?1 ORDER BY rowid",
         ) {
             if let Ok(rows) =
                 stmt.query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))

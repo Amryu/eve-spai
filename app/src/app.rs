@@ -111,6 +111,8 @@ pub struct SpaiApp {
     player: crate::esi::SharedPlayer,
     /// System graph for UI distance queries (set once the SDE is ready).
     systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    /// Jump bridges currently baked into `systems` (to detect config changes).
+    bridges_applied: Vec<crate::settings::JumpBridge>,
     /// Live per-system status (incursion/FW/sov), shared with the ESI poller.
     system_status: crate::systemstatus::SharedStatus,
     /// Only alert on reports newer than this (set to launch time to skip backlog).
@@ -238,6 +240,7 @@ impl SpaiApp {
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             player,
             systems: None,
+            bridges_applied: Vec::new(),
             system_status: {
                 let status: crate::systemstatus::SharedStatus =
                     std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -412,6 +415,7 @@ impl SpaiApp {
         systems.add_bridges(&bridges);
         let systems = std::sync::Arc::new(systems);
         self.systems = Some(systems.clone());
+        self.bridges_applied = self.settings.jump_bridges.clone();
 
         // Bake ship role bonuses (invTraits) lazily, once.
         if let Some(store) = &self.store {
@@ -1066,6 +1070,28 @@ impl SpaiApp {
         if let Some(store) = &self.store {
             sde::spawn_download(store.path().to_path_buf(), self.sde_status.clone(), ctx.clone());
         }
+    }
+
+    /// Rebuild the system graph when the jump-bridge config changes, so stale
+    /// bridge edges are removed from the map and routing at runtime.
+    fn maybe_rebuild_graph(&mut self, ctx: &egui::Context) {
+        if self.systems.is_none() || self.settings.jump_bridges == self.bridges_applied {
+            return;
+        }
+        let Some(store) = &self.store else { return };
+        let mut systems = store.load_systems();
+        let bridges: Vec<(i64, i64)> = self
+            .settings
+            .jump_bridges
+            .iter()
+            .filter_map(|b| Some((systems.lookup(&b.from)?.id, systems.lookup(&b.to)?.id)))
+            .collect();
+        systems.add_bridges(&bridges);
+        self.systems = Some(std::sync::Arc::new(systems));
+        self.bridges_applied = self.settings.jump_bridges.clone();
+        self.map_loaded = None; // reload map systems with the new connectivity
+        self.map_draw_key = None;
+        ctx.request_repaint();
     }
 
     fn map_view(&mut self, ui: &mut egui::Ui) {
@@ -2202,6 +2228,15 @@ impl SpaiApp {
         let details = self.store.as_ref().and_then(|s| s.ship_details(id));
         let traits = self.store.as_ref().map(|s| s.ship_traits(id)).unwrap_or_default();
         let roles = derive_roles(&traits);
+        // Resolve skill names (ESI, cached) for the per-skill bonus sections.
+        let skill_ids: Vec<i64> = {
+            let mut s: Vec<i64> = traits.iter().map(|t| t.0).filter(|&s| s > 0).collect();
+            s.sort_unstable();
+            s.dedup();
+            s
+        };
+        self.ensure_type_names(&skill_ids, ctx);
+        let names = self.type_names.lock().unwrap().clone();
         let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai — Ship", [380.0, 600.0], |ui| {
             ui.horizontal(|ui| {
                 let url = format!("https://images.evetech.net/types/{id}/render?size=128");
@@ -2210,7 +2245,13 @@ impl SpaiApp {
                     match &details {
                         Some(d) => {
                             ui.heading(&d.name);
-                            ui.label(egui::RichText::new(&d.group).weak());
+                            let size = hull_size(&d.group);
+                            let type_line = if size.is_empty() || d.group.contains(size) {
+                                d.group.clone()
+                            } else {
+                                format!("{size} · {}", d.group)
+                            };
+                            ui.label(egui::RichText::new(type_line).weak());
                         }
                         None => {
                             ui.heading("Ship");
@@ -2226,18 +2267,49 @@ impl SpaiApp {
             }
             if !traits.is_empty() {
                 ui.separator();
-                ui.label(egui::RichText::new("Role bonuses").strong());
-                egui::ScrollArea::vertical().max_height(160.0).id_salt("ship_traits").show(ui, |ui| {
-                    for (skill, bonus, text) in &traits {
-                        let line = if *bonus != 0.0 {
-                            format!("{bonus:.0}% {text}")
-                        } else {
-                            text.clone()
-                        };
-                        let suffix = if *skill > 0 { " (per level)" } else { "" };
-                        ui.label(egui::RichText::new(format!("• {line}{suffix}")));
+                let fmt = |bonus: f64, text: &str| {
+                    if bonus != 0.0 {
+                        format!("• {bonus:.0}% {text}")
+                    } else {
+                        format!("• {text}")
                     }
-                });
+                };
+                // Fill the remaining window height; scroll if it overflows.
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .max_height(ui.available_height())
+                    .id_salt("ship_traits")
+                    .show(ui, |ui| {
+                        // Per-skill sections first (specialised → generic), role bonuses last.
+                        let mut skills: Vec<i64> = Vec::new();
+                        for (s, _, _) in &traits {
+                            if *s > 0 && !skills.contains(s) {
+                                skills.push(*s);
+                            }
+                        }
+                        for skill in &skills {
+                            let sname =
+                                names.get(skill).cloned().unwrap_or_else(|| "…".to_owned());
+                            ui.label(egui::RichText::new(format!("{sname} (per level)")).strong());
+                            ui.indent(*skill, |ui| {
+                                for (s, bonus, text) in &traits {
+                                    if s == skill {
+                                        ui.label(fmt(*bonus, text));
+                                    }
+                                }
+                            });
+                        }
+                        let role: Vec<&(i64, f64, String)> =
+                            traits.iter().filter(|t| t.0 == -1).collect();
+                        if !role.is_empty() {
+                            ui.label(egui::RichText::new("Role Bonuses").strong());
+                            ui.indent("trait_role", |ui| {
+                                for (_, bonus, text) in role {
+                                    ui.label(fmt(*bonus, text));
+                                }
+                            });
+                        }
+                    });
             }
         });
         if !keep {
@@ -2691,6 +2763,7 @@ impl eframe::App for SpaiApp {
         self.refresh_characters();
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
+        self.maybe_rebuild_graph(&ctx);
         self.check_alerts();
         self.top_bar(ui);
         self.status_bar(ui);
@@ -3302,6 +3375,47 @@ fn fit_url(site: &str, ship_id: i64, loss: &crate::lookup::Loss) -> String {
     match site {
         "osmium" => format!("https://o.smium.org/loadout/dna/{}", dna_string(ship_id, loss)),
         _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
+    }
+}
+
+/// Broad hull-size class for a ship group (Frigate … Capital).
+fn hull_size(g: &str) -> &'static str {
+    if g.contains("Capsule") {
+        "Capsule"
+    } else if g.contains("Titan")
+        || g.contains("Carrier")
+        || g.contains("Dreadnought")
+        || g.contains("Force Auxiliary")
+        || g.contains("Capital")
+    {
+        "Capital"
+    } else if g.contains("Freighter")
+        || g.contains("Industrial")
+        || g.contains("Hauler")
+        || g.contains("Transport")
+        || g.contains("Barge")
+        || g.contains("Exhumer")
+    {
+        "Industrial"
+    } else if g.contains("Battleship") || g.contains("Marauder") || g.contains("Black Ops") {
+        "Battleship"
+    } else if g.contains("Battlecruiser") || g.contains("Command Ship") {
+        "Battlecruiser"
+    } else if g.contains("Cruiser") || g.contains("Recon") {
+        "Cruiser"
+    } else if g.contains("Destroyer") || g.contains("Interdictor") {
+        "Destroyer"
+    } else if g.contains("Frigate")
+        || g.contains("Interceptor")
+        || g.contains("Covert Ops")
+        || g.contains("Bomber")
+        || g.contains("Electronic Attack")
+    {
+        "Frigate"
+    } else if g.contains("Shuttle") || g.contains("Corvette") {
+        "Rookie"
+    } else {
+        ""
     }
 }
 
