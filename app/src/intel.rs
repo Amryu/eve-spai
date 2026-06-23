@@ -647,6 +647,13 @@ pub fn analyze(
             pilots.push(n);
         }
     }
+    // "Word lowercase 1234" runs are pilot names even when the first word is a
+    // system ("Amarr slave 3424") — the trailing number disambiguates a name.
+    for n in numbered_names(&tokenize(&masked)) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&n)) {
+            pilots.push(n);
+        }
+    }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
     for k in match_known_pilots(text, known_pilots) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
@@ -1034,6 +1041,26 @@ fn flagged(
     })
 }
 
+/// "Title-Case + lower-case word + a number" runs — a pilot name even when the
+/// first word is a system ("Amarr slave 3424"); the trailing number disambiguates.
+fn numbered_names(tokens: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for w in tokens.windows(3) {
+        let (a, b, c) = (w[0], w[1], w[2]);
+        let a_ok = name_part(a) && a.len() >= 2;
+        let blc = b.to_lowercase();
+        let b_ok = b.len() >= 2
+            && b.chars().all(|ch| ch.is_ascii_lowercase())
+            && !PILOT_STOP.contains(&blc.as_str())
+            && !CLEAR_WORDS.contains(&blc.as_str());
+        let c_ok = c.len() >= 2 && c.chars().all(|ch| ch.is_ascii_digit());
+        if a_ok && b_ok && c_ok {
+            out.push(format!("{a} {b} {c}"));
+        }
+    }
+    out
+}
+
 /// A bare 1–2 digit number — ambiguous between a system/gate code and a count.
 fn is_short_number(t: &str) -> bool {
     (1..=2).contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit())
@@ -1139,6 +1166,8 @@ mod tests {
             ("78-aaa", "78-AAA", 4, -0.5),
             ("c-j6mt", "C-J6MT", 5, -0.6),
             ("ypw-m2", "YPW-M2", 7, -0.5),
+            ("amarr", "Amarr", 8, 1.0),
+            ("sv5-8n", "SV5-8N", 9, -0.4),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -1416,6 +1445,38 @@ mod tests {
         let s = systems();
         let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
+    }
+
+    #[test]
+    fn numbered_name_with_system_prefix_plain_text() {
+        let s = systems();
+        // Plain text (tags stripped): "Amarr slave 3424" is a pilot, not the Amarr
+        // system; SV5-8N stays the system.
+        let r = analyze("SV5-8N Amarr slave 3424", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Amarr slave 3424"), "pilots: {:?}", r.pilots);
+        assert!(!r.systems.iter().any(|d| d.name == "Amarr"), "systems: {:?}", r.systems);
+        assert!(r.systems.iter().any(|d| d.name == "SV5-8N"));
+    }
+
+    #[test]
+    fn showinfo_character_name_containing_system_word() {
+        let s = systems();
+        // "Amarr slave 3424" (typeID 1379 = character) must be a pilot, not detected
+        // as the Amarr system from the leading word.
+        let r = analyze(
+            "<url=showinfo:5//30001158>SV5-8N</url> \
+             <url=showinfo:1379//2123880778>Amarr slave 3424</url> \
+             <url=showinfo:1376//2124463618>CIYUAN</url>",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(r.pilots.iter().any(|p| p == "Amarr slave 3424"), "pilots: {:?}", r.pilots);
+        assert!(!r.systems.iter().any(|d| d.name == "Amarr"), "systems: {:?}", r.systems);
+        assert!(r.systems.iter().any(|d| d.name == "SV5-8N"));
     }
 
     #[test]
