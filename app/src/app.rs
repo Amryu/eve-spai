@@ -210,6 +210,8 @@ pub struct SpaiApp {
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
     eve_focus_checked: Option<std::time::Instant>,
+    /// Throttle for reconciling pilot candidates that turned out not to be characters.
+    pilot_reconcile_checked: Option<std::time::Instant>,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -400,6 +402,7 @@ impl SpaiApp {
             jabber_pw_input: String::new(),
             eve_focused: true,
             eve_focus_checked: None,
+            pilot_reconcile_checked: None,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -945,6 +948,42 @@ impl SpaiApp {
         );
         if !keep {
             self.jabber_popped = false;
+        }
+    }
+
+    /// A pilot candidate that ESI confirms is NOT a character falls back to being a
+    /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
+    /// it's not a real pilot). showinfo-confirmed characters are never demoted.
+    fn reconcile_unresolved_pilots(&mut self) {
+        let due = self.pilot_reconcile_checked.map(|t| t.elapsed().as_millis() > 700).unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.pilot_reconcile_checked = Some(std::time::Instant::now());
+        let Some(geo) = self.systems.clone() else { return };
+        let cache = self.pilots.lock().unwrap();
+        let mut st = self.intel_state.lock().unwrap();
+        for r in &mut st.reports {
+            let mut i = 0;
+            while i < r.pilots.len() {
+                let p = r.pilots[i].clone();
+                let is_confirmed = r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&p));
+                if !is_confirmed && matches!(cache.get(&p), Some(None)) {
+                    // Not a character — fall back to a system embedded in the name.
+                    if let Some(info) = p.split_whitespace().find_map(|t| geo.lookup(t)) {
+                        if !r.systems.iter().any(|d| d.id == info.id) {
+                            r.systems.push(crate::intel::DetectedSystem {
+                                id: info.id,
+                                name: info.name.clone(),
+                                security: info.security,
+                            });
+                        }
+                    }
+                    r.pilots.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
         }
     }
 
@@ -5214,6 +5253,7 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
+        self.reconcile_unresolved_pilots();
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
