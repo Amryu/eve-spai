@@ -93,6 +93,7 @@ mod tests {
             cyno: false,
             wormhole: false,
             ess: false,
+            ess_time: None,
             skyhook: false,
             gate: None,
             movement: None,

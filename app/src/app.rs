@@ -3406,7 +3406,13 @@ impl SpaiApp {
                     .weak(),
                 );
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                // Button above the (bounded) list so it never gets pushed off-screen.
+                if ui.button("Add channel").clicked() {
+                    self.settings.intel_channels.push(String::new());
+                    changed = true;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove: Option<usize> = None;
                     for (i, ch) in self.settings.intel_channels.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
@@ -3423,11 +3429,6 @@ impl SpaiApp {
                         changed = true;
                     }
                 });
-                ui.add_space(4.0);
-                if ui.button("Add channel").clicked() {
-                    self.settings.intel_channels.push(String::new());
-                    changed = true;
-                }
             },
         );
         if changed {
@@ -4107,7 +4108,10 @@ fn intel_row(
                     tag(ui, "WH", crate::theme::standing::ALLIANCE);
                 }
                 if r.ess {
-                    tag(ui, "ESS", warn);
+                    match &r.ess_time {
+                        Some(t) => tag(ui, &format!("ESS {t}"), warn),
+                        None => tag(ui, "ESS", warn),
+                    }
                 }
                 if r.skyhook {
                     tag(ui, "SKYHOOK", warn);

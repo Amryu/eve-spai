@@ -50,6 +50,8 @@ pub struct IntelReport {
     pub cyno: bool,
     pub wormhole: bool,
     pub ess: bool,
+    /// Time left until the ESS is hacked, when called out (e.g. "5:30", "3m").
+    pub ess_time: Option<String>,
     pub skyhook: bool,
     /// Gate the hostiles are reported on, e.g. "78-" in "C-J +20 on 78- gate".
     pub gate: Option<String>,
@@ -656,11 +658,40 @@ pub fn analyze(
         wormhole: lower.contains("wormhole")
             || lower_tokens.iter().any(|t| (t == "wh" || t == "k162") && !pilot_tokens.contains(t)),
         ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
+        ess_time: if lower.contains("ess") { parse_time_left(text) } else { None },
         skyhook: lower.contains("skyhook"),
         gate,
         movement: None,
         links,
     }
+}
+
+/// Parse a "time left" callout: "M:SS" (e.g. "5:30") or "Xm"/"Xm Ys"/"Xs".
+fn parse_time_left(text: &str) -> Option<String> {
+    for raw in text.split_whitespace() {
+        let t = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+        // "5:30" — minutes:seconds.
+        if let Some((m, s)) = t.split_once(':') {
+            if (1..=2).contains(&m.len())
+                && s.len() == 2
+                && m.chars().all(|c| c.is_ascii_digit())
+                && s.chars().all(|c| c.is_ascii_digit())
+            {
+                return Some(format!("{m}:{s}"));
+            }
+        }
+        // "5m", "5m30s", "30s" — minute/second suffixes.
+        let lower = t.to_lowercase();
+        if (lower.ends_with('m') || lower.ends_with('s'))
+            && lower.len() >= 2
+            && lower.len() <= 6
+            && lower.chars().any(|c| c.is_ascii_digit())
+            && lower.chars().all(|c| c.is_ascii_digit() || c == 'm' || c == 's')
+        {
+            return Some(lower);
+        }
+    }
+    None
 }
 
 /// A bare 1–2 digit number — ambiguous between a system/gate code and a count.
@@ -723,7 +754,8 @@ fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
         }
         if let Ok(n) = digits.parse::<u32>() {
             if (1..=999).contains(&n) {
-                best = Some(best.map_or(n, |b| b.max(n)));
+                // Add up separate groups, e.g. "7 red; 1 neut" -> 8.
+                best = Some(best.map_or(n, |b| (b + n).min(999)));
             }
         }
     }
@@ -913,7 +945,7 @@ mod tests {
         let r = analyze("hostile in Rancer, 3 Drake +2", &s, &noships(), &noknown(), 100, "ch", "Scout");
         assert_eq!(r.systems.len(), 1);
         assert_eq!(r.systems[0].name, "Rancer");
-        assert_eq!(r.count, Some(3));
+        assert_eq!(r.count, Some(5)); // groups summed: 3 + 2
         assert!(!r.clear);
 
         assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x").clear);
@@ -926,6 +958,13 @@ mod tests {
         assert!(analyze("skyhook theft Rancer", &s, &noships(), &noknown(), 1, "ch", "x").skyhook);
         // lower-case common words that are system names are not matched
         assert!(analyze("clear in here", &s, &noships(), &noknown(), 1, "ch", "x").systems.is_empty());
+    }
+
+    #[test]
+    fn sums_separate_hostile_groups() {
+        let s = systems();
+        let r = analyze("PDF-3Z 7 red; 1 neut", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(8));
     }
 
     #[test]
