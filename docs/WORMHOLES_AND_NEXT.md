@@ -64,8 +64,9 @@ the map**, but the system-info window must open for them.
 ---
 
 ## A8 — Setup wizard
-- [ ] First-run wizard (log/settings paths, intel channels, characters, theme),
-      **dismissable**, re-runnable later from Settings.
+- [x] First-run wizard (EVE log dir, intel channels via packs/manual, SSO character
+      login, theme preset), **dismissable** ("Skip setup"), re-runnable from a "Run
+      setup wizard" button in Settings. Gated on `settings.wizard_done`.
 
 ## A9 — D-scan clipboard upload
 - [ ] Watch the clipboard; when it holds valid d-scan data, prompt to upload it to a
