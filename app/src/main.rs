@@ -13,6 +13,7 @@ mod factions;
 mod gamelog;
 mod gamewatcher;
 mod geo;
+mod jabber;
 mod intel;
 mod logpaths;
 mod lookup;
