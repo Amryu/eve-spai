@@ -20,16 +20,21 @@ pub struct SystemInfo {
 pub struct Systems {
     by_name: HashMap<String, SystemInfo>,
     by_id: HashMap<i64, SystemInfo>,
+    /// Gate + jump-bridge edges.
     adjacency: HashMap<i64, Vec<i64>>,
+    /// Gate-only edges (no jump bridges) — for distances enemies can actually travel.
+    gate_adjacency: HashMap<i64, Vec<i64>>,
 }
 
 impl Systems {
     pub fn new(by_name: HashMap<String, SystemInfo>, adjacency: HashMap<i64, Vec<i64>>) -> Self {
         let by_id = by_name.values().map(|s| (s.id, s.clone())).collect();
+        let gate_adjacency = adjacency.clone();
         Self {
             by_name,
             by_id,
             adjacency,
+            gate_adjacency,
         }
     }
 
@@ -81,9 +86,19 @@ impl Systems {
         found
     }
 
-    /// Shortest gate-jump distance between two systems (0 if equal), or None if
-    /// unreachable within `max_jumps`.
+    /// Shortest jump distance between two systems (0 if equal), or None if
+    /// unreachable within `max_jumps`. Includes jump bridges.
     pub fn jumps(&self, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
+        Self::bfs_jumps(&self.adjacency, from, to, max_jumps)
+    }
+
+    /// As [`Self::jumps`], but over gate edges only (ignoring jump bridges) — the
+    /// distance a hostile (who can't use your bridges) would actually have to travel.
+    pub fn jumps_gates_only(&self, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
+        Self::bfs_jumps(&self.gate_adjacency, from, to, max_jumps)
+    }
+
+    fn bfs_jumps(adj: &HashMap<i64, Vec<i64>>, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
         if from == to {
             return Some(0);
         }
@@ -93,7 +108,7 @@ impl Systems {
             if dist >= max_jumps {
                 continue;
             }
-            for &n in self.adjacency.get(&sys).into_iter().flatten() {
+            for &n in adj.get(&sys).into_iter().flatten() {
                 if n == to {
                     return Some(dist + 1);
                 }

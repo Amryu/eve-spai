@@ -115,6 +115,10 @@ pub struct AlertRule {
     pub channels: Vec<String>,
     /// Within this many jumps of an alerting character (None = any distance).
     pub max_jumps: Option<u32>,
+    /// Count jump bridges in the jump-range distance. Off = gate-only (the distance
+    /// a hostile, who can't use your bridges, would actually have to travel).
+    #[serde(default = "default_true")]
+    pub count_bridges: bool,
     /// At least this many hostiles (None = any).
     pub min_count: Option<u32>,
     /// Required condition tags (any of): bubble/camp/cyno/kill/ess/wormhole/spike/threat.
@@ -147,6 +151,7 @@ impl Default for AlertRule {
             regions: Vec::new(),
             channels: Vec::new(),
             max_jumps: None,
+            count_bridges: true,
             min_count: None,
             require: Vec::new(),
             characters: Vec::new(),

@@ -182,6 +182,8 @@ pub struct SpaiApp {
     /// True while the alert window is currently shown (to detect re-opening so the
     /// saved geometry is re-applied each time it appears).
     alert_window_open: bool,
+    /// Pin: temporarily hold the alert window open (auto-cleared when it closes).
+    alert_window_pinned: bool,
     /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
     /// the combat-log watcher.
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -365,6 +367,7 @@ impl SpaiApp {
             alert_feed: Vec::new(),
             alert_window_secs: 0.0,
             alert_window_open: false,
+            alert_window_pinned: false,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
             eve_focused: true,
@@ -501,7 +504,7 @@ impl SpaiApp {
                 for ru in acfg.rules.iter().filter(|ru| ru.enabled) {
                     let srcs = char_systems(&ru.characters);
                     let measurable = !srcs.is_empty() && target.is_some();
-                    let jumps = min_jumps_from(&systems, &srcs, target);
+                    let jumps = min_jumps_from(&systems, &srcs, target, ru.count_bridges);
                     if rule_matches(ru, r, sev, jumps, measurable, &systems) {
                         chosen = Some((ru, jumps));
                         break;
@@ -1446,6 +1449,7 @@ impl SpaiApp {
     fn alert_window(&mut self, ctx: &egui::Context) {
         if self.alert_window_secs <= 0.0 {
             self.alert_window_open = false;
+            self.alert_window_pinned = false; // auto-clear the pin when it closes
             return;
         }
         let just_opened = !self.alert_window_open;
@@ -1543,6 +1547,16 @@ impl SpaiApp {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(egui_phosphor::regular::X).on_hover_text("Dismiss").clicked() {
                                     dismiss = true;
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(egui_phosphor::regular::PUSH_PIN)
+                                            .selected(self.alert_window_pinned),
+                                    )
+                                    .on_hover_text("Pin open (hold until closed)")
+                                    .clicked()
+                                {
+                                    self.alert_window_pinned = !self.alert_window_pinned;
                                 }
                             });
                         });
@@ -1643,6 +1657,9 @@ impl SpaiApp {
         if hovered {
             self.alert_window_secs = self.alert_window_secs.max(3.0);
             ctx.request_repaint();
+        } else if self.alert_window_pinned {
+            // Pinned: hold open without counting down.
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         } else if self.alert_window_secs.is_finite() {
             self.alert_window_secs -= dt;
             ctx.request_repaint();
@@ -3713,6 +3730,15 @@ impl SpaiApp {
                         ru.max_jumps = if mj == 0 { None } else { Some(mj) };
                         changed = true;
                     }
+                    if ru.max_jumps.is_some() {
+                        changed |= ui
+                            .checkbox(&mut ru.count_bridges, "bridges")
+                            .on_hover_text(
+                                "Count jump bridges in the range. Off = gate-only \
+                                 (how far a hostile, who can't use your bridges, really is).",
+                            )
+                            .changed();
+                    }
                     ui.label("count ≥");
                     let mut mc = ru.min_count.unwrap_or(0);
                     if ui.add(egui::DragValue::new(&mut mc).range(0..=999)).changed() {
@@ -4786,13 +4812,23 @@ fn jumps_from_you(
 }
 
 /// Fewest jumps from any of `srcs` to `target` (None if none reach it / no target).
+/// `use_bridges` counts jump bridges; otherwise the distance is gate-only.
 fn min_jumps_from(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     srcs: &[i64],
     target: Option<i64>,
+    use_bridges: bool,
 ) -> Option<u32> {
-    let t = target?;
-    srcs.iter().filter_map(|&s| jumps_from_you(systems, Some(s), Some(t))).min()
+    let (sys, t) = (systems.as_ref()?, target?);
+    srcs.iter()
+        .filter_map(|&s| {
+            if use_bridges {
+                sys.jumps(t, s, 50)
+            } else {
+                sys.jumps_gates_only(t, s, 50)
+            }
+        })
+        .min()
 }
 
 /// System suffix chips: in-game-style `< Constellation < Region`, NPC faction
