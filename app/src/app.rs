@@ -58,6 +58,10 @@ pub struct SpaiApp {
     view: View,
     settings_open: bool,
     intel_channels_open: bool,
+    jump_bridges_open: bool,
+    jb_paste: String,
+    sov_upgrades_open: bool,
+    sov_paste: String,
     active_character: String,
     /// Settings changed this frame and should be persisted.
     needs_save: bool,
@@ -189,6 +193,10 @@ impl SpaiApp {
             view: View::Dashboard,
             settings_open: false,
             intel_channels_open: false,
+            jump_bridges_open: false,
+            jb_paste: String::new(),
+            sov_upgrades_open: false,
+            sov_paste: String::new(),
             active_character: "No character".to_owned(),
             needs_save: false,
             sde_status,
@@ -1782,6 +1790,22 @@ impl SpaiApp {
                         stat(ui, "NPC kills", flags.npc_kills, an);
                     });
                 }
+                // Configured sovereignty upgrades for this system.
+                let upgrades: Vec<&str> = self
+                    .settings
+                    .sov_upgrades
+                    .iter()
+                    .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
+                    .map(|u| u.upgrade.as_str())
+                    .collect();
+                if !upgrades.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Sov upgrades:").weak());
+                        for u in upgrades {
+                            ui.label(egui::RichText::new(u).color(crate::theme::standing::CORP));
+                        }
+                    });
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Show on map").clicked() {
                         show_on_map = true;
@@ -1929,6 +1953,141 @@ impl SpaiApp {
         });
         if !keep {
             self.ship_window = None;
+        }
+    }
+
+    /// Jump-bridge configuration: paste a coalition list (any separator); each
+    /// line's first two SDE systems become a bridge. Drawn green on the map.
+    fn jump_bridges_window(&mut self, ctx: &egui::Context) {
+        if !self.jump_bridges_open {
+            return;
+        }
+        let mut changed = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "jump_bridges_window",
+            "EVE Spai — Jump bridges",
+            [440.0, 520.0],
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Paste a jump-bridge list (one bridge per line).").weak(),
+                    );
+                    ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
+                        "Imperium members: open the alliance jump-bridge map, copy the bridge \
+                         list, and paste it here. Each line's first two systems form a bridge \
+                         (any separator works).",
+                    );
+                    ui.hyperlink_to("Imperium services", "https://goonfleet.com");
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.jb_paste)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("1DQ1-A » O-EIMK\nT5ZI-S - 5-CQDA"),
+                );
+                if ui.button("Add from paste").clicked() {
+                    if let Some(g) = self.systems.clone() {
+                        let added = parse_bridges(&self.jb_paste, &g);
+                        for b in added {
+                            if !self.settings.jump_bridges.contains(&b) {
+                                self.settings.jump_bridges.push(b);
+                                changed = true;
+                            }
+                        }
+                    }
+                    self.jb_paste.clear();
+                }
+                ui.separator();
+                ui.label(egui::RichText::new(format!("{} bridges", self.settings.jump_bridges.len())).strong());
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut remove = None;
+                    for (i, b) in self.settings.jump_bridges.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} » {}", b.from, b.to));
+                            if ui.button("✕").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        self.settings.jump_bridges.remove(i);
+                        changed = true;
+                    }
+                });
+            },
+        );
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.jump_bridges_open = false;
+        }
+    }
+
+    /// Sovereignty-upgrade configuration: paste lines of "<system> <upgrade…>".
+    fn sov_upgrades_window(&mut self, ctx: &egui::Context) {
+        if !self.sov_upgrades_open {
+            return;
+        }
+        let mut changed = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "sov_upgrades_window",
+            "EVE Spai — Sov upgrades",
+            [460.0, 520.0],
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Paste sov-upgrade data (one per line).").weak());
+                    ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
+                        "Imperium members: copy the sov-upgrade list from the alliance tool and \
+                         paste it here. The first system matched on each line is used; the rest \
+                         of the line becomes the upgrade label.",
+                    );
+                    ui.hyperlink_to("Imperium services", "https://goonfleet.com");
+                });
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.sov_paste)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("1DQ1-A Cynosural Suppression\nO-EIMK Advanced Logistics Network"),
+                );
+                if ui.button("Add from paste").clicked() {
+                    if let Some(g) = self.systems.clone() {
+                        for u in parse_sov_upgrades(&self.sov_paste, &g) {
+                            if !self.settings.sov_upgrades.contains(&u) {
+                                self.settings.sov_upgrades.push(u);
+                                changed = true;
+                            }
+                        }
+                    }
+                    self.sov_paste.clear();
+                }
+                ui.separator();
+                ui.label(egui::RichText::new(format!("{} upgrades", self.settings.sov_upgrades.len())).strong());
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut remove = None;
+                    for (i, u) in self.settings.sov_upgrades.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&u.system).strong());
+                            ui.label(egui::RichText::new(&u.upgrade).weak());
+                            if ui.button("✕").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        self.settings.sov_upgrades.remove(i);
+                        changed = true;
+                    }
+                });
+            },
+        );
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.sov_upgrades_open = false;
         }
     }
 
@@ -2108,6 +2267,27 @@ impl SpaiApp {
                     if ui.button("Configure intel channels…").clicked() {
                         self.intel_channels_open = true;
                     }
+
+                    ui.separator();
+
+                    // --- Jump bridges & sov upgrades ---
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Coalition data").strong());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} bridges · {} upgrades",
+                                self.settings.jump_bridges.len(),
+                                self.settings.sov_upgrades.len()
+                            ))
+                            .weak(),
+                        );
+                    });
+                    if ui.button("Configure jump bridges…").clicked() {
+                        self.jump_bridges_open = true;
+                    }
+                    if ui.button("Configure sov upgrades…").clicked() {
+                        self.sov_upgrades_open = true;
+                    }
                 });
             },
         );
@@ -2151,6 +2331,8 @@ impl eframe::App for SpaiApp {
 
         self.settings_dialog(&ctx);
         self.intel_channels_window(&ctx);
+        self.jump_bridges_window(&ctx);
+        self.sov_upgrades_window(&ctx);
         self.system_window(&ctx);
         self.ship_window(&ctx);
         self.pilot_window(&ctx);
@@ -2199,6 +2381,62 @@ fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: e
         }
         d += period;
     }
+}
+
+/// Resolve a pasted token to a canonical system name (exact, then prefix).
+fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
+    let tok = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '\'');
+    if tok.len() < 2 {
+        return None;
+    }
+    graph
+        .lookup(tok)
+        .or_else(|| graph.lookup_prefix(tok))
+        .map(|i| i.name.clone())
+}
+
+/// Parse a pasted jump-bridge list: each line's first two SDE systems = a bridge.
+fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::JumpBridge> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut ends: Vec<String> = Vec::new();
+        for raw in line.split_whitespace() {
+            if let Some(name) = resolve_system(graph, raw) {
+                if !ends.contains(&name) {
+                    ends.push(name);
+                }
+                if ends.len() == 2 {
+                    break;
+                }
+            }
+        }
+        if ends.len() == 2 {
+            out.push(crate::settings::JumpBridge { from: ends.remove(0), to: ends.remove(0) });
+        }
+    }
+    out
+}
+
+/// Parse pasted sov upgrades: first system on a line, rest = the upgrade label.
+fn parse_sov_upgrades(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::SovUpgrade> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let Some((idx, name)) =
+            words.iter().enumerate().find_map(|(i, w)| resolve_system(graph, w).map(|n| (i, n)))
+        else {
+            continue;
+        };
+        let upgrade: String = words
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != idx)
+            .map(|(_, w)| *w)
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push(crate::settings::SovUpgrade { system: name, upgrade: upgrade.trim().to_owned() });
+    }
+    out
 }
 
 /// Nearest projected system to a point within `threshold` pixels.

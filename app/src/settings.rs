@@ -44,6 +44,15 @@ pub struct Settings {
     /// Preferred online fitting site for "open fit" ("" = ask on first use).
     #[serde(default)]
     pub fit_site: String,
+    /// Configured sovereignty upgrades per system (pasted from a coalition site).
+    #[serde(default)]
+    pub sov_upgrades: Vec<SovUpgrade>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SovUpgrade {
+    pub system: String,
+    pub upgrade: String,
 }
 
 fn default_intel_ttl() -> i64 {
@@ -89,6 +98,7 @@ impl Default for Settings {
             alert_combat: true,
             intel_ttl_secs: 300,
             fit_site: String::new(),
+            sov_upgrades: Vec::new(),
         }
     }
 }
