@@ -216,6 +216,10 @@ pub struct SpaiApp {
     update: crate::update::SharedUpdate,
     update_checked: bool,
     update_dismissed: bool,
+    /// First-run setup wizard (dismissable; re-runnable from Settings).
+    wizard_open: bool,
+    wizard_step: u8,
+    wizard_checked: bool,
     /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
     /// poller and the intel watcher).
     wh_cache: Vec<crate::wormholes::Wormhole>,
@@ -421,6 +425,9 @@ impl SpaiApp {
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked: false,
             update_dismissed: false,
+            wizard_open: false,
+            wizard_step: 0,
+            wizard_checked: false,
             wh_cache: Vec::new(),
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
@@ -4642,6 +4649,148 @@ impl SpaiApp {
         }
     }
 
+    /// First-run setup wizard (docs/WORMHOLES_AND_NEXT.md A8). Dismissable; can be
+    /// re-run from Settings. Walks logs → channels → character → theme.
+    fn setup_wizard(&mut self, ctx: &egui::Context) {
+        if !self.wizard_open {
+            return;
+        }
+        use egui_phosphor::regular as icon;
+        const LAST: u8 = 4;
+        let mut step = self.wizard_step;
+        let mut close = false; // skip/dismiss
+        let mut finish = false;
+        egui::Window::new(format!("{}  Setup", icon::MAGIC_WAND))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(format!("Step {} of {}", step + 1, LAST + 1)).weak().small());
+                ui.separator();
+                ui.add_space(4.0);
+                match step {
+                    0 => {
+                        ui.heading("Welcome to EVE Spai");
+                        ui.label(
+                            "A quick setup to get intel flowing. Everything here can be changed \
+                             later in Settings, and you can re-run this wizard from there.",
+                        );
+                    }
+                    1 => {
+                        ui.heading(format!("{}  EVE chat logs", icon::FOLDER_OPEN));
+                        ui.label(
+                            "EVE Spai reads your in-game intel-channel logs. Leave blank to \
+                             auto-detect the standard location.",
+                        );
+                        ui.add_space(4.0);
+                        let hint = crate::logpaths::chat_logs_dir("")
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "auto-detect".into());
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.eve_logs_dir)
+                                .hint_text(hint)
+                                .desired_width(420.0),
+                        );
+                    }
+                    2 => {
+                        ui.heading(format!("{}  Intel channels", icon::BROADCAST));
+                        ui.label("Apply your coalition's preset channels, or add them manually.");
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            for pack in crate::packs::PACKS {
+                                if ui.button(format!("Apply {}", pack.name)).clicked() {
+                                    for ch in pack.channels {
+                                        if !self
+                                            .settings
+                                            .intel_channels
+                                            .iter()
+                                            .any(|c| c.eq_ignore_ascii_case(ch))
+                                        {
+                                            self.settings.intel_channels.push((*ch).to_owned());
+                                        }
+                                    }
+                                    self.settings.configuration_pack = pack.name.to_owned();
+                                    self.needs_save = true;
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        if ui.button("Configure channels manually…").clicked() {
+                            self.intel_channels_open = true;
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} channel(s) configured",
+                                self.settings.intel_channels.len()
+                            ))
+                            .weak(),
+                        );
+                    }
+                    3 => {
+                        ui.heading(format!("{}  Log in a character", icon::SIGN_IN));
+                        ui.label(
+                            "Log in with EVE SSO so EVE Spai knows your location for \
+                             distance / near-me filters and the map.",
+                        );
+                        ui.add_space(4.0);
+                        if ui.button(format!("{}  Log in with EVE", icon::SIGN_IN)).clicked() {
+                            self.start_login(ctx);
+                        }
+                        if !self.characters.is_empty() {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}  {} character(s) linked",
+                                    icon::CHECK_CIRCLE,
+                                    self.characters.len()
+                                ))
+                                .color(crate::theme::standing::ALLIANCE),
+                            );
+                        }
+                    }
+                    _ => {
+                        ui.heading(format!("{}  Theme", icon::PALETTE));
+                        ui.label("Pick a colour preset (fine-tune fully in Settings).");
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            for preset in Theme::presets() {
+                                if ui.button(&preset.name).clicked() {
+                                    self.settings.theme = preset.clone();
+                                    self.needs_save = true;
+                                }
+                            }
+                        });
+                    }
+                }
+                ui.add_space(10.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Skip setup").clicked() {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if step >= LAST {
+                            if ui.button(format!("{}  Finish", icon::CHECK_CIRCLE)).clicked() {
+                                finish = true;
+                            }
+                        } else if ui.button("Next").clicked() {
+                            step += 1;
+                        }
+                        if step > 0 && ui.button("Back").clicked() {
+                            step = step.saturating_sub(1);
+                        }
+                    });
+                });
+            });
+        self.wizard_step = step;
+        if finish || close {
+            self.settings.wizard_done = true;
+            self.needs_save = true;
+            self.wizard_open = false;
+        }
+    }
+
     /// Alert-rules editor (inline). Rules are evaluated top-first; the first matching
     /// enabled rule decides the actions (or suppresses the alert).
     fn alert_rules_ui(&mut self, ui: &mut egui::Ui) {
@@ -5355,6 +5504,15 @@ impl SpaiApp {
         let mut new_theme: Option<Theme> = None;
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
+                    if ui
+                        .button(format!("{}  Run setup wizard", egui_phosphor::regular::MAGIC_WAND))
+                        .clicked()
+                    {
+                        self.wizard_step = 0;
+                        self.wizard_open = true;
+                    }
+                    ui.separator();
+
                     // --- Theme ---
                     ui.label(egui::RichText::new("Theme (3 colours)").strong());
                     ui.horizontal_wrapped(|ui| {
@@ -5616,6 +5774,11 @@ impl eframe::App for SpaiApp {
             );
         }
         self.update_dialog(&ctx);
+        if !self.wizard_checked {
+            self.wizard_checked = true;
+            self.wizard_open = !self.settings.wizard_done;
+        }
+        self.setup_wizard(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();

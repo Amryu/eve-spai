@@ -89,6 +89,9 @@ pub struct Settings {
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
+    /// First-run setup wizard has been completed or dismissed.
+    #[serde(default)]
+    pub wizard_done: bool,
 }
 
 fn default_jabber_server() -> String {
@@ -413,6 +416,7 @@ impl Default for Settings {
             jabber_jid: String::new(),
             jabber_server: default_jabber_server(),
             update_skip_version: String::new(),
+            wizard_done: false,
         }
     }
 }
