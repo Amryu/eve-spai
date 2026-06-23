@@ -20,6 +20,7 @@ mod map;
 mod pilot;
 mod nav;
 mod packs;
+mod pings;
 mod procstat;
 mod push;
 mod rats;
