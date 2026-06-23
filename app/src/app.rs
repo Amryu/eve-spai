@@ -2167,34 +2167,43 @@ impl SpaiApp {
                     );
                     ui.hyperlink_to("Imperium stargates", "https://wiki.goonswarm.org/w/Alliance:Stargate");
                 });
-                egui::ScrollArea::vertical().max_height(110.0).id_salt("jb_scroll").show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.jb_paste)
-                            .desired_rows(4)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("Paste the bridge list (or whole wiki page)"),
-                    );
-                });
-                if ui.button("Add from paste").clicked() {
-                    if let Some(g) = self.systems.clone() {
-                        let added = parse_bridges(&self.jb_paste, &g);
-                        for b in added {
-                            if !self.settings.jump_bridges.contains(&b) {
-                                self.settings.jump_bridges.push(b);
-                                changed = true;
+                egui::ScrollArea::vertical()
+                    .max_height(110.0)
+                    .auto_shrink([false, false])
+                    .id_salt("jb_scroll")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.jb_paste)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("e.g.  1DQ1-A » O-EIMK   (one bridge per line, or paste the whole wiki page)"),
+                        );
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Add from paste").clicked() {
+                        if let Some(g) = self.systems.clone() {
+                            for b in parse_bridges(&self.jb_paste, &g) {
+                                if !self.settings.jump_bridges.contains(&b) {
+                                    self.settings.jump_bridges.push(b);
+                                    changed = true;
+                                }
                             }
                         }
+                        self.jb_paste.clear();
                     }
-                    self.jb_paste.clear();
-                }
+                    if !self.settings.jump_bridges.is_empty() && ui.button("Delete all").clicked() {
+                        self.settings.jump_bridges.clear();
+                        changed = true;
+                    }
+                });
                 ui.separator();
                 ui.label(egui::RichText::new(format!("{} bridges", self.settings.jump_bridges.len())).strong());
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove = None;
                     for (i, b) in self.settings.jump_bridges.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(format!("{} » {}", b.from, b.to));
-                            if ui.button("✕").clicked() {
+                            if ui.button(egui_phosphor::regular::X).clicked() {
                                 remove = Some(i);
                             }
                         });
@@ -2238,34 +2247,44 @@ impl SpaiApp {
                         "https://goonfleet.com/index.php/topic/371770-equinox-upgrade-information-station",
                     );
                 });
-                egui::ScrollArea::vertical().max_height(110.0).id_salt("sov_scroll").show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.sov_paste)
-                            .desired_rows(4)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("Paste the in-game I-Hub window (Sovereignty Hub …)"),
-                    );
-                });
-                if ui.button("Add from paste").clicked() {
-                    if let Some(g) = self.systems.clone() {
-                        for u in parse_sov_upgrades(&self.sov_paste, &g) {
-                            if !self.settings.sov_upgrades.contains(&u) {
-                                self.settings.sov_upgrades.push(u);
-                                changed = true;
+                egui::ScrollArea::vertical()
+                    .max_height(110.0)
+                    .auto_shrink([false, false])
+                    .id_salt("sov_scroll")
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.sov_paste)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("e.g.  1DQ1-A Cynosural Suppression   (or paste the in-game I-Hub window)"),
+                        );
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Add from paste").clicked() {
+                        if let Some(g) = self.systems.clone() {
+                            for u in parse_sov_upgrades(&self.sov_paste, &g) {
+                                if !self.settings.sov_upgrades.contains(&u) {
+                                    self.settings.sov_upgrades.push(u);
+                                    changed = true;
+                                }
                             }
                         }
+                        self.sov_paste.clear();
                     }
-                    self.sov_paste.clear();
-                }
+                    if !self.settings.sov_upgrades.is_empty() && ui.button("Delete all").clicked() {
+                        self.settings.sov_upgrades.clear();
+                        changed = true;
+                    }
+                });
                 ui.separator();
                 ui.label(egui::RichText::new(format!("{} upgrades", self.settings.sov_upgrades.len())).strong());
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let mut remove = None;
                     for (i, u) in self.settings.sov_upgrades.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&u.system).strong());
                             ui.label(egui::RichText::new(&u.upgrade).weak());
-                            if ui.button("✕").clicked() {
+                            if ui.button(egui_phosphor::regular::X).clicked() {
                                 remove = Some(i);
                             }
                         });
@@ -2563,16 +2582,15 @@ fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: e
     }
 }
 
-/// Resolve a pasted token to a canonical system name (exact, then prefix).
+/// Resolve a pasted token to a canonical system name. Exact match only — paste
+/// data uses full system names, and prefix matching would resolve stray words to
+/// random systems whose name merely starts with the token.
 fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
     let tok = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '\'');
     if tok.len() < 2 {
         return None;
     }
-    graph
-        .lookup(tok)
-        .or_else(|| graph.lookup_prefix(tok))
-        .map(|i| i.name.clone())
+    graph.lookup(tok).map(|i| i.name.clone())
 }
 
 /// Parse a pasted jump-bridge list (standard): the first two systems found on a
