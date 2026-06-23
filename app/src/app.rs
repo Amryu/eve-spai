@@ -177,6 +177,8 @@ pub struct SpaiApp {
     map_systems: Vec<crate::store::MapSystem>,
     map_loaded: Option<crate::map::MapView>,
     map_pan: egui::Vec2,
+    /// Last map canvas rect, to keep the centre fixed when the window resizes.
+    map_last_rect: Option<egui::Rect>,
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
@@ -317,6 +319,7 @@ impl SpaiApp {
             map_systems: Vec::new(),
             map_loaded: None,
             map_pan: egui::Vec2::ZERO,
+            map_last_rect: None,
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
@@ -1346,6 +1349,18 @@ impl SpaiApp {
         };
 
         let rect = ui.available_rect_before_wrap();
+        // On window resize, rescale the pan so the same world point stays centred.
+        if let Some(prev) = self.map_last_rect {
+            let d = prev.size() - rect.size();
+            if d.x.abs() > 0.5 || d.y.abs() > 0.5 {
+                let old_s = bounds.base_scale(prev, 30.0);
+                let new_s = bounds.base_scale(rect, 30.0);
+                if old_s > 0.0 {
+                    self.map_pan *= new_s / old_s;
+                }
+            }
+        }
+        self.map_last_rect = Some(rect);
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
         // Mouse back/forward buttons.

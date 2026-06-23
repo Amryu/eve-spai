@@ -46,7 +46,7 @@ impl Bounds {
     }
 
     /// Uniform scale to fit the region in `rect` (before zoom).
-    fn base_scale(&self, rect: Rect, margin: f32) -> f32 {
+    pub fn base_scale(&self, rect: Rect, margin: f32) -> f32 {
         let w = (rect.width() - 2.0 * margin).max(1.0) as f64;
         let h = (rect.height() - 2.0 * margin).max(1.0) as f64;
         let span_x = (self.max_x - self.min_x).max(1.0);
