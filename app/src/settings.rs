@@ -93,6 +93,12 @@ pub struct AlertRule {
     pub min_severity: Severity,
     /// Specific systems by name (empty = any).
     pub systems: Vec<String>,
+    /// Constellations by name — a report in any of them matches.
+    #[serde(default)]
+    pub constellations: Vec<String>,
+    /// Regions by name — a report in any of them matches.
+    #[serde(default)]
+    pub regions: Vec<String>,
     /// Within this many jumps of an alerting character (None = any distance).
     pub max_jumps: Option<u32>,
     /// At least this many hostiles (None = any).
@@ -120,6 +126,8 @@ impl Default for AlertRule {
             enabled: true,
             min_severity: Severity::Warning,
             systems: Vec::new(),
+            constellations: Vec::new(),
+            regions: Vec::new(),
             max_jumps: None,
             min_count: None,
             require: Vec::new(),

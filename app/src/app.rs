@@ -486,7 +486,7 @@ impl SpaiApp {
                     let srcs = char_systems(&ru.characters);
                     let measurable = !srcs.is_empty() && target.is_some();
                     let jumps = min_jumps_from(&systems, &srcs, target);
-                    if rule_matches(ru, r, sev, jumps, measurable) {
+                    if rule_matches(ru, r, sev, jumps, measurable, &systems) {
                         chosen = Some((ru, jumps));
                         break;
                     }
@@ -2263,16 +2263,27 @@ impl SpaiApp {
         }
     }
 
-    /// Top-right "Overlays" menu (sovereignty, ADM, activity, bridges, upgrades).
+    /// "Overlays" menu (sovereignty, ADM, activity, bridges, upgrades). Anchored
+    /// top-right; on a narrow map it moves to the bottom-right so the controls bar
+    /// can't overlap it, and the popover scrolls when it's taller than the map.
     fn map_overlay_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         let screen = ui.ctx().content_rect();
-        let offset = egui::vec2(rect.right() - screen.right() - 8.0, rect.top() - screen.top() + 8.0);
-        // The button is its own right-anchored area (so it stays in the corner), and
-        // the popover is a second right-anchored area below it — each sized to its
-        // own content rather than stretched to align.
+        // Tight on width: the top-left controls bar would overlap a top-right menu.
+        let narrow = rect.width() < 760.0;
+        let (anchor, base) = if narrow {
+            (
+                egui::Align2::RIGHT_BOTTOM,
+                egui::vec2(rect.right() - screen.right() - 8.0, rect.bottom() - screen.bottom() - 8.0),
+            )
+        } else {
+            (
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(rect.right() - screen.right() - 8.0, rect.top() - screen.top() + 8.0),
+            )
+        };
         let btn_area = egui::Area::new(egui::Id::new("map_overlays_btn"))
-            .anchor(egui::Align2::RIGHT_TOP, offset)
+            .anchor(anchor, base)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style())
@@ -2290,37 +2301,42 @@ impl SpaiApp {
         if !self.overlay_menu_open {
             return;
         }
-        let pop_offset = offset + egui::vec2(0.0, btn_area.response.rect.height() + 6.0);
+        // The popover sits below the button (top anchor) or above it (bottom anchor).
+        let gap = btn_area.response.rect.height() + 6.0;
+        let pop_offset = if narrow { base - egui::vec2(0.0, gap) } else { base + egui::vec2(0.0, gap) };
+        let max_h = (rect.height() - btn_area.response.rect.height() - 24.0).clamp(120.0, 600.0);
         egui::Area::new(egui::Id::new("map_overlays_pop"))
-            .anchor(egui::Align2::RIGHT_TOP, pop_offset)
+            .anchor(anchor, pop_offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
-                    ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
-                    ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
-                    ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
-                    ui.separator();
-                    ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
-                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
-                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
-                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
-                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
-                    ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
-                    ui.separator();
-                    ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
-                    ui.checkbox(
-                        &mut self.map_overlays.bridges,
-                        format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
-                    );
-                    ui.checkbox(
-                        &mut self.map_overlays.upgrades,
-                        format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
-                    );
-                    ui.checkbox(
-                        &mut self.map_overlays.jump_range,
-                        format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
-                    );
+                    egui::ScrollArea::vertical().auto_shrink([true, true]).max_height(max_h).show(ui, |ui| {
+                        ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
+                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
+                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
+                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
+                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
+                        ui.separator();
+                        ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
+                        ui.checkbox(
+                            &mut self.map_overlays.bridges,
+                            format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
+                        );
+                        ui.checkbox(
+                            &mut self.map_overlays.upgrades,
+                            format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
+                        );
+                        ui.checkbox(
+                            &mut self.map_overlays.jump_range,
+                            format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
+                        );
+                    });
                 });
             });
     }
@@ -3524,19 +3540,32 @@ impl SpaiApp {
                         }
                     }
                 });
-                // Systems (comma/space separated).
-                ui.horizontal(|ui| {
-                    ui.label("systems:");
-                    let mut s = ru.systems.join(", ");
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY).hint_text("any"))
-                        .changed()
-                    {
-                        ru.systems =
-                            s.split([',', ' ']).map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect();
-                        changed = true;
-                    }
-                });
+                // Location filter: systems / constellations / regions (any matches).
+                // Constellation/region names contain spaces, so they split on commas
+                // only; system codes split on spaces too.
+                let loc_field = |ui: &mut egui::Ui, label: &str, list: &mut Vec<String>, split_space: bool| -> bool {
+                    let mut ch = false;
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let mut s = list.join(", ");
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut s)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("any"),
+                            )
+                            .changed()
+                        {
+                            let sep: &[char] = if split_space { &[',', ' '] } else { &[','] };
+                            *list = s.split(sep).map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect();
+                            ch = true;
+                        }
+                    });
+                    ch
+                };
+                changed |= loc_field(ui, "systems:", &mut ru.systems, true);
+                changed |= loc_field(ui, "constellations:", &mut ru.constellations, false);
+                changed |= loc_field(ui, "regions:", &mut ru.regions, false);
                 // Characters this rule applies to (empty = any enabled character).
                 ui.horizontal(|ui| {
                     ui.label("characters:");
@@ -4692,6 +4721,7 @@ fn rule_matches(
     sev: crate::settings::Severity,
     jumps: Option<u32>,
     measurable: bool,
+    geo: &Option<std::sync::Arc<crate::geo::Systems>>,
 ) -> bool {
     if sev < ru.min_severity {
         return false;
@@ -4703,10 +4733,24 @@ fn rule_matches(
             return false;
         }
     }
-    if !ru.systems.is_empty()
-        && !r.systems.iter().any(|s| ru.systems.iter().any(|n| n.eq_ignore_ascii_case(&s.name)))
-    {
-        return false;
+    // Location filter: systems, constellations, and/or regions (any may match).
+    let loc_filter =
+        !ru.systems.is_empty() || !ru.constellations.is_empty() || !ru.regions.is_empty();
+    if loc_filter {
+        let matched = r.systems.iter().any(|ds| {
+            if ru.systems.iter().any(|n| n.eq_ignore_ascii_case(&ds.name)) {
+                return true;
+            }
+            if let Some(info) = geo.as_ref().and_then(|g| g.info_of(ds.id)) {
+                ru.constellations.iter().any(|n| n.eq_ignore_ascii_case(&info.constellation))
+                    || ru.regions.iter().any(|n| n.eq_ignore_ascii_case(&info.region))
+            } else {
+                false
+            }
+        });
+        if !matched {
+            return false;
+        }
     }
     if let Some(mc) = ru.min_count {
         if !r.count.is_some_and(|c| c >= mc) {
