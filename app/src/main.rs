@@ -21,6 +21,7 @@ mod map;
 mod pilot;
 mod nav;
 mod packs;
+mod rats;
 mod sde;
 mod settings;
 mod shipnames;

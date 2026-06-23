@@ -1556,8 +1556,8 @@ impl SpaiApp {
                                     let url =
                                         format!("https://images.evetech.net/types/{tid}/icon?size=64");
                                     ui.put(rect, egui::Image::new(url)).on_hover_text(*up);
-                                    // Level indicator dot.
-                                    painter.circle_filled(rect.right_bottom(), 3.0, lcol);
+                                    // Level indicator dot (top-right corner).
+                                    painter.circle_filled(rect.right_top(), 3.0, lcol);
                                 }
                             }
                         }
@@ -1645,9 +1645,20 @@ impl SpaiApp {
                 .filter_map(|r| r.primary_system().map(|s| s.id))
                 .collect()
         };
-        // System labels appear past a fixed zoom level — purely zoom-based so they
-        // don't flicker on/off while panning. Otherwise region names are labelled.
-        let show_sys_labels = self.map_zoom >= 3.5;
+        // System labels appear once zoomed in past region level (so they're spaced
+        // enough to read); a collision check then drops any that would still overlap.
+        let show_sys_labels = self.map_zoom >= 12.0;
+        let upgrade_counts: std::collections::HashMap<String, usize> =
+            if self.map_overlays.upgrades && zoomed {
+                let mut m = std::collections::HashMap::new();
+                for u in &self.settings.sov_upgrades {
+                    *m.entry(u.system.to_lowercase()).or_insert(0) += 1;
+                }
+                m
+            } else {
+                std::collections::HashMap::new()
+            };
+        let mut placed_labels: Vec<egui::Rect> = Vec::new();
         for s in &self.map_draw {
             let p = pos[&s.id];
             painter.circle_filled(p, dot, security_color(s.security));
@@ -1666,13 +1677,24 @@ impl SpaiApp {
                 painter.circle_stroke(p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             }
             if show_sys_labels && rect.contains(p) {
-                painter.text(
-                    p + egui::vec2(6.0, -2.0),
-                    egui::Align2::LEFT_CENTER,
-                    &s.name,
-                    egui::FontId::proportional(13.0),
-                    ui.visuals().text_color(),
+                // Shift the label clear of any sov-upgrade icons to the right.
+                let n_up = upgrade_counts.get(&s.name.to_lowercase()).copied().unwrap_or(0);
+                let icon_w = if n_up > 0 { dot + 3.0 + n_up.min(6) as f32 * 20.0 } else { 0.0 };
+                let anchor = p + egui::vec2(6.0 + icon_w, -2.0);
+                let approx = egui::Rect::from_min_size(
+                    anchor,
+                    egui::vec2(s.name.len() as f32 * 7.0, 14.0),
                 );
+                if !placed_labels.iter().any(|r| r.expand(2.0).intersects(approx)) {
+                    placed_labels.push(approx);
+                    painter.text(
+                        anchor,
+                        egui::Align2::LEFT_CENTER,
+                        &s.name,
+                        egui::FontId::proportional(13.0),
+                        ui.visuals().text_color(),
+                    );
+                }
             }
         }
 
@@ -1987,6 +2009,7 @@ impl SpaiApp {
                         ui.label(icon::MAGNIFYING_GLASS);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.map_search)
+                                .id(egui::Id::new("map_search_input"))
                                 .hint_text("Search system")
                                 .desired_width(220.0),
                         );
@@ -2301,6 +2324,25 @@ impl SpaiApp {
                         stat(ui, "pod kills", flags.pod_kills, ak);
                         stat(ui, "NPC kills", flags.npc_kills, an);
                     });
+                }
+                // NPC rats (consistent per region).
+                if let Some(rp) = crate::rats::rat_profile(&info.region) {
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
+                        ui.label(egui::RichText::new(rp.faction).strong());
+                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Deals {} / {}   ·   weak to {} / {}",
+                            rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
+                        ))
+                        .weak(),
+                    )
+                    .on_hover_text("Tank against the damage they deal; deal the damage they're weak to.");
+                    if rp.ewar != "None" {
+                        ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
+                    }
                 }
                 // Configured sovereignty upgrades for this system.
                 let upgrades: Vec<&str> = self
