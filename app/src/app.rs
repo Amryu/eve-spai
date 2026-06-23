@@ -935,7 +935,7 @@ impl SpaiApp {
         let names = self.type_names.lock().unwrap().clone();
         let mut new_mode = mode;
 
-        let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai — Fit", [380.0, 560.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai — Fit", [460.0, 620.0], |ui| {
             ui.horizontal(|ui| {
                 let url = format!("https://images.evetech.net/types/{ship_id}/icon?size=32");
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
@@ -1650,14 +1650,18 @@ impl SpaiApp {
                         };
                         ui.label(egui::RichText::new(clock).monospace());
                         ui.separator();
-                        let dim = ui.visuals().weak_text_color();
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}  ESI offline",
-                                egui_phosphor::regular::PLUGS
-                            ))
-                            .color(dim),
-                        );
+                        // ESI is "online" once the public status poller has data.
+                        let esi_ok = !self.system_status.lock().unwrap().is_empty();
+                        let (icon, text, col) = if esi_ok {
+                            (
+                                egui_phosphor::regular::PLUGS_CONNECTED,
+                                "ESI online",
+                                egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+                            )
+                        } else {
+                            (egui_phosphor::regular::PLUGS, "ESI offline", ui.visuals().weak_text_color())
+                        };
+                        ui.label(egui::RichText::new(format!("{icon}  {text}")).color(col));
                     });
                 });
             });

@@ -200,6 +200,10 @@ fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<L
 /// Bulk-resolve type ids to names via ESI `/universe/names` (≤1000 per call).
 pub fn resolve_type_names(ids: &[i64]) -> std::collections::HashMap<i64, String> {
     let mut out = std::collections::HashMap::new();
+    // /universe/names rejects duplicate ids (HTTP 400) — dedup first.
+    let mut ids: Vec<i64> = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
     if ids.is_empty() {
         return out;
     }
