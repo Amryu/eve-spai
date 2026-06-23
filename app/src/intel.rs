@@ -521,6 +521,8 @@ struct UrlTags {
     char_ids: Vec<(String, i64)>,
     ships: Vec<(i64, String)>,
     systems: Vec<String>,
+    /// Stargate links — the name is the destination system, i.e. a gate.
+    gates: Vec<String>,
 }
 
 fn parse_url_tags(
@@ -535,6 +537,7 @@ fn parse_url_tags(
         char_ids: Vec::new(),
         ships: Vec::new(),
         systems: Vec::new(),
+        gates: Vec::new(),
     };
     let mut rest = text;
     while let Some(start) = rest.find("<url=") {
@@ -563,11 +566,15 @@ fn parse_url_tags(
         t.masked.push(' '); // blank the linked span for the heuristic
         if let Some(rest_attr) = attr.strip_prefix("showinfo:") {
             let type_id: i64 = rest_attr.split("//").next().unwrap_or("").parse().unwrap_or(0);
+            let item_id: i64 = rest_attr.split("//").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
             if !inner.is_empty() {
-                // The typeID disambiguates: 5 = solar system; a character bloodline
-                // (1373–1390) = a character (authoritative even when the name also
-                // happens to be a system, e.g. "Sindend"); a hull typeID = a ship.
-                if type_id == 5 {
+                // The itemID range disambiguates a stargate (50M) from a solar system
+                // (30M); the typeID disambiguates a character bloodline (1373–1390,
+                // authoritative even when the name is also a system) or a hull.
+                if (50_000_000..60_000_000).contains(&item_id) {
+                    // A stargate link — its name is the destination system: a gate.
+                    t.gates.push(inner.to_owned());
+                } else if type_id == 5 {
                     t.systems.push(inner.to_owned());
                 } else if (1373..=1390).contains(&type_id) {
                     t.pilots.push(inner.to_owned());
@@ -606,6 +613,7 @@ pub fn analyze(
     let tags = parse_url_tags(text, systems, ship_index);
     let display_text = tags.display.trim().to_owned();
     let si_char_ids = tags.char_ids;
+    let si_gates = tags.gates;
     let (si_pilots, si_ships, si_systems) = (tags.pilots, tags.ships, tags.systems);
     let text = tags.masked.as_str();
     let lower = text.to_lowercase();
@@ -860,6 +868,31 @@ pub fn analyze(
             detected.retain(|d| d.id != info.id);
         }
         break;
+    }
+
+    // A stargate showinfo link names the destination system — that's the gate.
+    if gate.is_none() {
+        if let Some(g) = si_gates.first() {
+            let name = resolve(systems, g).map(|i| i.name.clone());
+            // Don't double-list the gate's destination as a plain system.
+            if let Some(n) = &name {
+                detected.retain(|d| &d.name != n);
+            }
+            gate = Some(name.unwrap_or_else(|| g.clone()));
+        }
+    }
+
+    // Two or more systems with no explicit gate: if the later one is a neighbour of
+    // the first, it's almost certainly the gate they're heading to (direction of
+    // travel), so promote it to the gate instead of a second location.
+    if gate.is_none() && detected.len() >= 2 {
+        let first = detected[0].id;
+        if let Some(pos) =
+            detected.iter().skip(1).position(|d| systems.neighbors(first).contains(&d.id))
+        {
+            let d = detected.remove(pos + 1);
+            gate = Some(d.name);
+        }
     }
 
     IntelReport {
@@ -1383,6 +1416,51 @@ mod tests {
         let s = systems();
         let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
+    }
+
+    #[test]
+    fn showinfo_stargate_is_gate() {
+        let s = systems();
+        let r = analyze(
+            "<url=showinfo:5//30004937>Rancer</url> 和 <url=showinfo:17//50012542>Jita</url> 相似",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert_eq!(r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Rancer"]);
+        assert_eq!(r.gate.as_deref(), Some("Jita")); // the stargate link → gate
+    }
+
+    #[test]
+    fn neighbour_second_system_becomes_gate() {
+        // Rancer (1) and Jita (2) as gate neighbours.
+        let by_name: std::collections::HashMap<String, SystemInfo> = [
+            ("rancer", "Rancer", 1, 0.4),
+            ("jita", "Jita", 2, 0.9),
+        ]
+        .into_iter()
+        .map(|(k, n, id, sec)| {
+            (
+                k.to_string(),
+                SystemInfo {
+                    id,
+                    name: n.to_string(),
+                    security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            )
+        })
+        .collect();
+        let adj = std::collections::HashMap::from([(1i64, vec![2i64]), (2, vec![1])]);
+        let s = Systems::new(by_name, adj);
+        let r = analyze("hostiles in Rancer heading Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Rancer"]);
+        assert_eq!(r.gate.as_deref(), Some("Jita"));
     }
 
     #[test]

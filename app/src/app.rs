@@ -1815,7 +1815,8 @@ impl SpaiApp {
                         .show(ctx, |_ui| {});
                     return;
                 }
-                // Re-apply the saved geometry when an alert first appears.
+                // Re-apply the saved geometry + on-top level when an alert appears
+                // (the builder values aren't reliably re-applied after unmapping).
                 if just_opened {
                     if let Some((w, h)) = self.settings.alerts.window_size {
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -1823,6 +1824,11 @@ impl SpaiApp {
                     if let Some((x, y)) = self.settings.alerts.window_pos {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
                     }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
+                        egui::WindowLevel::AlwaysOnTop
+                    } else {
+                        egui::WindowLevel::Normal
+                    }));
                 }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
