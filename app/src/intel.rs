@@ -586,21 +586,20 @@ fn parse_url_tags(
             let item_id: i64 = rest_attr.split("//").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
             if !inner.is_empty() {
                 // The itemID range disambiguates a stargate (50M) from a solar system
-                // (30M); the typeID disambiguates a character bloodline (1373–1390,
-                // authoritative even when the name is also a system) or a hull.
+                // (30M). A character is identified by BOTH its bloodline typeID
+                // (1373–1390) and its itemID range — so a newer bloodline whose typeID
+                // we don't list is still caught by its id (chars: 90–98M and the modern
+                // 2.10–2.147B range), authoritative even when the name is also a system.
+                let is_char_id = (90_000_000..98_000_000).contains(&item_id)
+                    || (2_100_000_000..=2_147_483_647).contains(&item_id);
                 if (50_000_000..60_000_000).contains(&item_id) {
                     // A stargate link — its name is the destination system: a gate.
                     t.gates.push(inner.to_owned());
                 } else if type_id == 5 {
                     t.systems.push(inner.to_owned());
-                } else if (1373..=1390).contains(&type_id) {
+                } else if (1373..=1390).contains(&type_id) || is_char_id {
                     t.pilots.push(inner.to_owned());
-                    // The itemID after "//" is the character id.
-                    if let Some(cid) =
-                        rest_attr.split("//").nth(1).and_then(|v| v.parse::<i64>().ok())
-                    {
-                        t.char_ids.push((inner.to_owned(), cid));
-                    }
+                    t.char_ids.push((inner.to_owned(), item_id));
                 } else if let Some((id, name)) = ship_index.get(&inner.to_lowercase()) {
                     t.ships.push((*id, name.clone()));
                 } else if resolve(systems, inner).is_some() {
@@ -887,6 +886,7 @@ pub fn analyze(
     // (resolved name, or the raw token if abbreviated/unknown) and don't also list
     // it as a plain system.
     let mut gate: Option<String> = None;
+    let primary = detected.first().map(|d| d.id);
     for (i, tok) in tokens.iter().enumerate() {
         if !tok.eq_ignore_ascii_case("gate") || i == 0 {
             continue;
@@ -898,13 +898,27 @@ pub fn analyze(
         // An explicit "<x> gate" keyword is authoritative for a resolvable code, but
         // a bare number that doesn't resolve is never a gate name (a single digit
         // never is, and e.g. "5 gate" means five hostiles).
-        let resolved = resolve(systems, cand).or_else(|| {
-            // "<X> gate" strongly implies X is a system — accept an unambiguous
-            // abbreviation even without a hyphen (e.g. "YPW" → YPW-M2).
-            let abbrev = cand.len() >= 2
-                && cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
-            if abbrev { systems.lookup_prefix(cand) } else { None }
-        });
+        let resolved = resolve(systems, cand)
+            .or_else(|| {
+                // The gate leads to a *neighbour* of the report's system, and there are
+                // only a handful — so even a 1–2 char prefix is unambiguous: "C-J6MT >
+                // 5e gate" → 5E-CFL. (A bare number is a hostile count, not a name.)
+                if cand.chars().all(|c| c.is_ascii_digit()) {
+                    return None;
+                }
+                let lc = cand.to_lowercase();
+                primary.and_then(|p| {
+                    systems.neighbors(p).iter().find_map(|&nid| {
+                        systems.info_of(nid).filter(|i| i.name.to_lowercase().starts_with(&lc))
+                    })
+                })
+            })
+            .or_else(|| {
+                // Still nothing: accept an unambiguous global abbreviation (e.g. "YPW").
+                let abbrev = cand.len() >= 2
+                    && cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
+                if abbrev { systems.lookup_prefix(cand) } else { None }
+            });
         if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
             break;
         }
@@ -1641,6 +1655,70 @@ mod tests {
         let q = analyze("status in Rancer?", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(q.status);
         assert!(!q.pilots.iter().any(|p| p.eq_ignore_ascii_case("status")));
+    }
+
+    #[test]
+    fn showinfo_char_link_recognised_by_typeid_and_itemid() {
+        let s = systems();
+        // A character whose bloodline typeID we list (1378) is recognised, AND its
+        // char id is captured from the itemID (in the modern 2.1B character range).
+        let r = analyze(
+            "<url=showinfo:1378//2116583018>The Meek</url> proteus",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "Reporter",
+        );
+        assert!(r.pilots.iter().any(|p| p == "The Meek"));
+        assert!(r.char_ids.iter().any(|(n, id)| n == "The Meek" && *id == 2116583018));
+        // A character whose typeID is NOT in our bloodline list is still caught by its
+        // itemID being in the character range.
+        let r2 = analyze(
+            "<url=showinfo:99//94000123>Nobody Known</url>",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "Reporter",
+        );
+        assert!(r2.char_ids.iter().any(|(n, id)| n == "Nobody Known" && *id == 94000123));
+    }
+
+    #[test]
+    fn gate_resolves_neighbour_prefix() {
+        use std::collections::HashMap;
+        let by_name = [
+            ("c-j6mt", "C-J6MT", 5i64, -0.6),
+            ("5e-cfl", "5E-CFL", 10, -0.5),
+            ("sv5-8n", "SV5-8N", 9, -0.4),
+        ]
+        .into_iter()
+        .map(|(k, n, id, sec)| {
+            (
+                k.to_string(),
+                SystemInfo {
+                    id,
+                    name: n.to_string(),
+                    security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            )
+        })
+        .collect();
+        // C-J6MT neighbours 5E-CFL and SV5-8N.
+        let adj = HashMap::from([(5i64, vec![10i64, 9]), (10, vec![5]), (9, vec![5])]);
+        let s = Systems::new(by_name, adj);
+        // A short prefix matching a neighbour name resolves to the full system.
+        let r = analyze("C-J6MT 5e gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.gate.as_deref(), Some("5E-CFL"));
+        // A 2-char letter prefix matches the other neighbour too.
+        let r2 = analyze("C-J6MT sv gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r2.gate.as_deref(), Some("SV5-8N"));
     }
 
     #[test]

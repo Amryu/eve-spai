@@ -7240,9 +7240,13 @@ fn intel_row(
                     }
                 }
 
-                // Pilot panels (only names confirmed as real characters by ESI).
+                // Pilot panels: names confirmed as real characters — either by ESI
+                // (resolved_pilots) or authoritatively by an in-game showinfo char link
+                // (char_ids), which always wins regardless of the ESI cache state.
                 for name in &r.pilots {
-                    if !resolved_pilots.contains_key(name) {
+                    let char_linked =
+                        r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
+                    if !char_linked && !resolved_pilots.contains_key(name) {
                         continue;
                     }
                     let txt = egui::RichText::new(format!("{} {name}", icon::USER));
