@@ -1487,7 +1487,7 @@ impl SpaiApp {
                 if ov.upgrades && zoomed {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
                         for (k, up) in ups.iter().take(6).enumerate() {
-                            let ip = p + egui::vec2(dot + 3.0 + k as f32 * 14.0, -(dot + 4.0));
+                            let ip = p + egui::vec2(dot + 3.0 + k as f32 * 20.0, -(dot + 4.0));
                             let (kind, level) = upgrade_info(up);
                             let lcol = level_color(level);
                             match kind {
@@ -1496,21 +1496,21 @@ impl SpaiApp {
                                         ip,
                                         egui::Align2::LEFT_BOTTOM,
                                         g,
-                                        egui::FontId::proportional(13.0),
+                                        egui::FontId::proportional(16.0),
                                         lcol,
                                     );
                                 }
                                 UpgradeIcon::Mineral(tid) => {
+                                    let sz = 19.0;
                                     let rect = egui::Rect::from_min_size(
-                                        egui::pos2(ip.x, ip.y - 13.0),
-                                        egui::Vec2::splat(13.0),
+                                        egui::pos2(ip.x, ip.y - sz),
+                                        egui::Vec2::splat(sz),
                                     );
                                     let url =
-                                        format!("https://images.evetech.net/types/{tid}/icon?size=32");
-                                    ui.put(rect, egui::Image::new(url))
-                                        .on_hover_text(*up);
+                                        format!("https://images.evetech.net/types/{tid}/icon?size=64");
+                                    ui.put(rect, egui::Image::new(url)).on_hover_text(*up);
                                     // Level indicator dot.
-                                    painter.circle_filled(rect.right_bottom(), 2.5, lcol);
+                                    painter.circle_filled(rect.right_bottom(), 3.0, lcol);
                                 }
                             }
                         }
@@ -1598,10 +1598,9 @@ impl SpaiApp {
                 .filter_map(|r| r.primary_system().map(|s| s.id))
                 .collect()
         };
-        // System labels only when few systems are actually on screen (so they don't
-        // appear too early / lag). Otherwise region names are labelled below.
-        let visible = self.map_draw.iter().filter(|s| rect.contains(pos[&s.id])).count();
-        let show_sys_labels = visible <= 60;
+        // System labels appear past a fixed zoom level — purely zoom-based so they
+        // don't flicker on/off while panning. Otherwise region names are labelled.
+        let show_sys_labels = self.map_zoom >= 3.5;
         for s in &self.map_draw {
             let p = pos[&s.id];
             painter.circle_filled(p, dot, security_color(s.security));
@@ -2128,6 +2127,41 @@ impl SpaiApp {
         let mut show_on_map = false;
         let now = chrono::Utc::now().timestamp();
 
+        // Build the data the proper intel cards need (same as the intel feed).
+        let ttl = self.settings.intel_ttl_secs;
+        let player_sys = self.player.lock().unwrap().system_id;
+        let (sys_reports, stale_flags): (Vec<crate::intel::IntelReport>, Vec<bool>) = {
+            let st = self.intel_state.lock().unwrap();
+            let mut reps = Vec::new();
+            let mut stale = Vec::new();
+            for r in st.reports.iter().rev() {
+                if r.systems.iter().any(|s| s.id == id) {
+                    stale.push(st.is_stale(r) || (now - r.received) > ttl);
+                    reps.push(r.clone());
+                }
+            }
+            (reps, stale)
+        };
+        let ship_ids: std::collections::HashSet<i64> =
+            sys_reports.iter().flat_map(|r| r.ships.iter().map(|s| s.id)).collect();
+        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
+            ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
+        let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
+            ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
+        let resolved_pilots: std::collections::HashMap<String, i64> = {
+            let cache = self.pilots.lock().unwrap();
+            sys_reports
+                .iter()
+                .flat_map(|r| r.pilots.iter())
+                .filter_map(|name| match cache.get(name) {
+                    Some(Some(pid)) => Some((name.clone(), pid)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let status_snapshot = self.system_status.lock().unwrap().clone();
+        let mut intel_click: Option<IntelClick> = None;
+
         let keep = Self::dialog_viewport(
             ctx,
             "system_window",
@@ -2306,35 +2340,19 @@ impl SpaiApp {
 
                 ui.separator();
                 ui.label(egui::RichText::new("Intel here").strong());
-                egui::ScrollArea::vertical().id_salt("sysintel").max_height(220.0).show(ui, |ui| {
-                    let mut any = false;
-                    for r in state.reports.iter().rev() {
-                        if !r.systems.iter().any(|s| s.id == id) {
-                            continue;
-                        }
-                        any = true;
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{:>6}", fmt_age((now - r.received).max(0))))
-                                    .monospace()
-                                    .weak(),
-                            );
-                            if let Some(n) = r.count {
-                                ui.label(egui::RichText::new(format!("{n}x")).strong());
-                            }
-                            if r.clear {
-                                ui.label(egui::RichText::new("CLEAR").color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)));
-                            }
-                            for sh in &r.ships {
-                                ui.label(egui::RichText::new(&sh.name).weak());
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(&r.reporter).weak());
-                            });
-                        });
-                    }
-                    if !any {
+                egui::ScrollArea::vertical().id_salt("sysintel").max_height(280.0).show(ui, |ui| {
+                    if sys_reports.is_empty() {
                         ui.label(egui::RichText::new("No recent intel.").weak());
+                    }
+                    for (i, r) in sys_reports.iter().enumerate() {
+                        let from_you =
+                            jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id));
+                        if let Some(c) = intel_row(
+                            ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
+                            &ship_details, &ship_roles, &resolved_pilots,
+                        ) {
+                            intel_click = Some(c);
+                        }
                     }
                 });
                 // TODO: neighbouring intel density over time (sparkline) — deferred.
@@ -2343,6 +2361,18 @@ impl SpaiApp {
 
         if let Some(nid) = nav {
             self.system_window = Some(nid);
+        }
+        // A click inside an intel card (ship / pilot / system).
+        match intel_click {
+            Some(IntelClick::System(sid)) => self.open_system(sid),
+            Some(IntelClick::Ship(sid)) => self.open_ship(sid),
+            Some(IntelClick::Pilot(name)) => {
+                self.pilot_query = name;
+                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
+                self.pilot_window_open = true;
+                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
+            }
+            None => {}
         }
         if show_on_map {
             self.view = View::Map;
@@ -3588,14 +3618,12 @@ fn upgrade_info(name: &str) -> (UpgradeIcon, u8) {
     (UpgradeIcon::Glyph(glyph), level)
 }
 
-/// Colour for a sov-upgrade level (low → high).
+/// Colour for a sov-upgrade level: white / green / red for level 1 / 2 / 3+.
 fn level_color(l: u8) -> egui::Color32 {
     match l {
-        5 => egui::Color32::from_rgb(0xFF, 0xC1, 0x07), // gold
-        4 => egui::Color32::from_rgb(0x42, 0xA5, 0xF5), // blue
-        3 => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // green
-        2 => egui::Color32::from_rgb(0x4D, 0xD0, 0xE1), // teal
-        _ => egui::Color32::from_rgb(0x9E, 0x9E, 0x9E), // grey (level 1 / unknown)
+        2 => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // green
+        3..=5 => egui::Color32::from_rgb(0xE5, 0x4B, 0x4B), // red
+        _ => egui::Color32::WHITE, // level 1 / unknown
     }
 }
 
