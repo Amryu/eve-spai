@@ -109,6 +109,9 @@ pub struct JabberState {
     pub status: String,
     /// Roster contacts (bare JID → contact).
     pub roster: std::collections::BTreeMap<String, Contact>,
+    /// Latest presence per bare JID, kept independently of the roster so a presence
+    /// that arrives before (or without) a roster entry is never lost.
+    pub presences: std::collections::BTreeMap<String, (Presence, String)>,
     /// Conversation history keyed by bare JID (1:1) or room JID.
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     /// Conversations with unread messages.
@@ -271,7 +274,8 @@ fn handle_event(
             let jid = item.jid.to_string();
             let groups: Vec<String> = item.groups.iter().map(|g| g.0.clone()).collect();
             let mut s = state.lock().unwrap();
-            // Keep any presence we've already learned for this contact.
+            // Apply any presence learned before this roster entry existed.
+            let known = s.presences.get(&jid).cloned();
             let entry = s.roster.entry(jid.clone()).or_insert_with(|| Contact {
                 jid: jid.clone(),
                 name: None,
@@ -281,6 +285,10 @@ fn handle_event(
             });
             entry.name = item.name.clone();
             entry.groups = groups;
+            if let Some((pres, st)) = known {
+                entry.presence = pres;
+                entry.status_text = st;
+            }
         }
         Event::ContactRemoved(item) => {
             state.lock().unwrap().roster.remove(&item.jid.to_string());
@@ -292,6 +300,9 @@ fn handle_event(
                 let presence = presence_from(&p);
                 let status = p.statuses.values().next().cloned().unwrap_or_default();
                 let mut s = state.lock().unwrap();
+                // Record it regardless of roster state (it may arrive first), and also
+                // apply it to the contact if we already have one.
+                s.presences.insert(bare.clone(), (presence, status.clone()));
                 if let Some(c) = s.roster.get_mut(&bare) {
                     c.presence = presence;
                     c.status_text = status;
