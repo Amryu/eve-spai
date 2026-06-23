@@ -9,9 +9,6 @@ use std::collections::HashMap;
 
 use crate::geo::Systems;
 
-/// How long a report stays live before decaying out of the feed.
-pub const DEFAULT_TTL_SECS: i64 = 300;
-
 #[derive(Clone, Debug)]
 pub struct DetectedSystem {
     pub id: i64,

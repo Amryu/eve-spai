@@ -98,6 +98,8 @@ pub struct SpaiApp {
     map_draw_key: Option<(crate::map::MapView, bool)>,
     /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
+    /// Persistently highlighted system on the map (from a search selection).
+    map_selected: Option<i64>,
     map_search: String,
     map_search_sel: usize,
     /// System-info window: the system currently shown (if any).
@@ -200,6 +202,7 @@ impl SpaiApp {
             map_draw_spaced: false,
             map_draw_key: None,
             map_focus: None,
+            map_selected: None,
             map_search: String::new(),
             map_search_sel: 0,
             system_window: None,
@@ -397,6 +400,18 @@ impl SpaiApp {
                     .custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n}") }),
             );
             ui.separator();
+            ui.label("outdated after").on_hover_text("How long until intel is outdated");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut self.settings.intel_ttl_secs)
+                        .range(30..=3600)
+                        .suffix("s"),
+                )
+                .changed()
+            {
+                self.needs_save = true;
+            }
+            ui.separator();
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add_sized(
                 [ui.available_width(), ui.spacing().interact_size.y],
@@ -441,11 +456,13 @@ impl SpaiApp {
                 .collect()
         };
         let mut action: Option<IntelClick> = None;
+        let ttl = self.settings.intel_ttl_secs;
         {
             let status = self.system_status.lock().unwrap();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for r in matches {
-                    let stale = state.is_stale(r);
+                    // Outdated: superseded by a clear, or older than the configured TTL.
+                    let stale = state.is_stale(r) || (now - r.received) > ttl;
                     let from_you =
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
                     if let Some(a) =
@@ -1077,6 +1094,12 @@ impl SpaiApp {
             if player_sys == Some(s.id) {
                 painter.circle_stroke(p, dot + 4.0, egui::Stroke::new(2.0, ui.visuals().hyperlink_color));
             }
+            if Some(s.id) == hovered_id {
+                painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+            }
+            if self.map_selected == Some(s.id) {
+                painter.circle_stroke(p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
+            }
             if show_sys_labels && rect.contains(p) {
                 painter.text(
                     p + egui::vec2(6.0, -2.0),
@@ -1189,24 +1212,30 @@ impl SpaiApp {
 
     /// Search panel at the bottom centre, with a keyboard-navigable dropdown that
     /// opens upward. Selecting a system focuses it (swapping region in region scope).
-    fn map_search_overlay(&mut self, ui: &mut egui::Ui, _rect: egui::Rect) {
+    fn map_search_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         let mut chosen: Option<i64> = None;
+        // Anchor to the map rect's bottom-centre (not the whole window).
+        let screen = ui.ctx().content_rect();
+        let offset = egui::vec2(
+            rect.center().x - screen.center().x,
+            rect.bottom() - screen.bottom() - 10.0,
+        );
         egui::Area::new(egui::Id::new("map_search"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -10.0))
+            .anchor(egui::Align2::CENTER_BOTTOM, offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     let has_query = !self.map_search.trim().is_empty();
-                    // Capture nav keys before the text field so it can't swallow them.
+                    // Read nav keys (single-line edit ignores up/down, so no conflict).
                     let (down, up, enter, esc) = if has_query {
-                        ui.input_mut(|i| {
+                        ui.input(|i| {
                             use egui::Key;
                             (
-                                i.consume_key(egui::Modifiers::NONE, Key::ArrowDown),
-                                i.consume_key(egui::Modifiers::NONE, Key::ArrowUp),
-                                i.consume_key(egui::Modifiers::NONE, Key::Enter),
-                                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+                                i.key_pressed(Key::ArrowDown),
+                                i.key_pressed(Key::ArrowUp),
+                                i.key_pressed(Key::Enter),
+                                i.key_pressed(Key::Escape),
                             )
                         })
                     } else {
@@ -1278,10 +1307,13 @@ impl SpaiApp {
     fn focus_map_on_select(&mut self, id: i64) {
         if matches!(self.map_view, crate::map::MapView::Region(_)) {
             if let Some(r) = self.store.as_ref().and_then(|s| s.region_of_system(id)) {
-                self.map_go(crate::map::MapView::Region(r));
+                self.map_go(crate::map::MapView::Region(r)); // resets zoom/pan
             }
         }
+        // Zoom in enough that system names show, centre + highlight the selection.
+        self.map_zoom = 12.0;
         self.map_focus = Some(id);
+        self.map_selected = Some(id);
     }
 
     /// Render the popped-out map in its own OS window.

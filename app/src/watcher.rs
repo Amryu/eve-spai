@@ -113,7 +113,9 @@ fn scan(
 
                 st.push(report);
             }
-            st.prune(intel::DEFAULT_TTL_SECS, now);
+            // Keep reports up to an hour so outdated ones still show (greyed) past
+            // the user-configurable outdated threshold; the UI marks staleness.
+            st.prune(3600, now);
             any_new = true;
         }
         processed.insert(path, messages.len());

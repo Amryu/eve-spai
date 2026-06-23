@@ -38,6 +38,13 @@ pub struct Settings {
     /// Desktop alerts on combat events (under attack / scrambled) from game logs.
     #[serde(default = "default_true")]
     pub alert_combat: bool,
+    /// Seconds until an intel report is considered outdated (and pruned).
+    #[serde(default = "default_intel_ttl")]
+    pub intel_ttl_secs: i64,
+}
+
+fn default_intel_ttl() -> i64 {
+    300
 }
 
 fn default_true() -> bool {
@@ -77,6 +84,7 @@ impl Default for Settings {
             alert_enabled: true,
             alert_within_jumps: 5,
             alert_combat: true,
+            intel_ttl_secs: 300,
         }
     }
 }
