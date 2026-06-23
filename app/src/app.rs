@@ -729,7 +729,6 @@ impl SpaiApp {
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.heading("Jabber");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !self.jabber_popped && ui.button("Pop out").clicked() {
                     self.jabber_popped = true;
@@ -1958,21 +1957,16 @@ impl SpaiApp {
         if !active {
             return; // idle: nothing to count down; window stays transparent
         }
-        // Countdown (paused while hovered; floor of 3 s when hovered). An infinite
-        // value never hides; we only repaint slowly to refresh the ages.
+        // Countdown (paused while hovered; floor of 3 s when hovered). The timer
+        // decrements by real elapsed time, so we only need a low repaint rate (the
+        // "Ns" label + ages) — not full framerate, which is what spiked the CPU.
         let dt = ctx.input(|i| i.stable_dt).min(0.5);
         if hovered {
             self.alert_window_secs = self.alert_window_secs.max(3.0);
-            ctx.request_repaint();
-        } else if self.alert_window_pinned {
-            // Pinned: hold open without counting down.
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
-        } else if self.alert_window_secs.is_finite() {
+        } else if !self.alert_window_pinned && self.alert_window_secs.is_finite() {
             self.alert_window_secs = (self.alert_window_secs - dt).max(0.0);
-            ctx.request_repaint();
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
+        ctx.request_repaint_after(std::time::Duration::from_millis(160)); // ~6 fps
     }
 
     /// Persist map overlay + intel-filter options when they change.
@@ -2504,7 +2498,7 @@ impl SpaiApp {
                         dashed_flow(&painter, *p1, *p2, route_col, phase);
                     }
                 }
-                ui.ctx().request_repaint(); // keep the dashes flowing
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33)); // dashes
             }
         }
 
@@ -2757,25 +2751,41 @@ impl SpaiApp {
             }
         }
 
-        // Systems with live (non-clear, non-stale) intel get a red glow.
-        let intel_sys: std::collections::HashSet<i64> = {
+        // Per-system: highest active severity + latest time (for a graded glow).
+        let sev_rules = self.settings.severity.clone();
+        let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
             let st = self.intel_state.lock().unwrap();
-            let mut set = std::collections::HashSet::new();
+            let mut m: std::collections::HashMap<i64, (crate::settings::Severity, i64)> =
+                std::collections::HashMap::new();
             for r in &st.reports {
-                if !r.clear && !st.is_stale(r) {
-                    set.extend(r.systems.iter().map(|s| s.id));
+                if r.clear || st.is_stale(r) {
+                    continue;
+                }
+                if let Some(sy) = r.primary_system() {
+                    let sev = severity_of(r, &sev_rules);
+                    let e = m.entry(sy.id).or_insert((sev, r.received));
+                    e.0 = e.0.max(sev);
+                    e.1 = e.1.max(r.received);
                 }
             }
-            set
+            m
         };
+        let now_ts = chrono::Utc::now().timestamp();
+        let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
+        let mut any_fresh = false;
 
-        // Edges (each undirected pair once).
+        // Edges (each undirected pair once). Jump bridges are drawn green.
         let edge = visuals.weak_text_color().gamma_multiply(0.5);
+        let bridge_col = egui::Color32::from_rgb(0x4C, 0xC2, 0x6A);
         for &a in &order {
             for &b in graph.neighbors(a) {
                 if a < b {
                     if let (Some(&pa), Some(&pb)) = (pos.get(&a), pos.get(&b)) {
-                        painter.line_segment([pa, pb], egui::Stroke::new(1.0, edge));
+                        if graph.is_bridge(a, b) {
+                            painter.line_segment([pa, pb], egui::Stroke::new(2.0, bridge_col));
+                        } else {
+                            painter.line_segment([pa, pb], egui::Stroke::new(1.0, edge));
+                        }
                     }
                 }
             }
@@ -2801,8 +2811,16 @@ impl SpaiApp {
             let sec = info.map(|i| i.security).unwrap_or(0.0);
             let is_center = id == center;
             let r = if is_center { node_r + 2.5 } else { node_r };
-            if intel_sys.contains(&id) {
-                painter.circle_filled(p, r + 5.0, crate::theme::standing::HOSTILE.gamma_multiply(0.45));
+            if let Some((isev, received)) = intel_map.get(&id) {
+                let base = severity_color(*isev);
+                let fresh = now_ts - received < 15;
+                let a = if fresh {
+                    any_fresh = true;
+                    0.45 + 0.45 * blink
+                } else {
+                    0.45
+                };
+                painter.circle_filled(p, r + 5.0, base.gamma_multiply(a));
             }
             painter.circle_filled(p, r, security_color(sec));
             let outline = if is_center {
@@ -2867,6 +2885,9 @@ impl SpaiApp {
             egui::FontId::proportional(12.0),
             visuals.weak_text_color(),
         );
+        if any_fresh {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
+        }
     }
 
     /// The map control overlays (or the minimal overlay-mode bar / hidden state).

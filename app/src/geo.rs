@@ -48,6 +48,12 @@ impl Systems {
         self.adjacency.get(&id).map_or(&[], |v| v.as_slice())
     }
 
+    /// Whether the edge a↔b is a jump bridge (an adjacency that isn't a gate).
+    pub fn is_bridge(&self, a: i64, b: i64) -> bool {
+        self.adjacency.get(&a).is_some_and(|v| v.contains(&b))
+            && !self.gate_adjacency.get(&a).is_some_and(|v| v.contains(&b))
+    }
+
     /// Add bidirectional jump-bridge edges (configured by the user) so distance and
     /// battle clustering can travel them like gates.
     pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {
