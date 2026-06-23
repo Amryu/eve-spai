@@ -18,6 +18,7 @@ mod intel;
 mod logpaths;
 mod lookup;
 mod map;
+mod pilot;
 mod nav;
 mod packs;
 mod sde;

@@ -24,6 +24,7 @@ pub fn spawn(
     channels: Vec<String>,
     systems: Arc<Systems>,
     ships: Arc<HashMap<String, (i64, String)>>,
+    pilots: crate::pilot::SharedPilots,
     state: Arc<Mutex<IntelState>>,
     ctx: egui::Context,
 ) {
@@ -38,6 +39,7 @@ pub fn spawn(
                 &channels,
                 &systems,
                 &ships,
+                &pilots,
                 &state,
                 &ctx,
                 &mut processed,
@@ -54,6 +56,7 @@ fn scan(
     channels: &[String],
     systems: &Systems,
     ships: &HashMap<String, (i64, String)>,
+    pilots: &crate::pilot::SharedPilots,
     state: &Mutex<IntelState>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
@@ -92,6 +95,14 @@ fn scan(
                 // Ignore non-placeable chatter: nothing to anchor without a system/gate.
                 if report.systems.is_empty() && report.gate.is_none() {
                     continue;
+                }
+
+                // Queue candidate pilot names for background ESI confirmation.
+                if !report.pilots.is_empty() {
+                    let mut cache = pilots.lock().unwrap();
+                    for name in &report.pilots {
+                        cache.queue(name);
+                    }
                 }
 
                 // Movement: link to the channel's previous sighting in a different

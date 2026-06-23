@@ -82,6 +82,7 @@ mod tests {
                 security: 0.0,
             }],
             ships: vec![],
+            pilots: vec![],
             count: Some(3),
             clear,
             no_visual: false,

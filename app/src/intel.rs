@@ -37,6 +37,8 @@ pub struct IntelReport {
     pub text: String,
     pub systems: Vec<DetectedSystem>,
     pub ships: Vec<DetectedShip>,
+    /// Candidate pilot names (Title-Case word runs); confirmed by ESI later.
+    pub pilots: Vec<String>,
     /// Approximate hostile/ship count parsed from the message, if any.
     pub count: Option<u32>,
     pub clear: bool,
@@ -103,6 +105,52 @@ impl IntelState {
 }
 
 const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
+
+/// Common Title-Case intel/English words that are not pilot names.
+const PILOT_STOP: &[&str] = &[
+    "gate", "camp", "clear", "clr", "spike", "bubble", "cyno", "local", "dock", "docked",
+    "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
+    "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
+    "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
+    "afk", "warpin", "system", "and", "for",
+];
+
+/// Candidate pilot names: runs of 2–3 Title-Case alphabetic words, minus obvious
+/// intel/English words and tokens already consumed as systems. ESI confirms which
+/// are real characters later.
+fn extract_pilots(tokens: &[&str], consumed: &[String]) -> Vec<String> {
+    let is_word = |t: &str| {
+        t.len() >= 2
+            && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && t.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut run: Vec<&str> = Vec::new();
+    let flush = |run: &mut Vec<&str>, out: &mut Vec<String>| {
+        if (2..=3).contains(&run.len()) {
+            let bad = run.iter().any(|w| {
+                let lw = w.to_lowercase();
+                PILOT_STOP.contains(&lw.as_str()) || consumed.contains(&lw)
+            });
+            if !bad {
+                let name = run.join(" ");
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
+        run.clear();
+    };
+    for &t in tokens {
+        if is_word(t) {
+            run.push(t);
+        } else {
+            flush(&mut run, &mut out);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
 
 /// Analyse one message into a structured report (movement is added later).
 pub fn analyze(
@@ -175,6 +223,7 @@ pub fn analyze(
         channel: channel.to_owned(),
         reporter: reporter.to_owned(),
         text: text.to_owned(),
+        pilots: extract_pilots(&tokens, &consumed),
         systems: detected,
         ships,
         count: parse_count(text, &consumed),
@@ -298,6 +347,16 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn extracts_pilot_candidates() {
+        let s = systems();
+        let r = analyze("Some Pilot tackled in Rancer", &s, &noships(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Some Pilot"));
+        // Common Title-Case intel phrases are not pilot candidates.
+        let r2 = analyze("Gate Camp in Rancer", &s, &noships(), 1, "ch", "x");
+        assert!(r2.pilots.is_empty());
     }
 
     #[test]

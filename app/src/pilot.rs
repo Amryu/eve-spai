@@ -1,0 +1,98 @@
+//! Pilot-name resolution (docs/DESIGN.md §7.1 E3 — named characters).
+//!
+//! The intel parser proposes candidate names (Title-Case word runs). We confirm
+//! which are real characters by batch-resolving them against ESI `/universe/ids/`
+//! (exact-name match) on a background thread, caching the verdict so each name is
+//! resolved at most once.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+
+const ESI_IDS: &str = "https://esi.evetech.net/latest/universe/ids/";
+
+#[derive(Default)]
+pub struct PilotCache {
+    /// name_lower -> Some(character_id) if a character, None if confirmed not one.
+    resolved: HashMap<String, Option<i64>>,
+    queued: std::collections::HashSet<String>,
+    queue: VecDeque<String>,
+}
+
+impl PilotCache {
+    /// Verdict for a name: `Some(Some(id))` = character, `Some(None)` = not a
+    /// character, `None` = not resolved yet.
+    pub fn get(&self, name: &str) -> Option<Option<i64>> {
+        self.resolved.get(&name.to_lowercase()).copied()
+    }
+
+    /// Queue a candidate name for resolution if we haven't seen it.
+    pub fn queue(&mut self, name: &str) {
+        let lw = name.to_lowercase();
+        if self.resolved.contains_key(&lw) || self.queued.contains(&lw) {
+            return;
+        }
+        self.queued.insert(lw);
+        self.queue.push_back(name.to_owned());
+    }
+}
+
+pub type SharedPilots = Arc<Mutex<PilotCache>>;
+
+/// Background resolver: drains queued names, batch-resolves via ESI, caches.
+pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
+    std::thread::spawn(move || {
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+        else {
+            return;
+        };
+        loop {
+            let batch: Vec<String> = {
+                let mut c = cache.lock().unwrap();
+                (0..100).map_while(|_| c.queue.pop_front()).collect()
+            };
+            if batch.is_empty() {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+            let chars = resolve_batch(&client, &batch);
+            {
+                let mut c = cache.lock().unwrap();
+                for name in &batch {
+                    let id = chars.get(&name.to_lowercase()).copied();
+                    c.resolved.insert(name.to_lowercase(), id);
+                }
+            }
+            ctx.request_repaint();
+            // Gentle on ESI between batches.
+            std::thread::sleep(std::time::Duration::from_millis(800));
+        }
+    });
+}
+
+/// Resolve a batch of exact names; returns the character names that matched
+/// (lower-cased) -> id.
+fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> HashMap<String, i64> {
+    let mut out = HashMap::new();
+    let resp: Option<serde_json::Value> = client
+        .post(ESI_IDS)
+        .json(names)
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .ok();
+    if let Some(v) = resp {
+        if let Some(chars) = v.get("characters").and_then(|c| c.as_array()) {
+            for c in chars {
+                if let (Some(id), Some(name)) =
+                    (c.get("id").and_then(|i| i.as_i64()), c.get("name").and_then(|n| n.as_str()))
+                {
+                    out.insert(name.to_lowercase(), id);
+                }
+            }
+        }
+    }
+    out
+}

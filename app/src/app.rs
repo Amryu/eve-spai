@@ -12,10 +12,11 @@ enum IntelTypeFilter {
 }
 
 /// A click on an intel card panel.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum IntelClick {
     System(i64),
     Ship(i64),
+    Pilot(String),
 }
 
 impl IntelTypeFilter {
@@ -109,6 +110,8 @@ pub struct SpaiApp {
     /// Pilot lookup (zKill) input + shared result.
     pilot_query: String,
     pilot_lookup: crate::lookup::SharedLookup,
+    /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
+    pilots: crate::pilot::SharedPilots,
 }
 
 impl SpaiApp {
@@ -209,6 +212,13 @@ impl SpaiApp {
             ship_window: None,
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
+            pilots: {
+                let cache: crate::pilot::SharedPilots = std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::pilot::PilotCache::default(),
+                ));
+                crate::pilot::spawn_resolver(cache.clone(), cc.egui_ctx.clone());
+                cache
+            },
         }
     }
 
@@ -351,6 +361,7 @@ impl SpaiApp {
                 self.settings.intel_channels.clone(),
                 systems,
                 ships,
+                self.pilots.clone(),
                 self.intel_state.clone(),
                 ctx.clone(),
             );
@@ -455,6 +466,18 @@ impl SpaiApp {
                 .filter_map(|id| self.store.as_ref().and_then(|s| s.ship_details(id)).map(|d| (id, d)))
                 .collect()
         };
+        // Pilot names confirmed as real characters (by the background resolver).
+        let resolved_pilots: std::collections::HashMap<String, i64> = {
+            let cache = self.pilots.lock().unwrap();
+            matches
+                .iter()
+                .flat_map(|r| r.pilots.iter())
+                .filter_map(|name| match cache.get(name) {
+                    Some(Some(id)) => Some((name.clone(), id)),
+                    _ => None,
+                })
+                .collect()
+        };
         let mut action: Option<IntelClick> = None;
         let ttl = self.settings.intel_ttl_secs;
         {
@@ -465,9 +488,10 @@ impl SpaiApp {
                     let stale = state.is_stale(r) || (now - r.received) > ttl;
                     let from_you =
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                    if let Some(a) =
-                        intel_row(ui, r, now, stale, from_you, &systems, &status, &ship_details)
-                    {
+                    if let Some(a) = intel_row(
+                        ui, r, now, stale, from_you, &systems, &status, &ship_details,
+                        &resolved_pilots,
+                    ) {
                         action = Some(a);
                     }
                     ui.add_space(2.0);
@@ -478,6 +502,11 @@ impl SpaiApp {
         match action {
             Some(IntelClick::System(id)) => self.open_system(id),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
+            Some(IntelClick::Pilot(name)) => {
+                self.pilot_query = name;
+                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ui.ctx().clone());
+                self.view = View::Characters;
+            }
             None => {}
         }
     }
@@ -2033,6 +2062,7 @@ fn intel_row(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
+    resolved_pilots: &std::collections::HashMap<String, i64>,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
@@ -2123,6 +2153,17 @@ fn intel_row(
                     }
                     if panel.clicked() {
                         clicked = Some(IntelClick::Ship(sh.id));
+                    }
+                }
+
+                // Pilot panels (only names confirmed as real characters by ESI).
+                for name in &r.pilots {
+                    if !resolved_pilots.contains_key(name) {
+                        continue;
+                    }
+                    let txt = egui::RichText::new(format!("{} {name}", icon::USER));
+                    if ui.add(egui::Button::new(txt)).on_hover_text("Look up pilot").clicked() {
+                        clicked = Some(IntelClick::Pilot(name.clone()));
                     }
                 }
 
