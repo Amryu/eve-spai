@@ -135,6 +135,7 @@ pub struct SpaiApp {
     sov_paste: String,
     coalitions_open: bool,
     severity_open: bool,
+    alert_rules_open: bool,
     /// Live edit buffers for the coalition editor: (name, alliances-one-per-line).
     coal_edit: Vec<(String, String)>,
     /// Text input for manually adding an alliance to the sov list.
@@ -174,6 +175,11 @@ pub struct SpaiApp {
     alert_cooldown: std::collections::HashMap<i64, i64>,
     /// Recent fired alerts (unix, text) — shared with the game-log watcher.
     recent_alerts: crate::gamewatcher::AlertLog,
+    /// Recent alerts shown in the custom notification window: (time, text, severity).
+    alert_feed: Vec<(i64, String, crate::settings::Severity)>,
+    /// Seconds the custom notification window stays visible (counts down; 0 = hidden,
+    /// paused while hovered).
+    alert_window_secs: f32,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -303,6 +309,7 @@ impl SpaiApp {
             sov_paste: String::new(),
             coalitions_open: false,
             severity_open: false,
+            alert_rules_open: false,
             coal_edit: Vec::new(),
             alliance_add: String::new(),
             active_character: "No character".to_owned(),
@@ -329,6 +336,8 @@ impl SpaiApp {
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            alert_feed: Vec::new(),
+            alert_window_secs: 0.0,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -392,43 +401,46 @@ impl SpaiApp {
         self.focus_window = Some(egui::ViewportId::from_hash_of("ship_window"));
     }
 
-    /// Evaluate new intel against alert rules; fire desktop notifications (cooldown
-    /// 60 s per system). Only reports newer than launch are considered.
+    /// Evaluate new intel against the alert rules and dispatch the resulting actions
+    /// (system notification / sound / custom window / push). Only reports newer than
+    /// the last watermark are considered.
     fn check_alerts(&mut self) {
-        let cfg = crate::alerts::AlertConfig {
-            enabled: self.settings.alert_enabled,
-            within_jumps: self.settings.alert_within_jumps,
-        };
-        if !cfg.enabled {
+        if !self.settings.alert_enabled {
             return;
         }
-        // Only alert for characters the user enabled (a disabled spy/alt shouldn't
-        // spam alerts based on where it's parked).
-        if self
+        let active_off = self
             .settings
             .intel_disabled_chars
             .iter()
-            .any(|d| d.eq_ignore_ascii_case(&self.active_character))
-        {
+            .any(|d| d.eq_ignore_ascii_case(&self.active_character));
+        let docked = self.player.lock().unwrap().docked;
+        if active_off || (self.settings.alert_only_undocked && docked) {
             if let Some(r) = self.intel_state.lock().unwrap().reports.last() {
                 self.last_alert_time = self.last_alert_time.max(r.received);
             }
             return;
         }
-        // Optionally suppress intel alerts while docked.
-        if self.settings.alert_only_undocked && self.player.lock().unwrap().docked {
-            // Still advance the watermark so we don't backlog-alert on undock.
-            if let Some(r) = self.intel_state.lock().unwrap().reports.last() {
-                self.last_alert_time = self.last_alert_time.max(r.received);
-            }
-            return;
-        }
+
         let player = self.player.lock().unwrap().system_id;
         let systems = self.systems.clone();
         let now = chrono::Utc::now().timestamp();
-        let mut hits: Vec<(i64, String)> = Vec::new();
         let mut newest = self.last_alert_time;
+        let acfg = self.settings.alerts.clone();
+        let sev_rules = self.settings.severity.clone();
+        let default_jumps = self.settings.alert_within_jumps;
 
+        struct Fire {
+            sys_id: i64,
+            title: String,
+            text: String,
+            body: String,
+            sev: crate::settings::Severity,
+            sound: String,
+            sys: bool,
+            win: bool,
+            push: bool,
+        }
+        let mut fired: Vec<Fire> = Vec::new();
         {
             let state = self.intel_state.lock().unwrap();
             for r in &state.reports {
@@ -436,28 +448,78 @@ impl SpaiApp {
                     continue;
                 }
                 newest = newest.max(r.received);
-                if let Some(text) = crate::alerts::evaluate(r, player, systems.as_deref(), &cfg) {
-                    let sys_id = r.primary_system().map_or(0, |s| s.id);
-                    let last = self.alert_cooldown.get(&sys_id).copied().unwrap_or(0);
-                    if now - last >= 60 {
-                        hits.push((sys_id, text));
+                let sev = severity_of(r, &sev_rules);
+                let jumps = jumps_from_you(&systems, player, r.primary_system().map(|s| s.id));
+                let rule = acfg.rules.iter().find(|ru| ru.enabled && rule_matches(ru, r, sev, jumps));
+                let (sys, win, push, sound, cd) = match rule {
+                    Some(ru) if ru.suppress => continue,
+                    Some(ru) => {
+                        let snd = if ru.sound.is_empty() {
+                            acfg.sounds.get(sev as usize).cloned().unwrap_or_default()
+                        } else {
+                            ru.sound.clone()
+                        };
+                        (ru.system_notification, ru.custom_window, ru.push, snd, ru.cooldown_secs)
                     }
+                    None => {
+                        if sev < acfg.min_severity {
+                            continue;
+                        }
+                        if default_jumps > 0 && !jumps.is_some_and(|j| j <= default_jumps) {
+                            continue;
+                        }
+                        let snd = acfg.sounds.get(sev as usize).cloned().unwrap_or_default();
+                        (acfg.system_notifications, acfg.use_custom_window, acfg.push_enabled, snd, 60)
+                    }
+                };
+                let sys_id = r.primary_system().map_or(0, |s| s.id);
+                if now - self.alert_cooldown.get(&sys_id).copied().unwrap_or(0) < cd {
+                    continue;
                 }
+                let title = r
+                    .primary_system()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| "Intel".to_owned());
+                let title = match jumps {
+                    Some(j) if j > 0 => format!("{title} — {j} jumps"),
+                    Some(_) => format!("{title} — here"),
+                    None => title,
+                };
+                let text = alert_text(r);
+                let body = format!("{text}\n— {} · {}", r.reporter, r.channel);
+                fired.push(Fire { sys_id, title, text, body, sev, sound, sys, win, push });
             }
         }
         self.last_alert_time = newest;
+        if fired.is_empty() {
+            return;
+        }
 
-        if !hits.is_empty() {
-            let mut log = self.recent_alerts.lock().unwrap();
-            for (sys_id, text) in hits {
-                self.alert_cooldown.insert(sys_id, now);
-                log.push((now, text.clone()));
-                notify(text);
+        let mut log = self.recent_alerts.lock().unwrap();
+        for f in fired {
+            self.alert_cooldown.insert(f.sys_id, now);
+            log.push((now, f.text.clone()));
+            if f.sys {
+                notify(f.title.clone(), f.body.clone());
             }
-            let len = log.len();
-            if len > 50 {
-                log.drain(0..len - 50);
+            if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
+                crate::sound::play(&f.sound);
             }
+            if f.win {
+                self.alert_feed.push((now, f.text.clone(), f.sev));
+                let n = self.alert_feed.len();
+                if n > 100 {
+                    self.alert_feed.drain(0..n - 100);
+                }
+                self.alert_window_secs = self.settings.alerts.window_timeout.max(3.0);
+            }
+            if f.push && acfg.push_enabled {
+                crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
+            }
+        }
+        let len = log.len();
+        if len > 50 {
+            log.drain(0..len - 50);
         }
     }
 
@@ -1255,6 +1317,89 @@ impl SpaiApp {
     fn start_sde(&self, ctx: &egui::Context) {
         if let Some(store) = &self.store {
             sde::spawn_download(store.path().to_path_buf(), self.sde_status.clone(), ctx.clone());
+        }
+    }
+
+    /// Custom notification window: a floating, always-on-top feed of intel that
+    /// passed the alert filters. Auto-hides `window_timeout` s after the last alert;
+    /// hovering pauses the countdown (and bumps it to ≥3 s).
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    fn alert_window(&mut self, ctx: &egui::Context) {
+        if !self.settings.alerts.use_custom_window || self.alert_window_secs <= 0.0 {
+            return;
+        }
+        let pos = self.settings.alerts.window_pos.unwrap_or((80.0, 80.0));
+        let mut hovered = false;
+        let mut dismiss = false;
+        let mut moved: Option<(f32, f32)> = None;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("alert_window"),
+            egui::ViewportBuilder::default()
+                .with_title("EVE Spai — alerts")
+                .with_always_on_top()
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_taskbar(false)
+                .with_position([pos.0, pos.1])
+                .with_inner_size([340.0, 220.0]),
+            |ctx, _| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Intel alerts").strong());
+                            ui.label(
+                                egui::RichText::new(format!("{:.0}s", self.alert_window_secs)).weak(),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(egui_phosphor::regular::X).on_hover_text("Dismiss").clicked() {
+                                    dismiss = true;
+                                }
+                            });
+                        });
+                        ui.separator();
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            for (t, text, sev) in self.alert_feed.iter().rev().take(20) {
+                                ui.horizontal_wrapped(|ui| {
+                                    let age = (chrono::Utc::now().timestamp() - t).max(0);
+                                    ui.label(
+                                        egui::RichText::new(format!("{:>5}", fmt_age(age)))
+                                            .monospace()
+                                            .color(severity_color(*sev)),
+                                    );
+                                    ui.label(text);
+                                });
+                            }
+                        });
+                        hovered = ui.ui_contains_pointer();
+                    });
+                if let Some(p) = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y))) {
+                    moved = Some(p);
+                }
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    dismiss = true;
+                }
+            },
+        );
+        // Save a moved position.
+        if let Some(p) = moved {
+            if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
+                self.settings.alerts.window_pos = Some(p);
+                self.needs_save = true;
+            }
+        }
+        if dismiss {
+            self.alert_window_secs = 0.0;
+            return;
+        }
+        // Countdown (paused while hovered; floor of 3 s when hovered).
+        let dt = ctx.input(|i| i.stable_dt).min(0.5);
+        if hovered {
+            self.alert_window_secs = self.alert_window_secs.max(3.0);
+            ctx.request_repaint();
+        } else {
+            self.alert_window_secs -= dt;
+            ctx.request_repaint();
         }
     }
 
@@ -3067,6 +3212,134 @@ impl SpaiApp {
     /// line's first two SDE systems become a bridge. Drawn green on the map.
     /// Coalition editor: name + member alliance names (one per line). Unlisted
     /// alliances are independent.
+    /// Alert-rules editor. Rules are evaluated top-first; the first matching enabled
+    /// rule decides the actions (or suppresses the alert).
+    fn alert_rules_window(&mut self, ctx: &egui::Context) {
+        if !self.alert_rules_open {
+            return;
+        }
+        let mut changed = false;
+        let mut remove: Option<usize> = None;
+        let mut move_up: Option<usize> = None;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "alert_rules_window",
+            "EVE Spai — Alert rules",
+            [560.0, 640.0],
+            |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Top rule wins. A matching rule's actions apply (or it suppresses the \
+                         alert). Empty condition fields mean \"any\".",
+                    )
+                    .weak(),
+                );
+                if ui.button("Add rule").clicked() {
+                    self.settings.alerts.rules.push(crate::settings::AlertRule::default());
+                    changed = true;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    use crate::settings::Severity::*;
+                    for (i, ru) in self.settings.alerts.rules.iter_mut().enumerate() {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                changed |= ui.checkbox(&mut ru.enabled, "").changed();
+                                changed |=
+                                    ui.add(egui::TextEdit::singleline(&mut ru.name).desired_width(180.0)).changed();
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button(egui_phosphor::regular::X).clicked() {
+                                        remove = Some(i);
+                                    }
+                                    if i > 0 && ui.button(egui_phosphor::regular::ARROW_UP).clicked() {
+                                        move_up = Some(i);
+                                    }
+                                });
+                            });
+                            // Conditions.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("if severity ≥");
+                                egui::ComboBox::from_id_salt(("rsev", i))
+                                    .selected_text(format!("{:?}", ru.min_severity))
+                                    .show_ui(ui, |ui| {
+                                        for lvl in [Info, Warning, Danger, Critical] {
+                                            changed |= ui
+                                                .selectable_value(&mut ru.min_severity, lvl, format!("{lvl:?}"))
+                                                .changed();
+                                        }
+                                    });
+                                ui.label("within");
+                                let mut mj = ru.max_jumps.unwrap_or(0);
+                                if ui.add(egui::DragValue::new(&mut mj).range(0..=50).custom_formatter(|n, _| if n == 0.0 { "any".into() } else { format!("{n}j") })).changed() {
+                                    ru.max_jumps = if mj == 0 { None } else { Some(mj) };
+                                    changed = true;
+                                }
+                                ui.label("count ≥");
+                                let mut mc = ru.min_count.unwrap_or(0);
+                                if ui.add(egui::DragValue::new(&mut mc).range(0..=999)).changed() {
+                                    ru.min_count = if mc == 0 { None } else { Some(mc) };
+                                    changed = true;
+                                }
+                            });
+                            // Condition tags.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("requires:");
+                                for tag in ["bubble", "camp", "cyno", "kill", "ess", "spike", "wormhole"] {
+                                    let mut on = ru.require.iter().any(|t| t == tag);
+                                    if ui.selectable_label(on, tag).clicked() {
+                                        on = !on;
+                                        ru.require.retain(|t| t != tag);
+                                        if on {
+                                            ru.require.push(tag.to_owned());
+                                        }
+                                        changed = true;
+                                    }
+                                }
+                            });
+                            // Systems (comma/space separated).
+                            ui.horizontal(|ui| {
+                                ui.label("systems:");
+                                let mut s = ru.systems.join(", ");
+                                if ui.add(egui::TextEdit::singleline(&mut s).desired_width(f32::INFINITY).hint_text("any")).changed() {
+                                    ru.systems = s.split([',', ' ']).map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect();
+                                    changed = true;
+                                }
+                            });
+                            // Actions.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("then:");
+                                changed |= ui.checkbox(&mut ru.suppress, "suppress").changed();
+                                if !ru.suppress {
+                                    changed |= ui.checkbox(&mut ru.system_notification, "notify").changed();
+                                    changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
+                                    changed |= ui.checkbox(&mut ru.push, "push").changed();
+                                    ui.label("sound");
+                                    changed |= ui.add(egui::TextEdit::singleline(&mut ru.sound).desired_width(90.0).hint_text("default")).changed();
+                                }
+                                ui.label("cooldown");
+                                changed |= ui.add(egui::DragValue::new(&mut ru.cooldown_secs).range(0..=3600).suffix("s")).changed();
+                            });
+                        });
+                    }
+                });
+            },
+        );
+        if let Some(i) = remove {
+            self.settings.alerts.rules.remove(i);
+            changed = true;
+        }
+        if let Some(i) = move_up {
+            self.settings.alerts.rules.swap(i, i - 1);
+            changed = true;
+        }
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.alert_rules_open = false;
+        }
+    }
+
     /// Intel severity configuration dialog.
     fn severity_window(&mut self, ctx: &egui::Context) {
         if !self.severity_open {
@@ -3655,6 +3928,70 @@ impl SpaiApp {
                         .checkbox(&mut self.settings.alert_only_undocked, "Only alert while undocked")
                         .changed();
 
+                    ui.add_space(6.0);
+                    {
+                        use crate::settings::Severity::*;
+                        let a = &mut self.settings.alerts;
+                        ui.horizontal(|ui| {
+                            ui.label("Alert from severity");
+                            egui::ComboBox::from_id_salt("alert_min_sev")
+                                .selected_text(format!("{:?}", a.min_severity))
+                                .show_ui(ui, |ui| {
+                                    for lvl in [Info, Warning, Danger, Critical] {
+                                        changed |= ui
+                                            .selectable_value(&mut a.min_severity, lvl, format!("{lvl:?}"))
+                                            .changed();
+                                    }
+                                });
+                        });
+                        changed |= ui
+                            .checkbox(&mut a.system_notifications, "System notifications")
+                            .changed();
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .checkbox(&mut a.use_custom_window, "Custom alert window")
+                                .changed();
+                            ui.label("for");
+                            changed |= ui
+                                .add(egui::DragValue::new(&mut a.window_timeout).range(3.0..=300.0).suffix("s"))
+                                .changed();
+                        });
+                        // Per-severity sounds (preset name or file path) + test.
+                        ui.label(egui::RichText::new("Sounds (preset: off/info/warning/danger/critical/beep/chime, or a file path)").weak());
+                        for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
+                            if a.sounds.len() <= i {
+                                a.sounds.resize(i + 1, "off".to_owned());
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{lbl:>9}"));
+                                changed |= ui
+                                    .add(egui::TextEdit::singleline(&mut a.sounds[i]).desired_width(180.0))
+                                    .changed();
+                                if ui.button("▶").on_hover_text("Test").clicked() {
+                                    crate::sound::play(&a.sounds[i]);
+                                }
+                            });
+                        }
+                        // Pushover (mobile push).
+                        changed |= ui
+                            .checkbox(&mut a.push_enabled, "Mobile push (Pushover)")
+                            .on_hover_text("Install the Pushover app; create an application for the token")
+                            .changed();
+                        if a.push_enabled {
+                            ui.horizontal(|ui| {
+                                ui.label("App token");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut a.pushover_token).desired_width(220.0)).changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("User key ");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut a.pushover_user).desired_width(220.0)).changed();
+                            });
+                        }
+                    }
+                    if ui.button("Alert rules…").clicked() {
+                        self.alert_rules_open = true;
+                    }
+
                     ui.separator();
 
                     // --- Configuration packs ---
@@ -3782,6 +4119,8 @@ impl eframe::App for SpaiApp {
         self.sov_upgrades_window(&ctx);
         self.coalitions_window(&ctx);
         self.severity_window(&ctx);
+        self.alert_rules_window(&ctx);
+        self.alert_window(&ctx);
         self.system_window(&ctx);
         self.constellation_window(&ctx);
         self.region_window(&ctx);
@@ -3807,11 +4146,12 @@ impl eframe::App for SpaiApp {
 }
 
 /// Fire a desktop notification off the UI thread (dbus can block).
-fn notify(text: String) {
+fn notify(summary: String, body: String) {
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new()
-            .summary("EVE Spai")
-            .body(&text)
+            .summary(&summary)
+            .body(&body)
+            .timeout(notify_rust::Timeout::Milliseconds(8000))
             .show();
     });
 }
@@ -4074,6 +4414,81 @@ fn battle_row(
             }
         });
     });
+}
+
+/// Whether an alert rule's conditions all match a report.
+fn rule_matches(
+    ru: &crate::settings::AlertRule,
+    r: &crate::intel::IntelReport,
+    sev: crate::settings::Severity,
+    jumps: Option<u32>,
+) -> bool {
+    if sev < ru.min_severity {
+        return false;
+    }
+    if let Some(mj) = ru.max_jumps {
+        if !jumps.is_some_and(|j| j <= mj) {
+            return false;
+        }
+    }
+    if !ru.systems.is_empty()
+        && !r.systems.iter().any(|s| ru.systems.iter().any(|n| n.eq_ignore_ascii_case(&s.name)))
+    {
+        return false;
+    }
+    if let Some(mc) = ru.min_count {
+        if !r.count.is_some_and(|c| c >= mc) {
+            return false;
+        }
+    }
+    for tag in &ru.require {
+        let ok = match tag.to_lowercase().as_str() {
+            "bubble" => r.bubble,
+            "camp" => r.camp,
+            "cyno" => r.cyno,
+            "kill" | "killmail" => r.killmail,
+            "ess" => r.ess,
+            "wormhole" | "wh" => r.wormhole,
+            "spike" => r.spike,
+            "skyhook" => r.skyhook,
+            "nv" | "novisual" => r.no_visual,
+            _ => true,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// A concise one-line alert string for a report.
+fn alert_text(r: &crate::intel::IntelReport) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = r.primary_system() {
+        parts.push(s.name.clone());
+    }
+    if let Some(n) = r.count {
+        parts.push(format!("{n} hostiles"));
+    }
+    if r.bubble {
+        parts.push("bubble".into());
+    }
+    if r.camp {
+        parts.push("gate camp".into());
+    }
+    if r.cyno {
+        parts.push("CYNO".into());
+    }
+    for sh in r.ships.iter().take(4) {
+        parts.push(sh.name.clone());
+    }
+    if r.clear {
+        parts.push("clear".into());
+    }
+    if parts.is_empty() {
+        parts.push(r.text.clone());
+    }
+    parts.join(" · ")
 }
 
 /// Compute an intel report's severity from the configurable rules (highest match).

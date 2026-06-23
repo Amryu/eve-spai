@@ -67,6 +67,9 @@ pub struct Settings {
     /// Intel severity rules (condition → level → card colour).
     #[serde(default = "default_severity")]
     pub severity: SeverityRules,
+    /// Alerting configuration (rules, sounds, custom window, push).
+    #[serde(default = "default_alerts")]
+    pub alerts: AlertSettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,6 +80,100 @@ pub struct Coalition {
     /// Map colour override; None = auto-generated from the name.
     #[serde(default)]
     pub color: Option<(u8, u8, u8)>,
+}
+
+/// One alert rule (condition chain → actions). Rules are evaluated top-first; the
+/// first enabled rule whose conditions all match decides the actions (or suppresses
+/// the alert). If no rule matches, the default actions apply.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub name: String,
+    pub enabled: bool,
+    // --- conditions (a set/empty field means "don't care") ---
+    pub min_severity: Severity,
+    /// Specific systems by name (empty = any).
+    pub systems: Vec<String>,
+    /// Within this many jumps of an alerting character (None = any distance).
+    pub max_jumps: Option<u32>,
+    /// At least this many hostiles (None = any).
+    pub min_count: Option<u32>,
+    /// Required condition tags (any of): bubble/camp/cyno/kill/ess/wormhole/spike/threat.
+    pub require: Vec<String>,
+    // --- actions ---
+    /// Suppress the alert entirely (takes precedence over the action toggles).
+    pub suppress: bool,
+    pub system_notification: bool,
+    pub custom_window: bool,
+    pub push: bool,
+    /// Sound override: "" = the severity default, "off" = silent, else preset/path.
+    pub sound: String,
+    pub cooldown_secs: i64,
+}
+
+impl Default for AlertRule {
+    fn default() -> Self {
+        Self {
+            name: "New rule".to_owned(),
+            enabled: true,
+            min_severity: Severity::Warning,
+            systems: Vec::new(),
+            max_jumps: None,
+            min_count: None,
+            require: Vec::new(),
+            suppress: false,
+            system_notification: true,
+            custom_window: true,
+            push: false,
+            sound: String::new(),
+            cooldown_secs: 60,
+        }
+    }
+}
+
+/// Intel alerting configuration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlertSettings {
+    /// Severities at or above this alert by default (default: Warning).
+    pub min_severity: Severity,
+    /// Per-severity default sound preset/path: [Info, Warning, Danger, Critical].
+    pub sounds: Vec<String>,
+    pub system_notifications: bool,
+    pub use_custom_window: bool,
+    /// Custom-window top-left position (screen pixels); None = auto.
+    pub window_pos: Option<(f32, f32)>,
+    /// Seconds the custom window stays after the last alert.
+    pub window_timeout: f32,
+    pub push_enabled: bool,
+    pub pushover_token: String,
+    pub pushover_user: String,
+    /// Ordered rules (top = highest precedence).
+    pub rules: Vec<AlertRule>,
+}
+
+impl Default for AlertSettings {
+    fn default() -> Self {
+        Self {
+            min_severity: Severity::Warning,
+            sounds: vec![
+                "off".to_owned(),      // Info
+                "warning".to_owned(),  // Warning
+                "danger".to_owned(),   // Danger
+                "critical".to_owned(), // Critical
+            ],
+            system_notifications: true,
+            use_custom_window: false,
+            window_pos: None,
+            window_timeout: 30.0,
+            push_enabled: false,
+            pushover_token: String::new(),
+            pushover_user: String::new(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+fn default_alerts() -> AlertSettings {
+    AlertSettings::default()
 }
 
 /// Intel severity levels (drive the card colour, lowest → highest).
@@ -221,6 +318,7 @@ impl Default for Settings {
             view_options: String::new(),
             alliances: Vec::new(),
             severity: SeverityRules::default(),
+            alerts: AlertSettings::default(),
         }
     }
 }

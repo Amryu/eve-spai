@@ -4,7 +4,6 @@
 //! a three-colour theme engine, a settings dialog, and SQLite-backed persistence.
 //! No EVE data yet — views are placeholders (see docs/DESIGN.md §10, milestone M0).
 
-mod alerts;
 mod app;
 mod auth;
 mod battle;
@@ -21,10 +20,12 @@ mod map;
 mod pilot;
 mod nav;
 mod packs;
+mod push;
 mod rats;
 mod sde;
 mod settings;
 mod shipnames;
+mod sound;
 mod store;
 mod systemstatus;
 mod theme;
