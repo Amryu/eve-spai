@@ -37,6 +37,11 @@ mod watcher;
 mod zkill;
 
 fn main() -> eframe::Result<()> {
+    // rustls 0.23 needs a process-wide default crypto provider; with both reqwest
+    // and tokio-xmpp pulling rustls there's no unambiguous default, so install one
+    // (otherwise the Jabber TLS handshake panics → "stuck at connecting").
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let mut native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("EVE Spai")
