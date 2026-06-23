@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS sde_ship_traits (
     text     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sde_traits_ship ON sde_ship_traits(ship_id);
+CREATE TABLE IF NOT EXISTS known_pilots (
+    name_lc   TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    char_id   INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS characters (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -342,6 +347,25 @@ impl Store {
             map.entry(slug).or_insert(entry);
         }
         map
+    }
+
+    /// All known (ESI-confirmed) pilot names → character id, keyed lower-case.
+    pub fn known_pilots(&self) -> std::collections::HashMap<String, i64> {
+        let mut out = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc, char_id FROM known_pilots") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Remember an ESI-confirmed pilot so it's recognised instantly next time.
+    pub fn add_known_pilot(&self, name: &str, char_id: i64) {
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)",
+            params![name.to_lowercase(), name, char_id],
+        );
     }
 
     /// Whether ship traits (role bonuses) have been baked.

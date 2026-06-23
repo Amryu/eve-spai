@@ -310,11 +310,17 @@ fn extract_dscan_drops(text: &str) -> Vec<String> {
             Some(c) => open + 1 + c,
             None => break,
         };
-        let name: Vec<&str> = text[..open]
-            .split_whitespace()
-            .rev()
-            .take_while(|t| name_part(t))
-            .collect();
+        // The "(ship)" context proves the preceding run is a pilot name, so accept
+        // any case (catches lower-case names like "bigfoott"); just skip system
+        // codes (hyphens) and status keywords.
+        let drop_part = |t: &str| {
+            t.len() >= 2
+                && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'')
+                && t.chars().any(|c| c.is_ascii_alphabetic())
+                && !PILOT_STOP.contains(&t.to_lowercase().as_str())
+        };
+        let name: Vec<&str> =
+            text[..open].split_whitespace().rev().take_while(|t| drop_part(t)).collect();
         if (1..=3).contains(&name.len()) {
             let pilot = name.into_iter().rev().collect::<Vec<_>>().join(" ");
             if !out.contains(&pilot) {
@@ -322,6 +328,36 @@ fn extract_dscan_drops(text: &str) -> Vec<String> {
             }
         }
         search = close + 1;
+    }
+    out
+}
+
+/// Match against the local cache of known (ESI-confirmed) pilot names, longest run
+/// first so a shorter name that's a subset of a longer one ("Hold" inside "Hold Me
+/// Balls") never short-circuits the longer match.
+fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>) -> Vec<String> {
+    if known.is_empty() {
+        return Vec::new();
+    }
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '\''))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let mut adv = 1;
+        let max = 3.min(words.len() - i);
+        for len in (1..=max).rev() {
+            let run = words[i..i + len].join(" ");
+            if known.contains_key(&run.to_lowercase()) {
+                out.push(run);
+                adv = len;
+                break;
+            }
+        }
+        i += adv;
     }
     out
 }
@@ -363,6 +399,7 @@ pub fn analyze(
     text: &str,
     systems: &Systems,
     ship_index: &std::collections::HashMap<String, (i64, String)>,
+    known_pilots: &std::collections::HashMap<String, i64>,
     received: i64,
     channel: &str,
     reporter: &str,
@@ -376,6 +413,12 @@ pub fn analyze(
     // systems (player names often contain hull/system names, e.g. "Sabre Pilot" or
     // "Jita Trader"). Quoted spans are forced to be names.
     let mut pilots = extract_pilots(text);
+    // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
+    for k in match_known_pilots(text, known_pilots) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
+            pilots.push(k);
+        }
+    }
     // Drag-and-drop dscan names "<pilot> (<ship>)" — catches single-word names.
     for d in extract_dscan_drops(text) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&d)) {
@@ -387,6 +430,23 @@ pub fn analyze(
             pilots.push(q);
         }
     }
+    // Drop a candidate that is a contiguous sub-phrase of a longer candidate (so a
+    // short known name doesn't false-parse inside a longer reported name), and drop
+    // a single-word candidate that is actually a ship (prefer the ship).
+    let lc: Vec<String> = pilots.iter().map(|p| p.to_lowercase()).collect();
+    pilots = pilots
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            let me = &lc[*i];
+            let is_subphrase = lc.iter().enumerate().any(|(j, other)| {
+                j != *i && other.len() > me.len() && format!(" {other} ").contains(&format!(" {me} "))
+            });
+            let single_ship = !p.contains(' ') && ship_index.contains_key(me);
+            !is_subphrase && !single_ship
+        })
+        .map(|(_, p)| p.clone())
+        .collect();
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
         .flat_map(|n| n.split_whitespace())
@@ -626,6 +686,10 @@ mod tests {
         std::collections::HashMap::new()
     }
 
+    fn noknown() -> std::collections::HashMap<String, i64> {
+        std::collections::HashMap::new()
+    }
+
     fn systems() -> Systems {
         let by_name = [
             ("rancer", "Rancer", 1, 0.4),
@@ -658,11 +722,11 @@ mod tests {
         let ships: std::collections::HashMap<String, (i64, String)> =
             [("sabre".to_string(), (22456i64, "Sabre".to_string()))].into_iter().collect();
         // Case-insensitive: lower-case ship name is detected.
-        let r = analyze("E-JCUS sabre", &s, &ships, 1, "ch", "x");
+        let r = analyze("E-JCUS sabre", &s, &ships, &noknown(), 1, "ch", "x");
         assert_eq!(r.ships.iter().map(|sh| sh.name.clone()).collect::<Vec<_>>(), vec!["Sabre"]);
         // Single-word "Sabre" prefers the ship even if a pilot shares the name.
         // A compound pilot name ("Sabre Smith") prefers the pilot — no ship parsed.
-        let r2 = analyze("Sabre Smith in Rancer", &s, &ships, 1, "ch", "x");
+        let r2 = analyze("Sabre Smith in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
         assert!(r2.ships.is_empty());
         assert_eq!(r2.systems.iter().map(|d| d.name.clone()).collect::<Vec<_>>(), vec!["Rancer"]);
     }
@@ -670,10 +734,10 @@ mod tests {
     #[test]
     fn extracts_pilot_candidates() {
         let s = systems();
-        let r = analyze("Some Pilot tackled in Rancer", &s, &noships(), 1, "ch", "x");
+        let r = analyze("Some Pilot tackled in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Some Pilot"));
         // Common Title-Case intel phrases are not pilot candidates.
-        let r2 = analyze("Gate Camp in Rancer", &s, &noships(), 1, "ch", "x");
+        let r2 = analyze("Gate Camp in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.pilots.is_empty());
     }
 
@@ -681,18 +745,34 @@ mod tests {
     fn amends_successive_reporter_messages() {
         let s = systems();
         let mut state = IntelState::default();
-        state.push(analyze("hostile in Rancer", &s, &noships(), 100, "ch", "Scout"));
+        state.push(analyze("hostile in Rancer", &s, &noships(), &noknown(), 100, "ch", "Scout"));
         // Same reporter, no system (gate only), within grace -> amends.
-        let follow = analyze("on 78- gate", &s, &noships(), 130, "ch", "Scout");
+        let follow = analyze("on 78- gate", &s, &noships(), &noknown(), 130, "ch", "Scout");
         assert!(state.try_amend(&follow, 60));
         assert_eq!(state.reports.len(), 1);
         assert!(state.reports[0].gate.is_some());
         // A different system is a new sighting, not an amendment.
-        let other = analyze("hostile in Jita", &s, &noships(), 140, "ch", "Scout");
+        let other = analyze("hostile in Jita", &s, &noships(), &noknown(), 140, "ch", "Scout");
         assert!(!state.try_amend(&other, 60));
         // A clear is never amended into a sighting (it must not wipe ship info).
-        let clear = analyze("Rancer clear", &s, &noships(), 150, "ch", "Scout");
+        let clear = analyze("Rancer clear", &s, &noships(), &noknown(), 150, "ch", "Scout");
         assert!(!state.try_amend(&clear, 60));
+    }
+
+    #[test]
+    fn known_pilots_match_with_subset_protection() {
+        let s = systems();
+        // A lower-case single-word known name is recognised.
+        let k1: std::collections::HashMap<String, i64> =
+            [("bigfoott".to_string(), 2i64)].into_iter().collect();
+        let r = analyze("Rancer bigfoott", &s, &noships(), &k1, 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p.eq_ignore_ascii_case("bigfoott")));
+        // A name that is a subset of a longer one must not short-circuit it.
+        let k2: std::collections::HashMap<String, i64> =
+            [("hold me balls".to_string(), 1i64), ("hold".to_string(), 3i64)].into_iter().collect();
+        let r2 = analyze("E-JCUS HOLD ME BALLS", &s, &noships(), &k2, 1, "ch", "x");
+        assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("hold me balls")));
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("hold")));
     }
 
     #[test]
@@ -708,10 +788,10 @@ mod tests {
             [("loki".to_string(), (29990i64, "Loki".to_string()))].into_iter().collect();
         let mut state = IntelState::default();
         // Scout A: a hyphenated system + a pilot with a digit in the name.
-        state.push(analyze("C-J6MT Pericle No1", &s, &noships(), 100, "ch", "Kobayashi Mika"));
+        state.push(analyze("C-J6MT Pericle No1", &s, &noships(), &noknown(), 100, "ch", "Kobayashi Mika"));
         assert_eq!(state.reports[0].pilots, vec!["Pericle No1".to_string()]);
         // Scout B (different reporter): same pilot, no system, adds the ship.
-        let follow = analyze("Pericle No1 loki", &s, &loki, 130, "ch", "Wallie Warptunnel");
+        let follow = analyze("Pericle No1 loki", &s, &loki, &noknown(), 130, "ch", "Wallie Warptunnel");
         assert!(state.try_amend(&follow, 60));
         assert_eq!(state.reports.len(), 1);
         assert!(state.reports[0].ships.iter().any(|sh| sh.name == "Loki"));
@@ -720,12 +800,12 @@ mod tests {
     #[test]
     fn quoting_forces_pilot_not_keyword() {
         let s = systems();
-        let r = analyze("'clear' in Rancer", &s, &noships(), 1, "ch", "x");
+        let r = analyze("'clear' in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "clear"));
         assert!(!r.clear); // quoted -> not a status keyword
         assert_eq!(r.systems.len(), 1); // Rancer still a system
         // Mixed opening/closing quotes.
-        let r2 = analyze("`Some Guy\" tackled", &s, &noships(), 1, "ch", "x");
+        let r2 = analyze("`Some Guy\" tackled", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.pilots.iter().any(|p| p == "Some Guy"));
     }
 
@@ -733,22 +813,22 @@ mod tests {
     fn detects_systems_count_and_flags() {
         let s = systems();
 
-        let r = analyze("hostile in Rancer, 3 Drake +2", &s, &noships(), 100, "ch", "Scout");
+        let r = analyze("hostile in Rancer, 3 Drake +2", &s, &noships(), &noknown(), 100, "ch", "Scout");
         assert_eq!(r.systems.len(), 1);
         assert_eq!(r.systems[0].name, "Rancer");
         assert_eq!(r.count, Some(3));
         assert!(!r.clear);
 
-        assert!(analyze("Rancer clear", &s, &noships(), 1, "ch", "x").clear);
-        assert!(analyze("nv in Jita", &s, &noships(), 1, "ch", "x").no_visual);
-        assert!(analyze("gate camp 1DQ1-A bubble up", &s, &noships(), 1, "ch", "x").camp);
-        assert!(analyze("https://zkillboard.com/kill/123/", &s, &noships(), 1, "ch", "x").killmail);
-        assert!(analyze("cyno up in Rancer", &s, &noships(), 1, "ch", "x").cyno);
-        assert!(analyze("wh in Jita k162", &s, &noships(), 1, "ch", "x").wormhole);
-        assert!(analyze("ess being robbed", &s, &noships(), 1, "ch", "x").ess);
-        assert!(analyze("skyhook theft Rancer", &s, &noships(), 1, "ch", "x").skyhook);
+        assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x").clear);
+        assert!(analyze("nv in Jita", &s, &noships(), &noknown(), 1, "ch", "x").no_visual);
+        assert!(analyze("gate camp 1DQ1-A bubble up", &s, &noships(), &noknown(), 1, "ch", "x").camp);
+        assert!(analyze("https://zkillboard.com/kill/123/", &s, &noships(), &noknown(), 1, "ch", "x").killmail);
+        assert!(analyze("cyno up in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").cyno);
+        assert!(analyze("wh in Jita k162", &s, &noships(), &noknown(), 1, "ch", "x").wormhole);
+        assert!(analyze("ess being robbed", &s, &noships(), &noknown(), 1, "ch", "x").ess);
+        assert!(analyze("skyhook theft Rancer", &s, &noships(), &noknown(), 1, "ch", "x").skyhook);
         // lower-case common words that are system names are not matched
-        assert!(analyze("clear in here", &s, &noships(), 1, "ch", "x").systems.is_empty());
+        assert!(analyze("clear in here", &s, &noships(), &noknown(), 1, "ch", "x").systems.is_empty());
     }
 
     #[test]
@@ -756,7 +836,7 @@ mod tests {
         let s = systems();
         // Abbreviated null-sec codes resolve by unique prefix; the gate is captured
         // and not double-listed as a plain system.
-        let r = analyze("C-J +20 on 78- gate", &s, &noships(), 1, "ch", "Scout");
+        let r = analyze("C-J +20 on 78- gate", &s, &noships(), &noknown(), 1, "ch", "Scout");
         assert_eq!(r.count, Some(20));
         assert_eq!(r.gate.as_deref(), Some("78-AAA"));
         assert_eq!(
@@ -765,7 +845,7 @@ mod tests {
         );
 
         // A bare number used as a gate must not also be a hostile count.
-        let r2 = analyze("20 reds on 78 gate", &s, &noships(), 1, "ch", "Scout");
+        let r2 = analyze("20 reds on 78 gate", &s, &noships(), &noknown(), 1, "ch", "Scout");
         assert_eq!(r2.gate.as_deref(), Some("78-AAA"));
         assert_eq!(r2.count, Some(20));
     }
@@ -774,9 +854,9 @@ mod tests {
     fn clear_outdates_prior_sighting_but_not_later_ones() {
         let s = systems();
         let mut st = IntelState::default();
-        let prior = analyze("hostile in Rancer", &s, &noships(), 100, "ch", "A");
-        let clear = analyze("Rancer clear", &s, &noships(), 112, "ch", "B");
-        let later = analyze("hostile back in Rancer", &s, &noships(), 120, "ch", "C");
+        let prior = analyze("hostile in Rancer", &s, &noships(), &noknown(), 100, "ch", "A");
+        let clear = analyze("Rancer clear", &s, &noships(), &noknown(), 112, "ch", "B");
+        let later = analyze("hostile back in Rancer", &s, &noships(), &noknown(), 120, "ch", "C");
         st.push(prior.clone());
         st.push(clear.clone());
         st.push(later.clone());

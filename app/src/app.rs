@@ -483,6 +483,8 @@ impl SpaiApp {
             if !store.traits_baked() {
                 sde::spawn_traits_bake(store.path().to_path_buf(), ctx.clone());
             }
+            // Pre-load remembered pilot names so they're recognised immediately.
+            self.pilots.lock().unwrap().preload(&store.known_pilots());
         }
 
         // The battle feed runs whenever the SDE is ready (independent of logs).

@@ -34,6 +34,18 @@ impl PilotCache {
         self.queued.insert(lw);
         self.queue.push_back(name.to_owned());
     }
+
+    /// Pre-load the known (persisted) pilot names so they're recognised at once.
+    pub fn preload(&mut self, known: &HashMap<String, i64>) {
+        for (lc, id) in known {
+            self.resolved.entry(lc.clone()).or_insert(Some(*id));
+        }
+    }
+
+    /// Snapshot of confirmed names (lower-cased) → character id, for the parser.
+    pub fn confirmed(&self) -> HashMap<String, i64> {
+        self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
+    }
 }
 
 pub type SharedPilots = Arc<Mutex<PilotCache>>;
@@ -58,11 +70,16 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                 continue;
             }
             let chars = resolve_batch(&client, &batch);
+            let store = crate::store::Store::open().ok();
             {
                 let mut c = cache.lock().unwrap();
                 for name in &batch {
                     let id = chars.get(&name.to_lowercase()).copied();
                     c.resolved.insert(name.to_lowercase(), id);
+                    // Persist confirmed names so they're recognised instantly later.
+                    if let (Some(cid), Some(store)) = (id, &store) {
+                        store.add_known_pilot(name, cid);
+                    }
                 }
             }
             ctx.request_repaint();

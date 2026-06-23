@@ -88,11 +88,12 @@ fn scan(
             .unwrap_or_else(|| messages.len().saturating_sub(FIRST_SIGHT_BACKLOG));
         if messages.len() > start {
             let now = chrono::Utc::now().timestamp();
+            let known = pilots.lock().unwrap().confirmed();
             let mut st = state.lock().unwrap();
             for m in &messages[start..] {
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
                 let mut report =
-                    intel::analyze(&m.text, systems, ships, received, &meta.channel, &m.author);
+                    intel::analyze(&m.text, systems, ships, &known, received, &meta.channel, &m.author);
 
                 // Queue candidate pilot names for background ESI confirmation.
                 if !report.pilots.is_empty() {
