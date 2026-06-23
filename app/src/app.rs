@@ -220,6 +220,12 @@ pub struct SpaiApp {
     /// poller and the intel watcher).
     wh_cache: Vec<crate::wormholes::Wormhole>,
     wh_reloaded: Option<std::time::Instant>,
+    /// Map overlay derived from `wh_cache` (recomputed on reload, not per frame).
+    wh_overlay: WhOverlay,
+    /// Wormholes-view filters.
+    wh_filter_dest: Option<crate::wormholes::DestClass>,
+    wh_filter_source: Option<crate::wormholes::Source>,
+    wh_filter_expiring: bool,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -417,6 +423,10 @@ impl SpaiApp {
             update_dismissed: false,
             wh_cache: Vec::new(),
             wh_reloaded: None,
+            wh_overlay: WhOverlay::default(),
+            wh_filter_dest: None,
+            wh_filter_source: None,
+            wh_filter_expiring: false,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -1023,6 +1033,7 @@ impl SpaiApp {
             let mut whs = store.wormholes();
             whs.retain(|w| !w.is_expired(now));
             whs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            self.wh_overlay = WhOverlay::build(&whs);
             self.wh_cache = whs;
         }
     }
@@ -1034,6 +1045,37 @@ impl SpaiApp {
         ui.horizontal(|ui| {
             ui.heading(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL));
             ui.label(egui::RichText::new(format!("· {} known", self.wh_cache.len())).weak());
+        });
+        // Filters: destination class, source, and "expiring soon".
+        ui.horizontal(|ui| {
+            use crate::wormholes::{DestClass, Source};
+            ui.label("Dest:");
+            egui::ComboBox::from_id_salt("wh_dest_filter")
+                .selected_text(self.wh_filter_dest.map_or("Any", |d| d.label()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.wh_filter_dest, None, "Any");
+                    for d in [
+                        DestClass::Highsec,
+                        DestClass::Lowsec,
+                        DestClass::Nullsec,
+                        DestClass::Wspace,
+                        DestClass::Thera,
+                        DestClass::Turnur,
+                        DestClass::Unknown,
+                    ] {
+                        ui.selectable_value(&mut self.wh_filter_dest, Some(d), d.label());
+                    }
+                });
+            ui.label("Source:");
+            egui::ComboBox::from_id_salt("wh_src_filter")
+                .selected_text(self.wh_filter_source.map_or("Any", |s| s.label()))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.wh_filter_source, None, "Any");
+                    for s in [Source::EveScout, Source::Intel, Source::Manual] {
+                        ui.selectable_value(&mut self.wh_filter_source, Some(s), s.label());
+                    }
+                });
+            ui.checkbox(&mut self.wh_filter_expiring, "Expiring <4h");
         });
         ui.separator();
         if self.wh_cache.is_empty() {
@@ -1063,9 +1105,15 @@ impl SpaiApp {
             source: String,
         }
         let name_of = |id: i64| self.systems.as_ref().and_then(|s| s.info_of(id)).map(|i| i.name.clone());
+        let (fd, fs, fe) = (self.wh_filter_dest, self.wh_filter_source, self.wh_filter_expiring);
         let rows: Vec<Row> = self
             .wh_cache
             .iter()
+            .filter(|w| {
+                fd.map_or(true, |d| w.dest == d)
+                    && fs.map_or(true, |s| w.source == s)
+                    && (!fe || w.hours_left(now).is_some_and(|h| h <= 4))
+            })
             .map(|w| {
                 let mut sys = name_of(w.system_id).unwrap_or_else(|| format!("#{}", w.system_id));
                 if let Some(sig) = &w.signature {
@@ -2592,6 +2640,57 @@ impl SpaiApp {
             for &(a, c) in &bridges {
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
                     painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
+                }
+            }
+        }
+
+        // Wormhole overlay: direct k-space↔k-space holes (teal), chains through
+        // J-space (purple, dashed, labelled with the J-space hop count), and a spiral
+        // marker on systems that hold a hole into (disconnected) J-space.
+        {
+            let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
+            let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
+            for &(a, b) in &self.wh_overlay.direct {
+                if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
+                    painter.line_segment([*p1, *p2], egui::Stroke::new(1.6, wh_col));
+                }
+            }
+            for &(a, b, hops) in &self.wh_overlay.chains {
+                if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
+                    painter.extend(egui::Shape::dashed_line(
+                        &[*p1, *p2],
+                        egui::Stroke::new(1.8, chain_col),
+                        6.0,
+                        4.0,
+                    ));
+                    let mid = egui::pos2((p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5);
+                    let txt = format!("{hops}J");
+                    let r = painter.text(
+                        mid,
+                        egui::Align2::CENTER_CENTER,
+                        &txt,
+                        egui::FontId::proportional(11.0),
+                        chain_col,
+                    );
+                    painter.rect_filled(r.expand(2.0), 3.0, ui.visuals().extreme_bg_color.gamma_multiply(0.7));
+                    painter.text(
+                        mid,
+                        egui::Align2::CENTER_CENTER,
+                        &txt,
+                        egui::FontId::proportional(11.0),
+                        chain_col,
+                    );
+                }
+            }
+            for sid in &self.wh_overlay.jspace_holes {
+                if let Some(p) = pos.get(sid) {
+                    painter.text(
+                        *p + egui::vec2(0.0, -dot - 6.0),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::regular::SPIRAL,
+                        egui::FontId::proportional(12.0),
+                        wh_col,
+                    );
                 }
             }
         }
@@ -5815,6 +5914,92 @@ fn min_jumps_from(
         .min()
 }
 
+/// A New Eden (k-space) system id — these are drawn on the map.
+fn is_kspace(id: i64) -> bool {
+    (30_000_000..31_000_000).contains(&id)
+}
+/// A J-space / wormhole-region system id (incl. Thera) — never drawn on the map.
+fn is_jspace(id: i64) -> bool {
+    (31_000_000..32_000_000).contains(&id)
+}
+
+/// Wormhole map overlay: k-space↔k-space links, chains through J-space (with the
+/// J-space hop count), and the set of k-space systems that hold a J-space hole.
+#[derive(Default, Clone)]
+struct WhOverlay {
+    /// Direct k-space ↔ k-space wormholes.
+    direct: Vec<(i64, i64)>,
+    /// k-space ↔ k-space via ≥1 J-space system: (a, b, j-space hops).
+    chains: Vec<(i64, i64, usize)>,
+    /// k-space systems with a hole leading into J-space.
+    jspace_holes: std::collections::HashSet<i64>,
+}
+
+impl WhOverlay {
+    /// Build the overlay from the known connections. Chains are found by walking the
+    /// wormhole graph from each k-space system *through J-space only* until another
+    /// k-space system is reached; capped in depth and count to stay sane.
+    fn build(whs: &[crate::wormholes::Wormhole]) -> WhOverlay {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        const MAX_J_HOPS: usize = 4;
+        const MAX_CHAINS: usize = 60;
+
+        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut jspace_holes: HashSet<i64> = HashSet::new();
+        for w in whs {
+            let a = w.system_id;
+            if let Some(b) = w.dest_system_id {
+                adj.entry(a).or_default().push(b);
+                adj.entry(b).or_default().push(a);
+                if is_kspace(a) && is_jspace(b) {
+                    jspace_holes.insert(a);
+                }
+                if is_kspace(b) && is_jspace(a) {
+                    jspace_holes.insert(b);
+                }
+            } else if is_kspace(a)
+                && matches!(w.dest, crate::wormholes::DestClass::Wspace)
+            {
+                jspace_holes.insert(a);
+            }
+        }
+
+        let mut direct: Vec<(i64, i64)> = Vec::new();
+        let mut chains: Vec<(i64, i64, usize)> = Vec::new();
+        let mut seen: HashSet<(i64, i64)> = HashSet::new();
+        let mut starts: Vec<i64> = adj.keys().copied().filter(|id| is_kspace(*id)).collect();
+        starts.sort_unstable();
+        for &start in &starts {
+            let mut visited: HashSet<i64> = HashSet::from([start]);
+            let mut q: VecDeque<(i64, usize)> = VecDeque::from([(start, 0usize)]);
+            while let Some((node, jhops)) = q.pop_front() {
+                for &nb in adj.get(&node).into_iter().flatten() {
+                    if is_kspace(nb) {
+                        if nb == start {
+                            continue;
+                        }
+                        let key = (start.min(nb), start.max(nb));
+                        if seen.insert(key) {
+                            if jhops == 0 {
+                                direct.push(key);
+                            } else {
+                                chains.push((key.0, key.1, jhops));
+                            }
+                        }
+                        // A k-space node ends the chain — don't path through it.
+                    } else if is_jspace(nb) && !visited.contains(&nb) && jhops < MAX_J_HOPS {
+                        visited.insert(nb);
+                        q.push_back((nb, jhops + 1));
+                    }
+                }
+            }
+        }
+        chains.sort_by_key(|c| c.2);
+        chains.truncate(MAX_CHAINS);
+        WhOverlay { direct, chains, jspace_holes }
+    }
+}
+
 /// Compact "time ago" — minutes under an hour, hours under a day, else days.
 fn human_ago(secs: i64) -> String {
     let s = secs.max(0);
@@ -6909,4 +7094,51 @@ fn color_row(ui: &mut egui::Ui, label: &str, rgb: &mut Rgb) -> bool {
         ui.label(label);
     });
     changed
+}
+
+#[cfg(test)]
+mod wh_overlay_tests {
+    use super::*;
+    use crate::wormholes::{DestClass, Source, Wormhole};
+
+    fn conn(sys: i64, dest_sys: i64) -> Wormhole {
+        Wormhole {
+            id: 0,
+            system_id: sys,
+            signature: None,
+            wh_type: None,
+            dest: if is_jspace(dest_sys) { DestClass::Wspace } else { DestClass::Nullsec },
+            dest_system_id: Some(dest_sys),
+            dest_signature: None,
+            dest_wh_type: None,
+            size: None,
+            is_drifter: false,
+            reported_at: 0,
+            explicit_expiry: None,
+            source: Source::Intel,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn chains_through_jspace_and_direct_links() {
+        // kA(30000001) — J1(31000001) — kB(30000002): a 1-J-hop chain.
+        // kA — kC(30000003): a direct k↔k hole.
+        let whs = vec![
+            conn(30_000_001, 31_000_001),
+            conn(31_000_001, 30_000_002),
+            conn(30_000_001, 30_000_003),
+        ];
+        let o = WhOverlay::build(&whs);
+        assert!(o.direct.contains(&(30_000_001, 30_000_003)), "direct: {:?}", o.direct);
+        assert!(
+            o.chains.iter().any(|&(a, b, h)| (a, b) == (30_000_001, 30_000_002) && h == 1),
+            "chains: {:?}",
+            o.chains
+        );
+        // kA holds a hole into J-space (J1), so it's marked.
+        assert!(o.jspace_holes.contains(&30_000_001));
+        // A pure J-space system is never a chain endpoint.
+        assert!(!o.direct.iter().any(|&(a, b)| is_jspace(a) || is_jspace(b)));
+    }
 }
