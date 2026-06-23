@@ -96,6 +96,12 @@ impl Presence {
 /// Commands sent from the UI to the background client.
 pub enum Cmd {
     Send { to: String, body: String },
+    /// Send a groupchat message to a joined room.
+    SendRoom { room: String, body: String },
+    /// Join a multi-user chat room (bare room JID).
+    JoinRoom { room: String },
+    /// Leave a joined room.
+    LeaveRoom { room: String },
 }
 
 #[derive(Default)]
@@ -112,6 +118,8 @@ pub struct JabberState {
     /// Latest presence per bare JID, kept independently of the roster so a presence
     /// that arrives before (or without) a roster entry is never lost.
     pub presences: std::collections::BTreeMap<String, (Presence, String)>,
+    /// Currently-joined MUC rooms (bare room JID).
+    pub rooms: std::collections::BTreeSet<String>,
     /// Conversation history keyed by bare JID (1:1) or room JID.
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     /// Conversations with unread messages.
@@ -126,10 +134,12 @@ pub type CmdSender = tokio::sync::mpsc::UnboundedSender<Cmd>;
 
 /// Spawn the background XMPP client. Returns a sender for outgoing commands.
 /// `server` is the host to connect to directly (empty = resolve from the JID).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     jid: String,
     password: String,
     server: String,
+    rooms: Vec<String>,
     resolve: Resolver,
     state: SharedJabber,
     ctx: egui::Context,
@@ -140,7 +150,7 @@ pub fn spawn(
             state.lock().unwrap().status = "Failed to start runtime".to_owned();
             return;
         };
-        rt.block_on(run(jid, password, server, resolve, state, rx, ctx));
+        rt.block_on(run(jid, password, server, rooms, resolve, state, rx, ctx));
     });
     tx
 }
@@ -153,10 +163,12 @@ fn push_msg(state: &SharedJabber, key: &str, msg: ChatMsg, mark_unread: bool) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     jid: String,
     password: String,
     server: String,
+    initial_rooms: Vec<String>,
     resolve: Resolver,
     state: SharedJabber,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
@@ -164,6 +176,7 @@ async fn run(
 ) {
     use xmpp::jid::BareJid;
     use xmpp::message::send::MessageSettings;
+    use xmpp::muc::room::{JoinRoomSettings, LeaveRoomSettings, RoomMessageSettings};
     use xmpp::tokio_xmpp::connect::{DnsConfig, StartTlsServerConnector};
     use xmpp::{ClientBuilder, ClientFeature, ClientType};
 
@@ -201,10 +214,20 @@ async fn run(
     // disables Jabber. An *empty* event batch is normal (a stanza that produced no
     // high-level event, e.g. the roster reply) — it does NOT mean the stream ended,
     // so we must not tear the connection down on it.
+    let mut rejoined = false;
     loop {
         if !state.lock().unwrap().enabled {
             let _ = agent.disconnect().await;
             break;
+        }
+        // Once connected, (re)join the persisted rooms exactly once.
+        if !rejoined && state.lock().unwrap().connected {
+            for r in &initial_rooms {
+                if let Ok(room) = r.parse::<BareJid>() {
+                    agent.join_room(JoinRoomSettings::new(room)).await;
+                }
+            }
+            rejoined = true;
         }
         tokio::select! {
             events = agent.wait_for_events() => {
@@ -226,6 +249,22 @@ async fn run(
                             false,
                         );
                         ctx.request_repaint();
+                    }
+                }
+                // Room messages are echoed back by the MUC, so we don't push locally.
+                Cmd::SendRoom { room, body } => {
+                    if let Ok(r) = room.parse::<BareJid>() {
+                        agent.send_room_message(RoomMessageSettings::new(r, &body)).await;
+                    }
+                }
+                Cmd::JoinRoom { room } => {
+                    if let Ok(r) = room.parse::<BareJid>() {
+                        agent.join_room(JoinRoomSettings::new(r)).await;
+                    }
+                }
+                Cmd::LeaveRoom { room } => {
+                    if let Ok(r) = room.parse::<BareJid>() {
+                        agent.leave_room(LeaveRoomSettings::new(r)).await;
                     }
                 }
             },
@@ -330,6 +369,14 @@ fn handle_event(
                 ChatMsg { from: key.clone(), body, time: now, outgoing: false },
                 true,
             );
+        }
+        Event::RoomJoined(room) => {
+            eprintln!("[jabber] room joined: {room}");
+            state.lock().unwrap().rooms.insert(room.to_string());
+        }
+        Event::RoomLeft(room) => {
+            eprintln!("[jabber] room left: {room}");
+            state.lock().unwrap().rooms.remove(&room.to_string());
         }
         Event::RoomMessage(_, room, nick, body, _) => {
             push_msg(

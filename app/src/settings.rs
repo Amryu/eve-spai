@@ -86,6 +86,9 @@ pub struct Settings {
     /// SRV record). Empty = resolve from the JID domain.
     #[serde(default = "default_jabber_server")]
     pub jabber_server: String,
+    /// Persisted MUC rooms to auto-(re)join on connect (bare room JIDs).
+    #[serde(default)]
+    pub jabber_rooms: Vec<String>,
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
@@ -424,6 +427,7 @@ impl Default for Settings {
             jabber_enabled: false,
             jabber_jid: String::new(),
             jabber_server: default_jabber_server(),
+            jabber_rooms: Vec::new(),
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,

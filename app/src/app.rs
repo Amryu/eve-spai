@@ -204,6 +204,8 @@ pub struct SpaiApp {
     jabber_chat: Option<String>,
     /// Message composer text.
     jabber_input: String,
+    /// "Join room" text input (a room JID).
+    jabber_room_input: String,
     /// Password field in the Jabber connect form (transient).
     jabber_pw_input: String,
     /// Whether the EVE client is the focused window (for "smart" always-on-top).
@@ -436,6 +438,7 @@ impl SpaiApp {
             jabber_popped: false,
             jabber_chat: None,
             jabber_input: String::new(),
+            jabber_room_input: String::new(),
             jabber_pw_input: String::new(),
             eve_focused: true,
             eve_focus_checked: None,
@@ -785,8 +788,16 @@ impl SpaiApp {
             systems.lookup(t).or_else(|| systems.lookup_prefix(t)).map(|i| i.id)
         });
         let server = self.settings.jabber_server.clone();
-        self.jabber_tx =
-            Some(crate::jabber::spawn(jid, pw, server, resolve, self.jabber.clone(), ctx.clone()));
+        let rooms = self.settings.jabber_rooms.clone();
+        self.jabber_tx = Some(crate::jabber::spawn(
+            jid,
+            pw,
+            server,
+            rooms,
+            resolve,
+            self.jabber.clone(),
+            ctx.clone(),
+        ));
     }
 
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
@@ -870,7 +881,7 @@ impl SpaiApp {
         }
 
         // Snapshot what we need, then render (so we don't hold the lock during UI).
-        let (connected, status, convos, sel_msgs, pings) = {
+        let (connected, status, convos, sel_msgs, pings, rooms) = {
             let st = self.jabber.lock().unwrap();
             let mut set: std::collections::BTreeMap<String, Convo> =
                 std::collections::BTreeMap::new();
@@ -906,7 +917,10 @@ impl SpaiApp {
                 .and_then(|j| st.chats.get(j))
                 .cloned()
                 .unwrap_or_default();
-            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone())
+            // Joined rooms (with unread flag), sorted by JID.
+            let rooms: Vec<(String, bool)> =
+                st.rooms.iter().map(|r| (r.clone(), st.unread.contains(r))).collect();
+            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms)
         };
 
         ui.horizontal(|ui| {
@@ -939,6 +953,51 @@ impl SpaiApp {
                 {
                     self.jabber_chat = None;
                 }
+                ui.separator();
+                // --- MUC rooms: joined rooms + a join box ---
+                for (rjid, unread) in &rooms {
+                    let name = rjid.split('@').next().unwrap_or(rjid);
+                    let mut txt = egui::RichText::new(format!(
+                        "{}  {name}",
+                        egui_phosphor::regular::USERS_THREE
+                    ));
+                    if *unread {
+                        txt = txt.strong();
+                    }
+                    if ui
+                        .selectable_label(self.jabber_chat.as_deref() == Some(rjid.as_str()), txt)
+                        .clicked()
+                    {
+                        self.jabber_chat = Some(rjid.clone());
+                        self.jabber.lock().unwrap().unread.remove(rjid);
+                    }
+                }
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.jabber_room_input)
+                            .hint_text("room@conference.…")
+                            .desired_width(132.0),
+                    );
+                    let go =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui
+                        .button(egui_phosphor::regular::PLUS)
+                        .on_hover_text("Join room")
+                        .clicked()
+                        || go)
+                        && !self.jabber_room_input.trim().is_empty()
+                    {
+                        let room = self.jabber_room_input.trim().to_owned();
+                        self.jabber_room_input.clear();
+                        if let Some(tx) = &self.jabber_tx {
+                            let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
+                        }
+                        if !self.settings.jabber_rooms.contains(&room) {
+                            self.settings.jabber_rooms.push(room);
+                            self.needs_save = true;
+                        }
+                    }
+                });
                 ui.separator();
                 // Group contacts by their server-assigned roster group (empty = Other).
                 let mut groups: std::collections::BTreeMap<&str, Vec<&Convo>> =
@@ -1007,6 +1066,36 @@ impl SpaiApp {
                         });
                     }
                     Some(jid) => {
+                        let is_room = rooms.iter().any(|(r, _)| r == &jid);
+                        // Room header with a Leave action.
+                        if is_room {
+                            ui.horizontal(|ui| {
+                                let name = jid.split('@').next().unwrap_or(&jid);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}  {name}",
+                                        egui_phosphor::regular::USERS_THREE
+                                    ))
+                                    .strong(),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("Leave").clicked() {
+                                            if let Some(tx) = &self.jabber_tx {
+                                                let _ = tx.send(crate::jabber::Cmd::LeaveRoom {
+                                                    room: jid.clone(),
+                                                });
+                                            }
+                                            self.settings.jabber_rooms.retain(|r| r != &jid);
+                                            self.needs_save = true;
+                                            self.jabber_chat = None;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.separator();
+                        }
                         let composer_h = 32.0;
                         egui::ScrollArea::vertical()
                             .id_salt("msgs")
@@ -1039,7 +1128,12 @@ impl SpaiApp {
                             if (ui.button("Send").clicked() || send) && !self.jabber_input.trim().is_empty() {
                                 let body = std::mem::take(&mut self.jabber_input);
                                 if let Some(tx) = &self.jabber_tx {
-                                    let _ = tx.send(crate::jabber::Cmd::Send { to: jid.clone(), body });
+                                    let cmd = if is_room {
+                                        crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
+                                    } else {
+                                        crate::jabber::Cmd::Send { to: jid.clone(), body }
+                                    };
+                                    let _ = tx.send(cmd);
                                 }
                             }
                         });
