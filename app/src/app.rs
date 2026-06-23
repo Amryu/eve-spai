@@ -191,6 +191,8 @@ pub struct SpaiApp {
     map_search_sel: usize,
     /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
+    /// A viewport to bring to the foreground this frame (a click updated its data).
+    focus_window: Option<egui::ViewportId>,
     /// Ship-info window: the ship type currently shown (if any).
     ship_window: Option<i64>,
     /// Pilot lookup (zKill) input + shared result.
@@ -315,6 +317,7 @@ impl SpaiApp {
             map_search: String::new(),
             map_search_sel: 0,
             system_window: None,
+            focus_window: None,
             ship_window: None,
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
@@ -338,11 +341,13 @@ impl SpaiApp {
     /// Open the system-info window for a system (from map/intel/search click).
     fn open_system(&mut self, system_id: i64) {
         self.system_window = Some(system_id);
+        self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
     }
 
     /// Open the ship-info window for a ship type (from an intel ship panel click).
     fn open_ship(&mut self, ship_id: i64) {
         self.ship_window = Some(ship_id);
+        self.focus_window = Some(egui::ViewportId::from_hash_of("ship_window"));
     }
 
     /// Evaluate new intel against alert rules; fire desktop notifications (cooldown
@@ -636,6 +641,7 @@ impl SpaiApp {
                 self.pilot_query = name;
                 crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ui.ctx().clone());
                 self.pilot_window_open = true;
+                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             None => {}
         }
@@ -1440,11 +1446,16 @@ impl SpaiApp {
         let zoomed = self.map_zoom > 3.0;
         if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {
             let status = self.system_status.lock().unwrap();
-            let upgrade_systems: std::collections::HashSet<String> = if ov.upgrades {
-                self.settings.sov_upgrades.iter().map(|u| u.system.to_lowercase()).collect()
-            } else {
-                std::collections::HashSet::new()
-            };
+            let mut upgrades_by_system: std::collections::HashMap<String, Vec<&str>> =
+                std::collections::HashMap::new();
+            if ov.upgrades {
+                for u in &self.settings.sov_upgrades {
+                    upgrades_by_system
+                        .entry(u.system.to_lowercase())
+                        .or_default()
+                        .push(u.upgrade.as_str());
+                }
+            }
             for s in &self.map_draw {
                 let p = pos[&s.id];
                 if let Some(f) = status.get(&s.id) {
@@ -1470,15 +1481,40 @@ impl SpaiApp {
                         }
                     }
                 }
-                // Sov upgrades: a small icon near the system when zoomed in (not a ring).
-                if ov.upgrades && zoomed && upgrade_systems.contains(&s.name.to_lowercase()) {
-                    painter.text(
-                        p + egui::vec2(dot + 3.0, -(dot + 3.0)),
-                        egui::Align2::LEFT_BOTTOM,
-                        egui_phosphor::regular::WRENCH,
-                        egui::FontId::proportional(12.0),
-                        crate::theme::standing::CORP,
-                    );
+                // Sov upgrades: specific, level-coloured icons near the system when
+                // zoomed in (mineral image for mining, skull for ratting, dish for
+                // exploration). Not a ring.
+                if ov.upgrades && zoomed {
+                    if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
+                        for (k, up) in ups.iter().take(6).enumerate() {
+                            let ip = p + egui::vec2(dot + 3.0 + k as f32 * 14.0, -(dot + 4.0));
+                            let (kind, level) = upgrade_info(up);
+                            let lcol = level_color(level);
+                            match kind {
+                                UpgradeIcon::Glyph(g) => {
+                                    painter.text(
+                                        ip,
+                                        egui::Align2::LEFT_BOTTOM,
+                                        g,
+                                        egui::FontId::proportional(13.0),
+                                        lcol,
+                                    );
+                                }
+                                UpgradeIcon::Mineral(tid) => {
+                                    let rect = egui::Rect::from_min_size(
+                                        egui::pos2(ip.x, ip.y - 13.0),
+                                        egui::Vec2::splat(13.0),
+                                    );
+                                    let url =
+                                        format!("https://images.evetech.net/types/{tid}/icon?size=32");
+                                    ui.put(rect, egui::Image::new(url))
+                                        .on_hover_text(*up);
+                                    // Level indicator dot.
+                                    painter.circle_filled(rect.right_bottom(), 2.5, lcol);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1573,8 +1609,9 @@ impl SpaiApp {
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(2.0, crate::theme::standing::HOSTILE));
             }
             if player_sys == Some(s.id) {
-                // A larger ring than the intel ring so the two always coexist.
-                painter.circle_stroke(p, dot + 8.0, egui::Stroke::new(2.5, ui.visuals().hyperlink_color));
+                // A larger blue ring than the red intel ring so the two coexist.
+                let blue = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
+                painter.circle_stroke(p, dot + 8.0, egui::Stroke::new(2.5, blue));
             }
             if Some(s.id) == hovered_id {
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
@@ -2904,6 +2941,10 @@ impl eframe::App for SpaiApp {
         self.ship_window(&ctx);
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
+        // Bring a just-updated window to the foreground.
+        if let Some(vp) = self.focus_window.take() {
+            ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
+        }
         if self.map_popped {
             self.show_map_viewport(&ctx);
         }
@@ -2938,7 +2979,8 @@ fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: e
     }
     let unit = dir / len;
     let (dash, period) = (6.0f32, 12.0f32);
-    let mut d = -(phase % period);
+    // Dashes advance toward p2 (the destination) as `phase` grows.
+    let mut d = (phase % period) - period;
     let stroke = egui::Stroke::new(2.0, color);
     while d < len {
         let s = d.max(0.0);
@@ -3492,6 +3534,68 @@ fn fit_url(site: &str, ship_id: i64, loss: &crate::lookup::Loss) -> String {
     match site {
         "osmium" => format!("https://o.smium.org/loadout/dna/{}", dna_string(ship_id, loss)),
         _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
+    }
+}
+
+/// Icon for a sov upgrade on the map.
+enum UpgradeIcon {
+    /// A mineral/ore item image (type id), for mining arrays.
+    Mineral(i64),
+    /// A Phosphor glyph (ratting/exploration/cyno/other).
+    Glyph(&'static str),
+}
+
+/// Categorise a sov upgrade by name → (icon, level 0–5).
+fn upgrade_info(name: &str) -> (UpgradeIcon, u8) {
+    use egui_phosphor::regular as icon;
+    let lower = name.to_lowercase();
+    let level = name.chars().rev().find(|c| c.is_ascii_digit()).and_then(|c| c.to_digit(10)).unwrap_or(0)
+        as u8;
+    const MINERALS: &[(&str, i64)] = &[
+        ("tritanium", 34),
+        ("pyerite", 35),
+        ("mexallon", 36),
+        ("isogen", 37),
+        ("nocxium", 38),
+        ("zydrine", 39),
+        ("megacyte", 40),
+        ("morphite", 11399),
+    ];
+    for (m, id) in MINERALS {
+        if lower.contains(m) {
+            return (UpgradeIcon::Mineral(*id), level);
+        }
+    }
+    let glyph = if lower.contains("pirate")
+        || lower.contains("detection")
+        || lower.contains("reconnaissance")
+        || lower.contains("insurgenc")
+        || lower.contains("ratting")
+    {
+        icon::SKULL
+    } else if lower.contains("scan")
+        || lower.contains("survey")
+        || lower.contains("explor")
+        || lower.contains("relic")
+        || lower.contains("data")
+    {
+        icon::BROADCAST
+    } else if lower.contains("cyno") {
+        icon::RADIOACTIVE
+    } else {
+        icon::GEAR
+    };
+    (UpgradeIcon::Glyph(glyph), level)
+}
+
+/// Colour for a sov-upgrade level (low → high).
+fn level_color(l: u8) -> egui::Color32 {
+    match l {
+        5 => egui::Color32::from_rgb(0xFF, 0xC1, 0x07), // gold
+        4 => egui::Color32::from_rgb(0x42, 0xA5, 0xF5), // blue
+        3 => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // green
+        2 => egui::Color32::from_rgb(0x4D, 0xD0, 0xE1), // teal
+        _ => egui::Color32::from_rgb(0x9E, 0x9E, 0x9E), // grey (level 1 / unknown)
     }
 }
 
