@@ -282,8 +282,23 @@ pub fn analyze(
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
 
-    // Ships: single-token proper-noun hull names, nicknames/acronyms (in the
-    // index), or an unambiguous typo (exactly one close match).
+    // Candidate pilot names first: their tokens must not be parsed as ships or
+    // systems (player names often contain hull/system names, e.g. "Sabre Pilot" or
+    // "Jita Trader"). Quoted spans are forced to be names.
+    let mut pilots = extract_pilots(text);
+    for q in extract_quoted(text) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&q)) {
+            pilots.push(q);
+        }
+    }
+    let pilot_tokens: std::collections::HashSet<String> = pilots
+        .iter()
+        .flat_map(|n| n.split_whitespace())
+        .map(|w| w.to_lowercase())
+        .collect();
+
+    // Ships: hull names / nicknames / acronyms (case-insensitive), or an unambiguous
+    // typo. A token that belongs to a pilot name is never also parsed as a ship.
     let mut ships: Vec<DetectedShip> = Vec::new();
     let add_ship = |id: i64, name: &str, ships: &mut Vec<DetectedShip>| {
         if !ships.iter().any(|s| s.id == id) {
@@ -291,13 +306,15 @@ pub fn analyze(
         }
     };
     for tok in &tokens {
-        if !tok.chars().next().is_some_and(|c| c.is_uppercase()) {
+        let lower = tok.to_lowercase();
+        if pilot_tokens.contains(&lower) {
             continue;
         }
-        let lower = tok.to_lowercase();
         if let Some((id, name)) = ship_index.get(&lower) {
             add_ship(*id, name, &mut ships);
-        } else if lower.len() >= 5 {
+            continue;
+        }
+        if lower.len() >= 5 {
             // Typo: accept only if exactly one ship name is within edit distance 1.
             let max = if lower.len() >= 8 { 2 } else { 1 };
             let mut hit: Option<(i64, String)> = None;
@@ -319,21 +336,6 @@ pub fn analyze(
             }
         }
     }
-
-    // Candidate pilot names first: their tokens must not be parsed as systems
-    // (player names often contain system names, e.g. "Jita Trader"). Quoted spans
-    // are forced to be names (so 'clear' is a pilot, not a status keyword).
-    let mut pilots = extract_pilots(text);
-    for q in extract_quoted(text) {
-        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&q)) {
-            pilots.push(q);
-        }
-    }
-    let pilot_tokens: std::collections::HashSet<String> = pilots
-        .iter()
-        .flat_map(|n| n.split_whitespace())
-        .map(|w| w.to_lowercase())
-        .collect();
 
     let mut detected: Vec<DetectedSystem> = Vec::new();
     // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
@@ -551,6 +553,21 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn detects_single_ship_name() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("sabre".to_string(), (22456i64, "Sabre".to_string()))].into_iter().collect();
+        // Case-insensitive: lower-case ship name is detected.
+        let r = analyze("E-JCUS sabre", &s, &ships, 1, "ch", "x");
+        assert_eq!(r.ships.iter().map(|sh| sh.name.clone()).collect::<Vec<_>>(), vec!["Sabre"]);
+        // Single-word "Sabre" prefers the ship even if a pilot shares the name.
+        // A compound pilot name ("Sabre Smith") prefers the pilot — no ship parsed.
+        let r2 = analyze("Sabre Smith in Rancer", &s, &ships, 1, "ch", "x");
+        assert!(r2.ships.is_empty());
+        assert_eq!(r2.systems.iter().map(|d| d.name.clone()).collect::<Vec<_>>(), vec!["Rancer"]);
     }
 
     #[test]
