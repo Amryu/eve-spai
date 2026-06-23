@@ -1799,11 +1799,12 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 })
                 .with_active(false)
+                .with_visible(active) // unmapped while idle: no compositor cost, no focus
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
                 .with_transparent(true)
-                .with_mouse_passthrough(!active) // click-through while idle
+                .with_mouse_passthrough(!active)
                 .with_position([pos.0, pos.1])
                 .with_inner_size(self.settings.alerts.window_size.map_or([360.0, 240.0].into(), |(w, h)| egui::vec2(w, h))),
             |ctx, _| {
@@ -2811,16 +2812,19 @@ impl SpaiApp {
             let sec = info.map(|i| i.security).unwrap_or(0.0);
             let is_center = id == center;
             let r = if is_center { node_r + 2.5 } else { node_r };
+            // Intel: a soft glow + an opaque severity-coloured ring (as in 2D/3D),
+            // brighter/blinking while fresh.
             if let Some((isev, received)) = intel_map.get(&id) {
                 let base = severity_color(*isev);
                 let fresh = now_ts - received < 15;
-                let a = if fresh {
+                let (glow, ring_w) = if fresh {
                     any_fresh = true;
-                    0.45 + 0.45 * blink
+                    (0.30 + 0.35 * blink, 3.0)
                 } else {
-                    0.45
+                    (0.28, 2.5)
                 };
-                painter.circle_filled(p, r + 5.0, base.gamma_multiply(a));
+                painter.circle_filled(p, r + 6.0, base.gamma_multiply(glow));
+                painter.circle_stroke(p, r + 3.0, egui::Stroke::new(ring_w, base));
             }
             painter.circle_filled(p, r, security_color(sec));
             let outline = if is_center {
@@ -2831,6 +2835,10 @@ impl SpaiApp {
                 visuals.window_stroke.color
             };
             painter.circle_stroke(p, r, egui::Stroke::new(if is_center { 2.0 } else { 1.0 }, outline));
+            // Hover highlight.
+            if Some(id) == hovered {
+                painter.circle_stroke(p, r + 2.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+            }
             if let (Some(info), true) = (info, dist[&id] <= label_max) {
                 let extra = stagger.get(&id).copied().unwrap_or(0.0);
                 painter.text(
