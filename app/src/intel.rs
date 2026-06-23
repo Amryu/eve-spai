@@ -154,7 +154,8 @@ impl IntelState {
             || new.spike
             || new.camp
             || new.bubble
-            || new.cyno;
+            || new.cyno
+            || new.cap_tackled;
         if !adds {
             return false;
         }
@@ -205,10 +206,17 @@ impl IntelState {
             prev.camp |= new.camp;
             prev.bubble |= new.bubble;
             prev.cyno |= new.cyno;
+            prev.cap_tackled |= new.cap_tackled;
             prev.killmail |= new.killmail;
             prev.wormhole |= new.wormhole;
             prev.ess |= new.ess;
+            prev.ess_time = new.ess_time.clone().or_else(|| prev.ess_time.clone());
             prev.skyhook |= new.skyhook;
+            for l in &new.links {
+                if !prev.links.iter().any(|p| p.url == l.url) {
+                    prev.links.push(l.clone());
+                }
+            }
             prev.received = new.received; // refresh so it re-alerts and reads as fresh
             prev.text = format!("{}  ·  {}", prev.text, new.text);
             if prev.clear {

@@ -210,6 +210,10 @@ pub struct SpaiApp {
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
     eve_focus_checked: Option<std::time::Instant>,
+    /// Last externally-focused (non-EVE-Spai) X11 window id — so the alert window can
+    /// hand focus back when it pops up (winit ignores active(false) on X11).
+    ext_window: Option<String>,
+    ext_window_checked: Option<std::time::Instant>,
     // --- Map view state ---
     map_overlays: MapOverlays,
     overlay_menu_open: bool,
@@ -400,6 +404,8 @@ impl SpaiApp {
             jabber_pw_input: String::new(),
             eve_focused: true,
             eve_focus_checked: None,
+            ext_window: None,
+            ext_window_checked: None,
             map_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -1716,6 +1722,28 @@ impl SpaiApp {
         }
     }
 
+    /// Track the last externally-focused window (throttled), so the alert window can
+    /// return focus to it. Only meaningful when the custom window is enabled.
+    fn track_external_window(&mut self) {
+        // Only needed when a rule can pop the custom window.
+        let wants_window = self.settings.alert_enabled
+            && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window && !r.suppress);
+        if !wants_window {
+            return;
+        }
+        let due = self.ext_window_checked.map(|t| t.elapsed().as_millis() > 400).unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.ext_window_checked = Some(std::time::Instant::now());
+        if let Some((id, name)) = active_window() {
+            // Remember it only if it isn't one of our own windows.
+            if !name.to_lowercase().contains("eve spai") {
+                self.ext_window = Some(id);
+            }
+        }
+    }
+
     /// Custom notification window: a floating, always-on-top feed of intel that
     /// passed the alert filters. Auto-hides `window_timeout` s after the last alert;
     /// hovering pauses the countdown (and bumps it to ≥3 s).
@@ -1797,6 +1825,11 @@ impl SpaiApp {
                     }
                     if let Some((x, y)) = self.settings.alerts.window_pos {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+                    }
+                    // winit ignores active(false) on X11/KWin, so the window steals
+                    // focus on map — hand it straight back to whatever was active.
+                    if let Some(id) = self.ext_window.clone() {
+                        refocus_window(id);
                     }
                 }
                 egui::CentralPanel::default()
@@ -5124,6 +5157,7 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
+        self.track_external_window();
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -5190,19 +5224,40 @@ impl eframe::App for SpaiApp {
 }
 
 /// Fire a desktop notification off the UI thread (dbus can block).
+/// The currently-active X11 window (id, name), best-effort via xdotool.
+fn active_window() -> Option<(String, String)> {
+    use std::process::Command;
+    let id = Command::new("xdotool").arg("getactivewindow").output().ok()?;
+    if !id.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&id.stdout).trim().to_owned();
+    if id.is_empty() {
+        return None;
+    }
+    let name = Command::new("xdotool").args(["getwindowname", &id]).output().ok()?;
+    Some((id, String::from_utf8_lossy(&name.stdout).trim().to_owned()))
+}
+
+/// Re-activate an X11 window by id (after a short delay so the alert window has
+/// finished mapping first). Works around winit ignoring `active(false)` on X11.
+fn refocus_window(id: String) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let _ = std::process::Command::new("xdotool").args(["windowactivate", &id]).status();
+    });
+}
+
 /// Best-effort check whether the EVE client is the focused window (X11 via
 /// xdotool/xprop). Returns true when it can't tell (so "smart" ≈ always-on-top).
 fn eve_is_focused() -> bool {
-    use std::process::Command;
-    if let Ok(out) = Command::new("xdotool").args(["getactivewindow", "getwindowname"]).output() {
-        if out.status.success() {
-            let name = String::from_utf8_lossy(&out.stdout).to_lowercase();
-            if !name.is_empty() {
-                return name.contains("eve") && !name.contains("eve spai");
-            }
+    match active_window() {
+        Some((_, name)) if !name.is_empty() => {
+            let n = name.to_lowercase();
+            n.contains("eve") && !n.contains("eve spai")
         }
+        _ => true,
     }
-    true
 }
 
 fn notify(summary: String, body: String) {
