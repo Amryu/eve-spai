@@ -1239,7 +1239,13 @@ impl SpaiApp {
             }
             .unwrap_or_default();
             self.map_systems = if let Some(g) = &self.systems {
-                raw.into_iter().filter(|s| !g.neighbors(s.id).is_empty()).collect()
+                raw.into_iter()
+                    .filter(|s| !g.neighbors(s.id).is_empty())
+                    .filter(|s| {
+                        // Hide permanently inaccessible regions (e.g. UUA-F4).
+                        g.info_of(s.id).map(|i| !is_hidden_region(&i.region)).unwrap_or(true)
+                    })
+                    .collect()
             } else {
                 raw
             };
@@ -1677,14 +1683,25 @@ impl SpaiApp {
         // Compact + translucent so it doesn't hide nearby/jumpable systems.
         ui.set_max_width(270.0);
         ui.set_opacity(0.82);
+        let status = self.system_status.lock().unwrap();
+        let flags = status.get(&id).cloned().unwrap_or_default();
         if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(id)) {
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
                 ui.label(egui::RichText::new(&info.name).strong());
+                // Sov alliance logo, top-right (instead of a "Sov:" text chip).
+                if let Some(aid) = flags.sov_alliance {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=64");
+                        let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(26.0)));
+                        if let Some(sov) = &flags.sov {
+                            r.on_hover_text(sov);
+                        }
+                    });
+                }
             });
         }
-        let status = self.system_status.lock().unwrap();
-        system_chips(ui, &self.systems, &status, id);
+        system_chips_ex(ui, &self.systems, &status, id, false);
         if let Some(f) = status.get(&id) {
             if f.jumps + f.ship_kills + f.pod_kills + f.npc_kills > 0 {
                 ui.label(
@@ -3476,6 +3493,11 @@ fn fit_url(site: &str, ship_id: i64, loss: &crate::lookup::Loss) -> String {
         "osmium" => format!("https://o.smium.org/loadout/dna/{}", dna_string(ship_id, loss)),
         _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
     }
+}
+
+/// Regions that are not reachable in-game and shouldn't appear on the map.
+fn is_hidden_region(region: &str) -> bool {
+    matches!(region, "UUA-F4")
 }
 
 /// Broad hull-size class for a ship group (Frigate … Capital).
