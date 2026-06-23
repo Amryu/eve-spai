@@ -115,6 +115,42 @@ const PILOT_STOP: &[&str] = &[
     "afk", "warpin", "system", "and", "for",
 ];
 
+/// Quoted spans (delimited by `"`, `'` or `` ` ``, openings/closings may be mixed)
+/// — forced to be treated as pilot names rather than keywords/systems. A quote only
+/// opens at a word boundary so apostrophes inside names (e.g. "O'Brien") are safe.
+fn extract_quoted(text: &str) -> Vec<String> {
+    let is_quote = |c: char| c == '"' || c == '\'' || c == '`';
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        if is_quote(chars[i]) && (i == 0 || chars[i - 1].is_whitespace()) {
+            // Find a closing quote at a word boundary (followed by space/punct/end).
+            let mut j = i + 1;
+            while j < n {
+                if is_quote(chars[j])
+                    && (j + 1 == n || chars[j + 1].is_whitespace() || chars[j + 1].is_ascii_punctuation())
+                {
+                    break;
+                }
+                j += 1;
+            }
+            if j < n {
+                let inner: String = chars[i + 1..j].iter().collect();
+                let inner = inner.trim().to_owned();
+                if !inner.is_empty() {
+                    out.push(inner);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Candidate pilot names: runs of 2–3 Title-Case alphabetic words in the *raw*
 /// text (punctuation and numbers break a run), minus obvious intel/English words.
 /// ESI confirms which are real characters later.
@@ -183,8 +219,14 @@ pub fn analyze(
     }
 
     // Candidate pilot names first: their tokens must not be parsed as systems
-    // (player names often contain system names, e.g. "Jita Trader").
-    let pilots = extract_pilots(text);
+    // (player names often contain system names, e.g. "Jita Trader"). Quoted spans
+    // are forced to be names (so 'clear' is a pilot, not a status keyword).
+    let mut pilots = extract_pilots(text);
+    for q in extract_quoted(text) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&q)) {
+            pilots.push(q);
+        }
+    }
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
         .flat_map(|n| n.split_whitespace())
@@ -376,6 +418,18 @@ mod tests {
         // Common Title-Case intel phrases are not pilot candidates.
         let r2 = analyze("Gate Camp in Rancer", &s, &noships(), 1, "ch", "x");
         assert!(r2.pilots.is_empty());
+    }
+
+    #[test]
+    fn quoting_forces_pilot_not_keyword() {
+        let s = systems();
+        let r = analyze("'clear' in Rancer", &s, &noships(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "clear"));
+        assert!(!r.clear); // quoted -> not a status keyword
+        assert_eq!(r.systems.len(), 1); // Rancer still a system
+        // Mixed opening/closing quotes.
+        let r2 = analyze("`Some Guy\" tackled", &s, &noships(), 1, "ch", "x");
+        assert!(r2.pilots.iter().any(|p| p == "Some Guy"));
     }
 
     #[test]

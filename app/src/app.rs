@@ -113,6 +113,8 @@ pub struct SpaiApp {
     map_focus: Option<i64>,
     /// Persistently highlighted system on the map (from a search selection).
     map_selected: Option<i64>,
+    /// Destination for the in-app route overlay (set via "Set Destination").
+    route_destination: Option<i64>,
     map_search: String,
     map_search_sel: usize,
     /// System-info window: the system currently shown (if any).
@@ -227,6 +229,7 @@ impl SpaiApp {
             map_draw_key: None,
             map_focus: None,
             map_selected: None,
+            route_destination: None,
             map_search: String::new(),
             map_search_sel: 0,
             system_window: None,
@@ -1237,6 +1240,22 @@ impl SpaiApp {
             }
         }
 
+        // Player route: animated dashed line flowing toward the destination.
+        if let (Some(dest), Some(ps), Some(graph)) =
+            (self.route_destination, player_sys, self.systems.as_ref())
+        {
+            if let Some(route) = graph.path(ps, dest) {
+                let phase = (ui.input(|i| i.time) * 28.0) as f32;
+                let route_col = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
+                for w in route.windows(2) {
+                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
+                        dashed_flow(&painter, *p1, *p2, route_col, phase);
+                    }
+                }
+                ui.ctx().request_repaint(); // keep the dashes flowing
+            }
+        }
+
         // Jump-range hover. Distances are always true light-years (real coords);
         // in schematic mode we keep the band-coloured highlights but drop the rings
         // (the on-screen distances aren't metric there).
@@ -1415,6 +1434,9 @@ impl SpaiApp {
                         }
                         if ui.button("Pop out").clicked() {
                             self.map_popped = true;
+                        }
+                        if self.route_destination.is_some() && ui.button("Clear route").clicked() {
+                            self.route_destination = None;
                         }
                     });
                 });
@@ -1727,6 +1749,7 @@ impl SpaiApp {
                     ui.add_enabled_ui(has_char, |ui| {
                         if ui.button("Set Destination").clicked() {
                             crate::esi::set_waypoint(cid.clone(), cname.clone(), id, true);
+                            self.route_destination = Some(id); // mirror on the map
                         }
                         if ui.button("Add Waypoint").clicked() {
                             crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
@@ -2100,6 +2123,28 @@ fn notify(text: String) {
             .body(&text)
             .show();
     });
+}
+
+/// Draw a dashed line from `p1` to `p2` whose dashes flow toward `p2` as `phase`
+/// increases (the in-game autopilot look).
+fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: egui::Color32, phase: f32) {
+    let dir = p2 - p1;
+    let len = dir.length();
+    if len < 1.0 {
+        return;
+    }
+    let unit = dir / len;
+    let (dash, period) = (6.0f32, 12.0f32);
+    let mut d = -(phase % period);
+    let stroke = egui::Stroke::new(2.0, color);
+    while d < len {
+        let s = d.max(0.0);
+        let e = (d + dash).min(len);
+        if e > s {
+            painter.line_segment([p1 + unit * s, p1 + unit * e], stroke);
+        }
+        d += period;
+    }
 }
 
 /// Nearest projected system to a point within `threshold` pixels.

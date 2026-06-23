@@ -96,6 +96,35 @@ impl Systems {
         }
         None
     }
+
+    /// Shortest gate path from `from` to `to` (inclusive of both), via BFS.
+    pub fn path(&self, from: i64, to: i64) -> Option<Vec<i64>> {
+        if from == to {
+            return Some(vec![from]);
+        }
+        let mut prev: HashMap<i64, i64> = HashMap::new();
+        let mut visited: HashSet<i64> = HashSet::from([from]);
+        let mut queue: VecDeque<i64> = VecDeque::from([from]);
+        while let Some(sys) = queue.pop_front() {
+            for &n in self.adjacency.get(&sys).into_iter().flatten() {
+                if visited.insert(n) {
+                    prev.insert(n, sys);
+                    if n == to {
+                        let mut route = vec![to];
+                        let mut cur = to;
+                        while let Some(&p) = prev.get(&cur) {
+                            route.push(p);
+                            cur = p;
+                        }
+                        route.reverse();
+                        return Some(route);
+                    }
+                    queue.push_back(n);
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
