@@ -1044,7 +1044,7 @@ impl SpaiApp {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.heading(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL));
-            ui.label(egui::RichText::new(format!("· {} known", self.wh_cache.len())).weak());
+            ui.label(egui::RichText::new(format!("{} known", self.wh_cache.len())).weak());
         });
         // Filters: destination class, source, and "expiring soon".
         ui.horizontal(|ui| {
@@ -1098,13 +1098,16 @@ impl SpaiApp {
             sys_id: i64,
             sys: String,
             wh_type: String,
+            drifter: bool,
             dest: String,
             dest_click: Option<i64>,
+            dest_const: String,
+            dest_region: String,
             size: String,
             life: String,
             source: String,
         }
-        let name_of = |id: i64| self.systems.as_ref().and_then(|s| s.info_of(id)).map(|i| i.name.clone());
+        let info_of = |id: i64| self.systems.as_ref().and_then(|s| s.info_of(id)).cloned();
         let (fd, fs, fe) = (self.wh_filter_dest, self.wh_filter_source, self.wh_filter_expiring);
         let rows: Vec<Row> = self
             .wh_cache
@@ -1115,19 +1118,18 @@ impl SpaiApp {
                     && (!fe || w.hours_left(now).is_some_and(|h| h <= 4))
             })
             .map(|w| {
-                let mut sys = name_of(w.system_id).unwrap_or_else(|| format!("#{}", w.system_id));
+                let mut sys = info_of(w.system_id)
+                    .map(|i| i.name)
+                    .unwrap_or_else(|| format!("#{}", w.system_id));
                 if let Some(sig) = &w.signature {
                     sys = format!("{sys}  [{sig}]");
                 }
-                // Prefer the actual far system name when known, else the class label.
-                let dest = match w.dest_system_id.and_then(name_of) {
-                    Some(n) => format!("→ {n}"),
-                    None => format!("→ {}", w.dest.label()),
+                // Prefer the actual far system (with its constellation/region) when
+                // known, else the bare destination class.
+                let (dest, dest_const, dest_region) = match w.dest_system_id.and_then(info_of) {
+                    Some(i) => (i.name, i.constellation, i.region),
+                    None => (w.dest.label().to_string(), String::new(), String::new()),
                 };
-                let mut wh_type = w.wh_type.clone().unwrap_or_else(|| "—".into());
-                if w.is_drifter {
-                    wh_type.push_str("  ⚠ drifter");
-                }
                 let life = if w.explicit_expiry.is_some() {
                     match w.hours_left(now) {
                         Some(h) => format!("{h}h left"),
@@ -1139,9 +1141,12 @@ impl SpaiApp {
                 Row {
                     sys_id: w.system_id,
                     sys,
-                    wh_type,
+                    wh_type: w.wh_type.clone().unwrap_or_else(|| "—".into()),
+                    drifter: w.is_drifter,
                     dest,
                     dest_click: w.dest_system_id,
+                    dest_const,
+                    dest_region,
                     size: w.size.map(|s| s.label().to_string()).unwrap_or_else(|| "—".into()),
                     life,
                     source: w.source.label().to_string(),
@@ -1149,11 +1154,14 @@ impl SpaiApp {
             })
             .collect();
 
+        use egui_phosphor::regular as icon;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("wh_grid").striped(true).num_columns(6).spacing([18.0, 6.0]).show(
+            egui::Grid::new("wh_grid").striped(true).num_columns(8).spacing([16.0, 6.0]).show(
                 ui,
                 |ui| {
-                    for h in ["System", "Type", "Destination", "Size", "Life", "Source"] {
+                    for h in
+                        ["System", "Type", "Destination", "Constellation", "Region", "Size", "Life", "Source"]
+                    {
                         ui.label(egui::RichText::new(h).strong().small());
                     }
                     ui.end_row();
@@ -1161,14 +1169,29 @@ impl SpaiApp {
                         if ui.link(&r.sys).clicked() {
                             self.open_system(r.sys_id);
                         }
-                        ui.label(&r.wh_type);
-                        if let Some(id) = r.dest_click {
-                            if ui.link(&r.dest).clicked() {
-                                self.open_system(id);
+                        ui.horizontal(|ui| {
+                            ui.label(&r.wh_type);
+                            if r.drifter {
+                                ui.label(
+                                    egui::RichText::new(format!("{} drifter", icon::WARNING))
+                                        .color(crate::theme::standing::WARNING)
+                                        .small(),
+                                );
                             }
-                        } else {
-                            ui.label(&r.dest);
-                        }
+                        });
+                        // Destination: an arrow icon + the target (clickable when known).
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(icon::ARROW_RIGHT).weak());
+                            if let Some(id) = r.dest_click {
+                                if ui.link(&r.dest).clicked() {
+                                    self.open_system(id);
+                                }
+                            } else {
+                                ui.label(&r.dest);
+                            }
+                        });
+                        ui.label(&r.dest_const);
+                        ui.label(&r.dest_region);
                         ui.label(&r.size);
                         ui.label(&r.life);
                         ui.label(&r.source);
@@ -5943,6 +5966,10 @@ impl WhOverlay {
         use std::collections::{HashMap, HashSet, VecDeque};
         const MAX_J_HOPS: usize = 4;
         const MAX_CHAINS: usize = 60;
+        // A real chain link has a handful of holes; a public hub (Thera) has many. We
+        // don't path *through* a high-degree J-space node, so we don't turn every pair
+        // of systems sharing Thera into a bogus chain — those show as hole markers.
+        const MAX_HUB_DEGREE: usize = 6;
 
         let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut jspace_holes: HashSet<i64> = HashSet::new();
@@ -5963,6 +5990,8 @@ impl WhOverlay {
                 jspace_holes.insert(a);
             }
         }
+        let degree: HashMap<i64, usize> =
+            adj.iter().map(|(k, v)| (*k, v.len())).collect();
 
         let mut direct: Vec<(i64, i64)> = Vec::new();
         let mut chains: Vec<(i64, i64, usize)> = Vec::new();
@@ -5987,7 +6016,11 @@ impl WhOverlay {
                             }
                         }
                         // A k-space node ends the chain — don't path through it.
-                    } else if is_jspace(nb) && !visited.contains(&nb) && jhops < MAX_J_HOPS {
+                    } else if is_jspace(nb)
+                        && !visited.contains(&nb)
+                        && jhops < MAX_J_HOPS
+                        && degree.get(&nb).copied().unwrap_or(0) <= MAX_HUB_DEGREE
+                    {
                         visited.insert(nb);
                         q.push_back((nb, jhops + 1));
                     }
