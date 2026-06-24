@@ -593,6 +593,17 @@ fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>
     out
 }
 
+/// Stop words that still appear inside real multi-word names ("The Meek", "Lord of War")
+/// and so are allowed mid-name — unlike intel descriptors ("cloaked", "jumped", "camped"),
+/// which are stop words that never belong in a name.
+fn is_name_connector(w: &str) -> bool {
+    matches!(
+        w.to_lowercase().as_str(),
+        "the" | "of" | "and" | "for" | "von" | "van" | "de" | "del" | "di" | "da"
+            | "la" | "le" | "el" | "der" | "den" | "du" | "lord"
+    )
+}
+
 /// A short name component that can't stand alone but is valid inside a name: a single
 /// capital initial ("Lopatich R") or a short number ("Adama 80", "Malcolm 41"). Only
 /// ever extends a run that already has a real name word; never starts one.
@@ -606,8 +617,11 @@ fn extract_pilots(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
+        // Connector stop words are fair game inside a multi-word name ("The Meek"); a run
+        // is rejected if it's all stop words OR contains an intel descriptor ("cloaked").
         if (2..=3).contains(&run.len())
-            && !run.iter().any(|w| is_pilot_stopword(w))
+            && run.iter().any(|w| !is_pilot_stopword(w))
+            && !run.iter().any(|w| is_pilot_stopword(w) && !is_name_connector(w))
         {
             let name = run.join(" ");
             if !out.contains(&name) {
@@ -655,6 +669,7 @@ fn loose_pilot_runs(
         // names ("mixa kolodenko") are caught too.
         if (2..=20).contains(&run.len())
             && run.iter().any(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 3)
+            && run.iter().any(|w| !is_pilot_stopword(w))
         {
             let name = run.join(" ");
             if !out.contains(&name) {
@@ -670,7 +685,7 @@ fn loose_pilot_runs(
         // EVE names allow digits ("c137"); ships/systems/stop words still break a run.
         let namelike = (core.len() >= 3 || is_name_suffix(core))
             && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
-            && !is_pilot_stopword(core)
+            && (!is_pilot_stopword(core) || is_name_connector(core))
             && !is_cap_word(core)
             && !is_tackle_word(core)
             && !looks_like_system_code(core)
@@ -2215,6 +2230,21 @@ mod tests {
         let r = analyze("Brutix Navy and Stabber Fleet in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
         assert!(r.ships.iter().any(|sh| sh.name == "Brutix Navy Issue"), "ships={:?}", r.ships);
         assert!(r.ships.iter().any(|sh| sh.name == "Stabber Fleet Issue"), "ships={:?}", r.ships);
+    }
+
+    #[test]
+    fn connector_stop_word_kept_in_multiword_name() {
+        // "the" is a stop word but a name connector -> "The Meek" keeps it.
+        assert!(extract_pilots("384-IN The Meek").iter().any(|r| r == "The Meek"));
+    }
+
+    #[test]
+    fn intel_descriptor_breaks_a_name_run() {
+        // "cloaked" is a stop word AND an intel descriptor -> never part of a name.
+        let out = extract_pilots("Cloaked Predator");
+        assert!(!out.iter().any(|r| r.to_lowercase().contains("cloaked")), "out={:?}", out);
+        // a run that is only stop words isn't a pilot either.
+        assert!(extract_pilots("The").is_empty());
     }
 
     #[test]
