@@ -32,7 +32,7 @@ pub type SharedPlayer = Arc<Mutex<Player>>;
 pub fn spawn_location_poller(client_id: String, player: SharedPlayer, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
             .timeout(Duration::from_secs(20))
             .build()
         else {
@@ -104,7 +104,7 @@ pub fn set_waypoint(
             return;
         };
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
             .timeout(Duration::from_secs(20))
             .build()
         else {
@@ -129,7 +129,7 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
             return;
         };
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
             .timeout(Duration::from_secs(20))
             .build()
         else {
@@ -164,7 +164,7 @@ pub fn save_fitting(
             return;
         };
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
             .timeout(Duration::from_secs(20))
             .build()
         else {

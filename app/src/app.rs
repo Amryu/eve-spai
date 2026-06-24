@@ -8169,6 +8169,12 @@ impl eframe::App for SpaiApp {
 
 /// Fire a desktop notification off the UI thread (dbus can block).
 /// The currently-active X11 window (id, name), best-effort via xdotool.
+#[cfg(not(target_os = "linux"))]
+fn active_window() -> Option<(String, String)> {
+    None // X11/xdotool only
+}
+
+#[cfg(target_os = "linux")]
 fn active_window() -> Option<(String, String)> {
     use std::process::Command;
     let id = Command::new("xdotool").arg("getactivewindow").output().ok()?;
@@ -8197,6 +8203,12 @@ fn eve_is_focused() -> bool {
 
 /// Best-effort EVE client window geometry (x, y, width, height) via xdotool (X11).
 /// None when xdotool is missing or no EVE window is found.
+#[cfg(not(target_os = "linux"))]
+fn eve_window_rect() -> Option<(i32, i32, i32, i32)> {
+    None // X11/xdotool only
+}
+
+#[cfg(target_os = "linux")]
 fn eve_window_rect() -> Option<(i32, i32, i32, i32)> {
     use std::process::Command;
     let out = Command::new("xdotool").args(["search", "--name", "EVE"]).output().ok()?;

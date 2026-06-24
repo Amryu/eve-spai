@@ -224,7 +224,7 @@ pub fn refresh_access_token(client_id: &str, refresh_token: &str) -> Result<Toke
 
 fn http_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
-        .user_agent("eve-spai/0.1 (EVE intel tool)")
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(Into::into)

@@ -38,7 +38,7 @@ pub fn spawn_fetcher(cache: LookupCache, ctx: egui::Context) -> LookupSender {
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool; +github.com/Amryu/eve-spai)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; +github.com/Amryu/eve-spai)"))
             .timeout(Duration::from_secs(20))
             .build()
         else {

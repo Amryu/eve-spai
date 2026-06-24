@@ -53,7 +53,7 @@ pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
             return;
         }
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
             .timeout(std::time::Duration::from_secs(60))
             .build()
         else {
@@ -124,7 +124,7 @@ pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {
 
 fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("eve-spai/0.1 (EVE intel tool)")
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
         .timeout(std::time::Duration::from_secs(180))
         .build()?;
     let fetch = |name: &str| -> Result<String> {

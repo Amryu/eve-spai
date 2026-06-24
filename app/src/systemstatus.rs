@@ -42,7 +42,7 @@ pub type SharedStatus = Arc<Mutex<HashMap<i64, SysFlags>>>;
 pub fn spawn(status: SharedStatus, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
             .timeout(Duration::from_secs(30))
             .build()
         else {

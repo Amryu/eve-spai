@@ -109,7 +109,7 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
 
 fn run(name: &str) -> Result<PilotReport, String> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("eve-spai/0.1 (EVE intel tool; pilot lookup)")
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; pilot lookup)"))
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -209,7 +209,7 @@ pub fn resolve_type_names(ids: &[i64]) -> std::collections::HashMap<i64, String>
         return out;
     }
     let Ok(client) = reqwest::blocking::Client::builder()
-        .user_agent("eve-spai/0.1 (EVE intel tool)")
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
         .timeout(std::time::Duration::from_secs(20))
         .build()
     else {

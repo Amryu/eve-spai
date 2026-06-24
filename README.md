@@ -36,7 +36,7 @@ Requirements:
 Build and run from source:
 
 ```
-git clone <this-repository>
+git clone https://github.com/Amryu/eve-spai.git
 cd eve-spai
 cargo run --release
 ```
