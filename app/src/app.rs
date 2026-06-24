@@ -4646,6 +4646,49 @@ impl SpaiApp {
 
     /// Hover tooltip for a map system: name/security/location, ESI activity, and
     /// any current intel. (Click the system for the full interactive window.)
+    /// Wormhole connections in/out of a system (from the cached store), shown in the
+    /// map tooltip and the system-info window. No-op if the system has no known holes.
+    fn wormhole_section(&self, ui: &mut egui::Ui, id: i64) {
+        let now = chrono::Utc::now().timestamp();
+        let holes: Vec<&crate::wormholes::Wormhole> = self
+            .wh_cache
+            .iter()
+            .filter(|w| w.system_id == id || w.dest_system_id == Some(id))
+            .collect();
+        if holes.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.label(
+            egui::RichText::new(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL)).strong(),
+        );
+        for w in holes {
+            let here_is_near = w.system_id == id;
+            let other_id = if here_is_near { w.dest_system_id } else { Some(w.system_id) };
+            let other = other_id
+                .and_then(|sid| {
+                    self.systems.as_ref().and_then(|g| g.info_of(sid)).map(|i| i.name.clone())
+                })
+                .unwrap_or_else(|| w.dest.label().to_owned());
+            let sig = if here_is_near { w.signature.as_deref() } else { w.dest_signature.as_deref() }
+                .unwrap_or("?");
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(t) = &w.wh_type {
+                parts.push(t.clone());
+            }
+            if let Some(s) = w.size {
+                parts.push(s.label().to_owned());
+            }
+            parts.push(match w.hours_left(now) {
+                Some(h) => format!("< {h}h"),
+                None => "expiring".to_owned(),
+            });
+            ui.label(
+                egui::RichText::new(format!("{sig} → {other}  ({})", parts.join(", "))).small(),
+            );
+        }
+    }
+
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
         // Compact + translucent so it doesn't hide nearby/jumpable systems.
         ui.set_max_width(270.0);
@@ -4720,6 +4763,8 @@ impl SpaiApp {
         if shown == 0 {
             ui.label(egui::RichText::new("Click for details.").weak());
         }
+        drop(state);
+        self.wormhole_section(ui, id);
     }
 
     /// Minimal overlay-mode controls: exit, lock, smart-on-top, opacity. When
@@ -5485,6 +5530,7 @@ impl SpaiApp {
                         ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
                     }
                 }
+                self.wormhole_section(ui, id);
                 // Configured sovereignty upgrades for this system.
                 let upgrades: Vec<&str> = self
                     .settings
