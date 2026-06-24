@@ -488,8 +488,24 @@ fn looks_like_system_code(t: &str) -> bool {
 /// A lower/digit-leading handle ("0xtomorrow", "xX1Mortis"): contains a digit and a
 /// run of at least three letters, so it is name-shaped even without a Title-case first
 /// letter. Excludes system codes (hyphen, no letters) and ISK/count tokens like "334m".
+/// A number glued to a time unit ("4min", "30s", "2h", "5m") — an ESS/timer duration,
+/// not a name. Only leading digits count, so a handle like "0xtomorrow" is unaffected.
+fn is_time_token(t: &str) -> bool {
+    let lower = t.to_lowercase();
+    let Some(de) = lower.find(|c: char| !c.is_ascii_digit()) else {
+        return false; // all digits, no unit
+    };
+    if de == 0 {
+        return false; // no leading digits
+    }
+    matches!(
+        &lower[de..],
+        "min" | "mins" | "m" | "s" | "sec" | "secs" | "h" | "hr" | "hrs" | "d"
+    )
+}
+
 fn is_handle_like(t: &str) -> bool {
-    if looks_like_system_code(t) || !t.chars().any(|c| c.is_ascii_digit()) {
+    if looks_like_system_code(t) || is_time_token(t) || !t.chars().any(|c| c.is_ascii_digit()) {
         return false;
     }
     let mut cur = 0usize;
@@ -696,6 +712,7 @@ fn loose_pilot_runs(
             && !is_cap_word(core)
             && !is_tackle_word(core)
             && !looks_like_system_code(core)
+            && !is_time_token(core)
             && !ship_index.contains_key(&lc)
             && systems.lookup(core).is_none();
         if namelike {
@@ -1062,6 +1079,7 @@ pub fn analyze_ctx(
         // code is the system, not a player who happens to be named like it ("C-J").
         if (!k.contains(' ') && ship_index.contains_key(&k.to_lowercase()))
             || looks_like_system_code(&k)
+            || is_time_token(&k)
         {
             continue;
         }
@@ -2033,6 +2051,9 @@ mod tests {
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("AGCP-I")), "pilots={:?}", r.pilots);
         // ISK/count tokens and system abbreviations stay out.
         assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
+        // Time tokens are not names ("4min" = 4 minutes for an ESS post).
+        assert!(is_time_token("4min") && is_time_token("30s") && is_time_token("2h"));
+        assert!(!is_handle_like("4min") && !is_time_token("0xtomorrow") && !is_time_token("c137m"));
         assert!(is_handle_like("0xtomorrow"));
     }
 
