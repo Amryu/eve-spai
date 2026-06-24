@@ -51,6 +51,7 @@ impl ActivityMode {
 
 /// Toggleable map overlays (the top-right Layers menu).
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct MapOverlays {
     sov: SovMode,
     bridges: bool,
@@ -3978,6 +3979,20 @@ impl SpaiApp {
                         egui::FontId::proportional(12.0), tcol);
                 }
             }
+            // Turnur badge (the system stays on the map; this just marks it).
+            if self.map_overlays.turnur {
+                if let Some(tp) = pos.get(&TURNUR).copied() {
+                    let col = egui::Color32::from_rgb(0xE0, 0xA8, 0x4C);
+                    painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, col));
+                    let lp = tp + egui::vec2(0.0, -dot - 11.0);
+                    let r = painter.text(lp, egui::Align2::CENTER_CENTER, "Turnur",
+                        egui::FontId::proportional(12.0), col);
+                    painter.rect_filled(r.expand(2.0), 3.0,
+                        ui.visuals().extreme_bg_color.gamma_multiply(0.7));
+                    painter.text(lp, egui::Align2::CENTER_CENTER, "Turnur",
+                        egui::FontId::proportional(12.0), col);
+                }
+            }
         }
 
         // Map overlays (ADM / activity / sov upgrades) as rings/markers behind dots.
@@ -4008,7 +4023,8 @@ impl SpaiApp {
                             } else {
                                 crate::theme::standing::HOSTILE
                             };
-                            painter.circle_stroke(p, dot + 5.0, egui::Stroke::new(1.5, c));
+                            // Colored backdrop behind the system (not a ring).
+                            painter.circle_filled(p, dot + 7.0, c.gamma_multiply(0.30));
                         }
                     }
                     if ov.activity != ActivityMode::Off {
@@ -4599,7 +4615,7 @@ impl SpaiApp {
                         );
                         ui.checkbox(
                             &mut self.map_overlays.turnur,
-                            format!("{}  Turnur holes", icon::PLANET),
+                            format!("{}  Turnur", icon::PLANET),
                         );
                     });
                 });
