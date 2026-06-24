@@ -267,6 +267,8 @@ pub struct SpaiApp {
     dscan_dismissed_hash: u64,
     /// Pending prompt: (dscan text, row count).
     dscan_prompt: Option<(String, usize)>,
+    /// Cached screen position for the d-scan popup (bottom-right of the EVE window).
+    dscan_pos: Option<(f32, f32)>,
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
     /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
     /// poller and the intel watcher).
@@ -549,6 +551,7 @@ impl SpaiApp {
             dscan_seen_hash: 0,
             dscan_dismissed_hash: 0,
             dscan_prompt: None,
+            dscan_pos: None,
             dscan_share: std::sync::Arc::new(std::sync::Mutex::new(DscanShare::default())),
             wh_cache: Vec::new(),
             wh_reloaded: None,
@@ -6345,74 +6348,133 @@ impl SpaiApp {
     }
 
     /// Prompt to share a detected d-scan, and show the resulting link.
+    fn start_dscan_upload(&self, ctx: &egui::Context, text: String) {
+        self.dscan_share.lock().unwrap().uploading = true;
+        let (share, ctx2) = (self.dscan_share.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let res = crate::dscan::upload(&text);
+            let mut s = share.lock().unwrap();
+            s.uploading = false;
+            match res {
+                Ok(link) => s.link = Some(link),
+                Err(e) => s.error = Some(e.to_string()),
+            }
+            ctx2.request_repaint();
+        });
+    }
+
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn dscan_dialog(&mut self, ctx: &egui::Context) {
+        let active = self.dscan_prompt.is_some() || {
+            let s = self.dscan_share.lock().unwrap();
+            s.uploading || s.link.is_some() || s.error.is_some()
+        };
+        if !active {
+            self.dscan_pos = None;
+            return;
+        }
+        // Auto-upload mode: skip the prompt and upload straight away.
+        if self.settings.dscan_autoupload {
+            let idle = {
+                let s = self.dscan_share.lock().unwrap();
+                !s.uploading && s.link.is_none() && s.error.is_none()
+            };
+            if idle {
+                if let Some((text, _)) = self.dscan_prompt.take() {
+                    self.start_dscan_upload(ctx, text);
+                }
+            }
+        }
+        // Position the popup once, at the bottom-right of the EVE window if we can find
+        // it (X11), otherwise a sensible screen position.
+        if self.dscan_pos.is_none() {
+            let (pw, ph) = (340.0_f32, 150.0_f32);
+            self.dscan_pos = Some(match eve_window_rect() {
+                Some((x, y, w, h)) => (
+                    ((x + w) as f32 - pw - 16.0).max(0.0),
+                    ((y + h) as f32 - ph - 16.0).max(0.0),
+                ),
+                None => (1920.0 - pw - 24.0, 1080.0 - ph - 60.0),
+            });
+        }
+        let pos = self.dscan_pos.unwrap_or((200.0, 200.0));
         let share = {
             let s = self.dscan_share.lock().unwrap();
             (s.uploading, s.link.clone(), s.error.clone())
         };
-        // Nothing to show unless a prompt is pending or an upload is active/done.
-        if self.dscan_prompt.is_none() && !share.0 && share.1.is_none() && share.2.is_none() {
-            return;
-        }
         use egui_phosphor::regular as icon;
         let mut start_upload = false;
         let mut dismiss = false;
-        egui::Window::new(format!("{}  D-scan", icon::BROADCAST))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
-            .show(ctx, |ui| {
-                let (uploading, link, error) = share;
-                if let Some(link) = link {
-                    ui.label("Shared:");
-                    ui.hyperlink(&link);
-                    ui.horizontal(|ui| {
-                        if ui.button(format!("{}  Copy link", icon::COPY)).clicked() {
-                            ui.ctx().copy_text(link.clone());
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("dscan_popup"),
+            egui::ViewportBuilder::default()
+                .with_title("EVE Spai — D-scan")
+                .with_window_level(egui::WindowLevel::AlwaysOnTop)
+                .with_active(false) // do not steal focus from the game
+                .with_decorations(false)
+                .with_taskbar(false)
+                .with_resizable(false)
+                .with_position([pos.0, pos.1])
+                .with_inner_size([340.0, 150.0]),
+            |ctx, _| {
+                let frame = egui::Frame::central_panel(&ctx.style());
+                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+                    ui.label(egui::RichText::new(format!("{}  D-scan", icon::BROADCAST)).strong());
+                    let (uploading, link, error) = (share.0, share.1.clone(), share.2.clone());
+                    if let Some(link) = link {
+                        ui.label("Shared:");
+                        ui.hyperlink(&link);
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("{}  Copy link", icon::COPY)).clicked() {
+                                ui.ctx().copy_text(link.clone());
+                            }
+                            if ui.button("Close").clicked() {
+                                dismiss = true;
+                            }
+                        });
+                    } else if uploading {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Uploading to dscan.info...");
+                        });
+                    } else {
+                        if let Some(e) = &error {
+                            ui.colored_label(
+                                crate::theme::standing::WARNING,
+                                format!("Upload failed: {e}"),
+                            );
                         }
-                        if ui.button("Close").clicked() {
-                            dismiss = true;
+                        if let Some((_, n)) = &self.dscan_prompt {
+                            ui.label(format!("D-scan detected ({n} rows)."));
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(format!("{}  Share on dscan.info", icon::UPLOAD_SIMPLE))
+                                    .clicked()
+                                {
+                                    start_upload = true;
+                                }
+                                if ui.button("Dismiss").clicked() {
+                                    dismiss = true;
+                                }
+                            });
                         }
-                    });
-                    return;
-                }
-                if uploading {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Uploading to dscan.info…");
-                    });
-                    return;
-                }
-                if let Some(e) = &error {
-                    ui.colored_label(crate::theme::standing::WARNING, format!("Upload failed: {e}"));
-                }
-                if let Some((_, n)) = &self.dscan_prompt {
-                    ui.label(format!("D-scan detected on the clipboard ({n} rows)."));
-                    ui.horizontal(|ui| {
-                        if ui.button(format!("{}  Share on dscan.info", icon::UPLOAD_SIMPLE)).clicked() {
-                            start_upload = true;
+                        if ui
+                            .checkbox(&mut self.settings.dscan_autoupload, "Auto-upload (also in Settings)")
+                            .changed()
+                        {
+                            self.needs_save = true;
                         }
-                        if ui.button("Dismiss").clicked() {
-                            dismiss = true;
-                        }
-                    });
+                    }
+                });
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    dismiss = true;
                 }
-            });
+            },
+        );
 
         if start_upload {
             if let Some((text, _)) = self.dscan_prompt.take() {
-                self.dscan_share.lock().unwrap().uploading = true;
-                let (share, ctx2) = (self.dscan_share.clone(), ctx.clone());
-                std::thread::spawn(move || {
-                    let res = crate::dscan::upload(&text);
-                    let mut s = share.lock().unwrap();
-                    s.uploading = false;
-                    match res {
-                        Ok(link) => s.link = Some(link),
-                        Err(e) => s.error = Some(e.to_string()),
-                    }
-                    ctx2.request_repaint();
-                });
+                self.start_dscan_upload(ctx, text);
             }
         }
         if dismiss {
@@ -7483,6 +7545,12 @@ impl SpaiApp {
                         .changed();
                     changed |= ui
                         .checkbox(
+                            &mut self.settings.dscan_autoupload,
+                            "Auto-upload detected d-scans (skip the prompt)",
+                        )
+                        .changed();
+                    changed |= ui
+                        .checkbox(
                             &mut self.settings.minimize_to_tray,
                             "Close to system tray (keep running)",
                         )
@@ -7891,6 +7959,30 @@ fn eve_is_focused() -> bool {
         }
         _ => true,
     }
+}
+
+/// Best-effort EVE client window geometry (x, y, width, height) via xdotool (X11).
+/// None when xdotool is missing or no EVE window is found.
+fn eve_window_rect() -> Option<(i32, i32, i32, i32)> {
+    use std::process::Command;
+    let out = Command::new("xdotool").args(["search", "--name", "EVE"]).output().ok()?;
+    for id in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        let name = Command::new("xdotool").args(["getwindowname", id]).output().ok()?;
+        let n = String::from_utf8_lossy(&name.stdout).to_lowercase();
+        if !n.contains("eve") || n.contains("eve spai") {
+            continue;
+        }
+        let geo =
+            Command::new("xdotool").args(["getwindowgeometry", "--shell", id]).output().ok()?;
+        let g = String::from_utf8_lossy(&geo.stdout);
+        let val = |k: &str| g.lines().find_map(|l| l.strip_prefix(k)?.trim().parse::<i32>().ok());
+        if let (Some(x), Some(y), Some(w), Some(h)) =
+            (val("X="), val("Y="), val("WIDTH="), val("HEIGHT="))
+        {
+            return Some((x, y, w, h));
+        }
+    }
+    None
 }
 
 fn notify(summary: String, body: String) {

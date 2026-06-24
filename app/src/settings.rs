@@ -131,6 +131,9 @@ pub struct Settings {
     /// Watch the clipboard for d-scans and offer to share them.
     #[serde(default = "default_true")]
     pub dscan_autoprompt: bool,
+    /// Automatically upload a detected d-scan to dscan.info (skip the share prompt).
+    #[serde(default)]
+    pub dscan_autoupload: bool,
     /// When setting a destination, route through known wormholes (waypoints at each
     /// hole entrance) if that's shorter than the gate route.
     #[serde(default)]
@@ -535,6 +538,7 @@ impl Default for Settings {
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,
+            dscan_autoupload: false,
             route_via_wormholes: false,
             minimize_to_tray: true,
             autostart: false,
