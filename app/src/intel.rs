@@ -322,6 +322,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went"
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
+                | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
         )
 }
 
@@ -1520,6 +1521,18 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn wormhole_word_is_keyword_not_a_pilot() {
+        let s = systems();
+        let r = analyze("Wormhole in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.wormhole, "wormhole keyword should fire");
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Wormhole")),
+            "Wormhole must not be a pilot: {:?}",
+            r.pilots
+        );
     }
 
     #[test]
