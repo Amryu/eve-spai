@@ -5353,9 +5353,6 @@ impl SpaiApp {
         }
     }
 
-    /// Render `content` as a standalone, non-modal, always-on-top OS window.
-    /// Returns false when the window's close button was pressed.
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     /// Per-character pop-out map windows: each renders the map centred on that
     /// character, in their region, with its own pan/zoom (reusing draw_map via a state
     /// swap — viewports render sequentially, so the shared map state is safe to borrow).
@@ -5418,6 +5415,9 @@ impl SpaiApp {
         }
     }
 
+    /// Render `content` as a standalone, non-modal, always-on-top OS window.
+    /// Returns false when the window's close button was pressed.
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn dialog_viewport(
         parent: &egui::Context,
         id: &str,
@@ -5432,6 +5432,7 @@ impl SpaiApp {
             egui::ViewportBuilder::default()
                 .with_title(title)
                 .with_inner_size(size)
+                .with_min_inner_size([size[0].min(380.0), size[1].min(320.0)])
                 .with_always_on_top(),
             |ctx, _class| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -6939,7 +6940,7 @@ impl SpaiApp {
             ctx,
             "severity_window",
             "EVE Spai — Intel severity",
-            [420.0, 560.0],
+            [620.0, 480.0],
             |ui| {
                 ui.label(
                     egui::RichText::new("Pick the severity (card colour) for each condition.")
@@ -6971,19 +6972,22 @@ impl SpaiApp {
                     changed |=
                         ui.add(egui::DragValue::new(&mut sv.big_gang_threshold).range(2..=100)).changed();
                 });
-                changed |= combo(ui, "Small gang (< threshold)", &mut sv.small_gang);
-                changed |= combo(ui, "Big gang (≥ threshold)", &mut sv.big_gang);
-                changed |= combo(ui, "Bubble", &mut sv.bubble);
-                changed |= combo(ui, "Gate camp", &mut sv.gate_camp);
-                changed |= combo(ui, "Spike (local)", &mut sv.spike);
-                changed |= combo(ui, "Cyno", &mut sv.cyno);
-                changed |= combo(ui, "Capital tackled", &mut sv.cap_tackled);
-                changed |= combo(ui, "Kill", &mut sv.kill);
-                changed |= combo(ui, "No visual", &mut sv.no_visual);
-                changed |= combo(ui, "Wormhole", &mut sv.wormhole);
-                changed |= combo(ui, "ESS", &mut sv.ess);
+                // Two columns so the conditions fit without a tall window.
+                ui.columns(2, |c| {
+                    changed |= combo(&mut c[0], "Small gang (< threshold)", &mut sv.small_gang);
+                    changed |= combo(&mut c[0], "Big gang (≥ threshold)", &mut sv.big_gang);
+                    changed |= combo(&mut c[0], "Bubble", &mut sv.bubble);
+                    changed |= combo(&mut c[0], "Gate camp", &mut sv.gate_camp);
+                    changed |= combo(&mut c[0], "Spike (local)", &mut sv.spike);
+                    changed |= combo(&mut c[0], "Cyno", &mut sv.cyno);
+                    changed |= combo(&mut c[1], "Capital tackled", &mut sv.cap_tackled);
+                    changed |= combo(&mut c[1], "Kill", &mut sv.kill);
+                    changed |= combo(&mut c[1], "No visual", &mut sv.no_visual);
+                    changed |= combo(&mut c[1], "Wormhole", &mut sv.wormhole);
+                    changed |= combo(&mut c[1], "ESS", &mut sv.ess);
+                    changed |= combo(&mut c[1], "High-threat ships", &mut sv.threat_ship);
+                });
                 ui.separator();
-                changed |= combo(ui, "High-threat ships", &mut sv.threat_ship);
                 ui.label(egui::RichText::new("High-threat hulls (one per line)").weak());
                 if ui
                     .add(
