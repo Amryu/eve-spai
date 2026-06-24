@@ -1382,7 +1382,7 @@ pub fn analyze_ctx(
 
     let classes = detect_classes(&lower_tokens);
     let (mut tackled, tackled_targets) = detect_tackle(&lower_tokens, &pilot_tokens, ship_index);
-    // First-pass Chinese tackle/point/web terms (verify against live CN channels).
+    // Best-guess Chinese tackle/point/web terms (not seen in current logs — a safety net).
     tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
     IntelReport {
@@ -1880,6 +1880,17 @@ mod tests {
         assert!(a("诱导信标").cyno, "诱导 = cyno");
         assert!(a("求救").help, "求救 = help");
         assert!(a("红名被抓了").tackled, "抓 = tackled");
+    }
+
+    #[test]
+    fn chinese_hull_name_resolves_as_ship() {
+        let s = systems();
+        // Localised hull names (审判者级 = Retribution) are keys in the ship index.
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("审判者级".to_string(), (17738i64, "Retribution".to_string()))].into_iter().collect();
+        let r = analyze("审判者级 in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Retribution"), "ships={:?}", r.ships);
+        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
     }
 
     #[test]
