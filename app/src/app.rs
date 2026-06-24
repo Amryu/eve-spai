@@ -1223,7 +1223,7 @@ impl SpaiApp {
         }
 
         // Snapshot what we need, then render (so we don't hold the lock during UI).
-        let (connected, status, convos, sel_msgs, pings, rooms) = {
+        let (connected, status, convos, sel_msgs, pings, rooms, open_dms) = {
             let st = self.jabber.lock().unwrap();
             let mut set: std::collections::BTreeMap<String, Convo> =
                 std::collections::BTreeMap::new();
@@ -1262,7 +1262,15 @@ impl SpaiApp {
             // Joined rooms (with unread flag), sorted by JID.
             let rooms: Vec<(String, bool)> =
                 st.rooms.iter().map(|r| (r.clone(), st.unread.contains(r))).collect();
-            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms)
+            // Open 1:1 DMs (any chat history that isn't a room) — kept as chips like
+            // rooms, independent of the directory/contacts toggle.
+            let open_dms: Vec<(String, bool)> = st
+                .chats
+                .keys()
+                .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY)
+                .map(|k| (k.clone(), st.unread.contains(k)))
+                .collect();
+            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, open_dms)
         };
 
         let mut presence_changed = false;
@@ -1334,12 +1342,12 @@ impl SpaiApp {
         ui.separator();
 
         let systems = self.systems.clone();
-        let avail = ui.available_height();
-        ui.horizontal_top(|ui| {
-            // Left: conversations + pings count.
-            ui.vertical(|ui| {
-                ui.set_width(190.0);
-                ui.set_height(avail);
+        // Resizable split: contact list (left) | messages (right).
+        egui::Panel::left("jabber_split")
+            .resizable(true)
+            .default_size(210.0)
+            .size_range(150.0..=460.0)
+            .show_inside(ui, |ui| {
                 if ui
                     .selectable_label(self.jabber_chat.is_none(), format!("{}  Fleet pings ({})", egui_phosphor::regular::MEGAPHONE, pings.len()))
                     .clicked()
@@ -1350,7 +1358,7 @@ impl SpaiApp {
                 ui.separator();
                 // --- MUC rooms: joined rooms + a join box ---
                 for (rjid, unread) in &rooms {
-                    let name = rjid.split('@').next().unwrap_or(rjid);
+                    let name = short_chip(rjid.split('@').next().unwrap_or(rjid));
                     let mut txt = egui::RichText::new(format!(
                         "{}  {name}",
                         egui_phosphor::regular::USERS_THREE
@@ -1360,6 +1368,7 @@ impl SpaiApp {
                     }
                     if ui
                         .selectable_label(self.jabber_chat.as_deref() == Some(rjid.as_str()), txt)
+                        .on_hover_text(rjid)
                         .clicked()
                     {
                         self.jabber_chat = Some(rjid.clone());
@@ -1394,6 +1403,23 @@ impl SpaiApp {
                         self.jabber_chat = Some(room);
                     }
                 });
+                // Open DMs (persistent chips like rooms — any started conversation).
+                for (djid, unread) in &open_dms {
+                    let name = short_chip(djid.split('@').next().unwrap_or(djid));
+                    let mut txt =
+                        egui::RichText::new(format!("{}  {name}", egui_phosphor::regular::USER));
+                    if *unread {
+                        txt = txt.strong();
+                    }
+                    if ui
+                        .selectable_label(self.jabber_chat.as_deref() == Some(djid.as_str()), txt)
+                        .on_hover_text(djid)
+                        .clicked()
+                    {
+                        self.jabber_chat = Some(djid.clone());
+                        self.jabber.lock().unwrap().unread.remove(djid);
+                    }
+                }
                 ui.separator();
                 // DM: open a direct conversation with anyone by JID / local part.
                 ui.horizontal(|ui| {
@@ -1426,7 +1452,7 @@ impl SpaiApp {
                     let dir = ui.selectable_label(self.jabber_show_directory, "Directory");
                     if dir_unread {
                         ui.scope(|ui| {
-                            ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).small());
+                            ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).size(8.0));
                         });
                     }
                     if dir.clicked() {
@@ -1434,7 +1460,7 @@ impl SpaiApp {
                     }
                     let con = ui.selectable_label(!self.jabber_show_directory, "Contacts");
                     if con_unread {
-                        ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).small());
+                        ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).size(8.0));
                     }
                     if con.clicked() {
                         self.jabber_show_directory = false;
@@ -1545,10 +1571,7 @@ impl SpaiApp {
                     self.needs_save = true;
                 }
             });
-            ui.separator();
-            // Right: messages + composer, or the pings feed.
-            ui.vertical(|ui| {
-                ui.set_height(avail);
+        egui::CentralPanel::default().show_inside(ui, |ui| {
                 match self.jabber_chat.clone() {
                     None => {
                         ui.horizontal(|ui| {
@@ -1692,7 +1715,6 @@ impl SpaiApp {
                     }
                 }
             });
-        });
     }
 
     /// The Jabber chat in its own OS window.
@@ -7325,6 +7347,16 @@ struct Convo {
     group: String,
     presence: crate::jabber::Presence,
     status_text: String,
+}
+
+/// Truncate a sidebar chip name so a long room/DM name can't widen the panel.
+fn short_chip(s: &str) -> String {
+    const MAX: usize = 20;
+    if s.chars().count() > MAX {
+        format!("{}…", s.chars().take(MAX - 1).collect::<String>())
+    } else {
+        s.to_owned()
+    }
 }
 
 /// Draft for the quick-ping composer.
