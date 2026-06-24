@@ -127,7 +127,7 @@ fn scan(
                 }
 
                 // Ignore non-placeable chatter: nothing to anchor without a system/gate.
-                if report.systems.is_empty() && report.gate.is_none() {
+                if report.systems.is_empty() && report.gates.is_empty() {
                     continue;
                 }
 

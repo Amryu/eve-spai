@@ -8147,8 +8147,8 @@ fn intel_row(
                     }
                 }
 
-                // Gate panel.
-                if let Some(g) = &r.gate {
+                // Gate panels (a card may name several gates).
+                for g in &r.gates {
                     ui.label(
                         egui::RichText::new(format!("{} {g} gate", icon::SIGN_IN)).color(accent).strong(),
                     );

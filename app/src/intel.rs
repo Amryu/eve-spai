@@ -73,7 +73,9 @@ pub struct IntelReport {
     pub ess_time: Option<String>,
     pub skyhook: bool,
     /// Gate the hostiles are reported on, e.g. "78-" in "C-J +20 on 78- gate".
-    pub gate: Option<String>,
+    /// Gates mentioned in the report (a card has one system but may name several
+    /// gates — extra system mentions are demoted to gates).
+    pub gates: Vec<String>,
     /// Where the subject was previously seen (set by the watcher).
     pub movement: Option<Movement>,
     /// External links pasted into the message (killmail / battle report / dscan).
@@ -165,7 +167,7 @@ impl IntelState {
         }
         let adds = !new.ships.is_empty()
             || !new.pilots.is_empty()
-            || new.gate.is_some()
+            || !new.gates.is_empty()
             || new.count.is_some()
             || new.no_visual
             || new.spike
@@ -207,8 +209,10 @@ impl IntelState {
                     prev.pilots.push(p.clone());
                 }
             }
-            if prev.gate.is_none() {
-                prev.gate = new.gate.clone();
+            for g in &new.gates {
+                if !prev.gates.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+                    prev.gates.push(g.clone());
+                }
             }
             if prev.systems.is_empty() {
                 prev.systems = new.systems.clone();
@@ -966,16 +970,18 @@ pub fn analyze_ctx(
         }
     }
 
-    // Two or more systems with no explicit gate: if the later one is a neighbour of
-    // the first, it's almost certainly the gate they're heading to (direction of
-    // travel), so promote it to the gate instead of a second location.
-    if gate.is_none() && detected.len() >= 2 {
-        let first = detected[0].id;
-        if let Some(pos) =
-            detected.iter().skip(1).position(|d| systems.neighbors(first).contains(&d.id))
-        {
-            let d = detected.remove(pos + 1);
-            gate = Some(d.name);
+    // One system per card: keep the first mentioned, and demote any further system
+    // mentions to gates (a report can list several gates). Combined with any explicit
+    // "<X> gate" already found above.
+    let mut gates: Vec<String> = Vec::new();
+    if let Some(g) = gate {
+        gates.push(g);
+    }
+    if detected.len() > 1 {
+        for d in detected.split_off(1) {
+            if !gates.iter().any(|g| g.eq_ignore_ascii_case(&d.name)) {
+                gates.push(d.name);
+            }
         }
     }
 
@@ -1021,7 +1027,7 @@ pub fn analyze_ctx(
             None
         },
         skyhook: lower.contains("skyhook"),
-        gate,
+        gates,
         movement: None,
         links,
     }
@@ -1341,7 +1347,7 @@ mod tests {
         let follow = analyze("on 78- gate", &s, &noships(), &noknown(), 130, "ch", "Scout");
         assert!(state.try_amend(&follow, 60));
         assert_eq!(state.reports.len(), 1);
-        assert!(state.reports[0].gate.is_some());
+        assert!(!state.reports[0].gates.is_empty());
         // A different system is a new sighting, not an amendment.
         let other = analyze("hostile in Jita", &s, &noships(), &noknown(), 140, "ch", "Scout");
         assert!(!state.try_amend(&other, 60));
@@ -1628,7 +1634,7 @@ mod tests {
             "x",
         );
         assert_eq!(r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Rancer"]);
-        assert_eq!(r.gate.as_deref(), Some("Jita")); // the stargate link → gate
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("Jita")); // the stargate link → gate
     }
 
     #[test]
@@ -1657,7 +1663,7 @@ mod tests {
         let s = Systems::new(by_name, adj);
         let r = analyze("hostiles in Rancer heading Jita", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Rancer"]);
-        assert_eq!(r.gate.as_deref(), Some("Jita"));
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("Jita"));
     }
 
     #[test]
@@ -1674,7 +1680,7 @@ mod tests {
             "x",
         );
         assert!(!r.bubble, "negated bubble");
-        assert_eq!(r.gate.as_deref(), Some("YPW-M2"));
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("YPW-M2"));
         // "status" is a request keyword: not a pilot, and stays informational.
         let q = analyze("status in Rancer?", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(q.status);
@@ -1739,10 +1745,10 @@ mod tests {
         let s = Systems::new(by_name, adj);
         // A short prefix matching a neighbour name resolves to the full system.
         let r = analyze("C-J6MT 5e gate", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert_eq!(r.gate.as_deref(), Some("5E-CFL"));
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("5E-CFL"));
         // A 2-char letter prefix matches the other neighbour too.
         let r2 = analyze("C-J6MT sv gate", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert_eq!(r2.gate.as_deref(), Some("SV5-8N"));
+        assert_eq!(r2.gates.first().map(|s| s.as_str()), Some("SV5-8N"));
     }
 
     #[test]
@@ -1772,10 +1778,23 @@ mod tests {
         let s = Systems::new(by_name, adj);
         // A system in the message gives the primary; "C-J" resolves to the neighbour.
         let r = analyze("D-PNSN C-J gate", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert_eq!(r.gate.as_deref(), Some("C-J6MT"));
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
         // No system in the message: the channel's last system (context) disambiguates.
         let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1));
-        assert_eq!(r2.gate.as_deref(), Some("C-J6MT"));
+        assert_eq!(r2.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
+    }
+
+    #[test]
+    fn one_system_extra_mentions_become_gates() {
+        let s = systems();
+        // Three system links → only the first stays; the rest become gates.
+        let txt = "<url=showinfo:5//1>Rancer</url> <url=showinfo:5//2>Jita</url> <url=showinfo:5//8>Amarr</url>";
+        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(
+            r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["Rancer"]
+        );
+        assert_eq!(r.gates, vec!["Jita".to_owned(), "Amarr".to_owned()]);
     }
 
     #[test]
@@ -1820,7 +1839,7 @@ mod tests {
         // and not double-listed as a plain system.
         let r = analyze("C-J +20 on 78- gate", &s, &noships(), &noknown(), 1, "ch", "Scout");
         assert_eq!(r.count, Some(20));
-        assert_eq!(r.gate.as_deref(), Some("78-AAA"));
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("78-AAA"));
         assert_eq!(
             r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
             vec!["C-J6MT"],
@@ -1828,7 +1847,7 @@ mod tests {
 
         // A bare number used as a gate must not also be a hostile count.
         let r2 = analyze("20 reds on 78 gate", &s, &noships(), &noknown(), 1, "ch", "Scout");
-        assert_eq!(r2.gate.as_deref(), Some("78-AAA"));
+        assert_eq!(r2.gates.first().map(|s| s.as_str()), Some("78-AAA"));
         assert_eq!(r2.count, Some(20));
     }
 
