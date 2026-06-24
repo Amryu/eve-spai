@@ -398,7 +398,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
         || matches!(
             lw.as_str(),
             "ship" | "ships" | "shuttle" | "shuttles" | "navy" | "issue" | "loc"
-                | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went"
+                | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went" | "min" | "mins" | "minute" | "minutes"
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
@@ -731,14 +731,23 @@ fn multiword_ships(
                 break;
             }
             // The trailing "Issue" is routinely dropped ("Brutix Navy" -> Brutix Navy
-            // Issue, "Stabber Fleet" -> Stabber Fleet Issue).
-            if (phrase.ends_with(" navy") || phrase.ends_with(" fleet"))
-                && ship_index.get(&format!("{phrase} issue")).is_some()
-            {
-                let (id, name) = &ship_index[&format!("{phrase} issue")];
-                out.push((i, len, *id, name.clone()));
-                adv = len;
-                break;
+            // Issue, "Stabber Fleet" -> Stabber Fleet Issue), or the whole faction suffix
+            // is abbreviated ("Vexor NI" -> Navy Issue, "Stabber FI" -> Fleet Issue).
+            let full = if phrase.ends_with(" navy") || phrase.ends_with(" fleet") {
+                Some(format!("{phrase} issue"))
+            } else if let Some(base) = phrase.strip_suffix(" ni") {
+                Some(format!("{base} navy issue"))
+            } else if let Some(base) = phrase.strip_suffix(" fi") {
+                Some(format!("{base} fleet issue"))
+            } else {
+                None
+            };
+            if let Some(full) = full {
+                if let Some((id, name)) = ship_index.get(&full) {
+                    out.push((i, len, *id, name.clone()));
+                    adv = len;
+                    break;
+                }
             }
         }
         i += adv;
@@ -2216,6 +2225,33 @@ mod tests {
         }
         // A real name in the same line is still caught.
         assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn ni_fi_abbreviations_match_faction_ships() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [
+            ("vexor navy issue".to_string(), (1i64, "Vexor Navy Issue".to_string())),
+            ("scythe fleet issue".to_string(), (2i64, "Scythe Fleet Issue".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let r = analyze("Vexor NI and Scythe FI in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Vexor Navy Issue"), "ships={:?}", r.ships);
+        assert!(r.ships.iter().any(|sh| sh.name == "Scythe Fleet Issue"), "ships={:?}", r.ships);
+    }
+
+    #[test]
+    fn min_minutes_is_a_stop_word() {
+        assert!(is_pilot_stopword("min"));
+        let s = systems();
+        // "5 min" -> "min" is time, not a name.
+        let runs = loose_pilot_runs("ess 300kk 5 min", &noships(), &s);
+        assert!(
+            !runs.iter().any(|r| r.split_whitespace().any(|w| w.eq_ignore_ascii_case("min"))),
+            "runs={:?}",
+            runs
+        );
     }
 
     #[test]

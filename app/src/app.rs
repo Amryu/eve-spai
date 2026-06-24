@@ -3642,9 +3642,25 @@ impl SpaiApp {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
-        // Card data for the feed (built only when there's something to show).
-        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
-            if active { self.alert_feed.iter().rev().take(20).cloned().collect() } else { Vec::new() };
+        // Card data for the feed (built only when there's something to show). Swap each
+        // snapshot taken when the alert fired for the LIVE reconciled report, so the alert
+        // window shows the same resolved pilots/ships as the main feed (the reconcile
+        // updates intel_state.reports, not the alert_feed snapshots).
+        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = if active {
+            let live = self.intel_state.lock().unwrap();
+            self.alert_feed
+                .iter()
+                .rev()
+                .take(20)
+                .map(|(r, sev)| {
+                    let k = report_key(r);
+                    let cur = live.reports.iter().find(|lr| report_key(lr) == k).cloned();
+                    (cur.unwrap_or_else(|| r.clone()), *sev)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let ship_ids: std::collections::HashSet<i64> =
             feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
