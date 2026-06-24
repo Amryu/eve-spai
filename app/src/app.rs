@@ -4358,7 +4358,7 @@ impl SpaiApp {
                 .settings
                 .sov_upgrades
                 .iter()
-                .filter(|u| u.upgrade.to_lowercase() == upl)
+                .filter(|u| split_upgrade_label(&u.upgrade).iter().any(|p| p.to_lowercase() == upl))
                 .map(|u| u.system.to_lowercase())
                 .collect();
             let col = ui.visuals().hyperlink_color;
@@ -4582,12 +4582,8 @@ impl SpaiApp {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
                         // One stored label can list several comma-separated upgrades
                         // ("...Array 3, Exploration Detector 3") — draw an icon for each.
-                        let parts: Vec<&str> = ups
-                            .iter()
-                            .flat_map(|u| u.split(','))
-                            .map(|u| u.trim_start_matches("<-").trim())
-                            .filter(|u| !u.is_empty())
-                            .collect();
+                        let parts: Vec<&str> =
+                            ups.iter().flat_map(|u| split_upgrade_label(u)).collect();
                         for (k, up) in parts.iter().take(6).enumerate() {
                             // Sit the icons in a row above the system name.
                             let ip = p + egui::vec2(6.0 * label_off + k as f32 * 20.0, -15.0 * label_off);
@@ -5591,8 +5587,10 @@ impl SpaiApp {
                         let ql = query.to_lowercase();
                         let mut names: std::collections::BTreeSet<String> = Default::default();
                         for u in &self.settings.sov_upgrades {
-                            if u.upgrade.to_lowercase().contains(&ql) {
-                                names.insert(u.upgrade.clone());
+                            for p in split_upgrade_label(&u.upgrade) {
+                                if p.to_lowercase().contains(&ql) {
+                                    names.insert(p.to_owned());
+                                }
                             }
                         }
                         for up in names.into_iter().take(5) {
@@ -6190,7 +6188,7 @@ impl SpaiApp {
                     .sov_upgrades
                     .iter()
                     .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
-                    .map(|u| u.upgrade.as_str())
+                    .flat_map(|u| split_upgrade_label(&u.upgrade))
                     .collect();
                 if !upgrades.is_empty() {
                     ui.horizontal_wrapped(|ui| {
@@ -8559,6 +8557,16 @@ fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings
 /// Parse pasted sov upgrades. Primary: the in-game I-Hub copy — a header
 /// "Sovereignty Hub <System>" followed by tab-separated "N⇥Upgrade⇥Online/Offline"
 /// rows. Fallback: per-line "<system> <upgrade…>".
+/// Split a stored sov-upgrade label into individual upgrade names. The in-game / alliance
+/// paste packs several into one comma-separated line, sometimes with a "<-" marker.
+fn split_upgrade_label(label: &str) -> Vec<&str> {
+    label
+        .split(',')
+        .map(|u| u.trim_start_matches("<-").trim())
+        .filter(|u| !u.is_empty())
+        .collect()
+}
+
 fn parse_sov_upgrades(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::SovUpgrade> {
     let lines: Vec<&str> = text.lines().collect();
     if let Some(rest) = lines.first().and_then(|l| l.trim().strip_prefix("Sovereignty Hub ")) {
