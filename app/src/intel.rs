@@ -1126,13 +1126,13 @@ pub fn analyze_ctx(
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
         camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]),
-        help: flagged(&lower_tokens, &pilot_tokens, &["help", "sos"])
+        help: flagged_exact(&lower_tokens, &pilot_tokens, &["help", "sos"])
             || lower.contains("need backup")
             || lower.contains("needs backup"),
         bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
-        cyno: flagged(&lower_tokens, &pilot_tokens, &["cyno"]),
+        cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         wormhole: is_wh_msg,
         wh_type: wh_code,
@@ -1247,6 +1247,21 @@ fn flagged(
     const NEG: &[&str] = &["no", "not", "without", "n0", "negative"];
     lower_tokens.iter().enumerate().any(|(i, t)| {
         stems.iter().any(|s| t.starts_with(s))
+            && !pilot_tokens.contains(t)
+            && !(i > 0 && NEG.contains(&lower_tokens[i - 1].as_str()))
+    })
+}
+
+/// Like `flagged` but requires an exact token match, for short keywords whose prefix
+/// collides with names/ships ("help" in "Helper", "cyno" in the ship "Cynabal").
+fn flagged_exact(
+    lower_tokens: &[String],
+    pilot_tokens: &std::collections::HashSet<String>,
+    words: &[&str],
+) -> bool {
+    const NEG: &[&str] = &["no", "not", "without", "n0", "negative"];
+    lower_tokens.iter().enumerate().any(|(i, t)| {
+        words.contains(&t.as_str())
             && !pilot_tokens.contains(t)
             && !(i > 0 && NEG.contains(&lower_tokens[i - 1].as_str()))
     })
@@ -1435,6 +1450,21 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn keywords_no_substring_false_trigger() {
+        let s = systems();
+        // "Bunk Helper" is a pilot run; "Helper" must not trigger HELP.
+        let r = analyze("Bunk Boi Bunk Helper in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r.help, "Helper must not trigger help");
+        // "Cynabal" the ship must not trigger CYNO.
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("cynabal".to_string(), (17720i64, "Cynabal".to_string()))].into_iter().collect();
+        let r2 = analyze("Cynabal in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(!r2.cyno, "Cynabal must not trigger cyno");
+        // Exact keywords still fire.
+        assert!(analyze("cyno up Rancer", &s, &noships(), &noknown(), 1, "ch", "x").cyno);
     }
 
     #[test]
