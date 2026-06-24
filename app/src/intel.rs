@@ -461,7 +461,7 @@ fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>
         let max = 3.min(words.len() - i);
         for len in (1..=max).rev() {
             let run = words[i..i + len].join(" ");
-            if known.contains_key(&run.to_lowercase()) {
+            if known.contains_key(&run.to_lowercase()) && !is_pilot_stopword(&run) {
                 out.push(run);
                 adv = len;
                 break;
@@ -802,7 +802,7 @@ pub fn analyze_ctx(
         }
     }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
-    for k in match_known_pilots(text, known_pilots) {
+    for k in match_known_pilots(&masked, known_pilots) {
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
             pilots.push(k);
         }
@@ -1520,6 +1520,24 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn known_pilot_cache_respects_ship_and_stopwords() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [(
+            "federation navy comet".to_string(),
+            (17841i64, "Federation Navy Comet".to_string()),
+        )]
+        .into_iter()
+        .collect();
+        // Real players happen to be named "Navy" and "Comet"; neither should be read as
+        // a pilot in "Federation Navy Comet".
+        let known: std::collections::HashMap<String, i64> =
+            [("navy".to_string(), 1i64), ("comet".to_string(), 2i64)].into_iter().collect();
+        let r = analyze("Federation Navy Comet Docteur West in Rancer", &s, &ships, &known, 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Navy")), "pilots={:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Comet")), "pilots={:?}", r.pilots);
     }
 
     #[test]
