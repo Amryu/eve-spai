@@ -447,7 +447,7 @@ impl Store {
     /// All known (ESI-confirmed) pilot names → character id, keyed lower-case.
     pub fn known_pilots(&self) -> std::collections::HashMap<String, i64> {
         let mut out = std::collections::HashMap::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc, char_id FROM known_pilots") {
+        if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc, char_id FROM known_pilots WHERE char_id != 0") {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
                 out.extend(rows.flatten());
             }
@@ -455,7 +455,19 @@ impl Store {
         out
     }
 
-    /// Remember an ESI-confirmed pilot so it's recognised instantly next time.
+    /// Multi-word spans confirmed by ESI to NOT be characters (stored with char_id 0),
+    /// so the over-glued-name cover doesn't re-block on them after a restart.
+    pub fn known_negatives(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc FROM known_pilots WHERE char_id = 0") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Remember an ESI-confirmed pilot (char_id > 0) or non-name (char_id 0).
     pub fn add_known_pilot(&self, name: &str, char_id: i64) {
         let _ = self.conn.execute(
             "INSERT OR IGNORE INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)",

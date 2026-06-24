@@ -57,6 +57,14 @@ impl PilotCache {
         }
     }
 
+    /// Pre-load persisted non-name verdicts (multi-word bridging spans) so the cover can
+    /// skip them at once instead of re-querying after every restart.
+    pub fn preload_negatives(&mut self, names: &[String]) {
+        for lc in names {
+            self.resolved.entry(lc.clone()).or_insert(None);
+        }
+    }
+
     /// Snapshot of confirmed names (lower-cased) → character id, for the parser.
     pub fn confirmed(&self) -> HashMap<String, i64> {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
@@ -72,33 +80,39 @@ impl PilotCache {
         let mut out = Vec::new();
         let mut i = 0;
         while i < words.len() {
-            // Take the longest CONFIRMED character name starting here. A pending or
-            // non-name span — e.g. the 3-word "Grim Iskander Felmilia" that bridges two
-            // real names — is skipped, not a reason to abort. (Previously ANY unresolved
-            // span discarded the whole split, so "Octavia von Zeckendorf" was dropped
-            // whenever a bridging span hadn't resolved — and those negative verdicts aren't
-            // persisted, so a restart re-triggered it.) Real characters ARE persisted, so
-            // the longest confirmed span here is the real name.
-            let mut took = 0;
+            // A short bare number is a count ("Ace hodgens 30" = pilot + 30 ships), never a
+            // name component on its own — skip it (it also never resolves, so waiting on it
+            // would block forever).
+            if words[i].len() <= 4 && words[i].chars().all(|c| c.is_ascii_digit()) {
+                i += 1;
+                continue;
+            }
+            // Take the longest CONFIRMED character name starting here. WAIT (return empty)
+            // if a longer span is still *pending* — otherwise a coincidental shorter name
+            // ("Yan" / "Watt", which are also real players) gets grabbed before the real
+            // "Yan Fan" / "Watt Watt" resolves, and the reconcile commits that wrong split
+            // permanently. A span resolved as a *non-name* (the bridging "Grim Iskander
+            // Felmilia") is skipped, so once it has resolved the split isn't blocked — which
+            // is why we persist negative verdicts too (see the resolver).
+            let mut matched = None;
             for len in (1..=3.min(words.len() - i)).rev() {
                 let span = words[i..i + len].join(" ");
-                if matches!(self.get(&span), Some(Some(_))) {
-                    out.push(span);
-                    took = len;
-                    break;
+                match self.get(&span) {
+                    Some(Some(_)) => {
+                        matched = Some(len);
+                        break;
+                    }
+                    None => return Vec::new(), // a longer span is still pending — wait
+                    Some(None) => {}           // resolved non-name — try a shorter span
                 }
             }
-            if took == 0 {
-                // A bare number that no name covers is a count ("Ace hodgens 30" = the
-                // pilot Ace hodgens + 30 ships), not part of the name — skip it. A real
-                // word might be a name still resolving, so wait (empty) for that.
-                if words[i].len() <= 4 && words[i].chars().all(|c| c.is_ascii_digit()) {
-                    i += 1;
-                    continue;
+            match matched {
+                Some(len) => {
+                    out.push(words[i..i + len].join(" "));
+                    i += len;
                 }
-                return Vec::new();
+                None => return Vec::new(), // a resolved non-name word — not a clean split
             }
-            i += took;
         }
         out
     }
@@ -162,8 +176,14 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                     for name in &batch {
                         let id = chars.get(&name.to_lowercase()).copied();
                         c.resolved.insert(name.to_lowercase(), id);
-                        if let (Some(cid), Some(store)) = (id, &store) {
-                            store.add_known_pilot(name, cid);
+                        if let Some(store) = &store {
+                            match id {
+                                Some(cid) => store.add_known_pilot(name, cid),
+                                // Persist only multi-word non-names (the bridging spans the
+                                // cover trips on); single junk words aren't worth a row.
+                                None if name.contains(' ') => store.add_known_pilot(name, 0),
+                                None => {}
+                            }
                         }
                     }
                 }
@@ -237,10 +257,22 @@ mod tests {
     }
 
     #[test]
-    fn cover_skips_unresolved_bridging_spans() {
+    fn cover_waits_for_a_longer_pending_name() {
         let mut c = PilotCache::default();
-        // Real names are persisted/confirmed; the 3-word spans that bridge two of them are
-        // left unresolved (negative verdicts aren't persisted). They must not block.
+        // "Yan" is also a real player, but "Yan Fan" is the real name and isn't resolved
+        // yet — the cover must wait, not grab "Yan".
+        c.resolved.insert("yan".into(), Some(1));
+        assert!(c.cover("Yan Fan Watt").is_empty());
+        // Once the real names resolve and the bridging span is a known non-name, split.
+        c.resolved.insert("yan fan".into(), Some(2));
+        c.resolved.insert("watt".into(), Some(3));
+        c.resolved.insert("yan fan watt".into(), None);
+        assert_eq!(c.cover("Yan Fan Watt"), vec!["Yan Fan", "Watt"]);
+    }
+
+    #[test]
+    fn cover_skips_resolved_non_name_bridging_spans() {
+        let mut c = PilotCache::default();
         for (n, id) in [
             ("octavia von zeckendorf", 1),
             ("grim iskander", 2),
@@ -250,6 +282,10 @@ mod tests {
         ] {
             c.resolved.insert(n.into(), Some(id));
         }
+        // The 3-word spans bridging two names are resolved as non-names (persisted) — the
+        // cover skips them instead of blocking.
+        c.resolved.insert("grim iskander felmilia".into(), None);
+        c.resolved.insert("ayaka iida ai-0002".into(), None);
         assert_eq!(
             c.cover("Octavia von Zeckendorf Grim Iskander Felmilia Berk Skjem Ayaka Iida ai-0002"),
             vec![
@@ -266,6 +302,7 @@ mod tests {
     fn cover_skips_trailing_count_number() {
         let mut c = PilotCache::default();
         c.resolved.insert("ace hodgens".into(), Some(1));
+        c.resolved.insert("ace hodgens 30".into(), None); // resolved as a non-name
         // "30" is a count ("Ace hodgens +30 kikimoras"), not part of the name.
         assert_eq!(c.cover("Ace hodgens 30"), vec!["Ace hodgens"]);
     }
