@@ -3298,7 +3298,21 @@ impl SpaiApp {
                 self.map_regions = store.regions();
             }
         }
-        let player_sys = self.player.lock().unwrap().system_id;
+        // Per-system character presence: system id → (count, includes the active char).
+        let active_char = self.active_character.clone();
+        let (player_sys, char_here) = {
+            let p = self.player.lock().unwrap();
+            let mut here: std::collections::HashMap<i64, (u32, bool)> =
+                std::collections::HashMap::new();
+            for (name, (sys, _)) in &p.locations {
+                let e = here.entry(*sys).or_insert((0, false));
+                e.0 += 1;
+                if name.eq_ignore_ascii_case(&active_char) {
+                    e.1 = true;
+                }
+            }
+            (p.system_id, here)
+        };
         if !self.map_initialized {
             // Open on the full universe map (in-game style); navigate in from there.
             self.map_view = MapView::Universe;
@@ -3865,10 +3879,24 @@ impl SpaiApp {
                 painter.circle_filled(p, dot + 5.0, base.gamma_multiply(fill_a));
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(ring_w, base));
             }
-            if player_sys == Some(s.id) {
-                // A larger blue ring than the red intel ring so the two coexist.
-                let blue = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
+            if let Some((count, has_active)) = char_here.get(&s.id) {
+                // Regular blue when the active char is here; light blue for other
+                // characters only. A larger ring than the red intel ring so they coexist.
+                let blue = if *has_active {
+                    egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)
+                } else {
+                    egui::Color32::from_rgb(0xA8, 0xDE, 0xF7)
+                };
                 painter.circle_stroke(p, dot + 8.0, egui::Stroke::new(2.5, blue));
+                if *count > 1 {
+                    painter.text(
+                        p + egui::vec2(dot + 9.0, -(dot + 9.0)),
+                        egui::Align2::LEFT_BOTTOM,
+                        count.to_string(),
+                        egui::FontId::proportional(11.0),
+                        blue,
+                    );
+                }
             }
             if Some(s.id) == hovered_id {
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
