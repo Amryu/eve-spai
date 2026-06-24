@@ -391,6 +391,26 @@ fn looks_like_system_code(t: &str) -> bool {
         && t.chars().any(|c| c.is_ascii_alphanumeric())
 }
 
+/// A lower/digit-leading handle ("0xtomorrow", "xX1Mortis"): contains a digit and a
+/// run of at least three letters, so it is name-shaped even without a Title-case first
+/// letter. Excludes system codes (hyphen, no letters) and ISK/count tokens like "334m".
+fn is_handle_like(t: &str) -> bool {
+    if looks_like_system_code(t) || !t.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let mut cur = 0usize;
+    let mut max = 0usize;
+    for c in t.chars() {
+        if c.is_ascii_alphabetic() {
+            cur += 1;
+            max = max.max(cur);
+        } else {
+            cur = 0;
+        }
+    }
+    max >= 3
+}
+
 fn is_distinctive_name(t: &str) -> bool {
     name_part(t)
         && !looks_like_system_code(t)
@@ -898,7 +918,7 @@ pub fn analyze_ctx(
     let masked_tokens = tokenize(&masked);
     for t in &masked_tokens {
         let lc = t.to_lowercase();
-        if name_part(t)
+        if (name_part(t) || is_handle_like(t))
             && t.len() >= 3
             && !is_pilot_stopword(t)
             && !looks_like_system_code(t)
@@ -1536,6 +1556,18 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn digit_handle_is_a_pilot_candidate() {
+        let s = systems();
+        // "0xtomorrow" starts with a digit, so the Title-case paths miss it.
+        let r = analyze("0xtomorrow AGCP-I", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "0xtomorrow"), "pilots={:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("AGCP-I")), "pilots={:?}", r.pilots);
+        // ISK/count tokens and system abbreviations stay out.
+        assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
+        assert!(is_handle_like("0xtomorrow"));
     }
 
     #[test]
