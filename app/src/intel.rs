@@ -211,6 +211,18 @@ impl IntelState {
                     prev.pilots.push(p.clone());
                 }
             }
+            // Authoritative showinfo char-ids and alliance mentions must merge too, else
+            // a merged pilot loses its char-link and is dropped from the card.
+            for c in &new.char_ids {
+                if !prev.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&c.0)) {
+                    prev.char_ids.push(c.clone());
+                }
+            }
+            for a in &new.alliances {
+                if !prev.alliances.iter().any(|(n, _)| n.eq_ignore_ascii_case(&a.0)) {
+                    prev.alliances.push(a.clone());
+                }
+            }
             for g in &new.gates {
                 if !prev.gates.iter().any(|x| x.eq_ignore_ascii_case(g)) {
                     prev.gates.push(g.clone());
@@ -1324,6 +1336,31 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn pilot_link_before_system() {
+        let s = systems();
+        let r = analyze(
+            "<url=showinfo:1379//115252465>Rondrasil</url>  <url=showinfo:5//30000775>8-WYQZ</url> nv",
+            &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Rondrasil"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn merge_keeps_char_link() {
+        // A pilot's showinfo char-id must survive a report merge, else the card filters
+        // the pilot out (char-linked names always display; unresolved bare names don't).
+        let s = systems();
+        let mut state = IntelState::default();
+        state.push(analyze("hostile in Rancer", &s, &noships(), &noknown(), 100, "ch", "Scout"));
+        let follow = analyze(
+            "<url=showinfo:1379//115252465>Rondrasil</url>",
+            &s, &noships(), &noknown(), 130, "ch", "Scout");
+        assert!(state.try_amend(&follow, 60));
+        let r = &state.reports[0];
+        assert!(r.pilots.iter().any(|p| p == "Rondrasil"), "pilots={:?}", r.pilots);
+        assert!(r.char_ids.iter().any(|(n, _)| n == "Rondrasil"), "char_ids={:?}", r.char_ids);
     }
 
     #[test]
