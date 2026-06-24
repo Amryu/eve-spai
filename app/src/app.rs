@@ -2064,44 +2064,65 @@ impl SpaiApp {
                                 // Tight rows so the time line hugs its message.
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 let mut hist_drawn = false;
+                                let mut prev_sender: Option<String> = None;
+                                let mut prev_time: i64 = 0;
                                 for m in &sel_msgs {
                                     // A divider where historic (loaded) messages end.
                                     if !hist_drawn && m.time >= session_start && m.time > 0 {
                                         hist_drawn = true;
+                                        prev_sender = None; // don't group across the divider
                                         ui.add_space(2.0);
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new("— new —").weak().small());
                                             ui.separator();
                                         });
                                     }
-                                    // Compact EVE-time line directly above the sender.
-                                    ui.add_space(5.0); // gap from the previous message
-                                    ui.label(
-                                        egui::RichText::new(eve_time_label(m.time, now))
-                                            .weak()
-                                            .size(9.5),
-                                    );
+                                    let sender =
+                                        if m.outgoing { "\u{0}me".to_owned() } else { m.from.clone() };
+                                    // Group consecutive messages from the same sender within 5 min
+                                    // (skip the repeated time + name lines until someone else talks
+                                    // or 5 min elapses).
+                                    let grouped = prev_sender.as_deref() == Some(sender.as_str())
+                                        && m.time >= prev_time
+                                        && m.time - prev_time < 300;
+                                    if !grouped {
+                                        // Compact EVE-time line directly above the sender.
+                                        ui.add_space(5.0); // gap from the previous message
+                                        ui.label(
+                                            egui::RichText::new(eve_time_label(m.time, now))
+                                                .weak()
+                                                .size(9.5),
+                                        );
+                                    }
                                     ui.horizontal_wrapped(|ui| {
-                                        if m.outgoing {
-                                            ui.label(egui::RichText::new("me:").color(me_col).strong());
-                                        } else {
-                                            let n = m.from.split('@').next().unwrap_or(&m.from);
-                                            // Clickable in rooms → DM that person.
-                                            let lbl = egui::Label::new(
-                                                egui::RichText::new(format!("{n}:")).strong().color(accent),
-                                            );
-                                            let resp = if is_room {
-                                                ui.add(lbl.sense(egui::Sense::click()))
-                                                    .on_hover_text("Message")
+                                        if !grouped {
+                                            if m.outgoing {
+                                                ui.label(
+                                                    egui::RichText::new("me:").color(me_col).strong(),
+                                                );
                                             } else {
-                                                ui.add(lbl)
-                                            };
-                                            if resp.clicked() {
-                                                dm_click = Some(n.to_owned());
+                                                let n = m.from.split('@').next().unwrap_or(&m.from);
+                                                // Clickable in rooms → DM that person.
+                                                let lbl = egui::Label::new(
+                                                    egui::RichText::new(format!("{n}:"))
+                                                        .strong()
+                                                        .color(accent),
+                                                );
+                                                let resp = if is_room {
+                                                    ui.add(lbl.sense(egui::Sense::click()))
+                                                        .on_hover_text("Message")
+                                                } else {
+                                                    ui.add(lbl)
+                                                };
+                                                if resp.clicked() {
+                                                    dm_click = Some(n.to_owned());
+                                                }
                                             }
                                         }
                                         ui.label(&m.body);
                                     });
+                                    prev_sender = Some(sender);
+                                    prev_time = m.time;
                                 }
                             });
                         ui.horizontal_top(|ui| {
