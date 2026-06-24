@@ -307,6 +307,7 @@ const PILOT_STOP: &[&str] = &[
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "here", "there",
+    "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -319,6 +320,8 @@ pub fn is_pilot_stopword(w: &str) -> bool {
             lw.as_str(),
             "ship" | "ships" | "shuttle" | "shuttles" | "navy" | "issue" | "loc"
                 | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went"
+                | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
+                | "incoming" | "inc" | "primary" | "killed" | "podded"
         )
 }
 
@@ -475,7 +478,7 @@ fn extract_pilots(text: &str) -> Vec<String> {
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
         if (2..=3).contains(&run.len())
-            && !run.iter().any(|w| PILOT_STOP.contains(&w.to_lowercase().as_str()))
+            && !run.iter().any(|w| is_pilot_stopword(w))
         {
             let name = run.join(" ");
             if !out.contains(&name) {
@@ -536,7 +539,7 @@ fn loose_pilot_runs(
         // EVE names allow digits ("c137"); ships/systems/stop words still break a run.
         let namelike = core.len() >= 3
             && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
-            && !PILOT_STOP.contains(&lc.as_str())
+            && !is_pilot_stopword(core)
             && !is_cap_word(core)
             && !is_tackle_word(core)
             && !ship_index.contains_key(&lc)
@@ -604,12 +607,12 @@ fn lowercase_tail_names(
         let a_ok = name_part(a)
             && a.len() >= 3
             && resolve(systems, a).is_none()
-            && !PILOT_STOP.contains(&a.to_lowercase().as_str())
+            && !is_pilot_stopword(a)
             && !CLEAR_WORDS.contains(&a.to_lowercase().as_str());
         let b_ok = b.len() >= 3
             && b.chars().next().is_some_and(|c| c.is_ascii_lowercase())
             && b.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
-            && !PILOT_STOP.contains(&b_lc.as_str())
+            && !is_pilot_stopword(b)
             && !CLEAR_WORDS.contains(&b_lc.as_str())
             && !ship_index.contains_key(&b_lc);
         if a_ok && b_ok {
@@ -882,7 +885,7 @@ pub fn analyze_ctx(
         let lc = t.to_lowercase();
         if name_part(t)
             && t.len() >= 3
-            && !PILOT_STOP.contains(&lc.as_str())
+            && !is_pilot_stopword(t)
             && !CLEAR_WORDS.contains(&lc.as_str())
             && ship_index.get(&lc).is_none()
             && resolve(systems, t).is_none()
@@ -1517,6 +1520,22 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn descriptor_and_verb_words_are_not_pilots() {
+        let s = systems();
+        // From real logs: "Navy"/"Issue" (ship descriptors) and "jumped" (a verb) leaked.
+        let r = analyze("Sevra jumped Navy Issue in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        for w in ["jumped", "Navy", "Issue"] {
+            assert!(
+                !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
+                "{w} must not be a pilot: {:?}",
+                r.pilots
+            );
+        }
+        // A real name in the same line is still caught.
+        assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
     }
 
     #[test]
