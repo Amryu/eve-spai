@@ -3087,6 +3087,42 @@ mod tests {
     }
 
     #[test]
+    fn lowercase_code_gate_is_not_a_pilot() {
+        // Two C-J systems → "c-j" is an ambiguous prefix (as live), so it isn't auto-resolved
+        // as a system; a character is also named "c-j". In "c-j gate" it's the gate, not a player.
+        let by_name: std::collections::HashMap<String, SystemInfo> = [
+            ("c-j6mt", "C-J6MT", 5, -0.6),
+            ("c-j7cr", "C-J7CR", 6, -0.5),
+            ("rancer", "Rancer", 1, 0.4),
+        ]
+        .into_iter()
+        .map(|(k, n, id, sec)| {
+            (
+                k.to_string(),
+                SystemInfo {
+                    id,
+                    name: n.to_string(),
+                    security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            )
+        })
+        .collect();
+        let adj = std::collections::HashMap::from([(1i64, vec![5i64]), (5, vec![1])]);
+        let s = Systems::new(by_name, adj);
+        let known = std::collections::HashMap::from([("c-j".to_string(), 999i64)]);
+        let r = analyze("Rancer c-j gate camped", &s, &noships(), &known, 1, "ch", "x");
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("c-j")),
+            "c-j is the gate's system, not a pilot: {:?}",
+            r.pilots
+        );
+        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
+    }
+
+    #[test]
     fn negation_gate_abbrev_and_status() {
         let s = systems();
         // "no bubble" must not set bubble; "YPW gate" resolves to the full system name.
