@@ -428,6 +428,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
             "ship" | "ships" | "shuttle" | "shuttles" | "navy" | "issue" | "loc"
                 | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went" | "min" | "mins" | "minute" | "minutes"
                 | "heading" | "towards" | "toward" | "through" | "inbound" | "enroute"
+                | "between"
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
                 | "small" | "large" | "big" | "huge"
@@ -511,10 +512,24 @@ fn name_part(t: &str) -> bool {
 /// alphanumerics joined by a hyphen, never lower-case. Used to keep them out of pilot
 /// detection (player names carry lower-case letters).
 fn looks_like_system_code(t: &str) -> bool {
-    t.len() >= 2
-        && t.contains('-')
-        && t.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
-        && t.chars().any(|c| c.is_ascii_alphanumeric())
+    if t.len() < 2 || !t.contains('-') {
+        return false;
+    }
+    if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        || !t.chars().any(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    // Distinguish a null-sec code from a hyphenated name. An ALL-CAPS hyphenated token is
+    // always a code (names aren't typed in all-caps). Mixed/lower case is a code only if it
+    // has a digit or only short (<=3 char) segments — so "c-j", "4m-", "1dq1-a" qualify but
+    // a name like "Jean-Luc" does not.
+    if !t.chars().any(|c| c.is_ascii_lowercase()) {
+        return true;
+    }
+    let has_digit = t.chars().any(|c| c.is_ascii_digit());
+    let longest_segment = t.split('-').map(|s| s.len()).max().unwrap_or(0);
+    has_digit || longest_segment <= 3
 }
 
 /// A lower/digit-leading handle ("0xtomorrow", "xX1Mortis"): contains a digit and a
@@ -3152,6 +3167,16 @@ mod tests {
         let r = analyze("hostiles in Rancer heading Jita", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Rancer"]);
         assert_eq!(r.gates.first().map(|s| s.as_str()), Some("Jita"));
+    }
+
+    #[test]
+    fn lowercase_codes_vs_hyphenated_names() {
+        assert!(looks_like_system_code("c-j"));
+        assert!(looks_like_system_code("4m-"));
+        assert!(looks_like_system_code("1dq1-a"));
+        assert!(looks_like_system_code("C-J6MT"));
+        assert!(!looks_like_system_code("Jean-Luc"));
+        assert!(!looks_like_system_code("Mary-Jo"));
     }
 
     #[test]
