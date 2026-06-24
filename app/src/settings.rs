@@ -106,6 +106,10 @@ pub struct Settings {
     /// Master switch for jabber notification sounds.
     #[serde(default = "default_true")]
     pub jabber_sound_enabled: bool,
+    /// The user's private contact list (bare JIDs) — shown via the directory/contacts
+    /// toggle, independent of the server roster.
+    #[serde(default)]
+    pub jabber_contacts: Vec<String>,
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
@@ -456,6 +460,7 @@ impl Default for Settings {
             jabber_msg_sound: default_msg_sound(),
             jabber_ping_sound: default_ping_sound(),
             jabber_sound_enabled: true,
+            jabber_contacts: Vec::new(),
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,

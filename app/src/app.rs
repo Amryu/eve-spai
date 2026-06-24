@@ -206,6 +206,12 @@ pub struct SpaiApp {
     jabber_input: String,
     /// "Join room" text input (a room JID).
     jabber_room_input: String,
+    /// Search filter over the shown contacts.
+    jabber_contact_search: String,
+    /// "Message someone" input — opens a DM by JID/local part.
+    jabber_dm_input: String,
+    /// Roster list shows the public directory (true) or the private contact list.
+    jabber_show_directory: bool,
     /// Our own chosen availability + status text.
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
@@ -468,6 +474,9 @@ impl SpaiApp {
             jabber_chat: None,
             jabber_input: String::new(),
             jabber_room_input: String::new(),
+            jabber_contact_search: String::new(),
+            jabber_dm_input: String::new(),
+            jabber_show_directory: true,
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
             jabber_pw_input: String::new(),
@@ -894,6 +903,17 @@ impl SpaiApp {
         }
     }
 
+    /// Resolve a DM target the user typed: a bare local part gets the user's own JID
+    /// domain appended ("Bob" → "Bob@goonfleet.com").
+    fn full_user_jid(&self, input: &str) -> String {
+        let input = input.trim();
+        if input.contains('@') {
+            return input.to_owned();
+        }
+        let domain = self.settings.jabber_jid.split('@').nth(1).unwrap_or("");
+        format!("{input}@{domain}")
+    }
+
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         if self.jabber_popped {
@@ -1131,15 +1151,82 @@ impl SpaiApp {
                     }
                 });
                 ui.separator();
-                // Group contacts by their server-assigned roster group (empty = Other).
+                // DM: open a direct conversation with anyone by JID / local part.
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
+                            .hint_text("Message someone…")
+                            .desired_width(132.0),
+                    );
+                    let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui
+                        .button(egui_phosphor::regular::CHAT_CIRCLE_DOTS)
+                        .on_hover_text("Open DM")
+                        .clicked()
+                        || go)
+                        && !self.jabber_dm_input.trim().is_empty()
+                    {
+                        let jid = self.full_user_jid(&self.jabber_dm_input);
+                        self.jabber_dm_input.clear();
+                        self.jabber.lock().unwrap().unread.remove(&jid);
+                        self.jabber_chat = Some(jid);
+                    }
+                });
+                // Directory / Contacts toggle (independent of pings/DMs above), each
+                // marked when it has unread.
+                let contacts: std::collections::HashSet<String> =
+                    self.settings.jabber_contacts.iter().cloned().collect();
+                let dir_unread = convos.iter().any(|c| c.unread);
+                let con_unread = convos.iter().any(|c| c.unread && contacts.contains(&c.jid));
+                ui.horizontal(|ui| {
+                    let dir = ui.selectable_label(self.jabber_show_directory, "Directory");
+                    if dir_unread {
+                        ui.scope(|ui| {
+                            ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).small());
+                        });
+                    }
+                    if dir.clicked() {
+                        self.jabber_show_directory = true;
+                    }
+                    let con = ui.selectable_label(!self.jabber_show_directory, "Contacts");
+                    if con_unread {
+                        ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).small());
+                    }
+                    if con.clicked() {
+                        self.jabber_show_directory = false;
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.jabber_contact_search)
+                        .hint_text("Search")
+                        .desired_width(176.0),
+                );
+                // Filter: directory shows the whole roster, contacts only the private
+                // list; the search box narrows by name or JID.
+                let search = self.jabber_contact_search.to_lowercase();
+                let show_dir = self.jabber_show_directory;
+                let shown: Vec<&Convo> = convos
+                    .iter()
+                    .filter(|c| show_dir || contacts.contains(&c.jid))
+                    .filter(|c| {
+                        search.is_empty()
+                            || c.name.to_lowercase().contains(&search)
+                            || c.jid.to_lowercase().contains(&search)
+                    })
+                    .collect();
                 let mut groups: std::collections::BTreeMap<&str, Vec<&Convo>> =
                     std::collections::BTreeMap::new();
-                for c in &convos {
+                for c in shown {
                     let g = if c.group.trim().is_empty() { "Other" } else { c.group.as_str() };
                     groups.entry(g).or_default().push(c);
                 }
                 let accent = ui.visuals().hyperlink_color;
+                let mut toggle_contact: Option<(String, bool)> = None; // (jid, add?)
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
+                    if groups.is_empty() && !show_dir {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("No contacts yet — add people from the Directory.").weak());
+                    }
                     for (group, mut members) in groups {
                         // Sort A–Z within each group (case-insensitive).
                         members.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -1164,9 +1251,31 @@ impl SpaiApp {
                             } else {
                                 egui::RichText::new(&c.name).weak()
                             };
+                            let is_contact = contacts.contains(&c.jid);
                             let resp = ui.horizontal(|ui| {
                                 ui.label(dot);
-                                ui.selectable_label(sel, name).clicked()
+                                let clicked = ui.selectable_label(sel, name).clicked();
+                                // Add to / remove from the private contact list.
+                                let star_col = if is_contact {
+                                    ui.visuals().hyperlink_color
+                                } else {
+                                    ui.visuals().weak_text_color()
+                                };
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(egui_phosphor::regular::STAR)
+                                                .small()
+                                                .color(star_col),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_text(if is_contact { "Remove from contacts" } else { "Add to contacts" })
+                                    .clicked()
+                                {
+                                    toggle_contact = Some((c.jid.clone(), !is_contact));
+                                }
+                                clicked
                             });
                             let tip = if c.status_text.is_empty() {
                                 c.presence.label().to_owned()
@@ -1181,6 +1290,16 @@ impl SpaiApp {
                         }
                     }
                 });
+                if let Some((jid, add)) = toggle_contact {
+                    if add {
+                        if !self.settings.jabber_contacts.contains(&jid) {
+                            self.settings.jabber_contacts.push(jid);
+                        }
+                    } else {
+                        self.settings.jabber_contacts.retain(|j| j != &jid);
+                    }
+                    self.needs_save = true;
+                }
             });
             ui.separator();
             // Right: messages + composer, or the pings feed.
