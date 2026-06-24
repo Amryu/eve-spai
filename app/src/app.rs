@@ -2351,8 +2351,10 @@ impl SpaiApp {
                     None => (w.dest.label().to_string(), String::new(), String::new()),
                 };
                 let life = if w.explicit_expiry.is_some() {
+                    // A hole only advertises a coarse maximum ("< Nh"); the real life is
+                    // always shorter, so present it as an upper bound.
                     match w.hours_left(now) {
-                        Some(h) => format!("{h}h left"),
+                        Some(h) => format!("< {h}h left"),
                         None => "expired".into(),
                     }
                 } else {

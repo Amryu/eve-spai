@@ -328,8 +328,20 @@ impl Wormhole {
     /// Identity for de-duplication: the near signature pins it exactly; without one we
     /// fall back to the (system, type, destination) triple.
     pub fn dedup_key(&self) -> String {
-        match &self.signature {
-            Some(sig) if !sig.is_empty() => format!("{}|sig:{}", self.system_id, sig.to_uppercase()),
+        // Normalise the signature to its scan id (the 3-char prefix before the dash),
+        // stripping brackets/spaces — so a seeded "ABC-123" and an intel "[ABC]" match.
+        let sig_id = self.signature.as_deref().map(|s| {
+            s.chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect::<String>()
+                .to_uppercase()
+                .split('-')
+                .next()
+                .unwrap_or("")
+                .to_owned()
+        });
+        match sig_id {
+            Some(id) if !id.is_empty() => format!("{}|sig:{}", self.system_id, id),
             _ => format!(
                 "{}|{}|{}",
                 self.system_id,
@@ -494,6 +506,15 @@ mod tests {
     }
 
     #[test]
+    fn dedup_key_normalises_signature() {
+        let mut a = wh(false, 0);
+        a.signature = Some("ABC-123".into());
+        let mut b = wh(false, 0);
+        b.signature = Some("[abc]".into());
+        assert_eq!(a.dedup_key(), b.dedup_key());
+    }
+
+    #[test]
     fn lifetime_caps() {
         let normal = wh(false, 1000);
         assert_eq!(normal.expiry(), 1000 + 2 * DAY);
@@ -516,7 +537,8 @@ mod tests {
     fn dedup_prefers_signature() {
         let mut a = wh(false, 1000);
         a.signature = Some("abc-123".into());
-        assert_eq!(a.dedup_key(), "30000142|sig:ABC-123");
+        // Keyed by the unique 3-char scan id (brackets/suffix normalised away).
+        assert_eq!(a.dedup_key(), "30000142|sig:ABC");
         let b = wh(false, 1000); // no sig
         assert_eq!(b.dedup_key(), "30000142|K162|ns");
     }
