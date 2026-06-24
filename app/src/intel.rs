@@ -825,9 +825,17 @@ pub fn analyze_ctx(
             ships.push(DetectedShip { id, name: name.to_owned() });
         }
     };
+    // Words that belong to a detected multi-word hull ("Catalyst" in "Catalyst Navy
+    // Issue") must not also be read as a standalone ship (double-counting the hull).
+    let mw_words: std::collections::HashSet<String> = mw_ships
+        .iter()
+        .flat_map(|(_, _, _, name)| {
+            name.to_lowercase().split_whitespace().map(str::to_owned).collect::<Vec<_>>()
+        })
+        .collect();
     for tok in &tokens {
         let lower = tok.to_lowercase();
-        if pilot_tokens.contains(&lower) {
+        if pilot_tokens.contains(&lower) || mw_words.contains(&lower) {
             continue;
         }
         if let Some((id, name)) = ship_index.get(&lower) {
@@ -1359,6 +1367,20 @@ mod tests {
             "<url=showinfo:1379//115252465>Rondrasil</url>  <url=showinfo:5//30000775>8-WYQZ</url> nv",
             &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Rondrasil"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn multiword_ship_not_double_counted() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [
+            ("catalyst".to_string(), (16240i64, "Catalyst".to_string())),
+            ("catalyst navy issue".to_string(), (33470i64, "Catalyst Navy Issue".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let r = analyze("Rancer Catalyst Navy Issue", &s, &ships, &noknown(), 1, "ch", "x");
+        let names: Vec<_> = r.ships.iter().map(|sh| sh.name.clone()).collect();
+        assert_eq!(names, vec!["Catalyst Navy Issue"], "got {:?}", names);
     }
 
     #[test]
