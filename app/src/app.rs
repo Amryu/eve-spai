@@ -5361,17 +5361,7 @@ impl SpaiApp {
                         {
                             self.map_go(MapView::Universe);
                         }
-                        ui.add_enabled_ui(!self.map_history.is_empty(), |ui| {
-                            if ui.button(icon::ARROW_LEFT).on_hover_text("Back").clicked() {
-                                self.map_back();
-                            }
-                        });
-                        ui.add_enabled_ui(!self.map_forward.is_empty(), |ui| {
-                            if ui.button(icon::ARROW_RIGHT).on_hover_text("Forward").clicked() {
-                                self.map_forward_nav();
-                            }
-                        });
-                        // (Region/constellation navigation moved to the search box.)
+                        // (Back/forward + region navigation moved to the search box.)
                         if ui
                             .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
                             .on_hover_text("Follow active character")
@@ -5639,12 +5629,60 @@ impl SpaiApp {
             rect.left() - screen.left() + 8.0,
             rect.bottom() - screen.bottom() - 10.0,
         );
+        // Accessible regions for the picker (computed outside the closure so the TextEdit's
+        // &mut borrow of self.map_search doesn't clash with reading self.map_regions).
+        if self.map_regions.is_empty() {
+            if let Some(r) = self.store.as_ref().map(|s| s.regions()) {
+                self.map_regions = r;
+            }
+        }
+        let cur_view = self.map_view;
+        let cur_region: String = match cur_view {
+            MapView::Region(id) => self
+                .map_regions
+                .iter()
+                .find(|(r, _)| *r == id)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "Region".to_owned()),
+            MapView::Universe => "Region".to_owned(),
+        };
+        let region_list: Vec<(i64, String)> = self
+            .map_regions
+            .iter()
+            .filter(|(_, n)| !is_hidden_region(n))
+            .cloned()
+            .collect();
+        let can_back = !self.map_history.is_empty();
+        let can_fwd = !self.map_forward.is_empty();
+        let mut nav_back = false;
+        let mut nav_fwd = false;
+        let mut region_pick: Option<i64> = None;
         egui::Area::new(egui::Id::new("map_search"))
             .anchor(egui::Align2::LEFT_BOTTOM, ioff)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.add_enabled_ui(can_back, |ui| {
+                            if ui.button(icon::ARROW_LEFT).on_hover_text("Back").clicked() {
+                                nav_back = true;
+                            }
+                        });
+                        ui.add_enabled_ui(can_fwd, |ui| {
+                            if ui.button(icon::ARROW_RIGHT).on_hover_text("Forward").clicked() {
+                                nav_fwd = true;
+                            }
+                        });
+                        egui::ComboBox::from_id_salt(ui.id().with("map_region_pick"))
+                            .selected_text(cur_region.clone())
+                            .show_ui(ui, |ui| {
+                                for (rid, rname) in &region_list {
+                                    let sel = matches!(cur_view, MapView::Region(r) if r == *rid);
+                                    if ui.selectable_label(sel, rname).clicked() {
+                                        region_pick = Some(*rid);
+                                    }
+                                }
+                            });
                         ui.label(icon::MAGNIFYING_GLASS);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.map_search)
@@ -5658,6 +5696,15 @@ impl SpaiApp {
                     });
                 });
             });
+        if nav_back {
+            self.map_back();
+        }
+        if nav_fwd {
+            self.map_forward_nav();
+        }
+        if let Some(id) = region_pick {
+            self.map_go(MapView::Region(id));
+        }
 
         if clear_upgrade {
             self.map_highlight_upgrade = None;
