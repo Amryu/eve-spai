@@ -325,6 +325,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
                 | "bubbled" | "bubbles" | "bubbling" | "cloak" | "cloaked" | "cloaky"
                 | "cloaks" | "cloaking" | "decloak" | "decloaked" | "camped"
+                | "ansi" | "ansiblex" | "jumpbridge" | "bridge" | "jump" | "jumps"
         )
 }
 
@@ -881,6 +882,10 @@ pub fn analyze_ctx(
     }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
     for k in match_known_pilots(&masked, known_pilots) {
+        // A standalone word that's a known ship is the ship, not a pilot ("Buzzard").
+        if !k.contains(' ') && ship_index.contains_key(&k.to_lowercase()) {
+            continue;
+        }
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
             pilots.push(k);
         }
@@ -1690,6 +1695,29 @@ mod tests {
         // ISK/count tokens and system abbreviations stay out.
         assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
         assert!(is_handle_like("0xtomorrow"));
+    }
+
+    #[test]
+    fn standalone_ship_word_known_as_pilot_is_not_a_pilot() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("buzzard".to_string(), (11192i64, "Buzzard".to_string()))].into_iter().collect();
+        let known: std::collections::HashMap<String, i64> =
+            [("buzzard".to_string(), 794250917i64)].into_iter().collect();
+        let r = analyze("hostiles in a Buzzard in Rancer", &s, &ships, &known, 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Buzzard")), "pilots={:?}", r.pilots);
+        assert!(r.ships.iter().any(|sh| sh.name == "Buzzard"), "ships={:?}", r.ships);
+    }
+
+    #[test]
+    fn ansiblex_jump_bridge_is_not_a_pilot() {
+        let s = systems();
+        let r = analyze("Ansiblex Jump Bridge in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        for w in ["Ansi", "Ansiblex", "Jump", "Bridge"] {
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w}: {:?}", r.pilots);
+        }
+        let r2 = analyze("reds on the Ansi in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Ansi")), "pilots={:?}", r2.pilots);
     }
 
     #[test]

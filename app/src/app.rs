@@ -244,6 +244,8 @@ pub struct SpaiApp {
     eve_focus_checked: Option<std::time::Instant>,
     /// Throttle for reconciling pilot candidates that turned out not to be characters.
     pilot_reconcile_checked: Option<std::time::Instant>,
+    /// Ship name -> (id, name), for reclassifying ship-words wrongly read as pilots.
+    ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     /// Update-checker state + one-shot startup check + per-session "ask later" flag.
     update: crate::update::SharedUpdate,
     update_checked: bool,
@@ -550,6 +552,7 @@ impl SpaiApp {
             eve_focused: true,
             eve_focus_checked: None,
             pilot_reconcile_checked: None,
+            ship_index: None,
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked: false,
             update_dismissed: false,
@@ -2245,6 +2248,7 @@ impl SpaiApp {
         }
         self.pilot_reconcile_checked = Some(std::time::Instant::now());
         let Some(geo) = self.systems.clone() else { return false };
+        let ships = self.ship_index.clone();
         let mut changed = false;
         // Lock order MUST match the watcher (intel_state → pilots); the reverse order
         // here deadlocked the UI thread against the watcher (ABBA).
@@ -2294,10 +2298,29 @@ impl SpaiApp {
             }
             let mut seen = std::collections::HashSet::new();
             new_pilots.retain(|p| seen.insert(p.to_lowercase()));
-            if new_pilots != original {
+            // A standalone word that is a known ship is the ship, not a pilot — even when
+            // a character shares the name ("Buzzard"). Move it to the ship list.
+            let mut final_pilots: Vec<String> = Vec::new();
+            for p in new_pilots {
+                if let Some(idx) = &ships {
+                    if !p.contains(' ') {
+                        if let Some((id, name)) = idx.get(&p.to_lowercase()) {
+                            if !r.ships.iter().any(|sh| sh.id == *id) {
+                                r.ships.push(crate::intel::DetectedShip {
+                                    id: *id,
+                                    name: name.clone(),
+                                });
+                            }
+                            continue;
+                        }
+                    }
+                }
+                final_pilots.push(p);
+            }
+            if final_pilots != original {
                 changed = true;
             }
-            r.pilots = new_pilots;
+            r.pilots = final_pilots;
         }
         changed
     }
@@ -2606,6 +2629,7 @@ impl SpaiApp {
 
         if let Some(dir) = self.chat_dir.clone() {
             let ships = std::sync::Arc::new(store.ship_index());
+            self.ship_index = Some(ships.clone());
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
