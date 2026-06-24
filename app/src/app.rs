@@ -3598,7 +3598,6 @@ impl SpaiApp {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
-        let pos = self.settings.alerts.window_pos.unwrap_or((80.0, 80.0));
         // Card data for the feed (built only when there's something to show).
         let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
             if active { self.alert_feed.iter().rev().take(20).cloned().collect() } else { Vec::new() };
@@ -3655,8 +3654,11 @@ impl SpaiApp {
                 .with_taskbar(false)
                 .with_transparent(true)
                 .with_mouse_passthrough(!active)
-                .with_position([pos.0, pos.1])
-                .with_inner_size(self.settings.alerts.window_size.map_or([360.0, 240.0].into(), |(w, h)| egui::vec2(w, h))),
+                // Fixed initial geometry only. The *saved* position/size are applied via
+                // ViewportCommand on open (just_opened); re-applying them every frame here
+                // fought the user's drag/resize and made the window shake.
+                .with_position([80.0, 80.0])
+                .with_inner_size([360.0, 240.0]),
             |ctx, _| {
                 if !active {
                     // Invisible + click-through: draw nothing on a transparent surface.
