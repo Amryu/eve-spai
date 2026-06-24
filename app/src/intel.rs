@@ -1191,6 +1191,9 @@ pub fn analyze_ctx(
             pilots.push((*t).to_owned());
         }
     }
+    // A structure name (Keepstar, Fortizar, …) is never a pilot, even if a character is
+    // named after one — it's reported as a structure badge, not a player.
+    pilots.retain(|p| !is_structure_word(p));
 
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
