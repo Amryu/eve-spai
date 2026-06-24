@@ -4,6 +4,9 @@ name: Release
 # (Also runnable manually for testing.)
 on:
   push:
+    # main builds warm the cache on the default-branch scope, which (unlike a tag's
+    # scope) is restorable by the tag-triggered release builds.
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
 

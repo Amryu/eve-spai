@@ -3638,16 +3638,15 @@ impl SpaiApp {
                     }
                     self.alert_level_applied = None; // force the level to be re-applied
                 }
-                // Keep the always-on-top level current: re-apply whenever it changes, so
-                // "smart" mode follows EVE focus and the level isn't lost while shown.
-                if self.alert_level_applied != Some(on_top) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
-                        egui::WindowLevel::AlwaysOnTop
-                    } else {
-                        egui::WindowLevel::Normal
-                    }));
-                    self.alert_level_applied = Some(on_top);
-                }
+                // Re-assert the level every frame (not just on change): some WMs drop
+                // always-on-top after the window unmaps/remaps, so a one-shot apply isn't
+                // enough. "Smart" mode still follows EVE focus via `on_top`.
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                }));
+                self.alert_level_applied = Some(on_top);
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
                     .show(ctx, |ui| {
@@ -3764,12 +3763,11 @@ impl SpaiApp {
         if !active {
             return; // idle: nothing to count down; window stays transparent
         }
-        // Countdown (paused while hovered; floor of 3 s when hovered). The timer
-        // decrements by real elapsed time, so we only need a low repaint rate (the
-        // "Ns" label + ages) — not full framerate, which is what spiked the CPU.
-        // Clamp generously: the window repaints at ~1 fps off-hover, so a 0.5 s cap
-        // would make the countdown lose half of every second.
-        let dt = ctx.input(|i| i.stable_dt).min(2.0);
+        // Countdown (paused while hovered; floor of 3 s when hovered). Use unstable_dt:
+        // it's the *true* time since the last frame. stable_dt is smoothed/clamped, so
+        // after a ~1 s idle it reports a tiny value and the countdown barely moves (this
+        // is why it ticked far too slowly). Cap a long idle gap at 2 s.
+        let dt = ctx.input(|i| i.unstable_dt).min(2.0);
         if hovered {
             self.alert_window_secs = self.alert_window_secs.max(3.0);
         } else if !self.alert_window_pinned && self.alert_window_secs.is_finite() {
@@ -6622,13 +6620,15 @@ impl SpaiApp {
         // Position the popup once, at the bottom-right of the EVE window if we can find
         // it (X11), otherwise a sensible screen position.
         if self.dscan_pos.is_none() {
-            let (pw, ph) = (340.0_f32, 150.0_f32);
+            // Outer window size (inner + the title bar the decorations add) and a small
+            // margin, so it sits just inside the EVE window's bottom-right, not touching.
+            let (ow, oh, margin) = (300.0_f32, 150.0_f32, 14.0_f32);
             self.dscan_pos = Some(match eve_window_rect() {
                 Some((x, y, w, h)) => (
-                    ((x + w) as f32 - pw - 16.0).max(0.0),
-                    ((y + h) as f32 - ph - 16.0).max(0.0),
+                    ((x + w) as f32 - ow - margin).max(0.0),
+                    ((y + h) as f32 - oh - margin).max(0.0),
                 ),
-                None => (1920.0 - pw - 24.0, 1080.0 - ph - 60.0),
+                None => (1920.0 - ow - margin, 1080.0 - oh - margin),
             });
         }
         let pos = self.dscan_pos.unwrap_or((200.0, 200.0));
@@ -6645,12 +6645,16 @@ impl SpaiApp {
                 .with_title("EVE Spai — D-scan")
                 .with_window_level(egui::WindowLevel::AlwaysOnTop)
                 .with_active(false) // do not steal focus from the game
-                .with_decorations(false)
+                .with_decorations(true) // border + title bar so it can be dragged
                 .with_taskbar(false)
-                .with_resizable(false)
+                .with_resizable(true)
                 .with_position([pos.0, pos.1])
-                .with_inner_size([340.0, 150.0]),
+                .with_inner_size([300.0, 118.0]),
             |ctx, _| {
+                // Re-assert always-on-top each frame; some WMs drop the initial hint.
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::AlwaysOnTop,
+                ));
                 let frame = egui::Frame::central_panel(&ctx.style());
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     ui.label(egui::RichText::new(format!("{}  D-scan", icon::BROADCAST)).strong());
