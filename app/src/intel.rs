@@ -518,7 +518,9 @@ fn loose_pilot_runs(
         // Allow longer runs than a single name (EVE names are <=3 words): several
         // adjacent names ("Bunk Boi Bunk Helper") are one run that the ESI cover splits
         // into the real names, instead of leaking a stray sub-word.
-        if (2..=6).contains(&run.len()) && *anchored {
+        // No Title-Case anchor required, so all-lowercase names ("mixa kolodenko") are
+        // caught too; the ESI cover drops anything that isn't a real character.
+        if (2..=6).contains(&run.len()) {
             let name = run.join(" ");
             if !out.contains(&name) {
                 out.push(name);

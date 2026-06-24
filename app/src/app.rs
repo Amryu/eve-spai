@@ -252,6 +252,12 @@ pub struct SpaiApp {
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
     kill_window: Option<i64>,
+    /// Embedded zKill lookup: pasted/dropped names, one tab each.
+    lookup_input: String,
+    lookup_tabs: Vec<String>,
+    lookup_active: usize,
+    lookup_cache: crate::charlookup::LookupCache,
+    lookup_tx: Option<crate::charlookup::LookupSender>,
     /// First-run setup wizard (dismissable; re-runnable from Settings).
     wizard_open: bool,
     wizard_step: u8,
@@ -469,6 +475,9 @@ impl SpaiApp {
         let kill_cache: crate::kills::KillCache =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let kill_tx = Some(crate::kills::spawn_fetcher(kill_cache.clone(), cc.egui_ctx.clone()));
+        let lookup_cache: crate::charlookup::LookupCache = Default::default();
+        let lookup_tx =
+            Some(crate::charlookup::spawn_fetcher(lookup_cache.clone(), cc.egui_ctx.clone()));
 
         Self {
             store,
@@ -541,6 +550,11 @@ impl SpaiApp {
             kill_cache,
             kill_tx,
             kill_window: None,
+            lookup_input: String::new(),
+            lookup_tabs: Vec::new(),
+            lookup_active: 0,
+            lookup_cache,
+            lookup_tx,
             wizard_open: false,
             wizard_step: 0,
             wizard_checked: false,
@@ -2840,6 +2854,192 @@ impl SpaiApp {
     }
 
     /// The Battle Report view: clusters of killmails near the tracked area.
+    /// Queue one tab per (de-duplicated) name from a block of pasted/dropped text.
+    fn add_lookup_names(&mut self, text: &str) {
+        for line in text.lines() {
+            let name = line.trim();
+            if name.len() < 3 || name.len() > 37 {
+                continue;
+            }
+            if self.lookup_tabs.iter().any(|t| t.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            self.lookup_tabs.push(name.to_owned());
+            if let Some(tx) = &self.lookup_tx {
+                let _ = tx.send(name.to_owned());
+            }
+        }
+        if !self.lookup_tabs.is_empty() {
+            self.lookup_active = self.lookup_tabs.len() - 1;
+        }
+    }
+
+    /// Embedded zKill lookup: paste/drop pilot names, one tab per pilot.
+    fn lookup_view(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        for f in dropped {
+            let text = f
+                .bytes
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_else(|| f.name.clone());
+            self.add_lookup_names(&text);
+        }
+
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(
+                "Paste pilot names (one per line, e.g. the local member list) or drop them here.",
+            )
+            .weak(),
+        );
+        ui.add(
+            egui::TextEdit::multiline(&mut self.lookup_input)
+                .hint_text("Pilot names, one per line...")
+                .desired_rows(3)
+                .desired_width(f32::INFINITY),
+        );
+        ui.horizontal(|ui| {
+            if ui.button(format!("{}  Look up", icon::MAGNIFYING_GLASS)).clicked()
+                && !self.lookup_input.trim().is_empty()
+            {
+                let text = std::mem::take(&mut self.lookup_input);
+                self.add_lookup_names(&text);
+            }
+            if !self.lookup_tabs.is_empty() && ui.button("Close all").clicked() {
+                self.lookup_tabs.clear();
+                self.lookup_active = 0;
+            }
+        });
+        ui.separator();
+        if self.lookup_tabs.is_empty() {
+            ui.label(egui::RichText::new("No lookups yet.").weak());
+            return;
+        }
+
+        let tabs = self.lookup_tabs.clone();
+        let mut close: Option<usize> = None;
+        egui::ScrollArea::horizontal().id_salt("lookup_tabs").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (i, name) in tabs.iter().enumerate() {
+                    let label = self
+                        .lookup_cache
+                        .lock()
+                        .unwrap()
+                        .get(&name.to_lowercase())
+                        .and_then(|o| o.as_ref())
+                        .filter(|inf| inf.found)
+                        .map(|inf| inf.name.clone())
+                        .unwrap_or_else(|| name.clone());
+                    if ui.selectable_label(self.lookup_active == i, label).clicked() {
+                        self.lookup_active = i;
+                    }
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new(icon::X).small()).frame(false))
+                        .on_hover_text("Close tab")
+                        .clicked()
+                    {
+                        close = Some(i);
+                    }
+                    ui.separator();
+                }
+            });
+        });
+        if let Some(i) = close {
+            self.lookup_tabs.remove(i);
+            if self.lookup_active >= self.lookup_tabs.len() {
+                self.lookup_active = self.lookup_tabs.len().saturating_sub(1);
+            }
+        }
+        ui.separator();
+
+        let Some(name) = self.lookup_tabs.get(self.lookup_active).cloned() else { return };
+        let info = self.lookup_cache.lock().unwrap().get(&name.to_lowercase()).cloned();
+        egui::ScrollArea::vertical().id_salt("lookup_body").show(ui, |ui| match info {
+            None | Some(None) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Looking up {name}..."));
+                });
+            }
+            Some(Some(inf)) if !inf.found => {
+                ui.label(format!("No character named \"{name}\" was found."));
+            }
+            Some(Some(inf)) => Self::lookup_profile(ui, &inf),
+        });
+    }
+
+    /// Render a looked-up pilot's zKill profile.
+    fn lookup_profile(ui: &mut egui::Ui, info: &crate::charlookup::LookupInfo) {
+        use egui_phosphor::regular as icon;
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Image::new(format!(
+                    "https://images.evetech.net/characters/{}/portrait?size=128",
+                    info.char_id
+                ))
+                .fit_to_exact_size(egui::Vec2::splat(72.0)),
+            );
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(&info.name).strong().size(18.0));
+                if !info.corp.is_empty() {
+                    ui.label(egui::RichText::new(&info.corp).weak());
+                }
+                if !info.alliance.is_empty() {
+                    ui.label(egui::RichText::new(&info.alliance).weak());
+                }
+            });
+        });
+        ui.separator();
+        egui::Grid::new("lookup_stats").spacing([24.0, 4.0]).show(ui, |ui| {
+            ui.label("Kills");
+            ui.label(egui::RichText::new(info.ships_destroyed.to_string()).strong());
+            ui.label("Losses");
+            ui.label(info.ships_lost.to_string());
+            ui.end_row();
+            ui.label("ISK destroyed");
+            ui.label(fmt_isk(info.isk_destroyed));
+            ui.label("ISK lost");
+            ui.label(fmt_isk(info.isk_lost));
+            ui.end_row();
+            ui.label("Danger");
+            ui.label(format!("{}%", info.danger_ratio));
+            ui.label("Gang");
+            ui.label(format!("{}%", info.gang_ratio));
+            ui.end_row();
+        });
+        if !info.top_ships.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new("Most-used ships").strong());
+            ui.horizontal_wrapped(|ui| {
+                for (id, name, kills) in &info.top_ships {
+                    ui.add(
+                        egui::Image::new(format!(
+                            "https://images.evetech.net/types/{id}/icon?size=32"
+                        ))
+                        .fit_to_exact_size(egui::Vec2::splat(28.0)),
+                    )
+                    .on_hover_text(format!("{name}: {kills} kills"));
+                }
+            });
+        }
+        if !info.top_systems.is_empty() {
+            ui.separator();
+            ui.label(egui::RichText::new("Most active systems").strong());
+            ui.horizontal_wrapped(|ui| {
+                for (sys, kills) in &info.top_systems {
+                    ui.label(egui::RichText::new(format!("{sys} ({kills})")).weak());
+                }
+            });
+        }
+        ui.separator();
+        if ui.button(format!("{}  Open on zKillboard", icon::ARROW_SQUARE_OUT)).clicked() {
+            let _ = open::that(format!("https://zkillboard.com/character/{}/", info.char_id));
+        }
+    }
+
+    #[allow(dead_code)] // battles kept for later; not in the nav for now
     fn battles_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
 
@@ -3535,7 +3735,9 @@ impl SpaiApp {
         // Countdown (paused while hovered; floor of 3 s when hovered). The timer
         // decrements by real elapsed time, so we only need a low repaint rate (the
         // "Ns" label + ages) — not full framerate, which is what spiked the CPU.
-        let dt = ctx.input(|i| i.stable_dt).min(0.5);
+        // Clamp generously: the window repaints at ~1 fps off-hover, so a 0.5 s cap
+        // would make the countdown lose half of every second.
+        let dt = ctx.input(|i| i.stable_dt).min(2.0);
         if hovered {
             self.alert_window_secs = self.alert_window_secs.max(3.0);
         } else if !self.alert_window_pinned && self.alert_window_secs.is_finite() {
@@ -7880,7 +8082,7 @@ impl eframe::App for SpaiApp {
             View::Characters => self.characters_view(ui),
             View::Intel => self.intel_view(ui),
             View::Wormholes => self.wormholes_view(ui),
-            View::Battles => self.battles_view(ui),
+            View::Lookup => self.lookup_view(ui),
             View::Alerts => self.alerts_view(ui),
             View::Jabber => self.jabber_view(ui),
             View::Settings => self.settings_view(ui),
