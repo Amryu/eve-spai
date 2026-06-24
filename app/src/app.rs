@@ -3743,11 +3743,9 @@ impl SpaiApp {
                 })
                 .with_active(false)
                 // Stay mapped (transparent + click-through when idle) so re-mapping on each
-                // alert doesn't make the X11 WM steal focus. On Windows there's no per-window
-                // compositor alpha for an idle borderless window, so a mapped-but-transparent
-                // one renders as an opaque black/white square — unmap it when idle there
-                // instead (with_active(false) keeps the re-map from stealing focus).
-                .with_visible(if cfg!(target_os = "windows") { active } else { true })
+                // alert doesn't make the WM steal focus — works on both X11 (glow) and
+                // Windows (wgpu/DX12 composites the transparent surface; see main.rs).
+                .with_visible(true)
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)

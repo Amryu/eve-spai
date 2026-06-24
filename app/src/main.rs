@@ -68,6 +68,14 @@ fn main() -> eframe::Result<()> {
     }
     let mut native_options = eframe::NativeOptions { viewport, ..Default::default() };
 
+    // On Windows, glow (OpenGL) can't have its per-pixel alpha composited by the DWM, so
+    // transparent windows (idle alert, map overlay) render as an opaque square. wgpu (DX12)
+    // selects a PreMultiplied composite-alpha surface and composites correctly.
+    #[cfg(target_os = "windows")]
+    {
+        native_options.renderer = eframe::Renderer::Wgpu;
+    }
+
     // Native Wayland forbids a client from setting its own window position or
     // suppressing focus, which the alert / map-overlay windows need. When running
     // under Wayland with XWayland available, force the X11 backend so those work.
