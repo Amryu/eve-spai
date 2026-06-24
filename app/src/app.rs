@@ -2230,7 +2230,11 @@ impl SpaiApp {
                     // Not a character as a whole: cover it with confirmed sub-names
                     // (the over-glued run "Wwallddo Lulu Uanid" -> Wwallddo + Lulu Uanid).
                     Some(None) => {
-                        let cover = cache.cover(&p);
+                        let cover: Vec<String> = cache
+                            .cover(&p)
+                            .into_iter()
+                            .filter(|n| !crate::intel::is_pilot_stopword(n))
+                            .collect();
                         if !cover.is_empty() {
                             new_pilots.extend(cover);
                         } else {

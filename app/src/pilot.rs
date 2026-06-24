@@ -55,24 +55,35 @@ impl PilotCache {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
     }
 
-    /// Greedily cover a multi-word candidate with confirmed character sub-names
-    /// (longest match first), e.g. "Wwallddo Lulu Uanid" → ["Wwallddo", "Lulu Uanid"].
-    /// Unmatched words are skipped. Empty if nothing in it is a known character.
+    /// Cover a multi-word candidate with confirmed character sub-names, longest match
+    /// first, e.g. "Wwallddo Lulu Uanid" → ["Wwallddo", "Lulu Uanid"]. Returns empty
+    /// (don't split) unless EVERY word is covered by a confirmed name — so "Amryu Alpha"
+    /// (with "Alpha" not a character) is not collapsed to "Amryu" — and defers (empty)
+    /// while any longer span is still pending resolution, so the longest name wins.
     pub fn cover(&self, candidate: &str) -> Vec<String> {
         let words: Vec<&str> = candidate.split_whitespace().collect();
         let mut out = Vec::new();
         let mut i = 0;
         while i < words.len() {
-            let mut step = 1;
+            let mut matched = None;
             for len in (1..=3.min(words.len() - i)).rev() {
                 let span = words[i..i + len].join(" ");
-                if matches!(self.get(&span), Some(Some(_))) {
-                    out.push(span);
-                    step = len;
-                    break;
+                match self.get(&span) {
+                    Some(Some(_)) => {
+                        matched = Some(len);
+                        break;
+                    }
+                    None => return Vec::new(), // a longer span isn't resolved yet — wait
+                    Some(None) => {}
                 }
             }
-            i += step;
+            match matched {
+                Some(len) => {
+                    out.push(words[i..i + len].join(" "));
+                    i += len;
+                }
+                None => return Vec::new(), // an uncovered word → not a clean split
+            }
         }
         out
     }
@@ -183,11 +194,20 @@ mod tests {
     #[test]
     fn cover_splits_glued_names() {
         let mut c = PilotCache::default();
+        // All sub-spans resolved (Some(id) = character, None = not one).
         c.resolved.insert("wwallddo".into(), Some(1));
         c.resolved.insert("lulu uanid".into(), Some(2));
+        c.resolved.insert("wwallddo lulu".into(), None);
         c.resolved.insert("wwallddo lulu uanid".into(), None);
         assert_eq!(c.cover("Wwallddo Lulu Uanid"), vec!["Wwallddo", "Lulu Uanid"]);
-        // A run with no known character covers to nothing.
+
+        // "Amryu Alpha" (Alpha not a character) must NOT collapse to "Amryu".
+        c.resolved.insert("amryu".into(), Some(3));
+        c.resolved.insert("amryu alpha".into(), None);
+        c.resolved.insert("alpha".into(), None);
+        assert!(c.cover("Amryu Alpha").is_empty());
+
+        // A run still pending a longer span defers (empty) rather than shortening.
         assert!(c.cover("Tea ship").is_empty());
     }
 

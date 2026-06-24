@@ -305,6 +305,19 @@ const PILOT_STOP: &[&str] = &[
     "now", "still", "back", "with", "this", "that", "they", "them", "here", "there",
 ];
 
+/// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
+/// as a pilot even if some character happens to share it (used to filter resolver
+/// sub-span covers). Conservative so real names aren't dropped.
+pub fn is_pilot_stopword(w: &str) -> bool {
+    let lw = w.to_lowercase();
+    PILOT_STOP.contains(&lw.as_str())
+        || matches!(
+            lw.as_str(),
+            "ship" | "ships" | "shuttle" | "shuttles" | "navy" | "issue" | "loc"
+                | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went"
+        )
+}
+
 /// Quoted spans (delimited by `"`, `'` or `` ` ``, openings/closings may be mixed)
 /// — forced to be treated as pilot names rather than keywords/systems. A quote only
 /// opens at a word boundary so apostrophes inside names (e.g. "O'Brien") are safe.
