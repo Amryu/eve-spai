@@ -346,6 +346,11 @@ pub struct SpaiApp {
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
     map_draw_key: Option<(crate::map::MapView, bool)>,
+    /// Per-view caches so multiple map instances (main + pop-outs) don't re-query the DB
+    /// and re-project every frame as the view is swapped between them.
+    map_systems_cache: std::collections::HashMap<crate::map::MapView, Vec<crate::store::MapSystem>>,
+    map_draw_cache:
+        std::collections::HashMap<(crate::map::MapView, bool), Vec<crate::store::MapSystem>>,
     /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
     /// Persistently highlighted system on the map (from a search selection).
@@ -617,6 +622,8 @@ impl SpaiApp {
             map_draw: Vec::new(),
             map_draw_spaced: false,
             map_draw_key: None,
+            map_systems_cache: std::collections::HashMap::new(),
+            map_draw_cache: std::collections::HashMap::new(),
             map_focus: None,
             map_selected: None,
             route_destination: None,
@@ -3872,6 +3879,8 @@ impl SpaiApp {
         self.bridges_applied = self.settings.jump_bridges.clone();
         self.map_loaded = None; // reload map systems with the new connectivity
         self.map_draw_key = None;
+        self.map_systems_cache.clear();
+        self.map_draw_cache.clear();
         ctx.request_repaint();
     }
 
@@ -3886,7 +3895,7 @@ impl SpaiApp {
                         self.map_popped = false;
                     }
                 } else {
-                    self.draw_map(ui);
+                    ui.push_id("map:main", |ui| self.draw_map(ui));
                 }
             }
             SdeStatus::Downloading(msg) => {
@@ -3998,22 +4007,29 @@ impl SpaiApp {
         // (Re)load systems for the current view, keeping only gate-connected systems
         // (drops wormhole / abyssal islands that have no K-space connections).
         if self.map_loaded != Some(self.map_view) {
-            let raw = match self.map_view {
-                MapView::Universe => self.store.as_ref().map(|s| s.all_map_systems()),
-                MapView::Region(id) => self.store.as_ref().map(|s| s.region_systems(id)),
+            if let Some(old) = self.map_loaded {
+                self.map_systems_cache.insert(old, std::mem::take(&mut self.map_systems));
             }
-            .unwrap_or_default();
-            self.map_systems = if let Some(g) = &self.systems {
-                raw.into_iter()
-                    .filter(|s| !g.neighbors(s.id).is_empty())
-                    .filter(|s| {
-                        // Hide permanently inaccessible regions (e.g. UUA-F4).
-                        g.info_of(s.id).map(|i| !is_hidden_region(&i.region)).unwrap_or(true)
-                    })
-                    .collect()
+            if let Some(cached) = self.map_systems_cache.remove(&self.map_view) {
+                self.map_systems = cached;
             } else {
-                raw
-            };
+                let raw = match self.map_view {
+                    MapView::Universe => self.store.as_ref().map(|s| s.all_map_systems()),
+                    MapView::Region(id) => self.store.as_ref().map(|s| s.region_systems(id)),
+                }
+                .unwrap_or_default();
+                self.map_systems = if let Some(g) = &self.systems {
+                    raw.into_iter()
+                        .filter(|s| !g.neighbors(s.id).is_empty())
+                        .filter(|s| {
+                            // Hide permanently inaccessible regions (e.g. UUA-F4).
+                            g.info_of(s.id).map(|i| !is_hidden_region(&i.region)).unwrap_or(true)
+                        })
+                        .collect()
+                } else {
+                    raw
+                };
+            }
             self.map_loaded = Some(self.map_view);
         }
 
@@ -4022,14 +4038,21 @@ impl SpaiApp {
         let spaced = self.map_layout == crate::map::MapLayout::Spaced;
         let want = (self.map_view, spaced);
         if self.map_draw_key != Some(want) {
-            self.map_draw = if spaced {
-                self.map_systems
-                    .iter()
-                    .map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() })
-                    .collect()
+            if let Some(old) = self.map_draw_key {
+                self.map_draw_cache.insert(old, std::mem::take(&mut self.map_draw));
+            }
+            if let Some(cached) = self.map_draw_cache.remove(&want) {
+                self.map_draw = cached;
             } else {
-                self.map_systems.clone()
-            };
+                self.map_draw = if spaced {
+                    self.map_systems
+                        .iter()
+                        .map(|s| crate::store::MapSystem { x: s.x2d, z: s.z2d, ..s.clone() })
+                        .collect()
+                } else {
+                    self.map_systems.clone()
+                };
+            }
             self.map_draw_spaced = spaced;
             self.map_draw_key = Some(want);
         }
@@ -4563,7 +4586,7 @@ impl SpaiApp {
         // Hover tooltip: system info + ESI activity + intel for the hovered system.
         if let Some(h_id) = hovered_id {
             let layer = ui.layer_id();
-            egui::show_tooltip_at_pointer(ui.ctx(), layer, egui::Id::new("map_hover_tip"), |ui| {
+            egui::show_tooltip_at_pointer(ui.ctx(), layer, ui.id().with("map_hover_tip"), |ui| {
                 self.map_system_tooltip(ui, h_id);
             });
         }
@@ -4924,7 +4947,7 @@ impl SpaiApp {
             self.map_overlay_controls(ui, rect);
         } else if self.map_controls_hidden {
             // Just a small button to bring the controls back.
-            egui::Area::new(egui::Id::new("map_show_controls"))
+            egui::Area::new(ui.id().with("map_show_controls"))
                 .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
@@ -4967,7 +4990,7 @@ impl SpaiApp {
                 egui::vec2(rect.right() - screen.right() - 8.0, rect.top() - screen.top() + 8.0),
             )
         };
-        let btn_area = egui::Area::new(egui::Id::new("map_overlays_btn"))
+        let btn_area = egui::Area::new(ui.id().with("map_overlays_btn"))
             .anchor(anchor, base)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -4990,7 +5013,7 @@ impl SpaiApp {
         let gap = btn_area.response.rect.height() + 6.0;
         let pop_offset = if narrow { base - egui::vec2(0.0, gap) } else { base + egui::vec2(0.0, gap) };
         let max_h = (rect.height() - btn_area.response.rect.height() - 24.0).clamp(120.0, 600.0);
-        egui::Area::new(egui::Id::new("map_overlays_pop"))
+        egui::Area::new(ui.id().with("map_overlays_pop"))
             .anchor(anchor, pop_offset)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -5174,7 +5197,7 @@ impl SpaiApp {
     /// locked, only an unlock button shows (everything else hidden).
     fn map_overlay_controls(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
-        egui::Area::new(egui::Id::new("map_overlay_bar"))
+        egui::Area::new(ui.id().with("map_overlay_bar"))
             .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -5226,7 +5249,7 @@ impl SpaiApp {
     /// Floating controls over the map (scope, navigation, follow, pop-out).
     fn map_controls_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use crate::map::MapView;
-        egui::Area::new(egui::Id::new("map_controls"))
+        egui::Area::new(ui.id().with("map_controls"))
             .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -5260,7 +5283,7 @@ impl SpaiApp {
                         }
                         // Layout: geographic / 2D / radial / tree.
                         use crate::map::MapLayout;
-                        egui::ComboBox::from_id_salt("map_layout")
+                        egui::ComboBox::from_id_salt(ui.id().with("map_layout"))
                             .selected_text(match self.map_layout {
                                 MapLayout::Geographic => "3D",
                                 MapLayout::Spaced => "2D",
@@ -5616,7 +5639,7 @@ impl SpaiApp {
                 };
                 let locked = self.map_overlay_locked;
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-                    self.draw_map(ui);
+                    ui.push_id("map:main", |ui| self.draw_map(ui));
                     // Borderless overlay has no native resize edge — draw a grip
                     // (hidden when locked, which also disables resizing).
                     if overlay && !locked {
@@ -5672,7 +5695,6 @@ impl SpaiApp {
             self.map_pan = cpan;
             self.map_zoom = czoom;
             self.map_focus = if centered { None } else { Some(sys) };
-            self.map_draw_key = None; // force a rebuild for this view
             let mut keep = true;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(format!("charmap_{name}")),
@@ -5681,7 +5703,7 @@ impl SpaiApp {
                     .with_inner_size([640.0, 520.0])
                     .with_min_inner_size([360.0, 280.0]),
                 |ctx, _| {
-                    egui::CentralPanel::default().show(ctx, |ui| self.draw_map(ui));
+                    egui::CentralPanel::default().show(ctx, |ui| { ui.push_id(name.as_str(), |ui| self.draw_map(ui)); });
                     if ctx.input(|i| i.viewport().close_requested()) {
                         keep = false;
                     }
@@ -5699,7 +5721,6 @@ impl SpaiApp {
         self.map_pan = sv_pan;
         self.map_zoom = sv_zoom;
         self.map_focus = sv_focus;
-        self.map_draw_key = None;
         for n in closed {
             self.map_char_popouts.retain(|x| x != &n);
             self.map_char_view.remove(&n);
