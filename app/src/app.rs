@@ -2193,7 +2193,7 @@ impl SpaiApp {
                                                 }
                                             }
                                         }
-                                        ui.label(&m.body);
+                                        render_message_body(ui, &m.body);
                                     });
                                     prev_sender = Some(sender);
                                     prev_time = m.time;
@@ -5066,7 +5066,45 @@ impl SpaiApp {
                 self.map_overlay_menu(ui, rect);
             }
             self.map_search_overlay(ui, rect);
+            // Legend for the sov-upgrade icons (only when that overlay is on, and never in
+            // overlay mode — handled by this branch only running when not in overlay mode).
+            if self.map_overlays.upgrades {
+                self.map_upgrade_legend(ui, rect);
+            }
         }
+    }
+
+    /// Key for the sov-upgrade icons, shown top-right while that overlay is enabled.
+    fn map_upgrade_legend(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use egui_phosphor::regular as icon;
+        egui::Area::new(ui.id().with("map_upgrade_legend"))
+            .fixed_pos(rect.right_top() + egui::vec2(-210.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Sov upgrades").strong());
+                        let mut row = |g: &str, txt: &str| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(g).size(16.0));
+                                ui.label(txt);
+                            });
+                        };
+                        row(icon::SKULL, "Ratting / threat detection");
+                        row(icon::BROADCAST, "Exploration / scanning");
+                        row(icon::RADIOACTIVE, "Cyno");
+                        row(icon::GEAR, "Other upgrade");
+                        ui.label(egui::RichText::new("Mining shows the ore icon").weak());
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Level:");
+                            ui.colored_label(level_color(1), "1");
+                            ui.colored_label(level_color(2), "2");
+                            ui.colored_label(level_color(3), "3–5");
+                        });
+                    });
+                });
+            });
     }
 
     /// "Overlays" menu (sovereignty, ADM, activity, bridges, upgrades). Anchored
@@ -8895,6 +8933,31 @@ fn eve_time_label(ts: i64, now: i64) -> String {
         format!("EVE {}", t.format("%H:%M"))
     } else {
         format!("EVE {}", t.format("%Y/%m/%d %H:%M"))
+    }
+}
+
+/// Render a chat message body, turning http(s) URLs into clickable links. Non-link text
+/// stays as plain (selectable) labels.
+fn render_message_body(ui: &mut egui::Ui, body: &str) {
+    let mut rest = body;
+    while let Some(rel) = rest.find("http") {
+        let after = &rest[rel..];
+        if after.starts_with("http://") || after.starts_with("https://") {
+            if rel > 0 {
+                ui.label(&rest[..rel]);
+            }
+            let end = after.find(char::is_whitespace).unwrap_or(after.len());
+            let url = &after[..end];
+            ui.hyperlink_to(url, url);
+            rest = &after[end..];
+        } else {
+            // A bare "http" not starting a URL — emit it and move on.
+            ui.label(&rest[..rel + 4]);
+            rest = &rest[rel + 4..];
+        }
+    }
+    if !rest.is_empty() {
+        ui.label(rest);
     }
 }
 
