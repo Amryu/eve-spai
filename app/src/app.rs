@@ -3681,10 +3681,17 @@ impl SpaiApp {
                 .iter()
                 .rev()
                 .take(20)
-                .map(|(r, sev)| {
+                .filter_map(|(r, sev)| {
                     let k = report_key(r);
-                    let cur = live.reports.iter().find(|lr| report_key(lr) == k).cloned();
-                    (cur.unwrap_or_else(|| r.clone()), *sev)
+                    // Show the LIVE report only — never the stale snapshot. If the report
+                    // is no longer live (reconciled away or absorbed by a later message),
+                    // drop it rather than let the alert card drift out of sync with the
+                    // main feed.
+                    live.reports
+                        .iter()
+                        .find(|lr| report_key(lr) == k)
+                        .cloned()
+                        .map(|lr| (lr, *sev))
                 })
                 .collect()
         } else {
