@@ -4580,7 +4580,15 @@ impl SpaiApp {
                 // exploration). Not a ring.
                 if ov.upgrades && zoomed {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
-                        for (k, up) in ups.iter().take(6).enumerate() {
+                        // One stored label can list several comma-separated upgrades
+                        // ("...Array 3, Exploration Detector 3") — draw an icon for each.
+                        let parts: Vec<&str> = ups
+                            .iter()
+                            .flat_map(|u| u.split(','))
+                            .map(|u| u.trim_start_matches("<-").trim())
+                            .filter(|u| !u.is_empty())
+                            .collect();
+                        for (k, up) in parts.iter().take(6).enumerate() {
                             // Sit the icons in a row above the system name.
                             let ip = p + egui::vec2(6.0 * label_off + k as f32 * 20.0, -15.0 * label_off);
                             let (kind, level) = upgrade_info(up);
