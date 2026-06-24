@@ -518,9 +518,10 @@ fn loose_pilot_runs(
         // Allow longer runs than a single name (EVE names are <=3 words): several
         // adjacent names ("Bunk Boi Bunk Helper") are one run that the ESI cover splits
         // into the real names, instead of leaking a stray sub-word.
-        // No Title-Case anchor required, so all-lowercase names ("mixa kolodenko") are
-        // caught too; the ESI cover drops anything that isn't a real character.
-        if (2..=6).contains(&run.len()) {
+        // Allow a long run (a whole gang listed inline) up to 20 words; the ESI cover
+        // splits it into the real names. No Title-Case anchor required, so all-lowercase
+        // names ("mixa kolodenko") are caught too.
+        if (2..=20).contains(&run.len()) {
             let name = run.join(" ");
             if !out.contains(&name) {
                 out.push(name);
@@ -536,6 +537,8 @@ fn loose_pilot_runs(
         let namelike = core.len() >= 3
             && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
             && !PILOT_STOP.contains(&lc.as_str())
+            && !is_cap_word(core)
+            && !is_tackle_word(core)
             && !ship_index.contains_key(&lc)
             && systems.lookup(core).is_none();
         if namelike {
@@ -1513,6 +1516,18 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn long_name_list_forms_one_run() {
+        let s = systems();
+        let r = analyze(
+            "Noki Saken Ris Etor Ryko Erukka Saratoga Forge Urhi Hita nv in Rancer",
+            &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case(
+                "Noki Saken Ris Etor Ryko Erukka Saratoga Forge Urhi Hita")),
+            "pilots={:?}", r.pilots);
     }
 
     #[test]
