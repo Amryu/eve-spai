@@ -30,6 +30,9 @@ pub struct Movement {
 
 #[derive(Clone, Debug)]
 pub struct IntelReport {
+    /// Stable per-report id (assigned on push, preserved across amendments) so the alert
+    /// window can re-find a report after its content — and thus report_key — changes.
+    pub id: u64,
     /// Unix seconds (from the message's EVE timestamp when parseable).
     pub received: i64,
     pub channel: String,
@@ -158,8 +161,11 @@ pub struct IntelState {
     cleared: HashMap<String, i64>,
 }
 
+static NEXT_REPORT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 impl IntelState {
-    pub fn push(&mut self, report: IntelReport) {
+    pub fn push(&mut self, mut report: IntelReport) {
+        report.id = NEXT_REPORT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // A "clear" records that a system was reported empty at this time. We do
         // NOT delete prior intel — "clear" means the hostiles aren't there *now*,
         // so earlier sightings are outdated (greyed), not erased.
@@ -1540,6 +1546,7 @@ pub fn analyze_ctx(
     let isk = parse_isk(text, ess_ctx);
     let structures = detect_structures(text);
     IntelReport {
+        id: 0, // assigned by IntelState::push
         received,
         channel: channel.to_owned(),
         reporter: reporter.to_owned(),

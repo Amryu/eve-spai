@@ -3685,14 +3685,14 @@ impl SpaiApp {
                 .rev()
                 .take(20)
                 .filter_map(|(r, sev)| {
-                    let k = report_key(r);
-                    // Show the LIVE report only — never the stale snapshot. If the report
-                    // is no longer live (reconciled away or absorbed by a later message),
-                    // drop it rather than let the alert card drift out of sync with the
-                    // main feed.
+                    // Show the LIVE report only — never the stale snapshot. Match by the
+                    // stable report id, not content: an amendment keeps the id but changes
+                    // the content (and thus report_key), which used to drop the card here
+                    // even though it was still live. Only a truly removed report falls out.
+                    let id = r.id;
                     live.reports
                         .iter()
-                        .find(|lr| report_key(lr) == k)
+                        .find(|lr| lr.id == id)
                         .cloned()
                         .map(|lr| (lr, *sev))
                 })
