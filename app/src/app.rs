@@ -1189,15 +1189,31 @@ impl SpaiApp {
                                     });
                                 }
                             });
-                        ui.horizontal(|ui| {
-                            let send = ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.jabber_input)
-                                        .hint_text("Message")
-                                        .desired_width(ui.available_width() - 60.0),
-                                )
-                                .lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        ui.horizontal_top(|ui| {
+                            // 2-line composer that grows with content (capped); Enter
+                            // sends, Shift+Enter inserts a newline.
+                            let shift_enter = egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            );
+                            let row_h = ui.text_style_height(&egui::TextStyle::Body);
+                            let resp = egui::ScrollArea::vertical()
+                                .id_salt("composer")
+                                .max_height(row_h * 8.0)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.jabber_input)
+                                            .hint_text("Message (Shift+Enter for a new line)")
+                                            .return_key(shift_enter)
+                                            .desired_rows(2)
+                                            .desired_width(ui.available_width() - 60.0),
+                                    )
+                                })
+                                .inner;
+                            let send = resp.has_focus()
+                                && ui.input(|i| {
+                                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                                });
                             if (ui.button("Send").clicked() || send) && !self.jabber_input.trim().is_empty() {
                                 let body = std::mem::take(&mut self.jabber_input);
                                 if let Some(tx) = &self.jabber_tx {
