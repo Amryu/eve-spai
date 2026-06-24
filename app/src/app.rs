@@ -216,6 +216,8 @@ pub struct SpaiApp {
     jabber_contact_search: String,
     /// "Message someone" input — opens a DM by JID/local part.
     jabber_dm_input: String,
+    /// Feedback when a DM target can't be resolved to a real contact.
+    jabber_dm_error: String,
     /// Roster list shows the public directory (true) or the private contact list.
     jabber_show_directory: bool,
     /// Directory groups the user has collapsed (session-only).
@@ -500,6 +502,7 @@ impl SpaiApp {
             jabber_room_input: String::new(),
             jabber_contact_search: String::new(),
             jabber_dm_input: String::new(),
+            jabber_dm_error: String::new(),
             jabber_show_directory: true,
             jabber_collapsed: std::collections::HashSet::new(),
             jabber_my_presence: crate::jabber::Presence::Online,
@@ -1641,12 +1644,43 @@ impl SpaiApp {
                     );
                     let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (dm_btn || go) && !self.jabber_dm_input.trim().is_empty() {
-                        let jid = self.full_user_jid(&self.jabber_dm_input);
-                        self.jabber_dm_input.clear();
-                        self.jabber.lock().unwrap().unread.remove(&jid);
-                        self.jabber_chat = Some(jid);
+                        let input = self.jabber_dm_input.trim().to_owned();
+                        // A full JID is trusted; a bare name must resolve to a real
+                        // roster contact (so we send to the correct JID, not a guess).
+                        let resolved = if input.contains('@') {
+                            Some(input.clone())
+                        } else {
+                            convos
+                                .iter()
+                                .find(|c| {
+                                    c.name.eq_ignore_ascii_case(&input)
+                                        || c.jid
+                                            .split('@')
+                                            .next()
+                                            .is_some_and(|l| l.eq_ignore_ascii_case(&input))
+                                })
+                                .map(|c| c.jid.clone())
+                        };
+                        match resolved {
+                            Some(jid) => {
+                                self.jabber_dm_input.clear();
+                                self.jabber_dm_error.clear();
+                                self.jabber.lock().unwrap().unread.remove(&jid);
+                                self.jabber_chat = Some(jid);
+                            }
+                            None => {
+                                self.jabber_dm_error = format!("No contact matching \"{input}\"");
+                            }
+                        }
                     }
                 });
+                if !self.jabber_dm_error.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&self.jabber_dm_error)
+                            .color(crate::theme::standing::WARNING)
+                            .small(),
+                    );
+                }
                 ui.separator();
                 // Directory / Contacts toggle (independent of pings/DMs above), each
                 // marked when it has unread.
