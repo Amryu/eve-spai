@@ -117,6 +117,34 @@ pub fn set_waypoint(
     });
 }
 
+/// Set an ordered list of waypoints (clears existing, then appends each in turn). Used
+/// for wormhole-aware routing: a waypoint at each hole entrance, then the destination.
+pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
+    std::thread::spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) =
+            current_access_token(&store, &client_id, character.id, character.expires_at)
+        else {
+            return;
+        };
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent("eve-spai/0.1 (EVE intel tool)")
+            .timeout(Duration::from_secs(20))
+            .build()
+        else {
+            return;
+        };
+        for (i, sys) in waypoints.iter().enumerate() {
+            let clear = i == 0; // first clears any existing route, rest append in order
+            let url = format!(
+                "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={sys}"
+            );
+            let _ = client.post(url).bearer_auth(&token).send();
+        }
+    });
+}
+
 /// Save a fitting to the active character's in-game fitting list, via ESI.
 /// Requires `esi-fittings.write_fittings.v1`. `items` = (type_id, flag, quantity).
 /// Runs on a background thread.

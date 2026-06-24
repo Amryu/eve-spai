@@ -2278,6 +2278,75 @@ impl SpaiApp {
         }
     }
 
+    /// Wormhole-aware route from `from` to `dest`: the entrance system of each hole the
+    /// shortest path uses, then the destination. `None` if unreachable; a single-element
+    /// `[dest]` means no hole shortens the route (use a plain waypoint).
+    fn wh_route_waypoints(&self, from: i64, dest: i64) -> Option<Vec<i64>> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        let geo = self.systems.as_ref()?;
+        let mut wh_adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        for &(a, b) in &self.wh_overlay.direct {
+            wh_adj.entry(a).or_default().push(b);
+            wh_adj.entry(b).or_default().push(a);
+        }
+        for &(a, b, _) in &self.wh_overlay.chains {
+            wh_adj.entry(a).or_default().push(b);
+            wh_adj.entry(b).or_default().push(a);
+        }
+        let mut prev: HashMap<i64, (i64, bool)> = HashMap::new();
+        let mut visited: HashSet<i64> = HashSet::from([from]);
+        let mut q: VecDeque<i64> = VecDeque::from([from]);
+        let mut found = from == dest;
+        while let Some(u) = q.pop_front() {
+            if u == dest {
+                found = true;
+                break;
+            }
+            for &v in geo.neighbors(u) {
+                if visited.insert(v) {
+                    prev.insert(v, (u, false));
+                    q.push_back(v);
+                }
+            }
+            for &v in wh_adj.get(&u).into_iter().flatten() {
+                if visited.insert(v) {
+                    prev.insert(v, (u, true));
+                    q.push_back(v);
+                }
+            }
+        }
+        if !found {
+            return None;
+        }
+        let mut waypoints = vec![dest];
+        let mut cur = dest;
+        while let Some(&(p, via_wh)) = prev.get(&cur) {
+            if via_wh {
+                waypoints.push(p);
+            }
+            cur = p;
+        }
+        waypoints.reverse();
+        Some(waypoints)
+    }
+
+    /// Set the in-game destination, routing via wormholes (waypoints at each hole
+    /// entrance) when enabled and that's shorter than the gate route.
+    fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
+        if self.settings.route_via_wormholes {
+            let from = self.player.lock().unwrap().system_id;
+            if let Some(from) = from {
+                if let Some(wp) = self.wh_route_waypoints(from, dest) {
+                    if wp.len() > 1 {
+                        crate::esi::set_route(cid, cname, wp);
+                        return;
+                    }
+                }
+            }
+        }
+        crate::esi::set_waypoint(cid, cname, dest, true);
+    }
+
     /// The Wormholes view (docs/WORMHOLES_AND_NEXT.md W4): a table of known holes
     /// seeded from EVE-Scout (Thera/Turnur) and intel channels.
     fn wormholes_view(&mut self, ui: &mut egui::Ui) {
@@ -3782,7 +3851,7 @@ impl SpaiApp {
             let cname = self.active_character.clone();
             ui.add_enabled_ui(has_char, |ui| {
                 if ui.button("Set Destination").clicked() {
-                    crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, true);
+                    self.set_destination_esi(cid.clone(), cname.clone(), sid);
                     self.route_destination = Some(sid);
                     ui.close();
                 }
@@ -4664,6 +4733,16 @@ impl SpaiApp {
                             &mut self.map_overlays.turnur,
                             format!("{}  Turnur", icon::PLANET),
                         );
+                        if ui
+                            .checkbox(
+                                &mut self.settings.route_via_wormholes,
+                                format!("{}  Route via wormholes", icon::SPIRAL),
+                            )
+                            .on_hover_text("Set Destination adds a waypoint at each hole entrance")
+                            .changed()
+                        {
+                            self.needs_save = true;
+                        }
                     });
                 });
             });
@@ -5579,7 +5658,7 @@ impl SpaiApp {
                     let cname = self.active_character.clone();
                     ui.add_enabled_ui(has_char, |ui| {
                         if ui.button("Set Destination").clicked() {
-                            crate::esi::set_waypoint(cid.clone(), cname.clone(), id, true);
+                            self.set_destination_esi(cid.clone(), cname.clone(), id);
                             self.route_destination = Some(id); // mirror on the map
                         }
                         if ui.button("Add Waypoint").clicked() {

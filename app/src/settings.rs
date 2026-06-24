@@ -131,6 +131,10 @@ pub struct Settings {
     /// Watch the clipboard for d-scans and offer to share them.
     #[serde(default = "default_true")]
     pub dscan_autoprompt: bool,
+    /// When setting a destination, route through known wormholes (waypoints at each
+    /// hole entrance) if that's shorter than the gate route.
+    #[serde(default)]
+    pub route_via_wormholes: bool,
     /// Hide to the system tray instead of quitting when the window is closed.
     #[serde(default = "default_true")]
     pub minimize_to_tray: bool,
@@ -531,6 +535,7 @@ impl Default for Settings {
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,
+            route_via_wormholes: false,
             minimize_to_tray: true,
             autostart: false,
         }
