@@ -715,6 +715,16 @@ fn multiword_ships(
                 adv = len;
                 break;
             }
+            // The trailing "Issue" is routinely dropped ("Brutix Navy" -> Brutix Navy
+            // Issue, "Stabber Fleet" -> Stabber Fleet Issue).
+            if (phrase.ends_with(" navy") || phrase.ends_with(" fleet"))
+                && ship_index.get(&format!("{phrase} issue")).is_some()
+            {
+                let (id, name) = &ship_index[&format!("{phrase} issue")];
+                out.push((i, len, *id, name.clone()));
+                adv = len;
+                break;
+            }
         }
         i += adv;
     }
@@ -2151,6 +2161,20 @@ mod tests {
         }
         // A real name in the same line is still caught.
         assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn navy_issue_short_form_matches_ship() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [
+            ("brutix navy issue".to_string(), (1i64, "Brutix Navy Issue".to_string())),
+            ("stabber fleet issue".to_string(), (2i64, "Stabber Fleet Issue".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let r = analyze("Brutix Navy and Stabber Fleet in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Brutix Navy Issue"), "ships={:?}", r.ships);
+        assert!(r.ships.iter().any(|sh| sh.name == "Stabber Fleet Issue"), "ships={:?}", r.ships);
     }
 
     #[test]
