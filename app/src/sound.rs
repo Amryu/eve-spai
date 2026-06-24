@@ -42,16 +42,19 @@ fn preset(name: &str) -> Option<(Vec<Seg>, f32)> {
         "beep" => (vec![s(880.0, 880.0, 110)], 0.26),
         "chime" => (vec![s(1046.0, 1568.0, 220)], 0.24),
         "sweep" => (vec![s(400.0, 1400.0, 260)], 0.28),
-        // Sci-fi wake-up horn: two low, steady brassy blasts (a fourth apart) with only
-        // a gentle rise — low frequencies + a soft 2nd harmonic read as a horn, not a
-        // shrill sweep.
+        // Fleet call: a loud, bright rising three-blast fanfare (E4 → A4 → D5). The old
+        // horn sat in deep bass (≈150 Hz) that most laptop/desktop speakers barely
+        // reproduce; this sits in the speakers' efficient mid range and is near full
+        // amplitude, so it actually grabs attention.
         "horn" => (
             vec![
-                s(147.0, 160.0, 360),
-                s(0.0, 0.0, 80),
-                s(196.0, 208.0, 520),
+                s(330.0, 349.0, 220),
+                s(0.0, 0.0, 55),
+                s(440.0, 466.0, 220),
+                s(0.0, 0.0, 55),
+                s(587.0, 622.0, 560),
             ],
-            0.38,
+            0.9,
         ),
         _ => return None,
     })
@@ -116,7 +119,7 @@ fn ensure_tone(name: &str, segs: &[Seg], amp: f32) -> Option<PathBuf> {
     let dir = std::env::temp_dir().join("eve-spai-sounds");
     let _ = std::fs::create_dir_all(&dir);
     // Version the file name so changes to the synth regenerate it.
-    let path = dir.join(format!("{name}-v3.wav"));
+    let path = dir.join(format!("{name}-v4.wav"));
     if path.is_file() {
         return Some(path);
     }
