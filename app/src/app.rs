@@ -2369,7 +2369,7 @@ impl SpaiApp {
                     dest_click: w.dest_system_id,
                     dest_const,
                     dest_region,
-                    size: w.size.map(|s| s.label().to_string()).unwrap_or_else(|| "—".into()),
+                    size: w.effective_size().map(|s| s.label().to_string()).unwrap_or_else(|| "—".into()),
                     life,
                     source: w.source.label().to_string(),
                 }
@@ -4676,7 +4676,7 @@ impl SpaiApp {
             if let Some(t) = &w.wh_type {
                 parts.push(t.clone());
             }
-            if let Some(s) = w.size {
+            if let Some(s) = w.effective_size() {
                 parts.push(s.label().to_owned());
             }
             parts.push(match w.hours_left(now) {

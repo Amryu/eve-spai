@@ -301,12 +301,21 @@ pub struct Wormhole {
 }
 
 impl Wormhole {
-    /// Maximum lifetime in seconds: 1 day for drifter holes, 2 days otherwise.
+    /// Maximum lifetime in seconds: drifter holes collapse within ~1 h, others ~2 days.
     pub fn max_life_secs(&self) -> i64 {
         if self.is_drifter {
-            DAY
+            3600
         } else {
             2 * DAY
+        }
+    }
+
+    /// Drifter holes are always Large; otherwise the type's nominal size.
+    pub fn effective_size(&self) -> Option<ShipSize> {
+        if self.is_drifter {
+            Some(ShipSize::Large)
+        } else {
+            self.size
         }
     }
 
