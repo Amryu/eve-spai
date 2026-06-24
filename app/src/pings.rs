@@ -29,6 +29,15 @@ pub enum Ping {
     },
 }
 
+impl Ping {
+    /// When the ping was broadcast (unix seconds).
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            Ping::Plain { timestamp, .. } | Ping::Fleet { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Formup {
     System(i64),

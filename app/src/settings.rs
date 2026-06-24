@@ -89,6 +89,10 @@ pub struct Settings {
     /// Persisted MUC rooms to auto-(re)join on connect (bare room JIDs).
     #[serde(default)]
     pub jabber_rooms: Vec<String>,
+    /// MUC conference host, so a room can be joined by local part only ("scouts").
+    /// Empty = derive `conference.<jid domain>`.
+    #[serde(default)]
+    pub jabber_muc_domain: String,
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
@@ -428,6 +432,7 @@ impl Default for Settings {
             jabber_jid: String::new(),
             jabber_server: default_jabber_server(),
             jabber_rooms: Vec::new(),
+            jabber_muc_domain: String::new(),
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,

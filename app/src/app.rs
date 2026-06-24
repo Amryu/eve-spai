@@ -800,18 +800,25 @@ impl SpaiApp {
         ));
     }
 
+    /// Resolve a room the user typed: a bare local part ("scouts") gets the MUC
+    /// conference host appended (configured, or derived as `conference.<jid domain>`).
+    fn full_room_jid(&self, input: &str) -> String {
+        let input = input.trim();
+        if input.contains('@') {
+            return input.to_owned();
+        }
+        let domain = if !self.settings.jabber_muc_domain.trim().is_empty() {
+            self.settings.jabber_muc_domain.trim().to_owned()
+        } else {
+            let jid_domain = self.settings.jabber_jid.split('@').nth(1).unwrap_or("");
+            format!("conference.{jid_domain}")
+        };
+        format!("{input}@{domain}")
+    }
+
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !self.jabber_popped && ui.button("Pop out").clicked() {
-                    self.jabber_popped = true;
-                }
-            });
-        });
-        ui.separator();
         if self.jabber_popped {
-            ui.add_space(20.0);
             ui.label(egui::RichText::new("Jabber is open in a separate window.").weak());
             return;
         }
@@ -936,6 +943,9 @@ impl SpaiApp {
                     self.settings.jabber_enabled = false;
                     self.needs_save = true;
                 }
+                if !self.jabber_popped && ui.button("Pop out").clicked() {
+                    self.jabber_popped = true;
+                }
             });
         });
         ui.separator();
@@ -987,15 +997,17 @@ impl SpaiApp {
                         || go)
                         && !self.jabber_room_input.trim().is_empty()
                     {
-                        let room = self.jabber_room_input.trim().to_owned();
+                        let room = self.full_room_jid(&self.jabber_room_input);
                         self.jabber_room_input.clear();
                         if let Some(tx) = &self.jabber_tx {
                             let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
                         }
                         if !self.settings.jabber_rooms.contains(&room) {
-                            self.settings.jabber_rooms.push(room);
+                            self.settings.jabber_rooms.push(room.clone());
                             self.needs_save = true;
                         }
+                        // Open the room immediately so it stays in view.
+                        self.jabber_chat = Some(room);
                     }
                 });
                 ui.separator();
@@ -1097,10 +1109,13 @@ impl SpaiApp {
                             ui.separator();
                         }
                         let composer_h = 32.0;
+                        // Measure the height left after the (optional) room header so
+                        // the composer always stays on-screen.
+                        let body_h = ui.available_height();
                         egui::ScrollArea::vertical()
                             .id_salt("msgs")
                             .auto_shrink([false, false])
-                            .max_height(avail - composer_h - 8.0)
+                            .max_height((body_h - composer_h - 8.0).max(60.0))
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
                                 for m in &sel_msgs {
@@ -4109,10 +4124,8 @@ impl SpaiApp {
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new(format!(
-                                "{}  {:.0}%   {}  {}",
-                                egui_phosphor::regular::CPU,
+                                "CPU {:.0}%   RAM {}",
                                 self.proc_monitor.cpu_percent,
-                                egui_phosphor::regular::MEMORY,
                                 self.proc_monitor.rss_human(),
                             ))
                             .weak(),
@@ -7066,7 +7079,20 @@ fn render_ping(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // "Time since the ping went out".
+    let now = chrono::Utc::now().timestamp();
+    let age = (now - p.timestamp()).max(0);
+    let ago = if age < 60 {
+        format!("{age}s")
+    } else if age < 3600 {
+        format!("{}m", age / 60)
+    } else if age < 86_400 {
+        format!("{}h", age / 3600)
+    } else {
+        format!("{}d", age / 86_400)
+    };
     egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_min_width(ui.available_width()); // full-width card
         match p {
             Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, description, source, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
@@ -7082,6 +7108,9 @@ fn render_ping(
                         };
                         ui.label(egui::RichText::new(t).color(c).strong());
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{ago} ago")).weak());
+                    });
                 });
                 ui.label(format!("FC: {fc}"));
                 if !formup.is_empty() {
@@ -7111,9 +7140,14 @@ fn render_ping(
                 ui.label(egui::RichText::new(format!("— {from} → {to}")).weak().small());
             }
             Ping::Plain { text, sender, target, .. } => {
-                let from = sender.as_deref().unwrap_or("ping");
-                let to = target.as_deref().map(|t| format!(" → {t}")).unwrap_or_default();
-                ui.label(egui::RichText::new(format!("{from}{to}")).strong());
+                ui.horizontal_wrapped(|ui| {
+                    let from = sender.as_deref().unwrap_or("ping");
+                    let to = target.as_deref().map(|t| format!(" → {t}")).unwrap_or_default();
+                    ui.label(egui::RichText::new(format!("{from}{to}")).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{ago} ago")).weak());
+                    });
+                });
                 ui.label(text);
             }
         }
