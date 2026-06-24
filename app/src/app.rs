@@ -5679,8 +5679,8 @@ impl SpaiApp {
         let locs = self.player.lock().unwrap().locations.clone();
         let mut closed: Vec<String> = Vec::new();
         // Save the main map's view state once.
-        let (sv_view, sv_pan, sv_zoom, sv_focus) =
-            (self.map_view, self.map_pan, self.map_zoom, self.map_focus);
+        let (sv_view, sv_pan, sv_zoom, sv_focus, sv_follow) =
+            (self.map_view, self.map_pan, self.map_zoom, self.map_focus, self.map_follow);
         for name in &names {
             let Some(&(sys, _)) = locs.get(name) else { continue };
             let region = self.store.as_ref().and_then(|s| s.region_of_system(sys));
@@ -5695,6 +5695,9 @@ impl SpaiApp {
             self.map_pan = cpan;
             self.map_zoom = czoom;
             self.map_focus = if centered { None } else { Some(sys) };
+            // A pop-out centres on its character once; it must NOT inherit the main map's
+            // "follow", which would yank it to the active player's system every frame.
+            self.map_follow = false;
             let mut keep = true;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(format!("charmap_{name}")),
@@ -5721,6 +5724,7 @@ impl SpaiApp {
         self.map_pan = sv_pan;
         self.map_zoom = sv_zoom;
         self.map_focus = sv_focus;
+        self.map_follow = sv_follow;
         for n in closed {
             self.map_char_popouts.retain(|x| x != &n);
             self.map_char_view.remove(&n);
