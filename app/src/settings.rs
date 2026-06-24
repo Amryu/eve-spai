@@ -177,6 +177,16 @@ pub struct PingRule {
     pub keyword: String,
     #[serde(default = "default_ping_sound")]
     pub sound: String,
+    // --- actions (suppress overrides the others) ---
+    #[serde(default = "default_true")]
+    pub notify: bool,
+    #[serde(default)]
+    pub suppress: bool,
+    #[serde(default)]
+    pub push: bool,
+    /// UI: rule card expanded.
+    #[serde(default)]
+    pub expanded: bool,
 }
 
 impl Default for PingRule {
@@ -190,6 +200,10 @@ impl Default for PingRule {
             formup: String::new(),
             keyword: String::new(),
             sound: default_ping_sound(),
+            notify: true,
+            suppress: false,
+            push: false,
+            expanded: true,
         }
     }
 }

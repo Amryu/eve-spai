@@ -903,18 +903,21 @@ impl SpaiApp {
             if self.jabber_is_muted(&key) {
                 continue;
             }
+            // Resolve the ping's matching rule → (suppress, notify, sound).
+            let (suppress, notify, snd) = if is_ping {
+                let latest = self.jabber.lock().unwrap().pings.last().cloned();
+                match latest.as_ref().and_then(|p| self.matching_ping_rule(p)) {
+                    Some(r) => (r.suppress, r.notify, r.sound.clone()),
+                    None => (false, true, self.settings.jabber_ping_sound.clone()),
+                }
+            } else {
+                (false, true, self.settings.jabber_msg_sound.clone())
+            };
+            if suppress {
+                continue; // no sound, badge or attention for suppressed pings
+            }
             any = true;
-            if self.settings.jabber_sound_enabled {
-                let snd: String = if is_ping {
-                    // A matching alert rule overrides the default ping sound.
-                    let latest = self.jabber.lock().unwrap().pings.last().cloned();
-                    latest
-                        .as_ref()
-                        .and_then(|p| self.matching_ping_rule(p).map(|r| r.sound.clone()))
-                        .unwrap_or_else(|| self.settings.jabber_ping_sound.clone())
-                } else {
-                    self.settings.jabber_msg_sound.clone()
-                };
+            if self.settings.jabber_sound_enabled && notify {
                 crate::sound::play(&snd);
             }
         }
@@ -1124,39 +1127,104 @@ impl SpaiApp {
                         .weak(),
                 );
                 let mut remove: Option<usize> = None;
+                let mut move_up: Option<usize> = None;
+                let mut move_down: Option<usize> = None;
+                let n = self.settings.jabber_ping_rules.len();
                 for (i, r) in self.settings.jabber_ping_rules.iter_mut().enumerate() {
                     ui.push_id(i, |ui| {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            changed |= ui.checkbox(&mut r.enabled, "").changed();
-                            changed |= ui
-                                .add(egui::TextEdit::singleline(&mut r.name).desired_width(120.0))
-                                .changed();
-                            if ui.button(egui_phosphor::regular::TRASH).clicked() {
-                                remove = Some(i);
+                        ui.group(|ui| {
+                            use egui_phosphor::regular as ic;
+                            ui.horizontal(|ui| {
+                                changed |= ui.checkbox(&mut r.enabled, "").changed();
+                                let tog = if r.expanded { ic::CARET_DOWN } else { ic::CARET_RIGHT };
+                                if ui.button(tog).on_hover_text("Expand / collapse").clicked() {
+                                    r.expanded = !r.expanded;
+                                }
+                                if r.expanded {
+                                    changed |= ui
+                                        .add(egui::TextEdit::singleline(&mut r.name).desired_width(200.0))
+                                        .changed();
+                                } else {
+                                    let nm = if r.name.is_empty() { "(unnamed rule)" } else { &r.name };
+                                    let txt = if r.enabled {
+                                        egui::RichText::new(nm).strong()
+                                    } else {
+                                        egui::RichText::new(nm).weak().strikethrough()
+                                    };
+                                    if ui.add(egui::Label::new(txt).sense(egui::Sense::click())).clicked() {
+                                        r.expanded = true;
+                                    }
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button(ic::X).on_hover_text("Delete").clicked() {
+                                        remove = Some(i);
+                                    }
+                                    if i + 1 < n && ui.button(ic::ARROW_DOWN).on_hover_text("Move down").clicked() {
+                                        move_down = Some(i);
+                                    }
+                                    if i > 0 && ui.button(ic::ARROW_UP).on_hover_text("Move up").clicked() {
+                                        move_up = Some(i);
+                                    }
+                                });
+                            });
+                            if !r.expanded {
+                                return;
                             }
-                        });
-                        egui::Grid::new("rule").num_columns(4).spacing([6.0, 3.0]).show(ui, |ui| {
-                            ui.label("FC");
-                            changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).desired_width(90.0)).changed();
-                            ui.label("PAP");
-                            changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text("strategic/peacetime").desired_width(120.0)).changed();
-                            ui.end_row();
-                            ui.label("Doctrine");
-                            changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).desired_width(90.0)).changed();
-                            ui.label("Form-up");
-                            changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).desired_width(120.0)).changed();
-                            ui.end_row();
-                            ui.label("Keyword");
-                            changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).desired_width(90.0)).changed();
-                            ui.label("Sound");
-                            changed |= ui.add(egui::TextEdit::singleline(&mut r.sound).desired_width(120.0)).changed();
-                            ui.end_row();
+                            egui::Grid::new("rule").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                                let wide = 230.0;
+                                ui.label("FC");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).hint_text("any").desired_width(wide)).changed();
+                                ui.end_row();
+                                ui.label("PAP type");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text("any  (strategic / peacetime)").desired_width(wide)).changed();
+                                ui.end_row();
+                                ui.label("Doctrine");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).hint_text("any").desired_width(wide)).changed();
+                                ui.end_row();
+                                ui.label("Form-up");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).hint_text("any").desired_width(wide)).changed();
+                                ui.end_row();
+                                ui.label("Keyword");
+                                changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).hint_text("any").desired_width(wide)).changed();
+                                ui.end_row();
+                            });
+                            // Actions — suppress overrides (disables) the others.
+                            ui.horizontal(|ui| {
+                                changed |= ui
+                                    .checkbox(&mut r.suppress, "Suppress")
+                                    .on_hover_text("Ignore matching pings — no sound, highlight or push")
+                                    .changed();
+                                if r.suppress {
+                                    r.notify = false;
+                                    r.push = false;
+                                }
+                                ui.add_enabled_ui(!r.suppress, |ui| {
+                                    changed |= ui.checkbox(&mut r.notify, "Notify").changed();
+                                    changed |= ui.checkbox(&mut r.push, "Push").changed();
+                                });
+                            });
+                            ui.add_enabled_ui(!r.suppress && r.notify, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Sound");
+                                    changed |= ui.add(egui::TextEdit::singleline(&mut r.sound).desired_width(160.0)).changed();
+                                    if ui.button(ic::PLAY).on_hover_text("Test").clicked() {
+                                        crate::sound::play(&r.sound);
+                                    }
+                                });
+                            });
                         });
                     });
                 }
                 if let Some(i) = remove {
                     self.settings.jabber_ping_rules.remove(i);
+                    changed = true;
+                }
+                if let Some(i) = move_up {
+                    self.settings.jabber_ping_rules.swap(i, i - 1);
+                    changed = true;
+                }
+                if let Some(i) = move_down {
+                    self.settings.jabber_ping_rules.swap(i, i + 1);
                     changed = true;
                 }
                 ui.separator();
@@ -1655,7 +1723,7 @@ impl SpaiApp {
                         ui.separator();
                         // Pre-compute which pings match an alert rule (for highlight).
                         let hl: Vec<bool> =
-                            pings.iter().map(|p| self.matching_ping_rule(p).is_some()).collect();
+                            pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
                         egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
                             if pings.is_empty() {
                                 ui.label(egui::RichText::new("No pings yet.").weak());
