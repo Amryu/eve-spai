@@ -4621,11 +4621,15 @@ impl SpaiApp {
             }
         }
 
-        // Player route: animated dashed line flowing toward the destination.
+        // Player route: animated dashed line flowing toward the destination. Clears itself
+        // once the active character reaches the destination.
+        let mut reached_dest = false;
         if let (Some(dest), Some(ps), Some(graph)) =
             (self.route_destination, player_sys, self.systems.as_ref())
         {
-            if let Some(route) = graph.path(ps, dest) {
+            if ps == dest {
+                reached_dest = true;
+            } else if let Some(route) = graph.path(ps, dest) {
                 let phase = (ui.input(|i| i.time) * 28.0) as f32;
                 let route_col = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
                 for w in route.windows(2) {
@@ -4635,6 +4639,9 @@ impl SpaiApp {
                 }
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(33)); // dashes
             }
+        }
+        if reached_dest {
+            self.route_destination = None;
         }
 
         // Jump-range hover. Distances are always true light-years (real coords);
