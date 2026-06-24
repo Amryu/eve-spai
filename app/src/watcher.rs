@@ -144,6 +144,10 @@ fn scan(
                     // Queue 1–3 word sub-spans so the resolver can confirm the real names
                     // inside an over-glued run ("Wwallddo Lulu Uanid" → Wwallddo + Lulu Uanid).
                     for name in &report.pilots {
+                        // The full candidate too (name_windows only yields 1–3 word spans),
+                        // so a 4+ word over-glued run resolves to not-a-character and the
+                        // cover can split it.
+                        cache.queue(name);
                         for w in crate::pilot::name_windows(name) {
                             cache.queue(&w);
                         }

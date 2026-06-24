@@ -2308,8 +2308,19 @@ impl SpaiApp {
                     continue;
                 }
                 match cache.get(&p) {
-                    // Confirmed character, or still pending resolution — keep as-is.
-                    Some(Some(_)) | None => new_pilots.push(p),
+                    // Confirmed character — keep as-is.
+                    Some(Some(_)) => new_pilots.push(p),
+                    // Still pending — keep showing it, and (re)queue the full name + its
+                    // sub-spans so a lost queue entry (dropped at the cap, in flight when a
+                    // batch failed, or a never-queued 4+ word run) still resolves instead of
+                    // staying pending until a restart.
+                    None => {
+                        cache.queue(&p);
+                        for w in crate::pilot::name_windows(&p) {
+                            cache.queue(&w);
+                        }
+                        new_pilots.push(p);
+                    }
                     // Not a character as a whole: cover it with confirmed sub-names
                     // (the over-glued run "Wwallddo Lulu Uanid" -> Wwallddo + Lulu Uanid).
                     Some(None) => {
