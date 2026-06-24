@@ -175,7 +175,13 @@ fn push_msg(
         s.add_chat(key, &msg.from, &msg.body, msg.time, msg.outgoing);
     }
     let mut s = state.lock().unwrap();
-    s.chats.entry(key.to_owned()).or_default().push(msg);
+    let conv = s.chats.entry(key.to_owned()).or_default();
+    conv.push(msg);
+    // Bound in-memory history per conversation (full history stays in the DB).
+    let n = conv.len();
+    if n > 1000 {
+        conv.drain(0..n - 1000);
+    }
     if mark_unread {
         s.unread.insert(key.to_owned());
         s.notify.push((key.to_owned(), false));

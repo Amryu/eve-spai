@@ -35,6 +35,9 @@ pub fn spawn(
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
         // Last sighting per channel: (system id, system name, pilot names lower-cased).
         let mut last_system: HashMap<String, (i64, String, Vec<String>)> = HashMap::new();
+        // One SQLite connection for the watcher's lifetime — opening per message ran the
+        // full schema migration under the intel lock and could stall the UI thread.
+        let db = crate::store::Store::open().ok();
         loop {
             scan(
                 &chat_dir,
@@ -46,6 +49,7 @@ pub fn spawn(
                 &ctx,
                 &mut processed,
                 &mut last_system,
+                db.as_ref(),
             );
             std::thread::sleep(POLL);
         }
@@ -63,6 +67,7 @@ fn scan(
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     last_system: &mut HashMap<String, (i64, String, Vec<String>)>,
+    db: Option<&crate::store::Store>,
 ) {
     let Ok(entries) = std::fs::read_dir(chat_dir) else {
         return;
@@ -107,10 +112,9 @@ fn scan(
                 if !report.pilots.is_empty() || !report.char_ids.is_empty() {
                     let mut cache = pilots.lock().unwrap();
                     if !report.char_ids.is_empty() {
-                        let store = crate::store::Store::open().ok();
                         for (name, id) in &report.char_ids {
                             cache.confirm(name, *id);
-                            if let Some(s) = &store {
+                            if let Some(s) = db {
                                 let _ = s.add_known_pilot(name, *id);
                             }
                         }
@@ -191,7 +195,7 @@ fn scan(
                             source: crate::wormholes::Source::Intel,
                             updated_at: received,
                         };
-                        if let Ok(store) = crate::store::Store::open() {
+                        if let Some(store) = db {
                             store.upsert_wormhole(&wh);
                         }
                     }

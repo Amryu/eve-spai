@@ -45,6 +45,9 @@ pub fn spawn(
         let mut buffer: Vec<Engagement> = Vec::new();
 
         let mut seen_links: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut last_scan = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
         loop {
             let mut changed = false;
             match poll(&client, &queue_id, &systems, &intel, &mut names) {
@@ -59,24 +62,27 @@ pub fn spawn(
                 Err(_) => std::thread::sleep(Duration::from_secs(5)),
             }
 
-            // Pull in killmails posted as links in intel so battle reports include
-            // already-posted kills (fetched once each).
-            let posted: Vec<i64> = {
-                let st = intel.lock().unwrap();
-                st.reports
-                    .iter()
-                    .flat_map(|r| r.links.iter())
-                    .filter_map(|l| l.kill_id)
-                    .collect()
-            };
-            for id in posted {
-                if seen_links.contains(&id) || buffer.iter().any(|e| e.kill_id == id) {
-                    continue;
-                }
-                seen_links.insert(id);
-                if let Some(eng) = fetch_posted_kill(&client, id, &systems, &mut names) {
-                    buffer.push(eng);
-                    changed = true;
+            // Pull in killmails posted as links in intel (throttled — it locks the intel
+            // feed and scans every report).
+            if last_scan.elapsed() >= Duration::from_secs(8) {
+                last_scan = std::time::Instant::now();
+                let posted: Vec<i64> = {
+                    let st = intel.lock().unwrap();
+                    st.reports
+                        .iter()
+                        .flat_map(|r| r.links.iter())
+                        .filter_map(|l| l.kill_id)
+                        .collect()
+                };
+                for id in posted {
+                    if seen_links.contains(&id) || buffer.iter().any(|e| e.kill_id == id) {
+                        continue;
+                    }
+                    seen_links.insert(id);
+                    if let Some(eng) = fetch_posted_kill(&client, id, &systems, &mut names) {
+                        buffer.push(eng);
+                        changed = true;
+                    }
                 }
             }
 
@@ -92,6 +98,8 @@ pub fn spawn(
                 *battles.lock().unwrap() = clustered;
                 ctx.request_repaint();
             }
+            // Backstop in case RedisQ returns immediately (so we never busy-spin).
+            std::thread::sleep(Duration::from_millis(500));
         }
     });
 }
@@ -139,7 +147,9 @@ fn poll(
     names: &mut HashMap<i64, String>,
 ) -> Result<Option<Engagement>> {
     // queue_id is alphanumeric ("eve-spai-<pid>"), safe to inline in the URL.
-    let url = format!("{REDISQ}?queueID={queue_id}");
+    // ttw makes RedisQ long-poll up to 10s server-side (client timeout is 30s), so an
+    // idle listener blocks instead of busy-spinning.
+    let url = format!("{REDISQ}?queueID={queue_id}&ttw=10");
     let resp: RedisQ = client.get(url).send()?.json()?;
     let Some(pkg) = resp.package else {
         return Ok(None);
