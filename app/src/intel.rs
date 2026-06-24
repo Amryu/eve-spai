@@ -1381,7 +1381,9 @@ pub fn analyze_ctx(
     ships.extend(reclassified);
 
     let classes = detect_classes(&lower_tokens);
-    let (tackled, tackled_targets) = detect_tackle(&lower_tokens, &pilot_tokens, ship_index);
+    let (mut tackled, tackled_targets) = detect_tackle(&lower_tokens, &pilot_tokens, ship_index);
+    // First-pass Chinese tackle/point/web terms (verify against live CN channels).
+    tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
     IntelReport {
         received,
@@ -1405,14 +1407,16 @@ pub fn analyze_ctx(
         no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
-        camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]),
+        camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]) || lower.contains("蹲"),
         help: flagged_exact(&lower_tokens, &pilot_tokens, &["help", "sos"])
             || lower.contains("need backup")
-            || lower.contains("needs backup"),
-        bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]),
+            || lower.contains("needs backup")
+            || lower.contains("求救")
+            || lower.contains("求助"),
+        bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]) || lower.contains("泡泡") || lower.contains("气泡"),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
-        cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]),
+        cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]) || lower.contains("诱导") || lower.contains("诱饵"),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         tackled,
         tackled_targets,
@@ -1865,6 +1869,17 @@ mod tests {
         // Internal apostrophes are preserved.
         let r2 = analyze("O'Brien in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.pilots.iter().any(|p| p == "O'Brien"), "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
+    fn detects_chinese_keywords() {
+        let s = systems();
+        let a = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(a("J5A 蹲门").camp, "蹲 = camp");
+        assert!(a("泡泡 on gate").bubble, "泡泡 = bubble");
+        assert!(a("诱导信标").cyno, "诱导 = cyno");
+        assert!(a("求救").help, "求救 = help");
+        assert!(a("红名被抓了").tackled, "抓 = tackled");
     }
 
     #[test]
