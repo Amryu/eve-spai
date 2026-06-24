@@ -1432,7 +1432,7 @@ pub fn analyze_ctx(
             .or_else(|| {
                 // Still nothing: accept an unambiguous global abbreviation (e.g. "YPW").
                 let abbrev = cand.len() >= 2
-                    && cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
+                    && cand.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '-');
                 if abbrev { systems.lookup_prefix(cand) } else { None }
             });
         // "O3-4MN Gate camp" is the "gate camp" keyword, not "O3-4MN gate": don't demote
@@ -1531,7 +1531,10 @@ pub fn analyze_ctx(
     // Best-guess Chinese tackle/point/web terms (not seen in current logs — a safety net).
     tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
-    let pilots = drop_covered_prefixes(&pilots, text);
+    let mut pilots = drop_covered_prefixes(&pilots, text);
+    // A single token consumed as a system or gate — including a lower-case null-sec code
+    // like "c-j" in "c-j gate" — is never also a pilot.
+    pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
     let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
