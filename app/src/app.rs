@@ -568,7 +568,7 @@ impl SpaiApp {
             wizard_open: false,
             wizard_step: 0,
             wizard_checked: false,
-            tray: crate::tray::spawn(),
+            tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
             dscan_clip: None,
             dscan_checked: None,

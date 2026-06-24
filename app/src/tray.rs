@@ -75,6 +75,9 @@ mod linux {
 
     struct SpaiTray {
         cmd: TrayCmd,
+        /// Wake the UI event loop so a menu action is acted on immediately, not on the
+        /// next idle repaint (which is why tray Exit/Show felt laggy when minimised).
+        ctx: egui::Context,
     }
 
     impl ksni::Tray for SpaiTray {
@@ -90,19 +93,26 @@ mod linux {
         // Left-click the tray icon → show the window.
         fn activate(&mut self, _x: i32, _y: i32) {
             self.cmd.show.store(true, Ordering::SeqCst);
+            self.ctx.request_repaint();
         }
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
             use ksni::menu::StandardItem;
             vec![
                 StandardItem {
                     label: "Show EVE Spai".into(),
-                    activate: Box::new(|t: &mut Self| t.cmd.show.store(true, Ordering::SeqCst)),
+                    activate: Box::new(|t: &mut Self| {
+                        t.cmd.show.store(true, Ordering::SeqCst);
+                        t.ctx.request_repaint();
+                    }),
                     ..Default::default()
                 }
                 .into(),
                 StandardItem {
                     label: "Exit".into(),
-                    activate: Box::new(|t: &mut Self| t.cmd.exit.store(true, Ordering::SeqCst)),
+                    activate: Box::new(|t: &mut Self| {
+                        t.cmd.exit.store(true, Ordering::SeqCst);
+                        t.ctx.request_repaint();
+                    }),
                     ..Default::default()
                 }
                 .into(),
@@ -144,13 +154,13 @@ mod linux {
 
     /// Start the tray. Registration is done on a background thread so a slow/absent
     /// tray host never delays app startup. Returns the command channel immediately.
-    pub fn spawn() -> Option<TrayCmd> {
+    pub fn spawn(ctx: egui::Context) -> Option<TrayCmd> {
         let cmd = TrayCmd::default();
         let cmd_for_thread = cmd.clone();
         std::thread::spawn(move || {
             use ksni::blocking::TrayMethods;
             let attention = cmd_for_thread.attention.clone();
-            match (SpaiTray { cmd: cmd_for_thread }).spawn() {
+            match (SpaiTray { cmd: cmd_for_thread, ctx }).spawn() {
                 Ok(handle) => {
                     // Poll the unread flag and ask the host to re-fetch the icon when
                     // it changes (the handle must stay alive for the tray to live).
@@ -184,7 +194,7 @@ mod other {
         }
         pub fn set_attention(&self, _on: bool) {}
     }
-    pub fn spawn() -> Option<TrayCmd> {
+    pub fn spawn(_ctx: egui::Context) -> Option<TrayCmd> {
         None
     }
 }
