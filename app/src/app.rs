@@ -1558,22 +1558,46 @@ impl SpaiApp {
                 }
                 ui.separator();
                 // --- MUC rooms: joined rooms + a join box ---
+                let mut leave_room: Option<String> = None;
                 for (rjid, unread) in &rooms {
-                    let name = short_chip(rjid.split('@').next().unwrap_or(rjid));
-                    let mut txt = egui::RichText::new(format!(
-                        "{}  {name}",
-                        egui_phosphor::regular::USERS_THREE
-                    ));
-                    if *unread {
-                        txt = txt.strong();
+                    ui.horizontal(|ui| {
+                        let name = short_chip(rjid.split('@').next().unwrap_or(rjid));
+                        let mut txt = egui::RichText::new(format!(
+                            "{}  {name}",
+                            egui_phosphor::regular::USERS_THREE
+                        ));
+                        if *unread {
+                            txt = txt.strong();
+                        }
+                        let sel = self.jabber_chat.as_deref() == Some(rjid.as_str());
+                        if ui.selectable_label(sel, txt).on_hover_text(rjid).clicked() {
+                            self.jabber_chat = Some(rjid.clone());
+                            self.jabber.lock().unwrap().unread.remove(rjid);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(egui_phosphor::regular::X).small(),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Leave (keeps history)")
+                                .clicked()
+                            {
+                                leave_room = Some(rjid.clone());
+                            }
+                        });
+                    });
+                }
+                if let Some(rjid) = leave_room {
+                    if let Some(tx) = &self.jabber_tx {
+                        let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: rjid.clone() });
                     }
-                    if ui
-                        .selectable_label(self.jabber_chat.as_deref() == Some(rjid.as_str()), txt)
-                        .on_hover_text(rjid)
-                        .clicked()
-                    {
-                        self.jabber_chat = Some(rjid.clone());
-                        self.jabber.lock().unwrap().unread.remove(rjid);
+                    self.settings.jabber_rooms.retain(|r| r != &rjid);
+                    self.needs_save = true;
+                    if self.jabber_chat.as_deref() == Some(rjid.as_str()) {
+                        self.jabber_chat = None;
                     }
                 }
                 ui.horizontal(|ui| {
@@ -1614,20 +1638,49 @@ impl SpaiApp {
                         dm_chips.push((jid.clone(), false));
                     }
                 }
+                let mut close_dm: Option<String> = None;
                 for (djid, unread) in &dm_chips {
-                    let name = short_chip(djid.split('@').next().unwrap_or(djid));
-                    let mut txt =
-                        egui::RichText::new(format!("{}  {name}", egui_phosphor::regular::USER));
-                    if *unread {
-                        txt = txt.strong();
+                    // Closed DMs are hidden (history kept); re-opening un-hides them.
+                    if self.settings.jabber_closed_dms.iter().any(|j| j == djid) {
+                        continue;
                     }
-                    if ui
-                        .selectable_label(self.jabber_chat.as_deref() == Some(djid.as_str()), txt)
-                        .on_hover_text(djid)
-                        .clicked()
-                    {
-                        self.jabber_chat = Some(djid.clone());
-                        self.jabber.lock().unwrap().unread.remove(djid);
+                    ui.horizontal(|ui| {
+                        let name = short_chip(djid.split('@').next().unwrap_or(djid));
+                        let mut txt = egui::RichText::new(format!(
+                            "{}  {name}",
+                            egui_phosphor::regular::USER
+                        ));
+                        if *unread {
+                            txt = txt.strong();
+                        }
+                        let sel = self.jabber_chat.as_deref() == Some(djid.as_str());
+                        if ui.selectable_label(sel, txt).on_hover_text(djid).clicked() {
+                            self.jabber_chat = Some(djid.clone());
+                            self.jabber.lock().unwrap().unread.remove(djid);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(egui_phosphor::regular::X).small(),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Close (keeps history)")
+                                .clicked()
+                            {
+                                close_dm = Some(djid.clone());
+                            }
+                        });
+                    });
+                }
+                if let Some(jid) = close_dm {
+                    if !self.settings.jabber_closed_dms.contains(&jid) {
+                        self.settings.jabber_closed_dms.push(jid.clone());
+                        self.needs_save = true;
+                    }
+                    if self.jabber_chat.as_deref() == Some(jid.as_str()) {
+                        self.jabber_chat = None;
                     }
                 }
                 // DM: open a direct conversation by JID / local part — grouped with the
@@ -1647,24 +1700,29 @@ impl SpaiApp {
                         let input = self.jabber_dm_input.trim().to_owned();
                         // A full JID is trusted; a bare name must resolve to a real
                         // roster contact (so we send to the correct JID, not a guess).
+                        // A full JID is used as-is; a bare name resolves to a roster
+                        // contact's exact JID, else the domain is auto-amended (a valid
+                        // local part); a name with spaces that matches nobody is rejected.
                         let resolved = if input.contains('@') {
                             Some(input.clone())
+                        } else if let Some(c) = convos.iter().find(|c| {
+                            c.name.eq_ignore_ascii_case(&input)
+                                || c.jid
+                                    .split('@')
+                                    .next()
+                                    .is_some_and(|l| l.eq_ignore_ascii_case(&input))
+                        }) {
+                            Some(c.jid.clone())
+                        } else if !input.contains(' ') {
+                            Some(self.full_user_jid(&input))
                         } else {
-                            convos
-                                .iter()
-                                .find(|c| {
-                                    c.name.eq_ignore_ascii_case(&input)
-                                        || c.jid
-                                            .split('@')
-                                            .next()
-                                            .is_some_and(|l| l.eq_ignore_ascii_case(&input))
-                                })
-                                .map(|c| c.jid.clone())
+                            None
                         };
                         match resolved {
                             Some(jid) => {
                                 self.jabber_dm_input.clear();
                                 self.jabber_dm_error.clear();
+                                self.settings.jabber_closed_dms.retain(|j| j != &jid);
                                 self.jabber.lock().unwrap().unread.remove(&jid);
                                 self.jabber_chat = Some(jid);
                             }
@@ -1836,6 +1894,7 @@ impl SpaiApp {
                             };
                             resp.response.on_hover_text(tip);
                             if resp.inner {
+                                self.settings.jabber_closed_dms.retain(|j| j != &c.jid);
                                 self.jabber_chat = Some(c.jid.clone());
                                 self.jabber.lock().unwrap().unread.remove(&c.jid);
                             }

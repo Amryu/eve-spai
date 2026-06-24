@@ -110,6 +110,9 @@ pub struct Settings {
     /// toggle, independent of the server roster.
     #[serde(default)]
     pub jabber_contacts: Vec<String>,
+    /// DMs the user closed (hidden from the open-DM chips; history is kept).
+    #[serde(default)]
+    pub jabber_closed_dms: Vec<String>,
     /// Bot JID that broadcast pings are sent to (empty = derive directorbot@<domain>).
     #[serde(default)]
     pub jabber_ping_bot: String,
@@ -521,6 +524,7 @@ impl Default for Settings {
             jabber_ping_sound: default_ping_sound(),
             jabber_sound_enabled: true,
             jabber_contacts: Vec::new(),
+            jabber_closed_dms: Vec::new(),
             jabber_ping_bot: String::new(),
             jabber_ping_groups: Vec::new(),
             jabber_ping_rules: Vec::new(),
