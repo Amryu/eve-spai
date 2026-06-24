@@ -8512,16 +8512,16 @@ impl eframe::App for SpaiApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // Opaque by default (radv mis-presents a transparent backbuffer). A fully
-        // transparent clear is only used for the borderless overlay, and only when
-        // transparency is explicitly enabled.
+        // A transparent backbuffer (the default) lets the idle alert window and the map
+        // overlay be genuinely see-through; the main window and popped-out map cover their
+        // backbuffer with opaque panels, so they still look solid. A semi-opaque clear used
+        // to leak through as a dark/"black" idle alert window. EVE_SPAI_OPAQUE forces a solid
+        // clear if a driver mis-presents transparency.
         if crate::transparency_enabled() {
-            if self.map_overlay_mode {
-                return [0.0, 0.0, 0.0, 0.0];
-            }
-            return egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32();
+            [0.0, 0.0, 0.0, 0.0]
+        } else {
+            egui::Color32::from_rgb(12, 12, 12).to_normalized_gamma_f32()
         }
-        egui::Color32::from_rgb(12, 12, 12).to_normalized_gamma_f32()
     }
 }
 
