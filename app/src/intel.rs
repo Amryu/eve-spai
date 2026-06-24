@@ -344,7 +344,7 @@ const PILOT_STOP: &[&str] = &[
     "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
-    "afk", "warpin", "system", "and", "for", "status", "stat", "report", "intel", "went",
+    "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went",
     "help", "sos", "backup",
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
@@ -1544,7 +1544,7 @@ pub fn analyze_ctx(
             .any(|t| CLEAR_WORDS.contains(&t.as_str()) && !pilot_tokens.contains(t)),
         status: lower_tokens
             .iter()
-            .any(|t| matches!(t.as_str(), "status" | "stat") && !pilot_tokens.contains(t)),
+            .any(|t| matches!(t.as_str(), "status" | "stat" | "eyes") && !pilot_tokens.contains(t)),
         no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
