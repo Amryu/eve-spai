@@ -340,7 +340,7 @@ const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
 
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
-    "gate", "camp", "clear", "clr", "spike", "bubble", "cyno", "local", "dock", "docked",
+    "gate", "camp", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
     "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
@@ -1554,7 +1554,7 @@ pub fn analyze_ctx(
             || lower.contains("needs backup")
             || lower.contains("求救")
             || lower.contains("求助"),
-        bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]) || lower.contains("泡泡") || lower.contains("气泡"),
+        bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble", "drag"]) || lower.contains("泡泡") || lower.contains("气泡"),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
         cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]) || lower.contains("诱导") || lower.contains("诱饵"),
@@ -2353,6 +2353,8 @@ mod tests {
         // From real intel: "C-J" (system abbreviation) and "bubbled" were read as pilots.
         let r = analyze("88A-RA C-J gate bubbled", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.bubble, "bubble keyword should fire");
+        assert!(a("drag on gate").bubble, "drag = drag bubble");
+        assert!(!a("no drag").bubble, "negated drag");
         for w in ["C-J", "88A-RA", "bubbled"] {
             assert!(
                 !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
