@@ -277,6 +277,10 @@ pub struct SpaiApp {
     dscan_prompt: Option<(String, usize)>,
     /// Cached screen position for the d-scan popup (bottom-right of the EVE window).
     dscan_pos: Option<(f32, f32)>,
+    /// D-scan popup: whether the shared link was opened/copied, and when it last lost
+    /// focus (to auto-close 5 s after the user is done with it).
+    dscan_link_used: bool,
+    dscan_unfocused_at: Option<std::time::Instant>,
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
     /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
     /// poller and the intel watcher).
@@ -569,6 +573,8 @@ impl SpaiApp {
             dscan_dismissed_hash: 0,
             dscan_prompt: None,
             dscan_pos: None,
+            dscan_link_used: false,
+            dscan_unfocused_at: None,
             dscan_share: std::sync::Arc::new(std::sync::Mutex::new(DscanShare::default())),
             wh_cache: Vec::new(),
             wh_reloaded: None,
@@ -2232,20 +2238,22 @@ impl SpaiApp {
     /// A pilot candidate that ESI confirms is NOT a character falls back to being a
     /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
     /// it's not a real pilot). showinfo-confirmed characters are never demoted.
-    fn reconcile_unresolved_pilots(&mut self) {
+    fn reconcile_unresolved_pilots(&mut self) -> bool {
         let due = self.pilot_reconcile_checked.map(|t| t.elapsed().as_millis() > 700).unwrap_or(true);
         if !due {
-            return;
+            return false;
         }
         self.pilot_reconcile_checked = Some(std::time::Instant::now());
-        let Some(geo) = self.systems.clone() else { return };
+        let Some(geo) = self.systems.clone() else { return false };
+        let mut changed = false;
         // Lock order MUST match the watcher (intel_state → pilots); the reverse order
         // here deadlocked the UI thread against the watcher (ABBA).
         let mut st = self.intel_state.lock().unwrap();
         let mut cache = self.pilots.lock().unwrap();
         for r in &mut st.reports {
+            let original: Vec<String> = std::mem::take(&mut r.pilots);
             let mut new_pilots: Vec<String> = Vec::new();
-            for p in std::mem::take(&mut r.pilots) {
+            for p in original.iter().cloned() {
                 if crate::intel::is_pilot_stopword(&p) {
                     continue; // blacklist overrides any cached/char-linked verdict
                 }
@@ -2286,8 +2294,12 @@ impl SpaiApp {
             }
             let mut seen = std::collections::HashSet::new();
             new_pilots.retain(|p| seen.insert(p.to_lowercase()));
+            if new_pilots != original {
+                changed = true;
+            }
             r.pilots = new_pilots;
         }
+        changed
     }
 
     /// Reload the wormhole cache from the store (throttled), dropping expired holes.
@@ -3726,6 +3738,22 @@ impl SpaiApp {
                 }
                 if ctx.input(|i| i.viewport().close_requested()) {
                     dismiss = true;
+                }
+                // Once the shared link has been opened/copied, close after 5 s without
+                // focus, so it doesn't linger over the game.
+                if self.dscan_link_used {
+                    if ctx.input(|i| i.viewport().focused).unwrap_or(false) {
+                        self.dscan_unfocused_at = None;
+                    } else if self
+                        .dscan_unfocused_at
+                        .get_or_insert_with(std::time::Instant::now)
+                        .elapsed()
+                        .as_secs_f32()
+                        >= 5.0
+                    {
+                        dismiss = true;
+                    }
+                    ctx.request_repaint_after(std::time::Duration::from_millis(500));
                 }
             },
         );
@@ -5753,6 +5781,18 @@ impl SpaiApp {
                     ui.label(format!("Intel: {intel}"));
                     ui.separator();
                     ui.label(egui::RichText::new(&self.active_character).weak());
+                    ui.separator();
+                    ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak());
+                    // Small badge when a newer release is available.
+                    if let Some(av) = self.update.lock().unwrap().available.clone() {
+                        if av.version != self.settings.update_skip_version {
+                            ui.label(
+                                egui::RichText::new(format!("● v{} available", av.version))
+                                    .color(egui::Color32::from_rgb(0x5a, 0xc8, 0x7a)),
+                            )
+                            .on_hover_text("A newer version is available — see the update prompt.");
+                        }
+                    }
                     // Resource usage, right-aligned.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
@@ -6603,10 +6643,11 @@ impl SpaiApp {
         };
         if !active {
             self.dscan_pos = None;
-            return;
+            self.dscan_link_used = false;
+            self.dscan_unfocused_at = None;
         }
         // Auto-upload mode: skip the prompt and upload straight away.
-        if self.settings.dscan_autoupload {
+        if active && self.settings.dscan_autoupload {
             let idle = {
                 let s = self.dscan_share.lock().unwrap();
                 !s.uploading && s.link.is_none() && s.error.is_none()
@@ -6619,7 +6660,7 @@ impl SpaiApp {
         }
         // Position the popup once, at the bottom-right of the EVE window if we can find
         // it (X11), otherwise a sensible screen position.
-        if self.dscan_pos.is_none() {
+        if active && self.dscan_pos.is_none() {
             // Outer window size (inner + the title bar the decorations add) and a small
             // margin, so it sits just inside the EVE window's bottom-right, not touching.
             let (ow, oh, margin) = (300.0_f32, 150.0_f32, 14.0_f32);
@@ -6643,6 +6684,7 @@ impl SpaiApp {
             egui::ViewportId::from_hash_of("dscan_popup"),
             egui::ViewportBuilder::default()
                 .with_title("EVE Spai — D-scan")
+                .with_visible(active) // created at startup, just toggled visible
                 .with_window_level(egui::WindowLevel::AlwaysOnTop)
                 .with_active(false) // do not steal focus from the game
                 .with_decorations(true) // border + title bar so it can be dragged
@@ -6651,6 +6693,10 @@ impl SpaiApp {
                 .with_position([pos.0, pos.1])
                 .with_inner_size([300.0, 118.0]),
             |ctx, _| {
+                if !active {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |_ui| {});
+                    return;
+                }
                 // Re-assert always-on-top each frame; some WMs drop the initial hint.
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                     egui::WindowLevel::AlwaysOnTop,
@@ -6661,10 +6707,13 @@ impl SpaiApp {
                     let (uploading, link, error) = (share.0, share.1.clone(), share.2.clone());
                     if let Some(link) = link {
                         ui.label("Shared:");
-                        ui.hyperlink(&link);
+                        if ui.hyperlink(&link).clicked() {
+                            self.dscan_link_used = true;
+                        }
                         ui.horizontal(|ui| {
                             if ui.button(format!("{}  Copy link", icon::COPY)).clicked() {
                                 ui.ctx().copy_text(link.clone());
+                                self.dscan_link_used = true;
                             }
                             if ui.button("Close").clicked() {
                                 dismiss = true;
@@ -8031,6 +8080,39 @@ impl SpaiApp {
                             .collect();
                         self.coalitions_open = true;
                     }
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.heading("About");
+                    ui.label(format!("EVE Spai v{}", env!("CARGO_PKG_VERSION")));
+                    ui.horizontal(|ui| {
+                        ui.label("Project:");
+                        ui.hyperlink_to(
+                            "github.com/Amryu/eve-spai",
+                            "https://github.com/Amryu/eve-spai",
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Community:");
+                        ui.hyperlink_to("Discord", "https://discord.gg/u4bDqB9rjn");
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Image::new(
+                                "https://images.evetech.net/characters/2119400938/portrait?size=64",
+                            )
+                            .fit_to_exact_size(egui::Vec2::splat(48.0)),
+                        );
+                        ui.vertical(|ui| {
+                            ui.label("Built by Amryu.");
+                            ui.label(
+                                egui::RichText::new(
+                                    "If you find it useful, ISK donations to Amryu in-game are welcome.",
+                                )
+                                .weak(),
+                            );
+                        });
+                    });
                 });
 
         if let Some(theme) = new_theme {
@@ -8078,7 +8160,9 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
-        self.reconcile_unresolved_pilots();
+        if self.reconcile_unresolved_pilots() {
+            ctx.request_repaint(); // a cover split the run -> re-render the card now
+        }
         self.reload_wormholes();
         if !self.update_checked {
             self.update_checked = true;
