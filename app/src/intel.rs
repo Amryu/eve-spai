@@ -875,9 +875,10 @@ pub fn analyze_ctx(
         }
     }
     // Single Title-Case tokens (plain-text logs carry no char links) — queued for ESI so
-    // standalone names like "Sevra" are recognised. Only tokens that aren't a ship,
-    // system, stop word, or already part of a multi-word candidate.
-    for t in &tokens {
+    // standalone names like "Sevra" are recognised. Uses the ship/paren-masked tokens so
+    // a multi-word hull's words ("Comet" in "Federation Navy Comet") aren't read as names.
+    let masked_tokens = tokenize(&masked);
+    for t in &masked_tokens {
         let lc = t.to_lowercase();
         if name_part(t)
             && t.len() >= 3
@@ -1516,6 +1517,20 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn multiword_ship_word_not_a_pilot() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [(
+            "federation navy comet".to_string(),
+            (17841i64, "Federation Navy Comet".to_string()),
+        )]
+        .into_iter()
+        .collect();
+        let r = analyze("Federation Navy Comet Docteur West in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Comet")), "pilots={:?}", r.pilots);
+        assert!(r.ships.iter().any(|sh| sh.name == "Federation Navy Comet"));
     }
 
     #[test]
