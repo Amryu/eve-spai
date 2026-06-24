@@ -4711,9 +4711,10 @@ impl SpaiApp {
         // Blink phase for fresh intel (≈3 Hz).
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
-        // System labels appear once zoomed in past region level (so they're spaced
-        // enough to read); a collision check then drops any that would still overlap.
-        let show_sys_labels = self.map_zoom >= 17.0;
+        // System labels: always on when viewing a single region, otherwise once zoomed in
+        // a bit (a collision check below still drops any that would overlap).
+        let show_sys_labels =
+            matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         let mut placed_labels: Vec<egui::Rect> = Vec::new();
         for s in &self.map_draw {
             let p = pos[&s.id];
@@ -10023,7 +10024,10 @@ fn level_color(l: u8) -> egui::Color32 {
 
 /// Regions that are not reachable in-game and shouldn't appear on the map.
 fn is_hidden_region(region: &str) -> bool {
-    matches!(region, "UUA-F4")
+    // Inaccessible space, hidden from the map and the region picker: wormhole and Jove
+    // regions carry a digit in their name (A-R00001, UUA-F4, A821-A…); Pochven
+    // (Triglavian) is reachable only by filament.
+    region == "Pochven" || region.chars().any(|c| c.is_ascii_digit())
 }
 
 /// Broad hull-size class for a ship group (Frigate … Capital).
