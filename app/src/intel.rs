@@ -405,6 +405,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
             lw.as_str(),
             "ship" | "ships" | "shuttle" | "shuttles" | "navy" | "issue" | "loc"
                 | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went" | "min" | "mins" | "minute" | "minutes"
+                | "heading" | "towards" | "toward" | "inbound" | "enroute"
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
@@ -2313,6 +2314,8 @@ mod tests {
     #[test]
     fn min_minutes_is_a_stop_word() {
         assert!(is_pilot_stopword("min"));
+        assert!(is_pilot_stopword("heading"));
+        assert!(is_pilot_stopword("towards"));
         let s = systems();
         // "5 min" -> "min" is time, not a name.
         let runs = loose_pilot_runs("ess 300kk 5 min", &noships(), &s);

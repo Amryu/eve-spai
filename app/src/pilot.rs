@@ -89,7 +89,13 @@ impl PilotCache {
                 }
             }
             if took == 0 {
-                // No confirmed name covers this word yet — not a clean split; wait.
+                // A bare number that no name covers is a count ("Ace hodgens 30" = the
+                // pilot Ace hodgens + 30 ships), not part of the name — skip it. A real
+                // word might be a name still resolving, so wait (empty) for that.
+                if words[i].len() <= 4 && words[i].chars().all(|c| c.is_ascii_digit()) {
+                    i += 1;
+                    continue;
+                }
                 return Vec::new();
             }
             i += took;
@@ -254,6 +260,14 @@ mod tests {
                 "ai-0002",
             ]
         );
+    }
+
+    #[test]
+    fn cover_skips_trailing_count_number() {
+        let mut c = PilotCache::default();
+        c.resolved.insert("ace hodgens".into(), Some(1));
+        // "30" is a count ("Ace hodgens +30 kikimoras"), not part of the name.
+        assert_eq!(c.cover("Ace hodgens 30"), vec!["Ace hodgens"]);
     }
 
     #[test]
