@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS pings (
     json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pings_ts ON pings(ts);
+CREATE TABLE IF NOT EXISTS chats (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    jid      TEXT NOT NULL,
+    sender   TEXT NOT NULL,
+    body     TEXT NOT NULL,
+    time     INTEGER NOT NULL,
+    outgoing INTEGER NOT NULL,
+    UNIQUE(jid, time, sender, body)
+);
+CREATE INDEX IF NOT EXISTS idx_chats_jid ON chats(jid, time);
 CREATE TABLE IF NOT EXISTS wormholes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     dedup           TEXT NOT NULL UNIQUE,
@@ -468,6 +478,39 @@ impl Store {
              ORDER BY id ASC",
         ) {
             if let Ok(rows) = stmt.query_map(params![limit], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    // --- Conversations (persisted, de-duplicated) --------------------------
+
+    /// Persist one chat message (de-duplicated by jid+time+sender+body).
+    pub fn add_chat(&self, jid: &str, sender: &str, body: &str, time: i64, outgoing: bool) {
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO chats(jid, sender, body, time, outgoing) VALUES(?1,?2,?3,?4,?5)",
+            params![jid, sender, body, time, outgoing as i64],
+        );
+    }
+
+    /// Load the most recent `limit` messages (oldest first): (jid, sender, body, time, outgoing).
+    pub fn load_chats(&self, limit: i64) -> Vec<(String, String, String, i64, bool)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT jid, sender, body, time, outgoing FROM
+                (SELECT * FROM chats ORDER BY time DESC, id DESC LIMIT ?1)
+             ORDER BY time ASC, id ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![limit], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)? != 0,
+                ))
+            }) {
                 out.extend(rows.flatten());
             }
         }

@@ -400,8 +400,22 @@ impl SpaiApp {
                 s.load_pings(2000).into_iter().filter_map(|j| serde_json::from_str(&j).ok()).collect()
             })
             .unwrap_or_default();
+        // Restore persisted conversations, grouped by JID (in time order).
+        let mut loaded_chats: std::collections::BTreeMap<String, Vec<crate::jabber::ChatMsg>> =
+            std::collections::BTreeMap::new();
+        if let Some(s) = &store {
+            for (jid, sender, body, time, outgoing) in s.load_chats(5000) {
+                loaded_chats.entry(jid).or_default().push(crate::jabber::ChatMsg {
+                    from: sender,
+                    body,
+                    time,
+                    outgoing,
+                });
+            }
+        }
         let jabber = std::sync::Arc::new(std::sync::Mutex::new(crate::jabber::JabberState {
             pings: loaded_pings,
+            chats: loaded_chats,
             ..Default::default()
         }));
 

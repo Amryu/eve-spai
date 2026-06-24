@@ -157,7 +157,16 @@ pub fn spawn(
     tx
 }
 
-fn push_msg(state: &SharedJabber, key: &str, msg: ChatMsg, mark_unread: bool) {
+fn push_msg(
+    state: &SharedJabber,
+    key: &str,
+    msg: ChatMsg,
+    mark_unread: bool,
+    store: Option<&crate::store::Store>,
+) {
+    if let Some(s) = store {
+        s.add_chat(key, &msg.from, &msg.body, msg.time, msg.outgoing);
+    }
     let mut s = state.lock().unwrap();
     s.chats.entry(key.to_owned()).or_default().push(msg);
     if mark_unread {
@@ -212,6 +221,9 @@ async fn run(
             .enable_feature(ClientFeature::ContactList)
             .build();
 
+    // One DB handle for the whole session (persisting pings + conversations).
+    let store = crate::store::Store::open().ok();
+
     // tokio-xmpp reconnects transparently, so we simply process events until the user
     // disables Jabber. An *empty* event batch is normal (a stanza that produced no
     // high-level event, e.g. the roster reply) — it does NOT mean the stream ended,
@@ -234,7 +246,7 @@ async fn run(
         tokio::select! {
             events = agent.wait_for_events() => {
                 for event in events {
-                    handle_event(event, &state, resolve.as_ref(), &ctx);
+                    handle_event(event, &state, resolve.as_ref(), &ctx, store.as_ref());
                 }
             }
             Some(cmd) = rx.recv() => match cmd {
@@ -249,6 +261,7 @@ async fn run(
                             &to,
                             ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true },
                             false,
+                            store.as_ref(),
                         );
                         ctx.request_repaint();
                     }
@@ -311,6 +324,7 @@ fn handle_event(
     state: &SharedJabber,
     resolve: &(dyn Fn(&str) -> Option<i64> + Send + Sync),
     ctx: &egui::Context,
+    store: Option<&crate::store::Store>,
 ) {
     use xmpp::Event;
     let now = chrono::Utc::now().timestamp();
@@ -374,7 +388,7 @@ fn handle_event(
                 let parsed = crate::pings::parse_ping(now, &body, resolve);
                 if !parsed.is_empty() {
                     // Persist indefinitely so pings survive restarts.
-                    if let Ok(store) = crate::store::Store::open() {
+                    if let Some(store) = store {
                         for p in &parsed {
                             if let Ok(json) = serde_json::to_string(p) {
                                 store.add_ping(p.timestamp(), &json);
@@ -394,6 +408,7 @@ fn handle_event(
                 &key,
                 ChatMsg { from: key.clone(), body, time: now, outgoing: false },
                 true,
+                store,
             );
         }
         Event::RoomJoined(room) => {
@@ -410,6 +425,7 @@ fn handle_event(
                 &room.to_string(),
                 ChatMsg { from: nick.to_string(), body, time: now, outgoing: false },
                 true,
+                store,
             );
         }
         _ => {}
