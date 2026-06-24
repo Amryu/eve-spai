@@ -3722,15 +3722,18 @@ impl SpaiApp {
                     }
                     self.alert_level_applied = None; // force the level to be re-applied
                 }
-                // Re-assert the level every frame (not just on change): some WMs drop
-                // always-on-top after the window unmaps/remaps, so a one-shot apply isn't
-                // enough. "Smart" mode still follows EVE focus via `on_top`.
-                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
-                    egui::WindowLevel::AlwaysOnTop
-                } else {
-                    egui::WindowLevel::Normal
-                }));
-                self.alert_level_applied = Some(on_top);
+                // Re-assert the level only when it changes or the window (re)opens — NOT
+                // every frame. A viewport command each frame forces egui to repaint each
+                // frame to process it, which pinned the whole app at vsync (~58 fps) for the
+                // entire alert countdown. The window stays mapped now, so on-change is enough.
+                if just_opened || self.alert_level_applied != Some(on_top) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
+                        egui::WindowLevel::AlwaysOnTop
+                    } else {
+                        egui::WindowLevel::Normal
+                    }));
+                    self.alert_level_applied = Some(on_top);
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
                     .show(ctx, |ui| {
