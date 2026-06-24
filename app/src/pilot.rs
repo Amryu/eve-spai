@@ -165,7 +165,8 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                 None => std::thread::sleep(std::time::Duration::from_secs(3)),
                 Some(chars) => {
                     if !chars.is_empty() {
-                        ctx.request_repaint();
+                        // Coalesce: the intel feed only needs ~1fps as names resolve.
+                        ctx.request_repaint_after(std::time::Duration::from_millis(1000));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }

@@ -258,6 +258,8 @@ pub struct SpaiApp {
     lookup_active: usize,
     lookup_cache: crate::charlookup::LookupCache,
     lookup_tx: Option<crate::charlookup::LookupSender>,
+    /// Cached intel-card heights (by report key) for feed virtualization.
+    intel_heights: std::collections::HashMap<u64, f32>,
     /// First-run setup wizard (dismissable; re-runnable from Settings).
     wizard_open: bool,
     wizard_step: u8,
@@ -555,6 +557,7 @@ impl SpaiApp {
             lookup_active: 0,
             lookup_cache,
             lookup_tx,
+            intel_heights: std::collections::HashMap::new(),
             wizard_open: false,
             wizard_step: 0,
             wizard_checked: false,
@@ -2740,27 +2743,56 @@ impl SpaiApp {
             // Cards are variable-height (badges wrap), so render normally rather than
             // with fixed-row virtualisation; cap the count to keep it cheap.
             const CARD_CAP: usize = 250;
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for r in matches.iter().take(CARD_CAP) {
-                    // Outdated: superseded by a clear, or older than the configured TTL.
-                    let stale = state.is_stale(r) || (now - r.received) > ttl;
-                    let from_you =
-                        jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
-                    let sev = severity_of(r, &sev_rules);
-                    let kc = self.kill_cache.clone();
-                    if let Some(a) = intel_row(
-                        ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                        &ship_roles, &resolved_pilots, &last_ship, &kc, sev, true,
-                    ) {
-                        action = Some(a);
+            // Bound the height cache (report keys change on merge).
+            if self.intel_heights.len() > 2000 {
+                self.intel_heights.clear();
+            }
+            // Virtualised: only on-screen cards are rendered; off-screen ones reserve
+            // their cached height. egui doesn't virtualise variable-height content, so
+            // with hundreds of cards this is what keeps the per-frame cost low.
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(
+                ui,
+                |ui, viewport| {
+                    let origin = ui.cursor().top();
+                    for r in matches.iter().take(CARD_CAP) {
+                        let y = ui.cursor().top() - origin;
+                        let key = report_key(r);
+                        if let Some(h) = self.intel_heights.get(&key).copied() {
+                            if y + h < viewport.min.y - 400.0 || y > viewport.max.y + 400.0 {
+                                ui.add_space(h);
+                                continue;
+                            }
+                        }
+                        let stale = state.is_stale(r) || (now - r.received) > ttl;
+                        let from_you = jumps_from_you(
+                            &systems,
+                            player_sys,
+                            r.primary_system().map(|s| s.id),
+                        );
+                        let sev = severity_of(r, &sev_rules);
+                        let kc = self.kill_cache.clone();
+                        let inner = ui.scope(|ui| {
+                            intel_row(
+                                ui, r, now, stale, from_you, &systems, &status, &ship_details,
+                                &ship_roles, &resolved_pilots, &last_ship, &kc, sev, true,
+                            )
+                        });
+                        if let Some(a) = inner.inner {
+                            action = Some(a);
+                        }
+                        let h = inner.response.rect.height();
+                        if h > 0.0 {
+                            self.intel_heights.insert(key, h);
+                        }
                     }
-                }
-                if matches.len() > CARD_CAP {
-                    ui.label(
-                        egui::RichText::new(format!("+{} older", matches.len() - CARD_CAP)).weak(),
-                    );
-                }
-            });
+                    if matches.len() > CARD_CAP {
+                        ui.label(
+                            egui::RichText::new(format!("+{} older", matches.len() - CARD_CAP))
+                                .weak(),
+                        );
+                    }
+                },
+            );
         }
         drop(state);
         match action {
@@ -9116,6 +9148,16 @@ fn resize_grip(ui: &mut egui::Ui) {
             egui::ResizeDirection::SouthEast,
         ));
     }
+}
+
+/// Stable-ish key for caching an intel card's measured height (feed virtualisation).
+fn report_key(r: &crate::intel::IntelReport) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    r.received.hash(&mut h);
+    r.reporter.hash(&mut h);
+    r.text.len().hash(&mut h);
+    h.finish()
 }
 
 fn intel_row(
