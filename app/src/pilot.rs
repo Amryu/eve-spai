@@ -165,15 +165,13 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
             let store = crate::store::Store::open().ok();
             {
                 let mut c = cache.lock().unwrap();
-                // Free the batch from the dedup set; resolved names are also recorded
-                // below, so only unresolved (failed-request) names become re-queueable.
-                for name in &batch {
-                    c.queued.remove(&name.to_lowercase());
-                }
                 if let Some(chars) = &result {
                     let ok = batch.iter().filter(|n| chars.contains_key(&n.to_lowercase())).count();
                     eprintln!("[pilot] resolved {}/{} (queue ~{})", ok, batch.len(), c.queue.len());
                     for name in &batch {
+                        // Resolved (or confirmed not-a-character) — free it from the dedup
+                        // set and record the outcome.
+                        c.queued.remove(&name.to_lowercase());
                         let id = chars.get(&name.to_lowercase()).copied();
                         c.resolved.insert(name.to_lowercase(), id);
                         if let Some(store) = &store {
@@ -185,6 +183,19 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                                 None => {}
                             }
                         }
+                    }
+                } else {
+                    // Request failed (timeout / rate-limit / network). Re-queue the batch
+                    // for retry rather than dropping it — the names stay in `queued` (so
+                    // intel won't double-add them) but go back on `queue`, so they retry
+                    // after the backoff instead of waiting to be mentioned again.
+                    eprintln!(
+                        "[pilot] batch failed — re-queued {} names for retry (queue ~{})",
+                        batch.len(),
+                        c.queue.len()
+                    );
+                    for name in &batch {
+                        c.queue.push_back(name.clone());
                     }
                 }
             }
