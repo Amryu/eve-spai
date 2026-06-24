@@ -8783,7 +8783,21 @@ fn intel_row(
                                 .kill_id
                                 .and_then(|id| kills.lock().unwrap().get(&id).cloned().flatten());
                             ui.horizontal(|ui| {
+                                let al_logo = |ui: &mut egui::Ui, al: i64, hover: &str| {
+                                    ui.add(egui::Image::new(format!(
+                                        "https://images.evetech.net/alliances/{al}/logo?size=32"
+                                    ))
+                                    .fit_to_exact_size(egui::vec2(18.0, 18.0)))
+                                    .on_hover_text(hover);
+                                };
                                 if let Some(inf) = &info {
+                                    // Dominant alliance per side: top attacker ⚔ victim.
+                                    if let Some(al) = inf.attacker_alliances.first() {
+                                        al_logo(ui, *al, "Top attacker alliance");
+                                        ui.label(
+                                            egui::RichText::new(icon::CARET_RIGHT).color(red).small(),
+                                        );
+                                    }
                                     if let Some(ship) = inf.victim_ship {
                                         ui.add(egui::Image::new(format!(
                                             "https://images.evetech.net/types/{ship}/icon?size=32"
@@ -8795,6 +8809,9 @@ fn intel_row(
                                             "https://images.evetech.net/characters/{ch}/portrait?size=32"
                                         ))
                                         .fit_to_exact_size(egui::vec2(18.0, 18.0)));
+                                    }
+                                    if let Some(al) = inf.victim_alliance {
+                                        al_logo(ui, al, "Victim alliance");
                                     }
                                 }
                                 let lbl = egui::RichText::new(format!("{} KILL", icon::SKULL))
