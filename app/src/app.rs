@@ -127,7 +127,7 @@ impl IntelTypeFilter {
             }
             IntelTypeFilter::Clear => r.clear,
             IntelTypeFilter::Kill => r.killmail,
-            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno,
+            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno || r.help,
         }
     }
 }
@@ -6731,7 +6731,7 @@ impl SpaiApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("requires:");
                     for tag in
-                        ["bubble", "camp", "cyno", "captackled", "kill", "ess", "spike", "wormhole"]
+                        ["bubble", "camp", "cyno", "captackled", "kill", "ess", "spike", "wormhole", "help"]
                     {
                         let label = if tag == "captackled" { "cap tackled" } else { tag };
                         let mut on = ru.require.iter().any(|t| t == tag);
@@ -8441,6 +8441,7 @@ fn rule_matches(
             "spike" => r.spike,
             "skyhook" => r.skyhook,
             "nv" | "novisual" => r.no_visual,
+            "help" | "sos" | "backup" => r.help,
             _ => true,
         };
         if !ok {
@@ -8749,7 +8750,7 @@ fn intel_row(
         icon::CHECK_CIRCLE
     } else if r.killmail {
         icon::SKULL
-    } else if r.spike || r.camp || r.bubble || r.cyno {
+    } else if r.spike || r.camp || r.bubble || r.cyno || r.help {
         icon::WARNING_OCTAGON
     } else if r.no_visual {
         icon::EYE_SLASH
@@ -8993,6 +8994,9 @@ fn intel_row(
                 }
                 if r.camp {
                     tag(ui, "CAMP", red);
+                }
+                if r.help {
+                    tag(ui, "HELP", red);
                 }
                 if r.bubble {
                     tag(ui, "BUBBLE", warn);

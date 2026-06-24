@@ -50,6 +50,8 @@ pub struct IntelReport {
     pub no_visual: bool,
     pub spike: bool,
     pub camp: bool,
+    /// A call for help / backup (help / sos / "need backup").
+    pub help: bool,
     pub bubble: bool,
     pub killmail: bool,
     pub cyno: bool,
@@ -239,6 +241,7 @@ impl IntelState {
             prev.no_visual |= new.no_visual;
             prev.spike |= new.spike;
             prev.camp |= new.camp;
+            prev.help |= new.help;
             prev.bubble |= new.bubble;
             prev.cyno |= new.cyno;
             prev.cap_tackled |= new.cap_tackled;
@@ -299,6 +302,7 @@ const PILOT_STOP: &[&str] = &[
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
     "afk", "warpin", "system", "and", "for", "status", "stat", "report", "intel", "went",
+    "help", "sos", "backup",
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
@@ -1122,6 +1126,9 @@ pub fn analyze_ctx(
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
         camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]),
+        help: flagged(&lower_tokens, &pilot_tokens, &["help", "sos"])
+            || lower.contains("need backup")
+            || lower.contains("needs backup"),
         bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
@@ -1428,6 +1435,15 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn detects_help_keyword() {
+        let s = systems();
+        assert!(analyze("help in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").help);
+        assert!(analyze("sos Rancer", &s, &noships(), &noknown(), 1, "ch", "x").help);
+        assert!(analyze("need backup in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").help);
+        assert!(!analyze("clear Rancer", &s, &noships(), &noknown(), 1, "ch", "x").help);
     }
 
     #[test]
