@@ -253,8 +253,21 @@ async fn run(
         }
         tokio::select! {
             events = agent.wait_for_events() => {
+                let mut urgent = false;
+                let mut background = false;
                 for event in events {
-                    handle_event(event, &state, resolve.as_ref(), &ctx, store.as_ref());
+                    if handle_event(event, &state, resolve.as_ref(), &ctx, store.as_ref()) {
+                        urgent = true;
+                    } else {
+                        background = true;
+                    }
+                }
+                // Messages/status repaint promptly; presence churn only lazily, so a big
+                // roster's presence flood can't peg the render thread.
+                if urgent {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                } else if background {
+                    ctx.request_repaint_after(std::time::Duration::from_secs(2));
                 }
             }
             Some(cmd) = rx.recv() => match cmd {
@@ -331,10 +344,19 @@ fn handle_event(
     event: xmpp::Event,
     state: &SharedJabber,
     resolve: &(dyn Fn(&str) -> Option<i64> + Send + Sync),
-    ctx: &egui::Context,
+    _ctx: &egui::Context,
     store: Option<&crate::store::Store>,
-) {
+) -> bool {
     use xmpp::Event;
+    // Presence/roster churn is background (a big roster floods it); repaint lazily for
+    // those and promptly only for messages / connection changes.
+    let urgent = !matches!(
+        event,
+        Event::Presence(_)
+            | Event::ContactAdded(_)
+            | Event::ContactChanged(_)
+            | Event::ContactRemoved(_)
+    );
     let now = chrono::Utc::now().timestamp();
     match event {
         Event::Online => {
@@ -456,5 +478,5 @@ fn handle_event(
         }
         _ => {}
     }
-    ctx.request_repaint();
+    urgent
 }

@@ -3416,7 +3416,11 @@ impl SpaiApp {
         } else if !self.alert_window_pinned && self.alert_window_secs.is_finite() {
             self.alert_window_secs = (self.alert_window_secs - dt).max(0.0);
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(160)); // ~6 fps
+        // The countdown uses real elapsed time, so off-hover we only need ~1 fps to
+        // refresh the "Ns" label; full rate here would rebuild the main window's intel
+        // feed many times a second (this drove the high CPU).
+        let ms = if hovered { 100 } else { 1000 };
+        ctx.request_repaint_after(std::time::Duration::from_millis(ms));
     }
 
     /// Persist map overlay + intel-filter options when they change.
