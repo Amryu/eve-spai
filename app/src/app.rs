@@ -6866,6 +6866,31 @@ impl SpaiApp {
                     }
 
                     ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(format!(
+                                "{}  Check for updates",
+                                egui_phosphor::regular::ARROWS_CLOCKWISE
+                            ))
+                            .clicked()
+                        {
+                            // Re-check even if this version was previously skipped.
+                            self.update_dismissed = false;
+                            self.settings.update_skip_version.clear();
+                            changed = true;
+                            crate::update::spawn_check(
+                                self.update.clone(),
+                                String::new(),
+                                ui.ctx().clone(),
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .weak(),
+                        );
+                    });
+
+                    ui.add_space(6.0);
                     ui.label("Fit preview site").on_hover_text("Where the fit window's \"Open in\" button sends a loss");
                     ui.horizontal_wrapped(|ui| {
                         for (id, label) in FIT_SITES {
