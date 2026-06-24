@@ -56,6 +56,9 @@ pub struct IntelReport {
     pub isk: Option<u64>,
     /// Structures mentioned (canonical name) + an optional distance off each.
     pub structures: Vec<(String, Option<String>)>,
+    /// Scanning probes mentioned (Core/Combat Scanner Probe items + slang) — distinct from
+    /// the Probe frigate. The badge label ("Core Probes"/"Combat Probes"/"Probes"), or None.
+    pub probes: Option<&'static str>,
     pub clear: bool,
     /// Someone explicitly asking for intel ("status?") — informational, not a threat.
     pub status: bool,
@@ -265,6 +268,7 @@ impl IntelState {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
+            prev.probes = new.probes.or(prev.probes);
             for (n, d) in &new.structures {
                 match prev.structures.iter_mut().find(|(pn, _)| pn == n) {
                     Some(e) => {
@@ -428,6 +432,9 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "bank" | "reserve" | "main"
                 | "small" | "large" | "big" | "huge"
                 | "sig" | "sigs"
+                // Scanner probes are a badge, never a pilot ("Combat Probes", "Core Scanner
+                // Probe"). The Probe frigate is still detected as a ship via the ship index.
+                | "probe" | "probes"
                 // Alliance ticker (EVE University), not a player — even though a character
                 // happens to be named "ivy".
                 | "ivy"
@@ -1533,6 +1540,13 @@ pub fn analyze_ctx(
         .collect();
     ships.extend(reclassified);
 
+    // Scanning probes (Core/Combat Scanner Probe items + slang) are reported as a badge,
+    // never as the Probe frigate — drop the frigate so it isn't double-detected.
+    let probes = detect_probes(text);
+    if probes.is_some() {
+        ships.retain(|s| !s.name.eq_ignore_ascii_case("Probe"));
+    }
+
     let classes = detect_classes(&lower_tokens);
     let (mut tackled, tackled_targets) = detect_tackle(&lower_tokens, &pilot_tokens, ship_index);
     // Best-guess Chinese tackle/point/web terms (not seen in current logs — a safety net).
@@ -1548,6 +1562,7 @@ pub fn analyze_ctx(
     let structures = detect_structures(text);
     IntelReport {
         id: 0, // assigned by IntelState::push
+        probes,
         received,
         channel: channel.to_owned(),
         reporter: reporter.to_owned(),
@@ -1855,6 +1870,24 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
 
 /// Structures mentioned in the message, each with an optional distance off it
 /// ("Keepstar 500km", "Astrahus 2AU").
+/// Scanning probes — Core/Combat Scanner Probe items (incl. Sisters/RSS/Satori-Horigu) and
+/// the "core/combat probes" slang — as a badge label, distinct from the Probe frigate. A
+/// lone "probe" (no Core/Combat/scanner qualifier) is the ship, so returns None.
+fn detect_probes(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    let core = lower.contains("core scanner probe") || lower.contains("core probe");
+    let combat = lower.contains("combat scanner probe") || lower.contains("combat probe");
+    match (core, combat) {
+        (true, false) => Some("Core Probes"),
+        (false, true) => Some("Combat Probes"),
+        (true, true) => Some("Probes"),
+        (false, false) => {
+            let bare_probes = lower.split(|c: char| !c.is_alphanumeric()).any(|w| w == "probes");
+            (lower.contains("scanner probe") || bare_probes).then_some("Probes")
+        }
+    }
+}
+
 fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
     let words: Vec<String> = text
         .split_whitespace()
@@ -2483,6 +2516,33 @@ mod tests {
         assert!(detect_structures("hostiles in Rancer").is_empty());
         // structure abbreviations aren't pilots
         assert!(is_structure_word("fort") && is_structure_word("keep") && is_structure_word("astra"));
+    }
+
+    #[test]
+    fn scanner_probes_badge_not_ship_or_pilot() {
+        assert_eq!(detect_probes("Sisters Core Scanner Probe on dscan"), Some("Core Probes"));
+        assert_eq!(detect_probes("Combat Scanner Probe I"), Some("Combat Probes"));
+        assert_eq!(detect_probes("Core Probes"), Some("Core Probes"));
+        assert_eq!(detect_probes("combat probes out"), Some("Combat Probes"));
+        assert_eq!(detect_probes("probes on dscan"), Some("Probes"));
+        assert_eq!(detect_probes("Probe tackled"), None); // the frigate
+        assert_eq!(detect_probes("hostiles in Rancer"), None);
+
+        // No double detection: the Probe frigate is dropped and it isn't a pilot.
+        let si =
+            std::collections::HashMap::from([("probe".to_string(), (587i64, "Probe".to_string()))]);
+        let s = systems();
+        let r = analyze("Sisters Core Scanner Probe on dscan", &s, &si, &noknown(), 1, "ch", "x");
+        assert_eq!(r.probes, Some("Core Probes"));
+        assert!(r.ships.iter().all(|sh| !sh.name.eq_ignore_ascii_case("probe")), "{:?}", r.ships);
+        assert!(
+            !r.pilots.iter().any(|p| p.to_lowercase().contains("probe")),
+            "{:?}",
+            r.pilots
+        );
+        // A lone "Probe" is still the frigate.
+        let r2 = analyze("Probe tackled", &s, &si, &noknown(), 1, "ch", "x");
+        assert!(r2.ships.iter().any(|sh| sh.name.eq_ignore_ascii_case("probe")));
     }
 
     #[test]

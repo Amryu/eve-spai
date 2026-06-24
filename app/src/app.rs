@@ -9734,6 +9734,23 @@ fn intel_row(
                         });
                 }
 
+                // Scanning probes (Core/Combat Scanner Probes) — a badge, not the Probe frigate.
+                if let Some(probes) = r.probes {
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(0x10, 0x3a, 0x40))
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} {probes}", icon::MAGNIFYING_GLASS))
+                                    .color(egui::Color32::from_rgb(0x7d, 0xd3, 0xde))
+                                    .strong(),
+                            );
+                        })
+                        .response
+                        .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
+                }
+
                 // Clickable system panels.
                 for s in &r.systems {
                     let scol = security_color(s.security);
