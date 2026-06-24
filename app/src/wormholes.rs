@@ -528,9 +528,10 @@ mod tests {
         let normal = wh(false, 1000);
         assert_eq!(normal.expiry(), 1000 + 2 * DAY);
         let drift = wh(true, 1000);
-        assert_eq!(drift.expiry(), 1000 + DAY);
-        assert!(!normal.is_expired(1000 + DAY));
-        assert!(drift.is_expired(1000 + DAY));
+        assert_eq!(drift.expiry(), 1000 + 3600); // drifter holes collapse within ~1 h
+        assert_eq!(drift.effective_size(), Some(ShipSize::Large));
+        assert!(!normal.is_expired(1000 + 3600));
+        assert!(drift.is_expired(1000 + 3600));
     }
 
     #[test]
