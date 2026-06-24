@@ -96,8 +96,11 @@ fn scan(
                     continue;
                 }
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
-                let mut report =
-                    intel::analyze(&m.text, systems, ships, &known, received, &meta.channel, &m.author);
+                // The channel's last-known system lets a bare "C-J gate" resolve.
+                let context = last_system.get(&meta.channel).map(|(id, _, _)| *id);
+                let mut report = intel::analyze_ctx(
+                    &m.text, systems, ships, &known, received, &meta.channel, &m.author, context,
+                );
 
                 // Characters from in-game showinfo links already carry their id —
                 // confirm them at once (and persist), then queue the rest for ESI.

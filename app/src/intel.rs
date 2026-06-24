@@ -625,6 +625,23 @@ pub fn analyze(
     channel: &str,
     reporter: &str,
 ) -> IntelReport {
+    analyze_ctx(text, systems, ship_index, known_pilots, received, channel, reporter, None)
+}
+
+/// As [`analyze`], but with the channel's last-known system as context so an
+/// abbreviated gate ("C-J gate") can disambiguate against that system's neighbours
+/// even when the message doesn't restate a system.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_ctx(
+    text: &str,
+    systems: &Systems,
+    ship_index: &std::collections::HashMap<String, (i64, String)>,
+    known_pilots: &std::collections::HashMap<String, i64>,
+    received: i64,
+    channel: &str,
+    reporter: &str,
+    context_system: Option<i64>,
+) -> IntelReport {
     // Resolve in-game showinfo links first; parse the masked text, display the names.
     let tags = parse_url_tags(text, systems, ship_index);
     let display_text = tags.display.trim().to_owned();
@@ -886,7 +903,9 @@ pub fn analyze(
     // (resolved name, or the raw token if abbreviated/unknown) and don't also list
     // it as a plain system.
     let mut gate: Option<String> = None;
-    let primary = detected.first().map(|d| d.id);
+    // Prefer a system named in this message; otherwise fall back to the channel's
+    // last-known system so a bare "C-J gate" still resolves against its neighbours.
+    let primary = detected.first().map(|d| d.id).or(context_system);
     for (i, tok) in tokens.iter().enumerate() {
         if !tok.eq_ignore_ascii_case("gate") || i == 0 {
             continue;
@@ -1719,6 +1738,39 @@ mod tests {
         // A 2-char letter prefix matches the other neighbour too.
         let r2 = analyze("C-J6MT sv gate", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r2.gate.as_deref(), Some("SV5-8N"));
+    }
+
+    #[test]
+    fn gate_disambiguates_abbrev_via_context() {
+        use std::collections::HashMap;
+        let by_name = [
+            ("d-pnsn", "D-PNSN", 1i64, -0.4),
+            ("c-j6mt", "C-J6MT", 2, -0.6),
+            ("c-jeez", "C-JEEZ", 3, -0.5), // makes "C-J" globally ambiguous
+        ]
+        .into_iter()
+        .map(|(k, n, id, sec)| {
+            (
+                k.to_string(),
+                SystemInfo {
+                    id,
+                    name: n.to_string(),
+                    security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            )
+        })
+        .collect();
+        let adj = HashMap::from([(1i64, vec![2i64]), (2, vec![1])]); // D-PNSN <-> C-J6MT
+        let s = Systems::new(by_name, adj);
+        // A system in the message gives the primary; "C-J" resolves to the neighbour.
+        let r = analyze("D-PNSN C-J gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.gate.as_deref(), Some("C-J6MT"));
+        // No system in the message: the channel's last system (context) disambiguates.
+        let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1));
+        assert_eq!(r2.gate.as_deref(), Some("C-J6MT"));
     }
 
     #[test]
