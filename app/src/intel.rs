@@ -1640,7 +1640,10 @@ fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
 
 /// Split into candidate tokens, keeping `-` and `'` (used in system/char names).
 fn tokenize(text: &str) -> Vec<&str> {
+    // Apostrophes are kept (O'Brien), but a leading/trailing one is stray punctuation
+    // ("PeshyHod'" is the character "PeshyHod"), so trim it off the token ends.
     text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '\''))
+        .map(|t| t.trim_matches('\''))
         .filter(|t| t.len() >= 2)
         .collect()
 }
@@ -1807,6 +1810,17 @@ mod tests {
         // ISK/count tokens and system abbreviations stay out.
         assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
         assert!(is_handle_like("0xtomorrow"));
+    }
+
+    #[test]
+    fn trailing_apostrophe_stripped_from_name() {
+        let s = systems();
+        let r = analyze("MO-I1W PeshyHod'", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "PeshyHod"), "pilots={:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.contains('\'')), "pilots={:?}", r.pilots);
+        // Internal apostrophes are preserved.
+        let r2 = analyze("O'Brien in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.pilots.iter().any(|p| p == "O'Brien"), "pilots={:?}", r2.pilots);
     }
 
     #[test]
