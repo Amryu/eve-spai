@@ -2215,28 +2215,44 @@ impl SpaiApp {
         // Lock order MUST match the watcher (intel_state → pilots); the reverse order
         // here deadlocked the UI thread against the watcher (ABBA).
         let mut st = self.intel_state.lock().unwrap();
-        let cache = self.pilots.lock().unwrap();
+        let mut cache = self.pilots.lock().unwrap();
         for r in &mut st.reports {
-            let mut i = 0;
-            while i < r.pilots.len() {
-                let p = r.pilots[i].clone();
-                let is_confirmed = r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&p));
-                if !is_confirmed && matches!(cache.get(&p), Some(None)) {
-                    // Not a character — fall back to a system embedded in the name.
-                    if let Some(info) = p.split_whitespace().find_map(|t| geo.lookup(t)) {
-                        if !r.systems.iter().any(|d| d.id == info.id) {
-                            r.systems.push(crate::intel::DetectedSystem {
-                                id: info.id,
-                                name: info.name.clone(),
-                                security: info.security,
-                            });
+            let mut new_pilots: Vec<String> = Vec::new();
+            for p in std::mem::take(&mut r.pilots) {
+                let char_linked = r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&p));
+                if char_linked {
+                    new_pilots.push(p);
+                    continue;
+                }
+                match cache.get(&p) {
+                    // Confirmed character, or still pending resolution — keep as-is.
+                    Some(Some(_)) | None => new_pilots.push(p),
+                    // Not a character as a whole: cover it with confirmed sub-names
+                    // (the over-glued run "Wwallddo Lulu Uanid" -> Wwallddo + Lulu Uanid).
+                    Some(None) => {
+                        let cover = cache.cover(&p);
+                        if !cover.is_empty() {
+                            new_pilots.extend(cover);
+                        } else {
+                            for w in crate::pilot::name_windows(&p) {
+                                cache.queue(&w);
+                            }
+                            if let Some(info) = p.split_whitespace().find_map(|t| geo.lookup(t)) {
+                                if !r.systems.iter().any(|d| d.id == info.id) {
+                                    r.systems.push(crate::intel::DetectedSystem {
+                                        id: info.id,
+                                        name: info.name.clone(),
+                                        security: info.security,
+                                    });
+                                }
+                            }
                         }
                     }
-                    r.pilots.remove(i);
-                } else {
-                    i += 1;
                 }
             }
+            let mut seen = std::collections::HashSet::new();
+            new_pilots.retain(|p| seen.insert(p.to_lowercase()));
+            r.pilots = new_pilots;
         }
     }
 
@@ -4684,9 +4700,7 @@ impl SpaiApp {
                 Some(h) => format!("< {h}h"),
                 None => "expiring".to_owned(),
             });
-            ui.label(
-                egui::RichText::new(format!("{sig} → {other}  ({})", parts.join(", "))).small(),
-            );
+            ui.label(egui::RichText::new(format!("{sig} → {other}  ({})", parts.join(", "))));
         }
     }
 

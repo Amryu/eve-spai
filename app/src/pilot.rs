@@ -54,6 +54,48 @@ impl PilotCache {
     pub fn confirmed(&self) -> HashMap<String, i64> {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
     }
+
+    /// Greedily cover a multi-word candidate with confirmed character sub-names
+    /// (longest match first), e.g. "Wwallddo Lulu Uanid" → ["Wwallddo", "Lulu Uanid"].
+    /// Unmatched words are skipped. Empty if nothing in it is a known character.
+    pub fn cover(&self, candidate: &str) -> Vec<String> {
+        let words: Vec<&str> = candidate.split_whitespace().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < words.len() {
+            let mut step = 1;
+            for len in (1..=3.min(words.len() - i)).rev() {
+                let span = words[i..i + len].join(" ");
+                if matches!(self.get(&span), Some(Some(_))) {
+                    out.push(span);
+                    step = len;
+                    break;
+                }
+            }
+            i += step;
+        }
+        out
+    }
+}
+
+/// 1–3 word sub-spans of a candidate, so the resolver can confirm the real names
+/// inside an over-glued run (EVE names are 1–3 words).
+pub fn name_windows(candidate: &str) -> Vec<String> {
+    let words: Vec<&str> = candidate.split_whitespace().collect();
+    let mut out = Vec::new();
+    for len in 1..=3 {
+        if words.len() < len {
+            break;
+        }
+        for start in 0..=words.len() - len {
+            let span = words[start..start + len].join(" ");
+            // EVE character names are at least 3 characters; shorter spans can't be one.
+            if span.chars().count() >= 3 {
+                out.push(span);
+            }
+        }
+    }
+    out
 }
 
 pub type SharedPilots = Arc<Mutex<PilotCache>>;
@@ -132,4 +174,27 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> HashMa
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cover_splits_glued_names() {
+        let mut c = PilotCache::default();
+        c.resolved.insert("wwallddo".into(), Some(1));
+        c.resolved.insert("lulu uanid".into(), Some(2));
+        c.resolved.insert("wwallddo lulu uanid".into(), None);
+        assert_eq!(c.cover("Wwallddo Lulu Uanid"), vec!["Wwallddo", "Lulu Uanid"]);
+        // A run with no known character covers to nothing.
+        assert!(c.cover("Tea ship").is_empty());
+    }
+
+    #[test]
+    fn windows_one_to_three() {
+        // 1-2 char spans are filtered (EVE names are >= 3 chars).
+        assert_eq!(name_windows("abc de"), vec!["abc", "abc de"]);
+        assert!(name_windows("x").is_empty());
+    }
 }
