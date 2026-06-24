@@ -318,8 +318,10 @@ pub struct SpaiApp {
     /// Per-character pop-out map windows (character names) + their saved view state
     /// (region/universe, pan, zoom, whether we've centred on them yet).
     map_char_popouts: Vec<String>,
-    map_char_view:
-        std::collections::HashMap<String, (crate::map::MapView, egui::Vec2, f32, bool)>,
+    map_char_view: std::collections::HashMap<
+        String,
+        (crate::map::MapView, egui::Vec2, f32, bool, Option<egui::Rect>),
+    >,
     /// Pop-out map window kept above other windows.
     map_window_on_top: bool,
     /// Hide all map control overlays (leaving just a "show" button).
@@ -5679,17 +5681,23 @@ impl SpaiApp {
         let locs = self.player.lock().unwrap().locations.clone();
         let mut closed: Vec<String> = Vec::new();
         // Save the main map's view state once.
-        let (sv_view, sv_pan, sv_zoom, sv_focus, sv_follow) =
-            (self.map_view, self.map_pan, self.map_zoom, self.map_focus, self.map_follow);
+        let (sv_view, sv_pan, sv_zoom, sv_focus, sv_follow, sv_rect) = (
+            self.map_view,
+            self.map_pan,
+            self.map_zoom,
+            self.map_focus,
+            self.map_follow,
+            self.map_last_rect,
+        );
         for name in &names {
             let Some(&(sys, _)) = locs.get(name) else { continue };
             let region = self.store.as_ref().and_then(|s| s.region_of_system(sys));
-            let (cv, cpan, czoom, centered) =
+            let (cv, cpan, czoom, centered, crect) =
                 *self.map_char_view.entry(name.clone()).or_insert_with(|| {
                     let v = region
                         .map(crate::map::MapView::Region)
                         .unwrap_or(crate::map::MapView::Universe);
-                    (v, egui::Vec2::ZERO, 6.0, false)
+                    (v, egui::Vec2::ZERO, 6.0, false, None)
                 });
             self.map_view = cv;
             self.map_pan = cpan;
@@ -5698,6 +5706,9 @@ impl SpaiApp {
             // A pop-out centres on its character once; it must NOT inherit the main map's
             // "follow", which would yank it to the active player's system every frame.
             self.map_follow = false;
+            // Per-instance last-rect: the resize-rescale must compare against THIS window's
+            // previous rect, not another instance's — otherwise it rescales pan every frame.
+            self.map_last_rect = crect;
             let mut keep = true;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(format!("charmap_{name}")),
@@ -5713,8 +5724,10 @@ impl SpaiApp {
                 },
             );
             // Persist this character's view; mark it centred so we don't re-snap.
-            self.map_char_view
-                .insert(name.clone(), (self.map_view, self.map_pan, self.map_zoom, true));
+            self.map_char_view.insert(
+                name.clone(),
+                (self.map_view, self.map_pan, self.map_zoom, true, self.map_last_rect),
+            );
             if !keep {
                 closed.push(name.clone());
             }
@@ -5725,6 +5738,7 @@ impl SpaiApp {
         self.map_zoom = sv_zoom;
         self.map_focus = sv_focus;
         self.map_follow = sv_follow;
+        self.map_last_rect = sv_rect;
         for n in closed {
             self.map_char_popouts.retain(|x| x != &n);
             self.map_char_view.remove(&n);
