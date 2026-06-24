@@ -585,6 +585,14 @@ fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>
     out
 }
 
+/// A short name component that can't stand alone but is valid inside a name: a single
+/// capital initial ("Lopatich R") or a short number ("Adama 80", "Malcolm 41"). Only
+/// ever extends a run that already has a real name word; never starts one.
+fn is_name_suffix(t: &str) -> bool {
+    (t.len() == 1 && t.starts_with(|c: char| c.is_ascii_uppercase()))
+        || (matches!(t.len(), 1..=4) && t.chars().all(|c| c.is_ascii_digit()))
+}
+
 fn extract_pilots(text: &str) -> Vec<String> {
     let is_namepart = name_part;
     let mut out: Vec<String> = Vec::new();
@@ -637,7 +645,9 @@ fn loose_pilot_runs(
         // Allow a long run (a whole gang listed inline) up to 20 words; the ESI cover
         // splits it into the real names. No Title-Case anchor required, so all-lowercase
         // names ("mixa kolodenko") are caught too.
-        if (2..=20).contains(&run.len()) {
+        if (2..=20).contains(&run.len())
+            && run.iter().any(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 3)
+        {
             let name = run.join(" ");
             if !out.contains(&name) {
                 out.push(name);
@@ -650,7 +660,7 @@ fn loose_pilot_runs(
         let core = raw.trim_matches(punct);
         let lc = core.to_lowercase();
         // EVE names allow digits ("c137"); ships/systems/stop words still break a run.
-        let namelike = core.len() >= 3
+        let namelike = (core.len() >= 3 || is_name_suffix(core))
             && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
             && !is_pilot_stopword(core)
             && !is_cap_word(core)
@@ -1398,7 +1408,7 @@ pub fn analyze_ctx(
         systems: detected,
         ships,
         classes,
-        count: parse_count(text, &consumed),
+        count: parse_count(text, &consumed, systems, ship_index),
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
         // named e.g. "Clear Skies" can't spoof a "clear" status.
         clear: lower_tokens
@@ -1642,7 +1652,12 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
 /// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number. A `+`/`x`
 /// decorated number is always a count; a bare number is a count only if it wasn't
 /// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
-fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
+fn parse_count(
+    text: &str,
+    consumed: &[String],
+    systems: &Systems,
+    ship_index: &HashMap<String, (i64, String)>,
+) -> Option<u32> {
     // A bare number directly before one of these is an ISK/quantity amount ("334
     // million"), not a hostile count.
     const MAGNITUDE: &[&str] =
@@ -1665,6 +1680,16 @@ fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
         let bare_number = t.chars().all(|c| c.is_ascii_digit());
         if !(decorated || bare_number) {
             continue;
+        }
+        // A *bare* number right after a pilot name is part of the name ("Adama 80",
+        // "Malcolm 41"), not a count. Decorated "+2"/"x2" is always a count, and a number
+        // after a *system* ("Rancer 80") still counts.
+        if bare_number && i > 0 {
+            let prev = words[i - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
+            let plc = prev.to_lowercase();
+            if name_part(prev) && systems.lookup(prev).is_none() && !ship_index.contains_key(&plc) {
+                continue;
+            }
         }
         if bare_number && !decorated {
             // A bare number consumed as a system/gate is not a count.
@@ -2377,6 +2402,29 @@ mod tests {
         // Mixed opening/closing quotes.
         let r2 = analyze("`Some Guy\" tackled", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.pilots.iter().any(|p| p == "Some Guy"));
+    }
+
+    #[test]
+    fn name_with_trailing_number_isnt_a_count() {
+        let s = systems();
+        // "Malcolm 41" / "Adama 80" are pilot names; the trailing number is part of the
+        // name, not a hostile count.
+        assert_eq!(analyze("8X6T-8 Malcolm 41", &s, &noships(), &noknown(), 1, "ch", "x").count, None);
+        assert_eq!(analyze("Adama 80 pls help", &s, &noships(), &noknown(), 1, "ch", "x").count, None);
+        // A number after a *system* is still a count.
+        assert_eq!(analyze("Rancer 5", &s, &noships(), &noknown(), 1, "ch", "x").count, Some(5));
+    }
+
+    #[test]
+    fn loose_runs_keep_short_name_parts() {
+        let s = systems();
+        // Short components ("80", "R") stay in the run so the ESI cover can confirm the
+        // real names ("Adama 80", "Lopatich R").
+        let runs = loose_pilot_runs("Adama 80 Lopatich R", &noships(), &s);
+        assert!(runs.iter().any(|r| r.contains("80")), "runs={:?}", runs);
+        assert!(runs.iter().any(|r| r.split_whitespace().last() == Some("R")), "runs={:?}", runs);
+        // A run of only short parts is dropped (needs a real >=3-letter word).
+        assert!(loose_pilot_runs("80 90", &noships(), &s).is_empty());
     }
 
     #[test]
