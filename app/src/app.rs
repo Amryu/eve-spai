@@ -4257,7 +4257,6 @@ impl SpaiApp {
                 acc.into_iter().map(|(rid, (sum, n))| (rid, (sum / n as f32).to_pos2())).collect();
             labels.sort_by_key(|(rid, _)| *rid);
             let font = egui::FontId::proportional(16.0);
-            let mut placed: Vec<egui::Rect> = Vec::new();
             for (rid, c) in labels {
                 if !rect.contains(c) {
                     continue;
@@ -4265,12 +4264,8 @@ impl SpaiApp {
                 let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) else {
                     continue;
                 };
-                let half = egui::vec2(name.len() as f32 * 4.5, 9.0);
-                let area = egui::Rect::from_center_size(c, half * 2.0);
-                if placed.iter().any(|r| r.intersects(area)) {
-                    continue;
-                }
-                placed.push(area);
+                // Always draw every region name (overlap is acceptable — the user wants
+                // all of them visible, not collision-pruned).
                 // Shadow for legibility over the starfield, then a bright label.
                 painter.text(
                     c + egui::vec2(1.0, 1.0),
