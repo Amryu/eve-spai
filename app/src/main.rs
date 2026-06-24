@@ -11,6 +11,7 @@ mod alliances;
 mod chatlog;
 mod dscan;
 mod esi;
+mod kills;
 mod factions;
 mod gamelog;
 mod gamewatcher;

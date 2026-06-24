@@ -96,6 +96,7 @@ enum IntelClick {
     System(i64),
     Ship(i64),
     Pilot(String),
+    Kill(i64),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -238,6 +239,10 @@ pub struct SpaiApp {
     update: crate::update::SharedUpdate,
     update_checked: bool,
     update_dismissed: bool,
+    /// Killmail enrichment cache + fetch channel + open Kill window (kill id).
+    kill_cache: crate::kills::KillCache,
+    kill_tx: Option<crate::kills::KillSender>,
+    kill_window: Option<i64>,
     /// First-run setup wizard (dismissable; re-runnable from Settings).
     wizard_open: bool,
     wizard_step: u8,
@@ -436,6 +441,10 @@ impl SpaiApp {
             ..Default::default()
         }));
 
+        let kill_cache: crate::kills::KillCache =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let kill_tx = Some(crate::kills::spawn_fetcher(kill_cache.clone(), cc.egui_ctx.clone()));
+
         Self {
             store,
             settings,
@@ -503,6 +512,9 @@ impl SpaiApp {
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked: false,
             update_dismissed: false,
+            kill_cache,
+            kill_tx,
+            kill_window: None,
             wizard_open: false,
             wizard_step: 0,
             wizard_checked: false,
@@ -803,15 +815,17 @@ impl SpaiApp {
         let mut click: Option<IntelClick> = None;
         for (r, sev) in &feed {
             let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+            let kc = self.kill_cache.clone();
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
-                &resolved_pilots, &last_ship, *sev, true,
+                &resolved_pilots, &last_ship, &kc, *sev, true,
             ) {
                 click = Some(c);
             }
         }
         match click {
             Some(IntelClick::System(id)) => self.open_system(id),
+            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -1236,6 +1250,98 @@ impl SpaiApp {
         self.ping_rules_open = open;
         if changed {
             self.needs_save = true;
+        }
+    }
+
+    /// Request zKill/ESI enrichment for any killmail links not yet in the cache.
+    fn poll_kill_fetches(&self) {
+        let Some(tx) = &self.kill_tx else { return };
+        let mut to_fetch: Vec<i64> = Vec::new();
+        {
+            let cache = self.kill_cache.lock().unwrap();
+            let st = self.intel_state.lock().unwrap();
+            for r in &st.reports {
+                for l in &r.links {
+                    if l.kind == crate::intel::LinkKind::Killmail {
+                        if let Some(id) = l.kill_id {
+                            if !cache.contains_key(&id) {
+                                to_fetch.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for id in to_fetch {
+            self.kill_cache.lock().unwrap().entry(id).or_insert(None);
+            let _ = tx.send(id);
+        }
+    }
+
+    /// Kill window: victim/attacker icons, system, value, and a zKill button.
+    fn kill_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.kill_window else { return };
+        use egui_phosphor::regular as icon;
+        let info = self.kill_cache.lock().unwrap().get(&id).cloned().flatten();
+        let systems = self.systems.clone();
+        let red = crate::theme::standing::HOSTILE;
+        let img = |ui: &mut egui::Ui, url: String, sz: f32| {
+            ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(sz, sz)))
+        };
+        let mut open = true;
+        egui::Window::new(format!("{}  Kill", icon::SKULL))
+            .open(&mut open)
+            .default_width(360.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                match &info {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading kill data from zKillboard\u{2026}");
+                        });
+                    }
+                    Some(k) => {
+                        ui.horizontal(|ui| {
+                            if let Some(ship) = k.victim_ship {
+                                img(ui, format!("https://images.evetech.net/types/{ship}/render?size=64"), 56.0);
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("VICTIM").color(red).strong());
+                                ui.horizontal(|ui| {
+                                    if let Some(ch) = k.victim_char {
+                                        img(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"), 28.0);
+                                    }
+                                    if let Some(al) = k.victim_alliance {
+                                        img(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=32"), 28.0);
+                                    }
+                                });
+                            });
+                        });
+                        ui.separator();
+                        if let Some(sys) = systems.as_ref().and_then(|g| g.info_of(k.system_id)) {
+                            ui.label(format!("System: {}", sys.name));
+                        }
+                        ui.label(format!("Value: {}", fmt_isk(k.value)));
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Attackers: {} \u{2014}", k.attacker_count));
+                            for al in k.attacker_alliances.iter().take(3) {
+                                img(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=32"), 22.0);
+                            }
+                        });
+                        ui.label(egui::RichText::new(&k.time).weak());
+                    }
+                }
+                ui.separator();
+                if ui
+                    .button(format!("{}  Open on zKillboard", icon::ARROW_SQUARE_OUT))
+                    .clicked()
+                {
+                    let _ = open::that(format!("https://zkillboard.com/kill/{id}/"));
+                }
+            });
+        if !open {
+            self.kill_window = None;
         }
     }
 
@@ -2378,9 +2484,10 @@ impl SpaiApp {
                     let from_you =
                         jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
                     let sev = severity_of(r, &sev_rules);
+                    let kc = self.kill_cache.clone();
                     if let Some(a) = intel_row(
                         ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                        &ship_roles, &resolved_pilots, &last_ship, sev, true,
+                        &ship_roles, &resolved_pilots, &last_ship, &kc, sev, true,
                     ) {
                         action = Some(a);
                     }
@@ -2395,6 +2502,7 @@ impl SpaiApp {
         drop(state);
         match action {
             Some(IntelClick::System(id)) => self.open_system(id),
+            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -3115,9 +3223,10 @@ impl SpaiApp {
                                     player_sys,
                                     r.primary_system().map(|s| s.id),
                                 );
+                                let kc = self.kill_cache.clone();
                                 if let Some(c) = intel_row(
                                     ui, r, now_ts, false, from_you, &systems, &status_snapshot,
-                                    &ship_details, &ship_roles, &resolved_pilots, &last_ship, *sev,
+                                    &ship_details, &ship_roles, &resolved_pilots, &last_ship, &kc, *sev,
                                     false,
                                 ) {
                                     click = Some(c);
@@ -3143,6 +3252,7 @@ impl SpaiApp {
         // A click in the feed opens the relevant window (in the main viewport).
         match click {
             Some(IntelClick::System(id)) => self.open_system(id),
+            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -5235,9 +5345,10 @@ impl SpaiApp {
                         let from_you =
                             jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id));
                         let sev = severity_of(r, &self.settings.severity);
+                        let kc = self.kill_cache.clone();
                         if let Some(c) = intel_row(
                             ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                            &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, sev, false,
+                            &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev, false,
                         ) {
                             intel_click = Some(c);
                         }
@@ -5261,6 +5372,7 @@ impl SpaiApp {
         // A click inside an intel card (ship / pilot / system).
         match intel_click {
             Some(IntelClick::System(sid)) => self.open_system(sid),
+            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(sid)) => self.open_ship(sid),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -7188,9 +7300,11 @@ impl eframe::App for SpaiApp {
         self.setup_wizard(&ctx);
         self.poll_dscan_clipboard();
         self.poll_jabber_notify(&ctx);
+        self.poll_kill_fetches();
         self.dscan_dialog(&ctx);
         self.ping_compose_dialog(&ctx);
         self.ping_rules_dialog(&ctx);
+        self.kill_window(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -8051,12 +8165,12 @@ fn render_ping(
                 }
                 let from = source.as_deref().unwrap_or("?");
                 let to = target.as_deref().unwrap_or("?");
-                ui.label(egui::RichText::new(format!("— {from} → {to}")).weak().small());
+                ui.label(egui::RichText::new(format!("— {from} {} {to}", icon::ARROW_RIGHT)).weak().small());
             }
             Ping::Plain { text, sender, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
                     let from = sender.as_deref().unwrap_or("ping");
-                    let to = target.as_deref().map(|t| format!(" → {t}")).unwrap_or_default();
+                    let to = target.as_deref().map(|t| format!(" {} {t}", icon::ARROW_RIGHT)).unwrap_or_default();
                     ui.label(egui::RichText::new(format!("{from}{to}")).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(format!("{ago} ago")).weak());
@@ -8209,6 +8323,7 @@ fn intel_row(
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
     last_ship: &std::collections::HashMap<String, (i64, String, i64)>,
+    kills: &crate::kills::KillCache,
     sev: crate::settings::Severity,
     show_reporter: bool,
 ) -> Option<IntelClick> {
@@ -8357,17 +8472,70 @@ fn intel_row(
                 // External link badges (killmail / battle report / dscan).
                 for link in &r.links {
                     use crate::intel::LinkKind;
-                    let (lic, label) = match link.kind {
-                        LinkKind::Killmail => (icon::SKULL, "killmail"),
-                        LinkKind::BattleReport => (icon::CHART_LINE, "battle report"),
-                        LinkKind::Dscan => (icon::RADIO, "dscan"),
-                    };
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new(format!("{lic} {label}")).color(accent)))
-                        .on_hover_text(&link.url)
-                        .clicked()
-                    {
-                        let _ = open::that(&link.url);
+                    match link.kind {
+                        LinkKind::Killmail => {
+                            // Rich KILL badge: victim ship + portrait + KILL; opens the
+                            // Kill window. Icons appear once zKill/ESI enrichment lands.
+                            let info = link
+                                .kill_id
+                                .and_then(|id| kills.lock().unwrap().get(&id).cloned().flatten());
+                            ui.horizontal(|ui| {
+                                if let Some(inf) = &info {
+                                    if let Some(ship) = inf.victim_ship {
+                                        ui.add(egui::Image::new(format!(
+                                            "https://images.evetech.net/types/{ship}/icon?size=32"
+                                        ))
+                                        .fit_to_exact_size(egui::vec2(18.0, 18.0)));
+                                    }
+                                    if let Some(ch) = inf.victim_char {
+                                        ui.add(egui::Image::new(format!(
+                                            "https://images.evetech.net/characters/{ch}/portrait?size=32"
+                                        ))
+                                        .fit_to_exact_size(egui::vec2(18.0, 18.0)));
+                                    }
+                                }
+                                let lbl = egui::RichText::new(format!("{} KILL", icon::SKULL))
+                                    .color(red)
+                                    .strong();
+                                if ui.add(egui::Button::new(lbl)).clicked() {
+                                    if let Some(id) = link.kill_id {
+                                        clicked = Some(IntelClick::Kill(id));
+                                    } else {
+                                        let _ = open::that(&link.url);
+                                    }
+                                }
+                                if let Some(inf) = &info {
+                                    if inf.value > 0.0 {
+                                        ui.label(egui::RichText::new(fmt_isk(inf.value)).weak());
+                                    }
+                                }
+                            });
+                        }
+                        LinkKind::BattleReport => {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(format!("{} BR", icon::CHART_LINE))
+                                        .color(accent)
+                                        .strong(),
+                                ))
+                                .on_hover_text(&link.url)
+                                .clicked()
+                            {
+                                let _ = open::that(&link.url);
+                            }
+                        }
+                        LinkKind::Dscan => {
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new(format!("{} dscan", icon::RADIO))
+                                        .color(accent),
+                                ))
+                                .on_hover_text(&link.url)
+                                .clicked()
+                            {
+                                let _ = open::that(&link.url);
+                            }
+                        }
                     }
                 }
 
