@@ -655,6 +655,19 @@ pub fn analyze(
 /// abbreviated gate ("C-J gate") can disambiguate against that system's neighbours
 /// even when the message doesn't restate a system.
 #[allow(clippy::too_many_arguments)]
+/// Localised "Kill:" prefixes from the in-game killReport link text. EVE doesn't write
+/// the `<url=killReport...>` wrapper to the chat log, so a kill is detected from the
+/// visible (localised) word, not the URL.
+const KILL_WORDS: &[&str] = &[
+    "kill:",       // English
+    "击杀", // Chinese - kill
+    "损失", // Chinese - loss
+    "キル", // Japanese - kill
+    "킬",       // Korean - kill
+    "abschuss",     // German
+    "убийство", // Russian - kill
+];
+
 pub fn analyze_ctx(
     text: &str,
     systems: &Systems,
@@ -1032,7 +1045,8 @@ pub fn analyze_ctx(
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
         camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]),
         bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble"]),
-        killmail: links.iter().any(|l| l.kind == LinkKind::Killmail) || lower.contains("kill:"),
+        killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
+            || KILL_WORDS.iter().any(|w| lower.contains(w)),
         cyno: flagged(&lower_tokens, &pilot_tokens, &["cyno"]),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         wormhole: is_wh_msg,
@@ -1345,6 +1359,14 @@ mod tests {
             "<url=showinfo:1379//115252465>Rondrasil</url>  <url=showinfo:5//30000775>8-WYQZ</url> nv",
             &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "Rondrasil"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn detects_localised_kill_keyword() {
+        let s = systems();
+        // Chinese killReport text (no url wrapper in the log) is recognised as a kill.
+        let r = analyze("DZ Sharisa > 击杀：Wolf E Kristjansson", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.killmail, "should flag a kill from the Chinese keyword");
     }
 
     #[test]
