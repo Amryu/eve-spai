@@ -427,6 +427,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
                 | "small" | "large" | "big" | "huge"
+                | "sig" | "sigs"
                 // Alliance ticker (EVE University), not a player — even though a character
                 // happens to be named "ivy".
                 | "ivy"
