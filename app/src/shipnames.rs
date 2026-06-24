@@ -27,6 +27,9 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("porp", "Porpoise"),
     ("bni", "Brutix Navy Issue"),
     ("eni", "Exequror Navy Issue"),
+    // Acronym auto-gen drops "oni" as ambiguous (Omen vs Osprey Navy Issue); in common
+    // usage ONI = Osprey Navy Issue.
+    ("oni", "Osprey Navy Issue"),
     // Common community slang.
     ("vaga", "Vagabond"),
     ("cane", "Hurricane"),
