@@ -488,6 +488,11 @@ impl Store {
 
     // --- Conversations (persisted, de-duplicated) --------------------------
 
+    /// Delete all stored messages for a conversation (e.g. an invalid-JID DM).
+    pub fn delete_chat_jid(&self, jid: &str) {
+        let _ = self.conn.execute("DELETE FROM chats WHERE jid = ?1", params![jid]);
+    }
+
     /// Persist one chat message (de-duplicated by jid+time+sender+body).
     pub fn add_chat(&self, jid: &str, sender: &str, body: &str, time: i64, outgoing: bool) {
         let _ = self.conn.execute(

@@ -432,13 +432,22 @@ impl SpaiApp {
         let mut loaded_chats: std::collections::BTreeMap<String, Vec<crate::jabber::ChatMsg>> =
             std::collections::BTreeMap::new();
         if let Some(s) = &store {
+            let mut purge: std::collections::HashSet<String> = std::collections::HashSet::new();
             for (jid, sender, body, time, outgoing) in s.load_chats(5000) {
+                // Auto-purge DMs to non-existent (syntactically invalid) JIDs.
+                if !valid_bare_jid(&jid) {
+                    purge.insert(jid);
+                    continue;
+                }
                 loaded_chats.entry(jid).or_default().push(crate::jabber::ChatMsg {
                     from: sender,
                     body,
                     time,
                     outgoing,
                 });
+            }
+            for j in purge {
+                s.delete_chat_jid(&j);
             }
         }
         let jabber = std::sync::Arc::new(std::sync::Mutex::new(crate::jabber::JabberState {
@@ -1431,7 +1440,7 @@ impl SpaiApp {
             for (jid, c) in &st.roster {
                 set.entry(jid.clone()).or_insert_with(|| Convo {
                     jid: jid.clone(),
-                    name: c.name.clone().unwrap_or_else(|| jid.clone()),
+                    name: c.name.clone().unwrap_or_else(|| jid.split('@').next().unwrap_or(jid).to_owned()),
                     unread: false,
                     group: c.groups.first().cloned().unwrap_or_else(|| "Other".to_owned()),
                     presence: c.presence,
@@ -1439,12 +1448,13 @@ impl SpaiApp {
                 });
             }
             for jid in st.chats.keys() {
+                let pres = st.presences.get(jid).map(|(p, _)| *p).unwrap_or_default();
                 set.entry(jid.clone()).or_insert_with(|| Convo {
                     jid: jid.clone(),
-                    name: jid.clone(),
+                    name: jid.split('@').next().unwrap_or(jid).to_owned(),
                     unread: false,
                     group: "Other".to_owned(),
-                    presence: crate::jabber::Presence::Offline,
+                    presence: pres,
                     status_text: String::new(),
                 });
             }
@@ -1468,7 +1478,7 @@ impl SpaiApp {
             let open_dms: Vec<(String, bool)> = st
                 .chats
                 .keys()
-                .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY)
+                .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY && valid_bare_jid(k))
                 .map(|k| (k.clone(), st.unread.contains(k)))
                 .collect();
             (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, open_dms)
@@ -1645,11 +1655,19 @@ impl SpaiApp {
                         continue;
                     }
                     ui.horizontal(|ui| {
+                        let pres = convos
+                            .iter()
+                            .find(|c| &c.jid == djid)
+                            .map(|c| c.presence)
+                            .unwrap_or_default();
+                        let (pr, pg, pb) = pres.color();
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                .color(egui::Color32::from_rgb(pr, pg, pb))
+                                .size(9.0),
+                        );
                         let name = short_chip(djid.split('@').next().unwrap_or(djid));
-                        let mut txt = egui::RichText::new(format!(
-                            "{}  {name}",
-                            egui_phosphor::regular::USER
-                        ));
+                        let mut txt = egui::RichText::new(name);
                         if *unread {
                             txt = txt.strong();
                         }
@@ -7888,6 +7906,19 @@ fn eve_time_label(ts: i64, now: i64) -> String {
         format!("EVE {}", t.format("%H:%M"))
     } else {
         format!("EVE {}", t.format("%Y/%m/%d %H:%M"))
+    }
+}
+
+/// Whether a string is a syntactically valid bare JID (local@domain, no spaces).
+fn valid_bare_jid(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.contains(char::is_whitespace) {
+        return false;
+    }
+    let mut it = s.split('@');
+    match (it.next(), it.next(), it.next()) {
+        (Some(l), Some(d), None) => !l.is_empty() && d.contains('.'),
+        _ => false,
     }
 }
 
