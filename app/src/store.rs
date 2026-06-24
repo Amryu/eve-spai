@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "6";
+pub const SDE_SCHEMA_VERSION: &str = "7";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -122,6 +122,8 @@ pub struct ShipDetails {
     pub mid_slots: i64,
     pub low_slots: i64,
     pub max_velocity: f64,
+    /// Warp speed in AU/s.
+    pub warp_speed: f64,
 }
 
 /// A solar system with map coordinates.
@@ -714,6 +716,20 @@ impl Store {
             mid_slots: val(13) as i64,
             low_slots: val(12) as i64,
             max_velocity: val(37),
+            // warpSpeedMultiplier (600) × baseWarpSpeed (1281, default 1) = AU/s, plus
+            // any always-on role bonus to warp speed from the hull's traits.
+            warp_speed: {
+                let base = val(1281);
+                let mult = val(600);
+                let raw = if base > 0.0 { base * mult } else { mult };
+                let role: f64 = self
+                    .ship_traits(id)
+                    .iter()
+                    .filter(|(_, _, t)| t.to_lowercase().contains("warp speed"))
+                    .map(|(_, b, _)| b)
+                    .sum();
+                raw * (1.0 + role / 100.0)
+            },
         })
     }
 

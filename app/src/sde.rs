@@ -26,6 +26,7 @@ const SHIP_ATTRS: &[i64] = &[
     101, 102, // launcher / turret hardpoints
     37,  // max velocity
     12, 13, 14, // low / med / hi slots
+    600, 1281, // warp speed multiplier, base warp speed
 ];
 
 /// Shared, observable state of the SDE download/bake.

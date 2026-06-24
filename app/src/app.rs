@@ -8551,7 +8551,20 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
             ui.label(egui::RichText::new(name).strong());
             ui.label(format!("{hp:.0}"));
             for i in 0..4 {
-                ui.label(egui::RichText::new(format!("{}%", r[i])).color(dmg_col[i]));
+                // Background bar sized to the resist %, white text on top.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 18.0), egui::Sense::hover());
+                let frac = (r[i] as f32 / 100.0).clamp(0.0, 1.0);
+                let painter = ui.painter();
+                painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+                let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, rect.height()));
+                painter.rect_filled(bar, 2.0, dmg_col[i].gamma_multiply(0.6));
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}%", r[i]),
+                    egui::FontId::proportional(12.5),
+                    egui::Color32::WHITE,
+                );
             }
             ui.label(format!("{:.0}", layer_ehp(hp, r)));
             ui.end_row();
@@ -8581,6 +8594,9 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
         ui.label(format!("Drones: {:.0} m³ / {:.0} Mbit", d.drone_cap, d.drone_bw));
     }
     ui.label(format!("Max velocity: {:.0} m/s", d.max_velocity));
+    if d.warp_speed > 0.0 {
+        ui.label(format!("Warp speed: {:.2} AU/s", d.warp_speed));
+    }
 }
 
 /// Hover tooltip for a system panel: security, location, live conditions.
