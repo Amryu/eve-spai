@@ -530,13 +530,19 @@ fn loose_pilot_runs(
     for raw in text.split_whitespace() {
         let core = raw.trim_matches(punct);
         let lc = core.to_lowercase();
+        // EVE names allow digits ("c137"); ships/systems/stop words still break a run.
         let namelike = core.len() >= 3
-            && core.chars().all(|c| c.is_ascii_alphabetic() || c == '\'' || c == '-')
+            && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
             && !PILOT_STOP.contains(&lc.as_str())
             && !ship_index.contains_key(&lc)
             && systems.lookup(core).is_none();
         if namelike {
-            if name_part(core) {
+            // Anchor on a Title-Case word OR a distinctive one (digit / internal capital),
+            // so an all-lowercase name with a code-like part ("rick c137 sancgez") still
+            // forms a run.
+            let distinctive = core.chars().any(|c| c.is_ascii_digit())
+                || core.chars().skip(1).any(|c| c.is_ascii_uppercase());
+            if name_part(core) || distinctive {
                 anchored = true;
             }
             run.push(core.to_owned());
@@ -1505,6 +1511,18 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn lowercase_name_with_digit_part_is_a_candidate() {
+        let s = systems();
+        // All-lowercase, code-like middle word, no Title-Case anchor.
+        let r = analyze("rick c137 sancgez in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("rick c137 sancgez")),
+            "pilots={:?}",
+            r.pilots
+        );
     }
 
     #[test]
