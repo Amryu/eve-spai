@@ -127,7 +127,7 @@ impl IntelTypeFilter {
             }
             IntelTypeFilter::Clear => r.clear,
             IntelTypeFilter::Kill => r.killmail,
-            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno || r.help,
+            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno || r.help || r.tackled || r.cap_tackled,
         }
     }
 }
@@ -8989,6 +8989,7 @@ fn rule_matches(
             "camp" => r.camp,
             "cyno" => r.cyno,
             "captackled" | "cap" => r.cap_tackled,
+            "tackled" | "point" | "scram" => r.tackled,
             "kill" | "killmail" => r.killmail,
             "ess" => r.ess,
             "wormhole" | "wh" => r.wormhole,
@@ -9405,6 +9406,26 @@ fn intel_row(
                 for class in &r.classes {
                     ui.add(egui::Button::new(egui::RichText::new(class).italics()))
                         .on_hover_text("Ship class — no exact hull was reported");
+                }
+
+                // "<ship/type> TACKLED" badges (a generic one if no target was named).
+                let tackled_badge = |ui: &mut egui::Ui, label: String| {
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(0x5a, 0x18, 0x18))
+                        .inner_margin(4)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(0xff, 0x8a, 0x8a)),
+                            );
+                        });
+                };
+                for target in &r.tackled_targets {
+                    tackled_badge(ui, format!("{target}  TACKLED"));
+                }
+                if r.tackled && r.tackled_targets.is_empty() && !r.cap_tackled {
+                    tackled_badge(ui, "TACKLED".to_string());
                 }
 
                 // Pilot panels: names confirmed as real characters — either by ESI

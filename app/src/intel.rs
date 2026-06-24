@@ -59,6 +59,10 @@ pub struct IntelReport {
     pub cyno: bool,
     /// A capital ship (cap / rorqual / dread / carrier / …) reported tackled.
     pub cap_tackled: bool,
+    /// A (non-capital) ship/type reported tackled.
+    pub tackled: bool,
+    /// Ship/class names reported tackled ("Loki", "Marauder"), for the TACKLED badge.
+    pub tackled_targets: Vec<String>,
     pub wormhole: bool,
     /// Detected wormhole signature code (e.g. "K162"), when one was named.
     pub wh_type: Option<String>,
@@ -252,6 +256,12 @@ impl IntelState {
             prev.bubble |= new.bubble;
             prev.cyno |= new.cyno;
             prev.cap_tackled |= new.cap_tackled;
+            prev.tackled |= new.tackled;
+            for tt in &new.tackled_targets {
+                if !prev.tackled_targets.iter().any(|x| x.eq_ignore_ascii_case(tt)) {
+                    prev.tackled_targets.push(tt.clone());
+                }
+            }
             prev.killmail |= new.killmail;
             prev.wormhole |= new.wormhole;
             prev.wh_type = new.wh_type.clone().or_else(|| prev.wh_type.clone());
@@ -392,6 +402,8 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "hic" | "hics" | "hictor" | "hictors" | "recon" | "recons" | "bomber"
                 | "bombers" | "logi" | "logis" | "ceptor" | "ceptors" | "hac" | "hacs"
                 | "marauder" | "marauders" | "blops"
+                | "tackled" | "tackle" | "tackling" | "takled" | "pointed" | "point"
+                | "scrammed" | "scram" | "scrambled" | "webbed"
         )
 }
 
@@ -1369,6 +1381,7 @@ pub fn analyze_ctx(
     ships.extend(reclassified);
 
     let classes = detect_classes(&lower_tokens);
+    let (tackled, tackled_targets) = detect_tackle(&lower_tokens, &pilot_tokens, ship_index);
 
     IntelReport {
         received,
@@ -1401,6 +1414,8 @@ pub fn analyze_ctx(
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
         cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
+        tackled,
+        tackled_targets,
         wormhole: is_wh_msg,
         wh_type: wh_code,
         wh_dest,
@@ -1489,6 +1504,35 @@ fn is_tackle_word(t: &str) -> bool {
         || t.starts_with("scram")
         || t.starts_with("scrambl")
         || t.starts_with("point")
+}
+
+/// Any ship/type reported tackled. Returns whether a tackle word appears and the
+/// ship/class names immediately preceding one (for the "<ship> TACKLED" badge).
+fn detect_tackle(
+    lower_tokens: &[String],
+    pilot_tokens: &std::collections::HashSet<String>,
+    ship_index: &HashMap<String, (i64, String)>,
+) -> (bool, Vec<String>) {
+    let mut any = false;
+    let mut targets: Vec<String> = Vec::new();
+    for i in 0..lower_tokens.len() {
+        let t = lower_tokens[i].as_str();
+        if is_tackle_word(t) && !pilot_tokens.contains(&lower_tokens[i]) {
+            any = true;
+            if i > 0 {
+                let prev = lower_tokens[i - 1].as_str();
+                let name = ship_index.get(prev).map(|(_, n)| n.clone()).or_else(|| {
+                    SHIP_CLASSES.iter().find(|(k, _)| *k == prev).map(|(_, c)| (*c).to_owned())
+                });
+                if let Some(n) = name {
+                    if !targets.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+                        targets.push(n);
+                    }
+                }
+            }
+        }
+    }
+    (any, targets)
 }
 
 /// A capital reported tackled: a cap-class word AND a tackle word both appear
@@ -1821,6 +1865,26 @@ mod tests {
         // Internal apostrophes are preserved.
         let r2 = analyze("O'Brien in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.pilots.iter().any(|p| p == "O'Brien"), "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
+    fn detects_tackled_with_target() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("loki".to_string(), (29990i64, "Loki".to_string()))].into_iter().collect();
+        let r = analyze("Loki tackled on the gate", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.tackled, "tackled keyword should fire");
+        assert!(r.tackled_targets.iter().any(|t| t == "Loki"), "targets={:?}", r.tackled_targets);
+        assert!(!r.cap_tackled, "Loki is not a capital");
+        // class target + point/scram variants
+        let r2 = analyze("2 marauders pointed", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.tackled && r2.tackled_targets.iter().any(|t| t == "Marauder"), "targets={:?}", r2.tackled_targets);
+        let r3 = analyze("recon scrammed", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r3.tackled && r3.tackled_targets.iter().any(|t| t == "Recon"), "targets={:?}", r3.tackled_targets);
+        // cap tackled stays distinct + escalated (and still fires the generic tackled).
+        let r4 = analyze("dread tackled", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r4.cap_tackled, "cap_tackled escalated");
+        assert!(r4.tackled, "tackled also fires for a cap");
     }
 
     #[test]
