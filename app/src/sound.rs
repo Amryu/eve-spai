@@ -41,6 +41,18 @@ fn preset(name: &str) -> Option<(Vec<Seg>, f32)> {
         "beep" => (vec![s(880.0, 880.0, 110)], 0.26),
         "chime" => (vec![s(1046.0, 1568.0, 220)], 0.24),
         "sweep" => (vec![s(400.0, 1400.0, 260)], 0.28),
+        // Sci-fi wake-up horn: two low brassy blasts that bend up — attention-getting
+        // for fleet pings without being shrill (the synth adds a 2nd harmonic).
+        "horn" => (
+            vec![
+                s(180.0, 262.0, 300),
+                s(262.0, 262.0, 240),
+                s(0.0, 0.0, 90),
+                s(196.0, 330.0, 340),
+                s(330.0, 330.0, 300),
+            ],
+            0.45,
+        ),
         _ => return None,
     })
 }

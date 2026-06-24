@@ -1091,10 +1091,23 @@ impl SpaiApp {
                         .changed();
                     ui.end_row();
                     ui.label("Message sound");
-                    changed |= ui.text_edit_singleline(&mut self.settings.jabber_msg_sound).changed();
+                    ui.horizontal(|ui| {
+                        changed |= ui.text_edit_singleline(&mut self.settings.jabber_msg_sound).changed();
+                        if ui.button(egui_phosphor::regular::PLAY).on_hover_text("Test").clicked() {
+                            crate::sound::play(&self.settings.jabber_msg_sound);
+                        }
+                    });
                     ui.end_row();
                     ui.label("Default ping sound");
-                    changed |= ui.text_edit_singleline(&mut self.settings.jabber_ping_sound).changed();
+                    ui.horizontal(|ui| {
+                        changed |= ui.text_edit_singleline(&mut self.settings.jabber_ping_sound).changed();
+                        if ui.button(egui_phosphor::regular::PLAY).on_hover_text("Test").clicked() {
+                            crate::sound::play(&self.settings.jabber_ping_sound);
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("");
+                    ui.label(egui::RichText::new("presets: horn · chime · beep · sweep · info · warning · danger · critical · off, or a file path").weak().small());
                     ui.end_row();
                     ui.label("Ping bot JID");
                     changed |= ui
@@ -1383,20 +1396,18 @@ impl SpaiApp {
                     }
                 }
                 ui.horizontal(|ui| {
-                    let resp = ui.add(
+                    let join_btn = ui
+                        .button(egui_phosphor::regular::PLUS)
+                        .on_hover_text("Join room")
+                        .clicked();
+                    let resp = ui.add_sized(
+                        [ui.available_width(), 20.0],
                         egui::TextEdit::singleline(&mut self.jabber_room_input)
-                            .hint_text("room@conference.…")
-                            .desired_width(ui.available_width() - 30.0),
+                            .hint_text("room@conference.…"),
                     );
                     let go =
                         resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui
-                        .button(egui_phosphor::regular::PLUS)
-                        .on_hover_text("Join room")
-                        .clicked()
-                        || go)
-                        && !self.jabber_room_input.trim().is_empty()
-                    {
+                    if (join_btn || go) && !self.jabber_room_input.trim().is_empty() {
                         let room = self.full_room_jid(&self.jabber_room_input);
                         self.jabber_room_input.clear();
                         if let Some(tx) = &self.jabber_tx {
@@ -1441,19 +1452,17 @@ impl SpaiApp {
                 // DM: open a direct conversation by JID / local part — grouped with the
                 // room/DM chips above (active DMs live here, not down by the directory).
                 ui.horizontal(|ui| {
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
-                            .hint_text("Message someone…")
-                            .desired_width(ui.available_width() - 30.0),
-                    );
-                    let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui
+                    let dm_btn = ui
                         .button(egui_phosphor::regular::CHAT_CIRCLE_DOTS)
                         .on_hover_text("Open DM")
-                        .clicked()
-                        || go)
-                        && !self.jabber_dm_input.trim().is_empty()
-                    {
+                        .clicked();
+                    let resp = ui.add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
+                            .hint_text("Message someone…"),
+                    );
+                    let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (dm_btn || go) && !self.jabber_dm_input.trim().is_empty() {
                         let jid = self.full_user_jid(&self.jabber_dm_input);
                         self.jabber_dm_input.clear();
                         self.jabber.lock().unwrap().unread.remove(&jid);
@@ -1485,10 +1494,9 @@ impl SpaiApp {
                         self.jabber_show_directory = false;
                     }
                 });
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.jabber_contact_search)
-                        .hint_text("Search")
-                        .desired_width(ui.available_width()),
+                ui.add_sized(
+                    [ui.available_width(), 20.0],
+                    egui::TextEdit::singleline(&mut self.jabber_contact_search).hint_text("Search"),
                 );
                 // Filter: directory shows the whole roster, contacts only the private
                 // list; the search box narrows by name or JID.
@@ -1530,13 +1538,15 @@ impl SpaiApp {
                                 } else {
                                     egui_phosphor::regular::CARET_DOWN
                                 };
+                                let gname = truncate_to(group, fit_chars(ui.available_width() - 40.0));
                                 let r = ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(format!("{caret}  {group}"))
+                                        egui::RichText::new(format!("{caret}  {gname}"))
                                             .strong()
                                             .size(15.0)
                                             .color(accent),
                                     )
+                                    .truncate()
                                     .sense(egui::Sense::click()),
                                 );
                                 ui.label(
@@ -1752,6 +1762,7 @@ impl SpaiApp {
                             .show(ui, |ui| {
                                 let accent = ui.visuals().hyperlink_color;
                                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+                                let now = chrono::Utc::now().timestamp();
                                 let mut hist_drawn = false;
                                 for m in &sel_msgs {
                                     // A divider where historic (loaded) messages end.
@@ -1763,6 +1774,14 @@ impl SpaiApp {
                                             ui.separator();
                                         });
                                     }
+                                    // Compact EVE-time line just above the sender (small
+                                    // font, tight spacing — doesn't grow the message row).
+                                    ui.add_space(3.0);
+                                    ui.label(
+                                        egui::RichText::new(eve_time_label(m.time, now))
+                                            .weak()
+                                            .size(9.5),
+                                    );
                                     ui.horizontal_wrapped(|ui| {
                                         if m.outgoing {
                                             ui.label(egui::RichText::new("me:").color(me_col).strong());
@@ -7474,6 +7493,20 @@ struct Convo {
     group: String,
     presence: crate::jabber::Presence,
     status_text: String,
+}
+
+/// EVE (UTC) timestamp for a chat message: "EVE HH:MM" today, full date otherwise.
+fn eve_time_label(ts: i64, now: i64) -> String {
+    use chrono::{Datelike, TimeZone, Utc};
+    let Some(t) = Utc.timestamp_opt(ts, 0).single() else {
+        return String::new();
+    };
+    let n = Utc.timestamp_opt(now, 0).single().unwrap_or(t);
+    if t.year() == n.year() && t.ordinal() == n.ordinal() {
+        format!("EVE {}", t.format("%H:%M"))
+    } else {
+        format!("EVE {}", t.format("%Y/%m/%d %H:%M"))
+    }
 }
 
 /// Truncate to `max` chars with an ellipsis.

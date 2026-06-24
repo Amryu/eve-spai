@@ -449,7 +449,7 @@ fn default_msg_sound() -> String {
     "chime".to_owned()
 }
 fn default_ping_sound() -> String {
-    "warning".to_owned()
+    "horn".to_owned()
 }
 fn default_alert_jumps() -> u32 {
     5
