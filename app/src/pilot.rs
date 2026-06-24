@@ -72,25 +72,27 @@ impl PilotCache {
         let mut out = Vec::new();
         let mut i = 0;
         while i < words.len() {
-            let mut matched = None;
+            // Take the longest CONFIRMED character name starting here. A pending or
+            // non-name span — e.g. the 3-word "Grim Iskander Felmilia" that bridges two
+            // real names — is skipped, not a reason to abort. (Previously ANY unresolved
+            // span discarded the whole split, so "Octavia von Zeckendorf" was dropped
+            // whenever a bridging span hadn't resolved — and those negative verdicts aren't
+            // persisted, so a restart re-triggered it.) Real characters ARE persisted, so
+            // the longest confirmed span here is the real name.
+            let mut took = 0;
             for len in (1..=3.min(words.len() - i)).rev() {
                 let span = words[i..i + len].join(" ");
-                match self.get(&span) {
-                    Some(Some(_)) => {
-                        matched = Some(len);
-                        break;
-                    }
-                    None => return Vec::new(), // a longer span isn't resolved yet — wait
-                    Some(None) => {}
+                if matches!(self.get(&span), Some(Some(_))) {
+                    out.push(span);
+                    took = len;
+                    break;
                 }
             }
-            match matched {
-                Some(len) => {
-                    out.push(words[i..i + len].join(" "));
-                    i += len;
-                }
-                None => return Vec::new(), // an uncovered word → not a clean split
+            if took == 0 {
+                // No confirmed name covers this word yet — not a clean split; wait.
+                return Vec::new();
             }
+            i += took;
         }
         out
     }
@@ -226,6 +228,32 @@ mod tests {
 
         // A run still pending a longer span defers (empty) rather than shortening.
         assert!(c.cover("Tea ship").is_empty());
+    }
+
+    #[test]
+    fn cover_skips_unresolved_bridging_spans() {
+        let mut c = PilotCache::default();
+        // Real names are persisted/confirmed; the 3-word spans that bridge two of them are
+        // left unresolved (negative verdicts aren't persisted). They must not block.
+        for (n, id) in [
+            ("octavia von zeckendorf", 1),
+            ("grim iskander", 2),
+            ("felmilia berk skjem", 3),
+            ("ayaka iida", 4),
+            ("ai-0002", 5),
+        ] {
+            c.resolved.insert(n.into(), Some(id));
+        }
+        assert_eq!(
+            c.cover("Octavia von Zeckendorf Grim Iskander Felmilia Berk Skjem Ayaka Iida ai-0002"),
+            vec![
+                "Octavia von Zeckendorf",
+                "Grim Iskander",
+                "Felmilia Berk Skjem",
+                "Ayaka Iida",
+                "ai-0002",
+            ]
+        );
     }
 
     #[test]
