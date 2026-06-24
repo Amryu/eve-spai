@@ -202,8 +202,9 @@ pub struct SpaiApp {
     jabber_popped: bool,
     /// Selected conversation (bare JID) in the Jabber view.
     jabber_chat: Option<String>,
-    /// Message composer text.
-    jabber_input: String,
+    /// Per-conversation message drafts (keeps a half-typed message when switching
+    /// chats; a non-empty draft also keeps an otherwise-empty DM open).
+    jabber_drafts: std::collections::HashMap<String, String>,
     /// "Join room" text input (a room JID).
     jabber_room_input: String,
     /// Search filter over the shown contacts.
@@ -482,7 +483,7 @@ impl SpaiApp {
             jabber_tx: None,
             jabber_popped: false,
             jabber_chat: None,
-            jabber_input: String::new(),
+            jabber_drafts: std::collections::HashMap::new(),
             jabber_room_input: String::new(),
             jabber_contact_search: String::new(),
             jabber_dm_input: String::new(),
@@ -1409,8 +1410,19 @@ impl SpaiApp {
                         self.jabber_chat = Some(room);
                     }
                 });
-                // Open DMs (persistent chips like rooms — any started conversation).
-                for (djid, unread) in &open_dms {
+                // Open DMs (persistent chips like rooms): started conversations, plus
+                // any empty DM that still holds a non-whitespace draft.
+                let mut dm_chips = open_dms.clone();
+                for (jid, draft) in &self.jabber_drafts {
+                    if !draft.trim().is_empty()
+                        && jid.as_str() != crate::jabber::PING_FEED_KEY
+                        && !rooms.iter().any(|(r, _)| r == jid)
+                        && !dm_chips.iter().any(|(d, _)| d == jid)
+                    {
+                        dm_chips.push((jid.clone(), false));
+                    }
+                }
+                for (djid, unread) in &dm_chips {
                     let name = short_chip(djid.split('@').next().unwrap_or(djid));
                     let mut txt =
                         egui::RichText::new(format!("{}  {name}", egui_phosphor::regular::USER));
@@ -1781,11 +1793,13 @@ impl SpaiApp {
                                 .max_height(row_h * 8.0)
                                 .show(ui, |ui| {
                                     ui.add(
-                                        egui::TextEdit::multiline(&mut self.jabber_input)
-                                            .hint_text("Message (Shift+Enter for a new line)")
-                                            .return_key(shift_enter)
-                                            .desired_rows(2)
-                                            .desired_width(ui.available_width() - 60.0),
+                                        egui::TextEdit::multiline(
+                                            self.jabber_drafts.entry(jid.clone()).or_default(),
+                                        )
+                                        .hint_text("Message (Shift+Enter for a new line)")
+                                        .return_key(shift_enter)
+                                        .desired_rows(2)
+                                        .desired_width(ui.available_width() - 60.0),
                                     )
                                 })
                                 .inner;
@@ -1793,8 +1807,16 @@ impl SpaiApp {
                                 && ui.input(|i| {
                                     i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
                                 });
-                            if (ui.button("Send").clicked() || send) && !self.jabber_input.trim().is_empty() {
-                                let body = std::mem::take(&mut self.jabber_input);
+                            let draft_empty = self
+                                .jabber_drafts
+                                .get(&jid)
+                                .map_or(true, |d| d.trim().is_empty());
+                            if (ui.button("Send").clicked() || send) && !draft_empty {
+                                let body = self
+                                    .jabber_drafts
+                                    .get_mut(&jid)
+                                    .map(std::mem::take)
+                                    .unwrap_or_default();
                                 if let Some(tx) = &self.jabber_tx {
                                     let cmd = if is_room {
                                         crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
