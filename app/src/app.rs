@@ -315,6 +315,9 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
+    /// True while drawing a per-character pop-out window, so its controls hide the
+    /// main-window management buttons (pop-out, on-top, overlay) that don't apply there.
+    map_in_popout: bool,
     /// Per-character pop-out map windows (character names) + their saved view state
     /// (region/universe, pan, zoom, whether we've centred on them yet).
     map_char_popouts: Vec<String>,
@@ -609,6 +612,7 @@ impl SpaiApp {
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
+            map_in_popout: false,
             map_char_popouts: Vec::new(),
             map_char_view: std::collections::HashMap::new(),
             map_window_on_top: false,
@@ -5361,7 +5365,7 @@ impl SpaiApp {
                             v.sort();
                             v
                         };
-                        if !others.is_empty() {
+                        if !others.is_empty() && !self.map_in_popout {
                             ui.menu_button(icon::USERS_THREE, |ui| {
                                 ui.label(egui::RichText::new("Pop out character map").strong());
                                 for n in &others {
@@ -5380,7 +5384,9 @@ impl SpaiApp {
                             .response
                             .on_hover_text("Pop out a map per character");
                         }
-                        if !self.map_popped {
+                        if self.map_in_popout {
+                            // A per-character pop-out has no main-window controls.
+                        } else if !self.map_popped {
                             if ui
                                 .button(icon::ARROW_SQUARE_OUT)
                                 .on_hover_text("Pop out map window")
@@ -5720,6 +5726,7 @@ impl SpaiApp {
             self.map_follow,
             self.map_last_rect,
         );
+        self.map_in_popout = true;
         for name in &names {
             let Some(&(sys, _)) = locs.get(name) else { continue };
             let region = self.store.as_ref().and_then(|s| s.region_of_system(sys));
@@ -5770,6 +5777,7 @@ impl SpaiApp {
         self.map_focus = sv_focus;
         self.map_follow = sv_follow;
         self.map_last_rect = sv_rect;
+        self.map_in_popout = false;
         for n in closed {
             self.map_char_popouts.retain(|x| x != &n);
             self.map_char_view.remove(&n);
