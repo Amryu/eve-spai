@@ -323,7 +323,7 @@ const PILOT_STOP: &[&str] = &[
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
-    "now", "still", "back", "with", "this", "that", "they", "them", "here", "there",
+    "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there",
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre",
 ];
 
