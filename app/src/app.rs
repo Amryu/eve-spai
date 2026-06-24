@@ -9530,6 +9530,30 @@ fn intel_row(
                         .on_hover_text("ISK posted");
                 }
 
+                // Structures mentioned (Keepstar, Fortizar, …) + distance off, if given.
+                for (name, dist) in &r.structures {
+                    let label = match dist {
+                        Some(d) => format!("{} {name}  {d}", icon::CASTLE_TURRET),
+                        None => format!("{} {name}", icon::CASTLE_TURRET),
+                    };
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(0x2e, 0x24, 0x4a))
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .color(egui::Color32::from_rgb(0xc4, 0xb5, 0xfd))
+                                    .strong(),
+                            );
+                        })
+                        .response
+                        .on_hover_text(match dist {
+                            Some(d) => format!("{name}, {d} off"),
+                            None => name.clone(),
+                        });
+                }
+
                 // Clickable system panels.
                 for s in &r.systems {
                     let scol = security_color(s.security);

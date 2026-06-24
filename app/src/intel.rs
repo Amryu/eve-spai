@@ -51,6 +51,8 @@ pub struct IntelReport {
     pub name_number_skips: Vec<(String, u32)>,
     /// An ISK amount posted in the message ("300kk" -> 300_000_000), if any.
     pub isk: Option<u64>,
+    /// Structures mentioned (canonical name) + an optional distance off each.
+    pub structures: Vec<(String, Option<String>)>,
     pub clear: bool,
     /// Someone explicitly asking for intel ("status?") — informational, not a threat.
     pub status: bool,
@@ -257,6 +259,16 @@ impl IntelState {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
+            for (n, d) in &new.structures {
+                match prev.structures.iter_mut().find(|(pn, _)| pn == n) {
+                    Some(e) => {
+                        if e.1.is_none() {
+                            e.1 = d.clone();
+                        }
+                    }
+                    None => prev.structures.push((n.clone(), d.clone())),
+                }
+            }
             for sk in &new.name_number_skips {
                 if !prev.name_number_skips.iter().any(|(c, _)| c.eq_ignore_ascii_case(&sk.0)) {
                     prev.name_number_skips.push(sk.clone());
@@ -714,6 +726,7 @@ fn loose_pilot_runs(
             && !is_tackle_word(core)
             && !looks_like_system_code(core)
             && !is_time_token(core)
+            && !is_structure_word(core)
             && !ship_index.contains_key(&lc)
             && systems.lookup(core).is_none();
         if namelike {
@@ -1081,6 +1094,7 @@ pub fn analyze_ctx(
         if (!k.contains(' ') && ship_index.contains_key(&k.to_lowercase()))
             || looks_like_system_code(&k)
             || is_time_token(&k)
+            || is_structure_word(&k)
         {
             continue;
         }
@@ -1508,6 +1522,7 @@ pub fn analyze_ctx(
     let pilots = drop_covered_prefixes(&pilots, text);
     let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
     let isk = parse_isk(text);
+    let structures = detect_structures(text);
     IntelReport {
         received,
         channel: channel.to_owned(),
@@ -1521,6 +1536,7 @@ pub fn analyze_ctx(
         count,
         name_number_skips,
         isk,
+        structures,
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
         // named e.g. "Clear Skies" can't spoof a "clear" status.
         clear: lower_tokens
@@ -1766,6 +1782,103 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
 /// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
 /// An approximate ISK amount posted in intel ("300kk", "1.5b", "300 mil", "300 million"),
 /// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
+/// EVE structures + their common in-game abbreviations (verified against player usage,
+/// not invented). Single-word entries match whole tokens; two-word entries match phrases.
+const STRUCTURES: &[(&str, &str)] = &[
+    // Citadels
+    ("keepstar", "Keepstar"), ("keep", "Keepstar"), ("ks", "Keepstar"),
+    ("fortizar", "Fortizar"), ("fort", "Fortizar"),
+    ("astrahus", "Astrahus"), ("astra", "Astrahus"),
+    // Engineering complexes
+    ("raitaru", "Raitaru"), ("azbel", "Azbel"), ("sotiyo", "Sotiyo"),
+    // Refineries
+    ("athanor", "Athanor"), ("tatara", "Tatara"),
+    // Navigation / cyno
+    ("ansiblex", "Ansiblex"), ("ansi", "Ansiblex"),
+    ("tenebrex", "Cyno Jammer"), ("cyno jammer", "Cyno Jammer"),
+    ("pharolux", "Cyno Beacon"), ("cyno beacon", "Cyno Beacon"),
+    // Planetary / Equinox
+    ("poco", "POCO"),
+    ("skyhook", "Skyhook"),
+    ("metenox", "Metenox"), ("moon drill", "Metenox"),
+    ("mercenary den", "Mercenary Den"), ("merc den", "Mercenary Den"),
+    ("sovereignty hub", "Sov Hub"), ("sov hub", "Sov Hub"),
+];
+
+/// Whether a single lower-case token names a structure (so it isn't read as a pilot).
+fn is_structure_word(t: &str) -> bool {
+    let lw = t.to_lowercase();
+    STRUCTURES.iter().any(|(m, _)| !m.contains(' ') && *m == lw.as_str())
+}
+
+/// A distance off a structure: "500km", "2au"/"2AU", or a bare number followed by
+/// "off"/"km"/"au".
+fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
+    match word.find(|c: char| !c.is_ascii_digit() && c != '.') {
+        Some(de) if de > 0 => match &word[de..] {
+            "km" => Some(format!("{}km", &word[..de])),
+            "au" => Some(format!("{}AU", &word[..de])),
+            _ => None,
+        },
+        None if !word.is_empty() && word.chars().all(|c| c.is_ascii_digit()) => match next {
+            Some("off") | Some("km") => Some(format!("{word}km")),
+            Some("au") => Some(format!("{word}AU")),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Structures mentioned in the message, each with an optional distance off it
+/// ("Keepstar 500km", "Astrahus 2AU").
+fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.').to_lowercase())
+        .collect();
+    let dists: Vec<(usize, String)> = words
+        .iter()
+        .enumerate()
+        .filter_map(|(i, w)| parse_distance(w, words.get(i + 1).map(|s| s.as_str())).map(|d| (i, d)))
+        .collect();
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let mut hit: Option<(usize, String)> = None;
+        for len in (1..=2).rev() {
+            if i + len > words.len() {
+                continue;
+            }
+            let phrase = words[i..i + len].join(" ");
+            if let Some(canon) =
+                STRUCTURES.iter().find(|(m, _)| *m == phrase.as_str()).map(|(_, c)| c.to_string())
+            {
+                hit = Some((len, canon));
+                break;
+            }
+        }
+        if let Some((len, canon)) = hit {
+            let near = dists
+                .iter()
+                .filter(|(di, _)| (*di as isize - i as isize).abs() <= 4)
+                .min_by_key(|(di, _)| (*di as isize - i as isize).unsigned_abs())
+                .map(|(_, d)| d.clone());
+            match out.iter_mut().find(|(n, _)| *n == canon) {
+                Some(e) => {
+                    if e.1.is_none() {
+                        e.1 = near;
+                    }
+                }
+                None => out.push((canon, near)),
+            }
+            i += len;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 fn parse_isk(text: &str) -> Option<u64> {
     fn mult(s: &str) -> Option<f64> {
         match s {
@@ -2307,6 +2420,30 @@ mod tests {
         }
         // A real name in the same line is still caught.
         assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn detects_structures_and_distance() {
+        assert_eq!(
+            detect_structures("Keepstar 500 off"),
+            vec![("Keepstar".to_string(), Some("500km".to_string()))]
+        );
+        assert_eq!(
+            detect_structures("Astra 2AU"),
+            vec![("Astrahus".to_string(), Some("2AU".to_string()))]
+        );
+        assert_eq!(detect_structures("Fort tackled"), vec![("Fortizar".to_string(), None)]);
+        assert_eq!(
+            detect_structures("merc den anchoring"),
+            vec![("Mercenary Den".to_string(), None)]
+        );
+        assert_eq!(
+            detect_structures("Sotiyo 1000km"),
+            vec![("Sotiyo".to_string(), Some("1000km".to_string()))]
+        );
+        assert!(detect_structures("hostiles in Rancer").is_empty());
+        // structure abbreviations aren't pilots
+        assert!(is_structure_word("fort") && is_structure_word("keep") && is_structure_word("astra"));
     }
 
     #[test]
