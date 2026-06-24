@@ -735,9 +735,8 @@ impl SpaiApp {
                 let mut chosen: Option<(&crate::settings::AlertRule, Option<u32>)> = None;
                 for ru in acfg.rules.iter().filter(|ru| ru.enabled) {
                     let srcs = char_systems(&ru.characters);
-                    let measurable = !srcs.is_empty() && target.is_some();
                     let jumps = min_jumps_from(&systems, &srcs, target, ru.count_bridges);
-                    if rule_matches(ru, r, sev, jumps, measurable, &systems) {
+                    if rule_matches(ru, r, sev, jumps, &systems) {
                         chosen = Some((ru, jumps));
                         break;
                     }
@@ -9206,7 +9205,6 @@ fn rule_matches(
     r: &crate::intel::IntelReport,
     sev: crate::settings::Severity,
     jumps: Option<u32>,
-    measurable: bool,
     geo: &Option<std::sync::Arc<crate::geo::Systems>>,
 ) -> bool {
     if sev < ru.min_severity {
@@ -9228,9 +9226,11 @@ fn rule_matches(
         }
     }
     if let Some(mj) = ru.max_jumps {
-        // Only filter on distance when it can actually be measured (a character
-        // location is known and the report has a system) — otherwise don't drop it.
-        if measurable && !jumps.is_some_and(|j| j <= mj) {
+        // Distance-limited rule: fire only when the report is provably within range. If the
+        // distance can't be measured — no known character location, or an unreachable target
+        // (e.g. while you're in a wormhole) — it is NOT within range, so don't fire. (Failing
+        // open here flooded alerts for k-space intel while the player sat in w-space.)
+        if !jumps.is_some_and(|j| j <= mj) {
             return false;
         }
     }
