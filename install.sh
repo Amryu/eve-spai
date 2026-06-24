@@ -61,9 +61,42 @@ echo "Installed eve-spai $tag to $PREFIX/eve-spai"
 # macOS: clear the quarantine flag so Gatekeeper doesn't block it.
 [ "$plat" = "macos" ] && xattr -dr com.apple.quarantine "$PREFIX/eve-spai" 2>/dev/null || true
 
+# Interactive prompts read from the controlling terminal so they work under `curl | sh`.
+ask() { # $1=prompt $2=default(y/n); returns 0 for yes
+  [ -e /dev/tty ] || return 1
+  printf '%s ' "$1" > /dev/tty
+  read -r _r < /dev/tty || return 1
+  case "${_r:-$2}" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+# Application menu entry (Linux .desktop; macOS would need an .app bundle).
+if [ "$plat" = "linux" ] && ask "Create an application menu entry? [y/N]" n; then
+  apps="$HOME/.local/share/applications"
+  icondir="$HOME/.local/share/icons/hicolor/256x256/apps"
+  mkdir -p "$apps" "$icondir"
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/assets/eve-spai.png" -o "$icondir/eve-spai.png" 2>/dev/null || true
+  cat > "$apps/eve-spai.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=EVE Spai
+Comment=EVE Online intel tool
+Exec=$PREFIX/eve-spai
+Icon=eve-spai
+Terminal=false
+Categories=Game;
+DESKTOP
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" 2>/dev/null || true
+  echo "Created $apps/eve-spai.desktop"
+fi
+
+# PATH.
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
-  *) echo "Note: $PREFIX is not on your PATH. Add it, e.g.:"
-     echo "  echo 'export PATH=\"$PREFIX:\$PATH\"' >> ~/.profile" ;;
+  *) if ask "Add $PREFIX to your PATH (via ~/.profile)? [Y/n]" y; then
+       printf '\nexport PATH="%s:$PATH"\n' "$PREFIX" >> "$HOME/.profile"
+       echo "Added to ~/.profile — restart your shell (or run $PREFIX/eve-spai now)."
+     else
+       echo "Run it with: $PREFIX/eve-spai"
+     fi ;;
 esac
 echo "Run it with: eve-spai"
