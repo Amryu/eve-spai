@@ -2219,6 +2219,9 @@ impl SpaiApp {
         for r in &mut st.reports {
             let mut new_pilots: Vec<String> = Vec::new();
             for p in std::mem::take(&mut r.pilots) {
+                if crate::intel::is_pilot_stopword(&p) {
+                    continue; // blacklist overrides any cached/char-linked verdict
+                }
                 let char_linked = r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&p));
                 if char_linked {
                     new_pilots.push(p);
@@ -8827,6 +8830,10 @@ fn intel_row(
                 // (resolved_pilots) or authoritatively by an in-game showinfo char link
                 // (char_ids), which always wins regardless of the ESI cache state.
                 for name in &r.pilots {
+                    // A blacklisted word is never a pilot, even if it's cached/char-linked.
+                    if crate::intel::is_pilot_stopword(name) {
+                        continue;
+                    }
                     let char_linked =
                         r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
                     if !char_linked && !resolved_pilots.contains_key(name) {

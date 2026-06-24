@@ -497,6 +497,50 @@ fn extract_pilots(text: &str) -> Vec<String> {
     out
 }
 
+/// Runs of name-like tokens (any case) anchored by at least one Title-Case word, for
+/// ESI sub-span resolution — catches lowercase names ("bigfoott Kepplet") that the
+/// Title-Case heuristic misses. Ships, systems and stop words break a run. The cover
+/// step later confirms/splits each run against ESI (so non-names are dropped).
+fn loose_pilot_runs(
+    text: &str,
+    ship_index: &HashMap<String, (i64, String)>,
+    systems: &Systems,
+) -> Vec<String> {
+    let punct = |c: char| ",.;:!?\"()".contains(c);
+    let mut out: Vec<String> = Vec::new();
+    let mut run: Vec<String> = Vec::new();
+    let mut anchored = false;
+    let flush = |run: &mut Vec<String>, out: &mut Vec<String>, anchored: &mut bool| {
+        if (2..=3).contains(&run.len()) && *anchored {
+            let name = run.join(" ");
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        run.clear();
+        *anchored = false;
+    };
+    for raw in text.split_whitespace() {
+        let core = raw.trim_matches(punct);
+        let lc = core.to_lowercase();
+        let namelike = core.len() >= 3
+            && core.chars().all(|c| c.is_ascii_alphabetic() || c == '\'' || c == '-')
+            && !PILOT_STOP.contains(&lc.as_str())
+            && !ship_index.contains_key(&lc)
+            && systems.lookup(core).is_none();
+        if namelike {
+            if name_part(core) {
+                anchored = true;
+            }
+            run.push(core.to_owned());
+        } else {
+            flush(&mut run, &mut out, &mut anchored);
+        }
+    }
+    flush(&mut run, &mut out, &mut anchored);
+    out
+}
+
 /// Multi-word hull names ("Exequror Navy Issue", "Stabber Fleet Issue") matched
 /// against the full ship name, longest run first. Returns (start_word, len, id,
 /// name). Checked before pilot detection so they aren't read as 3-word names.
@@ -804,6 +848,14 @@ pub fn analyze_ctx(
         .collect();
     // A wormhole signature code (e.g. "K162") is never part of a pilot name.
     pilots.retain(|p| !p.split_whitespace().any(crate::wormholes::is_wh_code));
+    // Loose runs (any-case, anchored by a Title-Case word) — added AFTER the sub-phrase
+    // filter so they don't swallow the strict shorter names; the ESI cover confirms or
+    // splits each later (non-names are dropped).
+    for r in loose_pilot_runs(&masked, ship_index, systems) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&r)) {
+            pilots.push(r);
+        }
+    }
 
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
@@ -1376,6 +1428,19 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn loose_run_catches_lowercase_name() {
+        let s = systems();
+        // Real logs carry no url tags; a lowercase name next to a Title-Case one must
+        // still become a candidate run (ESI/cover confirms it later).
+        let r = analyze("bigfoott Kepplet in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("bigfoott Kepplet")),
+            "pilots={:?}",
+            r.pilots
+        );
     }
 
     #[test]
