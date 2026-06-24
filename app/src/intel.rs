@@ -421,6 +421,9 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
                 | "small" | "large" | "big" | "huge"
+                // Alliance ticker (EVE University), not a player — even though a character
+                // happens to be named "ivy".
+                | "ivy"
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
@@ -1530,7 +1533,8 @@ pub fn analyze_ctx(
 
     let pilots = drop_covered_prefixes(&pilots, text);
     let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
-    let isk = parse_isk(text);
+    let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
+    let isk = parse_isk(text, ess_ctx);
     let structures = detect_structures(text);
     IntelReport {
         received,
@@ -1576,7 +1580,7 @@ pub fn analyze_ctx(
         wh_eol,
         wh_drifter,
         wh_sig,
-        ess: lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t)),
+        ess: ess_ctx,
         // The ESS hack timer maxes at 6 min for the main bank, 45 min for the
         // reserve. A larger "Xm" is an ISK amount (e.g. "77m bank"), not a time.
         ess_time: if lower.contains("ess") {
@@ -1888,18 +1892,25 @@ fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-fn parse_isk(text: &str) -> Option<u64> {
-    fn mult(s: &str) -> Option<f64> {
+fn parse_isk(text: &str, ess: bool) -> Option<u64> {
+    let mult = |s: &str| -> Option<f64> {
         match s {
             "k" => Some(1e3),
-            "kk" | "m" | "mil" | "mill" | "million" | "millions" => Some(1e6),
+            "kk" | "mil" | "mill" | "million" | "millions" => Some(1e6),
+            // Bare "m"/"M" collides with null-sec system shorthands ("4M-", "4M-HGW"), so
+            // only read it as millions when an ESS amount is being discussed.
+            "m" if ess => Some(1e6),
             "b" | "bil" | "bill" | "billion" | "billions" => Some(1e9),
             _ => None,
         }
-    }
+    };
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut best: Option<u64> = None;
     for (i, w) in words.iter().enumerate() {
+        // A hyphenated token is a null-sec system code ("4M-", "4M-HGW"), never ISK.
+        if w.contains('-') {
+            continue;
+        }
         let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
         let split = w.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(w.len());
         let (num, suf) = w.split_at(split);
@@ -2465,12 +2476,16 @@ mod tests {
 
     #[test]
     fn parses_isk_amounts() {
-        assert_eq!(parse_isk("ess 300kk 5 min"), Some(300_000_000));
-        assert_eq!(parse_isk("worth 1.5b"), Some(1_500_000_000));
-        assert_eq!(parse_isk("300 mil tag"), Some(300_000_000));
-        assert_eq!(parse_isk("loot 750m"), Some(750_000_000));
-        assert_eq!(parse_isk("5 min"), None);
-        assert_eq!(parse_isk("Rancer 3 Drake +2"), None);
+        assert_eq!(parse_isk("ess 300kk 5 min", true), Some(300_000_000));
+        assert_eq!(parse_isk("worth 1.5b", false), Some(1_500_000_000));
+        assert_eq!(parse_isk("300 mil tag", false), Some(300_000_000));
+        // Bare "m" reads as millions only with ESS context (collides with "4M-" shorthands).
+        assert_eq!(parse_isk("ess 750m", true), Some(750_000_000));
+        assert_eq!(parse_isk("loot 750m", false), None);
+        // "4M-HGW" is a null-sec system code, never ISK (even with ESS in the line).
+        assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
+        assert_eq!(parse_isk("5 min", false), None);
+        assert_eq!(parse_isk("Rancer 3 Drake +2", false), None);
     }
 
     #[test]
