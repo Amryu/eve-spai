@@ -58,6 +58,8 @@ struct MapOverlays {
     adm: bool,
     upgrades: bool,
     jump_range: bool,
+    wormholes: bool,
+    thera: bool,
 }
 
 impl Default for MapOverlays {
@@ -69,6 +71,8 @@ impl Default for MapOverlays {
             adm: false,
             upgrades: true,
             jump_range: true,
+            wormholes: true,
+            thera: false,
         }
     }
 }
@@ -3749,7 +3753,7 @@ impl SpaiApp {
         // Wormhole overlay: direct k-space↔k-space holes (teal), chains through
         // J-space (purple, dashed, labelled with the J-space hop count), and a spiral
         // marker on systems that hold a hole into (disconnected) J-space.
-        {
+        if self.map_overlays.wormholes {
             let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
             let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
             for &(a, b) in &self.wh_overlay.direct {
@@ -3793,6 +3797,36 @@ impl SpaiApp {
                         egui::FontId::proportional(12.0),
                         wh_col,
                     );
+                }
+            }
+            // Thera isn't on the k-space map: place it near its in-view connections
+            // (clamped just inside the map) and draw its holes.
+            if self.map_overlays.thera {
+                let conns: Vec<egui::Pos2> = self
+                    .wh_overlay
+                    .thera_conns
+                    .iter()
+                    .filter_map(|id| pos.get(id).copied())
+                    .collect();
+                if !conns.is_empty() {
+                    let cx = conns.iter().map(|p| p.x).sum::<f32>() / conns.len() as f32;
+                    let cy = conns.iter().map(|p| p.y).sum::<f32>() / conns.len() as f32;
+                    let mut tp = egui::pos2(cx, cy - 50.0);
+                    tp.x = tp.x.clamp(rect.left() + 14.0, rect.right() - 14.0);
+                    tp.y = tp.y.clamp(rect.top() + 14.0, rect.bottom() - 14.0);
+                    let tcol = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0);
+                    for p in &conns {
+                        painter.line_segment([tp, *p], egui::Stroke::new(1.6, tcol));
+                    }
+                    painter.circle_filled(tp, dot + 3.0, tcol);
+                    painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, tcol));
+                    let lp = tp + egui::vec2(0.0, -dot - 11.0);
+                    let r = painter.text(lp, egui::Align2::CENTER_CENTER, "Thera",
+                        egui::FontId::proportional(12.0), tcol);
+                    painter.rect_filled(r.expand(2.0), 3.0,
+                        ui.visuals().extreme_bg_color.gamma_multiply(0.7));
+                    painter.text(lp, egui::Align2::CENTER_CENTER, "Thera",
+                        egui::FontId::proportional(12.0), tcol);
                 }
             }
         }
@@ -4404,6 +4438,15 @@ impl SpaiApp {
                         ui.checkbox(
                             &mut self.map_overlays.jump_range,
                             format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
+                        );
+                        ui.separator();
+                        ui.checkbox(
+                            &mut self.map_overlays.wormholes,
+                            format!("{}  Wormhole connections", icon::SPIRAL),
+                        );
+                        ui.checkbox(
+                            &mut self.map_overlays.thera,
+                            format!("{}  Thera", icon::PLANET),
                         );
                     });
                 });
@@ -7644,6 +7687,8 @@ struct WhOverlay {
     chains: Vec<(i64, i64, usize)>,
     /// k-space systems with a hole leading into J-space.
     jspace_holes: std::collections::HashSet<i64>,
+    /// k-space systems with a known wormhole connection to Thera.
+    thera_conns: Vec<i64>,
 }
 
 impl WhOverlay {
@@ -7717,7 +7762,15 @@ impl WhOverlay {
         }
         chains.sort_by_key(|c| c.2);
         chains.truncate(MAX_CHAINS);
-        WhOverlay { direct, chains, jspace_holes }
+        const THERA: i64 = 31_000_005;
+        let thera_conns: Vec<i64> = adj
+            .get(&THERA)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|id| is_kspace(*id))
+            .collect();
+        WhOverlay { direct, chains, jspace_holes, thera_conns }
     }
 }
 
