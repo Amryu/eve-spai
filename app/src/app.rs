@@ -3742,9 +3742,12 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 })
                 .with_active(false)
-                // Stay mapped (transparent + click-through when idle) instead of
-                // unmapping: re-mapping on each alert is what made the WM steal focus.
-                .with_visible(true)
+                // Stay mapped (transparent + click-through when idle) so re-mapping on each
+                // alert doesn't make the X11 WM steal focus. On Windows there's no per-window
+                // compositor alpha for an idle borderless window, so a mapped-but-transparent
+                // one renders as an opaque black/white square — unmap it when idle there
+                // instead (with_active(false) keeps the re-map from stealing focus).
+                .with_visible(if cfg!(target_os = "windows") { active } else { true })
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
