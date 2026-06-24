@@ -217,22 +217,24 @@ impl Store {
 
     /// System name search for the map (id, name, security).
     pub fn search_systems(&self, query: &str, limit: i64) -> Vec<(i64, String, f64)> {
-        let q = query.trim();
+        let q = query.trim().to_lowercase();
         if q.is_empty() {
             return Vec::new();
         }
-        let pattern = format!("{q}%");
-        let mut out = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT id, name, security FROM sde_systems WHERE name LIKE ?1 ORDER BY name LIMIT ?2",
-        ) {
-            if let Ok(rows) =
-                stmt.query_map(params![pattern, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            {
-                out.extend(rows.flatten());
+        let mut scored: Vec<(i64, i64, String, f64)> = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name, security FROM sde_systems") {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+            }) {
+                for (id, name, sec) in rows.flatten() {
+                    if let Some(sc) = fuzzy_score(&name.to_lowercase(), &q) {
+                        scored.push((sc, id, name, sec));
+                    }
+                }
             }
         }
-        out
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+        scored.into_iter().take(limit as usize).map(|(_, id, n, sec)| (id, n, sec)).collect()
     }
 
     /// Region name search (id, name).
@@ -241,18 +243,21 @@ impl Store {
         if q.is_empty() {
             return Vec::new();
         }
-        let mut out = Vec::new();
-        if let Ok(mut stmt) = self
-            .conn
-            .prepare("SELECT id, name FROM sde_regions WHERE name LIKE ?1 ORDER BY name LIMIT ?2")
-        {
+        let q = q.to_lowercase();
+        let mut scored: Vec<(i64, i64, String)> = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_regions") {
             if let Ok(rows) =
-                stmt.query_map(params![format!("{q}%"), limit], |r| Ok((r.get(0)?, r.get(1)?)))
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
             {
-                out.extend(rows.flatten());
+                for (id, name) in rows.flatten() {
+                    if let Some(sc) = fuzzy_score(&name.to_lowercase(), &q) {
+                        scored.push((sc, id, name));
+                    }
+                }
             }
         }
-        out
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+        scored.into_iter().take(limit as usize).map(|(_, id, n)| (id, n)).collect()
     }
 
     /// Constellation name search (constellation id, name, its region id).
@@ -261,19 +266,25 @@ impl Store {
         if q.is_empty() {
             return Vec::new();
         }
-        let mut out = Vec::new();
+        let q = q.to_lowercase();
+        let mut scored: Vec<(i64, i64, String, i64)> = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
             "SELECT c.id, c.name,
                     (SELECT region_id FROM sde_systems WHERE constellation_id = c.id LIMIT 1)
-             FROM sde_constellations c WHERE c.name LIKE ?1 ORDER BY c.name LIMIT ?2",
+             FROM sde_constellations c",
         ) {
-            if let Ok(rows) = stmt.query_map(params![format!("{q}%"), limit], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0)))
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0)))
             }) {
-                out.extend(rows.flatten());
+                for (id, name, region) in rows.flatten() {
+                    if let Some(sc) = fuzzy_score(&name.to_lowercase(), &q) {
+                        scored.push((sc, id, name, region));
+                    }
+                }
             }
         }
-        out
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+        scored.into_iter().take(limit as usize).map(|(_, id, n, reg)| (id, n, reg)).collect()
     }
 
     /// Regions (id, name) for the map picker.
@@ -885,4 +896,37 @@ fn data_dir() -> Result<PathBuf> {
     let pd = directories::ProjectDirs::from("online", "EveSpai", "eve-spai")
         .ok_or_else(|| anyhow!("could not resolve a data directory"))?;
     Ok(pd.data_dir().to_path_buf())
+}
+
+/// Fuzzy name match score (higher = better) or None. exact > prefix > substring > trigram.
+fn fuzzy_score(name_lc: &str, q: &str) -> Option<i64> {
+    if name_lc == q {
+        return Some(10_000);
+    }
+    if name_lc.starts_with(q) {
+        return Some(5_000 - name_lc.len() as i64);
+    }
+    if let Some(pos) = name_lc.find(q) {
+        return Some(2_000 - pos as i64 - name_lc.len() as i64);
+    }
+    // Trigram overlap for typo tolerance: fraction of the query's trigrams in the name.
+    let qt = trigrams(q);
+    if qt.is_empty() {
+        return None;
+    }
+    let nt = trigrams(name_lc);
+    let shared = qt.iter().filter(|t| nt.contains(*t)).count();
+    let frac = shared as f64 / qt.len() as f64;
+    (frac >= 0.5).then(|| (frac * 1_000.0) as i64 - name_lc.len() as i64)
+}
+
+/// Boundary-padded 3-grams of a lower-cased string.
+fn trigrams(s: &str) -> std::collections::HashSet<[u8; 3]> {
+    let padded = format!("  {s} ");
+    let b = padded.as_bytes();
+    let mut set = std::collections::HashSet::new();
+    for w in b.windows(3) {
+        set.insert([w[0], w[1], w[2]]);
+    }
+    set
 }
