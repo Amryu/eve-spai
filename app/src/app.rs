@@ -1386,7 +1386,7 @@ impl SpaiApp {
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.jabber_room_input)
                             .hint_text("room@conference.…")
-                            .desired_width(132.0),
+                            .desired_width(ui.available_width() - 30.0),
                     );
                     let go =
                         resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1438,13 +1438,13 @@ impl SpaiApp {
                         self.jabber.lock().unwrap().unread.remove(djid);
                     }
                 }
-                ui.separator();
-                // DM: open a direct conversation with anyone by JID / local part.
+                // DM: open a direct conversation by JID / local part — grouped with the
+                // room/DM chips above (active DMs live here, not down by the directory).
                 ui.horizontal(|ui| {
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.jabber_dm_input)
                             .hint_text("Message someone…")
-                            .desired_width(132.0),
+                            .desired_width(ui.available_width() - 30.0),
                     );
                     let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui
@@ -1460,6 +1460,7 @@ impl SpaiApp {
                         self.jabber_chat = Some(jid);
                     }
                 });
+                ui.separator();
                 // Directory / Contacts toggle (independent of pings/DMs above), each
                 // marked when it has unread.
                 let contacts: std::collections::HashSet<String> =
@@ -1487,7 +1488,7 @@ impl SpaiApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.jabber_contact_search)
                         .hint_text("Search")
-                        .desired_width(176.0),
+                        .desired_width(ui.available_width()),
                 );
                 // Filter: directory shows the whole roster, contacts only the private
                 // list; the search box narrows by name or JID.
@@ -1568,17 +1569,22 @@ impl SpaiApp {
                             let dot = egui::RichText::new(egui_phosphor::regular::CIRCLE)
                                 .color(egui::Color32::from_rgb(r, g, b))
                                 .size(9.0);
+                            // Ellipsize to the space left after the dot + star (the
+                            // scroll area already excludes the scrollbar from avail).
+                            let disp = truncate_to(&c.name, fit_chars(ui.available_width() - 34.0));
                             let name = if c.unread {
-                                egui::RichText::new(&c.name).strong()
+                                egui::RichText::new(disp).strong()
                             } else if c.presence.online() {
-                                egui::RichText::new(&c.name)
+                                egui::RichText::new(disp)
                             } else {
-                                egui::RichText::new(&c.name).weak()
+                                egui::RichText::new(disp).weak()
                             };
                             let is_contact = contacts.contains(&c.jid);
                             let resp = ui.horizontal(|ui| {
                                 ui.label(dot);
-                                let clicked = ui.selectable_label(sel, name).clicked();
+                                let clicked = ui.selectable_label(sel, name)
+                                    .on_hover_text(&c.name)
+                                    .clicked();
                                 // Add to / remove from the private contact list.
                                 let star_col = if is_contact {
                                     ui.visuals().hyperlink_color
@@ -7470,14 +7476,24 @@ struct Convo {
     status_text: String,
 }
 
-/// Truncate a sidebar chip name so a long room/DM name can't widen the panel.
-fn short_chip(s: &str) -> String {
-    const MAX: usize = 20;
-    if s.chars().count() > MAX {
-        format!("{}…", s.chars().take(MAX - 1).collect::<String>())
+/// Truncate to `max` chars with an ellipsis.
+fn truncate_to(s: &str, max: usize) -> String {
+    if max > 1 && s.chars().count() > max {
+        format!("{}…", s.chars().take(max - 1).collect::<String>())
     } else {
         s.to_owned()
     }
+}
+
+/// Truncate a sidebar chip name so a long room/DM name can't widen the panel.
+fn short_chip(s: &str) -> String {
+    truncate_to(s, 20)
+}
+
+/// Roughly how many characters fit in `width` px at the contact-list font size,
+/// so names ellipsize to the available space (scrollbar already excluded by egui).
+fn fit_chars(width: f32) -> usize {
+    (width / 7.5).floor().max(3.0) as usize
 }
 
 /// Draft for the quick-ping composer.
