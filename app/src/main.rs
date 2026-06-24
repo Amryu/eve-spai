@@ -7,6 +7,7 @@
 mod app;
 mod auth;
 mod battle;
+mod alliances;
 mod chatlog;
 mod dscan;
 mod esi;

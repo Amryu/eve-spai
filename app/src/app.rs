@@ -8192,6 +8192,13 @@ fn intel_row(
                     );
                 }
 
+                // Alliance logos for shorthand mentions (frat, init, …).
+                for (name, id) in &r.alliances {
+                    let url = format!("https://images.evetech.net/alliances/{id}/logo?size=32");
+                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(20.0, 20.0)))
+                        .on_hover_text(name);
+                }
+
                 // External link badges (killmail / battle report / dscan).
                 for link in &r.links {
                     use crate::intel::LinkKind;

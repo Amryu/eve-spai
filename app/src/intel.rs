@@ -76,6 +76,8 @@ pub struct IntelReport {
     /// Gates mentioned in the report (a card has one system but may name several
     /// gates — extra system mentions are demoted to gates).
     pub gates: Vec<String>,
+    /// Alliances mentioned by shorthand → (name, alliance id) for the logo.
+    pub alliances: Vec<(String, i64)>,
     /// Where the subject was previously seen (set by the watcher).
     pub movement: Option<Movement>,
     /// External links pasted into the message (killmail / battle report / dscan).
@@ -985,6 +987,16 @@ pub fn analyze_ctx(
         }
     }
 
+    // Alliance shorthands ("frat", "init", …) → logos on the card.
+    let mut alliances: Vec<(String, i64)> = Vec::new();
+    for t in &lower_tokens {
+        if let Some((name, id)) = crate::alliances::lookup(t) {
+            if !alliances.iter().any(|(_, i)| *i == id) {
+                alliances.push((name.to_owned(), id));
+            }
+        }
+    }
+
     IntelReport {
         received,
         channel: channel.to_owned(),
@@ -1028,6 +1040,7 @@ pub fn analyze_ctx(
         },
         skyhook: lower.contains("skyhook"),
         gates,
+        alliances,
         movement: None,
         links,
     }
