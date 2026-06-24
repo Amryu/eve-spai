@@ -1088,6 +1088,38 @@ pub fn analyze_ctx(
         }
     }
 
+    // Standalone null-sec abbreviation ("C-J" when both C-J6MT and C-J7CR exist, with
+    // no "gate" word): resolve by prefix against an already-named system's neighbours or
+    // the channel context. Prefix-only and hyphenated-code-only, so plain words and
+    // suffixes ("6MT") never match.
+    {
+        let ctx: Vec<i64> = detected.iter().map(|d| d.id).chain(context_system).collect();
+        for (i, tok) in tokens.iter().enumerate() {
+            let lc = tok.to_lowercase();
+            if consumed.contains(&lc)
+                || pilot_tokens.contains(&lc)
+                || !looks_like_system_code(tok)
+                || resolve(systems, tok).is_some()
+                || tokens.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case("gate"))
+            {
+                continue;
+            }
+            if let Some((id, name, security)) = ctx.iter().find_map(|&c| {
+                systems.neighbors(c).iter().find_map(|&n| {
+                    systems
+                        .info_of(n)
+                        .filter(|info| info.name.to_lowercase().starts_with(&lc))
+                        .map(|info| (info.id, info.name.clone(), info.security))
+                })
+            }) {
+                consumed.push(lc);
+                if !detected.iter().any(|d| d.id == id) {
+                    detected.push(DetectedSystem { id, name, security });
+                }
+            }
+        }
+    }
+
     // Gate: "... <System> gate" — hostiles are on the gate *to* <System>. Record it
     // (resolved name, or the raw token if abbreviated/unknown) and don't also list
     // it as a plain system.
