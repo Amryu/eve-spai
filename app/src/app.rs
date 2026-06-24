@@ -5360,6 +5360,13 @@ impl SpaiApp {
                             self.map_overlay_locked = true;
                         }
                         if ui
+                            .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
+                            .on_hover_text("Follow active character")
+                            .clicked()
+                        {
+                            self.map_follow = !self.map_follow;
+                        }
+                        if ui
                             .add(egui::Button::new(icon::CPU).selected(self.settings.map_overlay_smart))
                             .on_hover_text("Smart on-top (above only while EVE is active)")
                             .clicked()
