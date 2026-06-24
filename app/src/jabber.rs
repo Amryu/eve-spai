@@ -373,11 +373,19 @@ fn handle_event(
             if local.eq_ignore_ascii_case(PING_SENDER) {
                 let parsed = crate::pings::parse_ping(now, &body, resolve);
                 if !parsed.is_empty() {
+                    // Persist indefinitely so pings survive restarts.
+                    if let Ok(store) = crate::store::Store::open() {
+                        for p in &parsed {
+                            if let Ok(json) = serde_json::to_string(p) {
+                                store.add_ping(p.timestamp(), &json);
+                            }
+                        }
+                    }
                     let mut s = state.lock().unwrap();
                     s.pings.extend(parsed);
                     let n = s.pings.len();
-                    if n > 200 {
-                        s.pings.drain(0..n - 200);
+                    if n > 2000 {
+                        s.pings.drain(0..n - 2000);
                     }
                 }
             }

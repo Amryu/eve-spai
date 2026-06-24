@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS characters (
     expires_at INTEGER,
     scopes     TEXT
 );
+CREATE TABLE IF NOT EXISTS pings (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts   INTEGER NOT NULL,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pings_ts ON pings(ts);
 CREATE TABLE IF NOT EXISTS wormholes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     dedup           TEXT NOT NULL UNIQUE,
@@ -443,6 +449,29 @@ impl Store {
             "INSERT OR IGNORE INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)",
             params![name.to_lowercase(), name, char_id],
         );
+    }
+
+    // --- Fleet pings (persisted indefinitely) ------------------------------
+
+    /// Persist a parsed ping (serialised JSON).
+    pub fn add_ping(&self, ts: i64, json: &str) {
+        let _ = self
+            .conn
+            .execute("INSERT INTO pings(ts, json) VALUES(?1, ?2)", params![ts, json]);
+    }
+
+    /// Load the most recent `limit` pings (oldest first, for display order).
+    pub fn load_pings(&self, limit: i64) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT json FROM (SELECT id, json FROM pings ORDER BY ts DESC, id DESC LIMIT ?1)
+             ORDER BY id ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![limit], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
     }
 
     // --- Wormholes ---------------------------------------------------------

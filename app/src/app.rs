@@ -393,6 +393,18 @@ impl SpaiApp {
             crate::esi::spawn_location_poller(cid, player.clone(), cc.egui_ctx.clone());
         }
 
+        // Restore persisted fleet pings (kept indefinitely).
+        let loaded_pings: Vec<crate::pings::Ping> = store
+            .as_ref()
+            .map(|s| {
+                s.load_pings(2000).into_iter().filter_map(|j| serde_json::from_str(&j).ok()).collect()
+            })
+            .unwrap_or_default();
+        let jabber = std::sync::Arc::new(std::sync::Mutex::new(crate::jabber::JabberState {
+            pings: loaded_pings,
+            ..Default::default()
+        }));
+
         Self {
             store,
             settings,
@@ -436,7 +448,7 @@ impl SpaiApp {
             alert_window_pinned: false,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
-            jabber: std::sync::Arc::new(std::sync::Mutex::new(crate::jabber::JabberState::default())),
+            jabber,
             jabber_tx: None,
             jabber_popped: false,
             jabber_chat: None,

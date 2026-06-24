@@ -7,7 +7,7 @@
 //! `FC` field are fleet pings; the rest are plain broadcasts.
 
 /// A parsed ping.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Ping {
     Plain {
         timestamp: i64,
@@ -38,20 +38,20 @@ impl Ping {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Formup {
     System(i64),
     Text(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PapType {
     Strategic,
     Peacetime,
     Text(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Comms {
     Mumble { channel: String, link: String },
     Text(String),
