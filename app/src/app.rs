@@ -299,6 +299,11 @@ pub struct SpaiApp {
     map_zoom: f32,
     map_follow: bool,
     map_popped: bool,
+    /// Per-character pop-out map windows (character names) + their saved view state
+    /// (region/universe, pan, zoom, whether we've centred on them yet).
+    map_char_popouts: Vec<String>,
+    map_char_view:
+        std::collections::HashMap<String, (crate::map::MapView, egui::Vec2, f32, bool)>,
     /// Pop-out map window kept above other windows.
     map_window_on_top: bool,
     /// Hide all map control overlays (leaving just a "show" button).
@@ -568,6 +573,8 @@ impl SpaiApp {
             map_zoom: 1.0,
             map_follow: false,
             map_popped: false,
+            map_char_popouts: Vec::new(),
+            map_char_view: std::collections::HashMap::new(),
             map_window_on_top: false,
             map_controls_hidden: false,
             map_overlay_mode: false,
@@ -4993,6 +5000,39 @@ impl SpaiApp {
                             self.map_zoom = 1.0;
                             self.map_follow = false;
                         }
+                        // Per-character pop-out maps (other characters with a known
+                        // location): one window each, centred on that character.
+                        let active = self.active_character.clone();
+                        let others: Vec<String> = {
+                            let p = self.player.lock().unwrap();
+                            let mut v: Vec<String> = p
+                                .locations
+                                .keys()
+                                .filter(|n| !n.eq_ignore_ascii_case(&active))
+                                .cloned()
+                                .collect();
+                            v.sort();
+                            v
+                        };
+                        if !others.is_empty() {
+                            ui.menu_button(icon::USERS_THREE, |ui| {
+                                ui.label(egui::RichText::new("Pop out character map").strong());
+                                for n in &others {
+                                    let open = self.map_char_popouts.contains(n);
+                                    if ui.selectable_label(open, n).clicked() {
+                                        if open {
+                                            self.map_char_popouts.retain(|x| x != n);
+                                            self.map_char_view.remove(n);
+                                        } else {
+                                            self.map_char_popouts.push(n.clone());
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("Pop out a map per character");
+                        }
                         if !self.map_popped {
                             if ui
                                 .button(icon::ARROW_SQUARE_OUT)
@@ -5316,6 +5356,68 @@ impl SpaiApp {
     /// Render `content` as a standalone, non-modal, always-on-top OS window.
     /// Returns false when the window's close button was pressed.
     #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    /// Per-character pop-out map windows: each renders the map centred on that
+    /// character, in their region, with its own pan/zoom (reusing draw_map via a state
+    /// swap — viewports render sequentially, so the shared map state is safe to borrow).
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    fn char_popout_windows(&mut self, ctx: &egui::Context) {
+        if self.map_char_popouts.is_empty() {
+            return;
+        }
+        let names = self.map_char_popouts.clone();
+        let locs = self.player.lock().unwrap().locations.clone();
+        let mut closed: Vec<String> = Vec::new();
+        // Save the main map's view state once.
+        let (sv_view, sv_pan, sv_zoom, sv_focus) =
+            (self.map_view, self.map_pan, self.map_zoom, self.map_focus);
+        for name in &names {
+            let Some(&(sys, _)) = locs.get(name) else { continue };
+            let region = self.store.as_ref().and_then(|s| s.region_of_system(sys));
+            let (cv, cpan, czoom, centered) =
+                *self.map_char_view.entry(name.clone()).or_insert_with(|| {
+                    let v = region
+                        .map(crate::map::MapView::Region)
+                        .unwrap_or(crate::map::MapView::Universe);
+                    (v, egui::Vec2::ZERO, 6.0, false)
+                });
+            self.map_view = cv;
+            self.map_pan = cpan;
+            self.map_zoom = czoom;
+            self.map_focus = if centered { None } else { Some(sys) };
+            self.map_draw_key = None; // force a rebuild for this view
+            let mut keep = true;
+            ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of(format!("charmap_{name}")),
+                egui::ViewportBuilder::default()
+                    .with_title(format!("EVE Spai — {name}"))
+                    .with_inner_size([640.0, 520.0])
+                    .with_min_inner_size([360.0, 280.0]),
+                |ctx, _| {
+                    egui::CentralPanel::default().show(ctx, |ui| self.draw_map(ui));
+                    if ctx.input(|i| i.viewport().close_requested()) {
+                        keep = false;
+                    }
+                },
+            );
+            // Persist this character's view; mark it centred so we don't re-snap.
+            self.map_char_view
+                .insert(name.clone(), (self.map_view, self.map_pan, self.map_zoom, true));
+            if !keep {
+                closed.push(name.clone());
+            }
+        }
+        // Restore the main map's state; force its next draw to rebuild map_draw.
+        self.map_view = sv_view;
+        self.map_pan = sv_pan;
+        self.map_zoom = sv_zoom;
+        self.map_focus = sv_focus;
+        self.map_draw_key = None;
+        for n in closed {
+            self.map_char_popouts.retain(|x| x != &n);
+            self.map_char_view.remove(&n);
+        }
+    }
+
     fn dialog_viewport(
         parent: &egui::Context,
         id: &str,
@@ -7731,6 +7833,7 @@ impl eframe::App for SpaiApp {
         if self.map_popped {
             self.show_map_viewport(&ctx);
         }
+        self.char_popout_windows(&ctx);
         if self.jabber_popped {
             self.show_jabber_viewport(&ctx);
         }
