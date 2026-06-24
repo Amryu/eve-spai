@@ -323,6 +323,8 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
+                | "bubbled" | "bubbles" | "bubbling" | "cloak" | "cloaked" | "cloaky"
+                | "cloaks" | "cloaking" | "decloak" | "decloaked" | "camped"
         )
 }
 
@@ -379,8 +381,19 @@ fn name_part(t: &str) -> bool {
 /// A single token distinctive enough to be a name candidate on its own (worth an
 /// ESI lookup): a hyphen/apostrophe, internal capital ("SokoleOko"), or a digit —
 /// patterns that plain words/ship names don't have.
+/// Nullsec system codes / abbreviations ("C-J", "88A-RA", "1DH-SX"): all-uppercase
+/// alphanumerics joined by a hyphen, never lower-case. Used to keep them out of pilot
+/// detection (player names carry lower-case letters).
+fn looks_like_system_code(t: &str) -> bool {
+    t.len() >= 2
+        && t.contains('-')
+        && t.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+        && t.chars().any(|c| c.is_ascii_alphanumeric())
+}
+
 fn is_distinctive_name(t: &str) -> bool {
     name_part(t)
+        && !looks_like_system_code(t)
         && (t.contains('-')
             || t.contains('\'')
             || t.chars().skip(1).any(|c| c.is_ascii_uppercase())
@@ -543,6 +556,7 @@ fn loose_pilot_runs(
             && !is_pilot_stopword(core)
             && !is_cap_word(core)
             && !is_tackle_word(core)
+            && !looks_like_system_code(core)
             && !ship_index.contains_key(&lc)
             && systems.lookup(core).is_none();
         if namelike {
@@ -887,6 +901,7 @@ pub fn analyze_ctx(
         if name_part(t)
             && t.len() >= 3
             && !is_pilot_stopword(t)
+            && !looks_like_system_code(t)
             && !CLEAR_WORDS.contains(&lc.as_str())
             && ship_index.get(&lc).is_none()
             && resolve(systems, t).is_none()
@@ -1521,6 +1536,35 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn system_codes_and_state_words_not_pilots() {
+        let s = systems();
+        // From real intel: "C-J" (system abbreviation) and "bubbled" were read as pilots.
+        let r = analyze("88A-RA C-J gate bubbled", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.bubble, "bubble keyword should fire");
+        for w in ["C-J", "88A-RA", "bubbled"] {
+            assert!(
+                !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
+                "{w} must not be a pilot: {:?}",
+                r.pilots
+            );
+        }
+    }
+
+    #[test]
+    fn cloaked_is_a_state_not_a_pilot() {
+        let s = systems();
+        let r = analyze("Psychopathic beemaster cloaked in bubble", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("cloaked")), "pilots={:?}", r.pilots);
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Psychopathic beemaster cloaked")),
+            "glued name leaked: {:?}",
+            r.pilots
+        );
+        // The real pilot is still detected.
+        assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"), "pilots={:?}", r.pilots);
     }
 
     #[test]
