@@ -9601,6 +9601,11 @@ fn intel_row(
     };
     let tint = if r.clear { green } else { severity_color(sev) };
 
+    // Clicking a card toggles between the parsed view and the raw message (with a minimal
+    // elapsed · jumps · system header). State is keyed by the report so it sticks per card.
+    let toggle_id = egui::Id::new("intel_raw").with(report_key(r));
+    let show_raw = ui.ctx().data(|d| d.get_temp::<bool>(toggle_id).unwrap_or(false));
+
     let mut clicked: Option<IntelClick> = None;
     let resp = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(8, 4))
@@ -9610,6 +9615,36 @@ fn intel_row(
             // The raw message lives on the non-interactive left columns so it never
             // competes with (or hides) the ship/system/pilot panel tooltips.
             let msg = format!("{}\n— {} · {}", r.text, r.reporter, r.channel);
+            if show_raw {
+                // Raw view: a minimal header (elapsed · jumps · system), then the plain message.
+                ui.vertical(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(type_icon).color(tint));
+                        ui.label(
+                            egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak(),
+                        );
+                        match from_you {
+                            Some(0) => {
+                                ui.label(egui::RichText::new("here").monospace().color(jumps_color));
+                            }
+                            Some(j) => {
+                                ui.label(
+                                    egui::RichText::new(format!("{j}j"))
+                                        .monospace()
+                                        .color(jumps_color),
+                                );
+                            }
+                            None => {}
+                        }
+                        for s in &r.systems {
+                            ui.label(egui::RichText::new(&s.name).strong().color(accent));
+                        }
+                    });
+                    let body = if r.text.trim().is_empty() { "(no message text)" } else { &r.text };
+                    ui.label(body);
+                });
+                return;
+            }
             let mut render = |ui: &mut egui::Ui| {
                 // Plain inline widgets (no fixed-size sub-uis — those break wrapping
                 // inside horizontal_wrapped and make the card grow vertically).
@@ -9969,7 +10004,17 @@ fn intel_row(
         })
         .response;
 
-    let _ = resp;
+    // A primary click inside the card that no inner system/ship/pilot link consumed toggles
+    // the raw message. Detected via input (not a card-wide click widget) so it doesn't steal
+    // the inner links' clicks — the card frame would otherwise sit on top of them.
+    let bg_click = clicked.is_none()
+        && ui.input(|i| {
+            i.pointer.primary_clicked()
+                && i.pointer.interact_pos().is_some_and(|p| resp.rect.contains(p))
+        });
+    if bg_click {
+        ui.ctx().data_mut(|d| d.insert_temp(toggle_id, !show_raw));
+    }
     clicked
 }
 
