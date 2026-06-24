@@ -33,6 +33,13 @@ impl PilotCache {
         }
         self.queued.insert(lw);
         self.queue.push_back(name.to_owned());
+        // Bound the backlog (drop the oldest, least-relevant names) so a busy channel
+        // can't starve recent names of resolution.
+        while self.queue.len() > 4000 {
+            if let Some(old) = self.queue.pop_front() {
+                self.queued.remove(&old.to_lowercase());
+            }
+        }
     }
 
     /// Mark a name as a confirmed character (e.g. from an in-game showinfo link that
@@ -122,46 +129,54 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
             return;
         };
         loop {
+            // LIFO: resolve the most recently seen names first (current intel matters
+            // more than a stale backlog). 200/batch stays under ESI's limit + timeout.
             let batch: Vec<String> = {
                 let mut c = cache.lock().unwrap();
-                (0..100).map_while(|_| c.queue.pop_front()).collect()
+                (0..200).map_while(|_| c.queue.pop_back()).collect()
             };
             if batch.is_empty() {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 continue;
             }
-            let chars = resolve_batch(&client, &batch);
-            let resolved: Vec<&String> = batch.iter().filter(|n| chars.contains_key(&n.to_lowercase())).collect();
-            let missed: Vec<&String> = batch.iter().filter(|n| !chars.contains_key(&n.to_lowercase())).collect();
-            eprintln!(
-                "[pilot] resolved {}/{}: ok={:?} not-a-char={:?}",
-                resolved.len(),
-                batch.len(),
-                resolved,
-                missed
-            );
+            let result = resolve_batch(&client, &batch);
             let store = crate::store::Store::open().ok();
             {
                 let mut c = cache.lock().unwrap();
+                // Free the batch from the dedup set; resolved names are also recorded
+                // below, so only unresolved (failed-request) names become re-queueable.
                 for name in &batch {
-                    let id = chars.get(&name.to_lowercase()).copied();
-                    c.resolved.insert(name.to_lowercase(), id);
-                    // Persist confirmed names so they're recognised instantly later.
-                    if let (Some(cid), Some(store)) = (id, &store) {
-                        store.add_known_pilot(name, cid);
+                    c.queued.remove(&name.to_lowercase());
+                }
+                if let Some(chars) = &result {
+                    let ok = batch.iter().filter(|n| chars.contains_key(&n.to_lowercase())).count();
+                    eprintln!("[pilot] resolved {}/{} (queue ~{})", ok, batch.len(), c.queue.len());
+                    for name in &batch {
+                        let id = chars.get(&name.to_lowercase()).copied();
+                        c.resolved.insert(name.to_lowercase(), id);
+                        if let (Some(cid), Some(store)) = (id, &store) {
+                            store.add_known_pilot(name, cid);
+                        }
                     }
                 }
             }
-            ctx.request_repaint();
-            // Gentle on ESI between batches.
-            std::thread::sleep(std::time::Duration::from_millis(800));
+            match &result {
+                // Request failed (timeout/limit/rate) — don't poison the cache; back off.
+                None => std::thread::sleep(std::time::Duration::from_secs(3)),
+                Some(chars) => {
+                    if !chars.is_empty() {
+                        ctx.request_repaint();
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
         }
     });
 }
 
 /// Resolve a batch of exact names; returns the character names that matched
 /// (lower-cased) -> id.
-fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> HashMap<String, i64> {
+fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option<HashMap<String, i64>> {
     let mut out = HashMap::new();
     let resp: Option<serde_json::Value> = client
         .post(ESI_IDS)
@@ -170,10 +185,11 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> HashMa
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.json())
         .ok();
-    if resp.is_none() {
-        eprintln!("[pilot] ESI /universe/ids request FAILED for {} names (network/rate-limit) — they stay unresolved", names.len());
-    }
-    if let Some(v) = resp {
+    let Some(v) = resp else {
+        eprintln!("[pilot] ESI /universe/ids request FAILED for {} names — left unresolved", names.len());
+        return None;
+    };
+    {
         if let Some(chars) = v.get("characters").and_then(|c| c.as_array()) {
             for c in chars {
                 if let (Some(id), Some(name)) =
@@ -184,7 +200,7 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> HashMa
             }
         }
     }
-    out
+    Some(out)
 }
 
 #[cfg(test)]
