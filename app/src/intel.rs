@@ -298,7 +298,7 @@ const PILOT_STOP: &[&str] = &[
     "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
-    "afk", "warpin", "system", "and", "for", "status", "stat", "report", "intel",
+    "afk", "warpin", "system", "and", "for", "status", "stat", "report", "intel", "went",
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
@@ -851,6 +851,11 @@ pub fn analyze_ctx(
         if pilot_tokens.contains(&lower) || mw_words.contains(&lower) {
             continue;
         }
+        // "shuttle(s)" with no specific hull → default to the Caldari Shuttle (672).
+        if matches!(lower.as_str(), "shuttle" | "shuttles") {
+            add_ship(672, "Caldari Shuttle", &mut ships);
+            continue;
+        }
         if let Some((id, name)) = ship_index.get(&lower) {
             add_ship(*id, name, &mut ships);
             continue;
@@ -1371,6 +1376,18 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn two_char_links_both_detected() {
+        let s = systems();
+        let r = analyze(
+            "<url=showinfo:1375//2123842340>bigfoott</url>  <url=showinfo:1374//2124452380>Kepplet</url>  <url=showinfo:5//30000593>GRHS-B</url>",
+            &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|x| x == "bigfoott"), "pilots={:?}", r.pilots);
+        assert!(r.pilots.iter().any(|x| x == "Kepplet"), "pilots={:?}", r.pilots);
+        assert!(r.char_ids.iter().any(|(n, _)| n == "bigfoott"), "char_ids={:?}", r.char_ids);
+        assert!(r.char_ids.iter().any(|(n, _)| n == "Kepplet"), "char_ids={:?}", r.char_ids);
     }
 
     #[test]
