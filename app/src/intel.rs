@@ -49,6 +49,8 @@ pub struct IntelReport {
     /// Bare numbers tentatively treated as name components ("Adama 80"): (candidate, n).
     /// The reconcile adds `n` back to the count if ESI says the candidate isn't a pilot.
     pub name_number_skips: Vec<(String, u32)>,
+    /// An ISK amount posted in the message ("300kk" -> 300_000_000), if any.
+    pub isk: Option<u64>,
     pub clear: bool,
     /// Someone explicitly asking for intel ("status?") — informational, not a threat.
     pub status: bool,
@@ -248,6 +250,10 @@ impl IntelState {
                 prev.systems = new.systems.clone();
             }
             prev.count = match (prev.count, new.count) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            prev.isk = match (prev.isk, new.isk) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
@@ -1481,6 +1487,7 @@ pub fn analyze_ctx(
 
     let pilots = drop_covered_prefixes(&pilots, text);
     let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
+    let isk = parse_isk(text);
     IntelReport {
         received,
         channel: channel.to_owned(),
@@ -1493,6 +1500,7 @@ pub fn analyze_ctx(
         classes,
         count,
         name_number_skips,
+        isk,
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
         // named e.g. "Clear Skies" can't spoof a "clear" status.
         clear: lower_tokens
@@ -1736,6 +1744,57 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
 /// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number. A `+`/`x`
 /// decorated number is always a count; a bare number is a count only if it wasn't
 /// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
+/// An approximate ISK amount posted in intel ("300kk", "1.5b", "300 mil", "300 million"),
+/// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
+fn parse_isk(text: &str) -> Option<u64> {
+    fn mult(s: &str) -> Option<f64> {
+        match s {
+            "k" => Some(1e3),
+            "kk" | "m" | "mil" | "mill" | "million" | "millions" => Some(1e6),
+            "b" | "bil" | "bill" | "billion" | "billions" => Some(1e9),
+            _ => None,
+        }
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut best: Option<u64> = None;
+    for (i, w) in words.iter().enumerate() {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+        let split = w.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(w.len());
+        let (num, suf) = w.split_at(split);
+        let Ok(n) = num.parse::<f64>() else { continue };
+        if !n.is_finite() || n <= 0.0 {
+            continue;
+        }
+        let m = if !suf.is_empty() {
+            mult(&suf.to_lowercase())
+        } else {
+            words
+                .get(i + 1)
+                .and_then(|nx| mult(&nx.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()))
+        };
+        if let Some(m) = m {
+            let isk = (n * m) as u64;
+            if best.map_or(true, |b| isk > b) {
+                best = Some(isk);
+            }
+        }
+    }
+    best
+}
+
+/// Compact ISK display ("300M", "1.5B", "750K").
+pub fn format_isk(isk: u64) -> String {
+    if isk >= 1_000_000_000 {
+        format!("{:.1}B", isk as f64 / 1e9)
+    } else if isk >= 1_000_000 {
+        format!("{:.0}M", isk as f64 / 1e6)
+    } else if isk >= 1_000 {
+        format!("{:.0}K", isk as f64 / 1e3)
+    } else {
+        isk.to_string()
+    }
+}
+
 fn parse_count(
     text: &str,
     consumed: &[String],
@@ -2225,6 +2284,16 @@ mod tests {
         }
         // A real name in the same line is still caught.
         assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn parses_isk_amounts() {
+        assert_eq!(parse_isk("ess 300kk 5 min"), Some(300_000_000));
+        assert_eq!(parse_isk("worth 1.5b"), Some(1_500_000_000));
+        assert_eq!(parse_isk("300 mil tag"), Some(300_000_000));
+        assert_eq!(parse_isk("loot 750m"), Some(750_000_000));
+        assert_eq!(parse_isk("5 min"), None);
+        assert_eq!(parse_isk("Rancer 3 Drake +2"), None);
     }
 
     #[test]

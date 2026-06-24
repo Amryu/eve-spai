@@ -9473,6 +9473,27 @@ fn intel_row(
                         .on_hover_text("hostiles");
                 }
 
+                // ISK amount posted (ESS bank, loot, bounty) — "300M", "1.5B".
+                if let Some(isk) = r.isk {
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(0x4a, 0x3d, 0x10))
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} {}",
+                                    icon::COINS,
+                                    crate::intel::format_isk(isk)
+                                ))
+                                .color(egui::Color32::from_rgb(0xff, 0xd9, 0x6b))
+                                .strong(),
+                            );
+                        })
+                        .response
+                        .on_hover_text("ISK posted");
+                }
+
                 // Clickable system panels.
                 for s in &r.systems {
                     let scol = security_color(s.security);
