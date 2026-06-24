@@ -46,6 +46,9 @@ pub struct IntelReport {
     pub char_ids: Vec<(String, i64)>,
     /// Approximate hostile/ship count parsed from the message, if any.
     pub count: Option<u32>,
+    /// Bare numbers tentatively treated as name components ("Adama 80"): (candidate, n).
+    /// The reconcile adds `n` back to the count if ESI says the candidate isn't a pilot.
+    pub name_number_skips: Vec<(String, u32)>,
     pub clear: bool,
     /// Someone explicitly asking for intel ("status?") — informational, not a threat.
     pub status: bool,
@@ -248,6 +251,11 @@ impl IntelState {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
+            for sk in &new.name_number_skips {
+                if !prev.name_number_skips.iter().any(|(c, _)| c.eq_ignore_ascii_case(&sk.0)) {
+                    prev.name_number_skips.push(sk.clone());
+                }
+            }
             prev.clear |= new.clear;
             prev.no_visual |= new.no_visual;
             prev.spike |= new.spike;
@@ -1398,6 +1406,7 @@ pub fn analyze_ctx(
     // Best-guess Chinese tackle/point/web terms (not seen in current logs — a safety net).
     tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
+    let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
     IntelReport {
         received,
         channel: channel.to_owned(),
@@ -1408,7 +1417,8 @@ pub fn analyze_ctx(
         systems: detected,
         ships,
         classes,
-        count: parse_count(text, &consumed, systems, ship_index),
+        count,
+        name_number_skips,
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
         // named e.g. "Clear Skies" can't spoof a "clear" status.
         clear: lower_tokens
@@ -1657,7 +1667,8 @@ fn parse_count(
     consumed: &[String],
     systems: &Systems,
     ship_index: &HashMap<String, (i64, String)>,
-) -> Option<u32> {
+) -> (Option<u32>, Vec<(String, u32)>) {
+    let mut name_skips: Vec<(String, u32)> = Vec::new();
     // A bare number directly before one of these is an ISK/quantity amount ("334
     // million"), not a hostile count.
     const MAGNITUDE: &[&str] =
@@ -1688,6 +1699,9 @@ fn parse_count(
             let prev = words[i - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
             let plc = prev.to_lowercase();
             if name_part(prev) && systems.lookup(prev).is_none() && !ship_index.contains_key(&plc) {
+                if let Ok(n) = digits.parse::<u32>() {
+                    name_skips.push((format!("{prev} {digits}"), n));
+                }
                 continue;
             }
         }
@@ -1711,7 +1725,7 @@ fn parse_count(
             }
         }
     }
-    best
+    (best, name_skips)
 }
 
 /// Split into candidate tokens, keeping `-` and `'` (used in system/char names).

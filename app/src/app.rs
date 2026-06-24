@@ -2330,6 +2330,29 @@ impl SpaiApp {
                 changed = true;
             }
             r.pilots = final_pilots;
+            // Count fallback: a bare number tentatively read as a name component ("Adama
+            // 80") is counted after all if ESI says the "{name} {n}" candidate isn't a
+            // real character ("Bob 80" -> 80 was a hostile count).
+            let mut add = 0u32;
+            let mut requeue: Vec<String> = Vec::new();
+            r.name_number_skips.retain(|(cand, num)| match cache.get(cand) {
+                Some(None) => {
+                    add += *num;
+                    false
+                }
+                Some(Some(_)) => false,
+                None => {
+                    requeue.push(cand.clone());
+                    true
+                }
+            });
+            for c in requeue {
+                cache.queue(&c);
+            }
+            if add > 0 {
+                r.count = Some(r.count.unwrap_or(0) + add);
+                changed = true;
+            }
         }
         changed
     }
