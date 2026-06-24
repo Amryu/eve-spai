@@ -118,6 +118,12 @@ fn scan(
                     for name in &report.pilots {
                         cache.queue(name);
                     }
+                    eprintln!(
+                        "[pilot] parsed '{}': pilots={:?} char-linked={:?}",
+                        m.author,
+                        report.pilots,
+                        report.char_ids.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                    );
                 }
 
                 // Successive messages from the same reporter (same/no system, ≤1 min)

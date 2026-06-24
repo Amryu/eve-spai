@@ -78,6 +78,15 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                 continue;
             }
             let chars = resolve_batch(&client, &batch);
+            let resolved: Vec<&String> = batch.iter().filter(|n| chars.contains_key(&n.to_lowercase())).collect();
+            let missed: Vec<&String> = batch.iter().filter(|n| !chars.contains_key(&n.to_lowercase())).collect();
+            eprintln!(
+                "[pilot] resolved {}/{}: ok={:?} not-a-char={:?}",
+                resolved.len(),
+                batch.len(),
+                resolved,
+                missed
+            );
             let store = crate::store::Store::open().ok();
             {
                 let mut c = cache.lock().unwrap();
@@ -108,6 +117,9 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> HashMa
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.json())
         .ok();
+    if resp.is_none() {
+        eprintln!("[pilot] ESI /universe/ids request FAILED for {} names (network/rate-limit) — they stay unresolved", names.len());
+    }
     if let Some(v) = resp {
         if let Some(chars) = v.get("characters").and_then(|c| c.as_array()) {
             for c in chars {
