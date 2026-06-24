@@ -761,7 +761,7 @@ pub fn analyze(
     channel: &str,
     reporter: &str,
 ) -> IntelReport {
-    analyze_ctx(text, systems, ship_index, known_pilots, received, channel, reporter, None)
+    analyze_ctx(text, systems, ship_index, known_pilots, received, channel, reporter, None, &[])
 }
 
 /// As [`analyze`], but with the channel's last-known system as context so an
@@ -781,6 +781,48 @@ const KILL_WORDS: &[&str] = &[
     "убийство", // Russian - kill
 ];
 
+/// Extract the EVE region names a channel covers from its MOTD
+/// ("Channel MOTD: TENERIFIS // IMMENSEA // …"). Only names matching a known region are
+/// kept, so the trailing prose is ignored. The result is a hint for abbreviation
+/// disambiguation, not an absolute filter.
+pub fn parse_motd_regions(motd: &str, known: &std::collections::HashSet<String>) -> Vec<String> {
+    // Scan from the MOTD marker onward (skip the log header) for *any* known region
+    // name, regardless of separators or line breaks. It's only a disambiguation hint, so
+    // being inclusive is fine. A boundary check (not preceded by a letter, not followed
+    // by a lower-case letter) keeps "Catch" out of the middle of words while still
+    // catching "CATCHPlease" where regions are glued to the trailing prose.
+    let body = match motd.rfind("Channel MOTD:") {
+        Some(i) => &motd[i + "Channel MOTD:".len()..],
+        None => motd,
+    };
+    let lc = body.to_lowercase();
+    let lcb = lc.as_bytes();
+    let orig = body.as_bytes();
+    let mut hits: Vec<(usize, &String)> = Vec::new();
+    for region in known {
+        let r = region.as_str();
+        let mut from = 0;
+        while let Some(rel) = lc[from..].find(r) {
+            let at = from + rel;
+            let before_ok = at == 0 || !(lcb[at - 1] as char).is_ascii_alphabetic();
+            let after = at + r.len();
+            let after_ok = after >= orig.len() || !(orig[after] as char).is_ascii_lowercase();
+            if before_ok && after_ok {
+                hits.push((at, region));
+                break;
+            }
+            from = at + 1;
+        }
+    }
+    hits.sort_by_key(|(pos, _)| *pos);
+    let mut out: Vec<String> = Vec::new();
+    for (_, r) in hits {
+        if !out.contains(r) {
+            out.push(r.clone());
+        }
+    }
+    out
+}
 pub fn analyze_ctx(
     text: &str,
     systems: &Systems,
@@ -790,6 +832,7 @@ pub fn analyze_ctx(
     channel: &str,
     reporter: &str,
     context_system: Option<i64>,
+    channel_regions: &[String],
 ) -> IntelReport {
     // Resolve in-game showinfo links first; parse the masked text, display the names.
     let tags = parse_url_tags(text, systems, ship_index);
@@ -1104,14 +1147,18 @@ pub fn analyze_ctx(
             {
                 continue;
             }
-            if let Some((id, name, security)) = ctx.iter().find_map(|&c| {
-                systems.neighbors(c).iter().find_map(|&n| {
-                    systems
-                        .info_of(n)
-                        .filter(|info| info.name.to_lowercase().starts_with(&lc))
-                        .map(|info| (info.id, info.name.clone(), info.security))
+            let hit = ctx
+                .iter()
+                .find_map(|&c| {
+                    systems.neighbors(c).iter().find_map(|&n| {
+                        systems.info_of(n).filter(|info| info.name.to_lowercase().starts_with(&lc))
+                    })
                 })
-            }) {
+                // Hint: an Imperium channel's regions (from its MOTD) pick C-J6MT over the
+                // Vale of the Silent C-J7CR even with no nearby named system.
+                .or_else(|| systems.lookup_prefix_in_regions(tok, channel_regions));
+            if let Some(info) = hit {
+                let (id, name, security) = (info.id, info.name.clone(), info.security);
                 consumed.push(lc);
                 if !detected.iter().any(|d| d.id == id) {
                     detected.push(DetectedSystem { id, name, security });
@@ -1588,6 +1635,49 @@ mod tests {
             r.pilots
         );
         assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn parses_regions_from_motd() {
+        let known: std::collections::HashSet<String> =
+            ["tenerifis", "immensea", "impass", "catch", "wicked creek"]
+                .iter().map(|s| s.to_string()).collect();
+        let motd = "[ 2026.06.24 ] EVE System > Channel MOTD: TENERIFIS // IMMENSEA // IMPASS // CATCH\nPlease contact Corps Diplomatique";
+        assert_eq!(parse_motd_regions(motd, &known), vec!["tenerifis", "immensea", "impass", "catch"]);
+        // The real format: one line, last region glued to trailing prose.
+        let glued = "EVE System > Channel MOTD: TENERIFIS // IMMENSEA // IMPASS // CATCHPlease contact Corps";
+        assert_eq!(parse_motd_regions(glued, &known), vec!["tenerifis", "immensea", "impass", "catch"]);
+        // Unknown segments ("Cache" absent from `known`) are ignored.
+        assert_eq!(parse_motd_regions("Channel MOTD:  Wicked Creek //  Cache", &known), vec!["wicked creek"]);
+    }
+
+    #[test]
+    fn motd_region_disambiguates_abbreviation() {
+        use crate::geo::{SystemInfo, Systems};
+        let mk = |id, name: &str, region: &str| SystemInfo {
+            id,
+            name: name.into(),
+            security: -0.6,
+            constellation: String::new(),
+            region: region.into(),
+            faction: String::new(),
+        };
+        let by_name: std::collections::HashMap<String, SystemInfo> = [
+            ("c-j6mt", mk(1, "C-J6MT", "Tenerifis")),
+            ("c-j7cr", mk(2, "C-J7CR", "Vale of the Silent")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let sys = Systems::new(by_name, std::collections::HashMap::new());
+        // No hint: ambiguous "C-J" stays unresolved.
+        let r0 = analyze_ctx("hostiles in C-J", &sys, &noships(), &noknown(), 1, "ch", "x", None, &[]);
+        assert!(r0.systems.is_empty(), "should stay ambiguous: {:?}", r0.systems);
+        // Channel covers Tenerifis -> resolves to C-J6MT, not the Vale C-J7CR.
+        let regions = vec!["Tenerifis".to_string()];
+        let r = analyze_ctx("hostiles in C-J", &sys, &noships(), &noknown(), 1, "ch", "x", None, &regions);
+        assert!(r.systems.iter().any(|s| s.name == "C-J6MT"), "systems={:?}", r.systems);
+        assert!(!r.systems.iter().any(|s| s.name == "C-J7CR"), "systems={:?}", r.systems);
     }
 
     #[test]
@@ -2286,7 +2376,7 @@ mod tests {
         let r = analyze("D-PNSN C-J gate", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
         // No system in the message: the channel's last system (context) disambiguates.
-        let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1));
+        let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
         assert_eq!(r2.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
     }
 

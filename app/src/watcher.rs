@@ -38,6 +38,8 @@ pub fn spawn(
         // One SQLite connection for the watcher's lifetime — opening per message ran the
         // full schema migration under the intel lock and could stall the UI thread.
         let db = crate::store::Store::open().ok();
+        let known_regions = systems.region_names();
+        let mut channel_regions: HashMap<String, Vec<String>> = HashMap::new();
         loop {
             scan(
                 &chat_dir,
@@ -50,6 +52,8 @@ pub fn spawn(
                 &mut processed,
                 &mut last_system,
                 db.as_ref(),
+                &known_regions,
+                &mut channel_regions,
             );
             std::thread::sleep(POLL);
         }
@@ -68,6 +72,8 @@ fn scan(
     processed: &mut HashMap<PathBuf, usize>,
     last_system: &mut HashMap<String, (i64, String, Vec<String>)>,
     db: Option<&crate::store::Store>,
+    known_regions: &std::collections::HashSet<String>,
+    channel_regions: &mut HashMap<String, Vec<String>>,
 ) {
     let Ok(entries) = std::fs::read_dir(chat_dir) else {
         return;
@@ -86,6 +92,21 @@ fn scan(
         if !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
             continue;
         }
+        // The channel's covered regions (from its MOTD) are a hint for disambiguating
+        // null-sec abbreviations; learn them once per channel.
+        let regions = channel_regions
+            .entry(meta.channel.clone())
+            .or_insert_with(|| {
+                messages
+                    .iter()
+                    .find(|m| {
+                        m.author.eq_ignore_ascii_case("EVE System")
+                            && m.text.contains("Channel MOTD:")
+                    })
+                    .map(|m| intel::parse_motd_regions(&m.text, known_regions))
+                    .unwrap_or_default()
+            })
+            .clone();
 
         let start = processed
             .get(&path)
@@ -105,6 +126,7 @@ fn scan(
                 let context = last_system.get(&meta.channel).map(|(id, _, _)| *id);
                 let mut report = intel::analyze_ctx(
                     &m.text, systems, ships, &known, received, &meta.channel, &m.author, context,
+                    &regions,
                 );
 
                 // Characters from in-game showinfo links already carry their id —

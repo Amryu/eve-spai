@@ -92,6 +92,39 @@ impl Systems {
         found
     }
 
+    /// All region names present in the data, lower-cased (for matching channel MOTDs).
+    pub fn region_names(&self) -> std::collections::HashSet<String> {
+        self.by_name
+            .values()
+            .map(|i| i.region.to_lowercase())
+            .filter(|r| !r.is_empty())
+            .collect()
+    }
+
+    /// Resolve an ambiguous null-sec prefix by preferring the unique match whose region
+    /// is one of `regions`. A hint only: returns None if zero or several qualify, so an
+    /// out-of-region system is never forced.
+    pub fn lookup_prefix_in_regions(&self, token: &str, regions: &[String]) -> Option<&SystemInfo> {
+        if regions.is_empty() {
+            return None;
+        }
+        let t = token.to_lowercase();
+        let regset: std::collections::HashSet<String> =
+            regions.iter().map(|r| r.to_lowercase()).collect();
+        let mut found: Option<&SystemInfo> = None;
+        for info in self.by_name.values() {
+            if info.name.to_lowercase().starts_with(&t)
+                && regset.contains(&info.region.to_lowercase())
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(info);
+            }
+        }
+        found
+    }
+
     /// Shortest jump distance between two systems (0 if equal), or None if
     /// unreachable within `max_jumps`. Includes jump bridges.
     pub fn jumps(&self, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
