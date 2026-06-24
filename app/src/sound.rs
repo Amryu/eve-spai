@@ -72,12 +72,33 @@ pub fn play(spec: &str) {
     } else {
         return;
     };
-    std::thread::spawn(move || {
-        let played = Command::new("paplay").arg(&path).status().map(|s| s.success()).unwrap_or(false);
+    std::thread::spawn(move || play_file(&path));
+}
+
+/// Play a WAV file through the platform's audio player.
+fn play_file(path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("afplay").arg(path).status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Use the .NET SoundPlayer via PowerShell (present on all supported Windows).
+        let script =
+            format!("(New-Object System.Media.SoundPlayer '{}').PlaySync()", path.display());
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // PulseAudio/PipeWire first, then ALSA.
+        let played =
+            Command::new("paplay").arg(path).status().map(|s| s.success()).unwrap_or(false);
         if !played {
-            let _ = Command::new("aplay").arg("-q").arg(&path).status();
+            let _ = Command::new("aplay").arg("-q").arg(path).status();
         }
-    });
+    }
 }
 
 /// Generate (once) a WAV for a built-in preset in the scratch dir; return its path.
