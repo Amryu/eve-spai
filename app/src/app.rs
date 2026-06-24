@@ -2330,6 +2330,14 @@ impl SpaiApp {
                 changed = true;
             }
             r.pilots = final_pilots;
+            // A name that only appears as the leading words of a longer detected name here
+            // ("Gallente Citizen" inside "Gallente Citizen 17120704") is the same span — drop
+            // it even when both are real characters.
+            let deduped = crate::intel::drop_covered_prefixes(&r.pilots, &r.text);
+            if deduped.len() != r.pilots.len() {
+                changed = true;
+                r.pilots = deduped;
+            }
             // Count fallback: a bare number tentatively read as a name component ("Adama
             // 80") is counted after all if ESI says the "{name} {n}" candidate isn't a
             // real character ("Bob 80" -> 80 was a hostile count).

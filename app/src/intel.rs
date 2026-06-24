@@ -731,6 +731,45 @@ fn multiword_ships(
     out
 }
 
+/// Drop a detected name that only ever appears as the leading words of a longer detected
+/// name in the same text ("Gallente Citizen" inside "Gallente Citizen 17120704"). Both can
+/// be real characters, but only the longer one was actually mentioned here. A name that
+/// also appears on its own (count exceeds the longer names that contain it) is kept.
+pub fn drop_covered_prefixes(pilots: &[String], text: &str) -> Vec<String> {
+    let toks: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let count = |phrase: &str| -> usize {
+        let pw: Vec<String> = phrase.split_whitespace().map(|w| w.to_lowercase()).collect();
+        if pw.is_empty() || pw.len() > toks.len() {
+            return 0;
+        }
+        toks.windows(pw.len()).filter(|w| w.iter().eq(pw.iter())).count()
+    };
+    pilots
+        .iter()
+        .filter(|p| {
+            let pl = p.to_lowercase();
+            let pc = count(&pl);
+            if pc == 0 {
+                return true;
+            }
+            let covered: usize = pilots
+                .iter()
+                .filter(|q| {
+                    let ql = q.to_lowercase();
+                    ql != pl && ql.starts_with(&format!("{pl} "))
+                })
+                .map(|q| count(&q.to_lowercase()))
+                .sum();
+            pc > covered
+        })
+        .cloned()
+        .collect()
+}
+
 /// Candidate "Title-Case + one lower-case word" names ("Psychopathic beemaster") —
 /// EVE family names can be lower-case. Only when the first word isn't a system and
 /// the second isn't a ship/keyword; ESI confirmation filters false positives.
@@ -1416,6 +1455,7 @@ pub fn analyze_ctx(
     // Best-guess Chinese tackle/point/web terms (not seen in current logs — a safety net).
     tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
+    let pilots = drop_covered_prefixes(&pilots, text);
     let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
     IntelReport {
         received,
@@ -2175,6 +2215,25 @@ mod tests {
         let r = analyze("Brutix Navy and Stabber Fleet in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
         assert!(r.ships.iter().any(|sh| sh.name == "Brutix Navy Issue"), "ships={:?}", r.ships);
         assert!(r.ships.iter().any(|sh| sh.name == "Stabber Fleet Issue"), "ships={:?}", r.ships);
+    }
+
+    #[test]
+    fn covered_prefix_name_is_dropped() {
+        let pilots = vec![
+            "Gallente Citizen".to_string(),
+            "Gallente Citizen 17120704".to_string(),
+        ];
+        let out = drop_covered_prefixes(&pilots, "Gallente Citizen 17120704 8-WYQZ");
+        assert_eq!(out, vec!["Gallente Citizen 17120704".to_string()]);
+    }
+
+    #[test]
+    fn standalone_name_sharing_a_prefix_is_kept() {
+        // "Bob" appears on its own AND inside "Bob Smith" -> both are real, keep both.
+        let pilots = vec!["Bob".to_string(), "Bob Smith".to_string()];
+        let out = drop_covered_prefixes(&pilots, "Bob and Bob Smith inc");
+        assert!(out.contains(&"Bob".to_string()));
+        assert!(out.contains(&"Bob Smith".to_string()));
     }
 
     #[test]
