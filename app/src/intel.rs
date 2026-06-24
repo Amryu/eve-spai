@@ -860,6 +860,23 @@ pub fn analyze_ctx(
             pilots.push(r);
         }
     }
+    // Single Title-Case tokens (plain-text logs carry no char links) — queued for ESI so
+    // standalone names like "Sevra" are recognised. Only tokens that aren't a ship,
+    // system, stop word, or already part of a multi-word candidate.
+    for t in &tokens {
+        let lc = t.to_lowercase();
+        if name_part(t)
+            && t.len() >= 3
+            && !PILOT_STOP.contains(&lc.as_str())
+            && !CLEAR_WORDS.contains(&lc.as_str())
+            && ship_index.get(&lc).is_none()
+            && resolve(systems, t).is_none()
+            && !crate::wormholes::is_wh_code(t)
+            && !pilots.iter().any(|p| p.split_whitespace().any(|w| w.eq_ignore_ascii_case(t)))
+        {
+            pilots.push((*t).to_owned());
+        }
+    }
 
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
@@ -1325,8 +1342,13 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
 /// decorated number is always a count; a bare number is a count only if it wasn't
 /// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
 fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
+    // A bare number directly before one of these is an ISK/quantity amount ("334
+    // million"), not a hostile count.
+    const MAGNITUDE: &[&str] =
+        &["m", "mil", "mill", "million", "millions", "b", "bil", "billion", "k", "isk"];
     let mut best: Option<u32> = None;
-    for raw in text.split_whitespace() {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for (i, raw) in words.iter().enumerate() {
         // Skip system codes (e.g. "78-", "1DQ1-A") — their digits aren't a count.
         if raw.contains('-') {
             continue;
@@ -1343,9 +1365,18 @@ fn parse_count(text: &str, consumed: &[String]) -> Option<u32> {
         if !(decorated || bare_number) {
             continue;
         }
-        // A bare number consumed as a system/gate is not a count.
-        if bare_number && !decorated && consumed.iter().any(|c| c == &t.to_lowercase()) {
-            continue;
+        if bare_number && !decorated {
+            // A bare number consumed as a system/gate is not a count.
+            if consumed.iter().any(|c| c == &t.to_lowercase()) {
+                continue;
+            }
+            // A bare number before a magnitude word is an ISK amount, not a count.
+            if let Some(next) = words.get(i + 1) {
+                let n = next.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+                if MAGNITUDE.contains(&n.as_str()) {
+                    continue;
+                }
+            }
         }
         if let Ok(n) = digits.parse::<u32>() {
             if (1..=999).contains(&n) {
@@ -1450,6 +1481,22 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn isk_amount_is_not_a_count() {
+        let s = systems();
+        // "334 million" is ISK; the count is the 2 hostiles.
+        let r = analyze("ESS raid 2 Bellicose 334 million 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(2), "ISK amount must not inflate the count");
+    }
+
+    #[test]
+    fn single_word_name_is_a_candidate() {
+        let s = systems();
+        // Plain-text log, a lone Title-Case name must still be offered for ESI.
+        let r = analyze("Sevra in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
     }
 
     #[test]
