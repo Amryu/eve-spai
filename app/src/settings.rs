@@ -110,6 +110,15 @@ pub struct Settings {
     /// toggle, independent of the server roster.
     #[serde(default)]
     pub jabber_contacts: Vec<String>,
+    /// Bot JID that broadcast pings are sent to (empty = derive directorbot@<domain>).
+    #[serde(default)]
+    pub jabber_ping_bot: String,
+    /// Editable list of ping groups offered by the quick-ping UI (coord, recon, …).
+    #[serde(default)]
+    pub jabber_ping_groups: Vec<String>,
+    /// Fleet-ping alert rules: a match plays a sound + highlights the ping.
+    #[serde(default)]
+    pub jabber_ping_rules: Vec<PingRule>,
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
@@ -148,6 +157,43 @@ pub struct Coalition {
 /// One alert rule (condition chain → actions). Rules are evaluated top-first; the
 /// first enabled rule whose conditions all match decides the actions (or suppresses
 /// the alert). If no rule matches, the default actions apply.
+/// A fleet-ping alert rule: a match plays a sound + highlights the ping. Empty fields
+/// mean "don't care"; all set fields must match (case-insensitive substring).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PingRule {
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub fc: String,
+    /// "strategic" | "peacetime" | "" (any).
+    #[serde(default)]
+    pub pap: String,
+    #[serde(default)]
+    pub doctrine: String,
+    #[serde(default)]
+    pub formup: String,
+    /// Matches anywhere in the ping text.
+    #[serde(default)]
+    pub keyword: String,
+    #[serde(default = "default_ping_sound")]
+    pub sound: String,
+}
+
+impl Default for PingRule {
+    fn default() -> Self {
+        Self {
+            name: "New rule".to_owned(),
+            enabled: true,
+            fc: String::new(),
+            pap: String::new(),
+            doctrine: String::new(),
+            formup: String::new(),
+            keyword: String::new(),
+            sound: default_ping_sound(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlertRule {
     pub name: String,
@@ -461,6 +507,9 @@ impl Default for Settings {
             jabber_ping_sound: default_ping_sound(),
             jabber_sound_enabled: true,
             jabber_contacts: Vec::new(),
+            jabber_ping_bot: String::new(),
+            jabber_ping_groups: Vec::new(),
+            jabber_ping_rules: Vec::new(),
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,

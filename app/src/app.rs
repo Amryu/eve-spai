@@ -217,6 +217,12 @@ pub struct SpaiApp {
     jabber_my_status: String,
     /// Password field in the Jabber connect form (transient).
     jabber_pw_input: String,
+    /// Quick-ping composer state.
+    ping_compose_open: bool,
+    ping_group_input: String,
+    ping_draft: PingDraft,
+    /// Notifications/alert-rules dialog open.
+    ping_rules_open: bool,
     /// Whether the EVE client is the focused window (for "smart" always-on-top).
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
@@ -480,6 +486,10 @@ impl SpaiApp {
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
             jabber_pw_input: String::new(),
+            ping_compose_open: false,
+            ping_group_input: String::new(),
+            ping_draft: PingDraft::default(),
+            ping_rules_open: false,
             eve_focused: true,
             eve_focus_checked: None,
             pilot_reconcile_checked: None,
@@ -888,12 +898,17 @@ impl SpaiApp {
             }
             any = true;
             if self.settings.jabber_sound_enabled {
-                let snd = if is_ping {
-                    &self.settings.jabber_ping_sound
+                let snd: String = if is_ping {
+                    // A matching alert rule overrides the default ping sound.
+                    let latest = self.jabber.lock().unwrap().pings.last().cloned();
+                    latest
+                        .as_ref()
+                        .and_then(|p| self.matching_ping_rule(p).map(|r| r.sound.clone()))
+                        .unwrap_or_else(|| self.settings.jabber_ping_sound.clone())
                 } else {
-                    &self.settings.jabber_msg_sound
+                    self.settings.jabber_msg_sound.clone()
                 };
-                crate::sound::play(snd);
+                crate::sound::play(&snd);
             }
         }
         if any && !ctx.input(|i| i.focused) {
@@ -901,6 +916,52 @@ impl SpaiApp {
                 egui::UserAttentionType::Informational,
             ));
         }
+    }
+
+    /// The bot JID that broadcast pings are sent to.
+    fn ping_bot_jid(&self) -> String {
+        let b = self.settings.jabber_ping_bot.trim();
+        if !b.is_empty() {
+            return if b.contains('@') { b.to_owned() } else { self.full_user_jid(b) };
+        }
+        let domain = self.settings.jabber_jid.split('@').nth(1).unwrap_or("");
+        format!("directorbot@{domain}")
+    }
+
+    /// The first enabled ping-alert rule a fleet ping matches (for sound + highlight).
+    fn matching_ping_rule(&self, p: &crate::pings::Ping) -> Option<&crate::settings::PingRule> {
+        use crate::pings::{PapType, Ping};
+        let (fc, pap, doctrine, formup_txt, all) = match p {
+            Ping::Fleet { fc, pap, doctrine, formup, description, .. } => {
+                let formup_txt = formup
+                    .iter()
+                    .map(|f| match f {
+                        crate::pings::Formup::Text(t) => t.clone(),
+                        crate::pings::Formup::System(_) => String::new(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let pap_s = match pap {
+                    Some(PapType::Strategic) => "strategic",
+                    Some(PapType::Peacetime) => "peacetime",
+                    _ => "",
+                };
+                let all = format!("{fc} {} {description}", doctrine.clone().unwrap_or_default());
+                (fc.to_lowercase(), pap_s, doctrine.clone().unwrap_or_default().to_lowercase(), formup_txt.to_lowercase(), all.to_lowercase())
+            }
+            Ping::Plain { text, .. } => {
+                (String::new(), "", String::new(), String::new(), text.to_lowercase())
+            }
+        };
+        let has = |field: &str, hay: &str| field.trim().is_empty() || hay.contains(&field.to_lowercase());
+        self.settings.jabber_ping_rules.iter().find(|r| {
+            r.enabled
+                && has(&r.fc, &fc)
+                && (r.pap.trim().is_empty() || r.pap.eq_ignore_ascii_case(pap))
+                && has(&r.doctrine, &doctrine)
+                && has(&r.formup, &formup_txt)
+                && has(&r.keyword, &all)
+        })
     }
 
     /// Resolve a DM target the user typed: a bare local part gets the user's own JID
@@ -912,6 +973,182 @@ impl SpaiApp {
         }
         let domain = self.settings.jabber_jid.split('@').nth(1).unwrap_or("");
         format!("{input}@{domain}")
+    }
+
+    /// The quick-ping composer: pick a group, optionally fill the fleet form, send a
+    /// `!bping <group> …` command to the bot.
+    fn ping_compose_dialog(&mut self, ctx: &egui::Context) {
+        if !self.ping_compose_open {
+            return;
+        }
+        let mut open = true;
+        let mut send = false;
+        egui::Window::new("Send ping")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Group:");
+                    egui::ComboBox::from_id_salt("ping_group")
+                        .selected_text(if self.ping_draft.group.is_empty() {
+                            "—".to_owned()
+                        } else {
+                            self.ping_draft.group.clone()
+                        })
+                        .show_ui(ui, |ui| {
+                            for g in self.settings.jabber_ping_groups.clone() {
+                                ui.selectable_value(&mut self.ping_draft.group, g.clone(), g);
+                            }
+                        });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ping_group_input)
+                            .hint_text("add group")
+                            .desired_width(90.0),
+                    );
+                    if ui.button("+").clicked() && !self.ping_group_input.trim().is_empty() {
+                        let g = self.ping_group_input.trim().to_owned();
+                        if !self.settings.jabber_ping_groups.contains(&g) {
+                            self.settings.jabber_ping_groups.push(g.clone());
+                            self.needs_save = true;
+                        }
+                        self.ping_draft.group = g;
+                        self.ping_group_input.clear();
+                    }
+                });
+                ui.checkbox(&mut self.ping_draft.fleet, "Fleet ping (FC / doctrine / form-up / PAP)");
+                if self.ping_draft.fleet {
+                    egui::Grid::new("fleet_form").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                        ui.label("FC");
+                        ui.text_edit_singleline(&mut self.ping_draft.fc);
+                        ui.end_row();
+                        ui.label("Doctrine");
+                        ui.text_edit_singleline(&mut self.ping_draft.doctrine);
+                        ui.end_row();
+                        ui.label("Form-up");
+                        ui.text_edit_singleline(&mut self.ping_draft.formup);
+                        ui.end_row();
+                        ui.label("PAP");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.ping_draft.pap, 0u8, "None");
+                            ui.selectable_value(&mut self.ping_draft.pap, 1u8, "Strategic");
+                            ui.selectable_value(&mut self.ping_draft.pap, 2u8, "Peacetime");
+                        });
+                        ui.end_row();
+                    });
+                }
+                ui.label("Message:");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.ping_draft.msg)
+                        .desired_rows(2)
+                        .desired_width(380.0),
+                );
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Sends:").weak());
+                ui.label(egui::RichText::new(self.ping_draft.to_command()).monospace().weak());
+                ui.add_space(4.0);
+                let ok = !self.ping_draft.group.trim().is_empty()
+                    && !self.ping_draft.msg.trim().is_empty();
+                if ui.add_enabled(ok, egui::Button::new("Send ping")).clicked() {
+                    send = true;
+                }
+            });
+        if send {
+            let body = self.ping_draft.to_command();
+            let bot = self.ping_bot_jid();
+            if let Some(tx) = &self.jabber_tx {
+                let _ = tx.send(crate::jabber::Cmd::Send { to: bot, body });
+            }
+            self.ping_draft.msg.clear();
+            self.ping_compose_open = false;
+        } else {
+            self.ping_compose_open = open;
+        }
+    }
+
+    /// Fleet-ping alert rules + notification sound settings.
+    fn ping_rules_dialog(&mut self, ctx: &egui::Context) {
+        if !self.ping_rules_open {
+            return;
+        }
+        let mut open = true;
+        let mut changed = false;
+        egui::Window::new("Jabber alerts")
+            .collapsible(false)
+            .open(&mut open)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                egui::Grid::new("snd").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                    changed |= ui
+                        .checkbox(&mut self.settings.jabber_sound_enabled, "Notification sounds")
+                        .changed();
+                    ui.end_row();
+                    ui.label("Message sound");
+                    changed |= ui.text_edit_singleline(&mut self.settings.jabber_msg_sound).changed();
+                    ui.end_row();
+                    ui.label("Default ping sound");
+                    changed |= ui.text_edit_singleline(&mut self.settings.jabber_ping_sound).changed();
+                    ui.end_row();
+                    ui.label("Ping bot JID");
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.jabber_ping_bot)
+                                .hint_text("directorbot@…"),
+                        )
+                        .changed();
+                    ui.end_row();
+                });
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Fleet-ping rules — a match plays its sound + highlights the ping.")
+                        .weak(),
+                );
+                let mut remove: Option<usize> = None;
+                for (i, r) in self.settings.jabber_ping_rules.iter_mut().enumerate() {
+                    ui.push_id(i, |ui| {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            changed |= ui.checkbox(&mut r.enabled, "").changed();
+                            changed |= ui
+                                .add(egui::TextEdit::singleline(&mut r.name).desired_width(120.0))
+                                .changed();
+                            if ui.button(egui_phosphor::regular::TRASH).clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                        egui::Grid::new("rule").num_columns(4).spacing([6.0, 3.0]).show(ui, |ui| {
+                            ui.label("FC");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).desired_width(90.0)).changed();
+                            ui.label("PAP");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text("strategic/peacetime").desired_width(120.0)).changed();
+                            ui.end_row();
+                            ui.label("Doctrine");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).desired_width(90.0)).changed();
+                            ui.label("Form-up");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).desired_width(120.0)).changed();
+                            ui.end_row();
+                            ui.label("Keyword");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).desired_width(90.0)).changed();
+                            ui.label("Sound");
+                            changed |= ui.add(egui::TextEdit::singleline(&mut r.sound).desired_width(120.0)).changed();
+                            ui.end_row();
+                        });
+                    });
+                }
+                if let Some(i) = remove {
+                    self.settings.jabber_ping_rules.remove(i);
+                    changed = true;
+                }
+                ui.separator();
+                if ui.button("+ Add rule").clicked() {
+                    self.settings.jabber_ping_rules.push(crate::settings::PingRule::default());
+                    changed = true;
+                }
+            });
+        self.ping_rules_open = open;
+        if changed {
+            self.needs_save = true;
+        }
     }
 
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
@@ -1076,6 +1313,13 @@ impl SpaiApp {
                 }
                 if !self.jabber_popped && ui.button("Pop out").clicked() {
                     self.jabber_popped = true;
+                }
+                if ui
+                    .button(egui_phosphor::regular::BELL_RINGING)
+                    .on_hover_text("Ping alert rules")
+                    .clicked()
+                {
+                    self.ping_rules_open = true;
                 }
             });
         });
@@ -1307,12 +1551,24 @@ impl SpaiApp {
                 ui.set_height(avail);
                 match self.jabber_chat.clone() {
                     None => {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("{}  Send ping", egui_phosphor::regular::PAPER_PLANE_TILT))
+                                .clicked()
+                            {
+                                self.ping_compose_open = true;
+                            }
+                        });
+                        ui.separator();
+                        // Pre-compute which pings match an alert rule (for highlight).
+                        let hl: Vec<bool> =
+                            pings.iter().map(|p| self.matching_ping_rule(p).is_some()).collect();
                         egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
                             if pings.is_empty() {
                                 ui.label(egui::RichText::new("No pings yet.").weak());
                             }
-                            for p in pings.iter().rev() {
-                                render_ping(ui, p, &systems);
+                            for (i, p) in pings.iter().enumerate().rev() {
+                                render_ping(ui, p, &systems, hl[i]);
                             }
                         });
                     }
@@ -6643,6 +6899,8 @@ impl eframe::App for SpaiApp {
         self.poll_dscan_clipboard();
         self.poll_jabber_notify(&ctx);
         self.dscan_dialog(&ctx);
+        self.ping_compose_dialog(&ctx);
+        self.ping_rules_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -7069,6 +7327,45 @@ struct Convo {
     status_text: String,
 }
 
+/// Draft for the quick-ping composer.
+#[derive(Default)]
+struct PingDraft {
+    group: String,
+    /// false = plain question, true = the fleet-ping form.
+    fleet: bool,
+    msg: String,
+    fc: String,
+    doctrine: String,
+    formup: String,
+    /// 0 = none, 1 = strategic, 2 = peacetime.
+    pap: u8,
+}
+
+impl PingDraft {
+    /// Build the `!bping <group> …` command body.
+    fn to_command(&self) -> String {
+        let group = self.group.trim();
+        let mut body = format!("!bping {group} {}", self.msg.trim());
+        if self.fleet {
+            if !self.fc.trim().is_empty() {
+                body.push_str(&format!("\nFC Name: {}", self.fc.trim()));
+            }
+            if !self.formup.trim().is_empty() {
+                body.push_str(&format!("\nFormup Location: {}", self.formup.trim()));
+            }
+            match self.pap {
+                1 => body.push_str("\nPAP Type: Strategic"),
+                2 => body.push_str("\nPAP Type: Peacetime"),
+                _ => {}
+            }
+            if !self.doctrine.trim().is_empty() {
+                body.push_str(&format!("\nDoctrine: {}", self.doctrine.trim()));
+            }
+        }
+        body
+    }
+}
+
 /// State of an in-flight / completed d-scan upload.
 #[derive(Default)]
 struct DscanShare {
@@ -7345,6 +7642,7 @@ fn render_ping(
     ui: &mut egui::Ui,
     p: &crate::pings::Ping,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    highlight: bool,
 ) {
     use crate::pings::{Comms, Formup, PapType, Ping};
     use egui_phosphor::regular as icon;
@@ -7376,7 +7674,14 @@ fn render_ping(
     } else {
         format!("{}d", age / 86_400)
     };
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    let frame = if highlight {
+        egui::Frame::group(ui.style())
+            .stroke(egui::Stroke::new(2.0, ui.visuals().hyperlink_color))
+            .fill(ui.visuals().hyperlink_color.gamma_multiply(0.08))
+    } else {
+        egui::Frame::group(ui.style())
+    };
+    frame.show(ui, |ui| {
         ui.set_min_width(ui.available_width()); // full-width card
         match p {
             Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, description, source, target, .. } => {
