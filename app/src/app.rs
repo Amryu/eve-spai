@@ -2126,11 +2126,15 @@ impl SpaiApp {
                         // Measure the height left after the (optional) room header so
                         // the composer always stays on-screen.
                         let body_h = ui.available_height();
+                        // Don't snap to the bottom while the pointer is held: that snap on
+                        // every incoming message was wiping out any text selection mid-drag
+                        // (the chat felt unselectable in a busy channel). It resumes on release.
+                        let selecting = ui.input(|i| i.pointer.any_down());
                         egui::ScrollArea::vertical()
                             .id_salt("msgs")
                             .auto_shrink([false, false])
                             .max_height((body_h - composer_h - 8.0).max(60.0))
-                            .stick_to_bottom(true)
+                            .stick_to_bottom(!selecting)
                             .show(ui, |ui| {
                                 let accent = ui.visuals().hyperlink_color;
                                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
