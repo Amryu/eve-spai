@@ -3970,7 +3970,7 @@ impl SpaiApp {
                     let min_z = conns.iter().map(|s| s.z).fold(f64::INFINITY, f64::min);
                     let max_z = conns.iter().map(|s| s.z).fold(f64::NEG_INFINITY, f64::max);
                     let mut tz = min_z - (max_z - min_z).max(1.0) * 0.25;
-                    // In the 2D layout, anchor Thera between Sinq Laison and Domain (its
+                    // In the 2D layout, anchor Thera between Cobalt Edge and Tenal (its
                     // in-game map location) when both regions are in view.
                     if self.map_layout == crate::map::MapLayout::Spaced {
                         let rc = |rid: i64| -> Option<(f64, f64)> {
@@ -3985,13 +3985,13 @@ impl SpaiApp {
                                 sys.iter().map(|s| s.z).sum::<f64>() / n,
                             ))
                         };
-                        if let (Some(sl), Some(dm)) = (rc(10_000_032), rc(10_000_043)) {
+                        if let (Some(sl), Some(dm)) = (rc(10_000_053), rc(10_000_045)) {
                             cx = (sl.0 + dm.0) / 2.0;
                             tz = (sl.1 + dm.1) / 2.0;
                         }
                     }
                     let tp = crate::map::project(cx, tz, &bounds, rect, self.map_zoom, self.map_pan);
-                    let tcol = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0);
+                    let tcol = egui::Color32::from_rgb(0xB0, 0x70, 0xE0); // purple: J-space -1.0
                     for p in &conn_screen {
                         painter.line_segment([tp, *p], egui::Stroke::new(1.6, tcol));
                     }
