@@ -960,8 +960,11 @@ pub fn analyze_ctx(
     }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
     for k in match_known_pilots(&masked, known_pilots) {
-        // A standalone word that's a known ship is the ship, not a pilot ("Buzzard").
-        if !k.contains(' ') && ship_index.contains_key(&k.to_lowercase()) {
+        // A standalone word that's a known ship is the ship ("Buzzard"); a null-sec
+        // code is the system, not a player who happens to be named like it ("C-J").
+        if (!k.contains(' ') && ship_index.contains_key(&k.to_lowercase()))
+            || looks_like_system_code(&k)
+        {
             continue;
         }
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
@@ -2000,6 +2003,17 @@ mod tests {
         assert!(r.camp, "gate-camp keyword should fire");
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Ansi")), "pilots={:?}", r.pilots);
         assert!(r.gates.iter().any(|g| g == "Rancer"), "the Ansi should lead to Rancer: {:?}", r.gates);
+    }
+
+    #[test]
+    fn system_code_known_as_pilot_is_not_a_pilot() {
+        let s = systems();
+        // A real character is named "C-J"; in intel it still means the system.
+        let known: std::collections::HashMap<String, i64> =
+            [("c-j".to_string(), 2119528359i64)].into_iter().collect();
+        let r = analyze("Gorika Galrog C-J in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("C-J")), "pilots={:?}", r.pilots);
+        assert!(r.pilots.iter().any(|p| p == "Gorika Galrog"), "pilots={:?}", r.pilots);
     }
 
     #[test]
