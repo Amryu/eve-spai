@@ -8737,22 +8737,32 @@ fn intel_row(
                 }
 
                 // No ship reported now: show each pilot's most recent (≤60 min) hull
-                // as a clickable badge (one per pilot, 1:1 association).
+                // under a "Last seen as:" label, with the regular ship tooltip.
                 if r.ships.is_empty() {
-                    for name in &r.pilots {
-                        if let Some((id, ship, t)) = last_ship.get(&name.to_lowercase()) {
-                            if now - t <= 3600 {
-                                let url =
-                                    format!("https://images.evetech.net/types/{id}/icon?size=32");
-                                let img = egui::Image::new(url)
-                                    .fit_to_exact_size(egui::Vec2::splat(ship_icon));
-                                let panel = ui.add(egui::Button::image_and_text(
-                                    img,
-                                    egui::RichText::new(ship).italics().weak(),
-                                ));
-                                if panel.on_hover_text(format!("{name} — last seen here")).clicked() {
-                                    clicked = Some(IntelClick::Ship(*id));
-                                }
+                    let seen: Vec<(i64, String)> = r
+                        .pilots
+                        .iter()
+                        .filter_map(|name| last_ship.get(&name.to_lowercase()))
+                        .filter(|(_, _, t)| now - t <= 3600)
+                        .map(|(id, ship, _)| (*id, ship.clone()))
+                        .collect();
+                    if !seen.is_empty() {
+                        ui.label(egui::RichText::new("Last seen as:").weak());
+                        for (id, ship) in seen {
+                            let url = format!("https://images.evetech.net/types/{id}/icon?size=32");
+                            let img = egui::Image::new(url)
+                                .fit_to_exact_size(egui::Vec2::splat(ship_icon));
+                            let mut panel = ui.add(egui::Button::image_and_text(
+                                img,
+                                egui::RichText::new(&ship).strong(),
+                            ));
+                            if let Some(d) = ship_details.get(&id) {
+                                let roles =
+                                    ship_roles.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
+                                panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
+                            }
+                            if panel.clicked() {
+                                clicked = Some(IntelClick::Ship(id));
                             }
                         }
                     }
