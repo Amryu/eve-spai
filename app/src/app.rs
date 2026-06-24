@@ -1831,6 +1831,8 @@ impl SpaiApp {
                                 let accent = ui.visuals().hyperlink_color;
                                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
                                 let now = chrono::Utc::now().timestamp();
+                                // Tight rows so the time line hugs its message.
+                                ui.spacing_mut().item_spacing.y = 1.0;
                                 let mut hist_drawn = false;
                                 for m in &sel_msgs {
                                     // A divider where historic (loaded) messages end.
@@ -1842,9 +1844,8 @@ impl SpaiApp {
                                             ui.separator();
                                         });
                                     }
-                                    // Compact EVE-time line just above the sender (small
-                                    // font, tight spacing — doesn't grow the message row).
-                                    ui.add_space(3.0);
+                                    // Compact EVE-time line directly above the sender.
+                                    ui.add_space(5.0); // gap from the previous message
                                     ui.label(
                                         egui::RichText::new(eve_time_label(m.time, now))
                                             .weak()
