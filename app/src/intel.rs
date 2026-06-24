@@ -515,7 +515,10 @@ fn loose_pilot_runs(
     let mut run: Vec<String> = Vec::new();
     let mut anchored = false;
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>, anchored: &mut bool| {
-        if (2..=3).contains(&run.len()) && *anchored {
+        // Allow longer runs than a single name (EVE names are <=3 words): several
+        // adjacent names ("Bunk Boi Bunk Helper") are one run that the ESI cover splits
+        // into the real names, instead of leaking a stray sub-word.
+        if (2..=6).contains(&run.len()) && *anchored {
             let name = run.join(" ");
             if !out.contains(&name) {
                 out.push(name);
@@ -1489,6 +1492,19 @@ mod tests {
         // "334 million" is ISK; the count is the 2 hostiles.
         let r = analyze("ESS raid 2 Bellicose 334 million 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.count, Some(2), "ISK amount must not inflate the count");
+    }
+
+    #[test]
+    fn adjacent_names_not_leaked_as_subword() {
+        let s = systems();
+        // Two adjacent two-word names; "Helper" must not leak out as a standalone name.
+        let r = analyze("Bunk Boi Bunk Helper in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Bunk Boi Bunk Helper")),
+            "pilots={:?}",
+            r.pilots
+        );
+        assert!(!r.pilots.iter().any(|p| p == "Helper"), "pilots={:?}", r.pilots);
     }
 
     #[test]
