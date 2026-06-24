@@ -3807,6 +3807,10 @@ impl SpaiApp {
 
         // Small uniform dots like the in-game star map.
         let dot = (0.7 * self.map_zoom).clamp(0.6, 2.2);
+        // Offsets for labels / sov-upgrade icons are in screen pixels, so when zoomed
+        // out (systems crowd together) a fixed gap makes them drift onto neighbours.
+        // Shrink the gap as we zoom out (full size once reasonably zoomed in).
+        let label_off = (self.map_zoom / 8.0).clamp(0.35, 1.0);
 
         // Sovereignty territory: opaque filled regions per holder. Drawing opaque
         // (rather than translucent) means same-colour overlaps merge into one
@@ -4092,7 +4096,7 @@ impl SpaiApp {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
                         for (k, up) in ups.iter().take(6).enumerate() {
                             // Sit the icons in a row above the system name.
-                            let ip = p + egui::vec2(6.0 + k as f32 * 20.0, -15.0);
+                            let ip = p + egui::vec2(6.0 * label_off + k as f32 * 20.0, -15.0 * label_off);
                             let (kind, level) = upgrade_info(up);
                             let lcol = level_color(level);
                             match kind {
@@ -4264,7 +4268,7 @@ impl SpaiApp {
             }
             if show_sys_labels && rect.contains(p) {
                 // Name sits next to the dot; sov-upgrade icons sit above it.
-                let anchor = p + egui::vec2(6.0, -2.0);
+                let anchor = p + egui::vec2(6.0 * label_off, -2.0 * label_off);
                 let approx = egui::Rect::from_min_size(
                     anchor,
                     egui::vec2(s.name.len() as f32 * 7.0, 14.0),
