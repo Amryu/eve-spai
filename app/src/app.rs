@@ -206,6 +206,9 @@ pub struct SpaiApp {
     jabber_input: String,
     /// "Join room" text input (a room JID).
     jabber_room_input: String,
+    /// Our own chosen availability + status text.
+    jabber_my_presence: crate::jabber::Presence,
+    jabber_my_status: String,
     /// Password field in the Jabber connect form (transient).
     jabber_pw_input: String,
     /// Whether the EVE client is the focused window (for "smart" always-on-top).
@@ -439,6 +442,8 @@ impl SpaiApp {
             jabber_chat: None,
             jabber_input: String::new(),
             jabber_room_input: String::new(),
+            jabber_my_presence: crate::jabber::Presence::Online,
+            jabber_my_status: String::new(),
             jabber_pw_input: String::new(),
             eve_focused: true,
             eve_focus_checked: None,
@@ -930,14 +935,47 @@ impl SpaiApp {
             (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms)
         };
 
+        let mut presence_changed = false;
         ui.horizontal(|ui| {
-            let (col, txt) = if connected {
-                (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "online")
+            if connected {
+                use crate::jabber::Presence;
+                let (r, g, b) = self.jabber_my_presence.color();
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                        .color(egui::Color32::from_rgb(r, g, b))
+                        .size(10.0),
+                );
+                // The user's own JID next to the status circle.
+                ui.label(egui::RichText::new(&self.settings.jabber_jid).weak());
+                egui::ComboBox::from_id_salt("my_presence")
+                    .selected_text(self.jabber_my_presence.label())
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        for p in [Presence::Online, Presence::Away, Presence::Xa, Presence::Dnd] {
+                            if ui
+                                .selectable_value(&mut self.jabber_my_presence, p, p.label())
+                                .clicked()
+                            {
+                                presence_changed = true;
+                            }
+                        }
+                    });
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.jabber_my_status)
+                        .hint_text("status message")
+                        .desired_width(150.0),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    presence_changed = true;
+                }
             } else {
-                (crate::theme::standing::WARNING, status.as_str())
-            };
-            ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(col).size(10.0));
-            ui.label(egui::RichText::new(txt).weak());
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                        .color(crate::theme::standing::WARNING)
+                        .size(10.0),
+                );
+                ui.label(egui::RichText::new(status.as_str()).weak());
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Disconnect").clicked() {
                     self.settings.jabber_enabled = false;
@@ -948,6 +986,14 @@ impl SpaiApp {
                 }
             });
         });
+        if presence_changed {
+            if let Some(tx) = &self.jabber_tx {
+                let _ = tx.send(crate::jabber::Cmd::SetPresence {
+                    show: self.jabber_my_presence,
+                    status: self.jabber_my_status.clone(),
+                });
+            }
+        }
         ui.separator();
 
         let systems = self.systems.clone();

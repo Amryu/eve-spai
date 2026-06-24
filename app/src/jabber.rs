@@ -102,6 +102,8 @@ pub enum Cmd {
     JoinRoom { room: String },
     /// Leave a joined room.
     LeaveRoom { room: String },
+    /// Set our own availability + status text.
+    SetPresence { show: Presence, status: String },
 }
 
 #[derive(Default)]
@@ -266,6 +268,22 @@ async fn run(
                     if let Ok(r) = room.parse::<BareJid>() {
                         agent.leave_room(LeaveRoomSettings::new(r)).await;
                     }
+                }
+                Cmd::SetPresence { show, status } => {
+                    use xmpp::parsers::presence::{Presence as Pres, Show, Type};
+                    let (ty, sh) = match show {
+                        Presence::Offline => (Type::Unavailable, None),
+                        Presence::Online => (Type::None, None),
+                        Presence::Away => (Type::None, Some(Show::Away)),
+                        Presence::Xa => (Type::None, Some(Show::Xa)),
+                        Presence::Dnd => (Type::None, Some(Show::Dnd)),
+                    };
+                    let mut pres = Pres::new(ty);
+                    pres.show = sh;
+                    if !status.trim().is_empty() {
+                        pres.set_status(String::new(), status);
+                    }
+                    let _ = agent.send_stanza(pres).await;
                 }
             },
         }
