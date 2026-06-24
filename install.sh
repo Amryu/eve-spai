@@ -43,14 +43,15 @@ release_json="$(curl -fsSL $auth -H 'Accept: application/vnd.github+json' "$API/
 tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 [ -n "$tag" ] || { echo "Could not find a release (private repo? set GITHUB_TOKEN)." >&2; exit 1; }
 
-# Asset id (so private-repo downloads work via the API).
-asset_id="$(printf '%s' "$release_json" \
-  | tr ',' '\n' | grep -A2 "\"name\": *\"$asset\"" | sed -n 's/.*"id": *\([0-9]*\).*/\1/p' | head -n1)"
-[ -n "$asset_id" ] || { echo "Release $tag has no asset '$asset'." >&2; exit 1; }
+# Confirm the asset is actually on this release before trying to download it.
+printf '%s' "$release_json" | grep -q "\"name\": *\"$asset\"" \
+  || { echo "Release $tag has no asset '$asset'." >&2; exit 1; }
 
 tmp="$(mktemp)"
 echo "Downloading $asset ($tag)…"
-curl -fSL $auth -H 'Accept: application/octet-stream' "$API/releases/assets/$asset_id" -o "$tmp"
+# Predictable public download URL; the auth header is still honoured (and followed
+# through the redirect) for private repos.
+curl -fSL $auth "https://github.com/$REPO/releases/download/$tag/$asset" -o "$tmp"
 
 mkdir -p "$PREFIX"
 chmod +x "$tmp"
