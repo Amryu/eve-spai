@@ -1668,6 +1668,13 @@ impl SpaiApp {
                             self.jabber_chat = Some(rjid.clone());
                             self.jabber.lock().unwrap().unread.remove(rjid);
                         }
+                        if *unread {
+                            ui.label(
+                                egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                    .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
+                                    .size(8.0),
+                            );
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
@@ -1788,6 +1795,13 @@ impl SpaiApp {
                         if ui.selectable_label(sel, txt).on_hover_text(djid).clicked() {
                             self.jabber_chat = Some(djid.clone());
                             self.jabber.lock().unwrap().unread.remove(djid);
+                        }
+                        if *unread {
+                            ui.label(
+                                egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                    .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
+                                    .size(8.0),
+                            );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
@@ -1927,7 +1941,10 @@ impl SpaiApp {
                                 .size(9.0);
                             // Ellipsize to the space left after the dot + star (the
                             // scroll area already excludes the scrollbar from avail).
-                            let disp = truncate_to(&c.name, fit_chars(ui.available_width() - 34.0));
+                            let disp = truncate_to(
+                                &c.name,
+                                fit_chars(ui.available_width() - 34.0 - if c.unread { 16.0 } else { 0.0 }),
+                            );
                             let name = if c.unread {
                                 egui::RichText::new(disp).strong()
                             } else if c.presence.online() {
@@ -1941,6 +1958,14 @@ impl SpaiApp {
                                 let clicked = ui.selectable_label(sel, name)
                                     .on_hover_text(&c.name)
                                     .clicked();
+                                // Unread DM / group conversation → red dot.
+                                if c.unread {
+                                    ui.label(
+                                        egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                            .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
+                                            .size(8.0),
+                                    );
+                                }
                                 // Add to / remove from the private contact list.
                                 let star_col = if is_contact {
                                     ui.visuals().hyperlink_color
