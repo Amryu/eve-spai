@@ -1567,7 +1567,39 @@ impl SpaiApp {
                     self.jabber.lock().unwrap().pings_unread = false;
                 }
                 ui.separator();
-                // --- MUC rooms: joined rooms + a join box ---
+                // Rooms + DMs, each with its input above, capped so the directory
+                // keeps at least half the sidebar height.
+                let chips_h = (ui.available_height() * 0.5).max(90.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("chips")
+                    .max_height(chips_h)
+                    .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let join_btn = ui
+                        .button(egui_phosphor::regular::PLUS)
+                        .on_hover_text("Join room")
+                        .clicked();
+                    let resp = ui.add_sized(
+                        [ui.available_width(), 20.0],
+                        egui::TextEdit::singleline(&mut self.jabber_room_input)
+                            .hint_text("room@conference.…"),
+                    );
+                    let go =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (join_btn || go) && !self.jabber_room_input.trim().is_empty() {
+                        let room = self.full_room_jid(&self.jabber_room_input);
+                        self.jabber_room_input.clear();
+                        if let Some(tx) = &self.jabber_tx {
+                            let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
+                        }
+                        if !self.settings.jabber_rooms.contains(&room) {
+                            self.settings.jabber_rooms.push(room.clone());
+                            self.needs_save = true;
+                        }
+                        // Open the room immediately so it stays in view.
+                        self.jabber_chat = Some(room);
+                    }
+                });
                 let mut leave_room: Option<String> = None;
                 for (rjid, unread) in &rooms {
                     ui.horizontal(|ui| {
@@ -1610,33 +1642,62 @@ impl SpaiApp {
                         self.jabber_chat = None;
                     }
                 }
+                // DM: open a direct conversation by JID / local part — grouped with the
+                // room/DM chips above (active DMs live here, not down by the directory).
                 ui.horizontal(|ui| {
-                    let join_btn = ui
-                        .button(egui_phosphor::regular::PLUS)
-                        .on_hover_text("Join room")
+                    let dm_btn = ui
+                        .button(egui_phosphor::regular::CHAT_CIRCLE_DOTS)
+                        .on_hover_text("Open DM")
                         .clicked();
                     let resp = ui.add_sized(
                         [ui.available_width(), 20.0],
-                        egui::TextEdit::singleline(&mut self.jabber_room_input)
-                            .hint_text("room@conference.…"),
+                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
+                            .hint_text("Message someone…"),
                     );
-                    let go =
-                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (join_btn || go) && !self.jabber_room_input.trim().is_empty() {
-                        let room = self.full_room_jid(&self.jabber_room_input);
-                        self.jabber_room_input.clear();
-                        if let Some(tx) = &self.jabber_tx {
-                            let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
+                    let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (dm_btn || go) && !self.jabber_dm_input.trim().is_empty() {
+                        let input = self.jabber_dm_input.trim().to_owned();
+                        // A full JID is trusted; a bare name must resolve to a real
+                        // roster contact (so we send to the correct JID, not a guess).
+                        // A full JID is used as-is; a bare name resolves to a roster
+                        // contact's exact JID, else the domain is auto-amended (a valid
+                        // local part); a name with spaces that matches nobody is rejected.
+                        let resolved = if input.contains('@') {
+                            Some(input.clone())
+                        } else if let Some(c) = convos.iter().find(|c| {
+                            c.name.eq_ignore_ascii_case(&input)
+                                || c.jid
+                                    .split('@')
+                                    .next()
+                                    .is_some_and(|l| l.eq_ignore_ascii_case(&input))
+                        }) {
+                            Some(c.jid.clone())
+                        } else if !input.contains(' ') {
+                            Some(self.full_user_jid(&input))
+                        } else {
+                            None
+                        };
+                        match resolved {
+                            Some(jid) => {
+                                self.jabber_dm_input.clear();
+                                self.jabber_dm_error.clear();
+                                self.settings.jabber_closed_dms.retain(|j| j != &jid);
+                                self.jabber.lock().unwrap().unread.remove(&jid);
+                                self.jabber_chat = Some(jid);
+                            }
+                            None => {
+                                self.jabber_dm_error = format!("No contact matching \"{input}\"");
+                            }
                         }
-                        if !self.settings.jabber_rooms.contains(&room) {
-                            self.settings.jabber_rooms.push(room.clone());
-                            self.needs_save = true;
-                        }
-                        // Open the room immediately so it stays in view.
-                        self.jabber_chat = Some(room);
                     }
                 });
-                // Open DMs (persistent chips like rooms): started conversations, plus
+                if !self.jabber_dm_error.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&self.jabber_dm_error)
+                            .color(crate::theme::standing::WARNING)
+                            .small(),
+                    );
+                }                // Open DMs (persistent chips like rooms): started conversations, plus
                 // any empty DM that still holds a non-whitespace draft.
                 let mut dm_chips = open_dms.clone();
                 for (jid, draft) in &self.jabber_drafts {
@@ -1701,62 +1762,7 @@ impl SpaiApp {
                         self.jabber_chat = None;
                     }
                 }
-                // DM: open a direct conversation by JID / local part — grouped with the
-                // room/DM chips above (active DMs live here, not down by the directory).
-                ui.horizontal(|ui| {
-                    let dm_btn = ui
-                        .button(egui_phosphor::regular::CHAT_CIRCLE_DOTS)
-                        .on_hover_text("Open DM")
-                        .clicked();
-                    let resp = ui.add_sized(
-                        [ui.available_width(), 20.0],
-                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
-                            .hint_text("Message someone…"),
-                    );
-                    let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (dm_btn || go) && !self.jabber_dm_input.trim().is_empty() {
-                        let input = self.jabber_dm_input.trim().to_owned();
-                        // A full JID is trusted; a bare name must resolve to a real
-                        // roster contact (so we send to the correct JID, not a guess).
-                        // A full JID is used as-is; a bare name resolves to a roster
-                        // contact's exact JID, else the domain is auto-amended (a valid
-                        // local part); a name with spaces that matches nobody is rejected.
-                        let resolved = if input.contains('@') {
-                            Some(input.clone())
-                        } else if let Some(c) = convos.iter().find(|c| {
-                            c.name.eq_ignore_ascii_case(&input)
-                                || c.jid
-                                    .split('@')
-                                    .next()
-                                    .is_some_and(|l| l.eq_ignore_ascii_case(&input))
-                        }) {
-                            Some(c.jid.clone())
-                        } else if !input.contains(' ') {
-                            Some(self.full_user_jid(&input))
-                        } else {
-                            None
-                        };
-                        match resolved {
-                            Some(jid) => {
-                                self.jabber_dm_input.clear();
-                                self.jabber_dm_error.clear();
-                                self.settings.jabber_closed_dms.retain(|j| j != &jid);
-                                self.jabber.lock().unwrap().unread.remove(&jid);
-                                self.jabber_chat = Some(jid);
-                            }
-                            None => {
-                                self.jabber_dm_error = format!("No contact matching \"{input}\"");
-                            }
-                        }
-                    }
                 });
-                if !self.jabber_dm_error.is_empty() {
-                    ui.label(
-                        egui::RichText::new(&self.jabber_dm_error)
-                            .color(crate::theme::standing::WARNING)
-                            .small(),
-                    );
-                }
                 ui.separator();
                 // Directory / Contacts toggle (independent of pings/DMs above), each
                 // marked when it has unread.
