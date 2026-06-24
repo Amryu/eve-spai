@@ -388,12 +388,20 @@ fn handle_event(
                 }
             }
         }
-        Event::ChatMessage(_, from, body, _) => {
+        Event::ChatMessage(_, from, body, time_info) => {
+            // Offline/history messages carry a <delay/>; we store them but must NOT
+            // sound/badge them (else the backlog of missed pings screeches on startup).
+            let delayed = !time_info.delays.is_empty();
+            let stamp = time_info
+                .delays
+                .first()
+                .map(|d| d.stamp.0.timestamp())
+                .unwrap_or(now);
             let key = from.to_string();
             let local = key.split('@').next().unwrap_or_default();
             // directorbot broadcasts are also parsed into fleet pings.
             if local.eq_ignore_ascii_case(PING_SENDER) {
-                let parsed = crate::pings::parse_ping(now, &body, resolve);
+                let parsed = crate::pings::parse_ping(stamp, &body, resolve);
                 if !parsed.is_empty() {
                     // Persist indefinitely so pings survive restarts.
                     if let Some(store) = store {
@@ -409,15 +417,17 @@ fn handle_event(
                     if n > 2000 {
                         s.pings.drain(0..n - 2000);
                     }
-                    s.pings_unread = true;
-                    s.notify.push((PING_FEED_KEY.to_owned(), true));
+                    if !delayed {
+                        s.pings_unread = true;
+                        s.notify.push((PING_FEED_KEY.to_owned(), true));
+                    }
                 }
             }
             push_msg(
                 state,
                 &key,
-                ChatMsg { from: key.clone(), body, time: now, outgoing: false },
-                true,
+                ChatMsg { from: key.clone(), body, time: stamp, outgoing: false },
+                !delayed,
                 store,
             );
         }
@@ -429,12 +439,18 @@ fn handle_event(
             eprintln!("[jabber] room left: {room}");
             state.lock().unwrap().rooms.remove(&room.to_string());
         }
-        Event::RoomMessage(_, room, nick, body, _) => {
+        Event::RoomMessage(_, room, nick, body, time_info) => {
+            let delayed = !time_info.delays.is_empty();
+            let stamp = time_info
+                .delays
+                .first()
+                .map(|d| d.stamp.0.timestamp())
+                .unwrap_or(now);
             push_msg(
                 state,
                 &room.to_string(),
-                ChatMsg { from: nick.to_string(), body, time: now, outgoing: false },
-                true,
+                ChatMsg { from: nick.to_string(), body, time: stamp, outgoing: false },
+                !delayed,
                 store,
             );
         }
