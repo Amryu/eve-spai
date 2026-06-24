@@ -420,6 +420,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "heading" | "towards" | "toward" | "through" | "inbound" | "enroute"
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
+                | "small" | "large" | "big" | "huge"
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
@@ -1096,6 +1097,10 @@ pub fn analyze_ctx(
             || looks_like_system_code(&k)
             || is_time_token(&k)
             || is_structure_word(&k)
+            // A code-shaped null-sec prefix ("88a" → 88A-RA) is the system, not a player
+            // who happens to share that name.
+            || (!k.contains(' ')
+                && systems.lookup_prefix(&k).is_some_and(|s| looks_like_system_code(&s.name)))
         {
             continue;
         }
