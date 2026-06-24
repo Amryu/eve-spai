@@ -1,9 +1,7 @@
 # EVE Spai — Design Document
 
 > Name: **EVE Spai** (EVE slang for an intelligence "spy"). Workspace: `eve-spai`.
-> Status: draft v0.2. This is a , ground-up design informed by a feature
-> inventory of an existing tool (), but it deliberately does **not** mirror that
-> tool's architecture, packaging, or code. Everything here describes intended
+> Status: draft. This is a ground-up design. Everything here describes intended
 > behavior and our own structure.
 
 ---
@@ -382,8 +380,7 @@ preserving the big inter-region distances. It is NOT in the Fuzzwork CSV dump
 follows 3D Z). Until we ingest the JSONL SDE, the map approximates it: anchor each
 region at its geographic centroid and de-overlap systems only *within* a region
 (`map::spaced_layout`). TODO: add a JSONL-SDE fetch and bake `position2D` for a
-pixel-faithful in-game layout. Refs: developers.eveonline.com map-data guide;
-everef.net schema.
+pixel-faithful in-game layout. Refs: developers.eveonline.com map-data guide.
 
 ## 9d. Deferred — Jump planner (A1 extension)
 A capital jump-route planner. We already have true 3D coordinates → light-year

@@ -1,8 +1,8 @@
 // Wired into the Jabber transport + alert framework in a follow-up; the parser
 // itself is complete and tested.
 #![allow(dead_code)]
-//! Fleet-ping parsing (Imperium/Goonswarm Jabber pings), ported  from
-//!  `ParsePingUseCase`. A ping is a directorbot broadcast whose text ends
+//! Fleet-ping parsing (Imperium/Goonswarm Jabber pings). A ping is a directorbot
+//! broadcast whose text ends
 //! with a `~~~ This was a … broadcast from … to … ~~~` signature. Pings with an
 //! `FC` field are fleet pings; the rest are plain broadcasts.
 
@@ -290,7 +290,7 @@ fn get_value(text: &str, key: &Key) -> Option<String> {
 mod tests {
     use super::*;
 
-    // System resolver matching the names used in the ported  test cases.
+    // System resolver matching the names used in the ping test cases.
     fn resolve(token: &str) -> Option<i64> {
         match token {
             "1DQ1-A" => Some(100000001),

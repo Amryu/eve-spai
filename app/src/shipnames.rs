@@ -1,14 +1,14 @@
 //! Ship-name nicknames / abbreviations and acronym generation, used to widen
-//! intel ship detection beyond exact names. The nickname seed list is partly from
-//!  static data; the rest is common community slang plus acronyms generated
-//! from multi-word hull names (kept only when unambiguous).
+//! intel ship detection beyond exact names. The nickname seed list is common
+//! community slang plus acronyms generated from multi-word hull names (kept only
+//! when unambiguous).
 
 use std::collections::HashMap;
 
 /// Lower-case slug → canonical ship name. Unambiguous, specific-hull only (class
 /// abbreviations like "hac"/"logi" are deliberately excluded).
 const NICKNAMES: &[(&str, &str)] = &[
-    // From  shipNicknames.
+    // Common community ship nicknames.
     ("kiki", "Kikimora"),
     ("iki", "Ikitursa"),
     ("stileto", "Stiletto"),

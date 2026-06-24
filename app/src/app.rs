@@ -8275,7 +8275,7 @@ fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
     graph.lookup(tok).map(|i| i.name.clone())
 }
 
-/// Parse a pasted jump-bridge list (standard): the first two systems found on a
+/// Parse a pasted jump-bridge list: the first two systems found on a
 /// line are a bridge. Tolerant of arrows/punctuation glued to system codes, so the
 /// user can paste a whole wiki page.
 fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::JumpBridge> {
