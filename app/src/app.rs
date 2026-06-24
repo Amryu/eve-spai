@@ -212,6 +212,8 @@ pub struct SpaiApp {
     jabber_dm_input: String,
     /// Roster list shows the public directory (true) or the private contact list.
     jabber_show_directory: bool,
+    /// Directory groups the user has collapsed (session-only).
+    jabber_collapsed: std::collections::HashSet<String>,
     /// Our own chosen availability + status text.
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
@@ -223,6 +225,8 @@ pub struct SpaiApp {
     ping_draft: PingDraft,
     /// Notifications/alert-rules dialog open.
     ping_rules_open: bool,
+    /// App-start time, to mark the historic/new boundary in conversations.
+    session_start: i64,
     /// Whether the EVE client is the focused window (for "smart" always-on-top).
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
@@ -483,6 +487,7 @@ impl SpaiApp {
             jabber_contact_search: String::new(),
             jabber_dm_input: String::new(),
             jabber_show_directory: true,
+            jabber_collapsed: std::collections::HashSet::new(),
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
             jabber_pw_input: String::new(),
@@ -490,6 +495,7 @@ impl SpaiApp {
             ping_group_input: String::new(),
             ping_draft: PingDraft::default(),
             ping_rules_open: false,
+            session_start: chrono::Utc::now().timestamp(),
             eve_focused: true,
             eve_focus_checked: None,
             pilot_reconcile_checked: None,
@@ -1502,12 +1508,48 @@ impl SpaiApp {
                         members.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         let online = members.iter().filter(|c| c.presence.online()).count();
                         ui.add_space(7.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(group).strong().size(15.0).color(accent));
-                            ui.label(
-                                egui::RichText::new(format!("{online}/{}", members.len())).weak(),
-                            );
-                        });
+                        let collapsed = self.jabber_collapsed.contains(group);
+                        let grp_unread = members.iter().any(|c| c.unread);
+                        let hdr = ui
+                            .horizontal(|ui| {
+                                let caret = if collapsed {
+                                    egui_phosphor::regular::CARET_RIGHT
+                                } else {
+                                    egui_phosphor::regular::CARET_DOWN
+                                };
+                                let r = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("{caret}  {group}"))
+                                            .strong()
+                                            .size(15.0)
+                                            .color(accent),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{online}/{}", members.len())).weak(),
+                                );
+                                // Collapsed group with unread → red dot.
+                                if collapsed && grp_unread {
+                                    ui.label(
+                                        egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                            .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
+                                            .size(8.0),
+                                    );
+                                }
+                                r
+                            })
+                            .inner;
+                        if hdr.clicked() {
+                            if collapsed {
+                                self.jabber_collapsed.remove(group);
+                            } else {
+                                self.jabber_collapsed.insert(group.to_owned());
+                            }
+                        }
+                        if collapsed {
+                            continue;
+                        }
                         for c in members {
                             let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
                             let (r, g, b) = c.presence.color();
@@ -1621,6 +1663,32 @@ impl SpaiApp {
                                         self.needs_save = true;
                                         self.jabber_chat = None;
                                     }
+                                    // Add/remove this DM partner from the contact list.
+                                    if !is_room {
+                                        let is_contact =
+                                            self.settings.jabber_contacts.contains(&jid);
+                                        let col = if is_contact {
+                                            ui.visuals().hyperlink_color
+                                        } else {
+                                            ui.visuals().weak_text_color()
+                                        };
+                                        if ui
+                                            .button(egui::RichText::new(icon::STAR).color(col))
+                                            .on_hover_text(if is_contact {
+                                                "Remove from contacts"
+                                            } else {
+                                                "Add as contact"
+                                            })
+                                            .clicked()
+                                        {
+                                            if is_contact {
+                                                self.settings.jabber_contacts.retain(|j| j != &jid);
+                                            } else {
+                                                self.settings.jabber_contacts.push(jid.clone());
+                                            }
+                                            self.needs_save = true;
+                                        }
+                                    }
                                     let bell = if muted { icon::BELL_SLASH } else { icon::BELL };
                                     ui.menu_button(bell, |ui| {
                                         let now = chrono::Utc::now().timestamp();
@@ -1653,6 +1721,8 @@ impl SpaiApp {
                         });
                         ui.separator();
                         let composer_h = 32.0;
+                        let session_start = self.session_start;
+                        let mut dm_click: Option<String> = None;
                         // Measure the height left after the (optional) room header so
                         // the composer always stays on-screen.
                         let body_h = ui.available_height();
@@ -1662,15 +1732,38 @@ impl SpaiApp {
                             .max_height((body_h - composer_h - 8.0).max(60.0))
                             .stick_to_bottom(true)
                             .show(ui, |ui| {
+                                let accent = ui.visuals().hyperlink_color;
+                                let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+                                let mut hist_drawn = false;
                                 for m in &sel_msgs {
+                                    // A divider where historic (loaded) messages end.
+                                    if !hist_drawn && m.time >= session_start && m.time > 0 {
+                                        hist_drawn = true;
+                                        ui.add_space(2.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("— new —").weak().small());
+                                            ui.separator();
+                                        });
+                                    }
                                     ui.horizontal_wrapped(|ui| {
-                                        let who = if m.outgoing {
-                                            egui::RichText::new("me").color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A))
+                                        if m.outgoing {
+                                            ui.label(egui::RichText::new("me:").color(me_col).strong());
                                         } else {
                                             let n = m.from.split('@').next().unwrap_or(&m.from);
-                                            egui::RichText::new(n).strong()
-                                        };
-                                        ui.label(who);
+                                            // Clickable in rooms → DM that person.
+                                            let lbl = egui::Label::new(
+                                                egui::RichText::new(format!("{n}:")).strong().color(accent),
+                                            );
+                                            let resp = if is_room {
+                                                ui.add(lbl.sense(egui::Sense::click()))
+                                                    .on_hover_text("Message")
+                                            } else {
+                                                ui.add(lbl)
+                                            };
+                                            if resp.clicked() {
+                                                dm_click = Some(n.to_owned());
+                                            }
+                                        }
                                         ui.label(&m.body);
                                     });
                                 }
@@ -1712,6 +1805,12 @@ impl SpaiApp {
                                 }
                             }
                         });
+                        // Clicking a room member's name opens a DM with them.
+                        if let Some(nick) = dm_click {
+                            let dm = self.full_user_jid(&nick);
+                            self.jabber.lock().unwrap().unread.remove(&dm);
+                            self.jabber_chat = Some(dm);
+                        }
                     }
                 }
             });
