@@ -54,6 +54,17 @@ impl Systems {
             && !self.gate_adjacency.get(&a).is_some_and(|v| v.contains(&b))
     }
 
+    /// The destination of the jump bridge in `id` (an adjacency that isn't a gate), or
+    /// None if the system has no configured bridge.
+    pub fn jump_bridge_dest(&self, id: i64) -> Option<&SystemInfo> {
+        let gates = self.gate_adjacency.get(&id);
+        self.adjacency
+            .get(&id)?
+            .iter()
+            .find(|n| !gates.is_some_and(|g| g.contains(n)))
+            .and_then(|n| self.by_id.get(n))
+    }
+
     /// Add bidirectional jump-bridge edges (configured by the user) so distance and
     /// battle clustering can travel them like gates.
     pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {

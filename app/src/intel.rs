@@ -326,6 +326,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "bubbled" | "bubbles" | "bubbling" | "cloak" | "cloaked" | "cloaky"
                 | "cloaks" | "cloaking" | "decloak" | "decloaked" | "camped"
                 | "ansi" | "ansiblex" | "jumpbridge" | "bridge" | "jump" | "jumps"
+                | "pls" | "plz"
         )
 }
 
@@ -1211,6 +1212,14 @@ pub fn analyze_ctx(
                     && cand.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
                 if abbrev { systems.lookup_prefix(cand) } else { None }
             });
+        // "O3-4MN Gate camp" is the "gate camp" keyword, not "O3-4MN gate": don't demote
+        // the report's own system to a gate when "gate" is immediately followed by "camp".
+        if resolved.is_some()
+            && resolved.map(|s| s.id) == primary
+            && tokens.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case("camp"))
+        {
+            continue;
+        }
         if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
             break;
         }
@@ -1231,6 +1240,16 @@ pub fn analyze_ctx(
                 detected.retain(|d| &d.name != n);
             }
             gate = Some(name.unwrap_or_else(|| g.clone()));
+        }
+    }
+
+    // "Ansi"/"Ansiblex" = the Ansiblex jump bridge in the report's system; treat it as
+    // the gate it leads to (the configured bridge's destination), so "camp on the Ansi"
+    // points at the system the bridge reaches.
+    if gate.is_none() && lower_tokens.iter().any(|t| t == "ansi" || t == "ansiblex") {
+        if let Some(dest) = primary.and_then(|p| systems.jump_bridge_dest(p)) {
+            detected.retain(|d| d.id != dest.id);
+            gate = Some(dest.name.clone());
         }
     }
 
@@ -1258,6 +1277,31 @@ pub fn analyze_ctx(
             }
         }
     }
+
+    // A run whose every word is a known ship is ships, not a pilot ("Sabre Orthrus");
+    // move it to the ship list (a coincidental same-named character loses).
+    let mut reclassified: Vec<DetectedShip> = Vec::new();
+    let pilots: Vec<String> = pilots
+        .into_iter()
+        .filter(|pn| {
+            let words: Vec<&str> = pn.split_whitespace().collect();
+            if !words.is_empty() && words.iter().all(|w| ship_index.contains_key(&w.to_lowercase())) {
+                for w in &words {
+                    if let Some((id, name)) = ship_index.get(&w.to_lowercase()) {
+                        if !ships.iter().any(|sh| sh.id == *id)
+                            && !reclassified.iter().any(|sh| sh.id == *id)
+                        {
+                            reclassified.push(DetectedShip { id: *id, name: name.clone() });
+                        }
+                    }
+                }
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    ships.extend(reclassified);
 
     IntelReport {
         received,
@@ -1695,6 +1739,56 @@ mod tests {
         // ISK/count tokens and system abbreviations stay out.
         assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
         assert!(is_handle_like("0xtomorrow"));
+    }
+
+    #[test]
+    fn adjacent_ship_names_are_ships_not_pilots() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [
+            ("sabre", (22456i64, "Sabre")),
+            ("orthrus", (33157, "Orthrus")),
+            ("stabber", (622, "Stabber")),
+            ("deimos", (12023, "Deimos")),
+        ]
+        .into_iter()
+        .map(|(k, (id, n))| (k.to_string(), (id, n.to_string())))
+        .collect();
+        // Adjacent ship names with no separator were read as a 2-word pilot.
+        let r = analyze("ZD1-Z2 Sabre Orthrus in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        for w in ["Sabre", "Orthrus", "Sabre Orthrus"] {
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w}: {:?}", r.pilots);
+        }
+        assert!(r.ships.iter().any(|sh| sh.name == "Sabre"), "ships={:?}", r.ships);
+        assert!(r.ships.iter().any(|sh| sh.name == "Orthrus"), "ships={:?}", r.ships);
+        // "and"-separated ship list.
+        let r2 = analyze("Stabber and Deimos in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r2.ships.iter().any(|sh| sh.name == "Stabber"), "ships={:?}", r2.ships);
+        assert!(r2.ships.iter().any(|sh| sh.name == "Deimos"), "ships={:?}", r2.ships);
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Stabber") || p.eq_ignore_ascii_case("Deimos")), "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
+    fn ansi_resolves_to_jump_bridge_destination() {
+        use crate::geo::{SystemInfo, Systems};
+        let mk = |id, name: &str| SystemInfo {
+            id,
+            name: name.into(),
+            security: -0.5,
+            constellation: String::new(),
+            region: String::new(),
+            faction: String::new(),
+        };
+        let by_name: std::collections::HashMap<String, SystemInfo> =
+            [("o3-4mn", mk(1, "O3-4MN")), ("rancer", mk(2, "Rancer"))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        let mut sys = Systems::new(by_name, std::collections::HashMap::new());
+        sys.add_bridges(&[(1, 2)]); // Ansiblex O3-4MN <-> Rancer
+        let r = analyze("O3-4MN Gate camp on Ansi", &sys, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.camp, "gate-camp keyword should fire");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Ansi")), "pilots={:?}", r.pilots);
+        assert!(r.gates.iter().any(|g| g == "Rancer"), "the Ansi should lead to Rancer: {:?}", r.gates);
     }
 
     #[test]
