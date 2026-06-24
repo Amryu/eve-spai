@@ -8495,12 +8495,9 @@ fn system_chips_ex(
 /// A weak "Nj" distance-from-you chip (blank if unknown).
 fn from_you_chip(ui: &mut egui::Ui, from_you: Option<u32>) {
     if let Some(j) = from_you {
-        let txt = if j == 0 {
-            "here".to_owned()
-        } else {
-            format!("{j}j")
-        };
-        ui.label(egui::RichText::new(txt).weak());
+        let txt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
+        // Monospace + padded so the jumps chip is a fixed width.
+        ui.label(egui::RichText::new(format!("{txt:>4}")).monospace().weak());
     }
 }
 
@@ -8973,11 +8970,20 @@ fn intel_row(
                 // Plain inline widgets (no fixed-size sub-uis — those break wrapping
                 // inside horizontal_wrapped and make the card grow vertically).
                 ui.label(egui::RichText::new(type_icon).color(tint)).on_hover_text(&msg);
-                ui.label(egui::RichText::new(fmt_age(age)).monospace().weak()).on_hover_text(&msg);
-                if let Some(j) = from_you {
-                    let t = if j == 0 { "here".to_owned() } else { format!("{j}j") };
-                    ui.label(egui::RichText::new(t).monospace().color(jumps_color));
-                }
+                // Fixed-width (monospace + padded) so the counting-up age doesn't shift
+                // the rest of the row.
+                ui.label(
+                    egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak(),
+                )
+                .on_hover_text(&msg);
+                // Always reserve the jumps slot (padded) so it doesn't reflow when the
+                // distance is computed retroactively.
+                let jtxt = match from_you {
+                    Some(0) => "here".to_owned(),
+                    Some(j) => format!("{j}j"),
+                    None => String::new(),
+                };
+                ui.label(egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color));
 
                 // Hostile-count badge — prominent; the number is what matters most.
                 if let Some(n) = r.count {
