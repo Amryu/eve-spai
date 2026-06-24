@@ -2353,8 +2353,14 @@ mod tests {
         // From real intel: "C-J" (system abbreviation) and "bubbled" were read as pilots.
         let r = analyze("88A-RA C-J gate bubbled", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.bubble, "bubble keyword should fire");
-        assert!(a("drag on gate").bubble, "drag = drag bubble");
-        assert!(!a("no drag").bubble, "negated drag");
+        assert!(
+            analyze("drag on gate", &s, &noships(), &noknown(), 1, "ch", "x").bubble,
+            "drag = drag bubble"
+        );
+        assert!(
+            !analyze("no drag", &s, &noships(), &noknown(), 1, "ch", "x").bubble,
+            "negated drag"
+        );
         for w in ["C-J", "88A-RA", "bubbled"] {
             assert!(
                 !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
