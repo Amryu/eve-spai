@@ -3647,7 +3647,9 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 })
                 .with_active(false)
-                .with_visible(active) // unmapped while idle: no compositor cost, no focus
+                // Stay mapped (transparent + click-through when idle) instead of
+                // unmapping: re-mapping on each alert is what made the WM steal focus.
+                .with_visible(true)
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
