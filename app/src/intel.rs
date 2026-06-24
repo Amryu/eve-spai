@@ -419,6 +419,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "location" | "likely" | "probably" | "maybe" | "checking" | "left" | "went" | "min" | "mins" | "minute" | "minutes"
                 | "heading" | "towards" | "toward" | "through" | "inbound" | "enroute"
                 | "total" | "anchored" | "anchor" | "anchoring"
+                | "bank" | "reserve" | "main"
                 | "jumped" | "jumping" | "warped" | "landed" | "burning" | "aligning"
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
