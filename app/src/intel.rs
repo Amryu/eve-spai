@@ -281,6 +281,10 @@ const PILOT_STOP: &[&str] = &[
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
     "afk", "warpin", "system", "and", "for", "status", "stat", "report", "intel",
+    // Common English filler words that are never pilot names (kept conservative so we
+    // don't drop real character names).
+    "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
+    "now", "still", "back", "with", "this", "that", "they", "them", "here", "there",
 ];
 
 /// Quoted spans (delimited by `"`, `'` or `` ` ``, openings/closings may be mixed)
@@ -616,6 +620,7 @@ fn parse_url_tags(
     t
 }
 
+#[allow(dead_code)] // thin no-context wrapper, kept for the public API + tests
 pub fn analyze(
     text: &str,
     systems: &Systems,

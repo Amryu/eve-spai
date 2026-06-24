@@ -73,8 +73,9 @@ pub const WIDTH_EXPANDED: f32 = 196.0;
 
 const ROW_HEIGHT: f32 = 38.0;
 
-/// Render the rail. Returns the (possibly changed) selected view.
-pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool) -> View {
+/// Render the rail. Returns the (possibly changed) selected view. `badges` lists
+/// views that should show an unread dot.
+pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[View]) -> View {
     let mut selected = current;
     let accent = ui.visuals().hyperlink_color;
     let weak = ui.visuals().weak_text_color();
@@ -117,7 +118,7 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool) -> View {
 
     // --- Primary views ---
     for &v in View::primary() {
-        if nav_item(ui, v.icon(), v.label(), v == selected, *expanded) {
+        if nav_item(ui, v.icon(), v.label(), v == selected, *expanded, badges.contains(&v)) {
             selected = v;
         }
         ui.add_space(4.0);
@@ -126,7 +127,7 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool) -> View {
     // --- Settings pinned to the bottom ---
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.add_space(10.0);
-        if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded) {
+        if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded, false) {
             selected = View::Settings;
         }
         ui.add_space(8.0);
@@ -143,7 +144,14 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, color: egui::Color32) -> egui::Re
 
 /// A full-width, left-aligned navigation row with hover + active states, drawn by
 /// hand so we control alignment, the accent bar, and density.
-fn nav_item(ui: &mut egui::Ui, glyph: &str, label: &str, active: bool, expanded: bool) -> bool {
+fn nav_item(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    label: &str,
+    active: bool,
+    expanded: bool,
+    badge: bool,
+) -> bool {
     let accent = ui.visuals().hyperlink_color;
     let normal = ui.visuals().text_color();
     let weak = ui.visuals().weak_text_color();
@@ -194,6 +202,16 @@ fn nav_item(ui: &mut egui::Ui, glyph: &str, label: &str, active: bool, expanded:
             glyph,
             egui::FontId::proportional(18.0),
             color,
+        );
+    }
+
+    // Unread badge: a small red dot at the icon's top-right.
+    if badge {
+        let icon_pos = if expanded { egui::pos2(rect.left() + 22.0, cy) } else { rect.center() };
+        painter.circle_filled(
+            icon_pos + egui::vec2(9.0, -8.0),
+            4.0,
+            egui::Color32::from_rgb(0xE0, 0x4C, 0x4C),
         );
     }
 

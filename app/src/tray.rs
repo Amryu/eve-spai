@@ -55,6 +55,7 @@ mod linux {
     pub struct TrayCmd {
         show: Arc<AtomicBool>,
         exit: Arc<AtomicBool>,
+        attention: Arc<AtomicBool>,
     }
 
     impl TrayCmd {
@@ -65,6 +66,10 @@ mod linux {
         /// Whether "Exit" was chosen (latched — we're quitting).
         pub fn exit_requested(&self) -> bool {
             self.exit.load(Ordering::SeqCst)
+        }
+        /// Show/clear the unread badge on the tray icon.
+        pub fn set_attention(&self, on: bool) {
+            self.attention.store(on, Ordering::SeqCst);
         }
     }
 
@@ -80,7 +85,7 @@ mod linux {
             "EVE Spai".into()
         }
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-            vec![icon()]
+            vec![icon(self.cmd.attention.load(Ordering::SeqCst))]
         }
         // Left-click the tray icon → show the window.
         fn activate(&mut self, _x: i32, _y: i32) {
@@ -105,20 +110,32 @@ mod linux {
         }
     }
 
-    /// A simple round accent-blue tray icon (ARGB32, network byte order).
-    fn icon() -> ksni::Icon {
+    /// A simple round accent-blue tray icon (ARGB32, network byte order). With
+    /// `badge`, a red dot is drawn in the top-right to signal unread messages.
+    fn icon(badge: bool) -> ksni::Icon {
         let (w, h) = (24i32, 24i32);
         let mut data = vec![0u8; (w * h * 4) as usize];
+        let put = |data: &mut [u8], x: i32, y: i32, argb: [u8; 4]| {
+            let i = ((y * w + x) * 4) as usize;
+            data[i..i + 4].copy_from_slice(&argb);
+        };
         let (cx, cy, r) = (w as f32 / 2.0, h as f32 / 2.0, 10.0f32);
         for y in 0..h {
             for x in 0..w {
                 let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
                 if (dx * dx + dy * dy).sqrt() <= r {
-                    let i = ((y * w + x) * 4) as usize;
-                    data[i] = 0xFF; // A
-                    data[i + 1] = 0x4F; // R
-                    data[i + 2] = 0xC3; // G
-                    data[i + 3] = 0xF7; // B
+                    put(&mut data, x, y, [0xFF, 0x4F, 0xC3, 0xF7]);
+                }
+            }
+        }
+        if badge {
+            let (bx, by, br) = (17.0f32, 7.0f32, 5.0f32);
+            for y in 0..h {
+                for x in 0..w {
+                    let (dx, dy) = (x as f32 + 0.5 - bx, y as f32 + 0.5 - by);
+                    if (dx * dx + dy * dy).sqrt() <= br {
+                        put(&mut data, x, y, [0xFF, 0xE0, 0x4C, 0x4C]);
+                    }
                 }
             }
         }
@@ -132,9 +149,21 @@ mod linux {
         let cmd_for_thread = cmd.clone();
         std::thread::spawn(move || {
             use ksni::blocking::TrayMethods;
+            let attention = cmd_for_thread.attention.clone();
             match (SpaiTray { cmd: cmd_for_thread }).spawn() {
-                // ksni runs the tray on its own executor; keep the handle alive.
-                Ok(handle) => std::mem::forget(handle),
+                Ok(handle) => {
+                    // Poll the unread flag and ask the host to re-fetch the icon when
+                    // it changes (the handle must stay alive for the tray to live).
+                    let mut last = false;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        let now = attention.load(Ordering::SeqCst);
+                        if now != last {
+                            last = now;
+                            let _ = handle.update(|_t| {});
+                        }
+                    }
+                }
                 Err(e) => eprintln!("[tray] unavailable: {e}"),
             }
         });
@@ -153,6 +182,7 @@ mod other {
         pub fn exit_requested(&self) -> bool {
             false
         }
+        pub fn set_attention(&self, _on: bool) {}
     }
     pub fn spawn() -> Option<TrayCmd> {
         None

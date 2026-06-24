@@ -93,6 +93,19 @@ pub struct Settings {
     /// Empty = derive `conference.<jid domain>`.
     #[serde(default)]
     pub jabber_muc_domain: String,
+    /// Muted conversations/feeds: key (bare JID, room JID, or "pings") → unmute unix
+    /// time (i64::MAX = muted until manually unmuted). Muted = no sound, no badge.
+    #[serde(default)]
+    pub jabber_muted: std::collections::BTreeMap<String, i64>,
+    /// Sound preset/path for a normal incoming jabber message.
+    #[serde(default = "default_msg_sound")]
+    pub jabber_msg_sound: String,
+    /// Sound preset/path for a fleet ping.
+    #[serde(default = "default_ping_sound")]
+    pub jabber_ping_sound: String,
+    /// Master switch for jabber notification sounds.
+    #[serde(default = "default_true")]
+    pub jabber_sound_enabled: bool,
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
@@ -382,6 +395,12 @@ fn default_intel_ttl() -> i64 {
 fn default_true() -> bool {
     true
 }
+fn default_msg_sound() -> String {
+    "chime".to_owned()
+}
+fn default_ping_sound() -> String {
+    "warning".to_owned()
+}
 fn default_alert_jumps() -> u32 {
     5
 }
@@ -433,6 +452,10 @@ impl Default for Settings {
             jabber_server: default_jabber_server(),
             jabber_rooms: Vec::new(),
             jabber_muc_domain: String::new(),
+            jabber_muted: std::collections::BTreeMap::new(),
+            jabber_msg_sound: default_msg_sound(),
+            jabber_ping_sound: default_ping_sound(),
+            jabber_sound_enabled: true,
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,

@@ -847,6 +847,53 @@ impl SpaiApp {
         format!("{input}@{domain}")
     }
 
+    /// Whether a conversation/feed key is currently muted.
+    fn jabber_is_muted(&self, key: &str) -> bool {
+        self.settings
+            .jabber_muted
+            .get(key)
+            .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
+    }
+
+    /// Any non-muted unread conversation or a new ping → drives the badges.
+    fn jabber_has_unread(&self) -> bool {
+        let st = self.jabber.lock().unwrap();
+        if st.pings_unread && !self.jabber_is_muted(crate::jabber::PING_FEED_KEY) {
+            return true;
+        }
+        st.unread.iter().any(|k| !self.jabber_is_muted(k))
+    }
+
+    /// Drain new-message notifications each frame: play sounds (respecting mute) and
+    /// flash the taskbar when we're not focused.
+    fn poll_jabber_notify(&mut self, ctx: &egui::Context) {
+        let events: Vec<(String, bool)> =
+            { std::mem::take(&mut self.jabber.lock().unwrap().notify) };
+        if events.is_empty() {
+            return;
+        }
+        let mut any = false;
+        for (key, is_ping) in events {
+            if self.jabber_is_muted(&key) {
+                continue;
+            }
+            any = true;
+            if self.settings.jabber_sound_enabled {
+                let snd = if is_ping {
+                    &self.settings.jabber_ping_sound
+                } else {
+                    &self.settings.jabber_msg_sound
+                };
+                crate::sound::play(snd);
+            }
+        }
+        if any && !ctx.input(|i| i.focused) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
+    }
+
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         if self.jabber_popped {
@@ -1034,6 +1081,7 @@ impl SpaiApp {
                     .clicked()
                 {
                     self.jabber_chat = None;
+                    self.jabber.lock().unwrap().pings_unread = false;
                 }
                 ui.separator();
                 // --- MUC rooms: joined rooms + a join box ---
@@ -1150,36 +1198,62 @@ impl SpaiApp {
                         });
                     }
                     Some(jid) => {
+                        use egui_phosphor::regular as icon;
                         let is_room = rooms.iter().any(|(r, _)| r == &jid);
-                        // Room header with a Leave action.
-                        if is_room {
-                            ui.horizontal(|ui| {
-                                let name = jid.split('@').next().unwrap_or(&jid);
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{}  {name}",
-                                        egui_phosphor::regular::USERS_THREE
-                                    ))
-                                    .strong(),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.button("Leave").clicked() {
-                                            if let Some(tx) = &self.jabber_tx {
-                                                let _ = tx.send(crate::jabber::Cmd::LeaveRoom {
-                                                    room: jid.clone(),
-                                                });
-                                            }
-                                            self.settings.jabber_rooms.retain(|r| r != &jid);
-                                            self.needs_save = true;
-                                            self.jabber_chat = None;
+                        let muted = self.jabber_is_muted(&jid);
+                        // Header: name, mute menu, and Leave (rooms only).
+                        ui.horizontal(|ui| {
+                            let name = jid.split('@').next().unwrap_or(&jid);
+                            let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
+                            ui.label(egui::RichText::new(format!("{glyph}  {name}")).strong());
+                            if muted {
+                                ui.label(egui::RichText::new(icon::BELL_SLASH).weak())
+                                    .on_hover_text("Muted");
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if is_room && ui.button("Leave").clicked() {
+                                        if let Some(tx) = &self.jabber_tx {
+                                            let _ = tx.send(crate::jabber::Cmd::LeaveRoom {
+                                                room: jid.clone(),
+                                            });
                                         }
-                                    },
-                                );
-                            });
-                            ui.separator();
-                        }
+                                        self.settings.jabber_rooms.retain(|r| r != &jid);
+                                        self.needs_save = true;
+                                        self.jabber_chat = None;
+                                    }
+                                    let bell = if muted { icon::BELL_SLASH } else { icon::BELL };
+                                    ui.menu_button(bell, |ui| {
+                                        let now = chrono::Utc::now().timestamp();
+                                        let set = |app: &mut Self, until: i64| {
+                                            app.settings.jabber_muted.insert(jid.clone(), until);
+                                            app.needs_save = true;
+                                        };
+                                        if ui.button("Mute 1 hour").clicked() {
+                                            set(self, now + 3600);
+                                            ui.close();
+                                        }
+                                        if ui.button("Mute 8 hours").clicked() {
+                                            set(self, now + 8 * 3600);
+                                            ui.close();
+                                        }
+                                        if ui.button("Mute until I unmute").clicked() {
+                                            set(self, i64::MAX);
+                                            ui.close();
+                                        }
+                                        if muted && ui.button("Unmute").clicked() {
+                                            self.settings.jabber_muted.remove(&jid);
+                                            self.needs_save = true;
+                                            ui.close();
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text("Mute notifications");
+                                },
+                            );
+                        });
+                        ui.separator();
                         let composer_h = 32.0;
                         // Measure the height left after the (optional) room header so
                         // the composer always stays on-screen.
@@ -2790,7 +2864,7 @@ impl SpaiApp {
         let ctx_sys = self.ctx_menu_system;
         resp.context_menu(|ui| {
             let Some(sid) = ctx_sys else {
-                ui.close_menu();
+                ui.close();
                 return;
             };
             if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
@@ -2803,21 +2877,21 @@ impl SpaiApp {
                 if ui.button("Set Destination").clicked() {
                     crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, true);
                     self.route_destination = Some(sid);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Add Waypoint").clicked() {
                     crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, false);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             ui.separator();
             if ui.button("Plan Jump Route From Here").clicked() {
                 self.jump_plan_from = Some(sid);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Plan Jump Route To Here").clicked() {
                 self.jump_plan_to = Some(sid);
-                ui.close_menu();
+                ui.close();
             }
         });
 
@@ -4230,12 +4304,14 @@ impl SpaiApp {
         } else {
             nav::WIDTH_COLLAPSED
         };
+        let badge = self.jabber_has_unread();
         egui::Panel::left("nav_rail")
             .resizable(false)
             .exact_size(width)
             .show_inside(ui, |ui| {
                 let mut expanded = self.settings.nav_expanded;
-                let selected = nav::rail(ui, self.view, &mut expanded);
+                let badged: &[nav::View] = if badge { &[nav::View::Jabber] } else { &[] };
+                let selected = nav::rail(ui, self.view, &mut expanded, badged);
                 if selected != self.view {
                     self.view = selected;
                 }
@@ -6407,6 +6483,7 @@ impl eframe::App for SpaiApp {
             if tray.exit_requested() {
                 self.really_exit = true;
             }
+            tray.set_attention(self.jabber_has_unread());
         }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.really_exit
@@ -6445,6 +6522,7 @@ impl eframe::App for SpaiApp {
         }
         self.setup_wizard(&ctx);
         self.poll_dscan_clipboard();
+        self.poll_jabber_notify(&ctx);
         self.dscan_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();

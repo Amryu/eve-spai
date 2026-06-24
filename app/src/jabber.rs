@@ -11,6 +11,8 @@ use crate::pings::Ping;
 
 /// The Jabber localpart that broadcasts fleet pings.
 const PING_SENDER: &str = "directorbot";
+/// Notification key for the fleet-ping feed (not a real JID).
+pub const PING_FEED_KEY: &str = "__pings__";
 
 const KEYCHAIN_SERVICE: &str = "eve-spai-jabber";
 
@@ -122,6 +124,11 @@ pub struct JabberState {
     pub presences: std::collections::BTreeMap<String, (Presence, String)>,
     /// Currently-joined MUC rooms (bare room JID).
     pub rooms: std::collections::BTreeSet<String>,
+    /// New arrivals awaiting a notification sound/badge: (key, is_ping). Drained by
+    /// the UI thread (which knows the mute settings).
+    pub notify: Vec<(String, bool)>,
+    /// A new fleet ping arrived and hasn't been viewed.
+    pub pings_unread: bool,
     /// Conversation history keyed by bare JID (1:1) or room JID.
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     /// Conversations with unread messages.
@@ -171,6 +178,7 @@ fn push_msg(
     s.chats.entry(key.to_owned()).or_default().push(msg);
     if mark_unread {
         s.unread.insert(key.to_owned());
+        s.notify.push((key.to_owned(), false));
     }
 }
 
@@ -401,6 +409,8 @@ fn handle_event(
                     if n > 2000 {
                         s.pings.drain(0..n - 2000);
                     }
+                    s.pings_unread = true;
+                    s.notify.push((PING_FEED_KEY.to_owned(), true));
                 }
             }
             push_msg(
