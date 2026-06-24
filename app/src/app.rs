@@ -60,6 +60,7 @@ struct MapOverlays {
     jump_range: bool,
     wormholes: bool,
     thera: bool,
+    turnur: bool,
 }
 
 impl Default for MapOverlays {
@@ -73,6 +74,7 @@ impl Default for MapOverlays {
             jump_range: true,
             wormholes: true,
             thera: false,
+            turnur: true,
         }
     }
 }
@@ -3873,12 +3875,19 @@ impl SpaiApp {
         if self.map_overlays.wormholes {
             let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
             let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
+            const TURNUR: i64 = 30_002_086;
             for &(a, b) in &self.wh_overlay.direct {
+                if !self.map_overlays.turnur && (a == TURNUR || b == TURNUR) {
+                    continue;
+                }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
                     painter.line_segment([*p1, *p2], egui::Stroke::new(1.6, wh_col));
                 }
             }
             for &(a, b, hops) in &self.wh_overlay.chains {
+                if !self.map_overlays.turnur && (a == TURNUR || b == TURNUR) {
+                    continue;
+                }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
                     painter.extend(egui::Shape::dashed_line(
                         &[*p1, *p2],
@@ -3919,20 +3928,43 @@ impl SpaiApp {
             // Thera isn't on the k-space map: place it near its in-view connections
             // (clamped just inside the map) and draw its holes.
             if self.map_overlays.thera {
-                let conns: Vec<egui::Pos2> = self
+                let conns: Vec<&crate::store::MapSystem> = self
                     .wh_overlay
                     .thera_conns
                     .iter()
-                    .filter_map(|id| pos.get(id).copied())
+                    .filter_map(|id| self.map_draw.iter().find(|s| s.id == *id))
                     .collect();
-                if !conns.is_empty() {
-                    let cx = conns.iter().map(|p| p.x).sum::<f32>() / conns.len() as f32;
-                    let cy = conns.iter().map(|p| p.y).sum::<f32>() / conns.len() as f32;
-                    let mut tp = egui::pos2(cx, cy - 50.0);
-                    tp.x = tp.x.clamp(rect.left() + 14.0, rect.right() - 14.0);
-                    tp.y = tp.y.clamp(rect.top() + 14.0, rect.bottom() - 14.0);
+                let conn_screen: Vec<egui::Pos2> =
+                    conns.iter().filter_map(|s| pos.get(&s.id).copied()).collect();
+                if !conns.is_empty() && !conn_screen.is_empty() {
+                    // Stable WORLD position (above the centroid) so it pans/zooms with the map.
+                    let mut cx = conns.iter().map(|s| s.x).sum::<f64>() / conns.len() as f64;
+                    let min_z = conns.iter().map(|s| s.z).fold(f64::INFINITY, f64::min);
+                    let max_z = conns.iter().map(|s| s.z).fold(f64::NEG_INFINITY, f64::max);
+                    let mut tz = min_z - (max_z - min_z).max(1.0) * 0.25;
+                    // In the 2D layout, anchor Thera between Sinq Laison and Domain (its
+                    // in-game map location) when both regions are in view.
+                    if self.map_layout == crate::map::MapLayout::Spaced {
+                        let rc = |rid: i64| -> Option<(f64, f64)> {
+                            let sys: Vec<&crate::store::MapSystem> =
+                                self.map_draw.iter().filter(|s| s.region_id == rid).collect();
+                            if sys.is_empty() {
+                                return None;
+                            }
+                            let n = sys.len() as f64;
+                            Some((
+                                sys.iter().map(|s| s.x).sum::<f64>() / n,
+                                sys.iter().map(|s| s.z).sum::<f64>() / n,
+                            ))
+                        };
+                        if let (Some(sl), Some(dm)) = (rc(10_000_032), rc(10_000_043)) {
+                            cx = (sl.0 + dm.0) / 2.0;
+                            tz = (sl.1 + dm.1) / 2.0;
+                        }
+                    }
+                    let tp = crate::map::project(cx, tz, &bounds, rect, self.map_zoom, self.map_pan);
                     let tcol = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0);
-                    for p in &conns {
+                    for p in &conn_screen {
                         painter.line_segment([tp, *p], egui::Stroke::new(1.6, tcol));
                     }
                     painter.circle_filled(tp, dot + 3.0, tcol);
@@ -4564,6 +4596,10 @@ impl SpaiApp {
                         ui.checkbox(
                             &mut self.map_overlays.thera,
                             format!("{}  Thera", icon::PLANET),
+                        );
+                        ui.checkbox(
+                            &mut self.map_overlays.turnur,
+                            format!("{}  Turnur holes", icon::PLANET),
                         );
                     });
                 });
