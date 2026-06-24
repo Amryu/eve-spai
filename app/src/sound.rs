@@ -3,6 +3,7 @@
 //! aplay). A preset is a built-in tone name, "off", or a path to a sound file.
 
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 
 /// One swept segment: glide from `f0` to `f1` over `ms` (f0=0 ⇒ silence/gap).
@@ -83,12 +84,21 @@ fn play_file(path: &Path) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Use the .NET SoundPlayer via PowerShell (present on all supported Windows).
-        let script =
-            format!("(New-Object System.Media.SoundPlayer '{}').PlaySync()", path.display());
-        let _ = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .status();
+        // winmm PlaySound — the canonical Windows WAV playback. Avoids PowerShell's startup
+        // latency, console-window flash, and System.Media.SoundPlayer quirks, all of which
+        // made the previous shell-out unreliable.
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        #[link(name = "winmm")]
+        extern "system" {
+            fn PlaySoundW(psz_sound: *const u16, hmod: *mut core::ffi::c_void, flags: u32) -> i32;
+        }
+        const SND_SYNC: u32 = 0x0000_0000;
+        const SND_FILENAME: u32 = 0x0002_0000;
+        // SND_SYNC: block until done (we are on a dedicated thread).
+        unsafe {
+            PlaySoundW(wide.as_ptr(), core::ptr::null_mut(), SND_SYNC | SND_FILENAME);
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {

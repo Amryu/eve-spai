@@ -8097,7 +8097,6 @@ impl SpaiApp {
                                 .add(
                                     egui::DragValue::new(&mut a.window_timeout)
                                         .range(0.0..=300.0)
-                                        .suffix("s")
                                         .custom_formatter(|n, _| {
                                             if n <= 0.0 { "never hides".to_owned() } else { format!("{n}s") }
                                         }),
