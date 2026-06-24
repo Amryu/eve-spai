@@ -37,6 +37,8 @@ pub struct IntelReport {
     pub text: String,
     pub systems: Vec<DetectedSystem>,
     pub ships: Vec<DetectedShip>,
+    /// Ship classes named only by keyword, no specific hull ("dic", "recon", "logi").
+    pub classes: Vec<String>,
     /// Candidate pilot names (Title-Case word runs); confirmed by ESI later.
     pub pilots: Vec<String>,
     /// Characters with their id already known (from in-game showinfo links) — no
@@ -208,6 +210,11 @@ impl IntelState {
                     prev.ships.push(sh.clone());
                 }
             }
+            for c in &new.classes {
+                if !prev.classes.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                    prev.classes.push(c.clone());
+                }
+            }
             for p in &new.pilots {
                 if !prev.pilots.contains(p) {
                     prev.pilots.push(p.clone());
@@ -313,6 +320,60 @@ const PILOT_STOP: &[&str] = &[
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
 /// as a pilot even if some character happens to share it (used to filter resolver
 /// sub-span covers). Conservative so real names aren't dropped.
+/// Intel keywords that name a ship *class* (not a specific hull) -> canonical class.
+const SHIP_CLASSES: &[(&str, &str)] = &[
+    ("dic", "Interdictor"),
+    ("dics", "Interdictor"),
+    ("dictor", "Interdictor"),
+    ("dictors", "Interdictor"),
+    ("interdictor", "Interdictor"),
+    ("interdictors", "Interdictor"),
+    ("hic", "Heavy Interdictor"),
+    ("hics", "Heavy Interdictor"),
+    ("hictor", "Heavy Interdictor"),
+    ("hictors", "Heavy Interdictor"),
+    ("recon", "Recon"),
+    ("recons", "Recon"),
+    ("bomber", "Stealth Bomber"),
+    ("bombers", "Stealth Bomber"),
+    ("logi", "Logistics"),
+    ("logis", "Logistics"),
+    ("ceptor", "Interceptor"),
+    ("ceptors", "Interceptor"),
+    ("hac", "Heavy Assault Cruiser"),
+    ("hacs", "Heavy Assault Cruiser"),
+    ("marauder", "Marauder"),
+    ("marauders", "Marauder"),
+    ("blops", "Black Ops"),
+    ("t3c", "Strategic Cruiser"),
+    ("t3cs", "Strategic Cruiser"),
+    ("t3d", "Tactical Destroyer"),
+    ("t3ds", "Tactical Destroyer"),
+    ("dread", "Dreadnought"),
+    ("dreads", "Dreadnought"),
+    ("carrier", "Carrier"),
+    ("carriers", "Carrier"),
+    ("fax", "Force Auxiliary"),
+    ("faxes", "Force Auxiliary"),
+    ("titan", "Titan"),
+    ("titans", "Titan"),
+    ("super", "Supercarrier"),
+    ("supers", "Supercarrier"),
+];
+
+/// Ship classes named by keyword in the message (exact token match, in order, deduped).
+fn detect_classes(lower_tokens: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in lower_tokens {
+        if let Some((_, class)) = SHIP_CLASSES.iter().find(|(k, _)| *k == t.as_str()) {
+            if !out.iter().any(|c| c == class) {
+                out.push((*class).to_owned());
+            }
+        }
+    }
+    out
+}
+
 pub fn is_pilot_stopword(w: &str) -> bool {
     let lw = w.to_lowercase();
     PILOT_STOP.contains(&lw.as_str())
@@ -327,6 +388,10 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "cloaks" | "cloaking" | "decloak" | "decloaked" | "camped"
                 | "ansi" | "ansiblex" | "jumpbridge" | "bridge" | "jump" | "jumps"
                 | "pls" | "plz"
+                | "dic" | "dics" | "dictor" | "dictors" | "interdictor" | "interdictors"
+                | "hic" | "hics" | "hictor" | "hictors" | "recon" | "recons" | "bomber"
+                | "bombers" | "logi" | "logis" | "ceptor" | "ceptors" | "hac" | "hacs"
+                | "marauder" | "marauders" | "blops"
         )
 }
 
@@ -1303,6 +1368,8 @@ pub fn analyze_ctx(
         .collect();
     ships.extend(reclassified);
 
+    let classes = detect_classes(&lower_tokens);
+
     IntelReport {
         received,
         channel: channel.to_owned(),
@@ -1312,6 +1379,7 @@ pub fn analyze_ctx(
         char_ids: si_char_ids,
         systems: detected,
         ships,
+        classes,
         count: parse_count(text, &consumed),
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
         // named e.g. "Clear Skies" can't spoof a "clear" status.
@@ -1739,6 +1807,45 @@ mod tests {
         // ISK/count tokens and system abbreviations stay out.
         assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
         assert!(is_handle_like("0xtomorrow"));
+    }
+
+    #[test]
+    fn detects_ship_classes() {
+        let s = systems();
+        let r = analyze("2 dics and a recon on the gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.classes.iter().any(|c| c == "Interdictor"), "classes={:?}", r.classes);
+        assert!(r.classes.iter().any(|c| c == "Recon"), "classes={:?}", r.classes);
+        for w in ["dics", "recon"] {
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w}: {:?}", r.pilots);
+        }
+        let r2 = analyze("hic plus 2 logi and a bomber", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.classes.iter().any(|c| c == "Heavy Interdictor"), "classes={:?}", r2.classes);
+        assert!(r2.classes.iter().any(|c| c == "Logistics"), "classes={:?}", r2.classes);
+        assert!(r2.classes.iter().any(|c| c == "Stealth Bomber"), "classes={:?}", r2.classes);
+    }
+
+    #[test]
+    fn complex_ship_report_not_misparsed() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> = [
+            ("eris", (22460i64, "Eris")),
+            ("vedmak", (47271, "Vedmak")),
+            ("eni", (40072, "Exequror Navy Issue")),
+        ]
+        .into_iter()
+        .map(|(k, (id, n))| (k.to_string(), (id, n.to_string())))
+        .collect();
+        let r = analyze(
+            "O3-4MN Eris ENI Vedmak mobile bubble on the gate close to ansi warp via cyno beacon",
+            &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.bubble, "bubble should fire");
+        assert!(r.cyno, "cyno should fire");
+        for sh in ["Eris", "Vedmak", "Exequror Navy Issue"] {
+            assert!(r.ships.iter().any(|x| x.name == sh), "missing {sh}: {:?}", r.ships);
+        }
+        for w in ["Eris", "ENI", "Vedmak", "Ansi"] {
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w} a pilot: {:?}", r.pilots);
+        }
     }
 
     #[test]

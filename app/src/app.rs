@@ -9400,6 +9400,13 @@ fn intel_row(
                     }
                 }
 
+                // Ship classes named only by keyword (no specific hull) — a lighter,
+                // italic chip so they read as a type rather than an exact ship.
+                for class in &r.classes {
+                    ui.add(egui::Button::new(egui::RichText::new(class).italics()))
+                        .on_hover_text("Ship class — no exact hull was reported");
+                }
+
                 // Pilot panels: names confirmed as real characters — either by ESI
                 // (resolved_pilots) or authoritatively by an in-game showinfo char link
                 // (char_ids), which always wins regardless of the ESI cache state.
