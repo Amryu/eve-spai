@@ -3991,9 +3991,10 @@ impl SpaiApp {
                         }
                     }
                     let tp = crate::map::project(cx, tz, &bounds, rect, self.map_zoom, self.map_pan);
+                    let line_col = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0); // blue links
                     let tcol = egui::Color32::from_rgb(0xB0, 0x70, 0xE0); // purple: J-space -1.0
                     for p in &conn_screen {
-                        painter.line_segment([tp, *p], egui::Stroke::new(1.6, tcol));
+                        painter.line_segment([tp, *p], egui::Stroke::new(1.6, line_col));
                     }
                     painter.circle_filled(tp, dot + 3.0, tcol);
                     painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, tcol));
