@@ -11943,8 +11943,23 @@ fn intel_row(
                     if !char_linked && !resolved_pilots.contains_key(name) {
                         continue;
                     }
-                    let txt = egui::RichText::new(format!("{} {name}", icon::USER));
-                    if ui.add(egui::Button::new(txt)).on_hover_text("Look up pilot").clicked() {
+                    let char_id = r
+                        .char_ids
+                        .iter()
+                        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                        .map(|(_, id)| *id)
+                        .or_else(|| resolved_pilots.get(name).copied());
+                    let resp = if let Some(cid) = char_id {
+                        // Avatar + name instead of the generic person icon.
+                        let img = egui::Image::new(format!(
+                            "https://images.evetech.net/characters/{cid}/portrait?size=64"
+                        ))
+                        .fit_to_exact_size(egui::Vec2::splat(24.0));
+                        ui.add(egui::Button::image_and_text(img, egui::RichText::new(name)))
+                    } else {
+                        ui.add(egui::Button::new(egui::RichText::new(format!("{} {name}", icon::USER))))
+                    };
+                    if resp.on_hover_text("Look up pilot").clicked() {
                         clicked = Some(IntelClick::Pilot(name.clone()));
                     }
                 }
