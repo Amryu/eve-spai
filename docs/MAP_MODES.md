@@ -12,9 +12,11 @@ overlays are shared; each mode adds its own control panel + map decorations.
 - **Travel** — plan a constrained route between two systems for a chosen ship.
 - **Hunting** — a live, location-sorted target/intel board for a roaming hunter.
 - **Safety** — AFK watch: alarms + screen flash when hostiles/kills come within range.
+- **Jump Plan** — build a capital jump route from the active character's ESI skills, with
+  fatigue / cooldown / fuel and capital-docking awareness (§8).
 
 ```rust
-enum MapMode { Standard, Travel, Hunting, Safety }
+enum MapMode { Standard, Travel, Hunting, Safety, JumpPlan }
 ```
 
 Modes are mutually exclusive in the UI but Hunting/Safety keep showing Standard's intel
@@ -196,3 +198,79 @@ All design decisions are settled. Remaining is implementation: the SDE ingest ex
 6. **Hunting Mode** (the live board; reuses the feed, router, and location tracking).
 
 Each phase is independently shippable and testable.
+
+## 8. Jump Plan Mode
+
+Build a **capital jump route** (a different graph from gate routing): hops are jump-drive
+jumps between cyno-able systems within range, costed by the active character's skills.
+
+### 8.1 The jump graph
+
+Unlike gates, this is **geometric**: connect two systems when their real-coordinate distance
+≤ the ship's max range, and the destination is **cyno-able** (low/null — no hi-sec cynos; no
+w-space). Built on demand for the chosen ship's range (range changes ⇒ rebuild). The fewest-
+jumps path is BFS over this graph; weighted variants (favour favourites, fewer fatigue) on top.
+
+### 8.2 Ship + skills (ESI)
+
+- Ship must be jump-capable (jump drive); the picker is filtered to those hulls.
+- Pull the **active character's skills** via ESI (`esi-skills.read_skills.v1`, needs the auth
+  scope): **Jump Drive Calibration** (range) and **Jump Fuel Conservation** (fuel). Cache them;
+  fall back to "skills unknown → assume V" with a flag if the scope isn't granted.
+
+### 8.3 Mechanics (researched — sources below)
+
+Per-ship bases come from the SDE (max jump range, fuel/ly = `jumpDriveConsumptionAmount`,
+isotope type by race). Skills/role-bonuses then modify:
+
+- **Range**: `max_ly = base_range × (1 + 0.20 × JDC)` (JDC 0–5 ⇒ up to ×2).
+- **Fuel/jump**: `ly × fuel_per_ly × (1 − 0.10 × JFC)` (JFC 0–5 ⇒ down to ×0.5). Summed = route fuel.
+- **Fatigue** (blue, minutes), applied per jump with effective distance `d' = d × (1 − role_reduction)`
+  (jump freighters / black ops have large fatigue role bonuses — "reduce jump penalty"):
+  `fatigue = min( max( fatigue × (1 + d'), 10 × (1 + d') ), 300 )`  (cap = 5 h).
+- **Jump activation cooldown** (red, the wait before the *next* jump) = `fatigue_before_this_jump / 10`
+  minutes. Back-to-back (no decay) route **delay = Σ cooldowns**; **final fatigue = last blue value**.
+
+Route summary when valid: **jumps · final fatigue · total jump delay · total fuel**.
+
+### 8.4 Capital docking (highlight + warning)
+
+From the pasted structure list (§2.2), tag each by kind, then:
+- **Highlight** systems with a structure the chosen hull can dock in.
+- Capital docking (researched): **supers/titans → Keepstar only**; **regular capitals (dread/
+  carrier/FAX) → Keepstar, Sotiyo, Fortizar** (Azbel docks subcaps only; Tatara only Rorquals).
+- **Warn** when a waypoint (especially the destination) has no known dockable structure for the
+  hull — you'd have to sit cloaked/tethered or risk it.
+
+### 8.5 Route building & editing
+
+- **Start** is set (default: current system); **Destination** optional → auto-compute the
+  fewest-jumps route over the jump graph.
+- **Alternatives per hop**: for waypoint *k*, offer the systems within range of **both** *k−1*
+  and *k+1* (drop-in replacements), shown as ghost nodes on the map.
+- **Favourites**: user-favourited systems are *preferred* mid-points — bias the route through
+  them only when it doesn't add jumps.
+- **Manual edit on the map**: click a system to insert/replace a waypoint; the user may make
+  the route **temporarily invalid** (out of range / no dock) — invalid legs are drawn red with
+  the reason, and the summary shows "invalid" until fixed.
+
+### 8.6 Map interaction change (applies to the route-editing modes)
+
+In Jump Plan (and Travel) a **left-click edits the route** — it no longer auto-opens the
+system-info window. Add a **right-click context menu** with **"Show Info"** (and "Set start",
+"Set destination", "Favourite"). Standard mode keeps today's left-click-opens-info behaviour.
+
+### 8.7 Open questions
+
+- **Cyno reality**: assume a cyno can be lit in any low/null destination, or let the user mark
+  "no-cyno" systems / restrict to friendly space?
+- **Fatigue role-bonus table**: read role bonuses from SDE traits, or maintain a small
+  hull→reduction table (JF, black ops, etc.)?
+- **Skill scope**: if the user won't grant `esi-skills`, assume all-V, or let them enter JDC/JFC
+  manually?
+- **Mid-route fatigue start**: plan from zero fatigue, or let the user enter current fatigue?
+
+Sources: [EVE-U Jump drives](https://wiki.eveuniversity.org/Jump_drives),
+[Jump Activation Cooldown & Fatigue (CCP)](https://support.eveonline.com/hc/en-us/articles/212726865-Jump-Activation-Cooldown-and-Jump-Fatigue),
+[Upwell Structures (CCP)](https://support.eveonline.com/hc/en-us/articles/213021829-Upwell-Structures),
+[Capital ships (EVE-U)](https://wiki.eveuniversity.org/Capital_ships).
