@@ -4804,20 +4804,35 @@ impl SpaiApp {
             self.route_destination = None;
         }
 
-        // Travel Mode: the planned route — solid highlighted legs + ringed waypoints.
+        // Travel Mode: the planned route legs + square markers on the start / waypoints /
+        // destination (shown even before a route is computed).
         if self.map_mode == MapMode::Travel {
+            let cyan = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
             if let Some(route) = &self.travel_route {
-                let col = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
                 for w in route.windows(2) {
                     if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
-                        painter.line_segment([*p1, *p2], egui::Stroke::new(2.5, col));
+                        painter.line_segment([*p1, *p2], egui::Stroke::new(2.5, cyan));
                     }
                 }
-                for id in route {
-                    if let Some(p) = pos.get(id) {
-                        painter.circle_stroke(*p, 7.0, egui::Stroke::new(2.0, col));
-                    }
+            }
+            let mark = |p: egui::Pos2, color: egui::Color32| {
+                let r = egui::Rect::from_center_size(p, egui::vec2(14.0, 14.0));
+                let st = egui::Stroke::new(2.0, color);
+                painter.line_segment([r.left_top(), r.right_top()], st);
+                painter.line_segment([r.right_top(), r.right_bottom()], st);
+                painter.line_segment([r.right_bottom(), r.left_bottom()], st);
+                painter.line_segment([r.left_bottom(), r.left_top()], st);
+            };
+            for wp in &self.travel_waypoints {
+                if let Some(p) = pos.get(wp) {
+                    mark(*p, cyan);
                 }
+            }
+            if let Some(p) = self.travel_start.and_then(|s| pos.get(&s)) {
+                mark(*p, egui::Color32::from_rgb(0x66, 0xBB, 0x6A)); // start — green
+            }
+            if let Some(p) = self.travel_end.and_then(|e| pos.get(&e)) {
+                mark(*p, egui::Color32::from_rgb(0xFF, 0xA7, 0x26)); // destination — amber
             }
         }
 
