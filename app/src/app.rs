@@ -7498,6 +7498,7 @@ impl SpaiApp {
         };
 
         let screen = ui.ctx().content_rect();
+        const SEARCH_PANEL_W: f32 = 320.0;
         let query = self.map_search.trim().to_owned();
         let has_query = !query.is_empty();
         let (down, up, enter, esc) = if has_query {
@@ -7587,6 +7588,9 @@ impl SpaiApp {
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        // Match the search-bar panel width below.
+                        ui.set_min_width(SEARCH_PANEL_W);
+                        ui.set_max_width(SEARCH_PANEL_W);
                         // Sov-upgrade matches (highlight every system that has one).
                         if let Some(up) = self.map_highlight_upgrade.clone() {
                             if ui
@@ -7684,6 +7688,8 @@ impl SpaiApp {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(SEARCH_PANEL_W);
+                    ui.set_max_width(SEARCH_PANEL_W);
                     ui.horizontal(|ui| {
                         ui.add_enabled_ui(can_back, |ui| {
                             if ui.button(icon::ARROW_LEFT).on_hover_text("Back").clicked() {
