@@ -48,6 +48,11 @@ impl Systems {
         self.adjacency.get(&id).map_or(&[], |v| v.as_slice())
     }
 
+    /// Adjacent systems over stargates only (no jump bridges).
+    pub fn neighbors_gates_only(&self, id: i64) -> &[i64] {
+        self.gate_adjacency.get(&id).map_or(&[], |v| v.as_slice())
+    }
+
     /// Whether the edge a↔b is a jump bridge (an adjacency that isn't a gate).
     pub fn is_bridge(&self, a: i64, b: i64) -> bool {
         self.adjacency.get(&a).is_some_and(|v| v.contains(&b))

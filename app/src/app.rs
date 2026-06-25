@@ -430,6 +430,8 @@ pub struct SpaiApp {
     map_threat_jumps: u32,
     /// Centre system for the threat views (None = active character's system).
     map_threat_center: Option<i64>,
+    /// Include jump bridges in the radial/tree threat-view distance.
+    threat_include_bridges: bool,
     /// Coordinates actually drawn (geographic or the 2D layout).
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
@@ -727,6 +729,7 @@ impl SpaiApp {
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
+            threat_include_bridges: true,
             map_draw: Vec::new(),
             map_draw_spaced: false,
             map_draw_key: None,
@@ -5018,7 +5021,15 @@ impl SpaiApp {
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
-                self.map_zoom = (self.map_zoom * (scroll * 0.0015).exp()).clamp(0.3, 6.0);
+                let old = self.map_zoom;
+                let new = (old * (scroll * 0.0015).exp()).clamp(0.3, 6.0);
+                // Keep the point under the cursor fixed (the layout spreads from rect.center()+pan,
+                // scaled by zoom), so scrolling zooms toward the mouse rather than the centre.
+                if let Some(m) = ui.input(|i| i.pointer.hover_pos()) {
+                    let rel = m - (rect.center() + self.map_pan);
+                    self.map_pan += rel * (1.0 - new / old);
+                }
+                self.map_zoom = new;
             }
         }
 
@@ -5039,7 +5050,7 @@ impl SpaiApp {
         let depth = self.map_threat_jumps.max(1);
 
         // BFS tree from the centre.
-        let (dist, children, order) = bfs_tree(&graph, center, depth);
+        let (dist, children, order) = bfs_tree(&graph, center, depth, self.threat_include_bridges);
         let leaves = order.iter().filter(|id| children.get(id).map_or(true, |c| c.is_empty())).count();
         let mut frac: std::collections::HashMap<i64, f32> = std::collections::HashMap::new();
         let mut next = 0u32;
@@ -6008,6 +6019,7 @@ impl SpaiApp {
                 ui.label("Max jumps");
                 ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix("j"));
             });
+            ui.checkbox(&mut self.threat_include_bridges, "Include jump bridges");
         }
         if ui
             .add(egui::Button::new(format!("{}  Follow character", icon::CROSSHAIR)).selected(self.map_follow))
@@ -9280,6 +9292,7 @@ fn bfs_tree(
     graph: &crate::geo::Systems,
     center: i64,
     depth: u32,
+    use_bridges: bool,
 ) -> (
     std::collections::HashMap<i64, u32>,
     std::collections::HashMap<i64, Vec<i64>>,
@@ -9295,7 +9308,11 @@ fn bfs_tree(
         if d >= depth {
             continue;
         }
-        let mut ns: Vec<i64> = graph.neighbors(s).to_vec();
+        let mut ns: Vec<i64> = if use_bridges {
+            graph.neighbors(s).to_vec()
+        } else {
+            graph.neighbors_gates_only(s).to_vec()
+        };
         ns.sort_unstable(); // deterministic layout
         for n in ns {
             if let std::collections::hash_map::Entry::Vacant(e) = dist.entry(n) {
