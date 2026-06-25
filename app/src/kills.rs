@@ -22,6 +22,8 @@ pub struct KillInfo {
     pub value: f64,
     pub time: String,
     pub final_blow_char: Option<i64>,
+    pub final_blow_corp: Option<i64>,
+    pub final_blow_alliance: Option<i64>,
     pub final_blow_ship: Option<i64>,
     /// Attacker alliance ids (most frequent first), for the "dominant side" display.
     pub attacker_alliances: Vec<i64>,
@@ -90,6 +92,7 @@ fn fetch_kill(client: &reqwest::blocking::Client, id: i64) -> Option<KillInfo> {
     #[derive(Deserialize)]
     struct Attacker {
         character_id: Option<i64>,
+        corporation_id: Option<i64>,
         alliance_id: Option<i64>,
         ship_type_id: Option<i64>,
         #[serde(default)]
@@ -128,6 +131,8 @@ fn fetch_kill(client: &reqwest::blocking::Client, id: i64) -> Option<KillInfo> {
         value,
         time: km.killmail_time,
         final_blow_char: fb.and_then(|a| a.character_id),
+        final_blow_corp: fb.and_then(|a| a.corporation_id),
+        final_blow_alliance: fb.and_then(|a| a.alliance_id),
         final_blow_ship: fb.and_then(|a| a.ship_type_id),
         attacker_count: km.attackers.len(),
         attacker_alliances: alliances.into_iter().map(|(a, _)| a).collect(),

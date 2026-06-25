@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS wormholes (
     source          TEXT NOT NULL,
     updated_at      INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kill_intel (
+    killmail_id  INTEGER PRIMARY KEY,
+    system_id    INTEGER NOT NULL,
+    ship_type_id INTEGER NOT NULL,
+    time         INTEGER NOT NULL,
+    value        REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kill_intel_time ON kill_intel(time);
 ";
 
 /// A ship type with computed resist/tank/fitting stats.
@@ -163,12 +171,24 @@ struct SysRow {
     tri: std::collections::HashSet<[u8; 3]>,
 }
 
+/// In-memory constellation / region lists (name lower-cased once) so the per-keystroke
+/// map search scores them in RAM instead of re-querying SQLite — the constellation query
+/// used a per-row correlated subquery over the unindexed systems table (the typing lag).
+struct PlaceCache {
+    /// (constellation id, name, lower, region id)
+    constellations: Vec<(i64, String, String, i64)>,
+    /// (region id, name, lower)
+    regions: Vec<(i64, String, String)>,
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
     /// In-memory system list with precomputed trigrams, so the per-keystroke search doesn't
     /// re-read 8k rows from SQLite and re-allocate a trigram set per name.
     sys_cache: std::cell::RefCell<Option<Vec<SysRow>>>,
+    /// In-memory constellation + region lists for the map search (see PlaceCache).
+    place_cache: std::cell::RefCell<Option<PlaceCache>>,
 }
 
 impl Store {
@@ -186,7 +206,12 @@ impl Store {
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_signature TEXT", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
         migrate_plaintext_tokens(&conn);
-        Ok(Self { conn, path, sys_cache: std::cell::RefCell::new(None) })
+        Ok(Self {
+            conn,
+            path,
+            sys_cache: std::cell::RefCell::new(None),
+            place_cache: std::cell::RefCell::new(None),
+        })
     }
 
     /// Path to the DB file (so background workers can open their own connection).
@@ -252,6 +277,54 @@ impl Store {
         *self.sys_cache.borrow_mut() = Some(rows);
     }
 
+    /// Lazily build the in-memory constellation + region lists. The constellation→region
+    /// link is resolved with a SINGLE scan of sde_systems (building a map) instead of a
+    /// correlated subquery per constellation, which is what made map-search typing lag.
+    fn ensure_place_cache(&self) {
+        if self.place_cache.borrow().is_some() {
+            return;
+        }
+        // One scan: first region seen per constellation.
+        let mut cid_region: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT constellation_id, region_id FROM sde_systems")
+        {
+            if let Ok(qr) = stmt.query_map([], |r| {
+                Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?))
+            }) {
+                for (cid, reg) in qr.flatten() {
+                    if let (Some(cid), Some(reg)) = (cid, reg) {
+                        cid_region.entry(cid).or_insert(reg);
+                    }
+                }
+            }
+        }
+        let mut constellations = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_constellations") {
+            if let Ok(qr) =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            {
+                for (id, name) in qr.flatten() {
+                    let lower = name.to_lowercase();
+                    let region = cid_region.get(&id).copied().unwrap_or(0);
+                    constellations.push((id, name, lower, region));
+                }
+            }
+        }
+        let mut regions = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_regions") {
+            if let Ok(qr) =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            {
+                for (id, name) in qr.flatten() {
+                    let lower = name.to_lowercase();
+                    regions.push((id, name, lower));
+                }
+            }
+        }
+        *self.place_cache.borrow_mut() = Some(PlaceCache { constellations, regions });
+    }
+
     pub fn search_systems(&self, query: &str, limit: i64) -> Vec<(i64, String, f64)> {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -281,16 +354,13 @@ impl Store {
             return Vec::new();
         }
         let q = q.to_lowercase();
+        self.ensure_place_cache();
+        let cache = self.place_cache.borrow();
+        let Some(pc) = cache.as_ref() else { return Vec::new() };
         let mut scored: Vec<(i64, i64, String)> = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name FROM sde_regions") {
-            if let Ok(rows) =
-                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-            {
-                for (id, name) in rows.flatten() {
-                    if let Some(sc) = fuzzy_score(&name.to_lowercase(), &q) {
-                        scored.push((sc, id, name));
-                    }
-                }
+        for (id, name, lower) in &pc.regions {
+            if let Some(sc) = fuzzy_score(lower, &q) {
+                scored.push((sc, *id, name.clone()));
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
@@ -304,20 +374,13 @@ impl Store {
             return Vec::new();
         }
         let q = q.to_lowercase();
+        self.ensure_place_cache();
+        let cache = self.place_cache.borrow();
+        let Some(pc) = cache.as_ref() else { return Vec::new() };
         let mut scored: Vec<(i64, i64, String, i64)> = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare(
-            "SELECT c.id, c.name,
-                    (SELECT region_id FROM sde_systems WHERE constellation_id = c.id LIMIT 1)
-             FROM sde_constellations c",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0)))
-            }) {
-                for (id, name, region) in rows.flatten() {
-                    if let Some(sc) = fuzzy_score(&name.to_lowercase(), &q) {
-                        scored.push((sc, id, name, region));
-                    }
-                }
+        for (id, name, lower, region) in &pc.constellations {
+            if let Some(sc) = fuzzy_score(lower, &q) {
+                scored.push((sc, *id, name.clone(), *region));
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
@@ -544,6 +607,45 @@ impl Store {
             }
         }
         out
+    }
+
+    // --- zKill kill-intel feed (persisted so cards survive a restart) -------
+
+    /// Persist a killmail that became a kill-intel card (deduped by killmail id).
+    pub fn add_kill_intel(&self, killmail_id: i64, system_id: i64, ship_type_id: i64, time: i64, value: f64) {
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO kill_intel(killmail_id, system_id, ship_type_id, time, value)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![killmail_id, system_id, ship_type_id, time, value],
+        );
+    }
+
+    /// Load persisted kill-intel newer than `since` (unix seconds), oldest first.
+    /// Returns (killmail_id, system_id, ship_type_id, time, value).
+    pub fn load_kill_intel(&self, since: i64) -> Vec<(i64, i64, i64, i64, f64)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT killmail_id, system_id, ship_type_id, time, value FROM kill_intel
+             WHERE time >= ?1 ORDER BY time ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![since], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, f64>(4)?,
+                ))
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Drop persisted kill-intel older than `before` (unix seconds).
+    pub fn prune_kill_intel(&self, before: i64) {
+        let _ = self.conn.execute("DELETE FROM kill_intel WHERE time < ?1", params![before]);
     }
 
     // --- Conversations (persisted, de-duplicated) --------------------------

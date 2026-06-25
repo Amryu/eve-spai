@@ -114,6 +114,14 @@ impl PilotCache {
                 None => return Vec::new(), // a resolved non-name word — not a clean split
             }
         }
+        // A candidate that splits into 3+ single-word names is almost always ONE character
+        // with a multi-word name ("I Forgot Who") whose individual words each happen to be
+        // real characters — not several glued-together names. Never reuse one run to emit
+        // that many separate pilots; refuse the split (the whole, ESI-rejected name is
+        // dropped instead of exploding into spurious singles).
+        if out.len() >= 3 && out.iter().all(|n| !n.contains(' ')) {
+            return Vec::new();
+        }
         out
     }
 }
@@ -316,6 +324,21 @@ mod tests {
         c.resolved.insert("ace hodgens 30".into(), None); // resolved as a non-name
         // "30" is a count ("Ace hodgens +30 kikimoras"), not part of the name.
         assert_eq!(c.cover("Ace hodgens 30"), vec!["Ace hodgens"]);
+    }
+
+    #[test]
+    fn cover_refuses_three_single_word_split() {
+        let mut c = PilotCache::default();
+        // "I Forgot Who" is one character whose individual words each happen to be real
+        // players. The whole name resolved as a non-name, but it must NOT explode into
+        // three separate single-word pilots.
+        c.resolved.insert("i".into(), Some(1));
+        c.resolved.insert("forgot".into(), Some(2));
+        c.resolved.insert("who".into(), Some(3));
+        c.resolved.insert("i forgot".into(), None);
+        c.resolved.insert("forgot who".into(), None);
+        c.resolved.insert("i forgot who".into(), None);
+        assert!(c.cover("I Forgot Who").is_empty());
     }
 
     #[test]

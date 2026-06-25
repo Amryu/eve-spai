@@ -177,7 +177,6 @@ enum IntelClick {
     System(i64),
     Ship(i64),
     Pilot(String),
-    Kill(i64),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -267,6 +266,8 @@ pub struct SpaiApp {
     killfeed: crate::zkill::SharedKillFeed,
     /// Ship type id → name, built from the ship index, for naming kill-feed ships.
     ship_by_id: std::collections::HashMap<i64, String>,
+    /// Persisted zKill kill-intel reloaded into the feed once on startup (one-shot).
+    kills_loaded: bool,
     /// Active character name + ESI-resolved system (shared with the location poller).
     player: crate::esi::SharedPlayer,
     /// System graph for UI distance queries (set once the SDE is ready).
@@ -346,10 +347,9 @@ pub struct SpaiApp {
     update: crate::update::SharedUpdate,
     update_checked: bool,
     update_dismissed: bool,
-    /// Killmail enrichment cache + fetch channel + open Kill window (kill id).
+    /// Killmail enrichment cache + fetch channel (feeds the kill badges on cards).
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
-    kill_window: Option<i64>,
     /// Embedded zKill lookup: pasted/dropped names, one tab each.
     lookup_input: String,
     lookup_tabs: Vec<String>,
@@ -722,6 +722,7 @@ impl SpaiApp {
             camped_cache_at: 0,
             killfeed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             ship_by_id: std::collections::HashMap::new(),
+            kills_loaded: false,
             player,
             systems: None,
             bridges_applied: Vec::new(),
@@ -770,7 +771,6 @@ impl SpaiApp {
             update_dismissed: false,
             kill_cache,
             kill_tx,
-            kill_window: None,
             lookup_input: String::new(),
             lookup_tabs: Vec::new(),
             lookup_active: 0,
@@ -1196,7 +1196,6 @@ impl SpaiApp {
         }
         match click {
             Some(IntelClick::System(id)) => self.open_system(id),
-            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -1678,73 +1677,6 @@ impl SpaiApp {
         for id in to_fetch {
             self.kill_cache.lock().unwrap().entry(id).or_insert(None);
             let _ = tx.send(id);
-        }
-    }
-
-    /// Kill window: victim/attacker icons, system, value, and a zKill button.
-    fn kill_window(&mut self, ctx: &egui::Context) {
-        let Some(id) = self.kill_window else { return };
-        use egui_phosphor::regular as icon;
-        let info = self.kill_cache.lock().unwrap().get(&id).cloned().flatten();
-        let systems = self.systems.clone();
-        let red = crate::theme::standing::HOSTILE;
-        let img = |ui: &mut egui::Ui, url: String, sz: f32| {
-            ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(sz, sz)))
-        };
-        let mut open = true;
-        egui::Window::new(format!("{}  Kill", icon::SKULL))
-            .open(&mut open)
-            .default_width(360.0)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                match &info {
-                    None => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Loading kill data from zKillboard\u{2026}");
-                        });
-                    }
-                    Some(k) => {
-                        ui.horizontal(|ui| {
-                            if let Some(ship) = k.victim_ship {
-                                img(ui, format!("https://images.evetech.net/types/{ship}/render?size=64"), 56.0);
-                            }
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("VICTIM").color(red).strong());
-                                ui.horizontal(|ui| {
-                                    if let Some(ch) = k.victim_char {
-                                        img(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"), 28.0);
-                                    }
-                                    if let Some(al) = k.victim_alliance {
-                                        img(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=32"), 28.0);
-                                    }
-                                });
-                            });
-                        });
-                        ui.separator();
-                        if let Some(sys) = systems.as_ref().and_then(|g| g.info_of(k.system_id)) {
-                            ui.label(format!("System: {}", sys.name));
-                        }
-                        ui.label(format!("Value: {}", fmt_isk(k.value)));
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Attackers: {} \u{2014}", k.attacker_count));
-                            for al in k.attacker_alliances.iter().take(3) {
-                                img(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=32"), 22.0);
-                            }
-                        });
-                        ui.label(egui::RichText::new(&k.time).weak());
-                    }
-                }
-                ui.separator();
-                if ui
-                    .button(format!("{}  Open on zKillboard", icon::ARROW_SQUARE_OUT))
-                    .clicked()
-                {
-                    let _ = open::that(format!("https://zkillboard.com/kill/{id}/"));
-                }
-            });
-        if !open {
-            self.kill_window = None;
         }
     }
 
@@ -2630,13 +2562,7 @@ impl SpaiApp {
         let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
             return;
         };
-        if self.ship_by_id.is_empty() {
-            if let Some(idx) = &self.ship_index {
-                for (id, name) in idx.values() {
-                    self.ship_by_id.insert(*id, name.clone());
-                }
-            }
-        }
+        self.ensure_ship_by_id();
         // 0 = follow the regular intel feed's jump range; if that's "any" (0), cap so the
         // global kill feed doesn't flood the cards.
         let range = match (self.settings.kill_intel_jumps, self.intel_max_jumps) {
@@ -2649,42 +2575,109 @@ impl SpaiApp {
             if geo.jumps(me, ev.system_id, range).is_none() {
                 continue;
             }
-            let Some(sys) = geo.info_of(ev.system_id) else { continue };
-            let ship = self.ship_by_id.get(&ev.ship_type_id).cloned().unwrap_or_default();
-            let lower = ship.to_lowercase();
-            if lower.contains("shuttle")
-                || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
-                || (lower == "capsule" && ev.value < 10_000_000.0)
-            {
-                continue;
+            let Some(report) = self.kill_report(&ev, &geo) else { continue };
+            // Persist so the card survives a restart (deduped by killmail id).
+            if let Some(store) = &self.store {
+                store.add_kill_intel(
+                    ev.killmail_id,
+                    ev.system_id,
+                    ev.ship_type_id,
+                    ev.time,
+                    ev.value,
+                );
             }
-            let mut report = crate::intel::IntelReport::default();
-            report.received = ev.time;
-            report.killmail = true;
-            report.channel = "zKill".to_owned();
-            report.reporter = "zKill".to_owned();
-            report.isk = Some(ev.value as u64);
-            report.systems.push(crate::intel::DetectedSystem {
-                id: sys.id,
-                name: sys.name.clone(),
-                security: sys.security,
-            });
-            if ship.is_empty() {
-                report.text = format!("Ship lost in {}", sys.name);
-            } else {
-                report.ships.push(crate::intel::DetectedShip {
-                    id: ev.ship_type_id,
-                    name: ship.clone(),
-                });
-                report.text = format!("{} lost in {}", ship, sys.name);
+            st.push(report);
+        }
+    }
+
+    /// Populate the ship-id → name map from the ship index, once it's available.
+    fn ensure_ship_by_id(&mut self) {
+        if self.ship_by_id.is_empty() {
+            if let Some(idx) = &self.ship_index {
+                for (id, name) in idx.values() {
+                    self.ship_by_id.insert(*id, name.clone());
+                }
             }
-            // The killmail link gives the card an "open on zKill" button + triggers enrichment
-            // (which resolves the victim who lost the ship).
-            report.links.push(crate::intel::IntelLink {
-                kind: crate::intel::LinkKind::Killmail,
-                url: format!("https://zkillboard.com/kill/{}/", ev.killmail_id),
-                kill_id: Some(ev.killmail_id),
-            });
+        }
+    }
+
+    /// Build a kill-intel card from a zKill event (no range filter), or None for a ship
+    /// type not worth showing (shuttle, rookie corvette, cheap empty pod).
+    fn kill_report(
+        &self,
+        ev: &crate::zkill::KillEvent,
+        geo: &crate::geo::Systems,
+    ) -> Option<crate::intel::IntelReport> {
+        let sys = geo.info_of(ev.system_id)?;
+        let ship = self.ship_by_id.get(&ev.ship_type_id).cloned().unwrap_or_default();
+        let lower = ship.to_lowercase();
+        if lower.contains("shuttle")
+            || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
+            || (lower == "capsule" && ev.value < 10_000_000.0)
+        {
+            return None;
+        }
+        let mut report = crate::intel::IntelReport::default();
+        report.received = ev.time;
+        report.killmail = true;
+        report.channel = "zKill".to_owned();
+        report.reporter = "zKill".to_owned();
+        report.isk = Some(ev.value as u64);
+        report.systems.push(crate::intel::DetectedSystem {
+            id: sys.id,
+            name: sys.name.clone(),
+            security: sys.security,
+        });
+        if ship.is_empty() {
+            report.text = format!("Ship lost in {}", sys.name);
+        } else {
+            report.ships.push(crate::intel::DetectedShip { id: ev.ship_type_id, name: ship.clone() });
+            report.text = format!("{} lost in {}", ship, sys.name);
+        }
+        // The killmail link gives the card an "open on zKill" button + triggers enrichment
+        // (which resolves the victim who lost the ship).
+        report.links.push(crate::intel::IntelLink {
+            kind: crate::intel::LinkKind::Killmail,
+            url: format!("https://zkillboard.com/kill/{}/", ev.killmail_id),
+            kill_id: Some(ev.killmail_id),
+        });
+        Some(report)
+    }
+
+    /// Reload persisted zKill kill-intel into the feed once on startup, so cards survive a
+    /// restart. Kept within the same 1-hour window the intel feed prunes to; older rows are
+    /// dropped. Bypasses the range filter (location may differ from when first seen). Waits
+    /// until the SDE/ship index is ready so ships are named.
+    fn load_persisted_kills(&mut self) {
+        if self.kills_loaded {
+            return;
+        }
+        let Some(geo) = self.systems.clone() else { return };
+        self.ensure_ship_by_id();
+        if self.ship_by_id.is_empty() {
+            return; // ship index not baked yet — retry next frame
+        }
+        self.kills_loaded = true;
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = now - 3600;
+        let saved = {
+            let Some(store) = &self.store else { return };
+            let rows = store.load_kill_intel(cutoff);
+            store.prune_kill_intel(cutoff);
+            rows
+        };
+        if saved.is_empty() {
+            return;
+        }
+        let mut reports = Vec::new();
+        for (killmail_id, system_id, ship_type_id, time, value) in saved {
+            let ev = crate::zkill::KillEvent { system_id, ship_type_id, time, value, killmail_id };
+            if let Some(report) = self.kill_report(&ev, &geo) {
+                reports.push(report);
+            }
+        }
+        let mut st = self.intel_state.lock().unwrap();
+        for report in reports {
             st.push(report);
         }
     }
@@ -3366,7 +3359,6 @@ impl SpaiApp {
     fn handle_intel_click(&mut self, action: Option<IntelClick>, ctx: &egui::Context) {
         match action {
             Some(IntelClick::System(id)) => self.open_system(id),
-            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -4607,7 +4599,6 @@ impl SpaiApp {
         // A click in the feed opens the relevant window (in the main viewport).
         match click {
             Some(IntelClick::System(id)) => self.open_system(id),
-            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -8480,7 +8471,6 @@ impl SpaiApp {
         // A click inside an intel card (ship / pilot / system).
         match intel_click {
             Some(IntelClick::System(sid)) => self.open_system(sid),
-            Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(sid)) => self.open_ship(sid),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
@@ -10504,6 +10494,7 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
+        self.load_persisted_kills();
         self.ingest_killfeed();
         if self.reconcile_unresolved_pilots() {
             ctx.request_repaint(); // a cover split the run -> re-render the card now
@@ -10530,7 +10521,6 @@ impl eframe::App for SpaiApp {
         self.dscan_dialog(&ctx);
         self.ping_compose_dialog(&ctx);
         self.ping_rules_dialog(&ctx);
-        self.kill_window(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances();
@@ -11777,8 +11767,10 @@ fn intel_row(
 
     // Clicking a card toggles between the parsed view and the raw message (with a minimal
     // elapsed · jumps · system header). State is keyed by the report so it sticks per card.
+    // zKill cards have no meaningful raw text ("<ship> lost in <system>") and their badges
+    // are all click targets, so they never switch to raw mode.
     let toggle_id = egui::Id::new("intel_raw").with(report_key(r));
-    let show_raw = ui.ctx().data(|d| d.get_temp::<bool>(toggle_id).unwrap_or(false));
+    let show_raw = !is_zkill && ui.ctx().data(|d| d.get_temp::<bool>(toggle_id).unwrap_or(false));
 
     let mut clicked: Option<IntelClick> = None;
     let resp = egui::Frame::group(ui.style())
@@ -12100,69 +12092,90 @@ fn intel_row(
                             let info = link
                                 .kill_id
                                 .and_then(|id| kills.lock().unwrap().get(&id).cloned().flatten());
-                            ui.horizontal(|ui| {
-                                let al_logo = |ui: &mut egui::Ui, al: i64, hover: &str| {
-                                    ui.add(egui::Image::new(format!(
-                                        "https://images.evetech.net/alliances/{al}/logo?size=32"
-                                    ))
-                                    .fit_to_exact_size(egui::vec2(18.0, 18.0)))
-                                    .on_hover_text(hover);
-                                };
+                            // Inline into the wrapping row (NOT a nested horizontal, which is an
+                            // atomic non-wrapping unit) so the kill badges wrap with the rest of
+                            // the card in the narrow alert window instead of overflowing.
+                            {
                                 if let Some(inf) = &info {
-                                    // Dominant alliance per side: top attacker ⚔ victim.
-                                    if let Some(al) = inf.attacker_alliances.first() {
-                                        al_logo(ui, *al, "Top attacker alliance");
+                                    let sz = egui::Vec2::splat(20.0);
+                                    let img = |url: String| {
+                                        egui::Image::new(url).fit_to_exact_size(sz)
+                                    };
+                                    // A grouped badge: alliance + corp logos + portrait as atoms in
+                                    // one button (same style as the chat pilot badge). Clicking it
+                                    // opens that entity's zKill page — the most specific id wins
+                                    // (character, else corporation, else alliance).
+                                    let badge = |ui: &mut egui::Ui,
+                                                 alliance: Option<i64>,
+                                                 corp: Option<i64>,
+                                                 character: Option<i64>,
+                                                 hover: &str| {
+                                        let parts: Vec<String> = [
+                                            alliance.map(|a| format!("https://images.evetech.net/alliances/{a}/logo?size=32")),
+                                            corp.map(|c| format!("https://images.evetech.net/corporations/{c}/logo?size=32")),
+                                            character.map(|c| format!("https://images.evetech.net/characters/{c}/portrait?size=32")),
+                                        ]
+                                        .into_iter()
+                                        .flatten()
+                                        .collect();
+                                        let Some(first) = parts.first() else { return };
+                                        let mut atoms = egui::Atoms::new(img(first.clone()));
+                                        for url in parts.iter().skip(1) {
+                                            atoms.push_right(img(url.clone()));
+                                        }
+                                        let zkill = character
+                                            .map(|c| format!("https://zkillboard.com/character/{c}/"))
+                                            .or_else(|| corp.map(|c| format!("https://zkillboard.com/corporation/{c}/")))
+                                            .or_else(|| alliance.map(|a| format!("https://zkillboard.com/alliance/{a}/")));
+                                        if ui.add(egui::Button::new(atoms)).on_hover_text(hover).clicked() {
+                                            if let Some(url) = zkill {
+                                                let _ = open::that(url);
+                                            }
+                                        }
+                                    };
+                                    // Attacker badge: the final-blow pilot's alliance + corp +
+                                    // portrait. Its own badge, pointing ⚔→ at the victim. A kill
+                                    // with no per-character final blow falls back to the dominant
+                                    // attacker alliance (e.g. an NPC/structure final blow).
+                                    let fb_alliance =
+                                        inf.final_blow_alliance.or_else(|| inf.attacker_alliances.first().copied());
+                                    if inf.final_blow_char.is_some()
+                                        || inf.final_blow_corp.is_some()
+                                        || fb_alliance.is_some()
+                                    {
+                                        badge(
+                                            ui,
+                                            fb_alliance,
+                                            inf.final_blow_corp,
+                                            inf.final_blow_char,
+                                            "Attacker (final blow) — click for zKill",
+                                        );
                                         ui.label(
-                                            egui::RichText::new(icon::CARET_RIGHT).color(red).small(),
+                                            egui::RichText::new(icon::CARET_RIGHT).color(red).strong(),
                                         );
                                     }
-                                    if let Some(ship) = inf.victim_ship {
-                                        ui.add(egui::Image::new(format!(
-                                            "https://images.evetech.net/types/{ship}/icon?size=32"
-                                        ))
-                                        .fit_to_exact_size(egui::vec2(18.0, 18.0)));
-                                    }
-                                    // Victim badge: alliance + corp logos + portrait, larger and
-                                    // grouped. Square sources, so fit_to_exact_size doesn't stretch.
-                                    egui::Frame::group(ui.style())
-                                        .inner_margin(egui::Margin::same(2))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                let badge = |ui: &mut egui::Ui, url: String, hover: &str| {
-                                                    ui.add(
-                                                        egui::Image::new(url)
-                                                            .fit_to_exact_size(egui::vec2(30.0, 30.0)),
-                                                    )
-                                                    .on_hover_text(hover);
-                                                };
-                                                if let Some(al) = inf.victim_alliance {
-                                                    badge(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=32"), "Victim alliance");
-                                                }
-                                                if let Some(co) = inf.victim_corp {
-                                                    badge(ui, format!("https://images.evetech.net/corporations/{co}/logo?size=32"), "Victim corporation");
-                                                }
-                                                if let Some(ch) = inf.victim_char {
-                                                    badge(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"), "Victim");
-                                                }
-                                            });
-                                        });
+                                    // Victim badge: alliance + corp + portrait.
+                                    badge(
+                                        ui,
+                                        inf.victim_alliance,
+                                        inf.victim_corp,
+                                        inf.victim_char,
+                                        "Victim — click for zKill",
+                                    );
                                 }
                                 let lbl = egui::RichText::new(format!("{} zKill", icon::ARROW_SQUARE_OUT))
                                     .color(red)
                                     .strong();
                                 if ui.add(egui::Button::new(lbl)).clicked() {
-                                    if let Some(id) = link.kill_id {
-                                        clicked = Some(IntelClick::Kill(id));
-                                    } else {
-                                        let _ = open::that(&link.url);
-                                    }
+                                    // Open the killmail on zKill directly (no in-app kill window).
+                                    let _ = open::that(&link.url);
                                 }
                                 if let Some(inf) = &info {
                                     if inf.value > 0.0 {
                                         ui.label(egui::RichText::new(fmt_isk(inf.value)).weak());
                                     }
                                 }
-                            });
+                            }
                         }
                         LinkKind::BattleReport => {
                             if ui
@@ -12270,6 +12283,7 @@ fn intel_row(
     // the raw message. Detected via input (not a card-wide click widget) so it doesn't steal
     // the inner links' clicks — the card frame would otherwise sit on top of them.
     let bg_click = clicked.is_none()
+        && !is_zkill
         && ui.input(|i| {
             i.pointer.primary_clicked()
                 && i.pointer.interact_pos().is_some_and(|p| resp.rect.contains(p))

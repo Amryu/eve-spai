@@ -351,7 +351,7 @@ const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
 
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
-    "gate", "camp", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
+    "gate", "camp", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
     "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
@@ -361,7 +361,7 @@ const PILOT_STOP: &[&str] = &[
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there",
-    "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre",
+    "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -1308,6 +1308,11 @@ pub fn analyze_ctx(
     // A structure name (Keepstar, Fortizar, …) is never a pilot, even if a character is
     // named after one — it's reported as a structure badge, not a player.
     pilots.retain(|p| !is_structure_word(p));
+    // Final pass: drop any pilot that is a contiguous sub-phrase of a longer detected one.
+    // The loose-run and single-token sources are added after the earlier sub-phrase filter,
+    // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
+    // produced because the loose run breaks on the 2-char "Dr") can slip through.
+    drop_subphrase_pilots(&mut pilots);
 
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
@@ -1700,7 +1705,7 @@ pub fn analyze_ctx(
         no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
-        camp: flagged(&lower_tokens, &pilot_tokens, &["camp"]) || lower.contains("蹲"),
+        camp: flagged(&lower_tokens, &pilot_tokens, &["camp", "gatecamp"]) || lower.contains("蹲"),
         help: flagged_exact(&lower_tokens, &pilot_tokens, &["help", "sos"])
             || lower.contains("need backup")
             || lower.contains("needs backup")
@@ -2277,6 +2282,34 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn showinfo_name_not_split_into_ship_and_pilot() {
+        let s = systems();
+        // A char-linked "Wolf E Kristjansson" must stay one pilot — never "Wolf" (the
+        // assault frigate) + "Kristjansson". Plain-text relays match it via the known cache.
+        let txt = "vin > <url=showinfo:1377//2122822665>Wolf E Kristjansson</url> nv";
+        let mut ships = noships();
+        ships.insert("wolf".into(), (11371, "Wolf".into()));
+        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "x");
+        assert_eq!(r.pilots, vec!["Wolf E Kristjansson".to_string()]);
+        assert!(r.ships.is_empty(), "ships={:?}", r.ships);
+        // Plain-text relay with the full name already known resolves whole, no "Wolf" ship.
+        let mut known = noknown();
+        known.insert("wolf e kristjansson".into(), 2122822665);
+        let r2 = analyze("Wolf E Kristjansson nv", &s, &ships, &known, 1, "ch", "x");
+        assert_eq!(r2.pilots, vec!["Wolf E Kristjansson".to_string()]);
+        assert!(r2.ships.is_empty(), "ships={:?}", r2.ships);
+    }
+
+    #[test]
+    fn suffix_subphrase_pilot_is_dropped() {
+        let s = systems();
+        // "Chen Chen" is a contiguous suffix of "Dr Chen Chen" — the loose run (which
+        // breaks on the 2-char "Dr") must not leak it as a second pilot.
+        let r = analyze("Dr Chen Chen in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.pilots, vec!["Dr Chen Chen".to_string()]);
     }
 
     #[test]
@@ -3123,6 +3156,10 @@ mod tests {
         assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x").clear);
         assert!(analyze("nv in Jita", &s, &noships(), &noknown(), 1, "ch", "x").no_visual);
         assert!(analyze("gate camp 1DQ1-A bubble up", &s, &noships(), &noknown(), 1, "ch", "x").camp);
+        // One-word "gatecamp" fires the camp keyword and is never read as a pilot.
+        let gc = analyze("gatecamp in 1DQ1-A", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(gc.camp, "gatecamp should fire camp");
+        assert!(gc.pilots.is_empty(), "gatecamp is not a pilot");
         assert!(analyze("https://zkillboard.com/kill/123/", &s, &noships(), &noknown(), 1, "ch", "x").killmail);
         assert!(analyze("cyno up in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").cyno);
         assert!(analyze("wh in Jita k162", &s, &noships(), &noknown(), 1, "ch", "x").wormhole);
