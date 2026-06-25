@@ -107,17 +107,17 @@ mod tests {
         let mut s = CampState::default();
         let now = 1_000_000;
         // One kill: nothing yet.
-        s.record(30000142, now - 600);
+        s.record(30000142, now - 100);
         assert!(s.camp(30000142, now).is_none());
         // Two kills: a flag, not yet a camp.
-        s.record(30000142, now - 300);
+        s.record(30000142, now - 80);
         assert_eq!(s.camp(30000142, now).unwrap().level, CampLevel::Flag);
-        // Third recent kill in a tight span: a possible camp.
+        // A third in a tight burst (<8min span): a possible camp.
         s.record(30000142, now - 60);
         let c = s.camp(30000142, now).unwrap();
         assert_eq!(c.kills, 3);
         assert_eq!(c.level, CampLevel::Possible);
-        // Kills sustained over a long span read as a likely camp.
+        // A kill 20 minutes back makes the span long → a likely camp.
         s.record(30000142, now - 20 * 60);
         assert_eq!(s.camp(30000142, now).unwrap().level, CampLevel::Likely);
         // Far in the future: the last kill is stale, not a camp.

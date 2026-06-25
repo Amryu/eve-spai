@@ -408,25 +408,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_redisq_package() {
-        // A minimal, real-shaped RedisQ payload.
-        let json = r#"{"package":{"killID":12345,"killmail":{
+    fn parses_r2z2_killmail() {
+        // A minimal, real-shaped R2Z2 ephemeral killmail ("/ephemeral/<seq>.json").
+        let json = r#"{"killmail_id":12345,"hash":"abc","esi":{
             "killmail_id":12345,"killmail_time":"2026-06-22T18:30:45Z",
             "solar_system_id":30000142,
             "victim":{"alliance_id":99,"corporation_id":98,"character_id":97,"ship_type_id":670},
             "attackers":[{"alliance_id":1,"corporation_id":2,"character_id":3}]},
-            "zkb":{"totalValue":12345.6}}}"#;
-        let parsed: RedisQ = serde_json::from_str(json).unwrap();
-        let pkg = parsed.package.expect("package present");
-        assert_eq!(pkg.kill_id, 12345);
-        assert_eq!(pkg.killmail.solar_system_id, 30000142);
-        assert_eq!(pkg.killmail.attackers.len(), 1);
-        assert_eq!(pkg.zkb.total_value, 12345.6);
-        assert_eq!(pkg.killmail.victim.alliance_id, Some(99));
-        // An empty poll ("no kill") parses to None.
-        assert!(serde_json::from_str::<RedisQ>(r#"{"package":null}"#)
-            .unwrap()
-            .package
-            .is_none());
+            "zkb":{"totalValue":12345.6},"sequence_id":98212640}"#;
+        let r2: R2Z2Kill = serde_json::from_str(json).unwrap();
+        assert_eq!(r2.killmail_id, 12345);
+        assert_eq!(r2.esi.solar_system_id, 30000142);
+        assert_eq!(r2.esi.attackers.len(), 1);
+        assert_eq!(r2.zkb.total_value, 12345.6);
+        assert_eq!(r2.esi.victim.alliance_id, Some(99));
+        // The sequence pointer file parses too.
+        let seq: Sequence = serde_json::from_str(r#"{"sequence":98212646}"#).unwrap();
+        assert_eq!(seq.sequence, 98212646);
     }
 }

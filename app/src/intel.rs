@@ -434,8 +434,8 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "small" | "large" | "big" | "huge"
                 | "sig" | "sigs" | "anyone"
                 // Scanner probes are a badge, never a pilot ("Combat Probes", "Core Scanner
-                // Probe"). The Probe frigate is still detected as a ship via the ship index.
-                | "probe" | "probes"
+                // Probe", "combat prob"). The Probe frigate is still detected via the ship index.
+                | "probe" | "probes" | "prob" | "probs" | "combat" | "core"
                 // Alliance ticker (EVE University), not a player — even though a character
                 // happens to be named "ivy".
                 | "ivy"
@@ -1945,15 +1945,18 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
 /// lone "probe" (no Core/Combat/scanner qualifier) is the ship, so returns None.
 fn detect_probes(text: &str) -> Option<&'static str> {
     let lower = text.to_lowercase();
-    let core = lower.contains("core scanner probe") || lower.contains("core probe");
-    let combat = lower.contains("combat scanner probe") || lower.contains("combat probe");
+    // Match the "prob" stem so abbreviations like "combat prob" count too.
+    let core = lower.contains("core scanner prob") || lower.contains("core prob");
+    let combat = lower.contains("combat scanner prob") || lower.contains("combat prob");
     match (core, combat) {
         (true, false) => Some("Core Probes"),
         (false, true) => Some("Combat Probes"),
         (true, true) => Some("Probes"),
         (false, false) => {
-            let bare_probes = lower.split(|c: char| !c.is_alphanumeric()).any(|w| w == "probes");
-            (lower.contains("scanner probe") || bare_probes).then_some("Probes")
+            let bare = lower
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| matches!(w, "probes" | "probs" | "prob"));
+            (lower.contains("scanner prob") || bare).then_some("Probes")
         }
     }
 }
@@ -2475,6 +2478,20 @@ mod tests {
         // A lone named pilot with no number gets no count badge (the badge is for 3+).
         let r2 = analyze("Gorika Galrog in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r2.count, None, "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
+    fn combat_prob_is_probes_not_pilots() {
+        let s = systems();
+        let r = analyze("combat prob in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.probes, Some("Combat Probes"), "probes={:?}", r.probes);
+        assert!(
+            !r.pilots.iter().any(|p| {
+                p.eq_ignore_ascii_case("combat") || p.eq_ignore_ascii_case("prob")
+            }),
+            "pilots={:?}",
+            r.pilots
+        );
     }
 
     #[test]

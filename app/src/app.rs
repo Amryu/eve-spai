@@ -279,6 +279,8 @@ pub struct SpaiApp {
     last_alert_time: i64,
     /// Per-system alert cooldown (system id -> last alert unix seconds).
     alert_cooldown: std::collections::HashMap<i64, i64>,
+    /// Report ids that have already raised an alert, so an amended message never re-fires.
+    alerted: std::collections::HashMap<u64, i64>,
     /// Recent fired alerts (unix, text) — shared with the game-log watcher.
     recent_alerts: crate::gamewatcher::AlertLog,
     /// Reports shown in the custom notification window, with their severity.
@@ -727,6 +729,7 @@ impl SpaiApp {
             },
             last_alert_time: chrono::Utc::now().timestamp(),
             alert_cooldown: std::collections::HashMap::new(),
+            alerted: std::collections::HashMap::new(),
             recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             alert_feed: Vec::new(),
             alert_window_secs: 0.0,
@@ -960,6 +963,7 @@ impl SpaiApp {
         };
 
         struct Fire {
+            id: u64,
             sys_id: i64,
             title: String,
             text: String,
@@ -1007,6 +1011,11 @@ impl SpaiApp {
                 if now - self.alert_cooldown.get(&sys_id).copied().unwrap_or(0) < cd {
                     continue;
                 }
+                // Never fire twice for the same report — e.g. when the poster amends the
+                // message (which refreshes its timestamp and would otherwise re-trigger).
+                if self.alerted.contains_key(&r.id) {
+                    continue;
+                }
                 let title = r
                     .primary_system()
                     .map(|s| s.name.clone())
@@ -1019,6 +1028,7 @@ impl SpaiApp {
                 let text = alert_text(r);
                 let body = format!("{text}\n— {} · {}", r.reporter, r.channel);
                 fired.push(Fire {
+                    id: r.id,
                     sys_id,
                     title,
                     text,
@@ -1033,6 +1043,10 @@ impl SpaiApp {
             }
         }
         self.last_alert_time = newest;
+        // Keep the alerted-report set bounded (those reports are long pruned).
+        if self.alerted.len() > 4000 {
+            self.alerted.retain(|_, t| now - *t < 7200);
+        }
         if fired.is_empty() {
             return;
         }
@@ -1040,6 +1054,7 @@ impl SpaiApp {
         let mut log = self.recent_alerts.lock().unwrap();
         for f in fired {
             self.alert_cooldown.insert(f.sys_id, now);
+            self.alerted.insert(f.id, now);
             log.push((now, f.text.clone()));
             if f.sys {
                 notify(f.title.clone(), f.body.clone());
