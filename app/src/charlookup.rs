@@ -15,6 +15,8 @@ pub struct LookupInfo {
     pub name: String,
     pub corp: String,
     pub alliance: String,
+    pub corp_id: Option<i64>,
+    pub alliance_id: Option<i64>,
     pub ships_destroyed: i64,
     pub ships_lost: i64,
     pub isk_destroyed: f64,
@@ -85,6 +87,8 @@ fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
         .and_then(|r| r.json::<Char>().ok())
     {
         info.name = c.name;
+        info.corp_id = c.corporation_id;
+        info.alliance_id = c.alliance_id;
         let ids: Vec<i64> = [c.corporation_id, c.alliance_id].into_iter().flatten().collect();
         let names = resolve_names(client, &ids);
         if let Some(cid) = c.corporation_id {

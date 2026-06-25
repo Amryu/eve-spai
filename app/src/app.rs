@@ -3689,12 +3689,35 @@ impl SpaiApp {
             );
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new(&info.name).strong().size(18.0));
-                if !info.corp.is_empty() {
-                    ui.label(egui::RichText::new(&info.corp).weak());
-                }
-                if !info.alliance.is_empty() {
-                    ui.label(egui::RichText::new(&info.alliance).weak());
-                }
+                // Alliance + corp logos, with their names as tooltips.
+                ui.horizontal(|ui| {
+                    if let Some(aid) = info.alliance_id {
+                        ui.add(
+                            egui::Image::new(format!(
+                                "https://images.evetech.net/alliances/{aid}/logo?size=64"
+                            ))
+                            .fit_to_exact_size(egui::Vec2::splat(40.0)),
+                        )
+                        .on_hover_text(if info.alliance.is_empty() {
+                            "Alliance"
+                        } else {
+                            info.alliance.as_str()
+                        });
+                    }
+                    if let Some(cid) = info.corp_id {
+                        ui.add(
+                            egui::Image::new(format!(
+                                "https://images.evetech.net/corporations/{cid}/logo?size=64"
+                            ))
+                            .fit_to_exact_size(egui::Vec2::splat(40.0)),
+                        )
+                        .on_hover_text(if info.corp.is_empty() {
+                            "Corporation"
+                        } else {
+                            info.corp.as_str()
+                        });
+                    }
+                });
             });
         });
         ui.separator();
