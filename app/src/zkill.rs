@@ -9,14 +9,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::Result;
 use serde::Deserialize;
 
 use crate::battle::{self, Battle, Engagement, Party, PartyKind};
 use crate::geo::Systems;
 use crate::intel::IntelState;
 
-const REDISQ: &str = "https://redisq.zkillboard.com/listen.php";
+const R2Z2: &str = "https://r2z2.zkillboard.com/ephemeral";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 /// Keep kills within this many jumps of a tracked intel system.
 const ANCHOR_JUMPS: u32 = 6;
@@ -42,26 +41,53 @@ pub fn spawn(
         else {
             return;
         };
-        let queue_id = format!("eve-spai-{}", std::process::id());
         let mut names: HashMap<i64, String> = HashMap::new();
         let mut buffer: Vec<Engagement> = Vec::new();
-
         let mut seen_links: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut last_scan = std::time::Instant::now()
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(std::time::Instant::now);
+
+        // R2Z2 (RedisQ's replacement; RedisQ was sunset 2026-05-31): killmails are numbered
+        // sequentially. Start at the current sequence and iterate forward, one file each.
+        let mut seq = fetch_sequence(&client);
+        let mut stuck = 0u32;
         loop {
             let mut changed = false;
-            match poll(&client, &queue_id, &systems, &intel, &camps, &killfeed, &mut names) {
-                Ok(Some(engagement)) => {
-                    // RedisQ can repeat a kill; dedup by id.
-                    if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
-                        buffer.push(engagement);
-                        changed = true;
-                    }
+            match seq {
+                None => {
+                    std::thread::sleep(Duration::from_secs(5));
+                    seq = fetch_sequence(&client);
                 }
-                Ok(None) => {} // no kill, or not in the tracked area
-                Err(_) => std::thread::sleep(Duration::from_secs(5)),
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &mut names) {
+                    Poll::Got(eng) => {
+                        stuck = 0;
+                        seq = Some(s + 1);
+                        if let Some(engagement) = eng {
+                            if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
+                                buffer.push(engagement);
+                                changed = true;
+                            }
+                        }
+                    }
+                    Poll::NotReady => {
+                        // Caught up (this sequence isn't uploaded yet). Wait; if stuck a while
+                        // there may be a gap, so re-sync to the current sequence.
+                        stuck += 1;
+                        std::thread::sleep(Duration::from_secs(2));
+                        if stuck >= 15 {
+                            stuck = 0;
+                            if let Some(cur) = fetch_sequence(&client) {
+                                if cur > s + 5 {
+                                    seq = Some(cur);
+                                } else if cur > s {
+                                    seq = Some(s + 1);
+                                }
+                            }
+                        }
+                    }
+                    Poll::Retry => std::thread::sleep(Duration::from_secs(5)),
+                },
             }
 
             // Pull in killmails posted as links in intel (throttled — it locks the intel
@@ -100,15 +126,33 @@ pub fn spawn(
                 *battles.lock().unwrap() = clustered;
                 ctx.request_repaint();
             }
-            // Backstop in case RedisQ returns immediately (so we never busy-spin).
-            std::thread::sleep(Duration::from_millis(500));
         }
     });
 }
 
+/// One R2Z2 ephemeral killmail (`/ephemeral/<sequence>.json`).
 #[derive(Deserialize)]
-struct RedisQ {
-    package: Option<Package>,
+struct R2Z2Kill {
+    killmail_id: i64,
+    esi: Killmail,
+    zkb: Zkb,
+}
+
+#[derive(Deserialize)]
+struct Sequence {
+    sequence: u64,
+}
+
+/// Outcome of polling one sequence file.
+enum Poll {
+    Got(Option<Engagement>),
+    NotReady,
+    Retry,
+}
+
+/// The current (latest) killmail sequence number.
+fn fetch_sequence(client: &reqwest::blocking::Client) -> Option<u64> {
+    client.get(format!("{R2Z2}/sequence.json")).send().ok()?.json::<Sequence>().ok().map(|s| s.sequence)
 }
 
 #[derive(Deserialize)]
@@ -157,21 +201,25 @@ struct Zkb {
 
 fn poll(
     client: &reqwest::blocking::Client,
-    queue_id: &str,
+    seq: u64,
     systems: &Systems,
     intel: &Mutex<IntelState>,
     camps: &crate::camp::SharedCamps,
     killfeed: &SharedKillFeed,
     names: &mut HashMap<i64, String>,
-) -> Result<Option<Engagement>> {
-    // queue_id is alphanumeric ("eve-spai-<pid>"), safe to inline in the URL.
-    // ttw makes RedisQ long-poll up to 10s server-side (client timeout is 30s), so an
-    // idle listener blocks instead of busy-spinning.
-    let url = format!("{REDISQ}?queueID={queue_id}&ttw=10");
-    let resp: RedisQ = client.get(url).send()?.json()?;
-    let Some(pkg) = resp.package else {
-        return Ok(None);
+) -> Poll {
+    let resp = match client.get(format!("{R2Z2}/{seq}.json")).send() {
+        Ok(r) => r,
+        Err(_) => return Poll::Retry,
     };
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Poll::NotReady; // this sequence hasn't been uploaded yet
+    }
+    let r2: R2Z2Kill = match resp.error_for_status().and_then(|r| r.json()) {
+        Ok(v) => v,
+        Err(_) => return Poll::Retry,
+    };
+    let pkg = Package { kill_id: r2.killmail_id, killmail: r2.esi, zkb: r2.zkb };
 
     // Record every kill for gate-camp detection, regardless of the tracked-area filter below.
     {
@@ -196,10 +244,10 @@ fn poll(
 
     // Only keep kills near a system currently in the intel feed.
     if !in_tracked_area(systems, intel, pkg.killmail.solar_system_id) {
-        return Ok(None);
+        return Poll::Got(None);
     }
     let Some(sys) = systems.info_of(pkg.killmail.solar_system_id) else {
-        return Ok(None);
+        return Poll::Got(None);
     };
     let time = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
         .map(|dt| dt.timestamp())
@@ -215,7 +263,7 @@ fn poll(
         .map(|a| party_of(a, names))
         .collect();
 
-    Ok(Some(Engagement {
+    Poll::Got(Some(Engagement {
         kill_id: pkg.kill_id,
         time,
         system_id: sys.id,
