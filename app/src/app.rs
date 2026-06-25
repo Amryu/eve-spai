@@ -11449,7 +11449,18 @@ fn render_ping(
                 }
                 ui.horizontal(|ui| {
                     if let Some(d) = doctrine {
-                        ui.label(format!("Doctrine: {d}"));
+                        // Link the doctrine name straight to its baked forum thread if known.
+                        if let Some(url) = crate::doctrines::link_for(d) {
+                            if ui
+                                .link(format!("Doctrine: {d} \u{2197}"))
+                                .on_hover_text(url)
+                                .clicked()
+                            {
+                                let _ = open::that(url);
+                            }
+                        } else {
+                            ui.label(format!("Doctrine: {d}"));
+                        }
                     }
                     if !doctrine_url.is_empty()
                         && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked()

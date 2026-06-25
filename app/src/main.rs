@@ -15,6 +15,7 @@ mod alliances;
 mod camp;
 mod charlookup;
 mod chatlog;
+mod doctrines;
 mod dscan;
 mod esi;
 mod kills;
