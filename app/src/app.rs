@@ -3802,10 +3802,10 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 })
                 .with_active(false)
-                // Stay mapped (transparent + click-through when idle) so re-mapping on each
-                // alert doesn't make the WM steal focus — works on both X11 (glow) and
-                // Windows (wgpu/DX12 composites the transparent surface; see main.rs).
-                .with_visible(true)
+                // Show only while an alert is up — close the window when idle instead of
+                // leaving it sitting there transparent. with_active(false) keeps the re-map
+                // from stealing focus.
+                .with_visible(active)
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
@@ -3818,7 +3818,7 @@ impl SpaiApp {
                 .with_inner_size([360.0, 240.0]),
             |ctx, _| {
                 if !active {
-                    // Invisible + click-through: draw nothing on a transparent surface.
+                    // Closed (with_visible=false) when idle — draw nothing.
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
                         .show(ctx, |_ui| {});
@@ -3958,18 +3958,22 @@ impl SpaiApp {
             }
             None => {}
         }
-        // Save a moved position / resized size.
-        if let Some(p) = moved {
-            if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
-                self.settings.alerts.window_pos = Some(p);
-                self.needs_save = true;
+        // Save a moved position / resized size — but NOT on the open frame, where the window
+        // briefly reports its builder default before the saved geometry is re-applied (which
+        // would otherwise overwrite the saved position with the default on every open).
+        if !just_opened {
+            if let Some(p) = moved {
+                if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
+                    self.settings.alerts.window_pos = Some(p);
+                    self.needs_save = true;
+                }
             }
-        }
-        if let Some(s) = moved_size {
-            let prev = self.settings.alerts.window_size;
-            if prev.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0) {
-                self.settings.alerts.window_size = Some(s);
-                self.needs_save = true;
+            if let Some(s) = moved_size {
+                let prev = self.settings.alerts.window_size;
+                if prev.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0) {
+                    self.settings.alerts.window_size = Some(s);
+                    self.needs_save = true;
+                }
             }
         }
         if dismiss {
@@ -3977,7 +3981,7 @@ impl SpaiApp {
             return;
         }
         if !active {
-            return; // idle: nothing to count down; window stays transparent
+            return; // idle: nothing to count down; the window is closed
         }
         // Countdown (paused while hovered; floor of 3 s when hovered). Use unstable_dt:
         // it's the *true* time since the last frame. stable_dt is smoothed/clamped, so
