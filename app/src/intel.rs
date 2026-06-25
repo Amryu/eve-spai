@@ -1613,7 +1613,20 @@ pub fn analyze_ctx(
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
-    let (count, name_number_skips) = parse_count(text, &consumed, systems, ship_index);
+    let (total_count, plus_count, name_number_skips) =
+        parse_count(text, &consumed, systems, ship_index);
+    // "pilot1 pilot2 +20" = 22; a stated total ("7 reds") wins; otherwise a bare list of
+    // 3+ named pilots reports its own count. Fewer than 3 named with no number = no badge.
+    let named = pilots.len() as u32;
+    let count = if let Some(t) = total_count {
+        Some((t + plus_count).min(999)) // a stated number ("3 Drake +2" = 5)
+    } else if plus_count > 0 {
+        Some((named + plus_count).min(999)) // named pilots + "N more" ("a b +20" = 22)
+    } else if named >= 3 {
+        Some(named) // a bare list of 3+ named pilots
+    } else {
+        None
+    };
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
     let structures = detect_structures(text);
@@ -2054,13 +2067,14 @@ fn parse_count(
     consumed: &[String],
     systems: &Systems,
     ship_index: &HashMap<String, (i64, String)>,
-) -> (Option<u32>, Vec<(String, u32)>) {
+) -> (Option<u32>, u32, Vec<(String, u32)>) {
     let mut name_skips: Vec<(String, u32)> = Vec::new();
     // A bare number directly before one of these is an ISK/quantity amount ("334
     // million"), not a hostile count.
     const MAGNITUDE: &[&str] =
         &["m", "mil", "mill", "million", "millions", "b", "bil", "billion", "k", "isk"];
     let mut best: Option<u32> = None;
+    let mut plus: u32 = 0;
     let words: Vec<&str> = text.split_whitespace().collect();
     for (i, raw) in words.iter().enumerate() {
         // Skip system codes (e.g. "78-", "1DQ1-A") — their digits aren't a count.
@@ -2107,12 +2121,18 @@ fn parse_count(
         }
         if let Ok(n) = digits.parse::<u32>() {
             if (1..=999).contains(&n) {
-                // Add up separate groups, e.g. "7 red; 1 neut" -> 8.
-                best = Some(best.map_or(n, |b| (b + n).min(999)));
+                // A leading/trailing "+" means N *more* besides the named pilots; keep it
+                // separate so the caller can add it to the pilot count. Other tokens are a
+                // stated total (summed: "7 red; 1 neut" -> 8).
+                if t.starts_with('+') || t.ends_with('+') {
+                    plus = (plus + n).min(999);
+                } else {
+                    best = Some(best.map_or(n, |b| (b + n).min(999)));
+                }
             }
         }
     }
-    (best, name_skips)
+    (best, plus, name_skips)
 }
 
 /// Split into candidate tokens, keeping `-` and `'` (used in system/char names).
@@ -2443,6 +2463,18 @@ mod tests {
         let r = analyze("Gorika Galrog C-J in Rancer", &s, &noships(), &known, 1, "ch", "x");
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("C-J")), "pilots={:?}", r.pilots);
         assert!(r.pilots.iter().any(|p| p == "Gorika Galrog"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn plus_count_adds_to_named_pilots() {
+        let s = systems();
+        // "+20" means 20 more besides the named pilot(s): 1 + 20 = 21.
+        let r = analyze("Gorika Galrog +20 in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Gorika Galrog"), "pilots={:?}", r.pilots);
+        assert_eq!(r.count, Some(21), "pilots={:?}", r.pilots);
+        // A lone named pilot with no number gets no count badge (the badge is for 3+).
+        let r2 = analyze("Gorika Galrog in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r2.count, None, "pilots={:?}", r2.pilots);
     }
 
     #[test]
