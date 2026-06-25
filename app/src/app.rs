@@ -168,6 +168,15 @@ enum PilotSort {
     Recent,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum PilotTab {
+    #[default]
+    Overview,
+    Kills,
+    Solo,
+    Losses,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum FitMode {
     Recent,
@@ -519,6 +528,7 @@ pub struct SpaiApp {
     pilot_lookup: crate::lookup::SharedLookup,
     pilot_window_open: bool,
     pilot_sort: PilotSort,
+    pilot_tab: PilotTab,
     /// Fit window: (ship type id, which fit).
     fit_view: Option<(i64, FitMode)>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
@@ -833,6 +843,7 @@ impl SpaiApp {
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
             pilot_window_open: false,
             pilot_sort: PilotSort::MostLost,
+            pilot_tab: PilotTab::default(),
             fit_view: None,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -3671,6 +3682,49 @@ impl SpaiApp {
         }
     }
 
+    /// A killmail list for a Kills / Solo / Losses tab (newest first, as fetched).
+    fn km_list(&self, ui: &mut egui::Ui, list: &[crate::lookup::Loss]) {
+        if list.is_empty() {
+            ui.label(egui::RichText::new("Nothing here yet \u{2014} or still loading.").weak());
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for l in list {
+                ui.horizontal(|ui| {
+                    let ship = self
+                        .ship_details_cached(l.ship_type_id)
+                        .map(|d| d.name)
+                        .unwrap_or_else(|| "?".to_owned());
+                    ui.label(egui::RichText::new(ship).strong());
+                    if let Some(sys) = self.systems.as_ref().and_then(|g| g.info_of(l.system_id)) {
+                        ui.label(egui::RichText::new(&sys.name).weak());
+                    }
+                    if l.value > 0.0 {
+                        let isk = if l.value >= 1e9 {
+                            format!("{:.1}B", l.value / 1e9)
+                        } else {
+                            format!("{:.0}M", l.value / 1e6)
+                        };
+                        ui.label(isk);
+                    }
+                    let age = now - l.time;
+                    let age_s = if age < 3600 {
+                        format!("{}m", age / 60)
+                    } else if age < 86_400 {
+                        format!("{}h", age / 3600)
+                    } else {
+                        format!("{}d", age / 86_400)
+                    };
+                    ui.label(egui::RichText::new(age_s).weak());
+                    if ui.button("\u{2197}").on_hover_text("Open on zKillboard").clicked() {
+                        let _ = open::that(format!("https://zkillboard.com/kill/{}/", l.killmail_id));
+                    }
+                });
+            }
+        });
+    }
+
     fn pilot_report_ui(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(&report.name).strong());
@@ -3679,6 +3733,19 @@ impl SpaiApp {
                 let _ = open::that(format!("https://zkillboard.com/character/{}/", report.character_id));
             }
         });
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Overview, "Overview");
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Kills, format!("Kills ({})", report.kills.len()));
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Solo, format!("Solo ({})", report.solo.len()));
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Losses, format!("Losses ({})", report.losses.len()));
+        });
+        ui.separator();
+        match self.pilot_tab {
+            PilotTab::Kills => return self.km_list(ui, &report.kills),
+            PilotTab::Solo => return self.km_list(ui, &report.solo),
+            PilotTab::Losses => return self.km_list(ui, &report.losses),
+            PilotTab::Overview => {}
+        }
         ui.horizontal(|ui| {
             ui.label("Sort:");
             ui.selectable_value(&mut self.pilot_sort, PilotSort::MostLost, "Most lost");

@@ -8,8 +8,11 @@ use std::sync::{Arc, Mutex};
 
 const ESI: &str = "https://esi.evetech.net/latest";
 const ZKILL: &str = "https://zkillboard.com/api";
-/// Cap how many killmails we resolve per lookup (keep zKill/ESI load gentle).
-const MAX_LOSSES: usize = 50;
+/// Cap killmails resolved per category per lookup (keep zKill/ESI load gentle, but more
+/// than the last 50 the basic API returns).
+const MAX_KILLS: usize = 75;
+/// At most this many zKill pages (200 each) per category.
+const MAX_PAGES: i64 = 2;
 
 /// A fitted/cargo item from a killmail.
 #[derive(Clone, Debug)]
@@ -51,6 +54,8 @@ pub struct Loss {
     pub hash: String,
     pub time: i64,
     pub ship_type_id: i64,
+    pub system_id: i64,
+    pub value: f64,
     pub items: Vec<Item>,
 }
 
@@ -75,6 +80,10 @@ pub struct PilotReport {
     pub character_id: i64,
     /// Recent losses, newest first.
     pub losses: Vec<Loss>,
+    /// Recent kills (the pilot was an attacker), newest first.
+    pub kills: Vec<Loss>,
+    /// Recent solo kills, newest first.
+    pub solo: Vec<Loss>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -115,33 +124,55 @@ fn run(name: &str) -> Result<PilotReport, String> {
         .map_err(|e| e.to_string())?;
 
     let (character_id, resolved) = resolve_name(&client, name)?;
+    let losses = fetch_category(&client, character_id, "losses");
+    let kills = fetch_category(&client, character_id, "kills");
+    let solo = fetch_category(&client, character_id, "solo");
 
-    let zk: serde_json::Value = client
-        .get(format!("{ZKILL}/losses/characterID/{character_id}/"))
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json())
-        .map_err(|e| format!("zKillboard: {e}"))?;
-    let entries = zk.as_array().cloned().unwrap_or_default();
+    Ok(PilotReport { name: resolved, character_id, losses, kills, solo })
+}
 
-    let mut losses = Vec::new();
-    for km in entries.iter().take(MAX_LOSSES) {
-        let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else {
-            continue;
+/// Pull a zKill category ("kills" / "losses" / "solo") for a character, up to MAX_KILLS
+/// entries across up to MAX_PAGES pages. zKill asks for ~1 request/second to their API.
+fn fetch_category(client: &reqwest::blocking::Client, character_id: i64, category: &str) -> Vec<Loss> {
+    let mut out: Vec<Loss> = Vec::new();
+    let mut page = 1;
+    while out.len() < MAX_KILLS && page <= MAX_PAGES {
+        let url = format!("{ZKILL}/{category}/characterID/{character_id}/page/{page}/");
+        let zk: serde_json::Value = match client
+            .get(&url)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.json())
+        {
+            Ok(v) => v,
+            Err(_) => break,
         };
-        let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str()) else {
-            continue;
-        };
-        if let Some(loss) = killmail(&client, id, hash) {
-            losses.push(loss);
+        let entries = zk.as_array().cloned().unwrap_or_default();
+        if entries.is_empty() {
+            break;
         }
+        for km in &entries {
+            if out.len() >= MAX_KILLS {
+                break;
+            }
+            let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
+            let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str())
+            else {
+                continue;
+            };
+            let value = km
+                .get("zkb")
+                .and_then(|z| z.get("totalValue"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            if let Some(loss) = killmail(client, id, hash, value) {
+                out.push(loss);
+            }
+        }
+        page += 1;
+        std::thread::sleep(std::time::Duration::from_millis(1100));
     }
-
-    Ok(PilotReport {
-        name: resolved,
-        character_id,
-        losses,
-    })
+    out
 }
 
 /// Resolve a character name to (id, canonical name) via ESI.
@@ -164,8 +195,8 @@ fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, 
         .ok_or_else(|| format!("No character named \"{name}\""))
 }
 
-/// Fetch a killmail and reconstruct the lost ship + its fit.
-fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<Loss> {
+/// Fetch a killmail and reconstruct the (victim) ship + its fit.
+fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str, value: f64) -> Option<Loss> {
     let km: serde_json::Value = client
         .get(format!("{ESI}/killmails/{id}/{hash}/"))
         .send()
@@ -176,6 +207,7 @@ fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<L
         .ok()?;
     let victim = km.get("victim")?;
     let ship_type_id = victim.get("ship_type_id")?.as_i64()?;
+    let system_id = km.get("solar_system_id").and_then(|v| v.as_i64()).unwrap_or(0);
     let time = km
         .get("killmail_time")
         .and_then(|t| t.as_str())
@@ -195,7 +227,7 @@ fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str) -> Option<L
             items.push(Item { type_id, flag, qty: qty.max(1) });
         }
     }
-    Some(Loss { killmail_id: id, hash: hash.to_owned(), time, ship_type_id, items })
+    Some(Loss { killmail_id: id, hash: hash.to_owned(), time, ship_type_id, system_id, value, items })
 }
 
 /// Bulk-resolve type ids to names via ESI `/universe/names` (≤1000 per call).
