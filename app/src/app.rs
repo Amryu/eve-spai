@@ -5174,7 +5174,8 @@ impl SpaiApp {
         // Map overlays (ADM / activity / sov upgrades) as rings/markers behind dots.
         // (Sovereignty territory is drawn separately, below.)
         let ov = self.map_overlays;
-        let zoomed = self.map_zoom > 3.0;
+        // Show sov-upgrade icons exactly when the system name labels appear (not earlier).
+        let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {
             let status = self.system_status.lock().unwrap();
             let mut upgrades_by_system: std::collections::HashMap<String, Vec<&str>> =
