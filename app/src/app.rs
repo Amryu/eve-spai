@@ -1202,6 +1202,17 @@ impl SpaiApp {
             if self.settings.jabber_sound_enabled && notify {
                 crate::sound::play(&snd);
             }
+            // Fleet pings raise a desktop notification with the key details.
+            if is_ping && notify {
+                let latest = self.jabber.lock().unwrap().pings.last().cloned();
+                if let Some(crate::pings::Ping::Fleet { fc, doctrine, .. }) = latest {
+                    let body = match doctrine {
+                        Some(d) => format!("FC: {fc} \u{00B7} {d}"),
+                        None => format!("FC: {fc}"),
+                    };
+                    notify_os("Fleet ping", &body);
+                }
+            }
         }
         if any && !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -10737,6 +10748,14 @@ fn rule_matches(
 }
 
 /// A concise one-line alert string for a report.
+/// Show a desktop notification (best-effort, off the UI thread).
+fn notify_os(summary: &str, body: &str) {
+    let (summary, body) = (summary.to_owned(), body.to_owned());
+    std::thread::spawn(move || {
+        let _ = notify_rust::Notification::new().summary(&summary).body(&body).show();
+    });
+}
+
 fn alert_text(r: &crate::intel::IntelReport) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(s) = r.primary_system() {
