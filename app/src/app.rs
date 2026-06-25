@@ -11862,7 +11862,7 @@ fn intel_row(
                 }
 
                 // ISK amount posted (ESS bank, loot, bounty) — "300M", "1.5B".
-                if let Some(isk) = r.isk {
+                if let Some(isk) = r.isk.filter(|_| !is_zkill) {
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(0x4a, 0x3d, 0x10))
                         .inner_margin(egui::Margin::symmetric(6, 1))
@@ -12147,7 +12147,7 @@ fn intel_row(
                                             });
                                         });
                                 }
-                                let lbl = egui::RichText::new(format!("{} KILL", icon::SKULL))
+                                let lbl = egui::RichText::new(format!("{} zKill", icon::ARROW_SQUARE_OUT))
                                     .color(red)
                                     .strong();
                                 if ui.add(egui::Button::new(lbl)).clicked() {
@@ -12252,7 +12252,7 @@ fn intel_row(
             // no vertical stretch).
             ui.horizontal_wrapped(|ui| {
                 render(ui);
-                if show_reporter {
+                if show_reporter && !is_zkill {
                     ui.label(
                         egui::RichText::new(if r.reporter.eq_ignore_ascii_case(&r.channel) {
                             format!("·  {}", r.reporter)
