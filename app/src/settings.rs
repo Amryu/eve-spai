@@ -496,6 +496,23 @@ pub struct SavedRoute {
     pub waypoints: Vec<i64>,
     #[serde(default)]
     pub jumps: usize,
+    /// Routing constraints captured at save time (None = older route without them).
+    #[serde(default)]
+    pub constraints: Option<RouteConstraints>,
+}
+
+/// Travel routing constraints saved alongside a route.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RouteConstraints {
+    pub sec: [bool; 3],
+    pub metric: u8,
+    pub regional_gates: bool,
+    pub jump_bridges: bool,
+    pub avoid_camps: bool,
+    #[serde(default)]
+    pub avoid: Vec<i64>,
+    #[serde(default)]
+    pub avoid_sov: Vec<String>,
 }
 
 fn default_intel_ttl() -> i64 {

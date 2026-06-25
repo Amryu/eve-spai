@@ -30,6 +30,24 @@ enum ActivityMode {
 }
 
 impl ActivityMode {
+    fn to_u8(self) -> u8 {
+        match self {
+            ActivityMode::Off => 0,
+            ActivityMode::ShipKills => 1,
+            ActivityMode::PodKills => 2,
+            ActivityMode::NpcKills => 3,
+            ActivityMode::Jumps => 4,
+        }
+    }
+    fn from_u8(n: u8) -> Self {
+        match n {
+            1 => ActivityMode::ShipKills,
+            2 => ActivityMode::PodKills,
+            3 => ActivityMode::NpcKills,
+            4 => ActivityMode::Jumps,
+            _ => ActivityMode::Off,
+        }
+    }
     fn value(self, f: &crate::systemstatus::SysFlags) -> u32 {
         match self {
             ActivityMode::Off => 0,
@@ -4901,7 +4919,9 @@ impl SpaiApp {
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
         // Small uniform dots like the in-game star map.
-        let dot = (0.7 * self.map_zoom).clamp(0.6, 2.2);
+        // Scale dots with zoom so they don't look tiny when zoomed in (spacing scales
+        // linearly with zoom up to 60×); cap so they stay sane at extreme zoom.
+        let dot = (0.7 * self.map_zoom).clamp(0.7, 14.0);
         // Offsets for labels / sov-upgrade icons are in screen pixels, so when zoomed
         // out (systems crowd together) a fixed gap makes them drift onto neighbours.
         // Shrink the gap as we zoom out (full size once reasonably zoomed in).
@@ -6165,6 +6185,15 @@ impl SpaiApp {
         self.travel_start_q = s;
         self.travel_end_q = e;
         self.travel_waypoints = r.waypoints.clone();
+        if let Some(c) = &r.constraints {
+            self.travel_sec = c.sec;
+            self.travel_metric = ActivityMode::from_u8(c.metric);
+            self.travel_regional_gates = c.regional_gates;
+            self.travel_jump_bridges = c.jump_bridges;
+            self.travel_avoid_camps = c.avoid_camps;
+            self.travel_avoid = c.avoid.clone();
+            self.travel_avoid_sov = c.avoid_sov.iter().cloned().collect();
+        }
         self.plan_route();
     }
 
@@ -6217,10 +6246,13 @@ impl SpaiApp {
                                 ui.selectable_value(&mut self.route_save_folder, f.clone(), f);
                             }
                         });
-                    let ok = can_save && !self.route_save_name.trim().is_empty();
                     if ui
-                        .add_enabled(ok, egui::Button::new("Save current"))
-                        .on_hover_text(if can_save { "Save the current Travel route" } else { "Plan a route first" })
+                        .add_enabled(can_save, egui::Button::new("Save current"))
+                        .on_hover_text(if can_save {
+                            "Save the current route + its settings (blank name = auto)"
+                        } else {
+                            "Plan a route first"
+                        })
                         .clicked()
                     {
                         do_save = true;
@@ -6283,13 +6315,38 @@ impl SpaiApp {
             });
 
         if do_save {
+            // Blank name → auto-generate "Start → wp → … → Destination".
+            let name = if self.route_save_name.trim().is_empty() {
+                let nm = |id: i64| {
+                    self.systems
+                        .as_ref()
+                        .and_then(|g| g.info_of(id))
+                        .map(|i| i.name.clone())
+                        .unwrap_or_default()
+                };
+                let mut parts = vec![nm(self.travel_start.unwrap_or(0))];
+                parts.extend(self.travel_waypoints.iter().map(|w| nm(*w)));
+                parts.push(nm(self.travel_end.unwrap_or(0)));
+                parts.join(" \u{2192} ")
+            } else {
+                self.route_save_name.trim().to_owned()
+            };
             let route = crate::settings::SavedRoute {
-                name: self.route_save_name.trim().to_owned(),
+                name,
                 folder: self.route_save_folder.clone(),
                 start: self.travel_start.unwrap_or(0),
                 end: self.travel_end.unwrap_or(0),
                 waypoints: self.travel_waypoints.clone(),
                 jumps: self.travel_route.as_ref().map(|r| r.len().saturating_sub(1)).unwrap_or(0),
+                constraints: Some(crate::settings::RouteConstraints {
+                    sec: self.travel_sec,
+                    metric: self.travel_metric.to_u8(),
+                    regional_gates: self.travel_regional_gates,
+                    jump_bridges: self.travel_jump_bridges,
+                    avoid_camps: self.travel_avoid_camps,
+                    avoid: self.travel_avoid.clone(),
+                    avoid_sov: self.travel_avoid_sov.iter().cloned().collect(),
+                }),
             };
             self.settings.saved_routes.push(route);
             self.route_save_name.clear();
