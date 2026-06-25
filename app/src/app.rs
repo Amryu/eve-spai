@@ -486,6 +486,8 @@ pub struct SpaiApp {
     threat_include_bridges: bool,
     /// Safety Mode: systems threatened on the last watch tick (to alarm only on a new one).
     safety_prev: Option<std::collections::HashSet<i64>>,
+    /// Map layout to restore when leaving Safety mode (Safety forces the Tree view).
+    safety_prev_layout: Option<crate::map::MapLayout>,
     /// egui time the red screen-flash overlay stays up until (Safety alarm).
     flash_until: f64,
     /// Coordinates actually drawn (geographic or the 2D layout).
@@ -826,6 +828,7 @@ impl SpaiApp {
             map_threat_center: None,
             threat_include_bridges: true,
             safety_prev: None,
+            safety_prev_layout: None,
             flash_until: 0.0,
             map_draw: Vec::new(),
             map_draw_spaced: false,
@@ -3224,18 +3227,80 @@ impl SpaiApp {
             );
         }
         drop(state);
+        self.handle_intel_click(action, ui.ctx());
+    }
+
+    /// Dispatch a click on an intel card (system / kill / ship / pilot).
+    fn handle_intel_click(&mut self, action: Option<IntelClick>, ctx: &egui::Context) {
         match action {
             Some(IntelClick::System(id)) => self.open_system(id),
             Some(IntelClick::Kill(kid)) => self.kill_window = Some(kid),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
             Some(IntelClick::Pilot(name)) => {
                 self.pilot_query = name;
-                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ui.ctx().clone());
+                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
                 self.pilot_window_open = true;
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             None => {}
         }
+    }
+
+    /// Render a small list of intel reports as proper cards (same `intel_row` the feed uses).
+    /// For short lists (Safety / Hunting boards) — no virtualisation. Returns a click action.
+    fn render_intel_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        reports: &[crate::intel::IntelReport],
+    ) -> Option<IntelClick> {
+        if reports.is_empty() {
+            ui.label(egui::RichText::new("No intel in range.").weak());
+            return None;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let player_sys = self.player_system();
+        let systems = self.systems.clone();
+        let sev_rules = self.settings.severity.clone();
+        let ttl = self.settings.intel_ttl_secs;
+        let ids: std::collections::HashSet<i64> =
+            reports.iter().flat_map(|r| r.ships.iter().map(|s| s.id)).collect();
+        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = ids
+            .iter()
+            .filter_map(|id| self.ship_details_cached(*id).map(|d| (*id, d)))
+            .collect();
+        let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
+            ids.iter().map(|id| (*id, self.ship_roles_cached(*id))).collect();
+        let resolved_pilots: std::collections::HashMap<String, i64> = {
+            let cache = self.pilots.lock().unwrap();
+            reports
+                .iter()
+                .flat_map(|r| r.pilots.iter())
+                .filter_map(|name| match cache.get(name) {
+                    Some(Some(id)) => Some((name.clone(), id)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let last_ship = build_last_ship(reports);
+        let kc = self.kill_cache.clone();
+        let mut action = None;
+        let state = self.intel_state.lock().unwrap();
+        let status = self.system_status.lock().unwrap();
+        for r in reports {
+            let stale = state.is_stale(r) || (now - r.received) > ttl;
+            let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+            let sev = severity_of(r, &sev_rules);
+            let inner = ui.scope(|ui| {
+                intel_row(
+                    ui, r, now, stale, from_you, &systems, &status, &ship_details, &ship_roles,
+                    &resolved_pilots, &last_ship, &kc, sev, true,
+                )
+            });
+            if let Some(a) = inner.inner {
+                action = Some(a);
+            }
+        }
+        action
     }
 
     /// Overview: at-a-glance summary of live state.
@@ -6059,6 +6124,18 @@ impl SpaiApp {
         } else {
             new.overlay_preset()
         };
+        // Safety watch is read on the jump-distance Tree; force it (saving the geographic
+        // layout) when entering Safety, and restore the prior layout when leaving.
+        if new == MapMode::Safety {
+            if !self.map_layout.is_threat() {
+                self.safety_prev_layout = Some(self.map_layout);
+                self.map_layout = crate::map::MapLayout::Tree;
+            }
+        } else if self.map_mode == MapMode::Safety {
+            if let Some(prev) = self.safety_prev_layout.take() {
+                self.map_layout = prev;
+            }
+        }
         self.map_mode = new;
         self.needs_save = true;
     }
@@ -6684,20 +6761,10 @@ impl SpaiApp {
             .weak(),
         );
 
-        struct Threat {
-            name: String,
-            jumps: u32,
-            count: Option<u32>,
-            ships: Vec<String>,
-            pilots: Vec<String>,
-            received: i64,
-            camp: bool,
-            spike: bool,
-        }
         let me_sys = self.player_system();
         let range = self.map_threat_jumps;
-        let now = chrono::Utc::now().timestamp();
-        let mut threats: Vec<Threat> = Vec::new();
+        // Nearby intel (cloned), nearest first, one card per system; plus kill hotspots.
+        let mut reports: Vec<(u32, crate::intel::IntelReport)> = Vec::new();
         let mut kills: Vec<(String, u32, u32, u32)> = Vec::new();
         if let (Some(me), Some(geo)) = (me_sys, self.systems.clone()) {
             {
@@ -6708,24 +6775,14 @@ impl SpaiApp {
                     }
                     if let Some(sys) = r.primary_system() {
                         if let Some(j) = geo.jumps(me, sys.id, range) {
-                            threats.push(Threat {
-                                name: sys.name.clone(),
-                                jumps: j,
-                                count: r.count,
-                                ships: r.classes.clone(),
-                                pilots: r.pilots.clone(),
-                                received: r.received,
-                                camp: r.camp,
-                                spike: r.spike,
-                            });
+                            reports.push((j, r.clone()));
                         }
                     }
                 }
             }
-            // Nearest first, most-recent per system; one card per system.
-            threats.sort_by(|a, b| a.jumps.cmp(&b.jumps).then(b.received.cmp(&a.received)));
+            reports.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.received.cmp(&a.1.received)));
             let mut seen = std::collections::HashSet::new();
-            threats.retain(|t| seen.insert(t.name.clone()));
+            reports.retain(|(_, r)| r.primary_system().map(|s| seen.insert(s.id)).unwrap_or(false));
             {
                 let status = self.system_status.lock().unwrap();
                 for (sid, f) in status.iter() {
@@ -6746,74 +6803,43 @@ impl SpaiApp {
             ui.label(egui::RichText::new("No active-character location.").weak());
             return;
         }
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let danger = !threats.is_empty();
-            ui.label(
-                egui::RichText::new(format!("Intel within {range}j: {}", threats.len()))
-                    .strong()
-                    .size(14.0)
-                    .color(if danger { red } else { green }),
-            );
-            for t in &threats {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
+        let danger = !reports.is_empty();
+        ui.label(
+            egui::RichText::new(format!("Intel within {range}j: {}", reports.len()))
+                .strong()
+                .size(14.0)
+                .color(if danger { red } else { green }),
+        );
+        let reports_only: Vec<crate::intel::IntelReport> =
+            reports.into_iter().map(|(_, r)| r).collect();
+        let action = egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt("threat_cards")
+            .show(ui, |ui| {
+                let action = self.render_intel_cards(ui, &reports_only);
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Kill hotspots (last hour)").strong().size(14.0));
+                if kills.is_empty() {
+                    ui.label(egui::RichText::new("none in range").weak());
+                }
+                for (name, j, sk, pk) in kills.iter().take(15) {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(&t.name).strong().color(prox(t.jumps)));
-                        ui.label(egui::RichText::new(format!("{}j", t.jumps)).color(prox(t.jumps)));
-                        if let Some(c) = t.count {
-                            ui.label(egui::RichText::new(format!("{c} hostiles")).strong().color(red));
+                        ui.label(egui::RichText::new(name).strong().color(prox(*j)));
+                        ui.label(egui::RichText::new(format!("{j}j")).weak());
+                        if *sk > 0 {
+                            ui.label(egui::RichText::new(format!("{sk} ship")).color(red));
                         }
-                        if t.camp {
-                            ui.label(egui::RichText::new("CAMP").strong().color(red));
-                        }
-                        if t.spike {
-                            ui.label(egui::RichText::new("SPIKE").strong().color(orange));
+                        if *pk > 0 {
+                            ui.label(egui::RichText::new(format!("{pk} pod")).color(orange));
                         }
                     });
-                    if !t.ships.is_empty() {
-                        ui.label(t.ships.join(", "));
-                    }
-                    if !t.pilots.is_empty() {
-                        let p = if t.pilots.len() > 5 {
-                            format!("{} +{}", t.pilots[..5].join(", "), t.pilots.len() - 5)
-                        } else {
-                            t.pilots.join(", ")
-                        };
-                        ui.label(egui::RichText::new(p).weak());
-                    }
-                    let age = now - t.received;
-                    let age_s = if age < 60 {
-                        format!("{age}s ago")
-                    } else if age < 3600 {
-                        format!("{}m ago", age / 60)
-                    } else {
-                        format!("{}h ago", age / 3600)
-                    };
-                    ui.label(egui::RichText::new(age_s).weak());
-                });
-            }
-
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Kill hotspots (last hour)").strong().size(14.0));
-            if kills.is_empty() {
-                ui.label(egui::RichText::new("none in range").weak());
-            }
-            for (name, j, sk, pk) in kills.iter().take(15) {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(name).strong().color(prox(*j)));
-                    ui.label(egui::RichText::new(format!("{j}j")).weak());
-                    if *sk > 0 {
-                        ui.label(egui::RichText::new(format!("{sk} ship")).color(red));
-                    }
-                    if *pk > 0 {
-                        ui.label(egui::RichText::new(format!("{pk} pod")).color(orange));
-                    }
-                });
-            }
-        });
+                }
+                action
+            })
+            .inner;
+        self.handle_intel_click(action, ui.ctx());
     }
 
-    /// The avoid-sov picker: a tree of coalitions → member alliances, plus standalone
-    /// sov-holders under "Others". Ticked alliances feed the Travel route's avoid-sov filter.
     fn travel_sov_dialog(&mut self, ctx: &egui::Context) {
         if !self.travel_sov_dialog_open {
             return;
