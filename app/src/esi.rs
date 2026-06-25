@@ -74,6 +74,23 @@ fn location_for(
     let character = store.character_by_name(name)?;
     let token = current_access_token(store, client_id, character.id, character.expires_at)?;
 
+    // Skip offline characters: ESI still returns their last-known location, but it must not
+    // drive alert distances (an offline alt elsewhere was triggering far-away alerts).
+    #[derive(Deserialize)]
+    struct Online {
+        online: bool,
+    }
+    let online: Online = client
+        .get(format!("{LOCATION_URL}/{}/online/", character.id))
+        .bearer_auth(&token)
+        .send()
+        .ok()?
+        .json()
+        .ok()?;
+    if !online.online {
+        return None;
+    }
+
     #[derive(Deserialize)]
     struct Location {
         solar_system_id: i64,
