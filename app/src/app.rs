@@ -5445,10 +5445,19 @@ impl SpaiApp {
 
         // Hover tooltip: system info + ESI activity + intel for the hovered system.
         if let Some(h_id) = hovered_id {
-            let layer = ui.layer_id();
-            egui::show_tooltip_at_pointer(ui.ctx(), layer, ui.id().with("map_hover_tip"), |ui| {
-                self.map_system_tooltip(ui, h_id);
-            });
+            // Open to the top-right of the cursor (pivot at its bottom-left) so it clears the
+            // system and the jump-range rings below it.
+            if let Some(ptr) = ui.ctx().pointer_hover_pos() {
+                egui::Area::new(ui.id().with("map_hover_tip"))
+                    .order(egui::Order::Tooltip)
+                    .fixed_pos(ptr + egui::vec2(14.0, -6.0))
+                    .pivot(egui::Align2::LEFT_BOTTOM)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            self.map_system_tooltip(ui, h_id);
+                        });
+                    });
+            }
         }
 
         // Systems + overlays. Per system, the highest active severity + latest time.
@@ -6026,9 +6035,10 @@ impl SpaiApp {
     }
 
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
-        // Compact + translucent so it doesn't hide nearby/jumpable systems.
+        // Compact + translucent so it doesn't hide nearby/jumpable systems; extra-translucent
+        // while the jump-range overlay is on so the rings stay readable through it.
         ui.set_max_width(270.0);
-        ui.set_opacity(0.82);
+        ui.set_opacity(if self.map_overlays.jump_range { 0.40 } else { 0.82 });
         let status = self.system_status.lock().unwrap();
         let flags = status.get(&id).cloned().unwrap_or_default();
         if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(id)) {
