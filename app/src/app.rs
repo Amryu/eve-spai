@@ -350,6 +350,9 @@ pub struct SpaiApp {
     travel_max_ship_kills: u32,
     /// Allowed security bands for intermediate systems (high / low / null).
     travel_sec: [bool; 3],
+    /// Highlighted index in the From/To suggestion dropdowns (keyboard nav).
+    travel_start_sel: usize,
+    travel_end_sel: usize,
     travel_route: Option<Vec<i64>>,
     overlay_menu_open: bool,
     /// System targeted by the map right-click context menu.
@@ -661,6 +664,8 @@ impl SpaiApp {
             travel_jump_bridges: true,
             travel_max_ship_kills: 0,
             travel_sec: [true, true, true],
+            travel_start_sel: 0,
+            travel_end_sel: 0,
             travel_route: None,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -5601,38 +5606,120 @@ impl SpaiApp {
     }
 
     /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
-    /// Travel Mode panel content, rendered inside a docked SidePanel (see `map_area`) so it
-    /// never overlaps the map overlays and adapts when the window shrinks.
+    /// Search systems for the From/To dropdowns: (id, name, security, constellation, region).
+    /// Empty when the query is blank or already exactly names the picked system.
+    fn travel_suggestions(&self, q: &str, picked: Option<i64>) -> Vec<(i64, String, f64, String, String)> {
+        if q.trim().is_empty() {
+            return Vec::new();
+        }
+        let Some(store) = self.store.as_ref() else { return Vec::new() };
+        let hits = store.search_systems(q, 8);
+        if let Some(pid) = picked {
+            if hits.len() == 1 && hits[0].0 == pid {
+                return Vec::new();
+            }
+        }
+        hits.into_iter()
+            .map(|(id, name, sec)| {
+                let (c, r) = self
+                    .systems
+                    .as_ref()
+                    .and_then(|g| g.info_of(id))
+                    .map(|i| (i.constellation.clone(), i.region.clone()))
+                    .unwrap_or_default();
+                (id, name, sec, c, r)
+            })
+            .collect()
+    }
+
+    /// Travel Mode panel content, rendered inside a docked SidePanel (see `map_area`).
     fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
+        // A field with a keyboard-navigable suggestion dropdown (system, sec, const, region).
+        fn travel_field(
+            ui: &mut egui::Ui,
+            q: &mut String,
+            sel: &mut usize,
+            hint: &str,
+            suggestions: &[(i64, String, f64, String, String)],
+        ) -> Option<i64> {
+            let mut pick = None;
+            let resp = ui.add(
+                egui::TextEdit::singleline(q).hint_text(hint).desired_width(ui.available_width()),
+            );
+            if resp.changed() {
+                *sel = 0;
+            }
+            if !suggestions.is_empty() {
+                let focused = resp.has_focus();
+                let n = suggestions.len();
+                if focused {
+                    let (down, up, enter) = ui.input(|i| {
+                        (
+                            i.key_pressed(egui::Key::ArrowDown),
+                            i.key_pressed(egui::Key::ArrowUp),
+                            i.key_pressed(egui::Key::Enter),
+                        )
+                    });
+                    if down {
+                        *sel = (*sel + 1).min(n - 1);
+                    }
+                    if up {
+                        *sel = sel.saturating_sub(1);
+                    }
+                    if enter {
+                        pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
+                    }
+                }
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
+                        let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
+                        if ui.selectable_label(focused && i == *sel, row).clicked() {
+                            pick = Some(*id);
+                        }
+                    }
+                });
+            }
+            pick
+        }
+
         let name_of = |id: Option<i64>| -> Option<String> {
             id.and_then(|i| self.systems.as_ref().and_then(|g| g.info_of(i)).map(|s| s.name.clone()))
         };
         let start_name = name_of(self.travel_start);
         let end_name = name_of(self.travel_end);
+        let start_suggestions = self.travel_suggestions(&self.travel_start_q, self.travel_start);
+        let end_suggestions = self.travel_suggestions(&self.travel_end_q, self.travel_end);
         let summary = self.travel_route.as_ref().map(|r| format!("{} jumps", r.len().saturating_sub(1)));
         let mut plan = false;
         let mut clear = false;
+        let mut start_pick: Option<i64> = None;
+        let mut end_pick: Option<i64> = None;
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Travel route").strong().size(15.0));
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("From");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.travel_start_q)
-                        .hint_text(start_name.as_deref().unwrap_or("system"))
-                        .desired_width(150.0),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label("To  ");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.travel_end_q)
-                        .hint_text(end_name.as_deref().unwrap_or("system"))
-                        .desired_width(150.0),
-                );
-            });
-            ui.label(egui::RichText::new("Right-click a system on the map to set it.").weak());
+            ui.label("From");
+            if let Some(id) = travel_field(
+                ui,
+                &mut self.travel_start_q,
+                &mut self.travel_start_sel,
+                start_name.as_deref().unwrap_or("system"),
+                &start_suggestions,
+            ) {
+                start_pick = Some(id);
+            }
+            ui.add_space(2.0);
+            ui.label("To");
+            if let Some(id) = travel_field(
+                ui,
+                &mut self.travel_end_q,
+                &mut self.travel_end_sel,
+                end_name.as_deref().unwrap_or("system"),
+                &end_suggestions,
+            ) {
+                end_pick = Some(id);
+            }
+            ui.label(egui::RichText::new("\u{2026}or right-click a system on the map.").weak());
             ui.add_space(4.0);
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
             ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
@@ -5670,6 +5757,20 @@ impl SpaiApp {
                 }
             }
         });
+        if let Some(id) = start_pick {
+            self.travel_start = Some(id);
+            self.travel_start_q =
+                self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
+            self.travel_start_sel = 0;
+            self.plan_route();
+        }
+        if let Some(id) = end_pick {
+            self.travel_end = Some(id);
+            self.travel_end_q =
+                self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
+            self.travel_end_sel = 0;
+            self.plan_route();
+        }
         if plan {
             self.plan_route();
         }
