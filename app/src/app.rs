@@ -11821,8 +11821,10 @@ fn intel_row(
             }
             let mut render = |ui: &mut egui::Ui| {
                 // Uniform badge height: match the image badges (24px avatar/ship) so the
-                // text-only badges line up. Forces the row's interactive line-height.
+                // text-only badges line up. Forces the row's interactive line-height; the small
+                // button padding keeps the 24px image buttons from overshooting that height.
                 ui.spacing_mut().interact_size.y = 28.0;
+                ui.spacing_mut().button_padding.y = 2.0;
                 // Plain inline widgets (no fixed-size sub-uis — those break wrapping
                 // inside horizontal_wrapped and make the card grow vertically).
                 ui.label(egui::RichText::new(type_icon).color(icon_color)).on_hover_text(&msg);
@@ -12002,29 +12004,37 @@ fn intel_row(
                         c.want(cid);
                         c.get(cid)
                     });
-                    // Badge: alliance + corp logos + avatar + name, grouped and clickable.
+                    // Inline badges that wrap with the row (a Frame sub-ui here would break
+                    // horizontal_wrapping). Alliance + corp logos — each its own hover — then the
+                    // avatar + name, all on the button background so they match the ship badges.
                     let logo24 = egui::Vec2::splat(24.0);
-                    let resp = egui::Frame::group(ui.style())
-                        .inner_margin(egui::Margin::symmetric(4, 1))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 3.0;
-                                if let Some(al) = aff.and_then(|a| a.alliance) {
-                                    ui.add(egui::Image::new(format!("https://images.evetech.net/alliances/{al}/logo?size=32")).fit_to_exact_size(logo24)).on_hover_text("Alliance");
-                                }
-                                if let Some(co) = aff.and_then(|a| a.corp) {
-                                    ui.add(egui::Image::new(format!("https://images.evetech.net/corporations/{co}/logo?size=32")).fit_to_exact_size(logo24)).on_hover_text("Corporation");
-                                }
-                                if let Some(cid) = char_id {
-                                    ui.add(egui::Image::new(format!("https://images.evetech.net/characters/{cid}/portrait?size=32")).fit_to_exact_size(logo24));
-                                } else {
-                                    ui.label(egui::RichText::new(icon::USER));
-                                }
-                                ui.label(egui::RichText::new(name));
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
+                    if let Some(al) = aff.and_then(|a| a.alliance) {
+                        ui.add(egui::ImageButton::new(
+                            egui::Image::new(format!(
+                                "https://images.evetech.net/alliances/{al}/logo?size=32"
+                            ))
+                            .fit_to_exact_size(logo24),
+                        ))
+                        .on_hover_text("Alliance");
+                    }
+                    if let Some(co) = aff.and_then(|a| a.corp) {
+                        ui.add(egui::ImageButton::new(
+                            egui::Image::new(format!(
+                                "https://images.evetech.net/corporations/{co}/logo?size=32"
+                            ))
+                            .fit_to_exact_size(logo24),
+                        ))
+                        .on_hover_text("Corporation");
+                    }
+                    let resp = if let Some(cid) = char_id {
+                        let img = egui::Image::new(format!(
+                            "https://images.evetech.net/characters/{cid}/portrait?size=32"
+                        ))
+                        .fit_to_exact_size(logo24);
+                        ui.add(egui::Button::image_and_text(img, egui::RichText::new(name)))
+                    } else {
+                        ui.add(egui::Button::new(egui::RichText::new(format!("{} {name}", icon::USER))))
+                    };
                     if resp.on_hover_text("Look up pilot").clicked() {
                         clicked = Some(IntelClick::Pilot(name.clone()));
                     }
