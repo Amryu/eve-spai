@@ -198,6 +198,59 @@ impl Systems {
         }
         None
     }
+
+    /// Constrained shortest (fewest-jumps) route from `from` to `to`. Intermediate systems
+    /// must satisfy `allowed`; region-crossing stargates and jump bridges can each be toggled
+    /// off. This is the basis of Travel Mode (docs/MAP_MODES.md); ship-jump edges and weighted
+    /// costs come in later phases.
+    pub fn route(
+        &self,
+        from: i64,
+        to: i64,
+        allow_regional_gates: bool,
+        allow_jump_bridges: bool,
+        allowed: impl Fn(i64) -> bool,
+    ) -> Option<Vec<i64>> {
+        if from == to {
+            return Some(vec![from]);
+        }
+        let mut prev: HashMap<i64, i64> = HashMap::new();
+        let mut visited: HashSet<i64> = HashSet::from([from]);
+        let mut queue: VecDeque<i64> = VecDeque::from([from]);
+        while let Some(sys) = queue.pop_front() {
+            for &n in self.adjacency.get(&sys).into_iter().flatten() {
+                // A non-gate adjacency is a jump bridge; a gate may cross a region boundary.
+                let is_gate = self.gate_adjacency.get(&sys).is_some_and(|g| g.contains(&n));
+                if is_gate {
+                    let cross_region =
+                        self.info_of(sys).map(|i| &i.region) != self.info_of(n).map(|i| &i.region);
+                    if cross_region && !allow_regional_gates {
+                        continue;
+                    }
+                } else if !allow_jump_bridges {
+                    continue;
+                }
+                if n != to && !allowed(n) {
+                    continue;
+                }
+                if visited.insert(n) {
+                    prev.insert(n, sys);
+                    if n == to {
+                        let mut route = vec![to];
+                        let mut cur = to;
+                        while let Some(&p) = prev.get(&cur) {
+                            route.push(p);
+                            cur = p;
+                        }
+                        route.reverse();
+                        return Some(route);
+                    }
+                    queue.push_back(n);
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -238,5 +291,39 @@ mod tests {
         assert_eq!(g.jumps(1, 4, 10), Some(3));
         assert_eq!(g.jumps(1, 4, 2), None); // beyond max
         assert_eq!(g.jumps(1, 99, 10), None); // unknown system
+    }
+
+    #[test]
+    fn constrained_route() {
+        // A - B - C - D (ids 1..4); B↔C crosses a region boundary (R1 → R2).
+        let mk = |id: i64, region: &str| SystemInfo {
+            id,
+            name: format!("S{id}"),
+            security: 0.0,
+            constellation: String::new(),
+            region: region.to_string(),
+            faction: String::new(),
+        };
+        let by_name: HashMap<String, SystemInfo> = [
+            ("a", mk(1, "R1")),
+            ("b", mk(2, "R1")),
+            ("c", mk(3, "R2")),
+            ("d", mk(4, "R2")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (a, b) in [(1, 2), (2, 3), (3, 4)] {
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+        }
+        let g = Systems::new(by_name, adj);
+        assert_eq!(g.route(1, 4, true, true, |_| true), Some(vec![1, 2, 3, 4]));
+        // Disallowing region-crossing gates blocks B↔C, with no alternative.
+        assert_eq!(g.route(1, 4, false, true, |_| true), None);
+        // A node mask excluding C blocks the only path.
+        assert_eq!(g.route(1, 4, true, true, |s| s != 3), None);
+        assert_eq!(g.route(2, 2, true, true, |_| true), Some(vec![2]));
     }
 }
