@@ -1021,6 +1021,11 @@ fn parse_url_tags(
                     t.ships.push((*id, name.clone()));
                 } else if resolve(systems, inner).is_some() {
                     t.systems.push(inner.to_owned());
+                } else if let Some((pilot, ship)) = split_pilot_ship(inner, ship_index) {
+                    // A "Pilot (Ship)" killmail/fitting link (showinfo on the ship type) — the
+                    // name is the pilot + their hull, not a pilot literally called "X (Hull)".
+                    t.pilots.push(pilot.to_owned());
+                    t.ships.push(ship);
                 } else {
                     t.pilots.push(inner.to_owned());
                 }
@@ -1031,6 +1036,19 @@ fn parse_url_tags(
     t.display.push_str(rest);
     t.masked.push_str(rest);
     t
+}
+
+/// Split a "Pilot (Hull)" link display into the pilot name + resolved ship, when the
+/// parenthesised part is a known hull (killmail / fitting links use this form).
+fn split_pilot_ship<'a>(
+    inner: &'a str,
+    ship_index: &std::collections::HashMap<String, (i64, String)>,
+) -> Option<(&'a str, (i64, String))> {
+    let (name, rest) = inner.rsplit_once(" (")?;
+    let hull = rest.strip_suffix(')')?;
+    let ship = ship_index.get(&hull.to_lowercase())?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| (name, ship.clone()))
 }
 
 #[allow(dead_code)] // thin no-context wrapper, kept for the public API + tests
@@ -1288,7 +1306,10 @@ pub fn analyze_ctx(
     // Extra wormhole detail, parsed only for an actual wormhole sighting.
     let is_wh_msg = lower.contains("wormhole")
         || wh_code.is_some()
-        || lower_tokens.iter().any(|t| t == "wh" && !pilot_tokens.contains(t));
+        || lower_tokens.iter().any(|t| {
+            matches!(t.as_str(), "wh" | "hole" | "holes" | "thera" | "turnur")
+                && !pilot_tokens.contains(t)
+        });
     let (wh_dest, wh_eol, wh_drifter, wh_sig) = if is_wh_msg {
         (
             parse_wh_dest(&lower, &lower_tokens),
@@ -2498,6 +2519,35 @@ mod tests {
             "pilots={:?}",
             r.pilots
         );
+    }
+
+    #[test]
+    fn pilot_ship_killmail_link_splits() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("retribution".to_string(), (11393i64, "Retribution".to_string()))]
+                .into_iter()
+                .collect();
+        // A "Pilot (Hull)" killmail link (showinfo on the ship type) is the pilot + their hull,
+        // not a pilot literally named "Wolf E Kristjansson (Retribution)".
+        let r = analyze(
+            "<url=showinfo:1377//2122822665>Wolf E Kristjansson</url>  <url=showinfo:11393//1054484222961//2122822665>Wolf E Kristjansson (Retribution)</url> nv",
+            &s, &ships, &noknown(), 1, "ch", "edge Navigator",
+        );
+        assert!(r.pilots.iter().any(|p| p == "Wolf E Kristjansson"), "pilots={:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.contains("Retribution")), "pilots={:?}", r.pilots);
+        assert!(r.ships.iter().any(|sh| sh.id == 11393), "ships={:?}", r.ships);
+    }
+
+    #[test]
+    fn thera_hole_is_a_wormhole() {
+        let s = systems();
+        let r = analyze(
+            "<url=showinfo:5//30004809>Y-ORBJ</url> undocumented thera hole",
+            &s, &noships(), &noknown(), 1, "ch", "wwhh",
+        );
+        assert!(r.wormhole, "should be a wormhole message");
+        assert!(matches!(r.wh_dest, Some(crate::wormholes::DestClass::Thera)), "dest={:?}", r.wh_dest);
     }
 
     #[test]
