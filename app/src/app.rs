@@ -360,6 +360,8 @@ pub struct SpaiApp {
     /// Comma-separated sov holders (alliance / NPC faction substrings) to route around.
     travel_avoid_sov: String,
     travel_route: Option<Vec<i64>>,
+    /// Safety Mode: how many jumps out to watch for threats.
+    safety_range: u32,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
     /// Jump-route planner endpoints (seeded from the map; planner is WIP).
@@ -675,6 +677,7 @@ impl SpaiApp {
             travel_avoid: Vec::new(),
             travel_avoid_sov: String::new(),
             travel_route: None,
+            safety_range: 5,
             ctx_menu_system: None,
             jump_plan_from: None,
             jump_plan_to: None,
@@ -5790,6 +5793,82 @@ impl SpaiApp {
         }
     }
 
+    /// Safety Mode panel: a live read of threats within `safety_range` jumps of the active
+    /// character — non-clear intel and ESI kill hotspots, nearest first.
+    fn safety_panel_content(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Safety watch").strong().size(15.0));
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Watch range");
+            ui.add(egui::DragValue::new(&mut self.safety_range).range(1..=20).suffix(" j"));
+        });
+
+        let me_sys = self.player_system();
+        let range = self.safety_range;
+        let mut intel_threats: Vec<(String, u32, Option<u32>)> = Vec::new();
+        let mut kill_hotspots: Vec<(String, u32, u32)> = Vec::new();
+        if let (Some(me), Some(geo)) = (me_sys, self.systems.clone()) {
+            {
+                let st = self.intel_state.lock().unwrap();
+                for r in &st.reports {
+                    if r.clear {
+                        continue;
+                    }
+                    if let Some(sys) = r.primary_system() {
+                        if let Some(j) = geo.jumps(me, sys.id, range) {
+                            intel_threats.push((sys.name.clone(), j, r.count));
+                        }
+                    }
+                }
+            }
+            intel_threats.sort_by_key(|t| t.1);
+            let mut seen = std::collections::HashSet::new();
+            intel_threats.retain(|t| seen.insert(t.0.clone()));
+            {
+                let status = self.system_status.lock().unwrap();
+                for (sid, f) in status.iter() {
+                    if f.ship_kills == 0 {
+                        continue;
+                    }
+                    if let Some(j) = geo.jumps(me, *sid, range) {
+                        let name = geo.info_of(*sid).map(|i| i.name.clone()).unwrap_or_default();
+                        kill_hotspots.push((name, j, f.ship_kills));
+                    }
+                }
+            }
+            kill_hotspots.sort_by_key(|t| t.1);
+        }
+
+        ui.separator();
+        if me_sys.is_none() {
+            ui.label(egui::RichText::new("No active-character location.").weak());
+            return;
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let danger = !intel_threats.is_empty();
+            let alarm = egui::Color32::from_rgb(0xEF, 0x53, 0x50);
+            let calm = egui::Color32::from_rgb(0x66, 0xBB, 0x6A);
+            ui.label(
+                egui::RichText::new(format!("Intel within {range}j: {}", intel_threats.len()))
+                    .strong()
+                    .color(if danger { alarm } else { calm }),
+            );
+            for (name, j, count) in intel_threats.iter().take(12) {
+                let c = count.map(|c| format!("  ({c})")).unwrap_or_default();
+                ui.label(format!("{name}  \u{2022} {j}j{c}"));
+            }
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Kill hotspots (last hour)").strong());
+            if kill_hotspots.is_empty() {
+                ui.label(egui::RichText::new("none in range").weak());
+            }
+            for (name, j, k) in kill_hotspots.iter().take(12) {
+                ui.label(format!("{name}  \u{2022} {j}j, {k} kills"));
+            }
+        });
+    }
+
     /// Render the map, prefixed by a docked left SidePanel for the active mode's panel (so the
     /// panel and the map never overlap and both reflow when the window is resized).
     fn map_area(&mut self, ui: &mut egui::Ui) {
@@ -5805,12 +5884,22 @@ impl SpaiApp {
                 });
             });
         // Mode-specific panels dock on the right.
-        if self.map_mode == MapMode::Travel {
+        if self.map_mode != MapMode::Standard {
             egui::Panel::right("map_mode_dock")
                 .resizable(true)
                 .default_size(240.0)
                 .size_range(180.0..=340.0)
-                .show_inside(ui, |ui| self.travel_panel_content(ui));
+                .show_inside(ui, |ui| match self.map_mode {
+                    MapMode::Travel => self.travel_panel_content(ui),
+                    MapMode::Safety => self.safety_panel_content(ui),
+                    MapMode::Hunting => {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("Hunting").strong().size(15.0));
+                        ui.separator();
+                        ui.label(egui::RichText::new("Live target board — coming soon.").weak());
+                    }
+                    MapMode::Standard => {}
+                });
         }
         }
         ui.push_id("map:main", |ui| self.draw_map(ui));
