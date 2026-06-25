@@ -355,7 +355,7 @@ const PILOT_STOP: &[&str] = &[
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
     "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went",
-    "help", "sos", "backup",
+    "help", "sos", "backup", "need",
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
@@ -900,6 +900,30 @@ fn lowercase_tail_names(
 }
 
 /// Analyse one message into a structured report (movement is added later).
+/// Pre-clean intel text before parsing: drop EVE's "*" route-waypoint marker (so a marked
+/// system like "NB-ALM*" still resolves), and strip a re-pasted chat line's
+/// "[ time ] Sender > " prefix when the body is an in-game-link paste (the inner sender is
+/// not a hostile).
+fn preprocess_intel(text: &str) -> String {
+    let mut t = text.trim();
+    if t.starts_with('[') {
+        if let Some(i) = t.find(']') {
+            t = t[i + 1..].trim_start();
+        }
+    }
+    if let Some(gt) = t.find(" > ") {
+        let prefix = &t[..gt];
+        let rest = t[gt + 3..].trim_start();
+        if !prefix.contains("<url=")
+            && prefix.split_whitespace().count() <= 4
+            && rest.starts_with("<url=")
+        {
+            t = rest;
+        }
+    }
+    t.replace('*', "")
+}
+
 /// Parse EVE in-game "<url=showinfo:TYPE//ID>Name</url>" links (present when intel
 /// is pasted straight from the client) — chat-log intel has the tags stripped, so
 /// this only matters for pastes. Returns the cleaned text (each tag replaced by its
@@ -1078,6 +1102,8 @@ pub fn analyze_ctx(
     context_system: Option<i64>,
     channel_regions: &[String],
 ) -> IntelReport {
+    let cleaned = preprocess_intel(text);
+    let text = cleaned.as_str();
     // Resolve in-game showinfo links first; parse the masked text, display the names.
     let tags = parse_url_tags(text, systems, ship_index);
     let display_text = tags.display.trim().to_owned();
@@ -3035,6 +3061,7 @@ mod tests {
         );
         assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
     }
+
 
     #[test]
     fn showinfo_system_strips_waypoint_star() {
