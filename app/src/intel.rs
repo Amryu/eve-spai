@@ -240,6 +240,7 @@ impl IntelState {
                     prev.pilots.push(p.clone());
                 }
             }
+            drop_subphrase_pilots(&mut prev.pilots);
             // Authoritative showinfo char-ids and alliance mentions must merge too, else
             // a merged pilot loses its char-link and is dropped from the card.
             for c in &new.char_ids {
@@ -435,7 +436,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "sig" | "sigs" | "anyone"
                 // Scanner probes are a badge, never a pilot ("Combat Probes", "Core Scanner
                 // Probe", "combat prob"). The Probe frigate is still detected via the ship index.
-                | "probe" | "probes" | "prob" | "probs" | "combat" | "core"
+                | "probe" | "probes" | "prob" | "probs" | "combat" | "core" | "scanner" | "sisters"
                 // Alliance ticker (EVE University), not a player — even though a character
                 // happens to be named "ivy".
                 | "ivy"
@@ -918,6 +919,21 @@ fn lowercase_tail_names(
 /// system like "NB-ALM*" still resolves), and strip a re-pasted chat line's
 /// "[ time ] Sender > " prefix when the body is an in-game-link paste (the inner sender is
 /// not a hostile).
+/// Drop a pilot that is a contiguous sub-phrase of a longer one (e.g. "Nine" when "Nine -3"
+/// is also present) — used after a merge, since each message is filtered individually.
+fn drop_subphrase_pilots(pilots: &mut Vec<String>) {
+    let lc: Vec<String> = pilots.iter().map(|p| p.to_lowercase()).collect();
+    let keep: Vec<bool> = (0..pilots.len())
+        .map(|i| {
+            !lc.iter().enumerate().any(|(j, o)| {
+                j != i && o.len() > lc[i].len() && format!(" {o} ").contains(&format!(" {} ", lc[i]))
+            })
+        })
+        .collect();
+    let mut it = keep.into_iter();
+    pilots.retain(|_| it.next().unwrap_or(true));
+}
+
 fn preprocess_intel(text: &str) -> String {
     let mut t = text.trim();
     if t.starts_with('[') {
@@ -1973,8 +1989,8 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
 fn detect_probes(text: &str) -> Option<&'static str> {
     let lower = text.to_lowercase();
     // Match the "prob" stem so abbreviations like "combat prob" count too.
-    let core = lower.contains("core scanner prob") || lower.contains("core prob");
-    let combat = lower.contains("combat scanner prob") || lower.contains("combat prob");
+    let core = lower.contains("core scanner") || lower.contains("core prob");
+    let combat = lower.contains("combat scanner") || lower.contains("combat prob");
     match (core, combat) {
         (true, false) => Some("Core Probes"),
         (false, true) => Some("Combat Probes"),
@@ -2541,6 +2557,21 @@ mod tests {
         let r = analyze("thera hole in Rancer", &s, &noships(), &noknown(), 1, "ch", "wwhh");
         assert!(r.wormhole, "should be a wormhole message");
         assert!(matches!(r.wh_dest, Some(crate::wormholes::DestClass::Thera)), "dest={:?}", r.wh_dest);
+    }
+
+    #[test]
+    fn sisters_combat_scanner_is_probes_not_pilots() {
+        let s = systems();
+        let r = analyze("Sisters Combat Scanner in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.probes, Some("Combat Probes"), "probes={:?}", r.probes);
+        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn drops_subphrase_pilots_works() {
+        let mut p = vec!["Nine".to_string(), "Nine -3".to_string()];
+        drop_subphrase_pilots(&mut p);
+        assert_eq!(p, vec!["Nine -3".to_string()]);
     }
 
     #[test]
