@@ -11545,7 +11545,8 @@ fn severity_of(
     rules: &crate::settings::SeverityRules,
 ) -> crate::settings::Severity {
     use crate::settings::Severity::*;
-    let mut s = Info;
+    // zKill killmails count as at least Warning so they satisfy the default alert rules.
+    let mut s = if r.killmail && r.channel.eq_ignore_ascii_case("zkill") { Warning } else { Info };
     if let Some(n) = r.count {
         s = s.max(if n >= rules.big_gang_threshold { rules.big_gang } else { rules.small_gang });
     } else if !r.systems.is_empty() && !r.clear && !r.killmail && !r.status {
@@ -11888,7 +11889,7 @@ fn intel_row(
                 }
 
                 // Ship panels with the real EVE hull icon (click -> ship window).
-                let ship_icon = ui.text_style_height(&egui::TextStyle::Body);
+                let ship_icon = 24.0_f32;
                 for sh in &r.ships {
                     let url = format!("https://images.evetech.net/types/{}/icon?size=32", sh.id);
                     let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(ship_icon));
@@ -11952,7 +11953,7 @@ fn intel_row(
                     let resp = if let Some(cid) = char_id {
                         // Avatar + name instead of the generic person icon.
                         let img = egui::Image::new(format!(
-                            "https://images.evetech.net/characters/{cid}/portrait?size=64"
+                            "https://images.evetech.net/characters/{cid}/portrait?size=32"
                         ))
                         .fit_to_exact_size(egui::Vec2::splat(24.0));
                         ui.add(egui::Button::image_and_text(img, egui::RichText::new(name)))
@@ -12056,13 +12057,13 @@ fn intel_row(
                                                     .on_hover_text(hover);
                                                 };
                                                 if let Some(al) = inf.victim_alliance {
-                                                    badge(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=64"), "Victim alliance");
+                                                    badge(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=32"), "Victim alliance");
                                                 }
                                                 if let Some(co) = inf.victim_corp {
-                                                    badge(ui, format!("https://images.evetech.net/corporations/{co}/logo?size=64"), "Victim corporation");
+                                                    badge(ui, format!("https://images.evetech.net/corporations/{co}/logo?size=32"), "Victim corporation");
                                                 }
                                                 if let Some(ch) = inf.victim_char {
-                                                    badge(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=64"), "Victim");
+                                                    badge(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"), "Victim");
                                                 }
                                             });
                                         });
