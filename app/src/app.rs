@@ -2743,15 +2743,23 @@ impl SpaiApp {
             // real character ("Bob 80" -> 80 was a hostile count).
             let mut add = 0u32;
             let mut requeue: Vec<String> = Vec::new();
-            r.name_number_skips.retain(|(cand, num)| match cache.get(cand) {
-                Some(None) => {
-                    add += *num;
-                    false
+            let pilots_lc: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
+            r.name_number_skips.retain(|(cand, num)| {
+                // The number belongs to an already-parsed pilot name (e.g. the tagged
+                // "Cyberdyne Systems 101") — it's part of the name, never a count.
+                if pilots_lc.iter().any(|p| p.contains(&cand.to_lowercase())) {
+                    return false;
                 }
-                Some(Some(_)) => false,
-                None => {
-                    requeue.push(cand.clone());
-                    true
+                match cache.get(cand) {
+                    Some(None) => {
+                        add += *num;
+                        false
+                    }
+                    Some(Some(_)) => false,
+                    None => {
+                        requeue.push(cand.clone());
+                        true
+                    }
                 }
             });
             for c in requeue {
@@ -4368,8 +4376,10 @@ impl SpaiApp {
                         .show(ctx, |_ui| {});
                     return;
                 }
-                // A new alert: bring the window to the foreground once so it's noticed.
-                if std::mem::take(&mut self.alert_focus_pending) {
+                // A new alert: bring the window forward once — Windows only. On Linux/X11 a
+                // focus request steals focus from the game (winit#1160), which the user doesn't
+                // want; there the window is already mapped + visible, so seeing it is enough.
+                if std::mem::take(&mut self.alert_focus_pending) && cfg!(target_os = "windows") {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 // Re-apply the saved geometry when an alert appears (the builder values
