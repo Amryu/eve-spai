@@ -515,6 +515,11 @@ fn looks_like_system_code(t: &str) -> bool {
     if t.len() < 2 || !t.contains('-') {
         return false;
     }
+    // A token starting with '-' is an alt-name suffix ("Nine -L", "Pilot -3"), not a system
+    // code — real codes always have content before the first hyphen ("C-J", "78-").
+    if t.starts_with('-') {
+        return false;
+    }
     if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         || !t.chars().any(|c| c.is_ascii_alphanumeric())
     {
@@ -680,6 +685,10 @@ fn is_name_connector(w: &str) -> bool {
 fn is_name_suffix(t: &str) -> bool {
     (t.len() == 1 && t.starts_with(|c: char| c.is_ascii_uppercase()))
         || (matches!(t.len(), 1..=4) && t.chars().all(|c| c.is_ascii_digit()))
+        // Alt suffix attached to a name: "-3", "-L", "-42".
+        || (t.starts_with('-')
+            && matches!(t.len(), 2..=4)
+            && t[1..].chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 fn extract_pilots(text: &str) -> Vec<String> {
@@ -3078,6 +3087,16 @@ mod tests {
         );
         assert!(r.systems.iter().any(|d| d.name == "Rancer"), "systems: {:?}", r.systems);
         assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn pilot_name_keeps_alt_suffix() {
+        let s = systems();
+        // "-L" / "-3" are alt-name suffixes, not system shorthands, and must stay on the name.
+        let r = analyze("hostiles Nine -L in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Nine -L"), "pilots: {:?}", r.pilots);
+        let r2 = analyze("Nine -3", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r2.pilots);
     }
 
     #[test]
