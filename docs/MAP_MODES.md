@@ -57,7 +57,7 @@ allowed hi/low system), and Hunting (distance ranking).
 | Coalition→alliance map | ✅ `settings.coalitions` | bundled snapshot, user-editable |
 | **Sov *owner* per system** | ❌ | **add ESI `/sovereignty/map`** (system→alliance_id), refreshed hourly |
 | **Friendly Keepstar/Fortizar per system** | ❌ → **paste** | new `settings.friendly_structures: Vec<{ system, kind }>` with a paste parser modelled on `parse_sov_upgrades` (kind = Keepstar/Fortizar/…) |
-| zKill live kills | partial (`kills.rs` lookups) | **add a feed**: zKillboard RedisQ (poll, ~1 s, no auth) |
+| zKill live kills | partial (`kills.rs` lookups) | **add a feed**: zKillboard RedisQ (poll). ⚠ killmails can lag the real event by **minutes** — always key freshness/age/ETA off the **killmail timestamp**, never receipt time |
 
 Sov-owner is the only remaining ❌; the structure data is a paste (same UX as sov upgrades),
 and everything else can ship without it.
@@ -123,10 +123,35 @@ cyno", "notify when NPC kills in <system> jump up".
 - Intel "hot" duration: how long a sighting stays active if the entity isn't re-reported.
 - AFK alarm config: **loud looping sound + full-screen flashing** (the screen-flash action).
 
-**Behaviour:** while AFK, any matching trigger fires the alarm. The map shows tracked
-intel with an **estimated time-to-safe**: jumps from the hunter to the nearest allowed
-high/low-sec (or configured safe) system via §2.1, shown per hostile so the user knows if a
-threat heading their way out-paces their escape.
+**Behaviour:** while AFK, any matching trigger fires the alarm. For each tracked hostile the
+map shows an **ETA-to-you** — an estimate of how long that entity would take to reach *your*
+system if it burned straight for you. (Not how long you take to flee; it's how much warning
+you have.)
+
+### 5.1 Threat-ETA model
+
+`ETA = Σ over the jumps on the hostile→you gate path of:`
+`  align/enter-warp + in-system warp (gate→gate) + gate session-change overhead`
+
+- **Path**: `geo` gate path from the hostile's last-known system to yours (gates only, unless
+  the hostile is flagged jump-capable).
+- **In-system warp time**: warp the distance between the entry and exit stargate at the hull's
+  max warp speed using EVE's accelerate→cruise→decelerate curve (closed-form approximation;
+  "good enough, not exact"). Needs **per-stargate positions** for the gate→gate distance.
+  v1 fallback: a typical per-system AU distance × the hull's warp profile until positions load.
+- **Ship**: max warp speed + agility (for align) by hull, from the SDE — hull taken from the
+  intel ship or the zKill victim/attacker. Unknown hull → a default (e.g. a cruiser).
+- **Overhead**: one fixed session-change + gate-tunnel constant per jump.
+- **zKill latency** (important): a killmail can surface minutes after the kill. Treat the
+  **killmail timestamp** as the hostile's *last-seen* time, so the warning we can actually give
+  is `effective_eta = model_eta − (now − kill_time)`, floored at 0. When `now − kill_time` is
+  large, the position is stale — widen the threat to a *radius* of systems they could already
+  have reached (`reachable within (now − kill_time)`), flag high uncertainty, and de-emphasise
+  vs. fresh chat intel. The intel "hot" TTL is also measured from this timestamp, not receipt.
+- Cache per `(hull, system→system)`; never re-solve per frame.
+
+If the hostile's hull is jump-capable and lit a cyno path, the ETA can collapse to near-zero —
+surface that as a distinct "can hotdrop you" warning rather than a misleadingly long gate ETA.
 
 ## 6. Decisions
 
@@ -136,14 +161,18 @@ threat heading their way out-paces their escape.
 3. **zKill feed** = RedisQ polling (~1 s, no auth). ✅ (recommended default)
 4. **Jump fatigue** = warn-only for v1, no routing penalty. ✅ (recommended default)
 
+5. **Sov owner** = auto-pull ESI `/sovereignty/map` (system→alliance) hourly + a maintained
+   alliance→coalition list (keep the snapshot only as the coalition grouping). ✅
+6. **"Time-to-safe"** = the hostile's **ETA to you**, not your escape — the warp/gate model in
+   §5.1, discounted by zKill latency. ✅
+7. **Active cyno** = intel cyno keyword **+ zKill inference** (cyno hull dying / covert fit),
+   accepting some false positives. ✅
+
 **Still open**
-5. **Sov owner & coalition mapping** — keep the bundled, user-editable coalition snapshot, or
-   auto-pull `/sovereignty/map` (system→alliance) and maintain an alliance→coalition list? The
-   paste-based `coalitions` works today; auto-pull is more accurate but adds upkeep.
-6. **Time-to-safe "safe" definition** (§5) — nearest high-sec only, nearest high/low-sec, or a
-   user-set list of safe systems/stations?
-7. **Hunting "active cyno" source** — intel cyno keyword only, or also infer from zKill (a cyno
-   ship dying / a covert cyno fit)?
+8. **zKill staleness cutoff** — past what `now − kill_time` do we stop drawing a point threat
+   and switch to a "could be anywhere in N systems" radius (and eventually drop it)?
+9. **Warp-curve fidelity** — ship its closed-form accel/cruise/decel from day one, or start
+   with a flat "X seconds per jump by hull class" table and refine later?
 
 ## 7. Suggested phasing
 
