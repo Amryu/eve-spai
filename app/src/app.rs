@@ -5188,8 +5188,8 @@ impl SpaiApp {
                     });
                 });
         } else {
-            self.map_controls_overlay(ui, rect);
-            // The overlays menu is geographic-only (sov areas etc.).
+            // Standard controls now live in the left dock (see map_area); only the
+            // overlays menu, search and legend remain floating over the map.
             if !self.map_layout.is_threat() {
                 self.map_overlay_menu(ui, rect);
             }
@@ -5677,8 +5677,19 @@ impl SpaiApp {
     /// Render the map, prefixed by a docked left SidePanel for the active mode's panel (so the
     /// panel and the map never overlap and both reflow when the window is resized).
     fn map_area(&mut self, ui: &mut egui::Ui) {
+        // Standard controls live in a left dock, not floating over the map.
+        egui::Panel::left("map_standard_dock")
+            .resizable(true)
+            .default_size(212.0)
+            .size_range(170.0..=300.0)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    self.map_controls_content(ui);
+                });
+            });
+        // Mode-specific panels dock on the right.
         if self.map_mode == MapMode::Travel {
-            egui::Panel::left("map_mode_panel")
+            egui::Panel::right("map_mode_dock")
                 .resizable(true)
                 .default_size(240.0)
                 .size_range(180.0..=340.0)
@@ -5687,15 +5698,10 @@ impl SpaiApp {
         ui.push_id("map:main", |ui| self.draw_map(ui));
     }
 
-    fn map_controls_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn map_controls_content(&mut self, ui: &mut egui::Ui) {
         use crate::map::MapView;
-        egui::Area::new(ui.id().with("map_controls"))
-            .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                use egui_phosphor::regular as icon;
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
+        use egui_phosphor::regular as icon;
+        ui.horizontal_wrapped(|ui| {
                         // Mode selector — auto-adapts the overlays to the chosen mode.
                         let mut mode = self.map_mode;
                         egui::ComboBox::from_id_salt(ui.id().with("map_mode"))
@@ -5825,9 +5831,7 @@ impl SpaiApp {
                         {
                             self.route_destination = None;
                         }
-                    });
-                });
-            });
+        });
     }
 
     /// Search panel at the bottom-left of the map: systems, constellations and
