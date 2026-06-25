@@ -892,7 +892,7 @@ fn migrate_plaintext_tokens(conn: &Connection) {
     }
 }
 
-fn data_dir() -> Result<PathBuf> {
+pub fn data_dir() -> Result<PathBuf> {
     let pd = directories::ProjectDirs::from("online", "EveSpai", "eve-spai")
         .ok_or_else(|| anyhow!("could not resolve a data directory"))?;
     Ok(pd.data_dir().to_path_buf())

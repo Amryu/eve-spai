@@ -15,7 +15,7 @@ const MAX_KILLS: usize = 75;
 const MAX_PAGES: i64 = 2;
 
 /// A fitted/cargo item from a killmail.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Item {
     pub type_id: i64,
     pub flag: i64,
@@ -48,7 +48,7 @@ pub fn slot_of(flag: i64) -> Slot {
 }
 
 /// One lost ship (a killmail) with its fit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Loss {
     pub killmail_id: i64,
     pub hash: String,
@@ -74,7 +74,7 @@ impl Loss {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PilotReport {
     pub name: String,
     pub character_id: i64,
@@ -99,8 +99,36 @@ pub enum LookupState {
 
 pub type SharedLookup = Arc<Mutex<LookupState>>;
 
-/// Look up `name` in the background; resolves the id, then fetches the three categories
-/// **in parallel** (newest first), filling `state` progressively and waking the UI.
+/// On-disk cache path for a character's lookup result.
+fn cache_path(character_id: i64) -> Option<std::path::PathBuf> {
+    let dir = crate::store::data_dir().ok()?.join("lookup");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("{character_id}.json")))
+}
+
+fn load_cache(character_id: i64) -> Option<PilotReport> {
+    let path = cache_path(character_id)?;
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+fn save_cache(report: &PilotReport) {
+    if let Some(path) = cache_path(report.character_id) {
+        if let Ok(json) = serde_json::to_string(report) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+/// Newest `new` entries followed by the `cached` ones, capped so the cache stays bounded.
+fn combine(new: &[Loss], cached: &[Loss]) -> Vec<Loss> {
+    let mut v = new.to_vec();
+    v.extend_from_slice(cached);
+    v.truncate(200);
+    v
+}
+
+/// Look up `name`: show the cached result instantly, then fetch only newer killmails (per
+/// category, in parallel) and merge, persisting the result for next time.
 pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     let name = name.trim().to_owned();
     if name.is_empty() {
@@ -129,30 +157,45 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
                 return;
             }
         };
-        *state.lock().unwrap() = LookupState::Done(PilotReport {
-            name: resolved,
+        // Show the cached report immediately (faster re-lookup), then refresh.
+        let base = load_cache(character_id).unwrap_or_else(|| PilotReport {
+            name: resolved.clone(),
             character_id,
             losses: Vec::new(),
             kills: Vec::new(),
             solo: Vec::new(),
             loading: true,
         });
+        *state.lock().unwrap() = LookupState::Done(PilotReport { name: resolved, loading: true, ..base });
         ctx.request_repaint();
+
         let pending = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(3));
         for (idx, category) in ["losses", "kills", "solo"].into_iter().enumerate() {
+            let cached_list: Vec<Loss> = {
+                let g = state.lock().unwrap();
+                if let LookupState::Done(r) = &*g {
+                    match idx {
+                        0 => r.losses.clone(),
+                        1 => r.kills.clone(),
+                        _ => r.solo.clone(),
+                    }
+                } else {
+                    Vec::new()
+                }
+            };
+            let known: std::collections::HashSet<i64> = cached_list.iter().map(|l| l.killmail_id).collect();
             let client = client.clone();
             let state = state.clone();
             let ctx = ctx.clone();
             let pending = pending.clone();
             std::thread::spawn(move || {
-                // Stagger the initial zKill list calls so the three threads don't burst the API.
                 std::thread::sleep(std::time::Duration::from_millis(idx as u64 * 500));
-                fetch_category(&client, character_id, category, |partial| {
+                fetch_category(&client, character_id, category, &known, &cached_list, |combined| {
                     if let LookupState::Done(r) = &mut *state.lock().unwrap() {
                         match idx {
-                            0 => r.losses = partial.to_vec(),
-                            1 => r.kills = partial.to_vec(),
-                            _ => r.solo = partial.to_vec(),
+                            0 => r.losses = combined.to_vec(),
+                            1 => r.kills = combined.to_vec(),
+                            _ => r.solo = combined.to_vec(),
                         }
                     }
                     ctx.request_repaint();
@@ -160,6 +203,7 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
                 if pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
                     if let LookupState::Done(r) = &mut *state.lock().unwrap() {
                         r.loading = false;
+                        save_cache(r);
                     }
                     ctx.request_repaint();
                 }
@@ -168,18 +212,19 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     });
 }
 
-/// Pull a zKill category ("kills" / "losses" / "solo"), up to MAX_KILLS entries across up to
-/// MAX_PAGES pages. `on_batch` is called with the partial list as it grows (progressive UI).
-/// zKill asks for ~1 request/second to their API.
+/// Fetch a zKill category's **newer** killmails (stopping at the first already-cached id),
+/// merging onto `cached`. `on_batch` gets the merged list as it grows.
 fn fetch_category(
     client: &reqwest::blocking::Client,
     character_id: i64,
     category: &str,
+    known: &std::collections::HashSet<i64>,
+    cached: &[Loss],
     mut on_batch: impl FnMut(&[Loss]),
 ) {
-    let mut out: Vec<Loss> = Vec::new();
+    let mut new: Vec<Loss> = Vec::new();
     let mut page = 1;
-    while out.len() < MAX_KILLS && page <= MAX_PAGES {
+    'pages: while new.len() < MAX_KILLS && page <= MAX_PAGES {
         let url = format!("{ZKILL}/{category}/characterID/{character_id}/page/{page}/");
         let zk: serde_json::Value = match client
             .get(&url)
@@ -195,10 +240,13 @@ fn fetch_category(
             break;
         }
         for km in &entries {
-            if out.len() >= MAX_KILLS {
-                break;
-            }
             let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
+            if known.contains(&id) {
+                break 'pages; // reached already-cached killmails
+            }
+            if new.len() >= MAX_KILLS {
+                break 'pages;
+            }
             let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str())
             else {
                 continue;
@@ -209,16 +257,16 @@ fn fetch_category(
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
             if let Some(loss) = killmail(client, id, hash, value) {
-                out.push(loss);
-                if out.len() % 6 == 0 {
-                    on_batch(&out);
+                new.push(loss);
+                if new.len() % 6 == 0 {
+                    on_batch(&combine(&new, cached));
                 }
             }
         }
         page += 1;
         std::thread::sleep(std::time::Duration::from_millis(1100));
     }
-    on_batch(&out);
+    on_batch(&combine(&new, cached));
 }
 
 /// Resolve a character name to (id, canonical name) via ESI.
