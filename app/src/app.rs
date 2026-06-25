@@ -357,6 +357,8 @@ pub struct SpaiApp {
     travel_waypoints: Vec<i64>,
     /// Systems the route must avoid.
     travel_avoid: Vec<i64>,
+    /// Comma-separated sov holders (alliance / NPC faction substrings) to route around.
+    travel_avoid_sov: String,
     travel_route: Option<Vec<i64>>,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
@@ -671,6 +673,7 @@ impl SpaiApp {
             travel_end_sel: 0,
             travel_waypoints: Vec::new(),
             travel_avoid: Vec::new(),
+            travel_avoid_sov: String::new(),
             travel_route: None,
             ctx_menu_system: None,
             jump_plan_from: None,
@@ -5507,12 +5510,26 @@ impl SpaiApp {
         let max_kills = self.travel_max_ship_kills;
         let sec = self.travel_sec;
         let avoid = self.travel_avoid.clone();
+        let avoid_sov: Vec<String> = self
+            .travel_avoid_sov
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
         let regional = self.travel_regional_gates;
         let bridges = self.travel_jump_bridges;
         let geo2 = geo.clone(); // a second handle so the node-mask can read security
         let allowed = |sys: i64| {
             if avoid.contains(&sys) {
                 return false;
+            }
+            if !avoid_sov.is_empty() {
+                if let Some(h) = status.get(&sys).and_then(|f| f.sov.as_deref()) {
+                    let h = h.to_lowercase();
+                    if avoid_sov.iter().any(|a| h.contains(a)) {
+                        return false;
+                    }
+                }
             }
             let sec_ok = geo2
                 .info_of(sys)
@@ -5717,6 +5734,12 @@ impl SpaiApp {
                         }),
                 );
             });
+            ui.label("Avoid sov held by");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.travel_avoid_sov)
+                    .hint_text("alliance / faction, comma-separated")
+                    .desired_width(ui.available_width()),
+            );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button("Plan").clicked() {
