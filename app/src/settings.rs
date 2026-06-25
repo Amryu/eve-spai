@@ -63,6 +63,9 @@ pub struct Settings {
     /// notification.
     #[serde(default)]
     pub fleet_ping_window: bool,
+    /// Auto-write the planned route into EVE (set destination hop-by-hop) while Live Mode is on.
+    #[serde(default = "default_true")]
+    pub travel_auto_dest: bool,
     /// Configured sovereignty upgrades per system (pasted from a coalition site).
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
@@ -534,6 +537,7 @@ impl Default for Settings {
             fit_site: String::new(),
             doctrine_url: String::new(),
             fleet_ping_window: false,
+            travel_auto_dest: true,
             sov_upgrades: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),

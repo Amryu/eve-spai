@@ -6499,6 +6499,13 @@ impl SpaiApp {
             ui.checkbox(&mut self.travel_live, "Live mode").on_hover_text(
                 "Track your position; continuously re-plan and re-route in-game on changes",
             );
+            if ui
+                .checkbox(&mut self.settings.travel_auto_dest, "Auto-set destination in EVE")
+                .on_hover_text("When off, Live mode tracks + re-plans but never writes the route into the game")
+                .changed()
+            {
+                self.needs_save = true;
+            }
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
             ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
             ui.checkbox(&mut self.travel_avoid_camps, "Avoid gate camps");
@@ -6639,7 +6646,9 @@ impl SpaiApp {
                     self.travel_live_base = self.travel_route.clone();
                 }
             }
-            self.push_ingame_dest();
+            if self.settings.travel_auto_dest {
+                self.push_ingame_dest();
+            }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(900));
         } else {
             self.travel_live_base = None;
