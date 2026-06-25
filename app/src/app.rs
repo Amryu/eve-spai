@@ -390,6 +390,16 @@ pub struct SpaiApp {
     travel_dirty_at: Option<f64>,
     /// The game's own shortest gate route (for the comparison overlay).
     travel_direct_route: Option<Vec<i64>>,
+    /// Live Mode: track position, continuously re-plan, and re-route in-game on changes.
+    travel_live: bool,
+    /// The route as first planned when Live Mode engaged (drawn dimmed for comparison).
+    travel_live_base: Option<Vec<i64>>,
+    /// Systems newly added by the last live re-plan, to blink briefly.
+    travel_changed: Vec<i64>,
+    /// Wall-clock time the route last changed under Live Mode (for the blink window).
+    travel_changed_at: Option<i64>,
+    /// Next Live-Mode re-plan time (egui seconds).
+    travel_live_next: f64,
     /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
     /// Systems the route must avoid.
@@ -725,6 +735,11 @@ impl SpaiApp {
             travel_pending_hash: 0,
             travel_dirty_at: None,
             travel_direct_route: None,
+            travel_live: false,
+            travel_live_base: None,
+            travel_changed: Vec::new(),
+            travel_changed_at: None,
+            travel_live_next: 0.0,
             travel_waypoints: Vec::new(),
             travel_avoid: Vec::new(),
             travel_avoid_sov: std::collections::HashSet::new(),
@@ -4866,6 +4881,15 @@ impl SpaiApp {
                     }
                 }
             }
+            // Live Mode: the route as first planned, dimmed in purple for comparison.
+            if let Some(base) = self.travel_live.then_some(self.travel_live_base.as_ref()).flatten() {
+                let purple = egui::Color32::from_rgb(0x95, 0x75, 0xCD);
+                for w in base.windows(2) {
+                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
+                        painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, purple));
+                    }
+                }
+            }
             if let Some(route) = &self.travel_route {
                 for w in route.windows(2) {
                     if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
@@ -4891,6 +4915,23 @@ impl SpaiApp {
             }
             if let Some(p) = self.travel_end.and_then(|e| pos.get(&e)) {
                 mark(*p, egui::Color32::from_rgb(0xFF, 0xA7, 0x26)); // destination — amber
+            }
+            // Blink systems newly added by a live re-plan, for a few seconds.
+            if let Some(at) = self.travel_changed_at {
+                if chrono::Utc::now().timestamp() - at < 6 {
+                    let blink = ((ui.input(|i| i.time) * 5.0).sin() * 0.5 + 0.5) as f32;
+                    let warn = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
+                    for id in &self.travel_changed {
+                        if let Some(p) = pos.get(id) {
+                            painter.circle_stroke(
+                                *p,
+                                11.0,
+                                egui::Stroke::new(2.5, warn.gamma_multiply(blink)),
+                            );
+                        }
+                    }
+                    ui.ctx().request_repaint();
+                }
             }
         }
 
@@ -5720,10 +5761,32 @@ impl SpaiApp {
                 }
             }
         }
+        let prev = self.travel_route.clone();
         self.travel_route = ok.then_some(route);
         // The game's own shortest gate route (all stargates, no bridges or constraints), shown
         // in a different colour so the player can compare.
         self.travel_direct_route = geo.route(s, e, true, false, |_| true);
+        // Live Mode: a deviation (new systems vs the previous route) re-routes in-game, blinks
+        // the changed legs, and warns aloud when the detour is much longer.
+        if self.travel_live {
+            if let (Some(p), Some(n)) = (&prev, &self.travel_route) {
+                if p != n {
+                    let pset: std::collections::HashSet<i64> = p.iter().copied().collect();
+                    let newsys: Vec<i64> = n.iter().copied().filter(|s| !pset.contains(s)).collect();
+                    if !newsys.is_empty() {
+                        let much_longer = n.len() > p.len() + 4;
+                        let route_ids = n.clone();
+                        self.travel_changed = newsys;
+                        self.travel_changed_at = Some(chrono::Utc::now().timestamp());
+                        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                        crate::esi::set_route(cid, self.active_character.clone(), route_ids);
+                        if much_longer {
+                            crate::sound::play("danger");
+                        }
+                    }
+                }
+            }
+        }
         self.travel_planned_hash = self.travel_input_hash();
         self.travel_dirty_at = None;
     }
@@ -5926,6 +5989,9 @@ impl SpaiApp {
                 }
             }
             ui.add_space(4.0);
+            ui.checkbox(&mut self.travel_live, "Live mode").on_hover_text(
+                "Track your position; continuously re-plan and re-route in-game on changes",
+            );
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
             ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
             ui.checkbox(&mut self.travel_avoid_camps, "Avoid gate camps");
@@ -6038,6 +6104,32 @@ impl SpaiApp {
             self.travel_avoid.clear();
             self.travel_route = None;
             self.travel_direct_route = None;
+        }
+        // Live Mode: track the character's current system as the start and re-plan on a timer so
+        // changing live data (camps, kills, sov) is picked up.
+        if self.travel_live {
+            let now_t = ui.input(|i| i.time);
+            if let Some(me) = self.player_system() {
+                if self.travel_start != Some(me) {
+                    self.travel_start = Some(me);
+                    self.travel_start_q = self
+                        .systems
+                        .as_ref()
+                        .and_then(|g| g.info_of(me))
+                        .map(|i| i.name.clone())
+                        .unwrap_or_default();
+                }
+            }
+            if now_t >= self.travel_live_next {
+                self.travel_live_next = now_t + 4.0;
+                self.plan_route();
+                if self.travel_live_base.is_none() {
+                    self.travel_live_base = self.travel_route.clone();
+                }
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(900));
+        } else {
+            self.travel_live_base = None;
         }
         // Force the activity overlay to match the route's metric while in Travel mode, so the
         // heat the route reacts to is always visible.
