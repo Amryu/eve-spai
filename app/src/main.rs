@@ -12,6 +12,7 @@ mod app;
 mod auth;
 mod battle;
 mod alliances;
+mod camp;
 mod charlookup;
 mod chatlog;
 mod dscan;

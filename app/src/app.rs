@@ -74,6 +74,8 @@ struct MapOverlays {
     wormholes: bool,
     thera: bool,
     turnur: bool,
+    /// Gate-camp markers (red campfire icon) from the live kill feed.
+    camps: bool,
 }
 
 impl Default for MapOverlays {
@@ -88,6 +90,7 @@ impl Default for MapOverlays {
             wormholes: true,
             thera: false,
             turnur: true,
+            camps: true,
         }
     }
 }
@@ -123,6 +126,7 @@ impl MapMode {
             wormholes: false,
             thera: false,
             turnur: false,
+            camps: !matches!(self, MapMode::Standard),
             bridges: matches!(self, MapMode::Travel | MapMode::Hunting),
             activity: match self {
                 MapMode::Standard => ActivityMode::Off,
@@ -227,6 +231,7 @@ pub struct SpaiApp {
     intel_type: IntelTypeFilter,
     /// Clustered battle reports (shared with the zKill feed worker).
     battles: crate::zkill::SharedBattles,
+    camps: crate::camp::SharedCamps,
     /// Active character name + ESI-resolved system (shared with the location poller).
     player: crate::esi::SharedPlayer,
     /// System graph for UI distance queries (set once the SDE is ready).
@@ -359,6 +364,8 @@ pub struct SpaiApp {
     travel_end_q: String,
     travel_regional_gates: bool,
     travel_jump_bridges: bool,
+    /// Route around systems currently flagged as gate camps.
+    travel_avoid_camps: bool,
     travel_max_ship_kills: u32,
     /// Allowed security bands for intermediate systems (high / low / null).
     travel_sec: [bool; 3],
@@ -619,6 +626,7 @@ impl SpaiApp {
             intel_max_jumps: pv.intel_max_jumps,
             intel_type: pv.intel_type,
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             player,
             systems: None,
             bridges_applied: Vec::new(),
@@ -701,6 +709,7 @@ impl SpaiApp {
             travel_end_q: String::new(),
             travel_regional_gates: true,
             travel_jump_bridges: true,
+            travel_avoid_camps: true,
             travel_max_ship_kills: 0,
             travel_sec: [true, true, true],
             travel_start_sel: 0,
@@ -2836,6 +2845,7 @@ impl SpaiApp {
             systems.clone(),
             self.intel_state.clone(),
             self.battles.clone(),
+            self.camps.clone(),
             ctx.clone(),
         );
 
@@ -4824,6 +4834,25 @@ impl SpaiApp {
             self.route_destination = None;
         }
 
+        // Gate-camp markers from the live kill feed: a red campfire above the system.
+        if self.map_overlays.camps {
+            let now = chrono::Utc::now().timestamp();
+            let camps = self.camps.lock().unwrap();
+            let red = egui::Color32::from_rgb(0xEF, 0x44, 0x44);
+            let font = egui::FontId::proportional(15.0);
+            for (id, p) in &pos {
+                if camps.camp(*id, now).is_some() {
+                    painter.text(
+                        *p + egui::vec2(0.0, -11.0),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::regular::CAMPFIRE,
+                        font.clone(),
+                        red,
+                    );
+                }
+            }
+        }
+
         // Travel Mode: the planned route legs + square markers on the start / waypoints /
         // destination (shown even before a route is computed).
         if self.map_mode == MapMode::Travel {
@@ -5332,6 +5361,7 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.wormholes, format!("{}  Wormhole connections", icon::SPIRAL));
         ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
         ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
+        ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
         if ui
             .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
             .on_hover_text("Set Destination adds a waypoint at each hole entrance")
@@ -5406,6 +5436,25 @@ impl SpaiApp {
         }
     }
 
+    /// A gate-camp warning line (red campfire) for `id`, if it's currently flagged. Shared by
+    /// the map tooltip and the system-info window.
+    fn camp_line(&self, ui: &mut egui::Ui, id: i64) {
+        let now = chrono::Utc::now().timestamp();
+        if let Some(c) = self.camps.lock().unwrap().camp(id, now) {
+            let mins = (c.age / 60).max(0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  Gate camp \u{2014} {} kills, last {}m ago",
+                    egui_phosphor::regular::CAMPFIRE,
+                    c.kills,
+                    mins
+                ))
+                .strong()
+                .color(egui::Color32::from_rgb(0xEF, 0x44, 0x44)),
+            );
+        }
+    }
+
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
         // Compact + translucent so it doesn't hide nearby/jumpable systems.
         ui.set_max_width(270.0);
@@ -5441,6 +5490,7 @@ impl SpaiApp {
             }
         }
         drop(status);
+        self.camp_line(ui, id);
 
         // Current intel for this system (compact).
         let now = chrono::Utc::now().timestamp();
@@ -5586,6 +5636,7 @@ impl SpaiApp {
         sov.hash(&mut h);
         self.travel_regional_gates.hash(&mut h);
         self.travel_jump_bridges.hash(&mut h);
+        self.travel_avoid_camps.hash(&mut h);
         self.travel_sec.hash(&mut h);
         self.travel_max_ship_kills.hash(&mut h);
         (self.travel_metric as u8).hash(&mut h);
@@ -5621,11 +5672,17 @@ impl SpaiApp {
         let avoid = self.travel_avoid.clone();
         let avoid_sov: std::collections::HashSet<String> =
             self.travel_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
+        let camped: std::collections::HashSet<i64> = if self.travel_avoid_camps {
+            let now = chrono::Utc::now().timestamp();
+            self.camps.lock().unwrap().camped(now).into_iter().collect()
+        } else {
+            std::collections::HashSet::new()
+        };
         let regional = self.travel_regional_gates;
         let bridges = self.travel_jump_bridges;
         let geo2 = geo.clone(); // a second handle so the node-mask can read security
         let allowed = |sys: i64| {
-            if avoid.contains(&sys) {
+            if avoid.contains(&sys) || camped.contains(&sys) {
                 return false;
             }
             if !avoid_sov.is_empty() {
@@ -5871,6 +5928,7 @@ impl SpaiApp {
             ui.add_space(4.0);
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
             ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
+            ui.checkbox(&mut self.travel_avoid_camps, "Avoid gate camps");
             ui.horizontal(|ui| {
                 ui.label("Sec");
                 ui.checkbox(&mut self.travel_sec[0], "Hi");
@@ -7158,6 +7216,7 @@ impl SpaiApp {
                         stat(ui, "NPC kills", flags.npc_kills, an);
                     });
                 }
+                self.camp_line(ui, info.id);
                 // NPC rats (consistent per region).
                 if let Some(rp) = crate::rats::rat_profile(&info.region) {
                     ui.separator();

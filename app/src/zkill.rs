@@ -30,6 +30,7 @@ pub fn spawn(
     systems: Arc<Systems>,
     intel: Arc<Mutex<IntelState>>,
     battles: SharedBattles,
+    camps: crate::camp::SharedCamps,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -50,7 +51,7 @@ pub fn spawn(
             .unwrap_or_else(std::time::Instant::now);
         loop {
             let mut changed = false;
-            match poll(&client, &queue_id, &systems, &intel, &mut names) {
+            match poll(&client, &queue_id, &systems, &intel, &camps, &mut names) {
                 Ok(Some(engagement)) => {
                     // RedisQ can repeat a kill; dedup by id.
                     if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
@@ -144,6 +145,7 @@ fn poll(
     queue_id: &str,
     systems: &Systems,
     intel: &Mutex<IntelState>,
+    camps: &crate::camp::SharedCamps,
     names: &mut HashMap<i64, String>,
 ) -> Result<Option<Engagement>> {
     // queue_id is alphanumeric ("eve-spai-<pid>"), safe to inline in the URL.
@@ -154,6 +156,14 @@ fn poll(
     let Some(pkg) = resp.package else {
         return Ok(None);
     };
+
+    // Record every kill for gate-camp detection, regardless of the tracked-area filter below.
+    {
+        let t = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
+            .map(|dt| dt.timestamp())
+            .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+        camps.lock().unwrap().record(pkg.killmail.solar_system_id, t);
+    }
 
     // Only keep kills near a system currently in the intel feed.
     if !in_tracked_area(systems, intel, pkg.killmail.solar_system_id) {
