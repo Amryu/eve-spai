@@ -388,6 +388,10 @@ const PILOT_STOP: &[&str] = &[
     "etc",
     // "more" as in "5 more inbound".
     "more",
+    // "scanning" ("someone is scanning"); "scanner" is already covered above.
+    "scanning",
+    // "drifter" / "drifters" — a wormhole type ("drifter wh"), never a pilot.
+    "drifter", "drifters",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted

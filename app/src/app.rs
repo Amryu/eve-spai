@@ -509,6 +509,9 @@ pub struct SpaiApp {
     jump_waypoints: Vec<i64>,
     /// Favourited systems — preferred mid-points, and toggled from the map menu (persisted).
     jump_favourites: std::collections::HashSet<i64>,
+    /// In-progress name for saving the current jump route + whether its dialog is open.
+    jump_route_name: String,
+    jump_routes_dialog_open: bool,
     /// All K-space systems with 3D coords (loaded once) for the jump graph.
     jump_systems: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
     /// The computed route, leg by leg (each anchor pair; legs can be invalid/red), its flattened
@@ -910,6 +913,8 @@ impl SpaiApp {
             jump_skills: std::sync::Arc::new(std::sync::Mutex::new(None)),
             jump_waypoints: Vec::new(),
             jump_favourites,
+            jump_route_name: String::new(),
+            jump_routes_dialog_open: false,
             jump_systems: None,
             jump_legs: Vec::new(),
             jump_route: Vec::new(),
@@ -3937,6 +3942,15 @@ impl SpaiApp {
         }
     }
 
+    /// Whether a character (by name) is missing a scope the app now needs.
+    fn char_missing_scope(&self, name: &str, scope: &str) -> bool {
+        self.characters
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .map(|c| !c.scopes.split(' ').any(|s| s == scope))
+            .unwrap_or(false)
+    }
+
     fn start_login(&self, ctx: &egui::Context) {
         let client_id = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         let callback = non_empty_or(&self.settings.sso_callback, auth::DEFAULT_CALLBACK);
@@ -3997,8 +4011,12 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let mut remove: Option<i64> = None;
         let mut toggle: Option<(String, bool)> = None;
+        let mut reauth = false;
         for c in &self.characters {
-            let scope_count = c.scopes.split(' ').filter(|s| !s.is_empty()).count();
+            let have: std::collections::HashSet<&str> = c.scopes.split(' ').collect();
+            let scope_count = have.iter().filter(|s| !s.is_empty()).count();
+            let missing: Vec<&str> =
+                auth::DEFAULT_SCOPES.iter().copied().filter(|s| !have.contains(s)).collect();
             let token_ok = c.expires_at > now;
             let mut intel_on =
                 !self.settings.intel_disabled_chars.iter().any(|d| d.eq_ignore_ascii_case(&c.name));
@@ -4012,9 +4030,24 @@ impl SpaiApp {
                 };
                 ui.label(egui::RichText::new("·").weak());
                 ui.label(egui::RichText::new(txt).color(col));
+                if !missing.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("{} missing scopes", egui_phosphor::regular::WARNING))
+                            .color(crate::theme::standing::WARNING),
+                    )
+                    .on_hover_text(format!("Re-auth to grant: {}", missing.join(", ")));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Remove").clicked() {
                         remove = Some(c.id);
+                    }
+                    if !missing.is_empty()
+                        && ui
+                            .small_button("Re-auth")
+                            .on_hover_text("Log in again to grant the new scopes")
+                            .clicked()
+                    {
+                        reauth = true;
                     }
                     if ui
                         .checkbox(&mut intel_on, "Alert")
@@ -4025,6 +4058,9 @@ impl SpaiApp {
                     }
                 });
             });
+        }
+        if reauth {
+            self.start_login(&ui.ctx().clone());
         }
         if let Some((name, on)) = toggle {
             self.settings.intel_disabled_chars.retain(|d| !d.eq_ignore_ascii_case(&name));
@@ -5150,7 +5186,12 @@ impl SpaiApp {
                 ui.close();
             }
             let fav = self.jump_favourites.contains(&sid);
-            if ui.button(if fav { "\u{2605} Unfavourite" } else { "\u{2606} Favourite" }).clicked() {
+            let fav_label = format!(
+                "{} {}",
+                egui_phosphor::regular::STAR,
+                if fav { "Unfavourite" } else { "Favourite" }
+            );
+            if ui.button(fav_label).clicked() {
                 if fav {
                     self.jump_favourites.remove(&sid);
                 } else {
@@ -5734,13 +5775,8 @@ impl SpaiApp {
             let gold = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
             for fav in &self.jump_favourites {
                 if let Some(p) = pos.get(fav) {
-                    painter.text(
-                        *p + egui::vec2(0.0, -11.0),
-                        egui::Align2::CENTER_CENTER,
-                        "\u{2605}",
-                        egui::FontId::proportional(13.0),
-                        gold,
-                    );
+                    // A gold marker above the system (a star glyph isn't in the map font).
+                    painter.circle_filled(*p + egui::vec2(0.0, -11.0), 3.0, gold);
                 }
             }
             if let Some(p) = self.jump_plan_from.and_then(|s| pos.get(&s)) {
@@ -7142,19 +7178,28 @@ impl SpaiApp {
             ui.add(egui::DragValue::new(&mut self.jump_jfc).range(0..=5));
             ui.label(egui::RichText::new(format!("{:.1} ly", max_range_ly(&class, self.jump_jdc))).weak());
         });
-        if self.active_character != "No character"
-            && ui
+        if self.active_character != "No character" {
+            let missing_skill =
+                self.char_missing_scope(&self.active_character, "esi-skills.read_skills.v1");
+            if ui
                 .button("Use my skills (ESI)")
                 .on_hover_text("Fetch Jump Drive Calibration / Fuel Conservation from ESI (needs the skills scope)")
                 .clicked()
-        {
-            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-            crate::esi::fetch_jump_skills(
-                cid,
-                self.active_character.clone(),
-                self.jump_skills.clone(),
-                ui.ctx().clone(),
-            );
+            {
+                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                crate::esi::fetch_jump_skills(
+                    cid,
+                    self.active_character.clone(),
+                    self.jump_skills.clone(),
+                    ui.ctx().clone(),
+                );
+            }
+            if missing_skill {
+                ui.label(
+                    egui::RichText::new("Re-auth this character in the Characters tab to grant the skills scope.")
+                        .color(crate::theme::standing::WARNING),
+                );
+            }
         }
         ui.separator();
 
@@ -7212,7 +7257,7 @@ impl SpaiApp {
         if let Some(to) = self.jump_plan_to {
             if !self.settings.jump_dock.is_empty() && !self.jump_dockable_ids().contains(&to) {
                 ui.label(
-                    egui::RichText::new("⚠ Destination has no marked dock for this hull.")
+                    egui::RichText::new(format!("{} Destination has no marked dock for this hull.", icon::WARNING))
                         .color(crate::theme::standing::WARNING),
                 );
             }
@@ -7226,8 +7271,12 @@ impl SpaiApp {
                 let a = name_of(Some(bad.from), &self.systems);
                 let b = name_of(Some(bad.to), &self.systems);
                 ui.label(
-                    egui::RichText::new(format!("⚠ {a} → {b} is out of range — add a closer waypoint."))
-                        .color(crate::theme::standing::HOSTILE),
+                    egui::RichText::new(format!(
+                        "{} {a} {} {b} out of range — add a closer waypoint.",
+                        icon::WARNING,
+                        icon::ARROW_RIGHT
+                    ))
+                    .color(crate::theme::standing::HOSTILE),
                 );
             }
         } else if self.jump_route.len() >= 2 {
@@ -7266,9 +7315,127 @@ impl SpaiApp {
             }
         } else if self.jump_plan_to.is_none() {
             ui.label(
-                egui::RichText::new("Right-click a system on the map → \u{201C}Plan Jump Route To Here\u{201D}.")
+                egui::RichText::new("Right-click a system on the map for \"Plan Jump Route To Here\".")
                     .weak(),
             );
+        }
+
+        ui.separator();
+        if ui
+            .button(format!("{}  Saved routes\u{2026}", icon::FOLDER))
+            .on_hover_text("Save, load and delete named jump routes")
+            .clicked()
+        {
+            self.jump_routes_dialog_open = true;
+        }
+    }
+
+    /// Save / load / delete named jump routes — mirrors the Travel "Saved routes" dialog.
+    fn jump_routes_dialog(&mut self, ctx: &egui::Context) {
+        if !self.jump_routes_dialog_open {
+            return;
+        }
+        let routes = self.settings.saved_jump_routes.clone();
+        let q = self.route_search.trim().to_lowercase();
+        let nm = |id: i64| {
+            self.systems
+                .as_ref()
+                .and_then(|g| g.info_of(id))
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| "?".into())
+        };
+        let can_save = self.jump_plan_from.is_some() && self.jump_plan_to.is_some();
+        let mut do_save = false;
+        let mut to_load: Option<crate::settings::SavedJumpRoute> = None;
+        let mut to_delete: Option<String> = None;
+        let mut open = true;
+        egui::Window::new("Saved jump routes")
+            .open(&mut open)
+            .default_width(420.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.jump_route_name)
+                            .desired_width(150.0)
+                            .hint_text("Name"),
+                    );
+                    if ui
+                        .add_enabled(can_save, egui::Button::new("Save current"))
+                        .on_hover_text(if can_save {
+                            "Save the current route + hull/skills (blank name = auto)"
+                        } else {
+                            "Set a destination first"
+                        })
+                        .clicked()
+                    {
+                        do_save = true;
+                    }
+                });
+                ui.separator();
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.route_search)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Search routes"),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for r in routes.iter().filter(|r| q.is_empty() || r.name.to_lowercase().contains(&q)) {
+                        ui.horizontal(|ui| {
+                            if ui.button("Load").clicked() {
+                                to_load = Some(r.clone());
+                            }
+                            ui.label(egui::RichText::new(&r.name).strong());
+                            ui.label(
+                                egui::RichText::new(format!("{} \u{2192} {}", nm(r.from), nm(r.to))).weak(),
+                            );
+                            if !r.waypoints.is_empty() {
+                                ui.label(egui::RichText::new(format!("{} wp", r.waypoints.len())).weak());
+                            }
+                            if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                                to_delete = Some(r.name.clone());
+                            }
+                        });
+                    }
+                    if routes.is_empty() {
+                        ui.label(egui::RichText::new("No saved routes yet.").weak());
+                    }
+                });
+            });
+        if do_save {
+            let name = if self.jump_route_name.trim().is_empty() {
+                format!("{} \u{2192} {}", nm(self.jump_plan_from.unwrap_or(0)), nm(self.jump_plan_to.unwrap_or(0)))
+            } else {
+                self.jump_route_name.trim().to_string()
+            };
+            self.settings.saved_jump_routes.retain(|r| !r.name.eq_ignore_ascii_case(&name));
+            self.settings.saved_jump_routes.push(crate::settings::SavedJumpRoute {
+                name,
+                from: self.jump_plan_from.unwrap_or(0),
+                waypoints: self.jump_waypoints.clone(),
+                to: self.jump_plan_to.unwrap_or(0),
+                ship: self.jump_ship,
+                jdc: self.jump_jdc,
+                jfc: self.jump_jfc,
+            });
+            self.jump_route_name.clear();
+            self.needs_save = true;
+        }
+        if let Some(r) = to_load {
+            self.jump_plan_from = Some(r.from);
+            self.jump_waypoints = r.waypoints;
+            self.jump_plan_to = Some(r.to);
+            self.jump_ship = r.ship.min(crate::jumproute::SHIP_CLASSES.len() - 1);
+            self.jump_jdc = r.jdc.min(5);
+            self.jump_jfc = r.jfc.min(5);
+            self.jump_route_key = None;
+        }
+        if let Some(name) = to_delete {
+            self.settings.saved_jump_routes.retain(|r| r.name != name);
+            self.needs_save = true;
+        }
+        if !open {
+            self.jump_routes_dialog_open = false;
         }
     }
 
@@ -8022,7 +8189,7 @@ impl SpaiApp {
                             RightDockTab::System => {
                                 if let Some(sid) = self.map_docked_system {
                                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                                        pending = Some((self.system_info_body(ui, sid), sid));
+                                        pending = Some((self.system_info_body(ui, sid, true), sid));
                                     });
                                 }
                             }
@@ -8764,7 +8931,7 @@ impl SpaiApp {
     /// density), and the intel reported for this system.
     /// Renders the system-info panel into `ui` (shared by the pop-out window and the map's
     /// docked System tab) and returns the navigations/clicks for the caller to apply.
-    fn system_info_body(&mut self, ui: &mut egui::Ui, id: i64) -> SystemInfoOut {
+    fn system_info_body(&mut self, ui: &mut egui::Ui, id: i64, docked: bool) -> SystemInfoOut {
         let mut nav: Option<i64> = None;
         let mut show_on_map = false;
         let now = chrono::Utc::now().timestamp();
@@ -8824,13 +8991,40 @@ impl SpaiApp {
         {
             let status = self.system_status.lock().unwrap();
             let flags = status.get(&id).cloned().unwrap_or_default();
+            let adm_color = |adm: f64| {
+                if adm >= 5.0 {
+                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
+                } else if adm >= 3.0 {
+                    crate::theme::standing::WARNING
+                } else {
+                    crate::theme::standing::HOSTILE
+                }
+            };
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
                 ui.heading(&info.name);
+                // Docked: a screen-anchored Area floats at the main window's corner, not the
+                // panel's, so render the sov logo + ADM inline on the right of the name row.
+                if docked {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(adm) = flags.adm {
+                            ui.label(
+                                egui::RichText::new(format!("ADM {adm:.1}")).color(adm_color(adm)).strong(),
+                            )
+                            .on_hover_text("Activity Defense Multiplier");
+                        }
+                        if let Some(aid) = flags.sov_alliance {
+                            let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=64");
+                            let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
+                            if let Some(sov) = &flags.sov {
+                                r.on_hover_text(sov);
+                            }
+                        }
+                    });
+                }
             });
-            // Sovereignty alliance logo + ADM, floated top-right so they don't
-            // affect the name's line height.
-            if flags.sov_alliance.is_some() || flags.adm.is_some() {
+            // Windowed: float the logo + ADM top-right so they don't affect the name line height.
+            if !docked && (flags.sov_alliance.is_some() || flags.adm.is_some()) {
                 egui::Area::new(egui::Id::new("sys_sov"))
                     .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
                     .order(egui::Order::Foreground)
@@ -8943,31 +9137,41 @@ impl SpaiApp {
             .flat_map(|u| split_upgrade_label(&u.upgrade))
             .collect();
         if !upgrades.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Sov upgrades:").weak());
-                for u in upgrades {
+            ui.label(egui::RichText::new("Sov upgrades").weak());
+            for u in upgrades {
+                let (kind, level) = upgrade_info(u);
+                let lcol = level_color(level);
+                ui.horizontal(|ui| {
+                    match kind {
+                        UpgradeIcon::Glyph(g) => {
+                            ui.label(egui::RichText::new(g).color(lcol).size(16.0));
+                        }
+                        UpgradeIcon::Mineral(tid) => {
+                            let url = format!("https://images.evetech.net/types/{tid}/icon?size=64");
+                            ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(18.0, 18.0)));
+                        }
+                    }
                     ui.label(egui::RichText::new(u).color(crate::theme::standing::CORP));
-                }
-            });
+                });
+            }
         }
-        // Wrapped so the action buttons reflow in the narrow docked panel instead of forcing
-        // a wide minimum width.
+        // Wrapped so the action buttons reflow in the narrow docked panel. Use per-button
+        // add_enabled (not a nested add_enabled_ui, which is a non-wrapping group that pushes
+        // "Add Waypoint" off the edge).
+        let has_char = self.active_character != "No character";
+        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+        let cname = self.active_character.clone();
         ui.horizontal_wrapped(|ui| {
             if ui.button("Show on map").clicked() {
                 show_on_map = true;
             }
-            let has_char = self.active_character != "No character";
-            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-            let cname = self.active_character.clone();
-            ui.add_enabled_ui(has_char, |ui| {
-                if ui.button("Set Destination").clicked() {
-                    self.set_destination_esi(cid.clone(), cname.clone(), id);
-                    self.route_destination = Some(id); // mirror on the map
-                }
-                if ui.button("Add Waypoint").clicked() {
-                    crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
-                }
-            });
+            if ui.add_enabled(has_char, egui::Button::new("Set Destination")).clicked() {
+                self.set_destination_esi(cid.clone(), cname.clone(), id);
+                self.route_destination = Some(id); // mirror on the map
+            }
+            if ui.add_enabled(has_char, egui::Button::new("Add Waypoint")).clicked() {
+                crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
+            }
         });
         ui.separator();
 
@@ -9141,7 +9345,7 @@ impl SpaiApp {
             "EVE Spai — System info",
             [470.0, 660.0],
             |ui| {
-                out = self.system_info_body(ui, id);
+                out = self.system_info_body(ui, id, false);
             },
         );
         self.apply_system_info_out(out, id, ctx, false);
@@ -11217,6 +11421,7 @@ impl eframe::App for SpaiApp {
         self.fit_window(&ctx);
         self.fleet_ping_window_ui(&ctx);
         self.routes_dialog(&ctx);
+        self.jump_routes_dialog(&ctx);
         self.safety_watch(&ctx);
         self.screen_flash(&ctx);
         // Bring a just-updated window to the foreground.
@@ -12616,6 +12821,48 @@ fn intel_row(
                         .on_hover_ui(|ui| system_hover(ui, systems, status, s));
                     if panel.clicked() {
                         clicked = Some(IntelClick::System(s.id));
+                    }
+                }
+
+                // A message that parsed to a system and nothing else (no count/ships/pilots/
+                // keywords): show its text inline after the system badge — not the toggle-to-raw
+                // view — so a one-off note ("anyone in X?") isn't a near-empty card.
+                let nothing_else = r.count.is_none()
+                    && r.isk.is_none()
+                    && r.pilots.is_empty()
+                    && r.ships.is_empty()
+                    && r.classes.is_empty()
+                    && r.gates.is_empty()
+                    && r.structures.is_empty()
+                    && r.celestials.is_empty()
+                    && r.probes.is_none()
+                    && r.tackled_targets.is_empty()
+                    && r.alliances.is_empty()
+                    && r.links.is_empty()
+                    && !r.clear
+                    && !r.no_visual
+                    && !r.spike
+                    && !r.camp
+                    && !r.help
+                    && !r.bubble
+                    && !r.killmail
+                    && !r.cyno
+                    && !r.dropper
+                    && !r.cap_tackled
+                    && !r.tackled
+                    && !r.wormhole
+                    && !r.ess
+                    && !r.skyhook
+                    && !r.status
+                    && r.movement.is_none();
+                if nothing_else && !r.systems.is_empty() {
+                    // Only when there's text beyond the system name(s) itself.
+                    let mut residual = r.text.to_lowercase();
+                    for s in &r.systems {
+                        residual = residual.replace(&s.name.to_lowercase(), " ");
+                    }
+                    if residual.chars().any(|c| c.is_alphanumeric()) {
+                        ui.label(egui::RichText::new(r.text.trim()).weak());
                     }
                 }
 

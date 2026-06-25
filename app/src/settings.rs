@@ -78,6 +78,9 @@ pub struct Settings {
     /// Favourited systems for the jump planner (preferred mid-points).
     #[serde(default)]
     pub jump_favourites: Vec<i64>,
+    /// Saved capital jump routes.
+    #[serde(default)]
+    pub saved_jump_routes: Vec<SavedJumpRoute>,
     /// User-marked capital docking permits per system. Dockable systems are *preferred* when
     /// routing (never required), and flagged on the map / as a destination warning.
     #[serde(default)]
@@ -498,6 +501,22 @@ pub struct SovUpgrade {
     pub upgrade: String,
 }
 
+/// A saved capital jump route (endpoints, waypoints, hull + skills).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedJumpRoute {
+    pub name: String,
+    pub from: i64,
+    #[serde(default)]
+    pub waypoints: Vec<i64>,
+    pub to: i64,
+    #[serde(default)]
+    pub ship: usize,
+    #[serde(default)]
+    pub jdc: u32,
+    #[serde(default)]
+    pub jfc: u32,
+}
+
 /// A user-set capital docking permit for a system (there's no reliable public list of
 /// friendly cap-dockable structures, so the user marks systems themselves). `supers` implies
 /// `capitals` (a Keepstar docks both).
@@ -605,6 +624,7 @@ impl Default for Settings {
             route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
             jump_favourites: Vec::new(),
+            saved_jump_routes: Vec::new(),
             jump_dock: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),
