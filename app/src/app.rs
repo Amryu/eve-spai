@@ -6646,18 +6646,29 @@ impl SpaiApp {
                 // While the pointer is actually moving, hovering a row takes over the
                 // highlight, so Enter accepts whichever row the mouse is over.
                 let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
-                        let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
-                        let resp = ui.selectable_label(i == *sel, row);
-                        if resp.hovered() && moving {
-                            *sel = i;
-                        }
-                        if resp.clicked() {
-                            pick = Some(*id);
-                        }
-                    }
-                });
+                // Float the dropdown above the controls below it, matching the input's width.
+                let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
+                let width = resp.rect.width();
+                egui::Area::new(ui.id().with(("travel_sugg", hint)))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(below)
+                    .constrain(true)
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_width(width);
+                        ui.set_max_width(width);
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
+                                let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
+                                let rr = ui.selectable_label(i == *sel, row);
+                                if rr.hovered() && moving {
+                                    *sel = i;
+                                }
+                                if rr.clicked() {
+                                    pick = Some(*id);
+                                }
+                            }
+                        });
+                    });
                 if focused && pick.is_none() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
                 }
