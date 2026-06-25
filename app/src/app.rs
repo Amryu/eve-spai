@@ -371,6 +371,13 @@ pub struct SpaiApp {
     travel_sugg: (Vec<SysHit>, Vec<SysHit>),
     /// Activity metric the max-per-hour cap applies to (ship/pod/NPC kills or jumps).
     travel_metric: ActivityMode,
+    /// Route re-plan debounce: the input hash the route was last planned for, the last-seen
+    /// input hash, and the egui time (seconds) the inputs last changed.
+    travel_planned_hash: u64,
+    travel_pending_hash: u64,
+    travel_dirty_at: Option<f64>,
+    /// The game's own shortest gate route (for the comparison overlay).
+    travel_direct_route: Option<Vec<i64>>,
     /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
     /// Systems the route must avoid.
@@ -696,6 +703,10 @@ impl SpaiApp {
             travel_sugg_key: (String::new(), None, String::new(), None),
             travel_sugg: (Vec::new(), Vec::new()),
             travel_metric: ActivityMode::ShipKills,
+            travel_planned_hash: 0,
+            travel_pending_hash: 0,
+            travel_dirty_at: None,
+            travel_direct_route: None,
             travel_waypoints: Vec::new(),
             travel_avoid: Vec::new(),
             travel_avoid_sov: std::collections::HashSet::new(),
@@ -4331,7 +4342,7 @@ impl SpaiApp {
                     let old = self.map_zoom;
                     // Min ~= fit-to-view (can't shrink past the whole map); max lets
                     // individual systems separate.
-                    let new = (old * (scroll * 0.0015).exp()).clamp(0.7, 60.0);
+                    let new = (old * (scroll * 0.003).exp()).clamp(0.7, 60.0);
                     let q = cursor - (rect.center() + self.map_pan);
                     self.map_pan += q * (1.0 - new / old);
                     self.map_zoom = new;
@@ -4808,6 +4819,15 @@ impl SpaiApp {
         // destination (shown even before a route is computed).
         if self.map_mode == MapMode::Travel {
             let cyan = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
+            // The game's direct gate route, dimmer and behind the planned one for comparison.
+            if let Some(direct) = &self.travel_direct_route {
+                let gray = egui::Color32::from_rgb(0x9E, 0x9E, 0x9E);
+                for w in direct.windows(2) {
+                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
+                        painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, gray));
+                    }
+                }
+            }
             if let Some(route) = &self.travel_route {
                 for w in route.windows(2) {
                     if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
@@ -5037,7 +5057,7 @@ impl SpaiApp {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
                 let old = self.map_zoom;
-                let new = (old * (scroll * 0.0015).exp()).clamp(0.3, 6.0);
+                let new = (old * (scroll * 0.003).exp()).clamp(0.3, 6.0);
                 // Keep the point under the cursor fixed (the layout spreads from rect.center()+pan,
                 // scaled by zoom), so scrolling zooms toward the mouse rather than the centre.
                 if let Some(m) = ui.input(|i| i.pointer.hover_pos()) {
@@ -5542,6 +5562,27 @@ impl SpaiApp {
     }
 
     /// Compute the Travel route from the typed start/end + the active constraints.
+    /// Hash of the inputs that affect the planned route, for the re-plan debounce.
+    fn travel_input_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.travel_start_q.hash(&mut h);
+        self.travel_end_q.hash(&mut h);
+        self.travel_start.hash(&mut h);
+        self.travel_end.hash(&mut h);
+        self.travel_waypoints.hash(&mut h);
+        self.travel_avoid.hash(&mut h);
+        let mut sov: Vec<&String> = self.travel_avoid_sov.iter().collect();
+        sov.sort();
+        sov.hash(&mut h);
+        self.travel_regional_gates.hash(&mut h);
+        self.travel_jump_bridges.hash(&mut h);
+        self.travel_sec.hash(&mut h);
+        self.travel_max_ship_kills.hash(&mut h);
+        (self.travel_metric as u8).hash(&mut h);
+        h.finish()
+    }
+
     fn plan_route(&mut self) {
         let Some(geo) = self.systems.clone() else { return };
         if let Some(store) = self.store.as_ref() {
@@ -5556,6 +5597,9 @@ impl SpaiApp {
         }
         let (Some(s), Some(e)) = (self.travel_start, self.travel_end) else {
             self.travel_route = None;
+            self.travel_direct_route = None;
+            self.travel_planned_hash = self.travel_input_hash();
+            self.travel_dirty_at = None;
             return;
         };
         let mut points = vec![s];
@@ -5611,6 +5655,11 @@ impl SpaiApp {
             }
         }
         self.travel_route = ok.then_some(route);
+        // The game's own shortest gate route (all stargates, no bridges or constraints), shown
+        // in a different colour so the player can compare.
+        self.travel_direct_route = geo.route(s, e, true, false, |_| true);
+        self.travel_planned_hash = self.travel_input_hash();
+        self.travel_dirty_at = None;
     }
 
     /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
@@ -5734,8 +5783,15 @@ impl SpaiApp {
         let avoid_names: Vec<(i64, String)> = self.travel_avoid.iter().map(|&id| name_id(id)).collect();
         let mut remove_wp: Option<i64> = None;
         let mut remove_avoid: Option<i64> = None;
-        let summary = self.travel_route.as_ref().map(|r| format!("{} jumps", r.len().saturating_sub(1)));
-        let mut plan = false;
+        let summary = self.travel_route.as_ref().map(|r| {
+            let planned = r.len().saturating_sub(1);
+            match self.travel_direct_route.as_ref().map(|d| d.len().saturating_sub(1)) {
+                Some(direct) if planned > direct => {
+                    format!("{planned} jumps \u{2022} direct {direct} (+{})", planned - direct)
+                }
+                _ => format!("{planned} jumps"),
+            }
+        });
         let mut clear = false;
         let mut start_pick: Option<i64> = None;
         let mut end_pick: Option<i64> = None;
@@ -5828,20 +5884,21 @@ impl SpaiApp {
                 self.travel_sov_dialog_open = true;
             }
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.button("Plan").clicked() {
-                    plan = true;
-                }
-                if self.travel_route.is_some() && ui.button("Clear").clicked() {
-                    clear = true;
-                }
-            });
+            let has_route = self.travel_start.is_some()
+                || self.travel_end.is_some()
+                || !self.travel_waypoints.is_empty();
+            if has_route && ui.button("Clear route").clicked() {
+                clear = true;
+            }
             match &summary {
                 Some(s) => {
                     ui.label(egui::RichText::new(s).color(egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)).strong());
                 }
                 None => {
-                    ui.label(egui::RichText::new("Set a from/to, then Plan.").weak());
+                    ui.label(
+                        egui::RichText::new("Set a from / to \u{2014} the route updates automatically.")
+                            .weak(),
+                    );
                 }
             }
         });
@@ -5867,13 +5924,36 @@ impl SpaiApp {
             self.travel_avoid.retain(|&a| a != id);
             self.plan_route();
         }
-        if plan {
-            self.plan_route();
-        }
         if clear {
-            self.travel_route = None;
+            self.travel_start = None;
+            self.travel_end = None;
+            self.travel_start_q.clear();
+            self.travel_end_q.clear();
             self.travel_waypoints.clear();
             self.travel_avoid.clear();
+            self.travel_route = None;
+            self.travel_direct_route = None;
+        }
+        // Force the activity overlay to match the route's metric while in Travel mode, so the
+        // heat the route reacts to is always visible.
+        self.map_overlays.activity = self.travel_metric;
+        // Auto-replan: a short debounce after the inputs settle (no Plan button). plan_route
+        // stamps travel_planned_hash, so discrete actions (picks/right-click) stay instant.
+        let now = ui.input(|i| i.time);
+        let h = self.travel_input_hash();
+        if h != self.travel_planned_hash {
+            if h != self.travel_pending_hash {
+                self.travel_pending_hash = h;
+                self.travel_dirty_at = Some(now);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(380));
+            } else if let Some(t) = self.travel_dirty_at {
+                if now - t >= 0.35 {
+                    self.plan_route();
+                    self.travel_pending_hash = self.travel_planned_hash;
+                } else {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+                }
+            }
         }
     }
 
