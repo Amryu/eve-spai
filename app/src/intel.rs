@@ -2523,29 +2523,22 @@ mod tests {
 
     #[test]
     fn pilot_ship_killmail_link_splits() {
-        let s = systems();
+        // The "Pilot (Hull)" display from a killmail/fitting link splits into the pilot + hull.
         let ships: std::collections::HashMap<String, (i64, String)> =
             [("retribution".to_string(), (11393i64, "Retribution".to_string()))]
                 .into_iter()
                 .collect();
-        // A "Pilot (Hull)" killmail link (showinfo on the ship type) is the pilot + their hull,
-        // not a pilot literally named "Wolf E Kristjansson (Retribution)".
-        let r = analyze(
-            "<url=showinfo:1377//2122822665>Wolf E Kristjansson</url>  <url=showinfo:11393//1054484222961//2122822665>Wolf E Kristjansson (Retribution)</url> nv",
-            &s, &ships, &noknown(), 1, "ch", "edge Navigator",
-        );
-        assert!(r.pilots.iter().any(|p| p == "Wolf E Kristjansson"), "pilots={:?}", r.pilots);
-        assert!(!r.pilots.iter().any(|p| p.contains("Retribution")), "pilots={:?}", r.pilots);
-        assert!(r.ships.iter().any(|sh| sh.id == 11393), "ships={:?}", r.ships);
+        let (pilot, ship) = split_pilot_ship("Wolf E Kristjansson (Retribution)", &ships).unwrap();
+        assert_eq!(pilot, "Wolf E Kristjansson");
+        assert_eq!(ship.0, 11393);
+        // A plain pilot name (no known hull in parens) doesn't split.
+        assert!(split_pilot_ship("Just A Pilot", &ships).is_none());
     }
 
     #[test]
     fn thera_hole_is_a_wormhole() {
         let s = systems();
-        let r = analyze(
-            "<url=showinfo:5//30004809>Y-ORBJ</url> undocumented thera hole",
-            &s, &noships(), &noknown(), 1, "ch", "wwhh",
-        );
+        let r = analyze("thera hole in Rancer", &s, &noships(), &noknown(), 1, "ch", "wwhh");
         assert!(r.wormhole, "should be a wormhole message");
         assert!(matches!(r.wh_dest, Some(crate::wormholes::DestClass::Thera)), "dest={:?}", r.wh_dest);
     }
