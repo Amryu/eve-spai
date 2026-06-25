@@ -425,6 +425,12 @@ pub struct SpaiApp {
     travel_ingame_dest: Option<i64>,
     /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
+    /// Saved-routes dialog state.
+    routes_dialog_open: bool,
+    route_save_name: String,
+    route_save_folder: String,
+    route_search: String,
+    route_new_folder: String,
     /// Systems the route must avoid.
     travel_avoid: Vec<i64>,
     /// Sov holders (alliance names) to route around, picked from the coalition tree dialog.
@@ -794,6 +800,11 @@ impl SpaiApp {
             travel_live_next: 0.0,
             travel_ingame_dest: None,
             travel_waypoints: Vec::new(),
+            routes_dialog_open: false,
+            route_save_name: String::new(),
+            route_save_folder: String::new(),
+            route_search: String::new(),
+            route_new_folder: String::new(),
             travel_avoid: Vec::new(),
             travel_avoid_sov: std::collections::HashSet::new(),
             travel_sov_dialog_open: false,
@@ -6143,6 +6154,168 @@ impl SpaiApp {
     /// Compute the Travel route from the typed start/end + the active constraints.
     /// The next system on the planned route after the character's current position (None at the
     /// end or with no route). Used to advance the in-game destination one hop at a time.
+    /// Load a saved route into Travel mode (set start/end/waypoints, then re-plan).
+    fn load_route(&mut self, r: &crate::settings::SavedRoute) {
+        let nm = |id: i64| {
+            self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default()
+        };
+        let (s, e) = (nm(r.start), nm(r.end));
+        self.travel_start = Some(r.start);
+        self.travel_end = Some(r.end);
+        self.travel_start_q = s;
+        self.travel_end_q = e;
+        self.travel_waypoints = r.waypoints.clone();
+        self.plan_route();
+    }
+
+    /// Save / load / organise Travel routes (named, in folders, searchable).
+    fn routes_dialog(&mut self, ctx: &egui::Context) {
+        if !self.routes_dialog_open {
+            return;
+        }
+        let routes = self.settings.saved_routes.clone();
+        let geo = self.systems.clone();
+        let mut folders: Vec<String> = self.settings.route_folders.clone();
+        for r in &routes {
+            if !r.folder.is_empty() && !folders.contains(&r.folder) {
+                folders.push(r.folder.clone());
+            }
+        }
+        folders.sort();
+        folders.dedup();
+        let q = self.route_search.trim().to_lowercase();
+        let can_save = self.travel_start.is_some() && self.travel_end.is_some();
+        let nm = |id: i64| {
+            geo.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_else(|| "?".into())
+        };
+
+        let mut do_save = false;
+        let mut new_folder = false;
+        let mut to_load: Option<crate::settings::SavedRoute> = None;
+        let mut to_delete: Option<(String, String)> = None;
+        let mut open = true;
+        egui::Window::new("Saved routes")
+            .open(&mut open)
+            .default_width(460.0)
+            .default_height(460.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.route_save_name)
+                            .desired_width(150.0)
+                            .hint_text("Name"),
+                    );
+                    egui::ComboBox::from_id_salt("route_save_folder")
+                        .selected_text(if self.route_save_folder.is_empty() {
+                            "(root)".to_owned()
+                        } else {
+                            self.route_save_folder.clone()
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.route_save_folder, String::new(), "(root)");
+                            for f in &folders {
+                                ui.selectable_value(&mut self.route_save_folder, f.clone(), f);
+                            }
+                        });
+                    let ok = can_save && !self.route_save_name.trim().is_empty();
+                    if ui
+                        .add_enabled(ok, egui::Button::new("Save current"))
+                        .on_hover_text(if can_save { "Save the current Travel route" } else { "Plan a route first" })
+                        .clicked()
+                    {
+                        do_save = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.route_new_folder)
+                            .desired_width(150.0)
+                            .hint_text("New folder"),
+                    );
+                    if ui
+                        .add_enabled(!self.route_new_folder.trim().is_empty(), egui::Button::new("Add folder"))
+                        .clicked()
+                    {
+                        new_folder = true;
+                    }
+                });
+                ui.separator();
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.route_search)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Search routes"),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let matches = |r: &crate::settings::SavedRoute| q.is_empty() || r.name.to_lowercase().contains(&q);
+                    for r in routes.iter().filter(|r| r.folder.is_empty() && matches(r)) {
+                        match route_row(ui, r, &nm(r.start), &nm(r.end)) {
+                            Some(true) => to_load = Some(r.clone()),
+                            Some(false) => to_delete = Some((r.folder.clone(), r.name.clone())),
+                            None => {}
+                        }
+                    }
+                    for f in &folders {
+                        let in_f: Vec<&crate::settings::SavedRoute> =
+                            routes.iter().filter(|r| &r.folder == f && matches(r)).collect();
+                        if !q.is_empty() && in_f.is_empty() {
+                            continue;
+                        }
+                        egui::CollapsingHeader::new(format!("{}  {f}", egui_phosphor::regular::FOLDER))
+                            .default_open(!q.is_empty())
+                            .show(ui, |ui| {
+                                if in_f.is_empty() {
+                                    ui.label(egui::RichText::new("(empty)").weak());
+                                }
+                                for r in in_f {
+                                    match route_row(ui, r, &nm(r.start), &nm(r.end)) {
+                                        Some(true) => to_load = Some(r.clone()),
+                                        Some(false) => to_delete = Some((r.folder.clone(), r.name.clone())),
+                                        None => {}
+                                    }
+                                }
+                            });
+                    }
+                    if routes.is_empty() {
+                        ui.label(egui::RichText::new("No saved routes yet.").weak());
+                    }
+                });
+            });
+
+        if do_save {
+            let route = crate::settings::SavedRoute {
+                name: self.route_save_name.trim().to_owned(),
+                folder: self.route_save_folder.clone(),
+                start: self.travel_start.unwrap_or(0),
+                end: self.travel_end.unwrap_or(0),
+                waypoints: self.travel_waypoints.clone(),
+                jumps: self.travel_route.as_ref().map(|r| r.len().saturating_sub(1)).unwrap_or(0),
+            };
+            self.settings.saved_routes.push(route);
+            self.route_save_name.clear();
+            self.needs_save = true;
+        }
+        if new_folder {
+            let f = self.route_new_folder.trim().to_owned();
+            if !self.settings.route_folders.contains(&f) {
+                self.settings.route_folders.push(f);
+            }
+            self.route_new_folder.clear();
+            self.needs_save = true;
+        }
+        if let Some((folder, name)) = to_delete {
+            self.settings.saved_routes.retain(|r| !(r.folder == folder && r.name == name));
+            self.needs_save = true;
+        }
+        if let Some(r) = to_load {
+            self.load_route(&r);
+            self.routes_dialog_open = false;
+        }
+        if !open {
+            self.routes_dialog_open = false;
+        }
+    }
+
     fn next_route_hop(&self) -> Option<i64> {
         let route = self.travel_route.as_ref()?;
         if route.len() < 2 {
@@ -6505,6 +6678,13 @@ impl SpaiApp {
                 .changed()
             {
                 self.needs_save = true;
+            }
+            if ui
+                .button(format!("{}  Saved routes\u{2026}", egui_phosphor::regular::FOLDER))
+                .on_hover_text("Save, organise and load named routes")
+                .clicked()
+            {
+                self.routes_dialog_open = true;
             }
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
             ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
@@ -10114,6 +10294,7 @@ impl eframe::App for SpaiApp {
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
         self.fleet_ping_window_ui(&ctx);
+        self.routes_dialog(&ctx);
         self.safety_watch(&ctx);
         self.screen_flash(&ctx);
         // Bring a just-updated window to the foreground.
@@ -10938,6 +11119,26 @@ fn find_op_channel(text: &str) -> Option<String> {
 }
 
 /// Show a desktop notification (best-effort, off the UI thread).
+/// One saved-route row. Returns Some(true)=load, Some(false)=delete, None=nothing.
+fn route_row(ui: &mut egui::Ui, r: &crate::settings::SavedRoute, start: &str, end: &str) -> Option<bool> {
+    let mut act = None;
+    ui.horizontal(|ui| {
+        if ui.button("Load").clicked() {
+            act = Some(true);
+        }
+        ui.label(egui::RichText::new(&r.name).strong());
+        ui.label(egui::RichText::new(format!("{start} \u{2192} {end}")).weak());
+        ui.label(egui::RichText::new(format!("{}j", r.jumps)).weak());
+        if !r.waypoints.is_empty() {
+            ui.label(egui::RichText::new(format!("{} wp", r.waypoints.len())).weak());
+        }
+        if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+            act = Some(false);
+        }
+    });
+    act
+}
+
 fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {

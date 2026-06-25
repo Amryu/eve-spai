@@ -66,6 +66,12 @@ pub struct Settings {
     /// Auto-write the planned route into EVE (set destination hop-by-hop) while Live Mode is on.
     #[serde(default = "default_true")]
     pub travel_auto_dest: bool,
+    /// User-saved Travel routes.
+    #[serde(default)]
+    pub saved_routes: Vec<SavedRoute>,
+    /// Folder names for organising saved routes (also covers empty folders).
+    #[serde(default)]
+    pub route_folders: Vec<String>,
     /// Configured sovereignty upgrades per system (pasted from a coalition site).
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
@@ -478,6 +484,20 @@ pub struct SovUpgrade {
     pub upgrade: String,
 }
 
+/// A named Travel route saved by the user (optionally filed under a folder).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedRoute {
+    pub name: String,
+    #[serde(default)]
+    pub folder: String,
+    pub start: i64,
+    pub end: i64,
+    #[serde(default)]
+    pub waypoints: Vec<i64>,
+    #[serde(default)]
+    pub jumps: usize,
+}
+
 fn default_intel_ttl() -> i64 {
     300
 }
@@ -538,6 +558,8 @@ impl Default for Settings {
             doctrine_url: String::new(),
             fleet_ping_window: false,
             travel_auto_dest: true,
+            saved_routes: Vec::new(),
+            route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),
