@@ -247,9 +247,6 @@ pub struct SpaiApp {
     camped_cache_at: i64,
     /// Live kill-feed buffer (from zkill) turned into optional kill-intel cards.
     killfeed: crate::zkill::SharedKillFeed,
-    /// Show zkill killmails within `kill_intel_jumps` of the active character as intel cards.
-    kill_intel: bool,
-    kill_intel_jumps: u32,
     /// Ship type id → name, built from the ship index, for naming kill-feed ships.
     ship_by_id: std::collections::HashMap<i64, String>,
     /// Active character name + ESI-resolved system (shared with the location poller).
@@ -675,8 +672,6 @@ impl SpaiApp {
             camped_cache: Vec::new(),
             camped_cache_at: 0,
             killfeed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            kill_intel: false,
-            kill_intel_jumps: 6,
             ship_by_id: std::collections::HashMap::new(),
             player,
             systems: None,
@@ -2486,7 +2481,7 @@ impl SpaiApp {
     fn ingest_killfeed(&mut self) {
         let events: Vec<crate::zkill::KillEvent> =
             std::mem::take(&mut *self.killfeed.lock().unwrap());
-        if !self.kill_intel || events.is_empty() {
+        if !self.settings.kill_intel || events.is_empty() {
             return;
         }
         let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
@@ -2499,7 +2494,7 @@ impl SpaiApp {
                 }
             }
         }
-        let range = self.kill_intel_jumps;
+        let range = self.settings.kill_intel_jumps;
         let mut st = self.intel_state.lock().unwrap();
         for ev in events {
             if geo.jumps(me, ev.system_id, range).is_none() {
@@ -5623,15 +5618,22 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
         ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
         if ui
-            .checkbox(&mut self.kill_intel, format!("{}  Kill-feed intel", icon::SKULL))
+            .checkbox(&mut self.settings.kill_intel, format!("{}  Kill-feed intel", icon::SKULL))
             .on_hover_text("Show zKill killmails within range as intel cards")
             .changed()
-        {}
-        if self.kill_intel {
+        {
+            self.needs_save = true;
+        }
+        if self.settings.kill_intel {
             ui.indent("kill_intel_range", |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Range");
-                    ui.add(egui::DragValue::new(&mut self.kill_intel_jumps).range(1..=20).suffix("j"));
+                    if ui
+                        .add(egui::DragValue::new(&mut self.settings.kill_intel_jumps).range(1..=20).suffix("j"))
+                        .changed()
+                    {
+                        self.needs_save = true;
+                    }
                 });
             });
         }

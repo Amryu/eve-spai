@@ -44,6 +44,11 @@ pub struct Settings {
     /// Only raise intel alerts while the active character is undocked.
     #[serde(default)]
     pub alert_only_undocked: bool,
+    /// Show zKill killmails within `kill_intel_jumps` jumps of you as intel cards.
+    #[serde(default)]
+    pub kill_intel: bool,
+    #[serde(default = "default_kill_jumps")]
+    pub kill_intel_jumps: u32,
     /// Seconds until an intel report is considered outdated (and pruned).
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
@@ -479,6 +484,10 @@ fn default_alert_jumps() -> u32 {
     5
 }
 
+fn default_kill_jumps() -> u32 {
+    6
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JumpBridge {
     pub from: String,
@@ -511,6 +520,8 @@ impl Default for Settings {
             alert_within_jumps: 5,
             alert_combat: true,
             alert_only_undocked: false,
+            kill_intel: false,
+            kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
             fit_site: String::new(),
             sov_upgrades: Vec::new(),
