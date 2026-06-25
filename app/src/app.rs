@@ -545,6 +545,10 @@ pub struct SpaiApp {
     map_highlight_upgrade: Option<String>,
     /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
+    /// System-info window: show the "Recent kills" tab instead of intel.
+    system_kills_tab: bool,
+    /// Per-system recent-kills feed (lazily fetched from zKill when the tab is opened).
+    system_kills_cache: std::collections::HashMap<i64, crate::lookup::SharedLookup>,
     /// Open constellation / region info windows (by id).
     constellation_window: Option<i64>,
     region_window: Option<i64>,
@@ -878,6 +882,8 @@ impl SpaiApp {
             upgrade_kinds: [true; 4],
             map_highlight_upgrade: None,
             system_window: None,
+            system_kills_tab: false,
+            system_kills_cache: std::collections::HashMap::new(),
             constellation_window: None,
             region_window: None,
             focus_window: None,
@@ -8191,6 +8197,7 @@ impl SpaiApp {
                         *counts.entry(s.id).or_default() += 1;
                     }
                 }
+                drop(state); // release the intel lock; the kills tab needs &mut self
 
                 ui.label(egui::RichText::new("Neighbours").strong());
                 ui.horizontal_wrapped(|ui| {
@@ -8230,24 +8237,62 @@ impl SpaiApp {
                 });
 
                 ui.separator();
-                ui.label(egui::RichText::new("Intel here").strong());
-                egui::ScrollArea::vertical().id_salt("sysintel").max_height(280.0).show(ui, |ui| {
-                    if sys_reports.is_empty() {
-                        ui.label(egui::RichText::new("No recent intel.").weak());
-                    }
-                    for (i, r) in sys_reports.iter().enumerate() {
-                        let from_you =
-                            jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id));
-                        let sev = severity_of(r, &self.settings.severity);
-                        let kc = self.kill_cache.clone();
-                        if let Some(c) = intel_row(
-                            ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                            &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev, false,
-                        ) {
-                            intel_click = Some(c);
-                        }
-                    }
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.system_kills_tab, false, "Intel");
+                    ui.selectable_value(&mut self.system_kills_tab, true, "Recent kills");
                 });
+                ui.separator();
+                if self.system_kills_tab {
+                    // Lazily fetch this system's recent kills from zKill (cached per system).
+                    let feed = self
+                        .system_kills_cache
+                        .entry(id)
+                        .or_insert_with(|| {
+                            let s =
+                                std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
+                            crate::lookup::spawn_system_kills(id, s.clone(), ui.ctx().clone());
+                            s
+                        })
+                        .clone();
+                    egui::ScrollArea::vertical().id_salt("syskills").max_height(280.0).show(ui, |ui| {
+                        match feed.lock().unwrap().clone() {
+                            crate::lookup::LookupState::Done(report) => {
+                                self.km_list(ui, &report.kills, report.loading);
+                            }
+                            crate::lookup::LookupState::Failed(e) => {
+                                ui.label(egui::RichText::new(e).weak());
+                            }
+                            _ => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Loading kills\u{2026}");
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    egui::ScrollArea::vertical().id_salt("sysintel").max_height(280.0).show(ui, |ui| {
+                        if sys_reports.is_empty() {
+                            ui.label(egui::RichText::new("No recent intel.").weak());
+                        }
+                        for (i, r) in sys_reports.iter().enumerate() {
+                            let from_you = jumps_from_you(
+                                &self.systems,
+                                player_sys,
+                                r.primary_system().map(|s| s.id),
+                            );
+                            let sev = severity_of(r, &self.settings.severity);
+                            let kc = self.kill_cache.clone();
+                            if let Some(c) = intel_row(
+                                ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
+                                &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev,
+                                false,
+                            ) {
+                                intel_click = Some(c);
+                            }
+                        }
+                    });
+                }
                 // TODO: neighbouring intel density over time (sparkline) — deferred.
             },
         );

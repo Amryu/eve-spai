@@ -289,6 +289,70 @@ fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, 
         .ok_or_else(|| format!("No character named \"{name}\""))
 }
 
+/// Fetch a solar system's recent kills (newest first) for the system-info window. Reuses the
+/// `PilotReport.kills` list so the existing `km_list` renderer (badges, skips, click-to-fit)
+/// can show them.
+pub fn spawn_system_kills(system_id: i64, state: SharedLookup, ctx: egui::Context) {
+    *state.lock().unwrap() = LookupState::Loading(format!("system {system_id}"));
+    ctx.request_repaint();
+    std::thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; system kills)"))
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                *state.lock().unwrap() = LookupState::Failed(e.to_string());
+                ctx.request_repaint();
+                return;
+            }
+        };
+        let url = format!("{ZKILL}/solarSystemID/{system_id}/");
+        let zk: serde_json::Value =
+            match client.get(&url).send().and_then(|r| r.error_for_status()).and_then(|r| r.json()) {
+                Ok(v) => v,
+                Err(e) => {
+                    *state.lock().unwrap() = LookupState::Failed(format!("zKill: {e}"));
+                    ctx.request_repaint();
+                    return;
+                }
+            };
+        *state.lock().unwrap() = LookupState::Done(PilotReport {
+            name: format!("System {system_id}"),
+            character_id: 0,
+            losses: Vec::new(),
+            kills: Vec::new(),
+            solo: Vec::new(),
+            loading: true,
+        });
+        ctx.request_repaint();
+        let mut kills: Vec<Loss> = Vec::new();
+        for km in zk.as_array().cloned().unwrap_or_default().iter().take(MAX_KILLS) {
+            let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
+            let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str()) else {
+                continue;
+            };
+            let value =
+                km.get("zkb").and_then(|z| z.get("totalValue")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if let Some(loss) = killmail(&client, id, hash, value) {
+                kills.push(loss);
+                if kills.len() % 6 == 0 {
+                    if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+                        r.kills = kills.clone();
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        }
+        if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+            r.kills = kills;
+            r.loading = false;
+        }
+        ctx.request_repaint();
+    });
+}
+
 /// Fetch a killmail and reconstruct the (victim) ship + its fit.
 fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str, value: f64) -> Option<Loss> {
     let km: serde_json::Value = client
