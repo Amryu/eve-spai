@@ -487,6 +487,9 @@ pub struct SpaiApp {
     map_search_sys: Vec<(i64, String, f64)>,
     map_search_const: Vec<(String, i64)>,
     map_search_reg: Vec<(i64, String)>,
+    /// Whether the left (standard) and right (mode) map docks are expanded.
+    left_dock_open: bool,
+    right_dock_open: bool,
     /// An upgrade name to faint-highlight on the map (from the search).
     map_highlight_upgrade: Option<String>,
     /// System-info window: the system currently shown (if any).
@@ -798,6 +801,8 @@ impl SpaiApp {
             map_search_sys: Vec::new(),
             map_search_const: Vec::new(),
             map_search_reg: Vec::new(),
+            left_dock_open: true,
+            right_dock_open: true,
             map_highlight_upgrade: None,
             system_window: None,
             constellation_window: None,
@@ -5388,6 +5393,31 @@ impl SpaiApp {
                     });
                 });
         } else {
+            // Reopen buttons for minimized docks.
+            if !self.left_dock_open {
+                egui::Area::new(ui.id().with("reopen_left"))
+                    .fixed_pos(rect.left_top() + egui::vec2(6.0, 6.0))
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            if ui.button("\u{00BB}").on_hover_text("Show map panel").clicked() {
+                                self.left_dock_open = true;
+                            }
+                        });
+                    });
+            }
+            if self.map_mode != MapMode::Standard && !self.right_dock_open {
+                egui::Area::new(ui.id().with("reopen_right"))
+                    .fixed_pos(rect.right_top() + egui::vec2(-38.0, 6.0))
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            if ui.button("\u{00AB}").on_hover_text("Show mode panel").clicked() {
+                                self.right_dock_open = true;
+                            }
+                        });
+                    });
+            }
             // Controls + layers + legend live in the left dock (see map_area); the search is
             // the only thing still floating over the map.
             self.map_search_overlay(ui, rect);
@@ -6479,33 +6509,48 @@ impl SpaiApp {
     fn map_area(&mut self, ui: &mut egui::Ui) {
         // Docks only in normal mode — overlay mode is a minimal borderless map.
         if !self.map_overlay_mode {
-        egui::Panel::left("map_standard_dock")
-            .resizable(true)
-            .default_size(212.0)
-            .size_range(170.0..=300.0)
-            .show_inside(ui, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    self.map_controls_content(ui);
-                });
-            });
-        // Mode-specific panels dock on the right.
-        if self.map_mode != MapMode::Standard {
-            egui::Panel::right("map_mode_dock")
-                .resizable(true)
-                .default_size(240.0)
-                .size_range(180.0..=340.0)
-                .show_inside(ui, |ui| match self.map_mode {
-                    MapMode::Travel => self.travel_panel_content(ui),
-                    MapMode::Safety => self.safety_panel_content(ui),
-                    MapMode::Hunting => {
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new("Hunting").strong().size(15.0));
-                        ui.separator();
-                        ui.label(egui::RichText::new("Live target board — coming soon.").weak());
-                    }
-                    MapMode::Standard => {}
-                });
-        }
+            if self.left_dock_open {
+                egui::Panel::left("map_standard_dock")
+                    .resizable(true)
+                    .default_size(212.0)
+                    .size_range(170.0..=300.0)
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("\u{00AB}").on_hover_text("Minimize panel").clicked() {
+                                self.left_dock_open = false;
+                            }
+                            ui.label(egui::RichText::new("Map").strong());
+                        });
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            self.map_controls_content(ui);
+                        });
+                    });
+            }
+            // Mode-specific panels dock on the right.
+            if self.map_mode != MapMode::Standard && self.right_dock_open {
+                egui::Panel::right("map_mode_dock")
+                    .resizable(true)
+                    .default_size(240.0)
+                    .size_range(180.0..=340.0)
+                    .show_inside(ui, |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("\u{00BB}").on_hover_text("Minimize panel").clicked() {
+                                self.right_dock_open = false;
+                            }
+                        });
+                        match self.map_mode {
+                            MapMode::Travel => self.travel_panel_content(ui),
+                            MapMode::Safety => self.safety_panel_content(ui),
+                            MapMode::Hunting => {
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new("Hunting").strong().size(15.0));
+                                ui.separator();
+                                ui.label(egui::RichText::new("Live target board — coming soon.").weak());
+                            }
+                            MapMode::Standard => {}
+                        }
+                    });
+            }
         }
         ui.push_id("map:main", |ui| self.draw_map(ui));
     }
