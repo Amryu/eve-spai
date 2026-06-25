@@ -3822,10 +3822,14 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 })
                 .with_active(false)
-                // Show only while an alert is up — close the window when idle instead of
-                // leaving it sitting there transparent. with_active(false) keeps the re-map
-                // from stealing focus.
-                .with_visible(active)
+                // Per-OS idle behaviour:
+                // - Windows: close the window when idle (with_active(false) keeps the re-map
+                //   from stealing focus via WS_EX_NOACTIVATE).
+                // - Linux/X11: re-mapping a window ALWAYS steals focus there (winit maps with
+                //   XMapRaised — winit#1160, and egui exposes no _NET_WM_USER_TIME / notification
+                //   type to avoid it), so stay mapped and go transparent + click-through when
+                //   idle instead of closing.
+                .with_visible(if cfg!(target_os = "windows") { active } else { true })
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
