@@ -203,6 +203,7 @@ pub struct KillEvent {
     pub ship_type_id: i64,
     pub time: i64,
     pub value: f64,
+    pub killmail_id: i64,
 }
 
 pub type SharedKillFeed = std::sync::Arc<Mutex<Vec<KillEvent>>>;
@@ -263,6 +264,7 @@ fn poll(
                 ship_type_id: ship,
                 time: t,
                 value: pkg.zkb.total_value,
+                killmail_id: pkg.kill_id,
             });
             let n = kf.len();
             if n > 256 {

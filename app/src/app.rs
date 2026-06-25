@@ -1111,7 +1111,7 @@ impl SpaiApp {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui
-                .checkbox(&mut self.settings.kill_intel, "Show zKill killmails as intel")
+                .checkbox(&mut self.settings.kill_intel, "zKill intel")
                 .on_hover_text("Within range, killmails appear as intel cards (and respect the alert rules)")
                 .changed()
             {
@@ -2661,6 +2661,13 @@ impl SpaiApp {
                 });
                 report.text = format!("{} lost in {}", ship, sys.name);
             }
+            // The killmail link gives the card an "open on zKill" button + triggers enrichment
+            // (which resolves the victim who lost the ship).
+            report.links.push(crate::intel::IntelLink {
+                kind: crate::intel::LinkKind::Killmail,
+                url: format!("https://zkillboard.com/kill/{}/", ev.killmail_id),
+                kill_id: Some(ev.killmail_id),
+            });
             st.push(report);
         }
     }
@@ -3189,7 +3196,7 @@ impl SpaiApp {
             }
             ui.separator();
             if ui
-                .checkbox(&mut self.settings.kill_intel, "Kill intel")
+                .checkbox(&mut self.settings.kill_intel, "zKill intel")
                 .on_hover_text("Show zKill killmails within range as intel cards")
                 .changed()
             {
@@ -11690,8 +11697,12 @@ fn intel_row(
 
     // Report type drives the background tint and a leading icon.
     // Leading icon by report kind; the card tint is the configurable severity.
+    // zKill-feed kills get a black crosshair to stand apart from chat-reported kills (skull).
+    let is_zkill = r.killmail && r.channel.eq_ignore_ascii_case("zkill");
     let type_icon = if r.clear {
         icon::CHECK_CIRCLE
+    } else if is_zkill {
+        icon::CROSSHAIR
     } else if r.killmail {
         icon::SKULL
     } else if r.spike || r.camp || r.bubble || r.cyno || r.help {
@@ -11704,6 +11715,7 @@ fn intel_row(
         icon::INFO
     };
     let tint = if r.clear { green } else { severity_color(sev) };
+    let icon_color = if is_zkill { egui::Color32::BLACK } else { tint };
 
     // Clicking a card toggles between the parsed view and the raw message (with a minimal
     // elapsed · jumps · system header). State is keyed by the report so it sticks per card.
@@ -11723,7 +11735,7 @@ fn intel_row(
                 // Raw view: a minimal header (elapsed · jumps · system), then the plain message.
                 ui.vertical(|ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(type_icon).color(tint));
+                        ui.label(egui::RichText::new(type_icon).color(icon_color));
                         ui.label(
                             egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak(),
                         );
@@ -11752,7 +11764,7 @@ fn intel_row(
             let mut render = |ui: &mut egui::Ui| {
                 // Plain inline widgets (no fixed-size sub-uis — those break wrapping
                 // inside horizontal_wrapped and make the card grow vertically).
-                ui.label(egui::RichText::new(type_icon).color(tint)).on_hover_text(&msg);
+                ui.label(egui::RichText::new(type_icon).color(icon_color)).on_hover_text(&msg);
                 // Fixed-width (monospace + padded) so the counting-up age doesn't shift
                 // the rest of the row.
                 ui.label(
@@ -12079,7 +12091,7 @@ fn intel_row(
                     tag(ui, "BUBBLE", warn);
                 }
                 if r.killmail {
-                    tag(ui, "KILL", red);
+                    tag(ui, if is_zkill { "zKill" } else { "KILL" }, red);
                 }
                 if r.cyno {
                     tag(ui, "CYNO", red);
@@ -12118,7 +12130,12 @@ fn intel_row(
                 render(ui);
                 if show_reporter {
                     ui.label(
-                        egui::RichText::new(format!("·  {} · {}", r.reporter, r.channel)).weak(),
+                        egui::RichText::new(if r.reporter.eq_ignore_ascii_case(&r.channel) {
+                            format!("·  {}", r.reporter)
+                        } else {
+                            format!("·  {} · {}", r.reporter, r.channel)
+                        })
+                        .weak(),
                     );
                 }
             });
