@@ -3678,9 +3678,10 @@ impl SpaiApp {
     }
 
     /// A killmail list for a Kills / Solo / Losses tab (newest first, as fetched).
-    fn km_list(&self, ui: &mut egui::Ui, list: &[crate::lookup::Loss]) {
+    fn km_list(&self, ui: &mut egui::Ui, list: &[crate::lookup::Loss], loading: bool) {
         if list.is_empty() {
-            ui.label(egui::RichText::new("Nothing here yet \u{2014} or still loading.").weak());
+            let msg = if loading { "Loading\u{2026}" } else { "Nothing in this category." };
+            ui.label(egui::RichText::new(msg).weak());
             return;
         }
         let now = chrono::Utc::now().timestamp();
@@ -3739,9 +3740,9 @@ impl SpaiApp {
         });
         ui.separator();
         match self.pilot_tab {
-            PilotTab::Kills => return self.km_list(ui, &report.kills),
-            PilotTab::Solo => return self.km_list(ui, &report.solo),
-            PilotTab::Losses => return self.km_list(ui, &report.losses),
+            PilotTab::Kills => return self.km_list(ui, &report.kills, report.loading),
+            PilotTab::Solo => return self.km_list(ui, &report.solo, report.loading),
+            PilotTab::Losses => return self.km_list(ui, &report.losses, report.loading),
             PilotTab::Overview => {}
         }
         ui.horizontal(|ui| {
