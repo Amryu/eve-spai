@@ -236,6 +236,13 @@ pub struct SpaiApp {
     /// lock + scan the camp state every frame for every map.
     camped_cache: Vec<i64>,
     camped_cache_at: i64,
+    /// Live kill-feed buffer (from zkill) turned into optional kill-intel cards.
+    killfeed: crate::zkill::SharedKillFeed,
+    /// Show zkill killmails within `kill_intel_jumps` of the active character as intel cards.
+    kill_intel: bool,
+    kill_intel_jumps: u32,
+    /// Ship type id → name, built from the ship index, for naming kill-feed ships.
+    ship_by_id: std::collections::HashMap<i64, String>,
     /// Active character name + ESI-resolved system (shared with the location poller).
     player: crate::esi::SharedPlayer,
     /// System graph for UI distance queries (set once the SDE is ready).
@@ -657,6 +664,10 @@ impl SpaiApp {
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
+            killfeed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            kill_intel: false,
+            kill_intel_jumps: 6,
+            ship_by_id: std::collections::HashMap::new(),
             player,
             systems: None,
             bridges_applied: Vec::new(),
@@ -2459,6 +2470,63 @@ impl SpaiApp {
     /// A pilot candidate that ESI confirms is NOT a character falls back to being a
     /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
     /// it's not a real pilot). showinfo-confirmed characters are never demoted.
+    /// Turn buffered zkill killmails into intel cards when within range and worth showing
+    /// (skips shuttles, rookie corvettes and empty pods).
+    fn ingest_killfeed(&mut self) {
+        let events: Vec<crate::zkill::KillEvent> =
+            std::mem::take(&mut *self.killfeed.lock().unwrap());
+        if !self.kill_intel || events.is_empty() {
+            return;
+        }
+        let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
+            return;
+        };
+        if self.ship_by_id.is_empty() {
+            if let Some(idx) = &self.ship_index {
+                for (id, name) in idx.values() {
+                    self.ship_by_id.insert(*id, name.clone());
+                }
+            }
+        }
+        let range = self.kill_intel_jumps;
+        let mut st = self.intel_state.lock().unwrap();
+        for ev in events {
+            if geo.jumps(me, ev.system_id, range).is_none() {
+                continue;
+            }
+            let Some(sys) = geo.info_of(ev.system_id) else { continue };
+            let ship = self.ship_by_id.get(&ev.ship_type_id).cloned().unwrap_or_default();
+            let lower = ship.to_lowercase();
+            if lower.contains("shuttle")
+                || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
+                || (lower == "capsule" && ev.value < 10_000_000.0)
+            {
+                continue;
+            }
+            let mut report = crate::intel::IntelReport::default();
+            report.received = ev.time;
+            report.killmail = true;
+            report.channel = "zKill".to_owned();
+            report.reporter = "zKill".to_owned();
+            report.isk = Some(ev.value as u64);
+            report.systems.push(crate::intel::DetectedSystem {
+                id: sys.id,
+                name: sys.name.clone(),
+                security: sys.security,
+            });
+            if ship.is_empty() {
+                report.text = format!("Ship lost in {}", sys.name);
+            } else {
+                report.ships.push(crate::intel::DetectedShip {
+                    id: ev.ship_type_id,
+                    name: ship.clone(),
+                });
+                report.text = format!("{} lost in {}", ship, sys.name);
+            }
+            st.push(report);
+        }
+    }
+
     fn reconcile_unresolved_pilots(&mut self) -> bool {
         let due = self.pilot_reconcile_checked.map(|t| t.elapsed().as_millis() > 700).unwrap_or(true);
         if !due {
@@ -2889,6 +2957,7 @@ impl SpaiApp {
             self.intel_state.clone(),
             self.battles.clone(),
             self.camps.clone(),
+            self.killfeed.clone(),
             ctx.clone(),
         );
 
@@ -5483,6 +5552,19 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
         ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
         ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
+        if ui
+            .checkbox(&mut self.kill_intel, format!("{}  Kill-feed intel", icon::SKULL))
+            .on_hover_text("Show zKill killmails within range as intel cards")
+            .changed()
+        {}
+        if self.kill_intel {
+            ui.indent("kill_intel_range", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Range");
+                    ui.add(egui::DragValue::new(&mut self.kill_intel_jumps).range(1..=20).suffix("j"));
+                });
+            });
+        }
         if ui
             .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
             .on_hover_text("Set Destination adds a waypoint at each hole entrance")
@@ -9625,6 +9707,7 @@ impl eframe::App for SpaiApp {
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
+        self.ingest_killfeed();
         if self.reconcile_unresolved_pilots() {
             ctx.request_repaint(); // a cover split the run -> re-render the card now
         }

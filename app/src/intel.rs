@@ -28,7 +28,7 @@ pub struct Movement {
     pub jumps: Option<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct IntelReport {
     /// Stable per-report id (assigned on push, preserved across amendments) so the alert
     /// window can re-find a report after its content — and thus report_key — changes.

@@ -31,6 +31,7 @@ pub fn spawn(
     intel: Arc<Mutex<IntelState>>,
     battles: SharedBattles,
     camps: crate::camp::SharedCamps,
+    killfeed: SharedKillFeed,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -51,7 +52,7 @@ pub fn spawn(
             .unwrap_or_else(std::time::Instant::now);
         loop {
             let mut changed = false;
-            match poll(&client, &queue_id, &systems, &intel, &camps, &mut names) {
+            match poll(&client, &queue_id, &systems, &intel, &camps, &killfeed, &mut names) {
                 Ok(Some(engagement)) => {
                     // RedisQ can repeat a kill; dedup by id.
                     if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
@@ -132,7 +133,21 @@ struct Combatant {
     alliance_id: Option<i64>,
     corporation_id: Option<i64>,
     character_id: Option<i64>,
+    #[serde(default)]
+    ship_type_id: Option<i64>,
 }
+
+/// A killmail surfaced for the optional kill-intel feed: the app turns these into intel
+/// cards when within jump range and not a skipped ship type.
+#[derive(Clone)]
+pub struct KillEvent {
+    pub system_id: i64,
+    pub ship_type_id: i64,
+    pub time: i64,
+    pub value: f64,
+}
+
+pub type SharedKillFeed = std::sync::Arc<Mutex<Vec<KillEvent>>>;
 
 #[derive(Deserialize)]
 struct Zkb {
@@ -146,6 +161,7 @@ fn poll(
     systems: &Systems,
     intel: &Mutex<IntelState>,
     camps: &crate::camp::SharedCamps,
+    killfeed: &SharedKillFeed,
     names: &mut HashMap<i64, String>,
 ) -> Result<Option<Engagement>> {
     // queue_id is alphanumeric ("eve-spai-<pid>"), safe to inline in the URL.
@@ -163,6 +179,19 @@ fn poll(
             .map(|dt| dt.timestamp())
             .unwrap_or_else(|_| chrono::Utc::now().timestamp());
         camps.lock().unwrap().record(pkg.killmail.solar_system_id, t);
+        if let Some(ship) = pkg.killmail.victim.ship_type_id {
+            let mut kf = killfeed.lock().unwrap();
+            kf.push(KillEvent {
+                system_id: pkg.killmail.solar_system_id,
+                ship_type_id: ship,
+                time: t,
+                value: pkg.zkb.total_value,
+            });
+            let n = kf.len();
+            if n > 256 {
+                kf.drain(0..n - 256);
+            }
+        }
     }
 
     // Only keep kills near a system currently in the intel feed.
