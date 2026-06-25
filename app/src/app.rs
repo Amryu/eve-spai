@@ -10943,9 +10943,9 @@ fn level_color(l: u8) -> egui::Color32 {
 /// Regions that are not reachable in-game and shouldn't appear on the map.
 fn is_hidden_region(region: &str) -> bool {
     // Inaccessible space, hidden from the map and the region picker: wormhole and Jove
-    // regions carry a digit in their name (A-R00001, UUA-F4, A821-A…); Pochven
-    // (Triglavian) is reachable only by filament.
-    region == "Pochven" || region.chars().any(|c| c.is_ascii_digit())
+    // regions carry a digit in their name (A-R00001, UUA-F4, A821-A…). Pochven
+    // (Triglavian) IS shown — it's a real, navigable k-space region.
+    region.chars().any(|c| c.is_ascii_digit())
 }
 
 /// Broad hull-size class for a ship group (Frigate … Capital).
