@@ -5033,6 +5033,11 @@ impl SpaiApp {
                         for (k, up) in parts.iter().take(6).enumerate() {
                             // Sit the icons in a row above the system name.
                             let ip = p + egui::vec2(6.0 * label_off + k as f32 * 20.0, -15.0 * label_off);
+                            // Skip icons that would spill onto a dock — the mineral image uses
+                            // ui.put (not the rect-clipped painter), so it isn't clipped.
+                            if ip.x + 20.0 > rect.right() || ip.y - 20.0 < rect.top() || !rect.contains(ip) {
+                                continue;
+                            }
                             let (kind, level) = upgrade_info(up);
                             let lcol = level_color(level);
                             match kind {
