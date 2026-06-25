@@ -533,7 +533,7 @@ fn default_alert_jumps() -> u32 {
 }
 
 fn default_kill_jumps() -> u32 {
-    6
+    0
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

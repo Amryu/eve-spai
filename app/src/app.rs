@@ -1122,8 +1122,8 @@ impl SpaiApp {
                 if ui
                     .add(
                         egui::DragValue::new(&mut self.settings.kill_intel_jumps)
-                            .range(1..=20)
-                            .suffix("j"),
+                            .range(0..=20)
+                            .custom_formatter(|n, _| if n == 0.0 { "feed".to_owned() } else { format!("{n}j") }),
                     )
                     .changed()
                 {
@@ -2626,7 +2626,13 @@ impl SpaiApp {
                 }
             }
         }
-        let range = self.settings.kill_intel_jumps;
+        // 0 = follow the regular intel feed's jump range; if that's "any" (0), cap so the
+        // global kill feed doesn't flood the cards.
+        let range = match (self.settings.kill_intel_jumps, self.intel_max_jumps) {
+            (0, 0) => 10,
+            (0, feed) => feed,
+            (k, _) => k,
+        };
         let mut st = self.intel_state.lock().unwrap();
         for ev in events {
             if geo.jumps(me, ev.system_id, range).is_none() {
@@ -3206,8 +3212,8 @@ impl SpaiApp {
                 && ui
                     .add(
                         egui::DragValue::new(&mut self.settings.kill_intel_jumps)
-                            .range(1..=20)
-                            .suffix("j"),
+                            .range(0..=20)
+                            .custom_formatter(|n, _| if n == 0.0 { "feed".to_owned() } else { format!("{n}j") }),
                     )
                     .on_hover_text("Kill-intel range")
                     .changed()
