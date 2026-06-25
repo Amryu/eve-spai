@@ -5129,7 +5129,12 @@ impl SpaiApp {
         // reduce overlaps; further-out systems reveal their name only on hover.
         let label_max = 3;
         let line_h = 13.0;
-        let stagger: std::collections::HashMap<i64, f32> = {
+        // Stagger only helps the Tree layout, where the outer level is a single horizontal row
+        // that crowds. In Radial the ring is spread around a full circle, so each label already
+        // clears its neighbours — staggering there just floats labels off their dots.
+        let stagger: std::collections::HashMap<i64, f32> = if matches!(self.map_layout, MapLayout::Radial) {
+            std::collections::HashMap::new()
+        } else {
             let mut ring: Vec<i64> = order.iter().copied().filter(|id| dist[id] == label_max).collect();
             ring.sort_by(|a, b| frac[a].partial_cmp(&frac[b]).unwrap_or(std::cmp::Ordering::Equal));
             ring.iter().enumerate().map(|(i, id)| (*id, (i % 3) as f32 * line_h)).collect()
