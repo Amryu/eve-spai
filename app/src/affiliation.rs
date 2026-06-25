@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Affil {
     pub corp: Option<i64>,
     pub alliance: Option<i64>,
+    pub corp_name: Option<String>,
+    pub alliance_name: Option<String>,
 }
 
 #[derive(Default)]
@@ -25,7 +27,7 @@ pub type SharedAffil = Arc<Mutex<AffilCache>>;
 impl AffilCache {
     /// Known corp/alliance for a character, if resolved.
     pub fn get(&self, id: i64) -> Option<Affil> {
-        self.map.get(&id).copied()
+        self.map.get(&id).cloned()
     }
 
     /// Ensure `id` gets resolved (queues it if not already known).
@@ -73,11 +75,26 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                     .and_then(|r| r.json::<Vec<AffilResp>>());
                 match resp {
                     Ok(list) => {
+                        // Resolve corp + alliance ids to names (one /universe/names batch) so the
+                        // pilot badge tooltip can show them.
+                        let mut ids: Vec<i64> = Vec::new();
+                        for a in &list {
+                            ids.push(a.corporation_id);
+                            if let Some(al) = a.alliance_id {
+                                ids.push(al);
+                            }
+                        }
+                        let names = crate::lookup::resolve_type_names(&ids);
                         let mut c = cache.lock().unwrap();
                         for a in list {
                             c.map.insert(
                                 a.character_id,
-                                Affil { corp: Some(a.corporation_id), alliance: a.alliance_id },
+                                Affil {
+                                    corp: Some(a.corporation_id),
+                                    alliance: a.alliance_id,
+                                    corp_name: names.get(&a.corporation_id).cloned(),
+                                    alliance_name: a.alliance_id.and_then(|al| names.get(&al).cloned()),
+                                },
                             );
                         }
                         got = true;

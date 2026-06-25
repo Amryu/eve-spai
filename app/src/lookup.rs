@@ -134,6 +134,19 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     if name.is_empty() {
         return;
     }
+    // Re-clicking the same pilot must not restart the zKill fetch: if it's already loading or
+    // loaded for this name, keep what we have.
+    {
+        let cur = state.lock().unwrap();
+        let same = match &*cur {
+            LookupState::Loading(n) => n.eq_ignore_ascii_case(&name),
+            LookupState::Done(r) => r.name.eq_ignore_ascii_case(&name),
+            _ => false,
+        };
+        if same {
+            return;
+        }
+    }
     *state.lock().unwrap() = LookupState::Loading(name.clone());
     ctx.request_repaint();
     std::thread::spawn(move || {

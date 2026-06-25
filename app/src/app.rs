@@ -12004,38 +12004,42 @@ fn intel_row(
                         c.want(cid);
                         c.get(cid)
                     });
-                    // Inline badges that wrap with the row (a Frame sub-ui here would break
-                    // horizontal_wrapping). Alliance + corp logos — each its own hover — then the
-                    // avatar + name, all on the button background so they match the ship badges.
-                    let logo24 = egui::Vec2::splat(24.0);
-                    if let Some(al) = aff.and_then(|a| a.alliance) {
-                        ui.add(egui::ImageButton::new(
-                            egui::Image::new(format!(
-                                "https://images.evetech.net/alliances/{al}/logo?size=32"
-                            ))
-                            .fit_to_exact_size(logo24),
-                        ))
-                        .on_hover_text("Alliance");
-                    }
-                    if let Some(co) = aff.and_then(|a| a.corp) {
-                        ui.add(egui::ImageButton::new(
-                            egui::Image::new(format!(
-                                "https://images.evetech.net/corporations/{co}/logo?size=32"
-                            ))
-                            .fit_to_exact_size(logo24),
-                        ))
-                        .on_hover_text("Corporation");
-                    }
+                    // One badge: alliance + corp logos + avatar + name as atoms in a single button
+                    // (grouped, shares the ship-badge background + height, wraps with the row).
+                    let sz = egui::Vec2::splat(20.0);
+                    let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);
                     let resp = if let Some(cid) = char_id {
-                        let img = egui::Image::new(format!(
+                        let mut atoms = egui::Atoms::new(img(format!(
                             "https://images.evetech.net/characters/{cid}/portrait?size=32"
-                        ))
-                        .fit_to_exact_size(logo24);
-                        ui.add(egui::Button::image_and_text(img, egui::RichText::new(name)))
+                        )));
+                        if let Some(co) = aff.as_ref().and_then(|a| a.corp) {
+                            atoms.push_left(img(format!(
+                                "https://images.evetech.net/corporations/{co}/logo?size=32"
+                            )));
+                        }
+                        if let Some(al) = aff.as_ref().and_then(|a| a.alliance) {
+                            atoms.push_left(img(format!(
+                                "https://images.evetech.net/alliances/{al}/logo?size=32"
+                            )));
+                        }
+                        atoms.push_right(egui::RichText::new(name));
+                        ui.add(egui::Button::new(atoms))
                     } else {
                         ui.add(egui::Button::new(egui::RichText::new(format!("{} {name}", icon::USER))))
                     };
-                    if resp.on_hover_text("Look up pilot").clicked() {
+                    let corp_name = aff.as_ref().and_then(|a| a.corp_name.clone());
+                    let alliance_name = aff.as_ref().and_then(|a| a.alliance_name.clone());
+                    let resp = resp.on_hover_ui(|ui| {
+                        ui.strong(name);
+                        if let Some(an) = &alliance_name {
+                            ui.label(an);
+                        }
+                        if let Some(cn) = &corp_name {
+                            ui.label(cn);
+                        }
+                        ui.label(egui::RichText::new("Click to look up").weak());
+                    });
+                    if resp.clicked() {
                         clicked = Some(IntelClick::Pilot(name.clone()));
                     }
                 }
