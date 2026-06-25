@@ -10757,6 +10757,23 @@ fn rule_matches(
 }
 
 /// A concise one-line alert string for a report.
+/// Best-effort op-channel name from ping text ("op 9", "op9") when there's no comms field.
+fn find_op_channel(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    for (idx, _) in lower.match_indices("op") {
+        if idx > 0 && bytes[idx - 1].is_ascii_alphabetic() {
+            continue; // not a word boundary ("stop")
+        }
+        let num: String =
+            lower[idx + 2..].trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num.is_empty() {
+            return Some(format!("Op {num}"));
+        }
+    }
+    None
+}
+
 /// Show a desktop notification (best-effort, off the UI thread).
 fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
@@ -10879,6 +10896,9 @@ fn render_ping(
                             ui.label(format!("Comms: {t}"));
                         }
                     }
+                } else if let Some(op) = find_op_channel(description) {
+                    // No comms field — surface the op channel name from the text ("op 9").
+                    ui.label(egui::RichText::new(format!("Comms: {op}?")).weak());
                 }
                 ui.horizontal(|ui| {
                     if let Some(d) = doctrine {
