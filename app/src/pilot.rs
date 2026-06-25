@@ -111,7 +111,13 @@ impl PilotCache {
                     out.push(words[i..i + len].join(" "));
                     i += len;
                 }
-                None => return Vec::new(), // a resolved non-name word — not a clean split
+                None => {
+                    // Every span starting here resolved as a non-name (a *pending* one would
+                    // have returned above). It's a typo / intel word glued onto the run
+                    // ("Tort Radeon skywook tief", "H3xat0r arazy") — skip it and keep the
+                    // confirmed names, instead of discarding the whole run.
+                    i += 1;
+                }
             }
         }
         // A candidate that splits into 3+ single-word names is almost always ONE character
@@ -265,11 +271,12 @@ mod tests {
         c.resolved.insert("wwallddo lulu uanid".into(), None);
         assert_eq!(c.cover("Wwallddo Lulu Uanid"), vec!["Wwallddo", "Lulu Uanid"]);
 
-        // "Amryu Alpha" (Alpha not a character) must NOT collapse to "Amryu".
+        // "Amryu Alpha" with "Alpha" a confirmed non-name keeps the real character and drops
+        // the junk word (ESI says "Amryu Alpha" isn't a character, but "Amryu" is).
         c.resolved.insert("amryu".into(), Some(3));
         c.resolved.insert("amryu alpha".into(), None);
         c.resolved.insert("alpha".into(), None);
-        assert!(c.cover("Amryu Alpha").is_empty());
+        assert_eq!(c.cover("Amryu Alpha"), vec!["Amryu"]);
 
         // A run still pending a longer span defers (empty) rather than shortening.
         assert!(c.cover("Tea ship").is_empty());
@@ -339,6 +346,37 @@ mod tests {
         c.resolved.insert("forgot who".into(), None);
         c.resolved.insert("i forgot who".into(), None);
         assert!(c.cover("I Forgot Who").is_empty());
+    }
+
+    #[test]
+    fn cover_keeps_real_name_with_trailing_junk() {
+        let mut c = PilotCache::default();
+        // A real name with trailing typos/intel words glued on by the loose run; the cover
+        // keeps the confirmed name and drops the junk once ESI has rejected it.
+        c.resolved.insert("tort radeon".into(), Some(1));
+        for j in ["tort radeon skywook", "tort radeon skywook tief", "skywook tief", "skywook", "tief"] {
+            c.resolved.insert(j.into(), None);
+        }
+        assert_eq!(c.cover("Tort Radeon skywook tief"), vec!["Tort Radeon"]);
+
+        c.resolved.insert("h3xat0r".into(), Some(2));
+        c.resolved.insert("h3xat0r arazy".into(), None);
+        c.resolved.insert("arazy".into(), None);
+        assert_eq!(c.cover("H3xat0r arazy"), vec!["H3xat0r"]);
+    }
+
+    #[test]
+    fn cover_splits_standing_color_led_run() {
+        let mut c = PilotCache::default();
+        // ESI confirms both real names; the glued plain-text run splits cleanly.
+        c.resolved.insert("blue randomattac".into(), Some(1));
+        c.resolved.insert("redhorn mastro".into(), Some(2));
+        c.resolved.insert("blue randomattac redhorn mastro".into(), None);
+        c.resolved.insert("blue randomattac redhorn".into(), None);
+        assert_eq!(
+            c.cover("Blue RandomAttac Redhorn Mastro"),
+            vec!["Blue RandomAttac", "Redhorn Mastro"]
+        );
     }
 
     #[test]

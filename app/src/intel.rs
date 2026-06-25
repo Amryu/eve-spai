@@ -56,6 +56,8 @@ pub struct IntelReport {
     pub isk: Option<u64>,
     /// Structures mentioned (canonical name) + an optional distance off each.
     pub structures: Vec<(String, Option<String>)>,
+    /// Celestial locations named in the message ("Planet 4", "Moon 3", "Sun").
+    pub celestials: Vec<String>,
     /// Scanning probes mentioned (Core/Combat Scanner Probe items + slang) — distinct from
     /// the Probe frigate. The badge label ("Core Probes"/"Combat Probes"/"Probes"), or None.
     pub probes: Option<&'static str>,
@@ -287,6 +289,11 @@ impl IntelState {
                     None => prev.structures.push((n.clone(), d.clone())),
                 }
             }
+            for c in &new.celestials {
+                if !prev.celestials.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                    prev.celestials.push(c.clone());
+                }
+            }
             for sk in &new.name_number_skips {
                 if !prev.name_number_skips.iter().any(|(c, _)| c.eq_ignore_ascii_case(&sk.0)) {
                     prev.name_number_skips.push(sk.clone());
@@ -363,7 +370,7 @@ const PILOT_STOP: &[&str] = &[
     "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
-    "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went",
+    "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went", "going",
     "help", "sos", "backup", "need",
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
@@ -372,6 +379,8 @@ const PILOT_STOP: &[&str] = &[
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
     // "rest" as in "1 jackdaw, rest NV" — never a pilot, even though a character is named "Rest".
     "rest", "stop",
+    // Engagement descriptors ("good fight", "engaged on gate"). "combat" is covered above.
+    "fight", "fights", "fighting", "engaged", "engage", "engaging",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -695,6 +704,19 @@ fn is_name_connector(w: &str) -> bool {
     )
 }
 
+/// Intel keywords that are stop words on their own ("3 reds in local", "bubble up") but also
+/// appear inside real character names ("Blue RandomAttac", "The Bubble Boy"). They are allowed
+/// inside a loose run so the full span reaches the ESI cover, which confirms or splits it —
+/// instead of breaking the run and gluing the rest into an unsplittable blob. When the span
+/// becomes a pilot candidate, its tokens also suppress the matching status flag (so "The
+/// Bubble Boy" no longer reads as a warp-bubble sighting).
+fn is_name_capable_stopword(w: &str) -> bool {
+    matches!(
+        w.to_lowercase().as_str(),
+        "blue" | "blues" | "red" | "reds" | "bubble" | "bubbles"
+    )
+}
+
 /// A short name component that can't stand alone but is valid inside a name: a single
 /// capital initial ("Lopatich R") or a short number ("Adama 80", "Malcolm 41"). Only
 /// ever extends a run that already has a real name word; never starts one.
@@ -780,7 +802,11 @@ fn loose_pilot_runs(
         // EVE names allow digits ("c137"); ships/systems/stop words still break a run.
         let namelike = (core.len() >= 3 || is_name_suffix(core))
             && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
-            && (!is_pilot_stopword(core) || is_name_connector(core))
+            // A name-capable keyword counts as a name word only when Title-cased ("Bubble"/
+            // "Blue" in a name) — the lower-case form ("bubble up", "3 reds") is the keyword.
+            && (!is_pilot_stopword(core)
+                || is_name_connector(core)
+                || (name_part(core) && is_name_capable_stopword(core)))
             && !is_cap_word(core)
             && !is_tackle_word(core)
             && !looks_like_system_code(core)
@@ -1668,6 +1694,13 @@ pub fn analyze_ctx(
     // Best-guess Chinese tackle/point/web terms (not seen in current logs — a safety net).
     tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
+    // Celestial locations ("planet 1", "moon IV", "sun"): their word + number are consumed so
+    // they aren't read as a hostile count or a pilot. Uses the raw split (tokenize drops bare
+    // numbers, which are exactly the celestial index).
+    let raw_tokens: Vec<&str> = text.split_whitespace().collect();
+    let (celestials, celestial_consumed) = detect_celestials(&raw_tokens);
+    consumed.extend(celestial_consumed);
+
     let mut pilots = drop_covered_prefixes(&pilots, text);
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
@@ -1711,6 +1744,7 @@ pub fn analyze_ctx(
         name_number_skips,
         isk,
         structures,
+        celestials,
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
         // named e.g. "Clear Skies" can't spoof a "clear" status.
         clear: lower_tokens
@@ -2020,6 +2054,56 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
 /// Scanning probes — Core/Combat Scanner Probe items (incl. Sisters/RSS/Satori-Horigu) and
 /// the "core/combat probes" slang — as a badge label, distinct from the Probe frigate. A
 /// lone "probe" (no Core/Combat/scanner qualifier) is the ship, so returns None.
+/// Celestial locations named in intel: "planet"/"moon" + an arabic number or roman numeral
+/// ("planet 1", "moon IV"), and a standalone "sun". Returns the display labels plus the
+/// tokens consumed (the celestial word + its number) so they aren't read as a hostile count
+/// or a pilot.
+fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
+    let is_roman = |t: &str| {
+        (1..=5).contains(&t.len())
+            && t.chars().all(|c| matches!(c.to_ascii_uppercase(), 'I' | 'V' | 'X'))
+    };
+    let mut labels: Vec<String> = Vec::new();
+    let mut consumed: Vec<String> = Vec::new();
+    let push = |label: String, labels: &mut Vec<String>| {
+        if !labels.iter().any(|l| l.eq_ignore_ascii_case(&label)) {
+            labels.push(label);
+        }
+    };
+    let mut i = 0;
+    while i < tokens.len() {
+        let w = tokens[i].trim_matches(|c: char| !c.is_ascii_alphanumeric()).to_lowercase();
+        let kind = match w.as_str() {
+            "planet" | "planets" => Some("Planet"),
+            "moon" | "moons" => Some("Moon"),
+            _ => None,
+        };
+        if let Some(k) = kind {
+            let n = tokens
+                .get(i + 1)
+                .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+                .unwrap_or("");
+            if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
+                push(format!("{k} {n}"), &mut labels);
+                consumed.push(w);
+                consumed.push(n.to_lowercase());
+                i += 2;
+                continue;
+            } else if is_roman(n) {
+                push(format!("{k} {}", n.to_uppercase()), &mut labels);
+                consumed.push(w);
+                i += 2;
+                continue;
+            }
+        } else if w == "sun" {
+            push("Sun".to_string(), &mut labels);
+            consumed.push(w);
+        }
+        i += 1;
+    }
+    (labels, consumed)
+}
+
 fn detect_probes(text: &str) -> Option<&'static str> {
     let lower = text.to_lowercase();
     // Match the "prob" stem so abbreviations like "combat prob" count too.
@@ -2376,6 +2460,35 @@ mod tests {
         assert!(!sighting.pilots.iter().any(|p| p.eq_ignore_ascii_case("rest")));
         assert_eq!(sighting.char_ids.len(), 4);
         assert!(sighting.ships.iter().any(|sh| sh.name == "Jackdaw"));
+    }
+
+    #[test]
+    fn name_with_bubble_keyword_is_a_pilot_not_a_bubble() {
+        let mut by_name = std::collections::HashMap::new();
+        by_name.insert("r0-dmm".to_string(), SystemInfo { id: 30000563, name: "R0-DMM".into(),
+            security: -0.5, constellation: String::new(), region: String::new(), faction: String::new() });
+        let s = Systems::new(by_name, HashMap::new());
+        // "The Bubble Boy" embeds the "bubble" keyword; the full name must reach the cover and
+        // the warp-bubble flag must NOT fire.
+        let r = analyze("R0-DMM  The Bubble Boy", &s, &noships(), &noknown(), 1, "ch", "Anniken");
+        assert_eq!(r.pilots, vec!["The Bubble Boy".to_string()]);
+        assert!(!r.bubble);
+        // A real bubble call still fires.
+        assert!(analyze("bubble up on gate R0-DMM", &s, &noships(), &noknown(), 1, "ch", "x").bubble);
+    }
+
+    #[test]
+    fn standing_color_led_name_reaches_the_cover() {
+        let mut by_name = std::collections::HashMap::new();
+        by_name.insert("9olq-6".to_string(), SystemInfo { id: 30000800, name: "9OLQ-6".into(),
+            security: -0.5, constellation: String::new(), region: String::new(), faction: String::new() });
+        let s = Systems::new(by_name, HashMap::new());
+        // Plain-text intel (no showinfo tags — real chat logs have none). "Blue" is a standing
+        // colour, but it begins the real name "Blue RandomAttac". The full span (incl. "Blue")
+        // must be captured so the ESI cover can split it; previously "Blue" broke the run.
+        let r = analyze("Blue RandomAttac  Redhorn Mastro  9OLQ-6", &s, &noships(), &noknown(), 1, "ch", "Ariel Afuran");
+        assert_eq!(r.pilots, vec!["Blue RandomAttac Redhorn Mastro".to_string()]);
+        assert!(r.systems.iter().any(|d| d.name == "9OLQ-6"));
     }
 
     #[test]
@@ -2812,6 +2925,15 @@ mod tests {
             detect_structures("Sotiyo 1000km"),
             vec![("Sotiyo".to_string(), Some("1000km".to_string()))]
         );
+        // Celestials: planet/moon + number or roman, and the sun. The trailing number is a
+        // location, never a hostile count.
+        let p1 = analyze("planet 1 Jita", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(p1.celestials, vec!["Planet 1".to_string()]);
+        assert!(p1.count.is_none(), "count={:?}", p1.count);
+        let m = analyze("moon IV in Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(m.celestials, vec!["Moon IV".to_string()]);
+        let sun = analyze("camped at the sun Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(sun.celestials, vec!["Sun".to_string()]);
         assert_eq!(detect_structures("POS bash Rancer"), vec![("POS".to_string(), None)]);
         assert!(is_structure_word("pos"));
         assert!(detect_structures("hostiles in Rancer").is_empty());

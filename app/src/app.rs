@@ -11916,6 +11916,31 @@ fn intel_row(
                         });
                 }
 
+                // Celestial locations ("Planet 4", "Moon 3", "Sun") — like a structure badge but
+                // with a celestial icon (and its own teal tint) to mark it as an in-system spot.
+                for cel in &r.celestials {
+                    let cicon = if cel.starts_with("Moon") {
+                        icon::MOON
+                    } else if cel.starts_with("Sun") {
+                        icon::SUN
+                    } else {
+                        icon::PLANET
+                    };
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
+                        .inner_margin(egui::Margin::symmetric(6, 1))
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{cicon} {cel}"))
+                                    .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                                    .strong(),
+                            );
+                        })
+                        .response
+                        .on_hover_text(format!("{cel} (celestial)"));
+                }
+
                 // Scanning probes (Core/Combat Scanner Probes) — a badge, not the Probe frigate.
                 if let Some(probes) = r.probes {
                     egui::Frame::new()
