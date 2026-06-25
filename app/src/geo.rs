@@ -203,6 +203,7 @@ impl Systems {
     /// must satisfy `allowed`; region-crossing stargates and jump bridges can each be toggled
     /// off. This is the basis of Travel Mode (docs/MAP_MODES.md); ship-jump edges and weighted
     /// costs come in later phases.
+    #[allow(dead_code)] // wired up by the Travel Mode panel (next phase)
     pub fn route(
         &self,
         from: i64,

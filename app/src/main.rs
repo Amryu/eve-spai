@@ -4,6 +4,10 @@
 //! a three-colour theme engine, a settings dialog, and SQLite-backed persistence.
 //! No EVE data yet — views are placeholders (see docs/DESIGN.md §10, milestone M0).
 
+// Release builds on Windows are GUI-subsystem so no console window opens alongside the app.
+// Debug keeps the console for eprintln logging.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod auth;
 mod battle;

@@ -432,7 +432,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
                 | "small" | "large" | "big" | "huge"
-                | "sig" | "sigs"
+                | "sig" | "sigs" | "anyone"
                 // Scanner probes are a badge, never a pilot ("Combat Probes", "Core Scanner
                 // Probe"). The Probe frigate is still detected as a ship via the ship index.
                 | "probe" | "probes"

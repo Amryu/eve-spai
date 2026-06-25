@@ -923,7 +923,7 @@ impl SpaiApp {
         let status = self.system_status.lock().unwrap().clone();
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
         let systems = self.systems.clone();
-        let player_sys = self.player.lock().unwrap().system_id;
+        let player_sys = self.player_system();
         let now = chrono::Utc::now().timestamp();
         let mut click: Option<IntelClick> = None;
         for (r, sev) in &feed {
@@ -2528,7 +2528,7 @@ impl SpaiApp {
     /// entrance) when enabled and that's shorter than the gate route.
     fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
         if self.settings.route_via_wormholes {
-            let from = self.player.lock().unwrap().system_id;
+            let from = self.player_system();
             if let Some(from) = from {
                 if let Some(wp) = self.wh_route_waypoints(from, dest) {
                     if wp.len() > 1 {
@@ -2798,7 +2798,7 @@ impl SpaiApp {
             return;
         }
 
-        let player_sys = self.player.lock().unwrap().system_id;
+        let player_sys = self.player_system();
         let systems = self.systems.clone();
 
         // Full-width filter bar: type · max-jumps · search.
@@ -2982,7 +2982,7 @@ impl SpaiApp {
     fn dashboard_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         let now = chrono::Utc::now().timestamp();
-        let player_sys = self.player.lock().unwrap().system_id;
+        let player_sys = self.player_system();
         let systems = self.systems.clone();
 
         // Active character + location.
@@ -3269,7 +3269,7 @@ impl SpaiApp {
 
         ui.label(egui::RichText::new(format!("{} battles", shown.len())).weak());
         ui.add_space(4.0);
-        let player_sys = self.player.lock().unwrap().system_id;
+        let player_sys = self.player_system();
         let systems = self.systems.clone();
         let status = self.system_status.lock().unwrap();
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -3781,7 +3781,7 @@ impl SpaiApp {
         let last_ship =
             if active { build_last_ship(&self.intel_state.lock().unwrap().reports) } else { Default::default() };
         let systems = self.systems.clone();
-        let player_sys = self.player.lock().unwrap().system_id;
+        let player_sys = self.player_system();
         let now_ts = chrono::Utc::now().timestamp();
 
         let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
@@ -5150,7 +5150,8 @@ impl SpaiApp {
     fn map_upgrade_legend(&self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         egui::Area::new(ui.id().with("map_upgrade_legend"))
-            .fixed_pos(rect.right_top() + egui::vec2(-210.0, 8.0))
+            // Bottom-right so it never covers the top-right Overlays menu.
+            .fixed_pos(rect.right_bottom() + egui::vec2(-210.0, -150.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -5462,6 +5463,14 @@ impl SpaiApp {
     }
 
     /// Floating controls over the map (scope, navigation, follow, pop-out).
+    /// The active character's current system — from the per-character location map, so the
+    /// map and distances follow the character selected at the top of the window, not
+    /// whichever character ESI happened to update last.
+    fn player_system(&self) -> Option<i64> {
+        let p = self.player.lock().unwrap();
+        p.locations.get(&self.active_character).map(|(s, _)| *s).or(p.system_id)
+    }
+
     /// Switch map mode, auto-adapting the overlays (saving/restoring the Standard layers).
     fn set_map_mode(&mut self, new: MapMode) {
         if new == self.map_mode {
@@ -6210,7 +6219,7 @@ impl SpaiApp {
 
         // Build the data the proper intel cards need (same as the intel feed).
         let ttl = self.settings.intel_ttl_secs;
-        let player_sys = self.player.lock().unwrap().system_id;
+        let player_sys = self.player_system();
         let (sys_reports, stale_flags, sys_last_ship): (
             Vec<crate::intel::IntelReport>,
             Vec<bool>,
