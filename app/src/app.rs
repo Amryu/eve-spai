@@ -209,7 +209,7 @@ impl IntelTypeFilter {
             }
             IntelTypeFilter::Clear => r.clear,
             IntelTypeFilter::Kill => r.killmail,
-            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno || r.help || r.tackled || r.cap_tackled,
+            IntelTypeFilter::Threat => r.spike || r.camp || r.bubble || r.cyno || r.dropper || r.help || r.tackled || r.cap_tackled,
         }
     }
 }
@@ -2660,12 +2660,22 @@ impl SpaiApp {
         self.kills_loaded = true;
         let now = chrono::Utc::now().timestamp();
         let cutoff = now - 3600;
-        let saved = {
+        let (saved, details) = {
             let Some(store) = &self.store else { return };
             let rows = store.load_kill_intel(cutoff);
             store.prune_kill_intel(cutoff);
-            rows
+            let details = store.load_kill_details();
+            (rows, details)
         };
+        // Preload the enriched details so the reloaded cards render their attacker/victim
+        // badges immediately and `poll_kill_fetches` doesn't re-request them from zKill/ESI.
+        if !details.is_empty() {
+            let mut c = self.kill_cache.lock().unwrap();
+            for k in details {
+                let id = k.kill_id;
+                c.entry(id).or_insert(Some(k));
+            }
+        }
         if saved.is_empty() {
             return;
         }
@@ -9517,9 +9527,10 @@ impl SpaiApp {
                 // Condition tags.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("requires:");
-                    for tag in
-                        ["bubble", "camp", "cyno", "captackled", "kill", "ess", "spike", "wormhole", "help"]
-                    {
+                    for tag in [
+                        "bubble", "camp", "cyno", "dropper", "captackled", "kill", "ess", "spike",
+                        "wormhole", "help",
+                    ] {
                         let label = if tag == "captackled" { "cap tackled" } else { tag };
                         let mut on = ru.require.iter().any(|t| t == tag);
                         if ui.selectable_label(on, label).clicked() {
@@ -11346,6 +11357,7 @@ fn rule_matches(
             "bubble" => r.bubble,
             "camp" => r.camp,
             "cyno" => r.cyno,
+            "dropper" | "hotdrop" | "hotdropper" | "blops" => r.dropper,
             "captackled" | "cap" => r.cap_tackled,
             "tackled" | "point" | "scram" => r.tackled,
             "kill" | "killmail" => r.killmail,
@@ -11426,6 +11438,9 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
     }
     if r.cyno {
         parts.push("CYNO".into());
+    }
+    if r.dropper {
+        parts.push("DROPPER".into());
     }
     if r.cap_tackled {
         parts.push("CAP TACKLED".into());
@@ -11598,6 +11613,9 @@ fn severity_of(
     if r.cyno {
         s = s.max(rules.cyno);
     }
+    if r.dropper {
+        s = s.max(rules.dropper);
+    }
     if r.cap_tackled {
         s = s.max(rules.cap_tackled);
     }
@@ -11746,7 +11764,7 @@ fn intel_row(
         icon::CROSSHAIR
     } else if r.killmail {
         icon::SKULL
-    } else if r.spike || r.camp || r.bubble || r.cyno || r.help {
+    } else if r.spike || r.camp || r.bubble || r.cyno || r.dropper || r.help {
         icon::WARNING_OCTAGON
     } else if r.no_visual {
         icon::EYE_SLASH
@@ -12232,6 +12250,9 @@ fn intel_row(
                 }
                 if r.cyno {
                     tag(ui, "CYNO", red);
+                }
+                if r.dropper {
+                    tag(ui, "DROPPER", red);
                 }
                 if r.cap_tackled {
                     tag(ui, "CAP TACKLED", red);

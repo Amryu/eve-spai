@@ -405,6 +405,8 @@ pub struct SeverityRules {
     pub gate_camp: Severity,
     pub spike: Severity,
     pub cyno: Severity,
+    #[serde(default = "danger")]
+    pub dropper: Severity,
     #[serde(default = "crit")]
     pub cap_tackled: Severity,
     pub kill: Severity,
@@ -427,6 +429,7 @@ impl Default for SeverityRules {
             gate_camp: Danger,
             spike: Danger,
             cyno: Critical,
+            dropper: Danger,
             cap_tackled: Critical,
             kill: Danger,
             no_visual: Warning,
@@ -444,6 +447,10 @@ fn default_severity() -> SeverityRules {
 
 fn crit() -> Severity {
     Severity::Critical
+}
+
+fn danger() -> Severity {
+    Severity::Danger
 }
 
 /// A sov-holding alliance the app has seen (auto-discovered from ESI or added by

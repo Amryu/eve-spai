@@ -113,6 +113,24 @@ CREATE TABLE IF NOT EXISTS kill_intel (
     value        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_kill_intel_time ON kill_intel(time);
+-- Enriched killmail details (zKill + ESI), so a reloaded card doesn't re-fetch them.
+CREATE TABLE IF NOT EXISTS kill_details (
+    kill_id             INTEGER PRIMARY KEY,
+    hash                TEXT,
+    victim_char         INTEGER,
+    victim_ship         INTEGER,
+    victim_corp         INTEGER,
+    victim_alliance     INTEGER,
+    system_id           INTEGER NOT NULL,
+    value               REAL NOT NULL,
+    time                TEXT NOT NULL,
+    final_blow_char     INTEGER,
+    final_blow_corp     INTEGER,
+    final_blow_alliance INTEGER,
+    final_blow_ship     INTEGER,
+    attacker_count      INTEGER NOT NULL,
+    attacker_alliances  TEXT
+);
 ";
 
 /// A ship type with computed resist/tank/fitting stats.
@@ -643,9 +661,74 @@ impl Store {
         out
     }
 
-    /// Drop persisted kill-intel older than `before` (unix seconds).
+    /// Drop persisted kill-intel older than `before` (unix seconds), and any orphaned
+    /// enriched details that no longer have a kill-intel row.
     pub fn prune_kill_intel(&self, before: i64) {
         let _ = self.conn.execute("DELETE FROM kill_intel WHERE time < ?1", params![before]);
+        let _ = self.conn.execute(
+            "DELETE FROM kill_details WHERE kill_id NOT IN (SELECT killmail_id FROM kill_intel)",
+            [],
+        );
+    }
+
+    /// Persist enriched killmail details so a reloaded card shows them without re-fetching.
+    pub fn save_kill_details(&self, k: &crate::kills::KillInfo) {
+        let alliances: String =
+            k.attacker_alliances.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(",");
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO kill_details
+                (kill_id, hash, victim_char, victim_ship, victim_corp, victim_alliance,
+                 system_id, value, time, final_blow_char, final_blow_corp, final_blow_alliance,
+                 final_blow_ship, attacker_count, attacker_alliances)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            params![
+                k.kill_id, k.hash, k.victim_char, k.victim_ship, k.victim_corp, k.victim_alliance,
+                k.system_id, k.value, k.time, k.final_blow_char, k.final_blow_corp,
+                k.final_blow_alliance, k.final_blow_ship, k.attacker_count as i64, alliances,
+            ],
+        );
+    }
+
+    /// Load all persisted enriched killmail details (to preload the in-memory cache at startup).
+    pub fn load_kill_details(&self) -> Vec<crate::kills::KillInfo> {
+        let mut out = Vec::new();
+        let Ok(mut stmt) = self.conn.prepare(
+            "SELECT kill_id, hash, victim_char, victim_ship, victim_corp, victim_alliance,
+                    system_id, value, time, final_blow_char, final_blow_corp, final_blow_alliance,
+                    final_blow_ship, attacker_count, attacker_alliances
+             FROM kill_details",
+        ) else {
+            return out;
+        };
+        let rows = stmt.query_map([], |r| {
+            let alliances: Option<String> = r.get(14)?;
+            let attacker_alliances = alliances
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|s| s.parse::<i64>().ok())
+                .collect();
+            Ok(crate::kills::KillInfo {
+                kill_id: r.get(0)?,
+                hash: r.get(1)?,
+                victim_char: r.get(2)?,
+                victim_ship: r.get(3)?,
+                victim_corp: r.get(4)?,
+                victim_alliance: r.get(5)?,
+                system_id: r.get(6)?,
+                value: r.get(7)?,
+                time: r.get(8)?,
+                final_blow_char: r.get(9)?,
+                final_blow_corp: r.get(10)?,
+                final_blow_alliance: r.get(11)?,
+                final_blow_ship: r.get(12)?,
+                attacker_count: r.get::<_, i64>(13)? as usize,
+                attacker_alliances,
+            })
+        });
+        if let Ok(rows) = rows {
+            out.extend(rows.flatten());
+        }
+        out
     }
 
     // --- Conversations (persisted, de-duplicated) --------------------------

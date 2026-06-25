@@ -14,8 +14,9 @@ commit messages.
 
 ## Build, test, run
 
-- `cargo run --release` runs the app. Debug builds are 10-40x slower than release
-  (release idle CPU is ~2.2%); never judge performance or CPU from a debug build.
+- `cargo run --release` runs the app. Debug builds are slower than release, so confirm
+  real performance with a release build — but don't dismiss a slowdown as "just debug":
+  if release performance is also poor, it's a real regression, not a build artifact.
 - `cargo test` runs the unit tests (intel parsing is heavily covered). Important:
   `cargo test` does NOT rebuild the `eve-spai` binary. Run `cargo build` before
   relaunching the app, or you will run a stale binary and "fixes" will look like they

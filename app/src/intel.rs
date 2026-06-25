@@ -70,6 +70,8 @@ pub struct IntelReport {
     pub bubble: bool,
     pub killmail: bool,
     pub cyno: bool,
+    /// A hot-drop / black-ops threat ("dropper", "hotdropper", "blops", …).
+    pub dropper: bool,
     /// A capital ship (cap / rorqual / dread / carrier / …) reported tackled.
     pub cap_tackled: bool,
     /// A (non-capital) ship/type reported tackled.
@@ -200,6 +202,7 @@ impl IntelState {
             || new.camp
             || new.bubble
             || new.cyno
+            || new.dropper
             || new.cap_tackled;
         if !adds {
             return false;
@@ -296,6 +299,7 @@ impl IntelState {
             prev.help |= new.help;
             prev.bubble |= new.bubble;
             prev.cyno |= new.cyno;
+            prev.dropper |= new.dropper;
             prev.cap_tackled |= new.cap_tackled;
             prev.tackled |= new.tackled;
             for tt in &new.tackled_targets {
@@ -367,7 +371,7 @@ const PILOT_STOP: &[&str] = &[
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there",
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
     // "rest" as in "1 jackdaw, rest NV" — never a pilot, even though a character is named "Rest".
-    "rest",
+    "rest", "stop",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -1728,6 +1732,16 @@ pub fn analyze_ctx(
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
         cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]) || lower.contains("诱导") || lower.contains("诱饵"),
+        dropper: flagged_exact(
+            &lower_tokens,
+            &pilot_tokens,
+            &[
+                "dropper", "droppers", "hotdrop", "hotdrops", "hotdropper", "hotdroppers",
+                "blops", "blackops", "blackop",
+            ],
+        ) || lower.contains("hot drop")
+            || lower.contains("hot dropper")
+            || lower.contains("black ops"),
         cap_tackled: detect_cap_tackled(&lower_tokens, &pilot_tokens),
         tackled,
         tackled_targets,
@@ -1967,6 +1981,8 @@ const STRUCTURES: &[(&str, &str)] = &[
     ("ansiblex", "Ansiblex"), ("ansi", "Ansiblex"),
     ("tenebrex", "Cyno Jammer"), ("cyno jammer", "Cyno Jammer"),
     ("pharolux", "Cyno Beacon"), ("cyno beacon", "Cyno Beacon"),
+    // Player-owned starbase (control tower)
+    ("pos", "POS"),
     // Planetary / Equinox
     ("poco", "POCO"),
     ("skyhook", "Skyhook"),
@@ -2796,6 +2812,8 @@ mod tests {
             detect_structures("Sotiyo 1000km"),
             vec![("Sotiyo".to_string(), Some("1000km".to_string()))]
         );
+        assert_eq!(detect_structures("POS bash Rancer"), vec![("POS".to_string(), None)]);
+        assert!(is_structure_word("pos"));
         assert!(detect_structures("hostiles in Rancer").is_empty());
         // structure abbreviations aren't pilots
         assert!(is_structure_word("fort") && is_structure_word("keep") && is_structure_word("astra"));
@@ -3226,6 +3244,10 @@ mod tests {
         assert!(gc.pilots.is_empty(), "gatecamp is not a pilot");
         assert!(analyze("https://zkillboard.com/kill/123/", &s, &noships(), &noknown(), 1, "ch", "x").killmail);
         assert!(analyze("cyno up in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").cyno);
+        assert!(analyze("hotdropper in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").dropper);
+        assert!(analyze("blops on scan Jita", &s, &noships(), &noknown(), 1, "ch", "x").dropper);
+        assert!(analyze("watch for hot drop", &s, &noships(), &noknown(), 1, "ch", "x").dropper);
+        assert!(!analyze("just a dropbear in Jita", &s, &noships(), &noknown(), 1, "ch", "x").dropper);
         assert!(analyze("wh in Jita k162", &s, &noships(), &noknown(), 1, "ch", "x").wormhole);
         assert!(analyze("ess being robbed", &s, &noships(), &noknown(), 1, "ch", "x").ess);
         assert!(analyze("skyhook theft Rancer", &s, &noships(), &noknown(), 1, "ch", "x").skyhook);

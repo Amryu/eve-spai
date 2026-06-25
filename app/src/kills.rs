@@ -45,6 +45,8 @@ pub fn spawn_fetcher(cache: KillCache, ctx: egui::Context) -> KillSender {
         else {
             return;
         };
+        // Persist enriched details so a reloaded card doesn't re-fetch them next startup.
+        let store = crate::store::Store::open().ok();
         for id in rx {
             // Mark as in-flight so the UI doesn't keep re-requesting.
             {
@@ -54,9 +56,11 @@ pub fn spawn_fetcher(cache: KillCache, ctx: egui::Context) -> KillSender {
                 }
                 c.entry(id).or_insert(None);
             }
-            let info = fetch_kill(&client, id);
-            if info.is_some() {
-                cache.lock().unwrap().insert(id, info);
+            if let Some(k) = fetch_kill(&client, id) {
+                if let Some(s) = &store {
+                    s.save_kill_details(&k);
+                }
+                cache.lock().unwrap().insert(id, Some(k));
                 ctx.request_repaint();
             }
             std::thread::sleep(Duration::from_millis(300)); // be gentle on zKill

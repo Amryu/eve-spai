@@ -166,6 +166,13 @@ impl Theme {
         v.widgets.open.bg_stroke = Stroke::new(1.0, line);
         v.widgets.open.fg_stroke = Stroke::new(1.0, fg);
 
+        // Don't draw a loading spinner over pending remote images (pilot/corp/alliance/ship
+        // icons from images.evetech.net). The spinner self-animates via request_repaint every
+        // frame, so on a busy intel feed — where images are always loading (and some 404 or are
+        // slow) — it pins the UI at a continuous repaint and burns CPU. The image still appears
+        // once its loader thread finishes (it requests a single repaint then).
+        v.image_loading_spinners = false;
+
         ctx.set_visuals(v);
 
         // Spacing/density polish — a little more breathing room than egui defaults.
