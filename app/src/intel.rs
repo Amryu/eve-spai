@@ -240,7 +240,6 @@ impl IntelState {
                     prev.pilots.push(p.clone());
                 }
             }
-            drop_subphrase_pilots(&mut prev.pilots);
             // Authoritative showinfo char-ids and alliance mentions must merge too, else
             // a merged pilot loses its char-link and is dropped from the card.
             for c in &new.char_ids {
@@ -248,6 +247,11 @@ impl IntelState {
                     prev.char_ids.push(c.clone());
                 }
             }
+            // Sub-phrase dedup AFTER char-ids merge, protecting every char-linked name so a
+            // glued plain-text relay can't evict an authoritative one.
+            let protected: std::collections::HashSet<String> =
+                prev.char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
+            drop_subphrase_pilots(&mut prev.pilots, &protected);
             for a in &new.alliances {
                 if !prev.alliances.iter().any(|(n, _)| n.eq_ignore_ascii_case(&a.0)) {
                     prev.alliances.push(a.clone());
@@ -362,6 +366,8 @@ const PILOT_STOP: &[&str] = &[
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there",
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
+    // "rest" as in "1 jackdaw, rest NV" — never a pilot, even though a character is named "Rest".
+    "rest",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -921,13 +927,18 @@ fn lowercase_tail_names(
 /// not a hostile).
 /// Drop a pilot that is a contiguous sub-phrase of a longer one (e.g. "Nine" when "Nine -3"
 /// is also present) — used after a merge, since each message is filtered individually.
-fn drop_subphrase_pilots(pilots: &mut Vec<String>) {
+/// A `protect`ed name (one with an authoritative showinfo char-id) is never dropped: a
+/// glued mis-parse from a plain-text relay must not evict the real, char-linked name.
+fn drop_subphrase_pilots(pilots: &mut Vec<String>, protect: &std::collections::HashSet<String>) {
     let lc: Vec<String> = pilots.iter().map(|p| p.to_lowercase()).collect();
     let keep: Vec<bool> = (0..pilots.len())
         .map(|i| {
-            !lc.iter().enumerate().any(|(j, o)| {
-                j != i && o.len() > lc[i].len() && format!(" {o} ").contains(&format!(" {} ", lc[i]))
-            })
+            protect.contains(&lc[i])
+                || !lc.iter().enumerate().any(|(j, o)| {
+                    j != i
+                        && o.len() > lc[i].len()
+                        && format!(" {o} ").contains(&format!(" {} ", lc[i]))
+                })
         })
         .collect();
     let mut it = keep.into_iter();
@@ -1312,7 +1323,9 @@ pub fn analyze_ctx(
     // The loose-run and single-token sources are added after the earlier sub-phrase filter,
     // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
     // produced because the loose run breaks on the 2-char "Dr") can slip through.
-    drop_subphrase_pilots(&mut pilots);
+    let char_linked: std::collections::HashSet<String> =
+        si_char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
+    drop_subphrase_pilots(&mut pilots, &char_linked);
 
     let pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
@@ -2304,6 +2317,52 @@ mod tests {
     }
 
     #[test]
+    fn rest_keyword_not_a_pilot_even_if_known() {
+        let s = systems();
+        // "rest" is a status word ("1 jackdaw, rest NV"), never a pilot — even when the
+        // persisted cache has a real character named "Rest".
+        let mut known = noknown();
+        known.insert("rest".into(), 999);
+        let mut ships = noships();
+        ships.insert("jackdaw".into(), (34562, "Jackdaw".into()));
+        let r = analyze("1 jackdaw, rest NV in Jita", &s, &ships, &known, 1, "ch", "Anaz");
+        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
+        assert!(r.no_visual);
+        assert!(r.ships.iter().any(|sh| sh.name == "Jackdaw"));
+    }
+
+    #[test]
+    fn showinfo_pilots_survive_amend_and_clear() {
+        let mut by_name = std::collections::HashMap::new();
+        by_name.insert(
+            "q-k2t7".to_string(),
+            SystemInfo { id: 30000682, name: "Q-K2T7".into(), security: -0.5,
+                constellation: String::new(), region: String::new(), faction: String::new() },
+        );
+        let s = Systems::new(by_name, HashMap::new());
+        let mut ships = noships();
+        ships.insert("jackdaw".into(), (34562, "Jackdaw".into()));
+        let mut st = IntelState::default();
+        let msgs = [
+            "<url=showinfo:1377//2122822665>Wolf E Kristjansson</url>  <url=showinfo:1386//2124246974>Kristin Vuld</url>  <url=showinfo:1386//2124278733>Hedgeborn Ragamuffin</url>  <url=showinfo:1378//94277160>Callas Plaude</url>  <url=showinfo:5//30000682>Q-K2T7</url> nv",
+            "1 jackdaw, rest NV",
+            "<url=showinfo:5//30000682>Q-K2T7</url> clear",
+        ];
+        for (i, m) in msgs.iter().enumerate() {
+            let r = analyze(m, &s, &ships, &noknown(), 100 + i as i64, "ch", "Anaz Dian");
+            if !st.try_amend(&r, 60) {
+                st.push(r);
+            }
+        }
+        // The sighting keeps all four char-linked pilots and the jackdaw; "rest" never leaks.
+        let sighting = st.reports.iter().find(|r| !r.clear).expect("sighting report");
+        assert_eq!(sighting.pilots.len(), 4, "pilots={:?}", sighting.pilots);
+        assert!(!sighting.pilots.iter().any(|p| p.eq_ignore_ascii_case("rest")));
+        assert_eq!(sighting.char_ids.len(), 4);
+        assert!(sighting.ships.iter().any(|sh| sh.name == "Jackdaw"));
+    }
+
+    #[test]
     fn suffix_subphrase_pilot_is_dropped() {
         let s = systems();
         // "Chen Chen" is a contiguous suffix of "Dr Chen Chen" — the loose run (which
@@ -2603,8 +2662,13 @@ mod tests {
     #[test]
     fn drops_subphrase_pilots_works() {
         let mut p = vec!["Nine".to_string(), "Nine -3".to_string()];
-        drop_subphrase_pilots(&mut p);
+        drop_subphrase_pilots(&mut p, &std::collections::HashSet::new());
         assert_eq!(p, vec!["Nine -3".to_string()]);
+        // A char-linked name is protected even when a longer glued run contains it.
+        let mut q = vec!["Callas Plaude".to_string(), "Callas Plaude Wolf".to_string()];
+        let protect: std::collections::HashSet<String> = ["callas plaude".to_string()].into();
+        drop_subphrase_pilots(&mut q, &protect);
+        assert!(q.contains(&"Callas Plaude".to_string()), "q={q:?}");
     }
 
     #[test]
