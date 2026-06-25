@@ -4375,6 +4375,21 @@ impl SpaiApp {
                 self.jump_plan_to = Some(sid);
                 ui.close();
             }
+            if self.map_mode == MapMode::Travel {
+                ui.separator();
+                if ui.button("Travel: set as start").clicked() {
+                    self.travel_start = Some(sid);
+                    self.travel_start_q.clear();
+                    self.plan_route();
+                    ui.close();
+                }
+                if ui.button("Travel: set as destination").clicked() {
+                    self.travel_end = Some(sid);
+                    self.travel_end_q.clear();
+                    self.plan_route();
+                    ui.close();
+                }
+            }
         });
 
         let painter = ui.painter_at(rect);
