@@ -11722,7 +11722,14 @@ fn intel_row(
         icon::INFO
     };
     let tint = if r.clear { green } else { severity_color(sev) };
-    let icon_color = if is_zkill { egui::Color32::BLACK } else { tint };
+    // zKill cards get a black card background (not a black icon); keep the crosshair red so it
+    // reads on black.
+    let icon_color = if is_zkill { egui::Color32::from_rgb(0xEF, 0x53, 0x50) } else { tint };
+    let card_fill = if is_zkill {
+        egui::Color32::from_rgb(12, 12, 12).gamma_multiply(if stale { 0.6 } else { 1.0 })
+    } else {
+        tint.gamma_multiply(if stale { 0.05 } else { 0.13 })
+    };
 
     // Clicking a card toggles between the parsed view and the raw message (with a minimal
     // elapsed · jumps · system header). State is keyed by the report so it sticks per card.
@@ -11732,7 +11739,7 @@ fn intel_row(
     let mut clicked: Option<IntelClick> = None;
     let resp = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(8, 4))
-        .fill(tint.gamma_multiply(if stale { 0.05 } else { 0.13 }))
+        .fill(card_fill)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             // The raw message lives on the non-interactive left columns so it never
@@ -12020,15 +12027,30 @@ fn intel_row(
                                         ))
                                         .fit_to_exact_size(egui::vec2(18.0, 18.0)));
                                     }
-                                    if let Some(ch) = inf.victim_char {
-                                        ui.add(egui::Image::new(format!(
-                                            "https://images.evetech.net/characters/{ch}/portrait?size=32"
-                                        ))
-                                        .fit_to_exact_size(egui::vec2(18.0, 18.0)));
-                                    }
-                                    if let Some(al) = inf.victim_alliance {
-                                        al_logo(ui, al, "Victim alliance");
-                                    }
+                                    // Victim badge: alliance + corp logos + portrait, larger and
+                                    // grouped. Square sources, so fit_to_exact_size doesn't stretch.
+                                    egui::Frame::group(ui.style())
+                                        .inner_margin(egui::Margin::same(2))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                let badge = |ui: &mut egui::Ui, url: String, hover: &str| {
+                                                    ui.add(
+                                                        egui::Image::new(url)
+                                                            .fit_to_exact_size(egui::vec2(30.0, 30.0)),
+                                                    )
+                                                    .on_hover_text(hover);
+                                                };
+                                                if let Some(al) = inf.victim_alliance {
+                                                    badge(ui, format!("https://images.evetech.net/alliances/{al}/logo?size=64"), "Victim alliance");
+                                                }
+                                                if let Some(co) = inf.victim_corp {
+                                                    badge(ui, format!("https://images.evetech.net/corporations/{co}/logo?size=64"), "Victim corporation");
+                                                }
+                                                if let Some(ch) = inf.victim_char {
+                                                    badge(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=64"), "Victim");
+                                                }
+                                            });
+                                        });
                                 }
                                 let lbl = egui::RichText::new(format!("{} KILL", icon::SKULL))
                                     .color(red)
