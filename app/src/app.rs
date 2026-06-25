@@ -47,7 +47,19 @@ impl ActivityMode {
             _ => 30.0,
         }
     }
+    fn label(self) -> &'static str {
+        match self {
+            ActivityMode::Off => "off",
+            ActivityMode::ShipKills => "ship kills",
+            ActivityMode::PodKills => "pod kills",
+            ActivityMode::NpcKills => "NPC kills",
+            ActivityMode::Jumps => "jumps",
+        }
+    }
 }
+
+/// A system suggestion row: (id, name, security, constellation, region).
+type SysHit = (i64, String, f64, String, String);
 
 /// Toggleable map overlays (the top-right Layers menu).
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -353,6 +365,12 @@ pub struct SpaiApp {
     /// Highlighted index in the From/To suggestion dropdowns (keyboard nav).
     travel_start_sel: usize,
     travel_end_sel: usize,
+    /// Cached From/To suggestions, keyed by (start_q, start, end_q, end) so the SDE search
+    /// (a full-table fuzzy scan) runs only when an input changes, not every frame.
+    travel_sugg_key: (String, Option<i64>, String, Option<i64>),
+    travel_sugg: (Vec<SysHit>, Vec<SysHit>),
+    /// Activity metric the max-per-hour cap applies to (ship/pod/NPC kills or jumps).
+    travel_metric: ActivityMode,
     /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
     /// Systems the route must avoid.
@@ -673,6 +691,9 @@ impl SpaiApp {
             travel_sec: [true, true, true],
             travel_start_sel: 0,
             travel_end_sel: 0,
+            travel_sugg_key: (String::new(), None, String::new(), None),
+            travel_sugg: (Vec::new(), Vec::new()),
+            travel_metric: ActivityMode::ShipKills,
             travel_waypoints: Vec::new(),
             travel_avoid: Vec::new(),
             travel_avoid_sov: String::new(),
@@ -5511,6 +5532,7 @@ impl SpaiApp {
         points.push(e);
         let status = self.system_status.lock().unwrap();
         let max_kills = self.travel_max_ship_kills;
+        let metric = self.travel_metric;
         let sec = self.travel_sec;
         let avoid = self.travel_avoid.clone();
         let avoid_sov: Vec<String> = self
@@ -5546,9 +5568,9 @@ impl SpaiApp {
                     }
                 })
                 .unwrap_or(true);
-            let kills_ok =
-                max_kills == 0 || status.get(&sys).map(|f| f.ship_kills).unwrap_or(0) <= max_kills;
-            sec_ok && kills_ok
+            let activity_ok =
+                max_kills == 0 || status.get(&sys).map(|f| metric.value(f)).unwrap_or(0) <= max_kills;
+            sec_ok && activity_ok
         };
         // Stitch each leg start -> wp1 -> ... -> end; an unreachable leg invalidates the route.
         let mut route = vec![s];
@@ -5568,18 +5590,26 @@ impl SpaiApp {
     /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
     /// Search systems for the From/To dropdowns: (id, name, security, constellation, region).
     /// Empty when the query is blank or already exactly names the picked system.
-    fn travel_suggestions(&self, q: &str, picked: Option<i64>) -> Vec<(i64, String, f64, String, String)> {
-        if q.trim().is_empty() {
+    fn travel_suggestions(&self, q: &str, picked: Option<i64>) -> Vec<SysHit> {
+        let q = q.trim();
+        if q.is_empty() {
             return Vec::new();
         }
-        let Some(store) = self.store.as_ref() else { return Vec::new() };
-        let hits = store.search_systems(q, 8);
+        // Already exactly the picked system → no dropdown (and skip the SDE table scan).
         if let Some(pid) = picked {
-            if hits.len() == 1 && hits[0].0 == pid {
+            if self
+                .systems
+                .as_ref()
+                .and_then(|g| g.info_of(pid))
+                .is_some_and(|i| i.name.eq_ignore_ascii_case(q))
+            {
                 return Vec::new();
             }
         }
-        hits.into_iter()
+        let Some(store) = self.store.as_ref() else { return Vec::new() };
+        store
+            .search_systems(q, 8)
+            .into_iter()
             .map(|(id, name, sec)| {
                 let (c, r) = self
                     .systems
@@ -5600,7 +5630,7 @@ impl SpaiApp {
             q: &mut String,
             sel: &mut usize,
             hint: &str,
-            suggestions: &[(i64, String, f64, String, String)],
+            suggestions: &[SysHit],
         ) -> Option<i64> {
             let mut pick = None;
             let resp = ui.add(
@@ -5613,12 +5643,8 @@ impl SpaiApp {
                 let focused = resp.has_focus();
                 let n = suggestions.len();
                 if focused {
-                    let (down, up, enter) = ui.input(|i| {
-                        (
-                            i.key_pressed(egui::Key::ArrowDown),
-                            i.key_pressed(egui::Key::ArrowUp),
-                            i.key_pressed(egui::Key::Enter),
-                        )
+                    let (down, up) = ui.input(|i| {
+                        (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp))
                     });
                     if down {
                         *sel = (*sel + 1).min(n - 1);
@@ -5626,18 +5652,25 @@ impl SpaiApp {
                     if up {
                         *sel = sel.saturating_sub(1);
                     }
-                    if enter {
-                        pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
-                    }
                 }
+                // While the pointer is actually moving, hovering a row takes over the
+                // highlight, so Enter accepts whichever row the mouse is over.
+                let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
                         let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
-                        if ui.selectable_label(focused && i == *sel, row).clicked() {
+                        let resp = ui.selectable_label(i == *sel, row);
+                        if resp.hovered() && moving {
+                            *sel = i;
+                        }
+                        if resp.clicked() {
                             pick = Some(*id);
                         }
                     }
                 });
+                if focused && pick.is_none() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
+                }
             }
             pick
         }
@@ -5647,8 +5680,20 @@ impl SpaiApp {
         };
         let start_name = name_of(self.travel_start);
         let end_name = name_of(self.travel_end);
-        let start_suggestions = self.travel_suggestions(&self.travel_start_q, self.travel_start);
-        let end_suggestions = self.travel_suggestions(&self.travel_end_q, self.travel_end);
+        let key = (
+            self.travel_start_q.clone(),
+            self.travel_start,
+            self.travel_end_q.clone(),
+            self.travel_end,
+        );
+        if key != self.travel_sugg_key {
+            let s0 = self.travel_suggestions(&self.travel_start_q, self.travel_start);
+            let s1 = self.travel_suggestions(&self.travel_end_q, self.travel_end);
+            self.travel_sugg = (s0, s1);
+            self.travel_sugg_key = key;
+        }
+        let start_suggestions = self.travel_sugg.0.clone();
+        let end_suggestions = self.travel_sugg.1.clone();
         let name_id = |id: i64| -> (i64, String) {
             (
                 id,
@@ -5728,14 +5773,27 @@ impl SpaiApp {
                 ui.checkbox(&mut self.travel_sec[2], "Null");
             });
             ui.horizontal(|ui| {
-                ui.label("Max ship kills/h");
+                ui.label("Max");
                 ui.add(
                     egui::DragValue::new(&mut self.travel_max_ship_kills)
-                        .range(0..=500)
+                        .range(0..=20000)
                         .custom_formatter(|n, _| {
                             if n <= 0.0 { "any".to_owned() } else { format!("{n}") }
                         }),
                 );
+                egui::ComboBox::from_id_salt(ui.id().with("travel_metric"))
+                    .selected_text(self.travel_metric.label())
+                    .show_ui(ui, |ui| {
+                        for m in [
+                            ActivityMode::ShipKills,
+                            ActivityMode::PodKills,
+                            ActivityMode::NpcKills,
+                            ActivityMode::Jumps,
+                        ] {
+                            ui.selectable_value(&mut self.travel_metric, m, m.label());
+                        }
+                    });
+                ui.label("/h");
             });
             ui.label("Avoid sov held by");
             ui.add(
