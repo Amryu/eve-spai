@@ -375,8 +375,10 @@ pub struct SpaiApp {
     travel_waypoints: Vec<i64>,
     /// Systems the route must avoid.
     travel_avoid: Vec<i64>,
-    /// Comma-separated sov holders (alliance / NPC faction substrings) to route around.
-    travel_avoid_sov: String,
+    /// Sov holders (alliance names) to route around, picked from the coalition tree dialog.
+    travel_avoid_sov: std::collections::HashSet<String>,
+    /// Whether the avoid-sov coalition tree dialog is open.
+    travel_sov_dialog_open: bool,
     travel_route: Option<Vec<i64>>,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
@@ -696,7 +698,8 @@ impl SpaiApp {
             travel_metric: ActivityMode::ShipKills,
             travel_waypoints: Vec::new(),
             travel_avoid: Vec::new(),
-            travel_avoid_sov: String::new(),
+            travel_avoid_sov: std::collections::HashSet::new(),
+            travel_sov_dialog_open: false,
             travel_route: None,
             ctx_menu_system: None,
             jump_plan_from: None,
@@ -5548,12 +5551,8 @@ impl SpaiApp {
         let metric = self.travel_metric;
         let sec = self.travel_sec;
         let avoid = self.travel_avoid.clone();
-        let avoid_sov: Vec<String> = self
-            .travel_avoid_sov
-            .split(',')
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let avoid_sov: std::collections::HashSet<String> =
+            self.travel_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
         let regional = self.travel_regional_gates;
         let bridges = self.travel_jump_bridges;
         let geo2 = geo.clone(); // a second handle so the node-mask can read security
@@ -5563,8 +5562,7 @@ impl SpaiApp {
             }
             if !avoid_sov.is_empty() {
                 if let Some(h) = status.get(&sys).and_then(|f| f.sov.as_deref()) {
-                    let h = h.to_lowercase();
-                    if avoid_sov.iter().any(|a| h.contains(a)) {
+                    if avoid_sov.contains(&h.to_lowercase()) {
                         return false;
                     }
                 }
@@ -5808,12 +5806,12 @@ impl SpaiApp {
                     });
                 ui.label("/h");
             });
-            ui.label("Avoid sov held by");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.travel_avoid_sov)
-                    .hint_text("alliance / faction, comma-separated")
-                    .desired_width(ui.available_width()),
-            );
+            if ui
+                .button(format!("Avoid sov held by\u{2026} ({})", self.travel_avoid_sov.len()))
+                .clicked()
+            {
+                self.travel_sov_dialog_open = true;
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if ui.button("Plan").clicked() {
@@ -6009,6 +6007,101 @@ impl SpaiApp {
                 });
             }
         });
+    }
+
+    /// The avoid-sov picker: a tree of coalitions → member alliances, plus standalone
+    /// sov-holders under "Others". Ticked alliances feed the Travel route's avoid-sov filter.
+    fn travel_sov_dialog(&mut self, ctx: &egui::Context) {
+        if !self.travel_sov_dialog_open {
+            return;
+        }
+        let coalitions: Vec<(String, Vec<String>)> = self
+            .settings
+            .coalitions
+            .iter()
+            .map(|c| (c.name.clone(), c.alliances.clone()))
+            .collect();
+        let in_coalition: std::collections::HashSet<String> =
+            coalitions.iter().flat_map(|(_, m)| m.iter().cloned()).collect();
+        let mut others: Vec<String> = self
+            .settings
+            .alliances
+            .iter()
+            .map(|a| a.name.clone())
+            .filter(|n| !in_coalition.contains(n))
+            .collect();
+        others.sort();
+        let mut clear = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "travel_sov_dialog",
+            "EVE Spai \u{2014} Avoid sov",
+            [420.0, 600.0],
+            |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Tick coalitions or alliances whose sovereign space the route should \
+                         avoid. Manage the groups in Settings \u{2192} Coalitions.",
+                    )
+                    .weak(),
+                );
+                if ui.button("Clear all").clicked() {
+                    clear = true;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for (cname, members) in &coalitions {
+                        egui::CollapsingHeader::new(egui::RichText::new(cname).strong())
+                            .id_salt(cname)
+                            .show(ui, |ui| {
+                                let all = !members.is_empty()
+                                    && members.iter().all(|m| self.travel_avoid_sov.contains(m));
+                                let mut all_mut = all;
+                                if ui.checkbox(&mut all_mut, "Avoid entire coalition").changed() {
+                                    for m in members {
+                                        if all_mut {
+                                            self.travel_avoid_sov.insert(m.clone());
+                                        } else {
+                                            self.travel_avoid_sov.remove(m);
+                                        }
+                                    }
+                                }
+                                ui.separator();
+                                for m in members {
+                                    let mut on = self.travel_avoid_sov.contains(m);
+                                    if ui.checkbox(&mut on, m).changed() {
+                                        if on {
+                                            self.travel_avoid_sov.insert(m.clone());
+                                        } else {
+                                            self.travel_avoid_sov.remove(m);
+                                        }
+                                    }
+                                }
+                            });
+                    }
+                    if !others.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Others").strong());
+                        for a in &others {
+                            let mut on = self.travel_avoid_sov.contains(a);
+                            if ui.checkbox(&mut on, a).changed() {
+                                if on {
+                                    self.travel_avoid_sov.insert(a.clone());
+                                } else {
+                                    self.travel_avoid_sov.remove(a);
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+        );
+        if clear {
+            self.travel_avoid_sov.clear();
+        }
+        if !keep {
+            self.travel_sov_dialog_open = false;
+        }
     }
 
     /// Render the map, prefixed by a docked left SidePanel for the active mode's panel (so the
@@ -9111,6 +9204,7 @@ impl eframe::App for SpaiApp {
         self.jump_bridges_window(&ctx);
         self.sov_upgrades_window(&ctx);
         self.coalitions_window(&ctx);
+        self.travel_sov_dialog(&ctx);
         self.severity_window(&ctx);
         self.alert_window(&ctx);
         self.system_window(&ctx);
