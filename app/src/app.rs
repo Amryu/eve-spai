@@ -369,6 +369,11 @@ pub struct SpaiApp {
     /// (a full-table fuzzy scan) runs only when an input changes, not every frame.
     travel_sugg_key: (String, Option<i64>, String, Option<i64>),
     travel_sugg: (Vec<SysHit>, Vec<SysHit>),
+    /// "Add waypoint" input + its cached suggestions and keyboard-nav index.
+    travel_wp_q: String,
+    travel_wp_sel: usize,
+    travel_wp_sugg_key: String,
+    travel_wp_sugg: Vec<SysHit>,
     /// Activity metric the max-per-hour cap applies to (ship/pod/NPC kills or jumps).
     travel_metric: ActivityMode,
     /// Route re-plan debounce: the input hash the route was last planned for, the last-seen
@@ -702,6 +707,10 @@ impl SpaiApp {
             travel_end_sel: 0,
             travel_sugg_key: (String::new(), None, String::new(), None),
             travel_sugg: (Vec::new(), Vec::new()),
+            travel_wp_q: String::new(),
+            travel_wp_sel: 0,
+            travel_wp_sugg_key: String::new(),
+            travel_wp_sugg: Vec::new(),
             travel_metric: ActivityMode::ShipKills,
             travel_planned_hash: 0,
             travel_pending_hash: 0,
@@ -5769,6 +5778,13 @@ impl SpaiApp {
         }
         let start_suggestions = self.travel_sugg.0.clone();
         let end_suggestions = self.travel_sugg.1.clone();
+        if self.travel_wp_q != self.travel_wp_sugg_key {
+            self.travel_wp_sugg = self.travel_suggestions(&self.travel_wp_q, None);
+            self.travel_wp_sugg_key = self.travel_wp_q.clone();
+        }
+        let wp_suggestions = self.travel_wp_sugg.clone();
+        let mut wp_pick: Option<i64> = None;
+        let mut set_dest = false;
         let name_id = |id: i64| -> (i64, String) {
             (
                 id,
@@ -5821,17 +5837,24 @@ impl SpaiApp {
                 end_pick = Some(id);
             }
             ui.label(egui::RichText::new("\u{2026}or right-click a system on the map.").weak());
-            if !wp_names.is_empty() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Waypoints").strong());
-                for (id, name) in &wp_names {
-                    ui.horizontal(|ui| {
-                        if ui.button(egui_phosphor::regular::X).on_hover_text("Remove").clicked() {
-                            remove_wp = Some(*id);
-                        }
-                        ui.label(name);
-                    });
-                }
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Waypoints").strong());
+            for (id, name) in &wp_names {
+                ui.horizontal(|ui| {
+                    if ui.button(egui_phosphor::regular::X).on_hover_text("Remove").clicked() {
+                        remove_wp = Some(*id);
+                    }
+                    ui.label(name);
+                });
+            }
+            if let Some(id) = travel_field(
+                ui,
+                &mut self.travel_wp_q,
+                &mut self.travel_wp_sel,
+                "+ add waypoint",
+                &wp_suggestions,
+            ) {
+                wp_pick = Some(id);
             }
             if !avoid_names.is_empty() {
                 ui.add_space(4.0);
@@ -5887,9 +5910,19 @@ impl SpaiApp {
             let has_route = self.travel_start.is_some()
                 || self.travel_end.is_some()
                 || !self.travel_waypoints.is_empty();
-            if has_route && ui.button("Clear route").clicked() {
-                clear = true;
-            }
+            ui.horizontal(|ui| {
+                if self.travel_route.is_some()
+                    && ui
+                        .button("Set destination")
+                        .on_hover_text("Write the planned route to EVE as individual waypoints")
+                        .clicked()
+                {
+                    set_dest = true;
+                }
+                if has_route && ui.button("Clear route").clicked() {
+                    clear = true;
+                }
+            });
             match &summary {
                 Some(s) => {
                     ui.label(egui::RichText::new(s).color(egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)).strong());
@@ -5915,6 +5948,20 @@ impl SpaiApp {
                 self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default();
             self.travel_end_sel = 0;
             self.plan_route();
+        }
+        if let Some(id) = wp_pick {
+            if !self.travel_waypoints.contains(&id) {
+                self.travel_waypoints.push(id);
+            }
+            self.travel_avoid.retain(|&a| a != id);
+            self.travel_wp_q.clear();
+            self.travel_wp_sel = 0;
+        }
+        if set_dest {
+            if let Some(route) = self.travel_route.clone() {
+                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                crate::esi::set_route(cid, self.active_character.clone(), route);
+            }
         }
         if let Some(id) = remove_wp {
             self.travel_waypoints.retain(|&w| w != id);
