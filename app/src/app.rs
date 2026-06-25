@@ -353,6 +353,10 @@ pub struct SpaiApp {
     /// Highlighted index in the From/To suggestion dropdowns (keyboard nav).
     travel_start_sel: usize,
     travel_end_sel: usize,
+    /// Ordered intermediate waypoints the route must pass through.
+    travel_waypoints: Vec<i64>,
+    /// Systems the route must avoid.
+    travel_avoid: Vec<i64>,
     travel_route: Option<Vec<i64>>,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
@@ -665,6 +669,8 @@ impl SpaiApp {
             travel_sec: [true, true, true],
             travel_start_sel: 0,
             travel_end_sel: 0,
+            travel_waypoints: Vec::new(),
+            travel_avoid: Vec::new(),
             travel_route: None,
             ctx_menu_system: None,
             jump_plan_from: None,
@@ -4396,6 +4402,22 @@ impl SpaiApp {
                     self.plan_route();
                     ui.close();
                 }
+                if ui.button("Travel: add waypoint").clicked() {
+                    if !self.travel_waypoints.contains(&sid) {
+                        self.travel_waypoints.push(sid);
+                    }
+                    self.travel_avoid.retain(|&a| a != sid);
+                    self.plan_route();
+                    ui.close();
+                }
+                if ui.button("Travel: avoid system").clicked() {
+                    if !self.travel_avoid.contains(&sid) {
+                        self.travel_avoid.push(sid);
+                    }
+                    self.travel_waypoints.retain(|&w| w != sid);
+                    self.plan_route();
+                    ui.close();
+                }
             }
         });
 
@@ -5478,33 +5500,49 @@ impl SpaiApp {
             self.travel_route = None;
             return;
         };
+        let mut points = vec![s];
+        points.extend(self.travel_waypoints.iter().copied());
+        points.push(e);
         let status = self.system_status.lock().unwrap();
         let max_kills = self.travel_max_ship_kills;
         let sec = self.travel_sec;
+        let avoid = self.travel_avoid.clone();
+        let regional = self.travel_regional_gates;
+        let bridges = self.travel_jump_bridges;
         let geo2 = geo.clone(); // a second handle so the node-mask can read security
-        self.travel_route = geo.route(
-            s,
-            e,
-            self.travel_regional_gates,
-            self.travel_jump_bridges,
-            |sys| {
-                let sec_ok = geo2
-                    .info_of(sys)
-                    .map(|i| {
-                        if i.security >= 0.45 {
-                            sec[0] // high
-                        } else if i.security > 0.0 {
-                            sec[1] // low
-                        } else {
-                            sec[2] // null
-                        }
-                    })
-                    .unwrap_or(true);
-                let kills_ok =
-                    max_kills == 0 || status.get(&sys).map(|f| f.ship_kills).unwrap_or(0) <= max_kills;
-                sec_ok && kills_ok
-            },
-        );
+        let allowed = |sys: i64| {
+            if avoid.contains(&sys) {
+                return false;
+            }
+            let sec_ok = geo2
+                .info_of(sys)
+                .map(|i| {
+                    if i.security >= 0.45 {
+                        sec[0] // high
+                    } else if i.security > 0.0 {
+                        sec[1] // low
+                    } else {
+                        sec[2] // null
+                    }
+                })
+                .unwrap_or(true);
+            let kills_ok =
+                max_kills == 0 || status.get(&sys).map(|f| f.ship_kills).unwrap_or(0) <= max_kills;
+            sec_ok && kills_ok
+        };
+        // Stitch each leg start -> wp1 -> ... -> end; an unreachable leg invalidates the route.
+        let mut route = vec![s];
+        let mut ok = true;
+        for leg in points.windows(2) {
+            match geo.route(leg[0], leg[1], regional, bridges, &allowed) {
+                Some(seg) => route.extend(seg.into_iter().skip(1)),
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        self.travel_route = ok.then_some(route);
     }
 
     /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
@@ -5591,6 +5629,20 @@ impl SpaiApp {
         let end_name = name_of(self.travel_end);
         let start_suggestions = self.travel_suggestions(&self.travel_start_q, self.travel_start);
         let end_suggestions = self.travel_suggestions(&self.travel_end_q, self.travel_end);
+        let name_id = |id: i64| -> (i64, String) {
+            (
+                id,
+                self.systems
+                    .as_ref()
+                    .and_then(|g| g.info_of(id))
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| id.to_string()),
+            )
+        };
+        let wp_names: Vec<(i64, String)> = self.travel_waypoints.iter().map(|&id| name_id(id)).collect();
+        let avoid_names: Vec<(i64, String)> = self.travel_avoid.iter().map(|&id| name_id(id)).collect();
+        let mut remove_wp: Option<i64> = None;
+        let mut remove_avoid: Option<i64> = None;
         let summary = self.travel_route.as_ref().map(|r| format!("{} jumps", r.len().saturating_sub(1)));
         let mut plan = false;
         let mut clear = false;
@@ -5622,6 +5674,30 @@ impl SpaiApp {
                 end_pick = Some(id);
             }
             ui.label(egui::RichText::new("\u{2026}or right-click a system on the map.").weak());
+            if !wp_names.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Waypoints").strong());
+                for (id, name) in &wp_names {
+                    ui.horizontal(|ui| {
+                        if ui.button(egui_phosphor::regular::X).on_hover_text("Remove").clicked() {
+                            remove_wp = Some(*id);
+                        }
+                        ui.label(name);
+                    });
+                }
+            }
+            if !avoid_names.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Avoid").strong());
+                for (id, name) in &avoid_names {
+                    ui.horizontal(|ui| {
+                        if ui.button(egui_phosphor::regular::X).on_hover_text("Remove").clicked() {
+                            remove_avoid = Some(*id);
+                        }
+                        ui.label(name);
+                    });
+                }
+            }
             ui.add_space(4.0);
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
             ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
@@ -5673,11 +5749,21 @@ impl SpaiApp {
             self.travel_end_sel = 0;
             self.plan_route();
         }
+        if let Some(id) = remove_wp {
+            self.travel_waypoints.retain(|&w| w != id);
+            self.plan_route();
+        }
+        if let Some(id) = remove_avoid {
+            self.travel_avoid.retain(|&a| a != id);
+            self.plan_route();
+        }
         if plan {
             self.plan_route();
         }
         if clear {
             self.travel_route = None;
+            self.travel_waypoints.clear();
+            self.travel_avoid.clear();
         }
     }
 
