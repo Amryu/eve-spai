@@ -400,6 +400,10 @@ pub struct SpaiApp {
     travel_changed_at: Option<i64>,
     /// Next Live-Mode re-plan time (egui seconds).
     travel_live_next: f64,
+    /// The single in-game destination we last wrote (the next hop on the route), so we only
+    /// re-write it when it changes. EVE rejects duplicate waypoints, so we advance one hop at a
+    /// time instead of writing the whole (possibly self-revisiting) route at once.
+    travel_ingame_dest: Option<i64>,
     /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
     /// Systems the route must avoid.
@@ -740,6 +744,7 @@ impl SpaiApp {
             travel_changed: Vec::new(),
             travel_changed_at: None,
             travel_live_next: 0.0,
+            travel_ingame_dest: None,
             travel_waypoints: Vec::new(),
             travel_avoid: Vec::new(),
             travel_avoid_sov: std::collections::HashSet::new(),
@@ -5662,6 +5667,35 @@ impl SpaiApp {
     }
 
     /// Compute the Travel route from the typed start/end + the active constraints.
+    /// The next system on the planned route after the character's current position (None at the
+    /// end or with no route). Used to advance the in-game destination one hop at a time.
+    fn next_route_hop(&self) -> Option<i64> {
+        let route = self.travel_route.as_ref()?;
+        if route.len() < 2 {
+            return None;
+        }
+        if let Some(me) = self.player_system() {
+            if let Some(i) = route.iter().position(|&s| s == me) {
+                return route.get(i + 1).copied();
+            }
+        }
+        route.get(1).copied()
+    }
+
+    /// Set the in-game destination to the next hop on the route (only when it changes), so EVE
+    /// follows our exact path without ever needing a duplicate waypoint.
+    fn push_ingame_dest(&mut self) {
+        let next = self.next_route_hop();
+        if next == self.travel_ingame_dest {
+            return;
+        }
+        if let Some(d) = next {
+            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+            self.set_destination_esi(cid, self.active_character.clone(), d);
+        }
+        self.travel_ingame_dest = next;
+    }
+
     /// Hash of the inputs that affect the planned route, for the re-plan debounce.
     fn travel_input_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -5775,11 +5809,10 @@ impl SpaiApp {
                     let newsys: Vec<i64> = n.iter().copied().filter(|s| !pset.contains(s)).collect();
                     if !newsys.is_empty() {
                         let much_longer = n.len() > p.len() + 4;
-                        let route_ids = n.clone();
                         self.travel_changed = newsys;
                         self.travel_changed_at = Some(chrono::Utc::now().timestamp());
-                        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                        crate::esi::set_route(cid, self.active_character.clone(), route_ids);
+                        // The in-game destination is advanced hop-by-hop by push_ingame_dest;
+                        // here we only flag the change visually and warn on a big detour.
                         if much_longer {
                             crate::sound::play("danger");
                         }
@@ -6083,8 +6116,13 @@ impl SpaiApp {
         }
         if set_dest {
             if let Some(route) = self.travel_route.clone() {
+                // Dedup: EVE rejects a repeated waypoint, and a route can revisit a system when
+                // waypoint legs overlap. (For revisiting routes, Live mode follows the exact path
+                // hop by hop instead.)
+                let mut seen = std::collections::HashSet::new();
+                let unique: Vec<i64> = route.into_iter().filter(|s| seen.insert(*s)).collect();
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                crate::esi::set_route(cid, self.active_character.clone(), route);
+                crate::esi::set_route(cid, self.active_character.clone(), unique);
             }
         }
         if let Some(id) = remove_wp {
@@ -6127,9 +6165,11 @@ impl SpaiApp {
                     self.travel_live_base = self.travel_route.clone();
                 }
             }
+            self.push_ingame_dest();
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(900));
         } else {
             self.travel_live_base = None;
+            self.travel_ingame_dest = None;
         }
         // Force the activity overlay to match the route's metric while in Travel mode, so the
         // heat the route reacts to is always visible.
