@@ -973,7 +973,9 @@ fn parse_url_tags(
                     // A stargate link — its name is the destination system: a gate.
                     t.gates.push(inner.to_owned());
                 } else if type_id == 5 {
-                    t.systems.push(inner.to_owned());
+                    // EVE appends "*" to a system name that's set as a route waypoint; strip it
+                    // (and any trailing space) so the system still resolves.
+                    t.systems.push(inner.trim_end_matches('*').trim().to_owned());
                 } else if (1373..=1390).contains(&type_id) || is_char_id {
                     t.pilots.push(inner.to_owned());
                     t.char_ids.push((inner.to_owned(), item_id));
@@ -3031,6 +3033,23 @@ mod tests {
             "ch",
             "x",
         );
+        assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn showinfo_system_strips_waypoint_star() {
+        let s = systems();
+        // EVE appends "*" to a system set as a route waypoint; it must still resolve.
+        let r = analyze(
+            "<url=showinfo:5//30000469>9-02G0*</url> <url=showinfo:1375//2121803366>Nine -3</url>",
+            &s,
+            &noships(),
+            &noknown(),
+            1,
+            "ch",
+            "x",
+        );
+        assert!(r.systems.iter().any(|d| d.name == "9-02G0"), "systems: {:?}", r.systems);
         assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
     }
 
