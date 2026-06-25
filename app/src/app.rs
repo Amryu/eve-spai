@@ -538,6 +538,8 @@ pub struct SpaiApp {
     map_search_sys: Vec<(i64, String, f64)>,
     map_search_const: Vec<(String, i64)>,
     map_search_reg: Vec<(i64, String)>,
+    /// Sov-upgrade name matches for the search popover (cached per query, not per frame).
+    map_search_upgrades: Vec<String>,
     /// Whether the left (standard) and right (mode) map docks are expanded.
     left_dock_open: bool,
     right_dock_open: bool,
@@ -880,6 +882,7 @@ impl SpaiApp {
             map_search_sys: Vec::new(),
             map_search_const: Vec::new(),
             map_search_reg: Vec::new(),
+            map_search_upgrades: Vec::new(),
             left_dock_open: true,
             right_dock_open: true,
             upgrade_kinds: [true; 4],
@@ -7539,6 +7542,18 @@ impl SpaiApp {
             self.map_search_sys = sys;
             self.map_search_const = cons;
             self.map_search_reg = reg;
+            // Sov-upgrade name matches (the list can be hundreds of entries — was scanned per
+            // frame in the popover).
+            let ql = query.to_lowercase();
+            let mut names: std::collections::BTreeSet<String> = Default::default();
+            for u in &self.settings.sov_upgrades {
+                for p in split_upgrade_label(&u.upgrade) {
+                    if p.to_lowercase().contains(&ql) {
+                        names.insert(p.to_owned());
+                    }
+                }
+            }
+            self.map_search_upgrades = names.into_iter().take(5).collect();
             self.map_search_key = query.clone();
         }
         let mut hits: Vec<Hit> = Vec::new();
@@ -7601,16 +7616,7 @@ impl SpaiApp {
                                 clear_upgrade = true;
                             }
                         }
-                        let ql = query.to_lowercase();
-                        let mut names: std::collections::BTreeSet<String> = Default::default();
-                        for u in &self.settings.sov_upgrades {
-                            for p in split_upgrade_label(&u.upgrade) {
-                                if p.to_lowercase().contains(&ql) {
-                                    names.insert(p.to_owned());
-                                }
-                            }
-                        }
-                        for up in names.into_iter().take(5) {
+                        for up in self.map_search_upgrades.clone() {
                             if ui
                                 .selectable_label(
                                     self.map_highlight_upgrade.as_deref() == Some(up.as_str()),

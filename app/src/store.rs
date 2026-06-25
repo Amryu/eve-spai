@@ -155,9 +155,20 @@ pub struct CharacterRow {
     pub scopes: String,
 }
 
+struct SysRow {
+    id: i64,
+    name: String,
+    lower: String,
+    sec: f64,
+    tri: std::collections::HashSet<[u8; 3]>,
+}
+
 pub struct Store {
     conn: Connection,
     path: PathBuf,
+    /// In-memory system list with precomputed trigrams, so the per-keystroke search doesn't
+    /// re-read 8k rows from SQLite and re-allocate a trigram set per name.
+    sys_cache: std::cell::RefCell<Option<Vec<SysRow>>>,
 }
 
 impl Store {
@@ -175,7 +186,7 @@ impl Store {
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_signature TEXT", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
         migrate_plaintext_tokens(&conn);
-        Ok(Self { conn, path })
+        Ok(Self { conn, path, sys_cache: std::cell::RefCell::new(None) })
     }
 
     /// Path to the DB file (so background workers can open their own connection).
@@ -221,21 +232,42 @@ impl Store {
     }
 
     /// System name search for the map (id, name, security).
+    /// Lazily build the in-memory system cache (one SQLite scan + trigram pass, then reused).
+    fn ensure_sys_cache(&self) {
+        if self.sys_cache.borrow().is_some() {
+            return;
+        }
+        let mut rows = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name, security FROM sde_systems") {
+            if let Ok(qr) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+            }) {
+                for (id, name, sec) in qr.flatten() {
+                    let lower = name.to_lowercase();
+                    let tri = trigrams(&lower);
+                    rows.push(SysRow { id, name, lower, sec, tri });
+                }
+            }
+        }
+        *self.sys_cache.borrow_mut() = Some(rows);
+    }
+
     pub fn search_systems(&self, query: &str, limit: i64) -> Vec<(i64, String, f64)> {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
             return Vec::new();
         }
+        let qt = trigrams(&q); // once per search, not once per name
+        self.ensure_sys_cache();
+        let cache = self.sys_cache.borrow();
+        let rows = match cache.as_ref() {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
         let mut scored: Vec<(i64, i64, String, f64)> = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT id, name, security FROM sde_systems") {
-            if let Ok(rows) = stmt.query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
-            }) {
-                for (id, name, sec) in rows.flatten() {
-                    if let Some(sc) = fuzzy_score(&name.to_lowercase(), &q) {
-                        scored.push((sc, id, name, sec));
-                    }
-                }
+        for r in rows {
+            if let Some(sc) = score_cached(&r.lower, &r.tri, &q, &qt) {
+                scored.push((sc, r.id, r.name.clone(), r.sec));
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
@@ -946,6 +978,30 @@ pub fn data_dir() -> Result<PathBuf> {
 }
 
 /// Fuzzy name match score (higher = better) or None. exact > prefix > substring > trigram.
+/// Like `fuzzy_score` but with the name's and query's trigrams precomputed (hot search path).
+fn score_cached(
+    lower: &str,
+    tri: &std::collections::HashSet<[u8; 3]>,
+    q: &str,
+    qt: &std::collections::HashSet<[u8; 3]>,
+) -> Option<i64> {
+    if lower == q {
+        return Some(10_000);
+    }
+    if lower.starts_with(q) {
+        return Some(5_000 - lower.len() as i64);
+    }
+    if let Some(pos) = lower.find(q) {
+        return Some(2_000 - pos as i64 - lower.len() as i64);
+    }
+    if qt.is_empty() {
+        return None;
+    }
+    let shared = qt.iter().filter(|t| tri.contains(*t)).count();
+    let frac = shared as f64 / qt.len() as f64;
+    (frac >= 0.5).then(|| (frac * 1_000.0) as i64 - lower.len() as i64)
+}
+
 fn fuzzy_score(name_lc: &str, q: &str) -> Option<i64> {
     if name_lc == q {
         return Some(10_000);
