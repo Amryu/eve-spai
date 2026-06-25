@@ -58,6 +58,8 @@ allowed hi/low system), and Hunting (distance ranking).
 | **Sov *owner* per system** | ❌ | **add ESI `/sovereignty/map`** (system→alliance_id), refreshed hourly |
 | **Friendly Keepstar/Fortizar per system** | ❌ → **paste** | new `settings.friendly_structures: Vec<{ system, kind }>` with a paste parser modelled on `parse_sov_upgrades` (kind = Keepstar/Fortizar/…) |
 | zKill live kills | partial (`kills.rs` lookups) | **add a feed**: zKillboard RedisQ (poll). ⚠ killmails can lag the real event by **minutes** — always key freshness/age/ETA off the **killmail timestamp**, never receipt time |
+| **Per-stargate positions** (gate→gate AU) | ❌ | add to the SDE ingest (mapDenormalize/stargates) — for the §5.1 warp model |
+| **Ship warp speed + role bonus + agility** | partial (SDE) | hull attributes/traits — for §5.1 |
 
 Sov-owner is the only remaining ❌; the structure data is a paste (same UX as sov upgrades),
 and everything else can ship without it.
@@ -135,19 +137,20 @@ you have.)
 
 - **Path**: `geo` gate path from the hostile's last-known system to yours (gates only, unless
   the hostile is flagged jump-capable).
-- **In-system warp time**: warp the distance between the entry and exit stargate at the hull's
-  max warp speed using EVE's accelerate→cruise→decelerate curve (closed-form approximation;
-  "good enough, not exact"). Needs **per-stargate positions** for the gate→gate distance.
-  v1 fallback: a typical per-system AU distance × the hull's warp profile until positions load.
-- **Ship**: max warp speed + agility (for align) by hull, from the SDE — hull taken from the
-  intel ship or the zKill victim/attacker. Unknown hull → a default (e.g. a cruiser).
+- **In-system warp time**: warp the real entry→exit stargate distance using EVE's full
+  accelerate→cruise→decelerate warp curve (closed-form). Requires **per-stargate positions**
+  added to the SDE ingest (gate→gate AU per system).
+- **Ship**: warp speed = SDE base × the hull's warp-speed **role bonus** (interceptors,
+  blockade runners, some T3s warp far faster) + agility for align — hull from the intel ship or
+  the zKill victim/attacker. Unknown hull → a sensible default (e.g. a cruiser).
 - **Overhead**: one fixed session-change + gate-tunnel constant per jump.
-- **zKill latency** (important): a killmail can surface minutes after the kill. Treat the
-  **killmail timestamp** as the hostile's *last-seen* time, so the warning we can actually give
-  is `effective_eta = model_eta − (now − kill_time)`, floored at 0. When `now − kill_time` is
-  large, the position is stale — widen the threat to a *radius* of systems they could already
-  have reached (`reachable within (now − kill_time)`), flag high uncertainty, and de-emphasise
-  vs. fresh chat intel. The intel "hot" TTL is also measured from this timestamp, not receipt.
+- **zKill latency** (important): a killmail surfaces minutes after the event, and the hostile
+  could have left the instant it died — there is **no grace window**. Model the threat as a
+  **reachable set that grows from the killmail timestamp**: systems within travel-time
+  `≤ (now − kill_time)` of the kill system (the kill system is just the last-known centre). The
+  warning is `effective_eta = model_eta(kill_system → you) − (now − kill_time)`, floored at 0;
+  when it reaches 0 the reachable set has touched your system ("could already be here"). Drop
+  the threat once the set covers your whole watch range. The "hot" TTL counts from this stamp.
 - Cache per `(hull, system→system)`; never re-solve per frame.
 
 If the hostile's hull is jump-capable and lit a cyno path, the ETA can collapse to near-zero —
@@ -168,11 +171,13 @@ surface that as a distinct "can hotdrop you" warning rather than a misleadingly 
 7. **Active cyno** = intel cyno keyword **+ zKill inference** (cyno hull dying / covert fit),
    accepting some false positives. ✅
 
-**Still open**
-8. **zKill staleness cutoff** — past what `now − kill_time` do we stop drawing a point threat
-   and switch to a "could be anywhere in N systems" radius (and eventually drop it)?
-9. **Warp-curve fidelity** — ship its closed-form accel/cruise/decel from day one, or start
-   with a flat "X seconds per jump by hull class" table and refine later?
+8. **zKill staleness** = no grace window; the threat is a reachable set that grows from the
+   killmail timestamp (§5.1), dropped once it covers the whole watch range. ✅
+9. **Warp fidelity** = full accel/cruise/decel curve over real stargate distances, warp speed
+   from the SDE incl. hull role bonuses (§5.1); needs per-stargate positions in the ingest. ✅
+
+All design decisions are settled. Remaining is implementation: the SDE ingest extension
+(stargate positions + warp/agility/role-bonus attributes) and the Phase 1 work in §7.
 
 ## 7. Suggested phasing
 
