@@ -32,6 +32,10 @@ decorations underneath ("the current state of the map is Standard mode").
   (except possibly the start/end).
 - **Edge kinds**: `Gate`, `JumpBridge` (Ansiblex), `ShipJump(range_ly)`. The available kinds
   depend on the chosen ship + the allow/disallow toggles.
+- **Regional vs intra-region gates**: a `Gate` edge `(a,b)` is a *regional gate* when
+  `info_of(a).region != info_of(b).region` (cheap region compare per edge). "Disallow regional
+  gates" drops exactly those edges, so the router must leave a region by jump bridge or ship
+  jump — the point is to avoid the camped region-boundary stargates. Intra-region gates stay.
 - **Ship-jump edges**: generated on demand — for a jump-capable ship, connect cyno-able
   systems within the ship's range (real light-year coords, already used for the jump-range
   overlay). Fatigue is out of scope for v1 (note it on the route instead).
@@ -52,11 +56,11 @@ allowed hi/low system), and Hunting (distance ranking).
 | Sov upgrades per system | ✅ `settings.sov_upgrades` | pasted I-Hub |
 | Coalition→alliance map | ✅ `settings.coalitions` | bundled snapshot, user-editable |
 | **Sov *owner* per system** | ❌ | **add ESI `/sovereignty/map`** (system→alliance_id), refreshed hourly |
-| **Friendly Keepstar/Fortizar per system** | ❌ | **open question** — ESI has no public all-structures list; options: user paste, manual pin, or derive from sov + a "friendly structure" list |
-| zKill live kills | partial (`kills.rs` lookups) | **add a feed**: zKillboard RedisQ (poll) or websocket |
+| **Friendly Keepstar/Fortizar per system** | ❌ → **paste** | new `settings.friendly_structures: Vec<{ system, kind }>` with a paste parser modelled on `parse_sov_upgrades` (kind = Keepstar/Fortizar/…) |
+| zKill live kills | partial (`kills.rs` lookups) | **add a feed**: zKillboard RedisQ (poll, ~1 s, no auth) |
 
-The two ❌ rows gate the richer Travel/Hunting constraints; everything else can ship without
-them.
+Sov-owner is the only remaining ❌; the structure data is a paste (same UX as sov upgrades),
+and everything else can ship without it.
 
 ### 2.3 Alert + notification engine
 
@@ -80,9 +84,10 @@ Generalise today's alert rules into a small trigger bus so all modes reuse it:
 2. **Midpoint constraints** (each a checkbox/▾):
    - Security: High / Low / Null (multi-select).
    - Coalition / Alliance space (pick which; uses `coalitions` + `/sovereignty/map`).
-   - Friendly Keepstar / Fortizar only (needs the structure data — gated).
+   - Friendly Keepstar / Fortizar only (from the pasted `friendly_structures`; can filter by
+     kind, e.g. "Keepstar only").
    - Max NPC / ship / pod kills in the last hour (per-metric `DragValue`; uses `systemstatus`).
-   - Allow / disallow **regional gates** *(decision needed — see §6)*.
+   - Allow / disallow **regional gates** (region-crossing stargates; see §2.1).
    - Allow / disallow **jump bridges** (Ansiblex).
 3. **Start / End** system pickers (reuse the fuzzy search).
 4. **Plan** → runs §2.1 router → an **editable route plan**: ordered list with per-leg type
@@ -123,16 +128,22 @@ intel with an **estimated time-to-safe**: jumps from the hunter to the nearest a
 high/low-sec (or configured safe) system via §2.1, shown per hostile so the user knows if a
 threat heading their way out-paces their escape.
 
-## 6. Decisions needed before building
+## 6. Decisions
 
-1. **"Regional gates"** — does this mean the Ansiblex jump-gate network, or stargates that
-   cross region boundaries, or both? Changes the edge model.
-2. **Friendly structures** — acceptable source? (paste like sov upgrades / manual pins on the
-   map / skip for v1 and add later.)
-3. **zKill feed** — RedisQ polling (simple, ~1s latency, no auth) vs websocket. Recommend RedisQ.
-4. **Jump fatigue** — model it in routing, or just warn? (Recommend warn for v1.)
-5. **Coalition data freshness** — keep the bundled snapshot user-editable, or auto-pull
-   `/sovereignty/map` + a maintained alliance→coalition list?
+**Resolved**
+1. **Regional gates** = region-crossing stargates (edge model in §2.1). ✅
+2. **Friendly structures** = pasted list (`friendly_structures`), same UX as sov upgrades. ✅
+3. **zKill feed** = RedisQ polling (~1 s, no auth). ✅ (recommended default)
+4. **Jump fatigue** = warn-only for v1, no routing penalty. ✅ (recommended default)
+
+**Still open**
+5. **Sov owner & coalition mapping** — keep the bundled, user-editable coalition snapshot, or
+   auto-pull `/sovereignty/map` (system→alliance) and maintain an alliance→coalition list? The
+   paste-based `coalitions` works today; auto-pull is more accurate but adds upkeep.
+6. **Time-to-safe "safe" definition** (§5) — nearest high-sec only, nearest high/low-sec, or a
+   user-set list of safe systems/stations?
+7. **Hunting "active cyno" source** — intel cyno keyword only, or also infer from zKill (a cyno
+   ship dying / a covert cyno fit)?
 
 ## 7. Suggested phasing
 
