@@ -232,6 +232,10 @@ pub struct SpaiApp {
     /// Clustered battle reports (shared with the zKill feed worker).
     battles: crate::zkill::SharedBattles,
     camps: crate::camp::SharedCamps,
+    /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
+    /// lock + scan the camp state every frame for every map.
+    camped_cache: Vec<i64>,
+    camped_cache_at: i64,
     /// Active character name + ESI-resolved system (shared with the location poller).
     player: crate::esi::SharedPlayer,
     /// System graph for UI distance queries (set once the SDE is ready).
@@ -649,6 +653,8 @@ impl SpaiApp {
             intel_type: pv.intel_type,
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
+            camped_cache: Vec::new(),
+            camped_cache_at: 0,
             player,
             systems: None,
             bridges_applied: Vec::new(),
@@ -4871,11 +4877,14 @@ impl SpaiApp {
         // Gate-camp markers from the live kill feed: a red campfire above the system.
         if self.map_overlays.camps {
             let now = chrono::Utc::now().timestamp();
-            let camps = self.camps.lock().unwrap();
+            if now - self.camped_cache_at >= 2 {
+                self.camped_cache = self.camps.lock().unwrap().camped(now);
+                self.camped_cache_at = now;
+            }
             let red = egui::Color32::from_rgb(0xEF, 0x44, 0x44);
             let font = egui::FontId::proportional(15.0);
-            for (id, p) in &pos {
-                if camps.camp(*id, now).is_some() {
+            for id in &self.camped_cache {
+                if let Some(p) = pos.get(id) {
                     painter.text(
                         *p + egui::vec2(0.0, -11.0),
                         egui::Align2::CENTER_CENTER,
@@ -4949,7 +4958,7 @@ impl SpaiApp {
                             );
                         }
                     }
-                    ui.ctx().request_repaint();
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
                 }
             }
         }
