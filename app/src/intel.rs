@@ -171,8 +171,10 @@ pub struct IntelState {
 static NEXT_REPORT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl IntelState {
-    pub fn push(&mut self, mut report: IntelReport) {
-        report.id = NEXT_REPORT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// Push a report and return its assigned stable id.
+    pub fn push(&mut self, mut report: IntelReport) -> u64 {
+        let id = NEXT_REPORT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        report.id = id;
         // A "clear" records that a system was reported empty at this time. We do
         // NOT delete prior intel — "clear" means the hostiles aren't there *now*,
         // so earlier sightings are outdated (greyed), not erased.
@@ -183,6 +185,7 @@ impl IntelState {
             }
         }
         self.reports.push(report);
+        id
     }
 
     /// Amend the reporter's most recent report (within `grace` seconds) instead of

@@ -1074,12 +1074,24 @@ impl SpaiApp {
         }
         let mut fired: Vec<Fire> = Vec::new();
         {
+            // zKill killmail timestamps lag the real event by minutes (zKill delivers late), so
+            // the "newer than the last alert" check would wrongly skip them. Gate killmails on
+            // recency + the per-id `alerted` dedup instead, so a freshly-ingested kill alerts
+            // once. (Reloaded-at-startup kills are pre-marked alerted in load_persisted_kills.)
+            const KILLMAIL_ALERT_WINDOW: i64 = 600; // 10 min
             let state = self.intel_state.lock().unwrap();
             for r in &state.reports {
-                if r.received <= self.last_alert_time {
+                let fresh = if r.killmail {
+                    now - r.received < KILLMAIL_ALERT_WINDOW && !self.alerted.contains_key(&r.id)
+                } else {
+                    r.received > self.last_alert_time
+                };
+                if !fresh {
                     continue;
                 }
-                newest = newest.max(r.received);
+                if !r.killmail {
+                    newest = newest.max(r.received);
+                }
                 let sev = severity_of(r, &sev_rules);
                 let target = r.primary_system().map(|s| s.id);
                 // First enabled rule whose conditions all match (jumps measured from
@@ -2704,7 +2716,8 @@ impl SpaiApp {
         if lower.contains("shuttle")
             || lower.contains("mobile ")
             || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
-            || (lower == "capsule" && ev.value < 10_000_000.0)
+            // Regular pod and the Genolution "Auroral" 197-variant capsule: skip unless valuable.
+            || (lower.starts_with("capsule") && ev.value < 10_000_000.0)
         {
             return None;
         }
@@ -2777,9 +2790,15 @@ impl SpaiApp {
                 reports.push(report);
             }
         }
-        let mut st = self.intel_state.lock().unwrap();
-        for report in reports {
-            st.push(report);
+        let ids: Vec<u64> = {
+            let mut st = self.intel_state.lock().unwrap();
+            reports.into_iter().map(|report| st.push(report)).collect()
+        };
+        // These are historical kills, not live events — pre-mark them alerted so the recency
+        // gate in check_alerts doesn't pop them into the alert window at startup.
+        let now = chrono::Utc::now().timestamp();
+        for id in ids {
+            self.alerted.insert(id, now);
         }
     }
 
@@ -5166,6 +5185,14 @@ impl SpaiApp {
                 if ui.button("Travel: set as start").clicked() {
                     self.travel_start = Some(sid);
                     self.travel_start_q.clear();
+                    // A start that isn't the character's current system can't coexist with
+                    // following the character: Live mode forces the start to your position
+                    // (it would immediately revert this pick), and the map-follow view-lock
+                    // keeps snapping back to your region. Disable both so the pick sticks.
+                    if Some(sid) != self.player_system() {
+                        self.travel_live = false;
+                        self.map_follow = false;
+                    }
                     self.plan_route();
                     ui.close();
                 }
@@ -6506,10 +6533,14 @@ impl SpaiApp {
         if new == self.map_mode {
             return;
         }
-        if self.map_mode == MapMode::Standard {
+        // Jump Plan keeps the normal map layers (you want intel / activity visible to route
+        // around danger), so it behaves like Standard for overlays — only Travel / Hunting /
+        // Safety swap in the focused preset.
+        let keeps_layers = |m: MapMode| matches!(m, MapMode::Standard | MapMode::JumpPlan);
+        if keeps_layers(self.map_mode) {
             self.standard_overlays = self.map_overlays; // remember the user's layers
         }
-        self.map_overlays = if new == MapMode::Standard {
+        self.map_overlays = if keeps_layers(new) {
             self.standard_overlays
         } else {
             new.overlay_preset()
