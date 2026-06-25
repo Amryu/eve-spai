@@ -6031,6 +6031,19 @@ impl SpaiApp {
             .filter(|n| !in_coalition.contains(n))
             .collect();
         others.sort();
+        // NPC sov holders: live systems whose sov has a holder name but no alliance id.
+        let npc: Vec<String> = {
+            let status = self.system_status.lock().unwrap();
+            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for f in status.values() {
+                if f.sov_alliance.is_none() {
+                    if let Some(h) = &f.sov {
+                        set.insert(h.clone());
+                    }
+                }
+            }
+            set.into_iter().collect()
+        };
         let mut clear = false;
         let keep = Self::dialog_viewport(
             ctx,
@@ -6050,6 +6063,7 @@ impl SpaiApp {
                 }
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Player alliances").strong().size(14.0));
                     for (cname, members) in &coalitions {
                         egui::CollapsingHeader::new(egui::RichText::new(cname).strong())
                             .id_salt(cname)
@@ -6081,7 +6095,7 @@ impl SpaiApp {
                     }
                     if !others.is_empty() {
                         ui.separator();
-                        ui.label(egui::RichText::new("Others").strong());
+                        ui.label(egui::RichText::new("Independent").weak());
                         for a in &others {
                             let mut on = self.travel_avoid_sov.contains(a);
                             if ui.checkbox(&mut on, a).changed() {
@@ -6090,6 +6104,21 @@ impl SpaiApp {
                                 } else {
                                     self.travel_avoid_sov.remove(a);
                                 }
+                            }
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("NPC sov").strong().size(14.0));
+                    if npc.is_empty() {
+                        ui.label(egui::RichText::new("none in the current sov data").weak());
+                    }
+                    for n in &npc {
+                        let mut on = self.travel_avoid_sov.contains(n);
+                        if ui.checkbox(&mut on, n).changed() {
+                            if on {
+                                self.travel_avoid_sov.insert(n.clone());
+                            } else {
+                                self.travel_avoid_sov.remove(n);
                             }
                         }
                     }
