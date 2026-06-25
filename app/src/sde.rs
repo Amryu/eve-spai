@@ -240,8 +240,10 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     tx.execute("DELETE FROM sde_ships", [])?;
     tx.execute("DELETE FROM sde_ship_attrs", [])?;
 
-    // Ship groups (categoryID 0=groupID, 1=categoryID, 2=groupName).
+    // Groups (0=groupID, 1=categoryID, 2=groupName). `ship_groups` keeps the ship category;
+    // `all_groups` keeps every group so we can classify camp-relevant non-ship types too.
     let mut ship_groups: HashMap<i64, String> = HashMap::new();
+    let mut all_groups: HashMap<i64, String> = HashMap::new();
     {
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(true)
@@ -249,11 +251,12 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         for rec in rdr.records() {
             let rec = rec?;
             let cat: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
-            if cat != 6 {
-                continue;
-            }
             if let Ok(gid) = rec.get(0).unwrap_or("").trim().parse::<i64>() {
-                ship_groups.insert(gid, rec.get(2).unwrap_or("").to_owned());
+                let name = rec.get(2).unwrap_or("").to_owned();
+                if cat == 6 {
+                    ship_groups.insert(gid, name.clone());
+                }
+                all_groups.insert(gid, name);
             }
         }
     }
@@ -280,6 +283,31 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
             let volume: f64 = rec.get(5).unwrap_or("").trim().parse().unwrap_or(0.0);
             stmt.execute(params![id, rec.get(2).unwrap_or(""), group, mass, volume])?;
             ship_ids.insert(id);
+        }
+    }
+
+    // Camp-relevant types for gate-camp signals: interdictors, HICs, smartbombs, and
+    // anchorable warp-disruption bubbles. Classified by their group name.
+    {
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(types_csv.as_bytes());
+        let mut stmt =
+            tx.prepare("INSERT OR REPLACE INTO sde_camp_types(id, kind) VALUES(?1, ?2)")?;
+        for rec in rdr.records() {
+            let rec = rec?;
+            let gid: i64 = rec.get(1).unwrap_or("").trim().parse().unwrap_or(0);
+            let Some(group) = all_groups.get(&gid) else { continue };
+            let kind = match group.as_str() {
+                "Interdictor" => "dic",
+                "Heavy Interdiction Cruiser" => "hic",
+                "Smart Bomb" => "smartbomb",
+                "Mobile Warp Disruptor" => "bubble",
+                _ => continue,
+            };
+            if let Ok(id) = rec.get(0).unwrap_or("").trim().parse::<i64>() {
+                stmt.execute(params![id, kind])?;
+            }
         }
     }
 
@@ -345,6 +373,31 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
             }
         }
         drop(stmt);
+
+        // Stargate positions per system (for on-gate gate-camp detection). Schema:
+        // { "_key": int, "solarSystemID": int, "position": {x,y,z} }.
+        set(SdeStatus::Downloading("Indexing stargates…".to_owned()));
+        let mut gates_jsonl = String::new();
+        let _ = archive
+            .by_name("mapStargates.jsonl")
+            .map(|mut e| e.read_to_string(&mut gates_jsonl));
+        if !gates_jsonl.is_empty() {
+            tx.execute("DELETE FROM sde_stargates", [])?;
+            let mut ins =
+                tx.prepare("INSERT INTO sde_stargates(system_id, x, y, z) VALUES(?1,?2,?3,?4)")?;
+            for line in gates_jsonl.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+                let Some(p) = v.get("position") else { continue };
+                if let (Some(x), Some(y), Some(z)) = (
+                    p.get("x").and_then(|n| n.as_f64()),
+                    p.get("y").and_then(|n| n.as_f64()),
+                    p.get("z").and_then(|n| n.as_f64()),
+                ) {
+                    ins.execute(params![sys, x, y, z])?;
+                }
+            }
+        }
 
         // Localized ship names (so intel from non-English clients resolves, e.g. a
         // Chinese hull name). Stream types.jsonl (large) and keep only ship types.

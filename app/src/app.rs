@@ -3072,12 +3072,14 @@ impl SpaiApp {
         }
 
         // The battle feed runs whenever the SDE is ready (independent of logs).
+        let camp_types = self.store.as_ref().map(|s| s.load_camp_types()).unwrap_or_default();
         crate::zkill::spawn(
             systems.clone(),
             self.intel_state.clone(),
             self.battles.clone(),
             self.camps.clone(),
             self.killfeed.clone(),
+            camp_types,
             ctx.clone(),
         );
 

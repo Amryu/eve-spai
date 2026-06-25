@@ -5,7 +5,6 @@
 //! RedisQ feed in `zkill`) and derive the flag on demand. System-level clustering is a
 //! proxy for an actual gate camp — good enough for a travel-warning + map cue.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Keep kills for this long (seconds).
@@ -43,27 +42,56 @@ pub struct Camp {
     pub span: i64,
 }
 
+/// Camp-relevant type-id sets resolved from the SDE: interdictors + HICs, smartbombs, and
+/// anchorable warp-disruption bubbles. Used to flag "camp equipment" on a kill.
+#[derive(Default, Clone)]
+pub struct CampTypes {
+    pub dic_hic: std::collections::HashSet<i64>,
+    pub smartbomb: std::collections::HashSet<i64>,
+    pub bubble: std::collections::HashSet<i64>,
+}
+
+#[derive(Default)]
+struct SysKills {
+    /// Kill timestamps (pruned/capped on insert).
+    times: Vec<i64>,
+    /// Timestamps of kills that landed on a stargate.
+    on_gate: Vec<i64>,
+    /// Most recent kill involving camp equipment (dic/hic/smartbomb/bubble).
+    last_equip: i64,
+}
+
 #[derive(Default)]
 pub struct CampState {
-    /// system id -> kill unix timestamps (ascending-ish; pruned/capped on insert).
-    kills: HashMap<i64, Vec<i64>>,
+    kills: std::collections::HashMap<i64, SysKills>,
 }
 
 impl CampState {
-    /// Record a kill in `system` at `time` (unix seconds).
-    pub fn record(&mut self, system: i64, time: i64) {
-        let v = self.kills.entry(system).or_default();
-        v.push(time);
-        if v.len() > CAP {
-            let drop = v.len() - CAP;
-            v.drain(0..drop);
+    /// Record a kill in `system` at `time`. `on_gate`: it landed near a stargate. `equip`: an
+    /// interdictor/HIC/smartbomb/anchorable-bubble was involved.
+    pub fn record(&mut self, system: i64, time: i64, on_gate: bool, equip: bool) {
+        let e = self.kills.entry(system).or_default();
+        e.times.push(time);
+        if e.times.len() > CAP {
+            let drop = e.times.len() - CAP;
+            e.times.drain(0..drop);
+        }
+        if on_gate {
+            e.on_gate.push(time);
+            if e.on_gate.len() > CAP {
+                let drop = e.on_gate.len() - CAP;
+                e.on_gate.drain(0..drop);
+            }
+        }
+        if equip {
+            e.last_equip = e.last_equip.max(time);
         }
     }
 
     /// Camp status for a system, or None if it doesn't currently qualify.
     pub fn camp(&self, system: i64, now: i64) -> Option<Camp> {
-        let v = self.kills.get(&system)?;
-        let recent: Vec<i64> = v.iter().copied().filter(|&t| now - t <= WINDOW).collect();
+        let e = self.kills.get(&system)?;
+        let recent: Vec<i64> = e.times.iter().copied().filter(|&t| now - t <= WINDOW).collect();
         let kills = recent.len();
         if kills < MIN_KILLS {
             return None;
@@ -74,15 +102,27 @@ impl CampState {
             return None;
         }
         let span = last - *recent.iter().min()?;
-        // Sustained over a longer span (or simply many kills) reads as a real camp; a tight
-        // burst of a few is only "possible"; the bare minimum is a flag.
-        let level = if kills >= 6 || (kills >= 3 && span >= SUSTAINED) {
+        let on_gate = e.on_gate.iter().filter(|&&t| now - t <= WINDOW).count();
+        let has_equip = e.last_equip > 0 && now - e.last_equip <= WINDOW;
+
+        // Base read from clustering + span; on-gate kills and camp equipment push it up — a
+        // gate camp is kills *on the gate*, usually with bubbles/dics over a longer span.
+        let mut level = if kills >= 6 || (kills >= 3 && span >= SUSTAINED) {
             CampLevel::Likely
         } else if kills >= 3 {
             CampLevel::Possible
         } else {
             CampLevel::Flag
         };
+        if on_gate >= 1 {
+            if has_equip || on_gate >= 2 || span >= SUSTAINED {
+                level = CampLevel::Likely;
+            } else {
+                level = level.max(CampLevel::Possible);
+            }
+        } else if has_equip {
+            level = level.max(CampLevel::Possible);
+        }
         Some(Camp { level, kills, age, span })
     }
 
@@ -107,20 +147,26 @@ mod tests {
         let mut s = CampState::default();
         let now = 1_000_000;
         // One kill: nothing yet.
-        s.record(30000142, now - 100);
+        s.record(30000142, now - 100, false, false);
         assert!(s.camp(30000142, now).is_none());
-        // Two kills: a flag, not yet a camp.
-        s.record(30000142, now - 80);
+        // Two off-gate kills: a flag, not yet a camp.
+        s.record(30000142, now - 80, false, false);
         assert_eq!(s.camp(30000142, now).unwrap().level, CampLevel::Flag);
         // A third in a tight burst (<8min span): a possible camp.
-        s.record(30000142, now - 60);
+        s.record(30000142, now - 60, false, false);
         let c = s.camp(30000142, now).unwrap();
         assert_eq!(c.kills, 3);
         assert_eq!(c.level, CampLevel::Possible);
         // A kill 20 minutes back makes the span long → a likely camp.
-        s.record(30000142, now - 20 * 60);
+        s.record(30000142, now - 20 * 60, false, false);
         assert_eq!(s.camp(30000142, now).unwrap().level, CampLevel::Likely);
         // Far in the future: the last kill is stale, not a camp.
         assert!(s.camp(30000142, now + 3600).is_none());
+
+        // On-gate kills with camp equipment read as a likely camp with only a couple kills.
+        let mut g = CampState::default();
+        g.record(30000144, now - 100, true, true);
+        g.record(30000144, now - 60, true, false);
+        assert_eq!(g.camp(30000144, now).unwrap().level, CampLevel::Likely);
     }
 }

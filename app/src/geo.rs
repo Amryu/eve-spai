@@ -24,6 +24,8 @@ pub struct Systems {
     adjacency: HashMap<i64, Vec<i64>>,
     /// Gate-only edges (no jump bridges) — for distances enemies can actually travel.
     gate_adjacency: HashMap<i64, Vec<i64>>,
+    /// Stargate positions per system (meters, system-local) for on-gate kill detection.
+    stargates: HashMap<i64, Vec<[f64; 3]>>,
 }
 
 impl Systems {
@@ -35,7 +37,26 @@ impl Systems {
             by_id,
             adjacency,
             gate_adjacency,
+            stargates: HashMap::new(),
         }
+    }
+
+    /// Install stargate positions (from the SDE) for on-gate detection.
+    pub fn set_stargates(&mut self, stargates: HashMap<i64, Vec<[f64; 3]>>) {
+        self.stargates = stargates;
+    }
+
+    /// True if `pos` is within ~150 km of any stargate in `system` (an "on-gate" kill).
+    pub fn on_gate(&self, system: i64, pos: [f64; 3]) -> bool {
+        const ON_GATE_M: f64 = 150_000.0; // ~150 km — gate-camp grid
+        self.stargates.get(&system).is_some_and(|gates| {
+            gates.iter().any(|g| {
+                let d2 = (g[0] - pos[0]).powi(2)
+                    + (g[1] - pos[1]).powi(2)
+                    + (g[2] - pos[2]).powi(2);
+                d2 <= ON_GATE_M * ON_GATE_M
+            })
+        })
     }
 
     /// Look up a system by id.

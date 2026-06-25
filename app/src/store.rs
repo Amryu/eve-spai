@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "7";
+pub const SDE_SCHEMA_VERSION: &str = "8";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS sde_systems (
 CREATE INDEX IF NOT EXISTS idx_sde_systems_name ON sde_systems(name);
 CREATE TABLE IF NOT EXISTS sde_jumps (from_id INTEGER, to_id INTEGER);
 CREATE INDEX IF NOT EXISTS idx_sde_jumps_from ON sde_jumps(from_id);
+-- Stargate positions per system (for on-gate kill detection).
+CREATE TABLE IF NOT EXISTS sde_stargates (system_id INTEGER, x REAL, y REAL, z REAL);
+CREATE INDEX IF NOT EXISTS idx_sde_stargates_sys ON sde_stargates(system_id);
+-- Camp-relevant type ids by kind ('dic'|'hic'|'smartbomb'|'bubble'), for camp signals.
+CREATE TABLE IF NOT EXISTS sde_camp_types (id INTEGER PRIMARY KEY, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_ships (
     id         INTEGER PRIMARY KEY,
@@ -797,7 +802,49 @@ impl Store {
             }
         }
 
-        crate::geo::Systems::new(by_name, adjacency)
+        let mut systems = crate::geo::Systems::new(by_name, adjacency);
+
+        // Stargate positions per system (for on-gate kill detection).
+        let mut stargates: HashMap<i64, Vec<[f64; 3]>> = HashMap::new();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT system_id, x, y, z FROM sde_stargates")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?))
+            }) {
+                for (sys, x, y, z) in rows.flatten() {
+                    stargates.entry(sys).or_default().push([x, y, z]);
+                }
+            }
+        }
+        systems.set_stargates(stargates);
+        systems
+    }
+
+    /// Camp-relevant type-id sets (dics+HICs, smartbombs, anchorable bubbles).
+    pub fn load_camp_types(&self) -> crate::camp::CampTypes {
+        let mut t = crate::camp::CampTypes::default();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, kind FROM sde_camp_types") {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            {
+                for (id, kind) in rows.flatten() {
+                    match kind.as_str() {
+                        "dic" | "hic" => {
+                            t.dic_hic.insert(id);
+                        }
+                        "smartbomb" => {
+                            t.smartbomb.insert(id);
+                        }
+                        "bubble" => {
+                            t.bubble.insert(id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        t
     }
 
     // --- Characters ---

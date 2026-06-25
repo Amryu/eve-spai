@@ -31,6 +31,7 @@ pub fn spawn(
     battles: SharedBattles,
     camps: crate::camp::SharedCamps,
     killfeed: SharedKillFeed,
+    camp_types: crate::camp::CampTypes,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -59,7 +60,7 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(5));
                     seq = fetch_sequence(&client);
                 }
-                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &mut names) {
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &mut names) {
                     Poll::Got(eng) => {
                         stuck = 0;
                         seq = Some(s + 1);
@@ -179,6 +180,19 @@ struct Combatant {
     character_id: Option<i64>,
     #[serde(default)]
     ship_type_id: Option<i64>,
+    /// Weapon used (attackers only) — for smartbomb detection.
+    #[serde(default)]
+    weapon_type_id: Option<i64>,
+    /// In-space position (victim only) — for on-gate detection.
+    #[serde(default)]
+    position: Option<Position>,
+}
+
+#[derive(Deserialize)]
+struct Position {
+    x: f64,
+    y: f64,
+    z: f64,
 }
 
 /// A killmail surfaced for the optional kill-intel feed: the app turns these into intel
@@ -206,6 +220,7 @@ fn poll(
     intel: &Mutex<IntelState>,
     camps: &crate::camp::SharedCamps,
     killfeed: &SharedKillFeed,
+    camp_types: &crate::camp::CampTypes,
     names: &mut HashMap<i64, String>,
 ) -> Poll {
     let resp = match client.get(format!("{R2Z2}/{seq}.json")).send() {
@@ -226,7 +241,21 @@ fn poll(
         let t = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
             .map(|dt| dt.timestamp())
             .unwrap_or_else(|_| chrono::Utc::now().timestamp());
-        camps.lock().unwrap().record(pkg.killmail.solar_system_id, t);
+        // On-gate: the victim died within ~grid of a stargate.
+        let on_gate = pkg.killmail.victim.position.as_ref().is_some_and(|p| {
+            systems.on_gate(pkg.killmail.solar_system_id, [p.x, p.y, p.z])
+        });
+        // Camp equipment: an interdictor/HIC among the attackers, a smartbomb weapon, or the
+        // victim itself was an anchorable warp-disruption bubble.
+        let equip = pkg.killmail.attackers.iter().any(|a| {
+            a.ship_type_id.is_some_and(|s| camp_types.dic_hic.contains(&s))
+                || a.weapon_type_id.is_some_and(|w| camp_types.smartbomb.contains(&w))
+        }) || pkg
+            .killmail
+            .victim
+            .ship_type_id
+            .is_some_and(|s| camp_types.bubble.contains(&s));
+        camps.lock().unwrap().record(pkg.killmail.solar_system_id, t, on_gate, equip);
         if let Some(ship) = pkg.killmail.victim.ship_type_id {
             let mut kf = killfeed.lock().unwrap();
             kf.push(KillEvent {
