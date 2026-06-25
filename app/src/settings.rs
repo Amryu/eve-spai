@@ -59,6 +59,10 @@ pub struct Settings {
     /// file:/// link to an offline doctrine page.
     #[serde(default)]
     pub doctrine_url: String,
+    /// Pop a foreground window (grabbing focus) on a fleet ping, in addition to the desktop
+    /// notification.
+    #[serde(default)]
+    pub fleet_ping_window: bool,
     /// Configured sovereignty upgrades per system (pasted from a coalition site).
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
@@ -529,6 +533,7 @@ impl Default for Settings {
             intel_ttl_secs: 300,
             fit_site: String::new(),
             doctrine_url: String::new(),
+            fleet_ping_window: false,
             sov_upgrades: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),

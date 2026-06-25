@@ -533,6 +533,8 @@ pub struct SpaiApp {
     fit_view: Option<(i64, FitMode)>,
     /// A specific clicked killmail to show in the fit window (takes precedence over fit_view).
     fit_loss: Option<crate::lookup::Loss>,
+    /// A fleet ping to show in a foreground window (None = closed).
+    ping_window: Option<crate::pings::Ping>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
     /// Static ship-detail cache (avoids per-frame DB queries).
@@ -847,6 +849,7 @@ impl SpaiApp {
             pilot_tab: PilotTab::default(),
             fit_view: None,
             fit_loss: None,
+            ping_window: None,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -1205,12 +1208,17 @@ impl SpaiApp {
             // Fleet pings raise a desktop notification with the key details.
             if is_ping && notify {
                 let latest = self.jabber.lock().unwrap().pings.last().cloned();
-                if let Some(crate::pings::Ping::Fleet { fc, doctrine, .. }) = latest {
-                    let body = match doctrine {
-                        Some(d) => format!("FC: {fc} \u{00B7} {d}"),
-                        None => format!("FC: {fc}"),
-                    };
-                    notify_os("Fleet ping", &body);
+                if let Some(ping @ crate::pings::Ping::Fleet { .. }) = latest {
+                    if let crate::pings::Ping::Fleet { fc, doctrine, .. } = &ping {
+                        let body = match doctrine {
+                            Some(d) => format!("FC: {fc} \u{00B7} {d}"),
+                            None => format!("FC: {fc}"),
+                        };
+                        notify_os("Fleet ping", &body);
+                    }
+                    if self.settings.fleet_ping_window {
+                        self.ping_window = Some(ping);
+                    }
                 }
             }
         }
@@ -1410,6 +1418,14 @@ impl SpaiApp {
                         .add(
                             egui::TextEdit::singleline(&mut self.settings.doctrine_url)
                                 .hint_text("URL or file:/// path shown on fleet pings"),
+                        )
+                        .changed();
+                    ui.end_row();
+                    ui.label("Fleet ping window");
+                    changed |= ui
+                        .checkbox(
+                            &mut self.settings.fleet_ping_window,
+                            "Pop a focused window on fleet pings",
                         )
                         .changed();
                     ui.end_row();
@@ -4060,6 +4076,32 @@ impl SpaiApp {
         } else if !keep {
             self.fit_view = None;
             self.fit_loss = None;
+        }
+    }
+
+    /// A foreground window (grabs focus on open) showing a fleet ping with its links.
+    fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
+        let Some(ping) = self.ping_window.clone() else {
+            return;
+        };
+        let systems = self.systems.clone();
+        let doctrine_url = self.settings.doctrine_url.clone();
+        let mut dismiss = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "fleet_ping_window",
+            "EVE Spai \u{2014} Fleet ping",
+            [440.0, 380.0],
+            |ui| {
+                render_ping(ui, &ping, &systems, true, &doctrine_url);
+                ui.add_space(8.0);
+                if ui.button("Dismiss").clicked() {
+                    dismiss = true;
+                }
+            },
+        );
+        if dismiss || !keep {
+            self.ping_window = None;
         }
     }
 
@@ -9953,6 +9995,7 @@ impl eframe::App for SpaiApp {
         self.ship_window(&ctx);
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
+        self.fleet_ping_window_ui(&ctx);
         // Bring a just-updated window to the foreground.
         if let Some(vp) = self.focus_window.take() {
             ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
