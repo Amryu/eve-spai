@@ -80,6 +80,46 @@ impl Default for MapOverlays {
     }
 }
 
+/// Map mode. Standard is today's intel map; the others (planned in docs/MAP_MODES.md) add a
+/// focused panel and auto-adapt the overlays to surface only what that mode needs.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MapMode {
+    #[default]
+    Standard,
+    Travel,
+    Hunting,
+    Safety,
+}
+
+impl MapMode {
+    fn label(self) -> &'static str {
+        match self {
+            MapMode::Standard => "Standard",
+            MapMode::Travel => "Travel",
+            MapMode::Hunting => "Hunting",
+            MapMode::Safety => "Safety",
+        }
+    }
+    /// Overlay preset for a non-Standard mode: hide the sov/connection clutter, surface
+    /// ship-kills (danger), keep jump bridges for the routing-oriented modes.
+    fn overlay_preset(self) -> MapOverlays {
+        MapOverlays {
+            sov: SovMode::Off,
+            adm: false,
+            upgrades: false,
+            jump_range: false,
+            wormholes: false,
+            thera: false,
+            turnur: false,
+            bridges: matches!(self, MapMode::Travel | MapMode::Hunting),
+            activity: match self {
+                MapMode::Standard => ActivityMode::Off,
+                _ => ActivityMode::ShipKills,
+            },
+        }
+    }
+}
+
 /// Map + intel-filter options persisted between sessions (as a JSON blob in
 /// settings, so settings.rs needn't know these app types).
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -296,6 +336,10 @@ pub struct SpaiApp {
     wh_filter_expiring: bool,
     // --- Map view state ---
     map_overlays: MapOverlays,
+    /// Active map mode; the non-Standard modes auto-adapt the overlays.
+    map_mode: MapMode,
+    /// The user's saved Standard-mode overlays, restored when returning to Standard.
+    standard_overlays: MapOverlays,
     overlay_menu_open: bool,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
@@ -596,6 +640,8 @@ impl SpaiApp {
             wh_filter_source: None,
             wh_filter_expiring: false,
             map_overlays: pv.overlays,
+            map_mode: MapMode::Standard,
+            standard_overlays: pv.overlays,
             overlay_menu_open: false,
             ctx_menu_system: None,
             jump_plan_from: None,
@@ -3953,7 +3999,12 @@ impl SpaiApp {
     /// Persist map overlay + intel-filter options when they change.
     fn persist_view_options(&mut self) {
         let pv = PersistedView {
-            overlays: self.map_overlays,
+            // Persist the Standard layers, not a transient mode preset.
+            overlays: if self.map_mode == MapMode::Standard {
+                self.map_overlays
+            } else {
+                self.standard_overlays
+            },
             map_layout: self.map_layout,
             map_threat_jumps: self.map_threat_jumps,
             intel_max_jumps: self.intel_max_jumps,
@@ -5411,6 +5462,23 @@ impl SpaiApp {
     }
 
     /// Floating controls over the map (scope, navigation, follow, pop-out).
+    /// Switch map mode, auto-adapting the overlays (saving/restoring the Standard layers).
+    fn set_map_mode(&mut self, new: MapMode) {
+        if new == self.map_mode {
+            return;
+        }
+        if self.map_mode == MapMode::Standard {
+            self.standard_overlays = self.map_overlays; // remember the user's layers
+        }
+        self.map_overlays = if new == MapMode::Standard {
+            self.standard_overlays
+        } else {
+            new.overlay_preset()
+        };
+        self.map_mode = new;
+        self.needs_save = true;
+    }
+
     fn map_controls_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use crate::map::MapView;
         egui::Area::new(ui.id().with("map_controls"))
@@ -5420,6 +5488,20 @@ impl SpaiApp {
                 use egui_phosphor::regular as icon;
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // Mode selector — auto-adapts the overlays to the chosen mode.
+                        let mut mode = self.map_mode;
+                        egui::ComboBox::from_id_salt(ui.id().with("map_mode"))
+                            .selected_text(mode.label())
+                            .show_ui(ui, |ui| {
+                                for m in
+                                    [MapMode::Standard, MapMode::Travel, MapMode::Hunting, MapMode::Safety]
+                                {
+                                    ui.selectable_value(&mut mode, m, m.label());
+                                }
+                            });
+                        if mode != self.map_mode {
+                            self.set_map_mode(mode);
+                        }
                         if ui
                             .button(icon::GLOBE_HEMISPHERE_WEST)
                             .on_hover_text("Universe map")

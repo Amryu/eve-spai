@@ -74,10 +74,15 @@ Generalise today's alert rules into a small trigger bus so all modes reuse it:
   full-window coloured overlay pulse), push (existing).
 - Each mode wires a preset set of triggers; the user tunes thresholds.
 
-### 2.4 Overlay visibility ("hide icon overlays")
+### 2.4 Overlay visibility & mode-aware filtering
 
-`MapOverlays` already toggles sov/ADM/activity/upgrades/bridges/jump-range. Add a master
-"hide all map icons" toggle + per-layer eye toggles in the overlay menu, persisted per mode.
+`MapOverlays` already toggles sov/ADM/activity/upgrades/bridges/jump-range.
+- **Auto-adapt per mode**: switching mode applies a preset that surfaces only what that mode
+  needs and hides the clutter — Travel: ship-kills (danger) + bridges (routing); Hunting &
+  Safety: ship-kills + intel; Standard: the user's saved layers. The user can still toggle
+  within a mode (the toggles are remembered per mode).
+- **Master hide toggle**: a one-click "hide all map icons" + per-layer eye toggles in the
+  overlay menu, persisted per mode.
 
 ## 3. Travel Mode
 
