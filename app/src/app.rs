@@ -482,6 +482,11 @@ pub struct SpaiApp {
     route_destination: Option<i64>,
     map_search: String,
     map_search_sel: usize,
+    /// Cached search results keyed by the query, so the SDE scans run only on input change.
+    map_search_key: String,
+    map_search_sys: Vec<(i64, String, f64)>,
+    map_search_const: Vec<(String, i64)>,
+    map_search_reg: Vec<(i64, String)>,
     /// An upgrade name to faint-highlight on the map (from the search).
     map_highlight_upgrade: Option<String>,
     /// System-info window: the system currently shown (if any).
@@ -789,6 +794,10 @@ impl SpaiApp {
             route_destination: None,
             map_search: String::new(),
             map_search_sel: 0,
+            map_search_key: String::new(),
+            map_search_sys: Vec::new(),
+            map_search_const: Vec::new(),
+            map_search_reg: Vec::new(),
             map_highlight_upgrade: None,
             system_window: None,
             constellation_window: None,
@@ -6651,20 +6660,41 @@ impl SpaiApp {
             (false, false, false, false)
         };
 
-        // Combined results: systems, then constellations, then regions.
+        // Combined results: systems, then constellations, then regions. Cached by query so the
+        // SDE table scans only run when the input changes (was per-frame — hence the lag).
+        if !has_query {
+            self.map_search_key.clear();
+            self.map_search_sys.clear();
+            self.map_search_const.clear();
+            self.map_search_reg.clear();
+        } else if query != self.map_search_key {
+            let (sys, cons, reg) = if let Some(store) = &self.store {
+                (
+                    store.search_systems(&query, 6),
+                    store
+                        .search_constellations(&query, 4)
+                        .into_iter()
+                        .map(|(_c, name, region)| (name, region))
+                        .collect::<Vec<_>>(),
+                    store.search_regions(&query, 4),
+                )
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+            self.map_search_sys = sys;
+            self.map_search_const = cons;
+            self.map_search_reg = reg;
+            self.map_search_key = query.clone();
+        }
         let mut hits: Vec<Hit> = Vec::new();
-        if has_query {
-            if let Some(store) = &self.store {
-                for (id, name, sec) in store.search_systems(&query, 6) {
-                    hits.push(Hit::System { id, name, sec });
-                }
-                for (_c, name, region) in store.search_constellations(&query, 4) {
-                    hits.push(Hit::Constellation { name, region });
-                }
-                for (id, name) in store.search_regions(&query, 4) {
-                    hits.push(Hit::Region { id, name });
-                }
-            }
+        for (id, name, sec) in &self.map_search_sys {
+            hits.push(Hit::System { id: *id, name: name.clone(), sec: *sec });
+        }
+        for (name, region) in &self.map_search_const {
+            hits.push(Hit::Constellation { name: name.clone(), region: *region });
+        }
+        for (id, name) in &self.map_search_reg {
+            hits.push(Hit::Region { id: *id, name: name.clone() });
         }
         let mut sel = self.map_search_sel;
         if hits.is_empty() {
