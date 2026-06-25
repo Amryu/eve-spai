@@ -348,6 +348,8 @@ pub struct SpaiApp {
     travel_regional_gates: bool,
     travel_jump_bridges: bool,
     travel_max_ship_kills: u32,
+    /// Allowed security bands for intermediate systems (high / low / null).
+    travel_sec: [bool; 3],
     travel_route: Option<Vec<i64>>,
     overlay_menu_open: bool,
     /// System targeted by the map right-click context menu.
@@ -658,6 +660,7 @@ impl SpaiApp {
             travel_regional_gates: true,
             travel_jump_bridges: true,
             travel_max_ship_kills: 0,
+            travel_sec: [true, true, true],
             travel_route: None,
             overlay_menu_open: false,
             ctx_menu_system: None,
@@ -5548,12 +5551,30 @@ impl SpaiApp {
         };
         let status = self.system_status.lock().unwrap();
         let max_kills = self.travel_max_ship_kills;
+        let sec = self.travel_sec;
+        let geo2 = geo.clone(); // a second handle so the node-mask can read security
         self.travel_route = geo.route(
             s,
             e,
             self.travel_regional_gates,
             self.travel_jump_bridges,
-            |sys| max_kills == 0 || status.get(&sys).map(|f| f.ship_kills).unwrap_or(0) <= max_kills,
+            |sys| {
+                let sec_ok = geo2
+                    .info_of(sys)
+                    .map(|i| {
+                        if i.security >= 0.45 {
+                            sec[0] // high
+                        } else if i.security > 0.0 {
+                            sec[1] // low
+                        } else {
+                            sec[2] // null
+                        }
+                    })
+                    .unwrap_or(true);
+                let kills_ok =
+                    max_kills == 0 || status.get(&sys).map(|f| f.ship_kills).unwrap_or(0) <= max_kills;
+                sec_ok && kills_ok
+            },
         );
     }
 
@@ -5592,6 +5613,12 @@ impl SpaiApp {
                     });
                     ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
                     ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
+                    ui.horizontal(|ui| {
+                        ui.label("Sec");
+                        ui.checkbox(&mut self.travel_sec[0], "Hi");
+                        ui.checkbox(&mut self.travel_sec[1], "Lo");
+                        ui.checkbox(&mut self.travel_sec[2], "Null");
+                    });
                     ui.horizontal(|ui| {
                         ui.label("Max ship kills/h");
                         ui.add(
