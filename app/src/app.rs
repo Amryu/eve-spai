@@ -340,6 +340,15 @@ pub struct SpaiApp {
     map_mode: MapMode,
     /// The user's saved Standard-mode overlays, restored when returning to Standard.
     standard_overlays: MapOverlays,
+    // --- Travel Mode ---
+    travel_start: Option<i64>,
+    travel_end: Option<i64>,
+    travel_start_q: String,
+    travel_end_q: String,
+    travel_regional_gates: bool,
+    travel_jump_bridges: bool,
+    travel_max_ship_kills: u32,
+    travel_route: Option<Vec<i64>>,
     overlay_menu_open: bool,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
@@ -642,6 +651,14 @@ impl SpaiApp {
             map_overlays: pv.overlays,
             map_mode: MapMode::Standard,
             standard_overlays: pv.overlays,
+            travel_start: None,
+            travel_end: None,
+            travel_start_q: String::new(),
+            travel_end_q: String::new(),
+            travel_regional_gates: true,
+            travel_jump_bridges: true,
+            travel_max_ship_kills: 0,
+            travel_route: None,
             overlay_menu_open: false,
             ctx_menu_system: None,
             jump_plan_from: None,
@@ -4710,6 +4727,23 @@ impl SpaiApp {
             self.route_destination = None;
         }
 
+        // Travel Mode: the planned route — solid highlighted legs + ringed waypoints.
+        if self.map_mode == MapMode::Travel {
+            if let Some(route) = &self.travel_route {
+                let col = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
+                for w in route.windows(2) {
+                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
+                        painter.line_segment([*p1, *p2], egui::Stroke::new(2.5, col));
+                    }
+                }
+                for id in route {
+                    if let Some(p) = pos.get(id) {
+                        painter.circle_stroke(*p, 7.0, egui::Stroke::new(2.0, col));
+                    }
+                }
+            }
+        }
+
         // Jump-range hover. Distances are always true light-years (real coords);
         // in schematic mode we keep the band-coloured highlights but drop the rings
         // (the on-screen distances aren't metric there).
@@ -5147,6 +5181,9 @@ impl SpaiApp {
             if self.map_overlays.upgrades {
                 self.map_upgrade_legend(ui, rect);
             }
+            if self.map_mode == MapMode::Travel {
+                self.travel_panel(ui, rect);
+            }
         }
     }
 
@@ -5490,6 +5527,105 @@ impl SpaiApp {
         };
         self.map_mode = new;
         self.needs_save = true;
+    }
+
+    /// Compute the Travel route from the typed start/end + the active constraints.
+    fn plan_route(&mut self) {
+        let Some(geo) = self.systems.clone() else { return };
+        if let Some(store) = self.store.as_ref() {
+            if !self.travel_start_q.trim().is_empty() {
+                self.travel_start =
+                    store.search_systems(&self.travel_start_q, 1).first().map(|(id, _, _)| *id);
+            }
+            if !self.travel_end_q.trim().is_empty() {
+                self.travel_end =
+                    store.search_systems(&self.travel_end_q, 1).first().map(|(id, _, _)| *id);
+            }
+        }
+        let (Some(s), Some(e)) = (self.travel_start, self.travel_end) else {
+            self.travel_route = None;
+            return;
+        };
+        let status = self.system_status.lock().unwrap();
+        let max_kills = self.travel_max_ship_kills;
+        self.travel_route = geo.route(
+            s,
+            e,
+            self.travel_regional_gates,
+            self.travel_jump_bridges,
+            |sys| max_kills == 0 || status.get(&sys).map(|f| f.ship_kills).unwrap_or(0) <= max_kills,
+        );
+    }
+
+    /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
+    fn travel_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let name_of = |id: Option<i64>| -> Option<String> {
+            id.and_then(|i| self.systems.as_ref().and_then(|g| g.info_of(i)).map(|s| s.name.clone()))
+        };
+        let start_name = name_of(self.travel_start);
+        let end_name = name_of(self.travel_end);
+        let summary = self.travel_route.as_ref().map(|r| format!("{} jumps", r.len().saturating_sub(1)));
+        let mut plan = false;
+        let mut clear = false;
+        egui::Area::new(ui.id().with("travel_panel"))
+            .fixed_pos(rect.left_top() + egui::vec2(8.0, 92.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(232.0);
+                    ui.label(egui::RichText::new("Travel route").strong());
+                    ui.horizontal(|ui| {
+                        ui.label("From");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.travel_start_q)
+                                .hint_text(start_name.as_deref().unwrap_or("system"))
+                                .desired_width(160.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("To  ");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.travel_end_q)
+                                .hint_text(end_name.as_deref().unwrap_or("system"))
+                                .desired_width(160.0),
+                        );
+                    });
+                    ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
+                    ui.checkbox(&mut self.travel_jump_bridges, "Jump bridges");
+                    ui.horizontal(|ui| {
+                        ui.label("Max ship kills/h");
+                        ui.add(
+                            egui::DragValue::new(&mut self.travel_max_ship_kills)
+                                .range(0..=500)
+                                .custom_formatter(|n, _| {
+                                    if n <= 0.0 { "any".to_owned() } else { format!("{n}") }
+                                }),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Plan").clicked() {
+                            plan = true;
+                        }
+                        if self.travel_route.is_some() && ui.button("Clear").clicked() {
+                            clear = true;
+                        }
+                    });
+                    match &summary {
+                        Some(s) => {
+                            ui.label(egui::RichText::new(s).color(egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)));
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("Type a from/to and Plan.").weak());
+                        }
+                    }
+                });
+            });
+        if plan {
+            self.plan_route();
+        }
+        if clear {
+            self.travel_route = None;
+        }
     }
 
     fn map_controls_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
