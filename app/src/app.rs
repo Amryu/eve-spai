@@ -523,6 +523,9 @@ pub struct SpaiApp {
     /// Pilot lookup (zKill) input + shared result.
     pilot_query: String,
     pilot_lookup: crate::lookup::SharedLookup,
+    /// Per-character killmail feed (Kills/Solo/Losses) for the sidebar lookup tabs, fetched
+    /// lazily when a list tab is opened.
+    feed_cache: std::collections::HashMap<String, crate::lookup::SharedLookup>,
     pilot_window_open: bool,
     pilot_sort: PilotSort,
     pilot_tab: PilotTab,
@@ -836,6 +839,7 @@ impl SpaiApp {
             ship_window: None,
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
+            feed_cache: std::collections::HashMap::new(),
             pilot_window_open: false,
             pilot_sort: PilotSort::MostLost,
             pilot_tab: PilotTab::default(),
@@ -3364,17 +3368,63 @@ impl SpaiApp {
 
         let Some(name) = self.lookup_tabs.get(self.lookup_active).cloned() else { return };
         let info = self.lookup_cache.lock().unwrap().get(&name.to_lowercase()).cloned();
-        egui::ScrollArea::vertical().id_salt("lookup_body").show(ui, |ui| match info {
-            None | Some(None) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Looking up {name}..."));
-                });
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Overview, "Overview");
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Kills, "Kills");
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Solo, "Solo");
+            ui.selectable_value(&mut self.pilot_tab, PilotTab::Losses, "Losses");
+        });
+        ui.separator();
+        // For a list tab, lazily fetch this character's killmail feed.
+        let feed = if self.pilot_tab != PilotTab::Overview {
+            Some(
+                self.feed_cache
+                    .entry(name.clone())
+                    .or_insert_with(|| {
+                        let s = std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
+                        crate::lookup::spawn_lookup(name.clone(), s.clone(), ui.ctx().clone());
+                        s
+                    })
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        egui::ScrollArea::vertical().id_salt("lookup_body").show(ui, |ui| {
+            if self.pilot_tab == PilotTab::Overview {
+                match info {
+                    None | Some(None) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(format!("Looking up {name}..."));
+                        });
+                    }
+                    Some(Some(inf)) if !inf.found => {
+                        ui.label(format!("No character named \"{name}\" was found."));
+                    }
+                    Some(Some(inf)) => Self::lookup_profile(ui, &inf),
+                }
+                return;
             }
-            Some(Some(inf)) if !inf.found => {
-                ui.label(format!("No character named \"{name}\" was found."));
+            match feed.map(|f| f.lock().unwrap().clone()) {
+                Some(crate::lookup::LookupState::Done(report)) => {
+                    let list = match self.pilot_tab {
+                        PilotTab::Kills => &report.kills,
+                        PilotTab::Solo => &report.solo,
+                        _ => &report.losses,
+                    };
+                    self.km_list(ui, list, report.loading);
+                }
+                Some(crate::lookup::LookupState::Failed(e)) => {
+                    ui.label(egui::RichText::new(e).weak());
+                }
+                _ => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading killmails\u{2026}");
+                    });
+                }
             }
-            Some(Some(inf)) => Self::lookup_profile(ui, &inf),
         });
     }
 
