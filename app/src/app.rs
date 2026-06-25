@@ -1106,6 +1106,29 @@ impl SpaiApp {
             );
         }
         ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut self.settings.kill_intel, "Show zKill killmails as intel")
+                .on_hover_text("Within range, killmails appear as intel cards (and respect the alert rules)")
+                .changed()
+            {
+                self.needs_save = true;
+            }
+            if self.settings.kill_intel {
+                ui.label("within");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut self.settings.kill_intel_jumps)
+                            .range(1..=20)
+                            .suffix("j"),
+                    )
+                    .changed()
+                {
+                    self.needs_save = true;
+                }
+            }
+        });
+        ui.add_space(4.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.label(egui::RichText::new("Alert rules").strong());
             self.alert_rules_ui(ui);
@@ -3160,6 +3183,26 @@ impl SpaiApp {
             ui.separator();
             if ui.button("Severity…").on_hover_text("Configure intel severity colours").clicked() {
                 self.severity_open = true;
+            }
+            ui.separator();
+            if ui
+                .checkbox(&mut self.settings.kill_intel, "Kill intel")
+                .on_hover_text("Show zKill killmails within range as intel cards")
+                .changed()
+            {
+                self.needs_save = true;
+            }
+            if self.settings.kill_intel
+                && ui
+                    .add(
+                        egui::DragValue::new(&mut self.settings.kill_intel_jumps)
+                            .range(1..=20)
+                            .suffix("j"),
+                    )
+                    .on_hover_text("Kill-intel range")
+                    .changed()
+            {
+                self.needs_save = true;
             }
             ui.separator();
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
@@ -5937,26 +5980,6 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
         ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
         ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
-        if ui
-            .checkbox(&mut self.settings.kill_intel, format!("{}  Kill-feed intel", icon::SKULL))
-            .on_hover_text("Show zKill killmails within range as intel cards")
-            .changed()
-        {
-            self.needs_save = true;
-        }
-        if self.settings.kill_intel {
-            ui.indent("kill_intel_range", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Range");
-                    if ui
-                        .add(egui::DragValue::new(&mut self.settings.kill_intel_jumps).range(1..=20).suffix("j"))
-                        .changed()
-                    {
-                        self.needs_save = true;
-                    }
-                });
-            });
-        }
         if ui
             .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
             .on_hover_text("Set Destination adds a waypoint at each hole entrance")
