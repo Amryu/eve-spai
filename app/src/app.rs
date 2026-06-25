@@ -494,6 +494,8 @@ pub struct SpaiApp {
     /// Whether the left (standard) and right (mode) map docks are expanded.
     left_dock_open: bool,
     right_dock_open: bool,
+    /// Sov-upgrade overlay sub-filters: show Ratting / Exploration / Mining / Other kinds.
+    upgrade_kinds: [bool; 4],
     /// An upgrade name to faint-highlight on the map (from the search).
     map_highlight_upgrade: Option<String>,
     /// System-info window: the system currently shown (if any).
@@ -809,6 +811,7 @@ impl SpaiApp {
             map_search_reg: Vec::new(),
             left_dock_open: true,
             right_dock_open: true,
+            upgrade_kinds: [true; 4],
             map_highlight_upgrade: None,
             system_window: None,
             constellation_window: None,
@@ -4824,8 +4827,12 @@ impl SpaiApp {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
                         // One stored label can list several comma-separated upgrades
                         // ("...Array 3, Exploration Detector 3") — draw an icon for each.
-                        let parts: Vec<&str> =
-                            ups.iter().flat_map(|u| split_upgrade_label(u)).collect();
+                        let ukinds = self.upgrade_kinds;
+                        let parts: Vec<&str> = ups
+                            .iter()
+                            .flat_map(|u| split_upgrade_label(u))
+                            .filter(|up| ukinds[upgrade_kind(up) as usize])
+                            .collect();
                         for (k, up) in parts.iter().take(6).enumerate() {
                             // Sit the icons in a row above the system name.
                             let ip = p + egui::vec2(6.0 * label_off + k as f32 * 20.0, -15.0 * label_off);
@@ -5462,6 +5469,14 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
         ui.checkbox(&mut self.map_overlays.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
         ui.checkbox(&mut self.map_overlays.upgrades, format!("{}  Sov upgrades", icon::MAP_PIN_LINE));
+        if self.map_overlays.upgrades {
+            ui.indent("upgrade_kinds", |ui| {
+                ui.checkbox(&mut self.upgrade_kinds[0], "Ratting");
+                ui.checkbox(&mut self.upgrade_kinds[1], "Exploration");
+                ui.checkbox(&mut self.upgrade_kinds[2], "Mining");
+                ui.checkbox(&mut self.upgrade_kinds[3], "Other");
+            });
+        }
         ui.checkbox(&mut self.map_overlays.jump_range, format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE));
         ui.separator();
         ui.checkbox(&mut self.map_overlays.wormholes, format!("{}  Wormhole connections", icon::SPIRAL));
@@ -11387,6 +11402,41 @@ fn upgrade_info(name: &str) -> (UpgradeIcon, u8) {
         icon::GEAR
     };
     (UpgradeIcon::Glyph(glyph), level)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpgradeKind {
+    Ratting = 0,
+    Exploration = 1,
+    Mining = 2,
+    Other = 3,
+}
+
+/// Classify a sov upgrade into one of the filterable kinds (mirrors `upgrade_info`).
+fn upgrade_kind(name: &str) -> UpgradeKind {
+    let lower = name.to_lowercase();
+    const MINERALS: &[&str] = &[
+        "tritanium", "pyerite", "mexallon", "isogen", "nocxium", "zydrine", "megacyte", "morphite",
+    ];
+    if MINERALS.iter().any(|m| lower.contains(m)) {
+        UpgradeKind::Mining
+    } else if lower.contains("pirate")
+        || lower.contains("detection")
+        || lower.contains("reconnaissance")
+        || lower.contains("insurgenc")
+        || lower.contains("ratting")
+    {
+        UpgradeKind::Ratting
+    } else if lower.contains("scan")
+        || lower.contains("survey")
+        || lower.contains("explor")
+        || lower.contains("relic")
+        || lower.contains("data")
+    {
+        UpgradeKind::Exploration
+    } else {
+        UpgradeKind::Other
+    }
 }
 
 /// Colour for a sov-upgrade level: white / green / red for level 1 / 2 / 3+.
