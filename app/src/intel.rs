@@ -520,6 +520,11 @@ fn looks_like_system_code(t: &str) -> bool {
     if t.starts_with('-') {
         return false;
     }
+    // A null-sec system name is 5 alphanumerics + one hyphen = 6 chars. Anything longer with a
+    // hyphen ("skt-10001", "Jean-Luc") is a name, not a system (abbreviations are shorter).
+    if t.len() > 6 {
+        return false;
+    }
     if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         || !t.chars().any(|c| c.is_ascii_alphanumeric())
     {
