@@ -45,7 +45,7 @@ pub struct Settings {
     #[serde(default)]
     pub alert_only_undocked: bool,
     /// Show zKill killmails within `kill_intel_jumps` jumps of you as intel cards.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub kill_intel: bool,
     #[serde(default = "default_kill_jumps")]
     pub kill_intel_jumps: u32,
@@ -568,7 +568,7 @@ impl Default for Settings {
             alert_within_jumps: 5,
             alert_combat: true,
             alert_only_undocked: false,
-            kill_intel: false,
+            kill_intel: true,
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
             fit_site: String::new(),
