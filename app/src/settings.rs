@@ -55,6 +55,10 @@ pub struct Settings {
     /// Preferred online fitting site for "open fit" ("" = ask on first use).
     #[serde(default)]
     pub fit_site: String,
+    /// URL/path opened by the "Doctrines" link on a fleet ping ("" = hide it). May be a
+    /// file:/// link to an offline doctrine page.
+    #[serde(default)]
+    pub doctrine_url: String,
     /// Configured sovereignty upgrades per system (pasted from a coalition site).
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
@@ -524,6 +528,7 @@ impl Default for Settings {
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
             fit_site: String::new(),
+            doctrine_url: String::new(),
             sov_upgrades: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),

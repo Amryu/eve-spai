@@ -1405,6 +1405,14 @@ impl SpaiApp {
                     ui.label("");
                     ui.label(egui::RichText::new("presets: horn · chime · beep · sweep · info · warning · danger · critical · off, or a file path").weak().small());
                     ui.end_row();
+                    ui.label("Doctrine link");
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.doctrine_url)
+                                .hint_text("URL or file:/// path shown on fleet pings"),
+                        )
+                        .changed();
+                    ui.end_row();
                     ui.label("Ping bot JID");
                     changed |= ui
                         .add(
@@ -2239,12 +2247,13 @@ impl SpaiApp {
                         // Pre-compute which pings match an alert rule (for highlight).
                         let hl: Vec<bool> =
                             pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
+                        let doctrine_url = self.settings.doctrine_url.clone();
                         egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
                             if pings.is_empty() {
                                 ui.label(egui::RichText::new("No pings yet.").weak());
                             }
                             for (i, p) in pings.iter().enumerate().rev() {
-                                render_ping(ui, p, &systems, hl[i]);
+                                render_ping(ui, p, &systems, hl[i], &doctrine_url);
                             }
                         });
                     }
@@ -10794,6 +10803,7 @@ fn render_ping(
     p: &crate::pings::Ping,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     highlight: bool,
+    doctrine_url: &str,
 ) {
     use crate::pings::{Comms, Formup, PapType, Ping};
     use egui_phosphor::regular as icon;
@@ -10870,9 +10880,16 @@ fn render_ping(
                         }
                     }
                 }
-                if let Some(d) = doctrine {
-                    ui.label(format!("Doctrine: {d}"));
-                }
+                ui.horizontal(|ui| {
+                    if let Some(d) = doctrine {
+                        ui.label(format!("Doctrine: {d}"));
+                    }
+                    if !doctrine_url.is_empty()
+                        && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked()
+                    {
+                        let _ = open::that(doctrine_url);
+                    }
+                });
                 if !description.is_empty() {
                     ui.label(egui::RichText::new(description).weak());
                 }
