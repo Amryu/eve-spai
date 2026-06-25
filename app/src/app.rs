@@ -11255,8 +11255,9 @@ fn rule_matches(
         return false;
     }
     // Channel filter: each entry is a case-insensitive regex (falls back to a plain
-    // substring match if it isn't a valid regex).
-    if !ru.channels.is_empty() {
+    // substring match if it isn't a valid regex). zKill killmails aren't from a chat channel,
+    // so a channel-filtered rule must not silently exclude them.
+    if !ru.channels.is_empty() && !r.killmail {
         let ch = r.channel.to_lowercase();
         let matched = ru.channels.iter().any(|pat| {
             let p = pat.to_lowercase();
