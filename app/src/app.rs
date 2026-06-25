@@ -531,6 +531,8 @@ pub struct SpaiApp {
     pilot_tab: PilotTab,
     /// Fit window: (ship type id, which fit).
     fit_view: Option<(i64, FitMode)>,
+    /// A specific clicked killmail to show in the fit window (takes precedence over fit_view).
+    fit_loss: Option<crate::lookup::Loss>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
     /// Static ship-detail cache (avoids per-frame DB queries).
@@ -844,6 +846,7 @@ impl SpaiApp {
             pilot_sort: PilotSort::MostLost,
             pilot_tab: PilotTab::default(),
             fit_view: None,
+            fit_loss: None,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -3728,13 +3731,14 @@ impl SpaiApp {
     }
 
     /// A killmail list for a Kills / Solo / Losses tab (newest first, as fetched).
-    fn km_list(&self, ui: &mut egui::Ui, list: &[crate::lookup::Loss], loading: bool) {
+    fn km_list(&mut self, ui: &mut egui::Ui, list: &[crate::lookup::Loss], loading: bool) {
         if list.is_empty() {
             let msg = if loading { "Loading\u{2026}" } else { "Nothing in this category." };
             ui.label(egui::RichText::new(msg).weak());
             return;
         }
         let now = chrono::Utc::now().timestamp();
+        let mut clicked: Option<crate::lookup::Loss> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for l in list {
                 let det = self.ship_details_cached(l.ship_type_id);
@@ -3752,9 +3756,17 @@ impl SpaiApp {
                 }
                 ui.horizontal(|ui| {
                     let url = format!("https://images.evetech.net/types/{}/icon?size=32", l.ship_type_id);
-                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(26.0)));
+                    let img = ui.add(
+                        egui::Image::new(url)
+                            .fit_to_exact_size(egui::Vec2::splat(26.0))
+                            .sense(egui::Sense::click()),
+                    );
                     let ship = det.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".to_owned());
-                    ui.label(egui::RichText::new(ship).strong());
+                    let name =
+                        ui.add(egui::Label::new(egui::RichText::new(ship).strong()).sense(egui::Sense::click()));
+                    if img.on_hover_text("Show fit").clicked() || name.clicked() {
+                        clicked = Some(l.clone());
+                    }
                     if let Some(sys) = self.systems.as_ref().and_then(|g| g.info_of(l.system_id)) {
                         ui.label(egui::RichText::new(&sys.name).weak());
                     }
@@ -3781,6 +3793,9 @@ impl SpaiApp {
                 });
             }
         });
+        if let Some(l) = clicked {
+            self.fit_loss = Some(l);
+        }
     }
 
     fn pilot_report_ui(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport) {
@@ -3888,15 +3903,21 @@ impl SpaiApp {
 
     /// Fit window: the pilot's chosen fit for a hull, with EFT copy + open-in-site.
     fn fit_window(&mut self, ctx: &egui::Context) {
-        let Some((ship_id, mode)) = self.fit_view else {
+        // A clicked killmail (specific fit) takes precedence over the (ship, mode) aggregate.
+        let (loss, ship_id, mode, has_mode) = if let Some(l) = self.fit_loss.clone() {
+            let sid = l.ship_type_id;
+            (Some(l), sid, FitMode::Recent, false)
+        } else if let Some((ship_id, mode)) = self.fit_view {
+            let l = {
+                let state = self.pilot_lookup.lock().unwrap();
+                match &*state {
+                    crate::lookup::LookupState::Done(report) => pick_loss(report, ship_id, mode),
+                    _ => None,
+                }
+            };
+            (l, ship_id, mode, true)
+        } else {
             return;
-        };
-        let loss = {
-            let state = self.pilot_lookup.lock().unwrap();
-            match &*state {
-                crate::lookup::LookupState::Done(report) => pick_loss(report, ship_id, mode),
-                _ => None,
-            }
         };
         if let Some(l) = &loss {
             let mut ids: Vec<i64> = l.items.iter().map(|i| i.type_id).collect();
@@ -3913,11 +3934,13 @@ impl SpaiApp {
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
                 ui.heading(&ship_name);
             });
-            ui.horizontal(|ui| {
-                ui.label("Fit:");
-                ui.selectable_value(&mut new_mode, FitMode::Recent, "Most recent");
-                ui.selectable_value(&mut new_mode, FitMode::MostUsed, "Most used");
-            });
+            if has_mode {
+                ui.horizontal(|ui| {
+                    ui.label("Fit:");
+                    ui.selectable_value(&mut new_mode, FitMode::Recent, "Most recent");
+                    ui.selectable_value(&mut new_mode, FitMode::MostUsed, "Most used");
+                });
+            }
             ui.separator();
             let Some(loss) = &loss else {
                 ui.label(egui::RichText::new("No fit found.").weak());
@@ -4012,10 +4035,11 @@ impl SpaiApp {
             });
         });
 
-        if new_mode != mode {
+        if has_mode && new_mode != mode {
             self.fit_view = Some((ship_id, new_mode));
         } else if !keep {
             self.fit_view = None;
+            self.fit_loss = None;
         }
     }
 
