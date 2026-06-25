@@ -236,7 +236,7 @@ impl IntelState {
                 }
             }
             for p in &new.pilots {
-                if !prev.pilots.contains(p) {
+                if !prev.pilots.iter().any(|x| x.eq_ignore_ascii_case(p)) {
                     prev.pilots.push(p.clone());
                 }
             }
@@ -1613,6 +1613,12 @@ pub fn analyze_ctx(
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
+    // Dedupe (case-insensitive) so the same name repeated — in one message or across merged
+    // re-posts — never inflates the hostile count ("X X X" is one hostile, not three).
+    {
+        let mut seen = std::collections::HashSet::new();
+        pilots.retain(|p| seen.insert(p.to_lowercase()));
+    }
     let (total_count, plus_count, name_number_skips) =
         parse_count(text, &consumed, systems, ship_index);
     // "pilot1 pilot2 +20" = 22; a stated total ("7 reds") wins; otherwise a bare list of
