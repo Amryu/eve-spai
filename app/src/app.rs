@@ -273,6 +273,8 @@ pub struct SpaiApp {
     alert_window_open: bool,
     /// Pin: temporarily hold the alert window open (auto-cleared when it closes).
     alert_window_pinned: bool,
+    /// Set when a new alert fires; the alert window requests foreground once, then clears it.
+    alert_focus_pending: bool,
     /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
     /// the combat-log watcher.
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -700,6 +702,7 @@ impl SpaiApp {
             alert_window_secs: 0.0,
             alert_window_open: false,
             alert_window_pinned: false,
+            alert_focus_pending: false,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
             jabber,
@@ -1017,6 +1020,7 @@ impl SpaiApp {
                 } else {
                     self.settings.alerts.window_timeout.max(3.0)
                 };
+                self.alert_focus_pending = true; // bring the window forward once
             }
             if f.push && acfg.push_enabled {
                 crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
@@ -4248,6 +4252,10 @@ impl SpaiApp {
                         .frame(egui::Frame::NONE)
                         .show(ctx, |_ui| {});
                     return;
+                }
+                // A new alert: bring the window to the foreground once so it's noticed.
+                if std::mem::take(&mut self.alert_focus_pending) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 // Re-apply the saved geometry when an alert appears (the builder values
                 // aren't reliably re-applied after unmapping).
