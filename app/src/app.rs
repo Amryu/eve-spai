@@ -6533,7 +6533,7 @@ impl SpaiApp {
                     .default_size(240.0)
                     .size_range(180.0..=340.0)
                     .show_inside(ui, |ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.horizontal(|ui| {
                             if ui.button("\u{00BB}").on_hover_text("Minimize panel").clicked() {
                                 self.right_dock_open = false;
                             }
