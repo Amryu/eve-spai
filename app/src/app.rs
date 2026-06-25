@@ -3737,11 +3737,23 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for l in list {
+                let det = self.ship_details_cached(l.ship_type_id);
+                // Skip the noise: pods, rookie corvettes, and the basic NPC racial shuttles.
+                let skip = det.as_ref().is_some_and(|d| {
+                    d.group == "Capsule"
+                        || d.group == "Corvette"
+                        || matches!(
+                            d.name.as_str(),
+                            "Caldari Shuttle" | "Gallente Shuttle" | "Amarr Shuttle" | "Minmatar Shuttle"
+                        )
+                });
+                if skip {
+                    continue;
+                }
                 ui.horizontal(|ui| {
-                    let ship = self
-                        .ship_details_cached(l.ship_type_id)
-                        .map(|d| d.name)
-                        .unwrap_or_else(|| "?".to_owned());
+                    let url = format!("https://images.evetech.net/types/{}/icon?size=32", l.ship_type_id);
+                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(26.0)));
+                    let ship = det.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".to_owned());
                     ui.label(egui::RichText::new(ship).strong());
                     if let Some(sys) = self.systems.as_ref().and_then(|g| g.info_of(l.system_id)) {
                         ui.label(egui::RichText::new(&sys.name).weak());
