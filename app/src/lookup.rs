@@ -99,7 +99,8 @@ pub enum LookupState {
 
 pub type SharedLookup = Arc<Mutex<LookupState>>;
 
-/// Look up `name` in the background; fills `state` progressively and wakes the UI.
+/// Look up `name` in the background; resolves the id, then fetches the three categories
+/// **in parallel** (newest first), filling `state` progressively and waking the UI.
 pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     let name = name.trim().to_owned();
     if name.is_empty() {
@@ -107,52 +108,64 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     }
     *state.lock().unwrap() = LookupState::Loading(name.clone());
     ctx.request_repaint();
-    std::thread::spawn(move || run(&name, &state, &ctx));
-}
-
-fn run(name: &str, state: &SharedLookup, ctx: &egui::Context) {
-    let fail = |state: &SharedLookup, ctx: &egui::Context, msg: String| {
-        *state.lock().unwrap() = LookupState::Failed(msg);
-        ctx.request_repaint();
-    };
-    let client = match reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; pilot lookup)"))
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return fail(state, ctx, e.to_string()),
-    };
-    let (character_id, resolved) = match resolve_name(&client, name) {
-        Ok(v) => v,
-        Err(e) => return fail(state, ctx, e),
-    };
-    // Show the header immediately, then fill each category as killmails resolve.
-    *state.lock().unwrap() = LookupState::Done(PilotReport {
-        name: resolved,
-        character_id,
-        losses: Vec::new(),
-        kills: Vec::new(),
-        solo: Vec::new(),
-        loading: true,
-    });
-    ctx.request_repaint();
-    for (idx, category) in ["losses", "kills", "solo"].into_iter().enumerate() {
-        fetch_category(&client, character_id, category, |partial| {
-            if let LookupState::Done(r) = &mut *state.lock().unwrap() {
-                match idx {
-                    0 => r.losses = partial.to_vec(),
-                    1 => r.kills = partial.to_vec(),
-                    _ => r.solo = partial.to_vec(),
-                }
+    std::thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; pilot lookup)"))
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                *state.lock().unwrap() = LookupState::Failed(e.to_string());
+                ctx.request_repaint();
+                return;
             }
-            ctx.request_repaint();
+        };
+        let (character_id, resolved) = match resolve_name(&client, &name) {
+            Ok(v) => v,
+            Err(e) => {
+                *state.lock().unwrap() = LookupState::Failed(e);
+                ctx.request_repaint();
+                return;
+            }
+        };
+        *state.lock().unwrap() = LookupState::Done(PilotReport {
+            name: resolved,
+            character_id,
+            losses: Vec::new(),
+            kills: Vec::new(),
+            solo: Vec::new(),
+            loading: true,
         });
-    }
-    if let LookupState::Done(r) = &mut *state.lock().unwrap() {
-        r.loading = false;
-    }
-    ctx.request_repaint();
+        ctx.request_repaint();
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(3));
+        for (idx, category) in ["losses", "kills", "solo"].into_iter().enumerate() {
+            let client = client.clone();
+            let state = state.clone();
+            let ctx = ctx.clone();
+            let pending = pending.clone();
+            std::thread::spawn(move || {
+                // Stagger the initial zKill list calls so the three threads don't burst the API.
+                std::thread::sleep(std::time::Duration::from_millis(idx as u64 * 500));
+                fetch_category(&client, character_id, category, |partial| {
+                    if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+                        match idx {
+                            0 => r.losses = partial.to_vec(),
+                            1 => r.kills = partial.to_vec(),
+                            _ => r.solo = partial.to_vec(),
+                        }
+                    }
+                    ctx.request_repaint();
+                });
+                if pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+                        r.loading = false;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
+    });
 }
 
 /// Pull a zKill category ("kills" / "losses" / "solo"), up to MAX_KILLS entries across up to
