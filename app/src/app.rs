@@ -482,6 +482,10 @@ pub struct SpaiApp {
     map_threat_center: Option<i64>,
     /// Include jump bridges in the radial/tree threat-view distance.
     threat_include_bridges: bool,
+    /// Safety Mode: systems threatened on the last watch tick (to alarm only on a new one).
+    safety_prev: Option<std::collections::HashSet<i64>>,
+    /// egui time the red screen-flash overlay stays up until (Safety alarm).
+    flash_until: f64,
     /// Coordinates actually drawn (geographic or the 2D layout).
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
@@ -818,6 +822,8 @@ impl SpaiApp {
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
             threat_include_bridges: true,
+            safety_prev: None,
+            flash_until: 0.0,
             map_draw: Vec::new(),
             map_draw_spaced: false,
             map_draw_key: None,
@@ -6580,7 +6586,70 @@ impl SpaiApp {
     /// Safety Mode panel: a live, colour-coded read of threats within the threat-view jump
     /// range of the active character \u{2014} nearby non-clear intel as mini-cards and recent
     /// ESI kill hotspots, nearest first. The range is shared with the radial/tree views.
-    fn safety_panel_content(&mut self, ui: &mut egui::Ui) {
+    /// Safety Mode AFK watch: alarm (sound + screen flash) when a *new* system within range
+    /// becomes threatened. Runs every frame in Safety mode regardless of the active view.
+    fn safety_watch(&mut self, ctx: &egui::Context) {
+        if self.map_mode != MapMode::Safety {
+            self.safety_prev = None;
+            return;
+        }
+        let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
+            return;
+        };
+        let range = self.map_threat_jumps;
+        let mut current: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        {
+            let st = self.intel_state.lock().unwrap();
+            for r in &st.reports {
+                if r.clear {
+                    continue;
+                }
+                if let Some(sys) = r.primary_system() {
+                    if geo.jumps(me, sys.id, range).is_some() {
+                        current.insert(sys.id);
+                    }
+                }
+            }
+        }
+        {
+            let status = self.system_status.lock().unwrap();
+            for (sid, f) in status.iter() {
+                if f.ship_kills > 0 && geo.jumps(me, *sid, range).is_some() {
+                    current.insert(*sid);
+                }
+            }
+        }
+        match self.safety_prev.take() {
+            None => {} // first tick = baseline; don't alarm for what's already there
+            Some(prev) => {
+                if current.iter().any(|s| !prev.contains(s)) {
+                    crate::sound::play("danger");
+                    self.flash_until = ctx.input(|i| i.time) + 0.8;
+                    ctx.request_repaint();
+                }
+            }
+        }
+        self.safety_prev = Some(current);
+    }
+
+    /// Brief red full-screen flash for the Safety Mode alarm.
+    fn screen_flash(&self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if now >= self.flash_until {
+            return;
+        }
+        let alpha = (((self.flash_until - now) / 0.8).clamp(0.0, 1.0) as f32) * 0.45;
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("safety_flash")));
+        painter.rect_filled(
+            ctx.content_rect(),
+            0.0,
+            egui::Color32::from_rgb(0xEF, 0x44, 0x44).gamma_multiply(alpha),
+        );
+        ctx.request_repaint();
+    }
+
+    fn threat_board(&mut self, ui: &mut egui::Ui, hunting: bool) {
         let red = egui::Color32::from_rgb(0xEF, 0x53, 0x50);
         let orange = egui::Color32::from_rgb(0xFF, 0xA7, 0x26);
         let yellow = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
@@ -6588,13 +6657,24 @@ impl SpaiApp {
         let prox = |j: u32| if j <= 1 { red } else if j <= 3 { orange } else { yellow };
 
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("Safety watch").strong().size(15.0));
+        ui.label(
+            egui::RichText::new(if hunting { "Hunting board" } else { "Safety watch" })
+                .strong()
+                .size(15.0),
+        );
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Watch range");
+            ui.label("Range");
             ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix("j"));
         });
-        ui.label(egui::RichText::new("Shared with the radial / tree view range.").weak());
+        ui.label(
+            egui::RichText::new(if hunting {
+                "Targets and activity nearby, nearest first."
+            } else {
+                "Alarms when a new threat enters range."
+            })
+            .weak(),
+        );
 
         struct Threat {
             name: String,
@@ -6884,13 +6964,8 @@ impl SpaiApp {
                         });
                         match self.map_mode {
                             MapMode::Travel => self.travel_panel_content(ui),
-                            MapMode::Safety => self.safety_panel_content(ui),
-                            MapMode::Hunting => {
-                                ui.add_space(6.0);
-                                ui.label(egui::RichText::new("Hunting").strong().size(15.0));
-                                ui.separator();
-                                ui.label(egui::RichText::new("Live target board — coming soon.").weak());
-                            }
+                            MapMode::Safety => self.threat_board(ui, false),
+                            MapMode::Hunting => self.threat_board(ui, true),
                             MapMode::Standard => {}
                         }
                     });
@@ -9996,6 +10071,8 @@ impl eframe::App for SpaiApp {
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
         self.fleet_ping_window_ui(&ctx);
+        self.safety_watch(&ctx);
+        self.screen_flash(&ctx);
         // Bring a just-updated window to the foreground.
         if let Some(vp) = self.focus_window.take() {
             ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
