@@ -378,8 +378,6 @@ pub struct SpaiApp {
     /// Comma-separated sov holders (alliance / NPC faction substrings) to route around.
     travel_avoid_sov: String,
     travel_route: Option<Vec<i64>>,
-    /// Safety Mode: how many jumps out to watch for threats.
-    safety_range: u32,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
     /// Jump-route planner endpoints (seeded from the map; planner is WIP).
@@ -700,7 +698,6 @@ impl SpaiApp {
             travel_avoid: Vec::new(),
             travel_avoid_sov: String::new(),
             travel_route: None,
-            safety_range: 5,
             ctx_menu_system: None,
             jump_plan_from: None,
             jump_plan_to: None,
@@ -5862,21 +5859,40 @@ impl SpaiApp {
         }
     }
 
-    /// Safety Mode panel: a live read of threats within `safety_range` jumps of the active
-    /// character — non-clear intel and ESI kill hotspots, nearest first.
+    /// Safety Mode panel: a live, colour-coded read of threats within the threat-view jump
+    /// range of the active character \u{2014} nearby non-clear intel as mini-cards and recent
+    /// ESI kill hotspots, nearest first. The range is shared with the radial/tree views.
     fn safety_panel_content(&mut self, ui: &mut egui::Ui) {
+        let red = egui::Color32::from_rgb(0xEF, 0x53, 0x50);
+        let orange = egui::Color32::from_rgb(0xFF, 0xA7, 0x26);
+        let yellow = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
+        let green = egui::Color32::from_rgb(0x66, 0xBB, 0x6A);
+        let prox = |j: u32| if j <= 1 { red } else if j <= 3 { orange } else { yellow };
+
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Safety watch").strong().size(15.0));
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Watch range");
-            ui.add(egui::DragValue::new(&mut self.safety_range).range(1..=20).suffix(" j"));
+            ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix("j"));
         });
+        ui.label(egui::RichText::new("Shared with the radial / tree view range.").weak());
 
+        struct Threat {
+            name: String,
+            jumps: u32,
+            count: Option<u32>,
+            ships: Vec<String>,
+            pilots: Vec<String>,
+            received: i64,
+            camp: bool,
+            spike: bool,
+        }
         let me_sys = self.player_system();
-        let range = self.safety_range;
-        let mut intel_threats: Vec<(String, u32, Option<u32>)> = Vec::new();
-        let mut kill_hotspots: Vec<(String, u32, u32)> = Vec::new();
+        let range = self.map_threat_jumps;
+        let now = chrono::Utc::now().timestamp();
+        let mut threats: Vec<Threat> = Vec::new();
+        let mut kills: Vec<(String, u32, u32, u32)> = Vec::new();
         if let (Some(me), Some(geo)) = (me_sys, self.systems.clone()) {
             {
                 let st = self.intel_state.lock().unwrap();
@@ -5886,27 +5902,37 @@ impl SpaiApp {
                     }
                     if let Some(sys) = r.primary_system() {
                         if let Some(j) = geo.jumps(me, sys.id, range) {
-                            intel_threats.push((sys.name.clone(), j, r.count));
+                            threats.push(Threat {
+                                name: sys.name.clone(),
+                                jumps: j,
+                                count: r.count,
+                                ships: r.classes.clone(),
+                                pilots: r.pilots.clone(),
+                                received: r.received,
+                                camp: r.camp,
+                                spike: r.spike,
+                            });
                         }
                     }
                 }
             }
-            intel_threats.sort_by_key(|t| t.1);
+            // Nearest first, most-recent per system; one card per system.
+            threats.sort_by(|a, b| a.jumps.cmp(&b.jumps).then(b.received.cmp(&a.received)));
             let mut seen = std::collections::HashSet::new();
-            intel_threats.retain(|t| seen.insert(t.0.clone()));
+            threats.retain(|t| seen.insert(t.name.clone()));
             {
                 let status = self.system_status.lock().unwrap();
                 for (sid, f) in status.iter() {
-                    if f.ship_kills == 0 {
+                    if f.ship_kills == 0 && f.pod_kills == 0 {
                         continue;
                     }
                     if let Some(j) = geo.jumps(me, *sid, range) {
                         let name = geo.info_of(*sid).map(|i| i.name.clone()).unwrap_or_default();
-                        kill_hotspots.push((name, j, f.ship_kills));
+                        kills.push((name, j, f.ship_kills, f.pod_kills));
                     }
                 }
             }
-            kill_hotspots.sort_by_key(|t| t.1);
+            kills.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
         }
 
         ui.separator();
@@ -5915,25 +5941,67 @@ impl SpaiApp {
             return;
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let danger = !intel_threats.is_empty();
-            let alarm = egui::Color32::from_rgb(0xEF, 0x53, 0x50);
-            let calm = egui::Color32::from_rgb(0x66, 0xBB, 0x6A);
+            let danger = !threats.is_empty();
             ui.label(
-                egui::RichText::new(format!("Intel within {range}j: {}", intel_threats.len()))
+                egui::RichText::new(format!("Intel within {range}j: {}", threats.len()))
                     .strong()
-                    .color(if danger { alarm } else { calm }),
+                    .size(14.0)
+                    .color(if danger { red } else { green }),
             );
-            for (name, j, count) in intel_threats.iter().take(12) {
-                let c = count.map(|c| format!("  ({c})")).unwrap_or_default();
-                ui.label(format!("{name}  \u{2022} {j}j{c}"));
+            for t in &threats {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(&t.name).strong().color(prox(t.jumps)));
+                        ui.label(egui::RichText::new(format!("{}j", t.jumps)).color(prox(t.jumps)));
+                        if let Some(c) = t.count {
+                            ui.label(egui::RichText::new(format!("{c} hostiles")).strong().color(red));
+                        }
+                        if t.camp {
+                            ui.label(egui::RichText::new("CAMP").strong().color(red));
+                        }
+                        if t.spike {
+                            ui.label(egui::RichText::new("SPIKE").strong().color(orange));
+                        }
+                    });
+                    if !t.ships.is_empty() {
+                        ui.label(t.ships.join(", "));
+                    }
+                    if !t.pilots.is_empty() {
+                        let p = if t.pilots.len() > 5 {
+                            format!("{} +{}", t.pilots[..5].join(", "), t.pilots.len() - 5)
+                        } else {
+                            t.pilots.join(", ")
+                        };
+                        ui.label(egui::RichText::new(p).weak());
+                    }
+                    let age = now - t.received;
+                    let age_s = if age < 60 {
+                        format!("{age}s ago")
+                    } else if age < 3600 {
+                        format!("{}m ago", age / 60)
+                    } else {
+                        format!("{}h ago", age / 3600)
+                    };
+                    ui.label(egui::RichText::new(age_s).weak());
+                });
             }
+
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Kill hotspots (last hour)").strong());
-            if kill_hotspots.is_empty() {
+            ui.label(egui::RichText::new("Kill hotspots (last hour)").strong().size(14.0));
+            if kills.is_empty() {
                 ui.label(egui::RichText::new("none in range").weak());
             }
-            for (name, j, k) in kill_hotspots.iter().take(12) {
-                ui.label(format!("{name}  \u{2022} {j}j, {k} kills"));
+            for (name, j, sk, pk) in kills.iter().take(15) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(name).strong().color(prox(*j)));
+                    ui.label(egui::RichText::new(format!("{j}j")).weak());
+                    if *sk > 0 {
+                        ui.label(egui::RichText::new(format!("{sk} ship")).color(red));
+                    }
+                    if *pk > 0 {
+                        ui.label(egui::RichText::new(format!("{pk} pod")).color(orange));
+                    }
+                });
             }
         });
     }
