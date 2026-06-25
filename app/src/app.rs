@@ -577,6 +577,8 @@ pub struct SpaiApp {
     ping_window: Option<crate::pings::Ping>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
+    /// Character → corp/alliance cache for pilot badges + the lookup window.
+    affiliations: crate::affiliation::SharedAffil,
     /// Static ship-detail cache (avoids per-frame DB queries).
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     /// Cached role badges per ship id.
@@ -914,6 +916,13 @@ impl SpaiApp {
                 crate::pilot::spawn_resolver(cache.clone(), cc.egui_ctx.clone());
                 cache
             },
+            affiliations: {
+                let cache = std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::affiliation::AffilCache::default(),
+                ));
+                crate::affiliation::spawn(cache.clone(), cc.egui_ctx.clone());
+                cache
+            },
         }
     }
 
@@ -1176,9 +1185,11 @@ impl SpaiApp {
         for (r, sev) in &feed {
             let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
             let kc = self.kill_cache.clone();
+            let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &last_ship, &kc, *sev, true,
+            &affil,
             ) {
                 click = Some(c);
             }
@@ -3322,10 +3333,12 @@ impl SpaiApp {
                         );
                         let sev = severity_of(r, &sev_rules);
                         let kc = self.kill_cache.clone();
+                        let affil = self.affiliations.clone();
                         let inner = ui.scope(|ui| {
                             intel_row(
                                 ui, r, now, stale, from_you, &systems, &status, &ship_details,
                                 &ship_roles, &resolved_pilots, &last_ship, &kc, sev, true,
+                            &affil,
                             )
                         });
                         if let Some(a) = inner.inner {
@@ -3402,6 +3415,7 @@ impl SpaiApp {
         };
         let last_ship = build_last_ship(reports);
         let kc = self.kill_cache.clone();
+        let affil = self.affiliations.clone();
         let mut action = None;
         let state = self.intel_state.lock().unwrap();
         let status = self.system_status.lock().unwrap();
@@ -3413,6 +3427,7 @@ impl SpaiApp {
                 intel_row(
                     ui, r, now, stale, from_you, &systems, &status, &ship_details, &ship_roles,
                     &resolved_pilots, &last_ship, &kc, sev, true,
+                &affil,
                 )
             });
             if let Some(a) = inner.inner {
@@ -4523,10 +4538,12 @@ impl SpaiApp {
                                     r.primary_system().map(|s| s.id),
                                 );
                                 let kc = self.kill_cache.clone();
+                                let affil = self.affiliations.clone();
                                 if let Some(c) = intel_row(
                                     ui, r, now_ts, false, from_you, &systems, &status_snapshot,
                                     &ship_details, &ship_roles, &resolved_pilots, &last_ship, &kc, *sev,
                                     false,
+                                &affil,
                                 ) {
                                     click = Some(c);
                                 }
@@ -8410,10 +8427,12 @@ impl SpaiApp {
                             );
                             let sev = severity_of(r, &self.settings.severity);
                             let kc = self.kill_cache.clone();
+                            let affil = self.affiliations.clone();
                             if let Some(c) = intel_row(
                                 ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
                                 &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev,
                                 false,
+                            &affil,
                             ) {
                                 intel_click = Some(c);
                             }
@@ -11694,6 +11713,7 @@ fn intel_row(
     kills: &crate::kills::KillCache,
     sev: crate::settings::Severity,
     show_reporter: bool,
+    affil: &crate::affiliation::SharedAffil,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
@@ -11777,6 +11797,9 @@ fn intel_row(
                 return;
             }
             let mut render = |ui: &mut egui::Ui| {
+                // Uniform badge height: match the image badges (24px avatar/ship) so the
+                // text-only badges line up. Forces the row's interactive line-height.
+                ui.spacing_mut().interact_size.y = 28.0;
                 // Plain inline widgets (no fixed-size sub-uis — those break wrapping
                 // inside horizontal_wrapped and make the card grow vertically).
                 ui.label(egui::RichText::new(type_icon).color(icon_color)).on_hover_text(&msg);
@@ -11950,16 +11973,35 @@ fn intel_row(
                         .find(|(n, _)| n.eq_ignore_ascii_case(name))
                         .map(|(_, id)| *id)
                         .or_else(|| resolved_pilots.get(name).copied());
-                    let resp = if let Some(cid) = char_id {
-                        // Avatar + name instead of the generic person icon.
-                        let img = egui::Image::new(format!(
-                            "https://images.evetech.net/characters/{cid}/portrait?size=32"
-                        ))
-                        .fit_to_exact_size(egui::Vec2::splat(24.0));
-                        ui.add(egui::Button::image_and_text(img, egui::RichText::new(name)))
-                    } else {
-                        ui.add(egui::Button::new(egui::RichText::new(format!("{} {name}", icon::USER))))
-                    };
+                    // Queue + read this pilot's corp/alliance (resolved in the background).
+                    let aff = char_id.and_then(|cid| {
+                        let mut c = affil.lock().unwrap();
+                        c.want(cid);
+                        c.get(cid)
+                    });
+                    // Badge: alliance + corp logos + avatar + name, grouped and clickable.
+                    let logo24 = egui::Vec2::splat(24.0);
+                    let resp = egui::Frame::group(ui.style())
+                        .inner_margin(egui::Margin::symmetric(4, 1))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 3.0;
+                                if let Some(al) = aff.and_then(|a| a.alliance) {
+                                    ui.add(egui::Image::new(format!("https://images.evetech.net/alliances/{al}/logo?size=32")).fit_to_exact_size(logo24)).on_hover_text("Alliance");
+                                }
+                                if let Some(co) = aff.and_then(|a| a.corp) {
+                                    ui.add(egui::Image::new(format!("https://images.evetech.net/corporations/{co}/logo?size=32")).fit_to_exact_size(logo24)).on_hover_text("Corporation");
+                                }
+                                if let Some(cid) = char_id {
+                                    ui.add(egui::Image::new(format!("https://images.evetech.net/characters/{cid}/portrait?size=32")).fit_to_exact_size(logo24));
+                                } else {
+                                    ui.label(egui::RichText::new(icon::USER));
+                                }
+                                ui.label(egui::RichText::new(name));
+                            });
+                        })
+                        .response
+                        .interact(egui::Sense::click());
                     if resp.on_hover_text("Look up pilot").clicked() {
                         clicked = Some(IntelClick::Pilot(name.clone()));
                     }

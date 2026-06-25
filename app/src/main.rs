@@ -11,6 +11,7 @@
 mod app;
 mod auth;
 mod battle;
+mod affiliation;
 mod alliances;
 mod camp;
 mod charlookup;
