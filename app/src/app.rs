@@ -261,7 +261,7 @@ pub struct SpaiApp {
     camps: crate::camp::SharedCamps,
     /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
     /// lock + scan the camp state every frame for every map.
-    camped_cache: Vec<i64>,
+    camped_cache: Vec<(i64, crate::camp::CampLevel)>,
     camped_cache_at: i64,
     /// Live kill-feed buffer (from zkill) turned into optional kill-intel cards.
     killfeed: crate::zkill::SharedKillFeed,
@@ -5303,16 +5303,28 @@ impl SpaiApp {
                 self.camped_cache = self.camps.lock().unwrap().camped(now);
                 self.camped_cache_at = now;
             }
-            let red = egui::Color32::from_rgb(0xEF, 0x44, 0x44);
             let font = egui::FontId::proportional(15.0);
-            for id in &self.camped_cache {
+            for (id, level) in &self.camped_cache {
                 if let Some(p) = pos.get(id) {
+                    // Colour by camp probability: red = likely camp, orange = possible, yellow = flag.
+                    let col = match level {
+                        crate::camp::CampLevel::Likely => egui::Color32::from_rgb(0xEF, 0x44, 0x44),
+                        crate::camp::CampLevel::Possible => egui::Color32::from_rgb(0xFF, 0xA7, 0x26),
+                        crate::camp::CampLevel::Flag => egui::Color32::from_rgb(0xFF, 0xD5, 0x4F),
+                    };
+                    // Highlight glow under the system, stronger for higher probability.
+                    let glow = match level {
+                        crate::camp::CampLevel::Likely => 0.30,
+                        crate::camp::CampLevel::Possible => 0.20,
+                        crate::camp::CampLevel::Flag => 0.12,
+                    };
+                    painter.circle_filled(*p, dot + 7.0, col.gamma_multiply(glow));
                     painter.text(
                         *p + egui::vec2(0.0, -11.0),
                         egui::Align2::CENTER_CENTER,
                         egui_phosphor::regular::CAMPFIRE,
                         font.clone(),
-                        red,
+                        col,
                     );
                 }
             }
@@ -5989,15 +6001,26 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         if let Some(c) = self.camps.lock().unwrap().camp(id, now) {
             let mins = (c.age / 60).max(0);
+            let (label, col) = match c.level {
+                crate::camp::CampLevel::Likely => {
+                    ("Likely gate camp", egui::Color32::from_rgb(0xEF, 0x44, 0x44))
+                }
+                crate::camp::CampLevel::Possible => {
+                    ("Possible camp", egui::Color32::from_rgb(0xFF, 0xA7, 0x26))
+                }
+                crate::camp::CampLevel::Flag => {
+                    ("Recent gate kills", egui::Color32::from_rgb(0xFF, 0xD5, 0x4F))
+                }
+            };
+            let over = (c.span / 60).max(0);
             ui.label(
                 egui::RichText::new(format!(
-                    "{}  Gate camp \u{2014} {} kills, last {}m ago",
+                    "{}  {label} \u{2014} {} kills over {over}m, last {mins}m ago",
                     egui_phosphor::regular::CAMPFIRE,
                     c.kills,
-                    mins
                 ))
                 .strong()
-                .color(egui::Color32::from_rgb(0xEF, 0x44, 0x44)),
+                .color(col),
             );
         }
     }
@@ -6461,7 +6484,15 @@ impl SpaiApp {
             self.travel_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
         let camped: std::collections::HashSet<i64> = if self.travel_avoid_camps {
             let now = chrono::Utc::now().timestamp();
-            self.camps.lock().unwrap().camped(now).into_iter().collect()
+            // Only route around real camps (possible/likely), not lone flag kills.
+            self.camps
+                .lock()
+                .unwrap()
+                .camped(now)
+                .into_iter()
+                .filter(|(_, l)| *l >= crate::camp::CampLevel::Possible)
+                .map(|(id, _)| id)
+                .collect()
         } else {
             std::collections::HashSet::new()
         };
