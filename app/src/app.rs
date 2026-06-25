@@ -4921,7 +4921,7 @@ impl SpaiApp {
         // Small uniform dots like the in-game star map.
         // Scale dots with zoom so they don't look tiny when zoomed in (spacing scales
         // linearly with zoom up to 60×); cap so they stay sane at extreme zoom.
-        let dot = (0.7 * self.map_zoom).clamp(0.7, 14.0);
+        let dot = (0.5 * self.map_zoom).clamp(0.7, 7.0);
         // Offsets for labels / sov-upgrade icons are in screen pixels, so when zoomed
         // out (systems crowd together) a fixed gap makes them drift onto neighbours.
         // Shrink the gap as we zoom out (full size once reasonably zoomed in).
@@ -5227,8 +5227,9 @@ impl SpaiApp {
                             .filter(|up| ukinds[upgrade_kind(up) as usize])
                             .collect();
                         for (k, up) in parts.iter().take(6).enumerate() {
-                            // Sit the icons in a row above the system name.
-                            let ip = p + egui::vec2(6.0 * label_off + k as f32 * 20.0, -15.0 * label_off);
+                            // Sit the icons in a row above the system name, clear of the dot.
+                            let ip = p
+                                + egui::vec2(dot + 4.0 + k as f32 * 20.0, -(dot + 9.0) * label_off);
                             // Skip icons that would spill onto a dock — the mineral image uses
                             // ui.put (not the rect-clipped painter), so it isn't clipped.
                             if ip.x + 20.0 > rect.right() || ip.y - 20.0 < rect.top() || !rect.contains(ip) {
@@ -5504,8 +5505,8 @@ impl SpaiApp {
                 painter.circle_stroke(p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             }
             if show_sys_labels && rect.contains(p) {
-                // Name sits next to the dot; sov-upgrade icons sit above it.
-                let anchor = p + egui::vec2(6.0 * label_off, -2.0 * label_off);
+                // Name sits next to the dot (clear of it); sov-upgrade icons sit above it.
+                let anchor = p + egui::vec2(dot + 4.0, -2.0 * label_off);
                 let approx = egui::Rect::from_min_size(
                     anchor,
                     egui::vec2(s.name.len() as f32 * 7.0, 14.0),
