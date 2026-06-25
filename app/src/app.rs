@@ -4617,6 +4617,11 @@ impl SpaiApp {
             Default::default()
         };
 
+        // Cull anything whose bounding box is off-screen — most of the ~13k edges / ~5k nodes
+        // are outside the viewport when zoomed in, and drawing them just wastes tessellation.
+        let cull = rect.expand(8.0);
+        let seg_visible = |a: egui::Pos2, b: egui::Pos2| egui::Rect::from_two_pos(a, b).intersects(cull);
+
         // Gate links (each pair once); bridges are drawn separately below.
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
         if let Some(graph) = &self.systems {
@@ -4625,7 +4630,9 @@ impl SpaiApp {
                 for &n in graph.neighbors(s.id) {
                     if s.id < n && !bridges.contains(&(s.id, n)) {
                         if let Some(p2) = pos.get(&n) {
-                            painter.line_segment([p1, *p2], egui::Stroke::new(1.0, line_col));
+                            if seg_visible(p1, *p2) {
+                                painter.line_segment([p1, *p2], egui::Stroke::new(1.0, line_col));
+                            }
                         }
                     }
                 }
@@ -4635,7 +4642,9 @@ impl SpaiApp {
             let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
             for &(a, c) in &bridges {
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
-                    painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
+                    if seg_visible(*p1, *p2) {
+                        painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
+                    }
                 }
             }
         }
@@ -5047,6 +5056,9 @@ impl SpaiApp {
         let mut placed_labels: Vec<egui::Rect> = Vec::new();
         for s in &self.map_draw {
             let p = pos[&s.id];
+            if !cull.contains(p) {
+                continue; // off-screen system — skip its dot, rings and label
+            }
             painter.circle_filled(p, dot, security_color(s.security));
             if let Some((sev, received)) = intel_map.get(&s.id) {
                 let base = severity_color(*sev);
