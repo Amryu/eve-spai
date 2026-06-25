@@ -75,6 +75,13 @@ pub struct Settings {
     /// Configured sovereignty upgrades per system (pasted from a coalition site).
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
+    /// Favourited systems for the jump planner (preferred mid-points).
+    #[serde(default)]
+    pub jump_favourites: Vec<i64>,
+    /// User-marked capital docking permits per system. Dockable systems are *preferred* when
+    /// routing (never required), and flagged on the map / as a destination warning.
+    #[serde(default)]
+    pub jump_dock: Vec<DockPermit>,
     /// Coalitions (member alliance names). Unlisted alliances are independent.
     #[serde(default = "default_coalitions")]
     pub coalitions: Vec<Coalition>,
@@ -491,6 +498,18 @@ pub struct SovUpgrade {
     pub upgrade: String,
 }
 
+/// A user-set capital docking permit for a system (there's no reliable public list of
+/// friendly cap-dockable structures, so the user marks systems themselves). `supers` implies
+/// `capitals` (a Keepstar docks both).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DockPermit {
+    pub system: String,
+    /// Regular capitals (dread / carrier / FAX / rorqual / jump freighter) can dock here.
+    pub capitals: bool,
+    /// Supercarriers / titans can dock here (a Keepstar).
+    pub supers: bool,
+}
+
 /// A named Travel route saved by the user (optionally filed under a folder).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedRoute {
@@ -585,6 +604,8 @@ impl Default for Settings {
             saved_routes: Vec::new(),
             route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
+            jump_favourites: Vec::new(),
+            jump_dock: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),
             alliances: Vec::new(),

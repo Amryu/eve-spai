@@ -381,6 +381,10 @@ const PILOT_STOP: &[&str] = &[
     "rest", "stop",
     // Engagement descriptors ("good fight", "engaged on gate"). "combat" is covered above.
     "fight", "fights", "fighting", "engaged", "engage", "engaging",
+    // "etc" / "etc." (the trailing dot is trimmed by the tokenizer).
+    "etc",
+    // "more" as in "5 more inbound".
+    "more",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -411,6 +415,8 @@ const SHIP_CLASSES: &[(&str, &str)] = &[
     ("marauder", "Marauder"),
     ("marauders", "Marauder"),
     ("blops", "Black Ops"),
+    ("t3", "Strategic Cruiser"),
+    ("t3s", "Strategic Cruiser"),
     ("t3c", "Strategic Cruiser"),
     ("t3cs", "Strategic Cruiser"),
     ("t3d", "Tactical Destroyer"),
@@ -2114,9 +2120,11 @@ fn detect_probes(text: &str) -> Option<&'static str> {
         (false, true) => Some("Combat Probes"),
         (true, true) => Some("Probes"),
         (false, false) => {
+            // A bare "prob" is shorthand for "probably", not scanning probes — only the
+            // unambiguous "probes" (or a qualified "scanner/core/combat prob") counts.
             let bare = lower
                 .split(|c: char| !c.is_alphanumeric())
-                .any(|w| matches!(w, "probes" | "probs" | "prob"));
+                .any(|w| matches!(w, "probes" | "probs"));
             (lower.contains("scanner prob") || bare).then_some("Probes")
         }
     }
@@ -2643,6 +2651,10 @@ mod tests {
         }
         let r2 = analyze("hic plus 2 logi and a bomber", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.classes.iter().any(|c| c == "Heavy Interdictor"), "classes={:?}", r2.classes);
+        // "t3" / "t3s" = Tier-3 (Strategic) Cruiser; "etc" is a stop word, never a pilot.
+        let r3 = analyze("3 t3s and a t3 roaming, etc", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r3.classes.iter().any(|c| c == "Strategic Cruiser"), "classes={:?}", r3.classes);
+        assert!(!r3.pilots.iter().any(|p| p.eq_ignore_ascii_case("etc")), "pilots={:?}", r3.pilots);
         assert!(r2.classes.iter().any(|c| c == "Logistics"), "classes={:?}", r2.classes);
         assert!(r2.classes.iter().any(|c| c == "Stealth Bomber"), "classes={:?}", r2.classes);
     }
@@ -2966,6 +2978,9 @@ mod tests {
         // A lone "Probe" is still the frigate.
         let r2 = analyze("Probe tackled", &s, &si, &noknown(), 1, "ch", "x");
         assert!(r2.ships.iter().any(|sh| sh.name.eq_ignore_ascii_case("probe")));
+        // "prob" is shorthand for "probably", not scanning probes.
+        assert!(analyze("prob cyno in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").probes.is_none());
+        assert_eq!(analyze("combat probes on dscan", &s, &noships(), &noknown(), 1, "ch", "x").probes, Some("Combat Probes"));
     }
 
     #[test]

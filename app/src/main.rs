@@ -25,6 +25,7 @@ mod gamelog;
 mod gamewatcher;
 mod geo;
 mod jabber;
+mod jumproute;
 mod intel;
 mod logpaths;
 mod lookup;
@@ -65,6 +66,7 @@ fn main() -> eframe::Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai")
+        .with_icon(app::app_icon())
         .with_inner_size([1100.0, 720.0])
         .with_min_inner_size([720.0, 460.0]);
     // A transparent backbuffer (gated on the root window) is what lets the map overlay

@@ -120,9 +120,46 @@ mod linux {
         }
     }
 
-    /// A simple round accent-blue tray icon (ARGB32, network byte order). With
-    /// `badge`, a red dot is drawn in the top-right to signal unread messages.
+    /// The program logo as the tray icon (ARGB32, network byte order). With `badge`, a red
+    /// dot is overlaid in the bottom-right to signal unread messages. Falls back to a drawn
+    /// circle only if the embedded PNG can't be decoded.
     fn icon(badge: bool) -> ksni::Icon {
+        use std::sync::OnceLock;
+        static LOGO: OnceLock<Option<(i32, i32, Vec<u8>)>> = OnceLock::new();
+        let logo = LOGO.get_or_init(|| {
+            let img = image::load_from_memory(include_bytes!("../../assets/eve-spai.png"))
+                .ok()?
+                .to_rgba8();
+            let (w, h) = img.dimensions();
+            // RGBA → ARGB32 network byte order (bytes A,R,G,B per pixel).
+            let mut data = Vec::with_capacity(img.as_raw().len());
+            for px in img.as_raw().chunks_exact(4) {
+                data.extend_from_slice(&[px[3], px[0], px[1], px[2]]);
+            }
+            Some((w as i32, h as i32, data))
+        });
+        let Some((w, h, base)) = logo else { return generated_icon(badge) };
+        let (w, h) = (*w, *h);
+        let mut data = base.clone();
+        if badge {
+            let r = (w.min(h) as f32) / 5.0;
+            let (cx, cy) = (w as f32 - r - 1.0, h as f32 - r - 1.0);
+            for y in 0..h {
+                for x in 0..w {
+                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                    if dx * dx + dy * dy <= r * r {
+                        let i = ((y * w + x) * 4) as usize;
+                        data[i..i + 4].copy_from_slice(&[0xFF, 0xE0, 0x4C, 0x4C]);
+                    }
+                }
+            }
+        }
+        ksni::Icon { width: w, height: h, data }
+    }
+
+    /// Drawn fallback: a round accent-blue dot with an optional red unread badge, used only
+    /// when the embedded logo PNG fails to decode.
+    fn generated_icon(badge: bool) -> ksni::Icon {
         let (w, h) = (24i32, 24i32);
         let mut data = vec![0u8; (w * h * 4) as usize];
         let put = |data: &mut [u8], x: i32, y: i32, argb: [u8; 4]| {

@@ -1,6 +1,21 @@
 //! The application shell: window, nav rail, top/status bars, settings dialog,
 //! theme application, and persistence wiring (docs/DESIGN.md §6).
 
+/// The embedded program icon (256×256), decoded once and shared by the main window, every
+/// child window (alerts, map, Jabber, lookups, D-scan), and the tray — so they all show the
+/// same logo. Falls back to a 1×1 transparent pixel only if the embedded PNG fails to decode
+/// (it won't — it's validated at build time by `include_bytes!`).
+pub fn app_icon() -> std::sync::Arc<egui::IconData> {
+    use std::sync::{Arc, OnceLock};
+    static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/eve-spai.png"))
+            .map(Arc::new)
+            .unwrap_or_else(|_| Arc::new(egui::IconData { rgba: vec![0; 4], width: 1, height: 1 }))
+    })
+    .clone()
+}
+
 /// Intel feed type filter.
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum IntelTypeFilter {
@@ -122,6 +137,7 @@ enum MapMode {
     Travel,
     Hunting,
     Safety,
+    JumpPlan,
 }
 
 impl MapMode {
@@ -131,6 +147,7 @@ impl MapMode {
             MapMode::Travel => "Travel",
             MapMode::Hunting => "Hunting",
             MapMode::Safety => "Safety",
+            MapMode::JumpPlan => "Jump Plan",
         }
     }
     /// Overlay preset for a non-Standard mode: hide the sov/connection clutter, surface
@@ -147,7 +164,7 @@ impl MapMode {
             camps: !matches!(self, MapMode::Standard),
             bridges: matches!(self, MapMode::Travel | MapMode::Hunting),
             activity: match self {
-                MapMode::Standard => ActivityMode::Off,
+                MapMode::Standard | MapMode::JumpPlan => ActivityMode::Off,
                 _ => ActivityMode::ShipKills,
             },
         }
@@ -177,6 +194,24 @@ enum IntelClick {
     System(i64),
     Ship(i64),
     Pilot(String),
+}
+
+/// Which tab the map's right dock is showing (the mode panel, or docked system info).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RightDockTab {
+    Mode,
+    System,
+}
+
+/// What rendering the system-info panel produced (shared by the pop-out window and the map's
+/// docked System tab): pending navigations and an intel-card click, applied by the caller.
+#[derive(Default)]
+struct SystemInfoOut {
+    nav: Option<i64>,
+    show_on_map: bool,
+    intel_click: Option<IntelClick>,
+    open_const: Option<i64>,
+    open_region: Option<i64>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -460,9 +495,30 @@ pub struct SpaiApp {
     travel_route: Option<Vec<i64>>,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
-    /// Jump-route planner endpoints (seeded from the map; planner is WIP).
+    /// Jump-route planner endpoints (seeded from the map right-click menu).
     jump_plan_from: Option<i64>,
     jump_plan_to: Option<i64>,
+    /// Jump-route planner inputs: selected hull class, Jump Drive Calibration / Fuel
+    /// Conservation skill levels.
+    jump_ship: usize,
+    jump_jdc: u32,
+    jump_jfc: u32,
+    /// ESI-fetched (JDC, JFC) levels, applied to the inputs when they arrive.
+    jump_skills: crate::esi::SharedJumpSkills,
+    /// Interior waypoints the route must pass through (between start and destination).
+    jump_waypoints: Vec<i64>,
+    /// Favourited systems — preferred mid-points, and toggled from the map menu (persisted).
+    jump_favourites: std::collections::HashSet<i64>,
+    /// All K-space systems with 3D coords (loaded once) for the jump graph.
+    jump_systems: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
+    /// The computed route, leg by leg (each anchor pair; legs can be invalid/red), its flattened
+    /// system sequence, and any error — recomputed only when the inputs change.
+    jump_legs: Vec<crate::jumproute::Leg>,
+    jump_route: Vec<i64>,
+    /// Ghost alternatives: drop-in replacements within range of a waypoint's neighbours (§8.5).
+    jump_alt: Vec<i64>,
+    jump_route_err: Option<String>,
+    jump_route_key: Option<u64>,
     map_view: crate::map::MapView,
     map_initialized: bool,
     map_history: Vec<crate::map::MapView>,
@@ -543,6 +599,11 @@ pub struct SpaiApp {
     /// Whether the left (standard) and right (mode) map docks are expanded.
     left_dock_open: bool,
     right_dock_open: bool,
+    /// A system docked as a tab in the map's right dock (from clicking a system on the map);
+    /// pops out to the standalone `system_window` on request.
+    map_docked_system: Option<i64>,
+    /// Which tab the right dock shows (mode panel vs. docked system info).
+    right_dock_tab: RightDockTab,
     /// Sov-upgrade overlay sub-filters: show Ratting / Exploration / Mining / Other kinds.
     upgrade_kinds: [bool; 4],
     /// An upgrade name to faint-highlight on the map (from the search).
@@ -691,6 +752,8 @@ impl SpaiApp {
         let lookup_cache: crate::charlookup::LookupCache = Default::default();
         let lookup_tx =
             Some(crate::charlookup::spawn_fetcher(lookup_cache.clone(), cc.egui_ctx.clone()));
+        let jump_favourites: std::collections::HashSet<i64> =
+            settings.jump_favourites.iter().copied().collect();
 
         Self {
             store,
@@ -841,6 +904,18 @@ impl SpaiApp {
             ctx_menu_system: None,
             jump_plan_from: None,
             jump_plan_to: None,
+            jump_ship: 0,
+            jump_jdc: 5,
+            jump_jfc: 5,
+            jump_skills: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            jump_waypoints: Vec::new(),
+            jump_favourites,
+            jump_systems: None,
+            jump_legs: Vec::new(),
+            jump_route: Vec::new(),
+            jump_alt: Vec::new(),
+            jump_route_err: None,
+            jump_route_key: None,
             map_view: crate::map::MapView::Universe,
             map_initialized: false,
             map_history: Vec::new(),
@@ -887,6 +962,8 @@ impl SpaiApp {
             map_search_upgrades: Vec::new(),
             left_dock_open: true,
             right_dock_open: true,
+            map_docked_system: None,
+            right_dock_tab: RightDockTab::System,
             upgrade_kinds: [true; 4],
             map_highlight_upgrade: None,
             system_window: None,
@@ -930,6 +1007,14 @@ impl SpaiApp {
     fn open_system(&mut self, system_id: i64) {
         self.system_window = Some(system_id);
         self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
+    }
+
+    /// Dock a system in the map's right dock (the default for clicking a system on the map);
+    /// it can be popped out to the standalone window from the dock's System tab.
+    fn dock_system(&mut self, system_id: i64) {
+        self.map_docked_system = Some(system_id);
+        self.right_dock_open = true;
+        self.right_dock_tab = RightDockTab::System;
     }
 
     /// Open the ship-info window for a ship type (from an intel ship panel click).
@@ -2535,7 +2620,7 @@ impl SpaiApp {
         let mut keep = true;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("jabber_window"),
-            egui::ViewportBuilder::default().with_title("EVE Spai — Jabber").with_inner_size([720.0, 560.0]),
+            egui::ViewportBuilder::default().with_icon(app_icon()).with_title("EVE Spai — Jabber").with_inner_size([720.0, 560.0]),
             |ctx, _| {
                 egui::CentralPanel::default().show(ctx, |ui| self.jabber_ui(ui));
                 if ctx.input(|i| i.viewport().close_requested()) {
@@ -2611,7 +2696,13 @@ impl SpaiApp {
         let sys = geo.info_of(ev.system_id)?;
         let ship = self.ship_by_id.get(&ev.ship_type_id).cloned().unwrap_or_default();
         let lower = ship.to_lowercase();
+        // Skip noise: shuttles, rookie corvettes, cheap empty pods, and anchorable deployables.
+        // Every player-anchorable deployable is a "Mobile X" (tractor unit, depot, small/medium/
+        // large warp disruptor, micro jump unit, siphon unit, scan inhibitor, cyno beacon/
+        // inhibitor, vault, observatory) and no real hull has "Mobile" in its name, so the
+        // substring is the exact, complete catch.
         if lower.contains("shuttle")
+            || lower.contains("mobile ")
             || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
             || (lower == "capsule" && ev.value < 10_000_000.0)
         {
@@ -4443,7 +4534,7 @@ impl SpaiApp {
         let mut click: Option<IntelClick> = None;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("alert_window"),
-            egui::ViewportBuilder::default()
+            egui::ViewportBuilder::default().with_icon(app_icon())
                 .with_title("EVE Spai — alerts")
                 .with_window_level(if on_top {
                     egui::WindowLevel::AlwaysOnTop
@@ -4794,7 +4885,11 @@ impl SpaiApp {
                     e.1 = true;
                 }
             }
-            (p.system_id, here)
+            // Match the canonical `player_system()` (prefer the active character's resolved
+            // location over the lagging `system_id`), so the radial/tree threat view picks up
+            // the centre as soon as ESI reports the location at startup.
+            let sys = p.locations.get(&active_char).map(|(s, _)| *s).or(p.system_id);
+            (sys, here)
         };
         if !self.map_initialized {
             // Open on the full universe map (in-game style); navigate in from there.
@@ -4969,11 +5064,16 @@ impl SpaiApp {
             }
         }
 
-        // Click a system: open its info window.
+        // Click a system: in Jump Plan mode edit the route (§8.6); otherwise dock its info in
+        // the right dock (pop out to a window from there).
         if resp.clicked() {
             if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
                 if let Some(id) = nearest_system(click, &pos, 10.0) {
-                    self.open_system(id);
+                    if self.map_mode == MapMode::JumpPlan {
+                        self.jump_click_edit(id);
+                    } else {
+                        self.dock_system(id);
+                    }
                 }
             }
         }
@@ -4985,6 +5085,9 @@ impl SpaiApp {
         }
         let ctx_sys = self.ctx_menu_system;
         resp.context_menu(|ui| {
+            // Widen the menu so the longest labels ("Plan Jump Route From Here", the Travel
+            // actions) lay out on one line instead of wrapping awkwardly.
+            ui.set_min_width(220.0);
             let Some(sid) = ctx_sys else {
                 ui.close();
                 return;
@@ -5009,10 +5112,53 @@ impl SpaiApp {
             ui.separator();
             if ui.button("Plan Jump Route From Here").clicked() {
                 self.jump_plan_from = Some(sid);
+                self.set_map_mode(MapMode::JumpPlan);
                 ui.close();
             }
             if ui.button("Plan Jump Route To Here").clicked() {
                 self.jump_plan_to = Some(sid);
+                self.set_map_mode(MapMode::JumpPlan);
+                ui.close();
+            }
+            if ui.button("Add as Jump Waypoint").clicked() {
+                if Some(sid) != self.jump_plan_from
+                    && Some(sid) != self.jump_plan_to
+                    && !self.jump_waypoints.contains(&sid)
+                {
+                    self.jump_waypoints.push(sid);
+                }
+                self.set_map_mode(MapMode::JumpPlan);
+                ui.close();
+            }
+            let fav = self.jump_favourites.contains(&sid);
+            if ui.button(if fav { "\u{2605} Unfavourite" } else { "\u{2606} Favourite" }).clicked() {
+                if fav {
+                    self.jump_favourites.remove(&sid);
+                } else {
+                    self.jump_favourites.insert(sid);
+                }
+                self.persist_jump_favourites();
+                self.jump_route_key = None; // re-route with the new favourite bias
+                ui.close();
+            }
+            if ui.button("Show Info").clicked() {
+                self.dock_system(sid);
+                ui.close();
+            }
+            // Capital docking permits (user-set; preferred when routing, never required).
+            let permit = self
+                .systems
+                .as_ref()
+                .and_then(|g| g.info_of(sid).map(|s| s.name.clone()))
+                .and_then(|n| self.settings.jump_dock.iter().find(|p| p.system.eq_ignore_ascii_case(&n)).cloned());
+            let caps = permit.as_ref().map(|p| p.capitals).unwrap_or(false);
+            let sups = permit.as_ref().map(|p| p.supers).unwrap_or(false);
+            if ui.selectable_label(caps, "Capitals dock here").clicked() {
+                self.toggle_dock_permit(sid, false);
+                ui.close();
+            }
+            if ui.selectable_label(sups, "Supers/titans dock here").clicked() {
+                self.toggle_dock_permit(sid, true);
                 ui.close();
             }
             if self.map_mode == MapMode::Travel {
@@ -5524,6 +5670,65 @@ impl SpaiApp {
             }
         }
 
+        // Jump Plan: each leg as straight jumps (violet when valid, red when out of range),
+        // a dot per hop, ghost alternatives, favourite stars and ringed start/waypoints/dest.
+        if self.map_mode == MapMode::JumpPlan {
+            let jcol = egui::Color32::from_rgb(0x9C, 0x6A, 0xF7);
+            let red = crate::theme::standing::HOSTILE;
+            // Systems the chosen hull can dock in — a teal anchor ring (preferred, not required).
+            let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
+            for d in self.jump_dockable_ids() {
+                if let Some(p) = pos.get(&d) {
+                    painter.circle_stroke(*p, 9.0, egui::Stroke::new(1.5, teal));
+                }
+            }
+            // Ghost alternatives first (faint, behind the route).
+            for alt in &self.jump_alt {
+                if let Some(p) = pos.get(alt) {
+                    painter.circle_stroke(*p, 6.0, egui::Stroke::new(1.0, jcol.gamma_multiply(0.5)));
+                }
+            }
+            for leg in &self.jump_legs {
+                if leg.valid {
+                    for w in leg.path.windows(2) {
+                        if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
+                            painter.line_segment([*p1, *p2], egui::Stroke::new(2.5, jcol));
+                        }
+                    }
+                } else if let (Some(p1), Some(p2)) = (pos.get(&leg.from), pos.get(&leg.to)) {
+                    painter.line_segment([*p1, *p2], egui::Stroke::new(2.0, red));
+                }
+            }
+            for sid in &self.jump_route {
+                if let Some(p) = pos.get(sid) {
+                    painter.circle_filled(*p, 4.0, jcol);
+                }
+            }
+            let gold = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
+            for fav in &self.jump_favourites {
+                if let Some(p) = pos.get(fav) {
+                    painter.text(
+                        *p + egui::vec2(0.0, -11.0),
+                        egui::Align2::CENTER_CENTER,
+                        "\u{2605}",
+                        egui::FontId::proportional(13.0),
+                        gold,
+                    );
+                }
+            }
+            if let Some(p) = self.jump_plan_from.and_then(|s| pos.get(&s)) {
+                painter.circle_stroke(*p, 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0x66, 0xBB, 0x6A)));
+            }
+            for wp in &self.jump_waypoints {
+                if let Some(p) = pos.get(wp) {
+                    painter.circle_stroke(*p, 7.0, egui::Stroke::new(2.0, jcol));
+                }
+            }
+            if let Some(p) = self.jump_plan_to.and_then(|s| pos.get(&s)) {
+                painter.circle_stroke(*p, 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0xFF, 0xA7, 0x26)));
+            }
+        }
+
         // Jump-range hover. Distances are always true light-years (real coords);
         // in schematic mode we keep the band-coloured highlights but drop the rings
         // (the on-screen distances aren't metric there).
@@ -5760,6 +5965,10 @@ impl SpaiApp {
                 egui::FontId::proportional(13.0),
                 visuals.weak_text_color(),
             );
+            // The centre comes from ESI, which loads ~20s after startup on a background
+            // thread. Poll while we wait so the view fills in on its own even if that
+            // thread's repaint signal is missed; this stops once a centre exists.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             return;
         };
         let depth = self.map_threat_jumps.max(1);
@@ -5925,11 +6134,11 @@ impl SpaiApp {
             }
         }
 
-        // Interaction: left-click opens a system; right-click re-centres on it.
+        // Interaction: left-click docks a system; right-click re-centres on it.
         let pointer = ui.input(|i| i.pointer.interact_pos());
         if resp.clicked() {
             if let Some(id) = pointer.and_then(|p| nearest_system(p, &pos, 12.0)) {
-                self.open_system(id);
+                self.dock_system(id);
             }
         }
         if resp.secondary_clicked() {
@@ -5988,7 +6197,9 @@ impl SpaiApp {
                         });
                     });
             }
-            if self.map_mode != MapMode::Standard && !self.right_dock_open {
+            if (self.map_mode != MapMode::Standard || self.map_docked_system.is_some())
+                && !self.right_dock_open
+            {
                 egui::Area::new(ui.id().with("reopen_right"))
                     .fixed_pos(rect.right_top() + egui::vec2(-38.0, 6.0))
                     .order(egui::Order::Foreground)
@@ -6316,6 +6527,12 @@ impl SpaiApp {
             }
         }
         self.map_mode = new;
+        // A non-Standard mode opens its panel in the right dock — switch to it so the new
+        // panel is visible (not whatever tab, e.g. a docked system, was last shown).
+        if new != MapMode::Standard {
+            self.right_dock_open = true;
+            self.right_dock_tab = RightDockTab::Mode;
+        }
         self.needs_save = true;
     }
 
@@ -6720,6 +6937,310 @@ impl SpaiApp {
     }
 
     /// Travel Mode panel content, rendered inside a docked SidePanel (see `map_area`).
+    /// §8.6 — left-clicking the map in Jump Plan mode edits the route: set the destination if
+    /// there isn't one, otherwise add the clicked system as a waypoint.
+    fn jump_click_edit(&mut self, id: i64) {
+        if self.jump_plan_from.is_none() {
+            self.jump_plan_from = Some(id);
+            return;
+        }
+        // Ignore a click on a system already on the route (avoid duplicate anchors).
+        if Some(id) == self.jump_plan_from
+            || Some(id) == self.jump_plan_to
+            || self.jump_waypoints.contains(&id)
+        {
+            return;
+        }
+        // The click becomes the new destination; the previous destination drops into the
+        // waypoint chain so the route extends naturally.
+        if let Some(old_dest) = self.jump_plan_to.replace(id) {
+            self.jump_waypoints.push(old_dest);
+        }
+    }
+
+    /// Persist the favourite set into settings (sorted, so the saved blob is stable).
+    fn persist_jump_favourites(&mut self) {
+        let mut v: Vec<i64> = self.jump_favourites.iter().copied().collect();
+        v.sort_unstable();
+        self.settings.jump_favourites = v;
+        self.needs_save = true;
+    }
+
+    /// System ids where the currently-selected hull can dock (per the user's permits). Supers
+    /// need a `supers` permit; regular capitals accept either flag.
+    fn jump_dockable_ids(&self) -> std::collections::HashSet<i64> {
+        let supers = self.jump_ship == 1; // "Supercarrier / Titan" in SHIP_CLASSES
+        let Some(g) = &self.systems else { return Default::default() };
+        self.settings
+            .jump_dock
+            .iter()
+            .filter(|p| if supers { p.supers } else { p.capitals || p.supers })
+            .filter_map(|p| g.lookup(&p.system).map(|s| s.id))
+            .collect()
+    }
+
+    /// Toggle a capital/super docking permit for a system (by name) and persist it.
+    fn toggle_dock_permit(&mut self, sid: i64, supers: bool) {
+        let Some(name) = self.systems.as_ref().and_then(|g| g.info_of(sid).map(|s| s.name.clone())) else {
+            return;
+        };
+        let dock = &mut self.settings.jump_dock;
+        let p = match dock.iter_mut().find(|p| p.system.eq_ignore_ascii_case(&name)) {
+            Some(p) => p,
+            None => {
+                dock.push(crate::settings::DockPermit { system: name, capitals: false, supers: false });
+                dock.last_mut().unwrap()
+            }
+        };
+        if supers {
+            p.supers = !p.supers;
+            if p.supers {
+                p.capitals = true; // a Keepstar docks both
+            }
+        } else {
+            p.capitals = !p.capitals;
+        }
+        dock.retain(|p| p.capitals || p.supers);
+        self.jump_route_key = None; // re-route with the updated dock preference
+        self.needs_save = true;
+    }
+
+    /// Load every K-space system with 3D coords once, for the jump graph.
+    fn ensure_jump_systems(&mut self) {
+        if self.jump_systems.is_none() {
+            if let Some(store) = &self.store {
+                self.jump_systems = Some(std::sync::Arc::new(store.all_map_systems()));
+            }
+        }
+    }
+
+    /// Recompute the jump route when an input (endpoints / ship / JDC) changed — keyed so the
+    /// graph isn't rebuilt every frame.
+    fn recompute_jump_route(&mut self) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.jump_plan_from.hash(&mut h);
+        self.jump_plan_to.hash(&mut h);
+        self.jump_waypoints.hash(&mut h);
+        self.jump_ship.hash(&mut h);
+        self.jump_jdc.hash(&mut h);
+        let dockable = self.jump_dockable_ids();
+        let mut prefer: std::collections::HashSet<i64> = self.jump_favourites.clone();
+        prefer.extend(dockable.iter().copied());
+        let mut pref_v: Vec<i64> = prefer.iter().copied().collect();
+        pref_v.sort_unstable();
+        pref_v.hash(&mut h);
+        let key = h.finish();
+        if self.jump_route_key == Some(key) {
+            return;
+        }
+        self.jump_route_key = Some(key);
+        self.jump_legs.clear();
+        self.jump_route.clear();
+        self.jump_route_err = None;
+        let (Some(from), Some(to)) = (self.jump_plan_from, self.jump_plan_to) else { return };
+        self.ensure_jump_systems();
+        let Some(systems) = self.jump_systems.clone() else { return };
+        let class = crate::jumproute::SHIP_CLASSES[self.jump_ship];
+        let max_ly = crate::jumproute::max_range_ly(&class, self.jump_jdc);
+        let mut anchors = vec![from];
+        anchors.extend(self.jump_waypoints.iter().copied());
+        anchors.push(to);
+        let legs = crate::jumproute::plan(&systems, max_ly, &anchors, &prefer);
+        self.jump_route = crate::jumproute::flatten(&legs);
+        self.jump_legs = legs;
+        // Ghost alternatives for each waypoint: systems within range of both its neighbours.
+        self.jump_alt.clear();
+        for w in anchors.windows(3) {
+            self.jump_alt.extend(crate::jumproute::alternatives(&systems, max_ly, w[0], w[2]));
+        }
+        self.jump_alt.sort_unstable();
+        self.jump_alt.dedup();
+    }
+
+    /// The Jump Plan panel: hull + skills, endpoints (set from the map right-click menu), and
+    /// the computed fewest-jumps capital route with its fuel / fatigue summary.
+    fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
+        use crate::jumproute::{max_range_ly, SHIP_CLASSES};
+        use egui_phosphor::regular as icon;
+
+        // Default the start to the current system once.
+        if self.jump_plan_from.is_none() {
+            self.jump_plan_from = self.player_system();
+        }
+        let name_of = |id: Option<i64>, sys: &Option<std::sync::Arc<crate::geo::Systems>>| -> String {
+            id.and_then(|i| sys.as_ref().and_then(|g| g.info_of(i).map(|s| s.name.clone())))
+                .unwrap_or_else(|| "—".to_string())
+        };
+        let fmt_min = |m: f64| -> String {
+            let t = m.round() as i64;
+            if t >= 60 {
+                format!("{}h {:02}m", t / 60, t % 60)
+            } else {
+                format!("{t}m")
+            }
+        };
+
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Jump Plan").strong());
+        ui.label(
+            egui::RichText::new("Fewest-jumps capital route — set endpoints from the map right-click menu.")
+                .weak(),
+        );
+        ui.separator();
+
+        egui::ComboBox::from_id_salt(ui.id().with("jump_ship"))
+            .selected_text(SHIP_CLASSES[self.jump_ship].name)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                for (i, c) in SHIP_CLASSES.iter().enumerate() {
+                    ui.selectable_value(&mut self.jump_ship, i, c.name);
+                }
+            });
+        let class = SHIP_CLASSES[self.jump_ship];
+        // Apply ESI-fetched skills when they arrive.
+        if let Some((jdc, jfc)) = self.jump_skills.lock().unwrap().take() {
+            self.jump_jdc = jdc.min(5);
+            self.jump_jfc = jfc.min(5);
+            self.jump_route_key = None;
+        }
+        ui.horizontal(|ui| {
+            ui.label("JDC").on_hover_text("Jump Drive Calibration (range)");
+            ui.add(egui::DragValue::new(&mut self.jump_jdc).range(0..=5));
+            ui.label("JFC").on_hover_text("Jump Fuel Conservation (fuel)");
+            ui.add(egui::DragValue::new(&mut self.jump_jfc).range(0..=5));
+            ui.label(egui::RichText::new(format!("{:.1} ly", max_range_ly(&class, self.jump_jdc))).weak());
+        });
+        if self.active_character != "No character"
+            && ui
+                .button("Use my skills (ESI)")
+                .on_hover_text("Fetch Jump Drive Calibration / Fuel Conservation from ESI (needs the skills scope)")
+                .clicked()
+        {
+            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+            crate::esi::fetch_jump_skills(
+                cid,
+                self.active_character.clone(),
+                self.jump_skills.clone(),
+                ui.ctx().clone(),
+            );
+        }
+        ui.separator();
+
+        let from_name = name_of(self.jump_plan_from, &self.systems);
+        let to_name = name_of(self.jump_plan_to, &self.systems);
+        ui.horizontal(|ui| {
+            ui.label("From");
+            ui.label(egui::RichText::new(from_name).strong());
+            if ui.small_button(icon::CROSSHAIR).on_hover_text("Set to current system").clicked() {
+                self.jump_plan_from = self.player_system();
+            }
+        });
+        // Waypoints the route must pass through (added from the map menu / left-click).
+        let mut remove_wp: Option<usize> = None;
+        for (i, wp) in self.jump_waypoints.clone().iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label("Via");
+                ui.label(egui::RichText::new(name_of(Some(*wp), &self.systems)).strong());
+                if ui.small_button(icon::X).on_hover_text("Remove waypoint").clicked() {
+                    remove_wp = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove_wp {
+            self.jump_waypoints.remove(i);
+        }
+        ui.horizontal(|ui| {
+            ui.label("To");
+            ui.label(egui::RichText::new(to_name).strong());
+            if self.jump_plan_to.is_some() && ui.small_button(icon::X).on_hover_text("Clear").clicked() {
+                self.jump_plan_to = None;
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button(format!("{}  Swap", icon::SWAP)).clicked() {
+                std::mem::swap(&mut self.jump_plan_from, &mut self.jump_plan_to);
+            }
+            if (!self.jump_waypoints.is_empty() || self.jump_plan_to.is_some())
+                && ui.button("Clear").on_hover_text("Clear destination + waypoints").clicked()
+            {
+                self.jump_waypoints.clear();
+                self.jump_plan_to = None;
+            }
+        });
+        ui.label(
+            egui::RichText::new("Left-click the map to extend the route (the click becomes the destination); right-click for options.")
+                .weak(),
+        );
+        ui.separator();
+
+        self.recompute_jump_route();
+        let any_invalid = self.jump_legs.iter().any(|l| !l.valid);
+
+        // Non-blocking docking warning: the destination has no marked dock for this hull.
+        if let Some(to) = self.jump_plan_to {
+            if !self.settings.jump_dock.is_empty() && !self.jump_dockable_ids().contains(&to) {
+                ui.label(
+                    egui::RichText::new("⚠ Destination has no marked dock for this hull.")
+                        .color(crate::theme::standing::WARNING),
+                );
+            }
+        }
+
+        if let Some(err) = self.jump_route_err.clone() {
+            ui.label(egui::RichText::new(err).color(crate::theme::standing::HOSTILE));
+        } else if any_invalid {
+            // Name the first leg that can't be routed within range.
+            if let Some(bad) = self.jump_legs.iter().find(|l| !l.valid) {
+                let a = name_of(Some(bad.from), &self.systems);
+                let b = name_of(Some(bad.to), &self.systems);
+                ui.label(
+                    egui::RichText::new(format!("⚠ {a} → {b} is out of range — add a closer waypoint."))
+                        .color(crate::theme::standing::HOSTILE),
+                );
+            }
+        } else if self.jump_route.len() >= 2 {
+            if let Some(systems) = self.jump_systems.clone() {
+                let cost = crate::jumproute::route_cost(&systems, &self.jump_route, &class, self.jump_jfc);
+                ui.label(
+                    egui::RichText::new(format!("{} jumps · {:.1} ly", cost.jumps, cost.total_ly))
+                        .strong()
+                        .size(16.0),
+                );
+                ui.label(format!("{} fuel (approx)", (cost.fuel.round() as i64)));
+                ui.label(format!("Final fatigue: {}", fmt_min(cost.final_fatigue_min)));
+                ui.label(format!("Total jump delay: {}", fmt_min(cost.total_delay_min)));
+                ui.separator();
+                ui.label(egui::RichText::new("Hops").strong());
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let route = self.jump_route.clone();
+                    for (i, sid) in route.iter().enumerate() {
+                        if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(*sid)).cloned() {
+                            let sec = (info.security * 10.0).round() / 10.0;
+                            let label = format!("{}. {:.1}  {}", i + 1, sec, info.name);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(label).color(security_color(info.security)),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                self.dock_system(*sid);
+                            }
+                        }
+                    }
+                });
+            }
+        } else if self.jump_plan_to.is_none() {
+            ui.label(
+                egui::RichText::new("Right-click a system on the map → \u{201C}Plan Jump Route To Here\u{201D}.")
+                    .weak(),
+            );
+        }
+    }
+
     fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
         // A field with a keyboard-navigable suggestion dropdown (system, sec, const, region).
         fn travel_field(
@@ -7397,25 +7918,89 @@ impl SpaiApp {
                         });
                     });
             }
-            // Mode-specific panels dock on the right.
-            if self.map_mode != MapMode::Standard && self.right_dock_open {
+            // Right dock: a tab strip of the mode panel (Travel / Threat) and the docked
+            // system info (from clicking a system on the map).
+            let has_mode = self.map_mode != MapMode::Standard;
+            if self.right_dock_open && (has_mode || self.map_docked_system.is_some()) {
+                use egui_phosphor::regular as icon;
+                let mut pending: Option<(SystemInfoOut, i64)> = None;
                 egui::Panel::right("map_mode_dock")
                     .resizable(true)
-                    .default_size(240.0)
-                    .size_range(180.0..=340.0)
+                    .default_size(260.0)
+                    .size_range(190.0..=380.0)
                     .show_inside(ui, |ui| {
+                        let has_system = self.map_docked_system.is_some();
+                        // Keep the active tab valid as panels appear/disappear.
+                        if self.right_dock_tab == RightDockTab::System && !has_system {
+                            self.right_dock_tab = RightDockTab::Mode;
+                        }
+                        if self.right_dock_tab == RightDockTab::Mode && !has_mode {
+                            self.right_dock_tab = RightDockTab::System;
+                        }
                         ui.horizontal(|ui| {
                             if ui.button("\u{00BB}").on_hover_text("Minimize panel").clicked() {
                                 self.right_dock_open = false;
                             }
+                            if has_mode {
+                                let label = match self.map_mode {
+                                    MapMode::Travel => "Travel",
+                                    MapMode::Safety | MapMode::Hunting => "Threat",
+                                    MapMode::JumpPlan => "Jump Plan",
+                                    MapMode::Standard => "",
+                                };
+                                if ui
+                                    .selectable_label(self.right_dock_tab == RightDockTab::Mode, label)
+                                    .clicked()
+                                {
+                                    self.right_dock_tab = RightDockTab::Mode;
+                                }
+                            }
+                            if has_system {
+                                let name = self
+                                    .map_docked_system
+                                    .and_then(|sid| {
+                                        self.systems.as_ref().and_then(|g| g.info_of(sid).map(|i| i.name.clone()))
+                                    })
+                                    .unwrap_or_else(|| "System".to_string());
+                                if ui
+                                    .selectable_label(self.right_dock_tab == RightDockTab::System, name)
+                                    .clicked()
+                                {
+                                    self.right_dock_tab = RightDockTab::System;
+                                }
+                                if ui.button(icon::ARROW_SQUARE_OUT).on_hover_text("Pop out to window").clicked() {
+                                    if let Some(sid) = self.map_docked_system.take() {
+                                        self.system_window = Some(sid);
+                                        self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
+                                    }
+                                }
+                                if ui.button(icon::X).on_hover_text("Close").clicked() {
+                                    self.map_docked_system = None;
+                                }
+                            }
                         });
-                        match self.map_mode {
-                            MapMode::Travel => self.travel_panel_content(ui),
-                            MapMode::Safety => self.threat_board(ui, false),
-                            MapMode::Hunting => self.threat_board(ui, true),
-                            MapMode::Standard => {}
+                        ui.separator();
+                        match self.right_dock_tab {
+                            RightDockTab::Mode => match self.map_mode {
+                                MapMode::Travel => self.travel_panel_content(ui),
+                                MapMode::Safety => self.threat_board(ui, false),
+                                MapMode::Hunting => self.threat_board(ui, true),
+                                MapMode::JumpPlan => self.jump_plan_content(ui),
+                                MapMode::Standard => {}
+                            },
+                            RightDockTab::System => {
+                                if let Some(sid) = self.map_docked_system {
+                                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                                        pending = Some((self.system_info_body(ui, sid), sid));
+                                    });
+                                }
+                            }
                         }
                     });
+                if let Some((out, sid)) = pending {
+                    let ctx = ui.ctx().clone();
+                    self.apply_system_info_out(out, sid, &ctx, true);
+                }
             }
         }
         ui.push_id("map:main", |ui| self.draw_map(ui));
@@ -7434,7 +8019,13 @@ impl SpaiApp {
             egui::ComboBox::from_id_salt(ui.id().with("map_mode"))
                 .selected_text(mode.label())
                 .show_ui(ui, |ui| {
-                    for m in [MapMode::Standard, MapMode::Travel, MapMode::Hunting, MapMode::Safety] {
+                    for m in [
+                        MapMode::Standard,
+                        MapMode::Travel,
+                        MapMode::Hunting,
+                        MapMode::Safety,
+                        MapMode::JumpPlan,
+                    ] {
                         ui.selectable_value(&mut mode, m, m.label());
                     }
                 });
@@ -7854,7 +8445,7 @@ impl SpaiApp {
         let mut keep = true;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("map_window"),
-            egui::ViewportBuilder::default()
+            egui::ViewportBuilder::default().with_icon(app_icon())
                 .with_title("EVE Spai — Map")
                 .with_inner_size([960.0, 720.0])
                 .with_decorations(!overlay)
@@ -7948,7 +8539,7 @@ impl SpaiApp {
             let mut keep = true;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(format!("charmap_{name}")),
-                egui::ViewportBuilder::default()
+                egui::ViewportBuilder::default().with_icon(app_icon())
                     .with_title(format!("EVE Spai — {name}"))
                     .with_inner_size([640.0, 520.0])
                     .with_min_inner_size([360.0, 280.0]),
@@ -7996,7 +8587,7 @@ impl SpaiApp {
         let mut content = Some(content);
         parent.show_viewport_immediate(
             egui::ViewportId::from_hash_of(id),
-            egui::ViewportBuilder::default()
+            egui::ViewportBuilder::default().with_icon(app_icon())
                 .with_title(title)
                 .with_inner_size(size)
                 .with_min_inner_size([size[0].min(380.0), size[1].min(320.0)])
@@ -8140,10 +8731,9 @@ impl SpaiApp {
 
     /// System-info window: details, conditions, neighbour navigation (with intel
     /// density), and the intel reported for this system.
-    fn system_window(&mut self, ctx: &egui::Context) {
-        let Some(id) = self.system_window else {
-            return;
-        };
+    /// Renders the system-info panel into `ui` (shared by the pop-out window and the map's
+    /// docked System tab) and returns the navigations/clicks for the caller to apply.
+    fn system_info_body(&mut self, ui: &mut egui::Ui, id: i64) -> SystemInfoOut {
         let mut nav: Option<i64> = None;
         let mut show_on_map = false;
         let now = chrono::Utc::now().timestamp();
@@ -8191,295 +8781,304 @@ impl SpaiApp {
         let mut open_const: Option<i64> = None;
         let mut open_region: Option<i64> = None;
 
-        let keep = Self::dialog_viewport(
-            ctx,
-            "system_window",
-            "EVE Spai — System info",
-            [470.0, 660.0],
-            |ui| {
-                let Some(graph) = self.systems.clone() else {
-                    ui.label("SDE not ready.");
-                    return;
-                };
-                let Some(info) = graph.info_of(id).cloned() else {
-                    ui.label("Unknown system.");
-                    return;
-                };
+        let Some(graph) = self.systems.clone() else {
+            ui.label("SDE not ready.");
+            return SystemInfoOut::default();
+        };
+        let Some(info) = graph.info_of(id).cloned() else {
+            ui.label("Unknown system.");
+            return SystemInfoOut::default();
+        };
 
-                {
-                    let status = self.system_status.lock().unwrap();
-                    let flags = status.get(&id).cloned().unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        ui.label(security_badge(info.security));
-                        ui.heading(&info.name);
+        {
+            let status = self.system_status.lock().unwrap();
+            let flags = status.get(&id).cloned().unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label(security_badge(info.security));
+                ui.heading(&info.name);
+            });
+            // Sovereignty alliance logo + ADM, floated top-right so they don't
+            // affect the name's line height.
+            if flags.sov_alliance.is_some() || flags.adm.is_some() {
+                egui::Area::new(egui::Id::new("sys_sov"))
+                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        ui.vertical_centered(|ui| {
+                            if let Some(aid) = flags.sov_alliance {
+                                let url = format!(
+                                    "https://images.evetech.net/alliances/{aid}/logo?size=128"
+                                );
+                                let r = ui.add(
+                                    egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(64.0)),
+                                );
+                                if let Some(sov) = &flags.sov {
+                                    r.on_hover_text(sov);
+                                }
+                            }
+                            if let Some(adm) = flags.adm {
+                                let col = if adm >= 5.0 {
+                                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
+                                } else if adm >= 3.0 {
+                                    crate::theme::standing::WARNING
+                                } else {
+                                    crate::theme::standing::HOSTILE
+                                };
+                                ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(col).strong())
+                                    .on_hover_text(
+                                        "Activity Defense Multiplier (ESI gives only the \
+                                         total, not the military/industry/strategic split)",
+                                    );
+                            }
+                        });
                     });
-                    // Sovereignty alliance logo + ADM, floated top-right so they don't
-                    // affect the name's line height.
-                    if flags.sov_alliance.is_some() || flags.adm.is_some() {
-                        egui::Area::new(egui::Id::new("sys_sov"))
-                            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
-                            .order(egui::Order::Foreground)
-                            .show(ui.ctx(), |ui| {
-                                ui.vertical_centered(|ui| {
-                                    if let Some(aid) = flags.sov_alliance {
-                                        let url = format!(
-                                            "https://images.evetech.net/alliances/{aid}/logo?size=128"
-                                        );
-                                        let r = ui.add(
-                                            egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(64.0)),
-                                        );
-                                        if let Some(sov) = &flags.sov {
-                                            r.on_hover_text(sov);
-                                        }
-                                    }
-                                    if let Some(adm) = flags.adm {
-                                        let col = if adm >= 5.0 {
-                                            egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)
-                                        } else if adm >= 3.0 {
-                                            crate::theme::standing::WARNING
-                                        } else {
-                                            crate::theme::standing::HOSTILE
-                                        };
-                                        ui.label(egui::RichText::new(format!("ADM {adm:.1}")).color(col).strong())
-                                            .on_hover_text(
-                                                "Activity Defense Multiplier (ESI gives only the \
-                                                 total, not the military/industry/strategic split)",
-                                            );
-                                    }
-                                });
-                            });
+            }
+            // Conditions only — the clickable breadcrumb below shows location.
+            system_chips_ex(ui, &self.systems, &status, id, false, false);
+            // Breadcrumb: navigate up to the constellation / region.
+            ui.horizontal_wrapped(|ui| {
+                if let Some((cid, cname)) = &constellation {
+                    if ui.link(egui::RichText::new(cname).weak()).clicked() {
+                        open_const = Some(*cid);
                     }
-                    // Conditions only — the clickable breadcrumb below shows location.
-                    system_chips_ex(ui, &self.systems, &status, id, false, false);
-                    // Breadcrumb: navigate up to the constellation / region.
-                    ui.horizontal_wrapped(|ui| {
-                        if let Some((cid, cname)) = &constellation {
-                            if ui.link(egui::RichText::new(cname).weak()).clicked() {
-                                open_const = Some(*cid);
-                            }
-                        }
-                        if let Some(r) = region_loc {
-                            ui.label(egui::RichText::new("‹").weak());
-                            if ui.link(egui::RichText::new(&info.region).weak()).clicked() {
-                                open_region = Some(r);
-                            }
-                        }
-                    });
-                    // Last-hour activity, highlighted vs the region average.
-                    let region_ids: Vec<i64> = self
-                        .store
-                        .as_ref()
-                        .and_then(|s| s.region_of_system(id).map(|r| s.region_systems(r)))
-                        .map(|v| v.into_iter().map(|m| m.id).collect())
-                        .unwrap_or_default();
-                    let avg = |sel: &dyn Fn(&crate::systemstatus::SysFlags) -> u32| -> f64 {
-                        if region_ids.is_empty() {
-                            return 0.0;
-                        }
-                        let sum: u64 = region_ids.iter().filter_map(|s| status.get(s)).map(|f| sel(f) as u64).sum();
-                        sum as f64 / region_ids.len() as f64
+                }
+                if let Some(r) = region_loc {
+                    ui.label(egui::RichText::new("‹").weak());
+                    if ui.link(egui::RichText::new(&info.region).weak()).clicked() {
+                        open_region = Some(r);
+                    }
+                }
+            });
+            // Last-hour activity, highlighted vs the region average.
+            let region_ids: Vec<i64> = self
+                .store
+                .as_ref()
+                .and_then(|s| s.region_of_system(id).map(|r| s.region_systems(r)))
+                .map(|v| v.into_iter().map(|m| m.id).collect())
+                .unwrap_or_default();
+            let avg = |sel: &dyn Fn(&crate::systemstatus::SysFlags) -> u32| -> f64 {
+                if region_ids.is_empty() {
+                    return 0.0;
+                }
+                let sum: u64 = region_ids.iter().filter_map(|s| status.get(s)).map(|f| sel(f) as u64).sum();
+                sum as f64 / region_ids.len() as f64
+            };
+            let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Last hour:").weak());
+                let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
+                    let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
+                        crate::theme::standing::HOSTILE
+                    } else if avg > 0.0 && v as f64 > avg {
+                        crate::theme::standing::WARNING
+                    } else {
+                        ui.visuals().text_color()
                     };
-                    let (aj, ak, an) = (avg(&|f| f.jumps), avg(&|f| f.ship_kills), avg(&|f| f.npc_kills));
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Last hour:").weak());
-                        let stat = |ui: &mut egui::Ui, label: &str, v: u32, avg: f64| {
-                            let col = if avg > 0.0 && v as f64 >= 2.0 * avg {
-                                crate::theme::standing::HOSTILE
-                            } else if avg > 0.0 && v as f64 > avg {
-                                crate::theme::standing::WARNING
-                            } else {
-                                ui.visuals().text_color()
-                            };
-                            ui.label(egui::RichText::new(format!("{v} {label}")).color(col));
-                        };
-                        stat(ui, "jumps", flags.jumps, aj);
-                        stat(ui, "ship kills", flags.ship_kills, ak);
-                        stat(ui, "pod kills", flags.pod_kills, ak);
-                        stat(ui, "NPC kills", flags.npc_kills, an);
-                    });
-                }
-                self.camp_line(ui, info.id);
-                // NPC rats (consistent per region).
-                if let Some(rp) = crate::rats::rat_profile(&info.region) {
-                    ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
-                        ui.label(egui::RichText::new(rp.faction).strong());
-                    });
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Deals {} / {}   ·   weak to {} / {}",
-                            rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
-                        ))
-                        .weak(),
-                    )
-                    .on_hover_text("Tank against the damage they deal; deal the damage they're weak to.");
-                    if rp.ewar != "None" {
-                        ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
-                    }
-                }
-                self.wormhole_section(ui, id);
-                // Configured sovereignty upgrades for this system.
-                let upgrades: Vec<&str> = self
-                    .settings
-                    .sov_upgrades
-                    .iter()
-                    .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
-                    .flat_map(|u| split_upgrade_label(&u.upgrade))
-                    .collect();
-                if !upgrades.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Sov upgrades:").weak());
-                        for u in upgrades {
-                            ui.label(egui::RichText::new(u).color(crate::theme::standing::CORP));
-                        }
-                    });
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Show on map").clicked() {
-                        show_on_map = true;
-                    }
-                    let has_char = self.active_character != "No character";
-                    let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                    let cname = self.active_character.clone();
-                    ui.add_enabled_ui(has_char, |ui| {
-                        if ui.button("Set Destination").clicked() {
-                            self.set_destination_esi(cid.clone(), cname.clone(), id);
-                            self.route_destination = Some(id); // mirror on the map
-                        }
-                        if ui.button("Add Waypoint").clicked() {
-                            crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
-                        }
-                    });
-                });
-                ui.separator();
-
-                // Active-intel counts per system (density proxy) + this system's reports.
-                let state = self.intel_state.lock().unwrap();
-                let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
-                for r in &state.reports {
-                    if r.clear || state.is_stale(r) {
-                        continue;
-                    }
-                    for s in &r.systems {
-                        *counts.entry(s.id).or_default() += 1;
-                    }
-                }
-                drop(state); // release the intel lock; the kills tab needs &mut self
-
-                ui.label(egui::RichText::new("Neighbours").strong());
-                ui.horizontal_wrapped(|ui| {
-                    for &nid in graph.neighbors(id) {
-                        if let Some(ni) = graph.info_of(nid) {
-                            let cnt = counts.get(&nid).copied().unwrap_or(0);
-                            let sec = (ni.security * 10.0).round() / 10.0;
-                            let mut label = format!("{sec:.1} {}", ni.name);
-                            if cnt > 0 {
-                                label.push_str(&format!(" ({cnt})"));
-                            }
-                            let text = egui::RichText::new(label).color(security_color(ni.security)).strong();
-                            let mut btn = egui::Button::new(text);
-                            // Highlight a jump that leaves the constellation/region.
-                            let cross_region = ni.region != info.region && !ni.region.is_empty();
-                            let cross_const = ni.constellation != info.constellation;
-                            if cross_region {
-                                btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.22));
-                            } else if cross_const {
-                                btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.10));
-                            }
-                            let mut resp = ui.add(btn);
-                            let arrow = egui_phosphor::regular::ARROW_RIGHT;
-                            if cross_region {
-                                resp = resp.on_hover_text(format!("{arrow} {} ({})", ni.constellation, ni.region));
-                            } else if cross_const {
-                                resp = resp.on_hover_text(format!("{arrow} {}", ni.constellation));
-                            }
-                            if cnt > 0 {
-                                resp = resp.on_hover_text(format!("{cnt} active intel"));
-                            }
-                            if resp.clicked() {
-                                nav = Some(nid);
-                            }
-                        }
-                    }
-                });
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.system_kills_tab, false, "Intel");
-                    ui.selectable_value(&mut self.system_kills_tab, true, "Recent kills");
-                });
-                ui.separator();
-                if self.system_kills_tab {
-                    // Lazily fetch this system's recent kills from zKill (cached per system).
-                    let feed = self
-                        .system_kills_cache
-                        .entry(id)
-                        .or_insert_with(|| {
-                            let s =
-                                std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
-                            crate::lookup::spawn_system_kills(id, s.clone(), ui.ctx().clone());
-                            s
-                        })
-                        .clone();
-                    egui::ScrollArea::vertical().id_salt("syskills").max_height(280.0).show(ui, |ui| {
-                        match feed.lock().unwrap().clone() {
-                            crate::lookup::LookupState::Done(report) => {
-                                self.km_list(ui, &report.kills, report.loading);
-                            }
-                            crate::lookup::LookupState::Failed(e) => {
-                                ui.label(egui::RichText::new(e).weak());
-                            }
-                            _ => {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Loading kills\u{2026}");
-                                });
-                            }
-                        }
-                    });
-                } else {
-                    egui::ScrollArea::vertical().id_salt("sysintel").max_height(280.0).show(ui, |ui| {
-                        if sys_reports.is_empty() {
-                            ui.label(egui::RichText::new("No recent intel.").weak());
-                        }
-                        for (i, r) in sys_reports.iter().enumerate() {
-                            let from_you = jumps_from_you(
-                                &self.systems,
-                                player_sys,
-                                r.primary_system().map(|s| s.id),
-                            );
-                            let sev = severity_of(r, &self.settings.severity);
-                            let kc = self.kill_cache.clone();
-                            let affil = self.affiliations.clone();
-                            if let Some(c) = intel_row(
-                                ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                                &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev,
-                                false,
-                            &affil,
-                            ) {
-                                intel_click = Some(c);
-                            }
-                        }
-                    });
-                }
-                // TODO: neighbouring intel density over time (sparkline) — deferred.
-            },
-        );
-
-        if let Some(nid) = nav {
-            self.system_window = Some(nid);
+                    ui.label(egui::RichText::new(format!("{v} {label}")).color(col));
+                };
+                stat(ui, "jumps", flags.jumps, aj);
+                stat(ui, "ship kills", flags.ship_kills, ak);
+                stat(ui, "pod kills", flags.pod_kills, ak);
+                stat(ui, "NPC kills", flags.npc_kills, an);
+            });
         }
-        if let Some(c) = open_const {
+        self.camp_line(ui, info.id);
+        // NPC rats (consistent per region).
+        if let Some(rp) = crate::rats::rat_profile(&info.region) {
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(format!("{}  rats", egui_phosphor::regular::SKULL)).strong());
+                ui.label(egui::RichText::new(rp.faction).strong());
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "Deals {} / {}   ·   weak to {} / {}",
+                    rp.deal[0], rp.deal[1], rp.weak[0], rp.weak[1]
+                ))
+                .weak(),
+            )
+            .on_hover_text("Tank against the damage they deal; deal the damage they're weak to.");
+            if rp.ewar != "None" {
+                ui.label(egui::RichText::new(format!("EWAR: {}", rp.ewar)).weak());
+            }
+        }
+        self.wormhole_section(ui, id);
+        // Configured sovereignty upgrades for this system.
+        let upgrades: Vec<&str> = self
+            .settings
+            .sov_upgrades
+            .iter()
+            .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
+            .flat_map(|u| split_upgrade_label(&u.upgrade))
+            .collect();
+        if !upgrades.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Sov upgrades:").weak());
+                for u in upgrades {
+                    ui.label(egui::RichText::new(u).color(crate::theme::standing::CORP));
+                }
+            });
+        }
+        // Wrapped so the action buttons reflow in the narrow docked panel instead of forcing
+        // a wide minimum width.
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Show on map").clicked() {
+                show_on_map = true;
+            }
+            let has_char = self.active_character != "No character";
+            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+            let cname = self.active_character.clone();
+            ui.add_enabled_ui(has_char, |ui| {
+                if ui.button("Set Destination").clicked() {
+                    self.set_destination_esi(cid.clone(), cname.clone(), id);
+                    self.route_destination = Some(id); // mirror on the map
+                }
+                if ui.button("Add Waypoint").clicked() {
+                    crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
+                }
+            });
+        });
+        ui.separator();
+
+        // Active-intel counts per system (density proxy) + this system's reports.
+        let state = self.intel_state.lock().unwrap();
+        let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        for r in &state.reports {
+            if r.clear || state.is_stale(r) {
+                continue;
+            }
+            for s in &r.systems {
+                *counts.entry(s.id).or_default() += 1;
+            }
+        }
+        drop(state); // release the intel lock; the kills tab needs &mut self
+
+        ui.label(egui::RichText::new("Neighbours").strong());
+        ui.horizontal_wrapped(|ui| {
+            for &nid in graph.neighbors(id) {
+                if let Some(ni) = graph.info_of(nid) {
+                    let cnt = counts.get(&nid).copied().unwrap_or(0);
+                    let sec = (ni.security * 10.0).round() / 10.0;
+                    let mut label = format!("{sec:.1} {}", ni.name);
+                    if cnt > 0 {
+                        label.push_str(&format!(" ({cnt})"));
+                    }
+                    let text = egui::RichText::new(label).color(security_color(ni.security)).strong();
+                    let mut btn = egui::Button::new(text);
+                    // Highlight a jump that leaves the constellation/region.
+                    let cross_region = ni.region != info.region && !ni.region.is_empty();
+                    let cross_const = ni.constellation != info.constellation;
+                    if cross_region {
+                        btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.22));
+                    } else if cross_const {
+                        btn = btn.fill(ui.visuals().hyperlink_color.gamma_multiply(0.10));
+                    }
+                    let mut resp = ui.add(btn);
+                    let arrow = egui_phosphor::regular::ARROW_RIGHT;
+                    if cross_region {
+                        resp = resp.on_hover_text(format!("{arrow} {} ({})", ni.constellation, ni.region));
+                    } else if cross_const {
+                        resp = resp.on_hover_text(format!("{arrow} {}", ni.constellation));
+                    }
+                    if cnt > 0 {
+                        resp = resp.on_hover_text(format!("{cnt} active intel"));
+                    }
+                    if resp.clicked() {
+                        nav = Some(nid);
+                    }
+                }
+            }
+        });
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.system_kills_tab, false, "Intel");
+            ui.selectable_value(&mut self.system_kills_tab, true, "Recent kills");
+        });
+        ui.separator();
+        if self.system_kills_tab {
+            // Lazily fetch this system's recent kills from zKill (cached per system).
+            let feed = self
+                .system_kills_cache
+                .entry(id)
+                .or_insert_with(|| {
+                    let s =
+                        std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
+                    crate::lookup::spawn_system_kills(id, s.clone(), ui.ctx().clone());
+                    s
+                })
+                .clone();
+            egui::ScrollArea::vertical().id_salt("syskills").max_height(280.0).show(ui, |ui| {
+                match feed.lock().unwrap().clone() {
+                    crate::lookup::LookupState::Done(report) => {
+                        self.km_list(ui, &report.kills, report.loading);
+                    }
+                    crate::lookup::LookupState::Failed(e) => {
+                        ui.label(egui::RichText::new(e).weak());
+                    }
+                    _ => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading kills\u{2026}");
+                        });
+                    }
+                }
+            });
+        } else {
+            egui::ScrollArea::vertical().id_salt("sysintel").max_height(280.0).show(ui, |ui| {
+                if sys_reports.is_empty() {
+                    ui.label(egui::RichText::new("No recent intel.").weak());
+                }
+                for (i, r) in sys_reports.iter().enumerate() {
+                    let from_you = jumps_from_you(
+                        &self.systems,
+                        player_sys,
+                        r.primary_system().map(|s| s.id),
+                    );
+                    let sev = severity_of(r, &self.settings.severity);
+                    let kc = self.kill_cache.clone();
+                    let affil = self.affiliations.clone();
+                    if let Some(c) = intel_row(
+                        ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
+                        &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev,
+                        false,
+                    &affil,
+                    ) {
+                        intel_click = Some(c);
+                    }
+                }
+            });
+        }
+        // TODO: neighbouring intel density over time (sparkline) — deferred.
+        SystemInfoOut { nav, show_on_map, intel_click, open_const, open_region }
+    }
+
+    /// Apply the navigations/clicks a system-info panel produced. `docked` routes a neighbour
+    /// click to the docked tab instead of the pop-out window.
+    fn apply_system_info_out(
+        &mut self,
+        out: SystemInfoOut,
+        id: i64,
+        ctx: &egui::Context,
+        docked: bool,
+    ) {
+        if let Some(nid) = out.nav {
+            if docked {
+                self.map_docked_system = Some(nid);
+            } else {
+                self.system_window = Some(nid);
+            }
+        }
+        if let Some(c) = out.open_const {
             self.constellation_window = Some(c);
             self.focus_window = Some(egui::ViewportId::from_hash_of("constellation_window"));
         }
-        if let Some(r) = open_region {
+        if let Some(r) = out.open_region {
             self.region_window = Some(r);
             self.focus_window = Some(egui::ViewportId::from_hash_of("region_window"));
         }
         // A click inside an intel card (ship / pilot / system).
-        match intel_click {
+        match out.intel_click {
             Some(IntelClick::System(sid)) => self.open_system(sid),
             Some(IntelClick::Ship(sid)) => self.open_ship(sid),
             Some(IntelClick::Pilot(name)) => {
@@ -8490,13 +9089,31 @@ impl SpaiApp {
             }
             None => {}
         }
-        if show_on_map {
+        if out.show_on_map {
             self.view = View::Map;
             if let Some(r) = self.store.as_ref().and_then(|s| s.region_of_system(id)) {
                 self.map_go(crate::map::MapView::Region(r));
             }
             self.map_focus = Some(id);
         }
+    }
+
+    /// The standalone system-info window (pop-out): renders the shared body inside a viewport.
+    fn system_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.system_window else {
+            return;
+        };
+        let mut out = SystemInfoOut::default();
+        let keep = Self::dialog_viewport(
+            ctx,
+            "system_window",
+            "EVE Spai — System info",
+            [470.0, 660.0],
+            |ui| {
+                out = self.system_info_body(ui, id);
+            },
+        );
+        self.apply_system_info_out(out, id, ctx, false);
         if !keep {
             self.system_window = None;
         }
@@ -9027,7 +9644,7 @@ impl SpaiApp {
         let mut dismiss = false;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("dscan_popup"),
-            egui::ViewportBuilder::default()
+            egui::ViewportBuilder::default().with_icon(app_icon())
                 .with_title("EVE Spai — D-scan")
                 .with_visible(active) // created at startup, just toggled visible
                 .with_window_level(egui::WindowLevel::AlwaysOnTop)
@@ -12090,7 +12707,22 @@ fn intel_row(
                         .map(|(id, ship, _)| (*id, ship.clone()))
                         .collect();
                     if !seen.is_empty() {
-                        ui.label(egui::RichText::new("Last seen as:").weak());
+                        // Render the prefix at the badge height (interact_size.y) and centred,
+                        // so it stays vertically aligned with the 28px ship badges when the
+                        // "Last seen as:" group wraps onto its own row. A bare text label keeps
+                        // its short text height and sits off-centre next to the taller badges.
+                        let row_h = ui.spacing().interact_size.y;
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let w = ui
+                            .painter()
+                            .layout_no_wrap("Last seen as:".to_owned(), font, egui::Color32::PLACEHOLDER)
+                            .size()
+                            .x;
+                        ui.add_sized(
+                            [w, row_h],
+                            egui::Label::new(egui::RichText::new("Last seen as:").weak())
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        );
                         for (id, ship) in seen {
                             let url = format!("https://images.evetech.net/types/{id}/icon?size=32");
                             let img = egui::Image::new(url)

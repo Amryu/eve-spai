@@ -162,6 +162,56 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
     });
 }
 
+/// Shared slot for a fetched (Jump Drive Calibration, Jump Fuel Conservation) skill pair.
+pub type SharedJumpSkills = std::sync::Arc<std::sync::Mutex<Option<(u32, u32)>>>;
+
+/// Fetch the character's Jump Drive Calibration (21611) and Jump Fuel Conservation (21610)
+/// trained levels via ESI (`esi-skills.read_skills.v1`) and write them into `out`. Does nothing
+/// on failure / missing scope — the planner keeps the manually-entered (assume-V) values.
+pub fn fetch_jump_skills(
+    client_id: String,
+    char_name: String,
+    out: SharedJumpSkills,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        let Ok(store) = Store::open() else { return };
+        let Some(character) = store.character_by_name(&char_name) else { return };
+        let Some(token) =
+            current_access_token(&store, &client_id, character.id, character.expires_at)
+        else {
+            return;
+        };
+        let Ok(client) = reqwest::blocking::Client::builder()
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
+            .timeout(Duration::from_secs(20))
+            .build()
+        else {
+            return;
+        };
+        #[derive(serde::Deserialize)]
+        struct Skill {
+            skill_id: i64,
+            active_skill_level: u32,
+        }
+        #[derive(serde::Deserialize)]
+        struct Skills {
+            skills: Vec<Skill>,
+        }
+        let url = format!(
+            "https://esi.evetech.net/latest/characters/{}/skills/?datasource=tranquility",
+            character.id
+        );
+        let Ok(resp) = client.get(url).bearer_auth(&token).send() else { return };
+        let Ok(skills) = resp.error_for_status().and_then(|r| r.json::<Skills>()) else { return };
+        let level = |id: i64| skills.skills.iter().find(|s| s.skill_id == id).map(|s| s.active_skill_level);
+        if let (Some(jdc), Some(jfc)) = (level(21611), level(21610)) {
+            *out.lock().unwrap() = Some((jdc, jfc));
+            ctx.request_repaint();
+        }
+    });
+}
+
 /// Save a fitting to the active character's in-game fitting list, via ESI.
 /// Requires `esi-fittings.write_fittings.v1`. `items` = (type_id, flag, quantity).
 /// Runs on a background thread.
