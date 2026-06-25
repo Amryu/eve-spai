@@ -3728,9 +3728,12 @@ impl SpaiApp {
     fn pilot_report_ui(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(&report.name).strong());
-            ui.label(egui::RichText::new(format!("· {} losses", report.losses.len())).weak());
             if ui.button("zKillboard").clicked() {
                 let _ = open::that(format!("https://zkillboard.com/character/{}/", report.character_id));
+            }
+            if report.loading {
+                ui.spinner();
+                ui.label(egui::RichText::new("loading\u{2026}").weak());
             }
         });
         ui.horizontal(|ui| {

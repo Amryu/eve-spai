@@ -84,6 +84,8 @@ pub struct PilotReport {
     pub kills: Vec<Loss>,
     /// Recent solo kills, newest first.
     pub solo: Vec<Loss>,
+    /// Still fetching categories in the background.
+    pub loading: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -97,7 +99,7 @@ pub enum LookupState {
 
 pub type SharedLookup = Arc<Mutex<LookupState>>;
 
-/// Look up `name` in the background; updates `state` and wakes the UI.
+/// Look up `name` in the background; fills `state` progressively and wakes the UI.
 pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     let name = name.trim().to_owned();
     if name.is_empty() {
@@ -105,35 +107,63 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     }
     *state.lock().unwrap() = LookupState::Loading(name.clone());
     ctx.request_repaint();
-
-    std::thread::spawn(move || {
-        let result = run(&name);
-        *state.lock().unwrap() = match result {
-            Ok(report) => LookupState::Done(report),
-            Err(e) => LookupState::Failed(e),
-        };
-        ctx.request_repaint();
-    });
+    std::thread::spawn(move || run(&name, &state, &ctx));
 }
 
-fn run(name: &str) -> Result<PilotReport, String> {
-    let client = reqwest::blocking::Client::builder()
+fn run(name: &str, state: &SharedLookup, ctx: &egui::Context) {
+    let fail = |state: &SharedLookup, ctx: &egui::Context, msg: String| {
+        *state.lock().unwrap() = LookupState::Failed(msg);
+        ctx.request_repaint();
+    };
+    let client = match reqwest::blocking::Client::builder()
         .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; pilot lookup)"))
         .timeout(std::time::Duration::from_secs(20))
         .build()
-        .map_err(|e| e.to_string())?;
-
-    let (character_id, resolved) = resolve_name(&client, name)?;
-    let losses = fetch_category(&client, character_id, "losses");
-    let kills = fetch_category(&client, character_id, "kills");
-    let solo = fetch_category(&client, character_id, "solo");
-
-    Ok(PilotReport { name: resolved, character_id, losses, kills, solo })
+    {
+        Ok(c) => c,
+        Err(e) => return fail(state, ctx, e.to_string()),
+    };
+    let (character_id, resolved) = match resolve_name(&client, name) {
+        Ok(v) => v,
+        Err(e) => return fail(state, ctx, e),
+    };
+    // Show the header immediately, then fill each category as killmails resolve.
+    *state.lock().unwrap() = LookupState::Done(PilotReport {
+        name: resolved,
+        character_id,
+        losses: Vec::new(),
+        kills: Vec::new(),
+        solo: Vec::new(),
+        loading: true,
+    });
+    ctx.request_repaint();
+    for (idx, category) in ["losses", "kills", "solo"].into_iter().enumerate() {
+        fetch_category(&client, character_id, category, |partial| {
+            if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+                match idx {
+                    0 => r.losses = partial.to_vec(),
+                    1 => r.kills = partial.to_vec(),
+                    _ => r.solo = partial.to_vec(),
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+    if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+        r.loading = false;
+    }
+    ctx.request_repaint();
 }
 
-/// Pull a zKill category ("kills" / "losses" / "solo") for a character, up to MAX_KILLS
-/// entries across up to MAX_PAGES pages. zKill asks for ~1 request/second to their API.
-fn fetch_category(client: &reqwest::blocking::Client, character_id: i64, category: &str) -> Vec<Loss> {
+/// Pull a zKill category ("kills" / "losses" / "solo"), up to MAX_KILLS entries across up to
+/// MAX_PAGES pages. `on_batch` is called with the partial list as it grows (progressive UI).
+/// zKill asks for ~1 request/second to their API.
+fn fetch_category(
+    client: &reqwest::blocking::Client,
+    character_id: i64,
+    category: &str,
+    mut on_batch: impl FnMut(&[Loss]),
+) {
     let mut out: Vec<Loss> = Vec::new();
     let mut page = 1;
     while out.len() < MAX_KILLS && page <= MAX_PAGES {
@@ -167,12 +197,15 @@ fn fetch_category(client: &reqwest::blocking::Client, character_id: i64, categor
                 .unwrap_or(0.0);
             if let Some(loss) = killmail(client, id, hash, value) {
                 out.push(loss);
+                if out.len() % 6 == 0 {
+                    on_batch(&out);
+                }
             }
         }
         page += 1;
         std::thread::sleep(std::time::Duration::from_millis(1100));
     }
-    out
+    on_batch(&out);
 }
 
 /// Resolve a character name to (id, canonical name) via ESI.
