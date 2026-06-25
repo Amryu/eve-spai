@@ -354,7 +354,6 @@ pub struct SpaiApp {
     travel_start_sel: usize,
     travel_end_sel: usize,
     travel_route: Option<Vec<i64>>,
-    overlay_menu_open: bool,
     /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
     /// Jump-route planner endpoints (seeded from the map; planner is WIP).
@@ -667,7 +666,6 @@ impl SpaiApp {
             travel_start_sel: 0,
             travel_end_sel: 0,
             travel_route: None,
-            overlay_menu_open: false,
             ctx_menu_system: None,
             jump_plan_from: None,
             jump_plan_to: None,
@@ -5197,159 +5195,63 @@ impl SpaiApp {
                     });
                 });
         } else {
-            // Standard controls now live in the left dock (see map_area); only the
-            // overlays menu, search and legend remain floating over the map.
-            if !self.map_layout.is_threat() {
-                self.map_overlay_menu(ui, rect);
-            }
+            // Controls + layers + legend live in the left dock (see map_area); the search is
+            // the only thing still floating over the map.
             self.map_search_overlay(ui, rect);
-            // Legend for the sov-upgrade icons (only when that overlay is on, and never in
-            // overlay mode — handled by this branch only running when not in overlay mode).
-            if self.map_overlays.upgrades {
-                self.map_upgrade_legend(ui, rect);
-            }
         }
     }
 
-    /// Key for the sov-upgrade icons, shown top-right while that overlay is enabled.
-    fn map_upgrade_legend(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn map_layers_content(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
-        // The Overlays menu is top-right when wide, bottom-right when narrow — put the legend
-        // in the opposite corner so they never overlap.
-        let legend_pos = if rect.width() < 760.0 {
-            rect.right_top() + egui::vec2(-210.0, 8.0)
-        } else {
-            rect.right_bottom() + egui::vec2(-210.0, -150.0)
-        };
-        egui::Area::new(ui.id().with("map_upgrade_legend"))
-            .fixed_pos(legend_pos)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Sov upgrades").strong());
-                        let mut row = |g: &str, txt: &str| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(g).size(16.0));
-                                ui.label(txt);
-                            });
-                        };
-                        row(icon::SKULL, "Ratting / threat detection");
-                        row(icon::BROADCAST, "Exploration / scanning");
-                        row(icon::RADIOACTIVE, "Cyno");
-                        row(icon::GEAR, "Other upgrade");
-                        ui.label(egui::RichText::new("Mining shows the ore icon").weak());
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label("Level:");
-                            ui.colored_label(level_color(1), "1");
-                            ui.colored_label(level_color(2), "2");
-                            ui.colored_label(level_color(3), "3–5");
-                        });
-                    });
-                });
-            });
-    }
-
-    /// "Overlays" menu (sovereignty, ADM, activity, bridges, upgrades). Anchored
-    /// top-right; on a narrow map it moves to the bottom-right so the controls bar
-    /// can't overlap it, and the popover scrolls when it's taller than the map.
-    fn map_overlay_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
-        use egui_phosphor::regular as icon;
-        let screen = ui.ctx().content_rect();
-        // Tight on width: the top-left controls bar would overlap a top-right menu.
-        let narrow = rect.width() < 760.0;
-        let (anchor, base) = if narrow {
-            (
-                egui::Align2::RIGHT_BOTTOM,
-                egui::vec2(rect.right() - screen.right() - 8.0, rect.bottom() - screen.bottom() - 8.0),
-            )
-        } else {
-            (
-                egui::Align2::RIGHT_TOP,
-                egui::vec2(rect.right() - screen.right() - 8.0, rect.top() - screen.top() + 8.0),
-            )
-        };
-        let btn_area = egui::Area::new(ui.id().with("map_overlays_btn"))
-            .anchor(anchor, base)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style())
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Button::new(format!("{}  Overlays", icon::STACK_SIMPLE))
-                                .selected(self.overlay_menu_open),
-                        )
-                    })
-                    .inner
-            });
-        if btn_area.inner.clicked() {
-            self.overlay_menu_open = !self.overlay_menu_open;
+        ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
+        ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
+        ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
+        ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
+        ui.separator();
+        ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
+        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
+        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
+        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
+        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
+        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
+        ui.separator();
+        ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
+        ui.checkbox(&mut self.map_overlays.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
+        ui.checkbox(&mut self.map_overlays.upgrades, format!("{}  Sov upgrades", icon::MAP_PIN_LINE));
+        ui.checkbox(&mut self.map_overlays.jump_range, format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE));
+        ui.separator();
+        ui.checkbox(&mut self.map_overlays.wormholes, format!("{}  Wormhole connections", icon::SPIRAL));
+        ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
+        ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
+        if ui
+            .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
+            .on_hover_text("Set Destination adds a waypoint at each hole entrance")
+            .changed()
+        {
+            self.needs_save = true;
         }
-        if !self.overlay_menu_open {
-            return;
-        }
-        // The popover sits below the button (top anchor) or above it (bottom anchor).
-        let gap = btn_area.response.rect.height() + 6.0;
-        let pop_offset = if narrow { base - egui::vec2(0.0, gap) } else { base + egui::vec2(0.0, gap) };
-        let max_h = (rect.height() - btn_area.response.rect.height() - 24.0).clamp(120.0, 600.0);
-        egui::Area::new(ui.id().with("map_overlays_pop"))
-            .anchor(anchor, pop_offset)
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    egui::ScrollArea::vertical().auto_shrink([true, true]).max_height(max_h).show(ui, |ui| {
-                        ui.label(egui::RichText::new(format!("{}  Sovereignty", icon::FLAG)).strong());
-                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Off, "Off");
-                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Alliance, "By alliance");
-                        ui.radio_value(&mut self.map_overlays.sov, SovMode::Coalition, "By coalition");
-                        ui.separator();
-                        ui.label(egui::RichText::new(format!("{}  Activity (last hour)", icon::FIRE)).strong());
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Off, "Off");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::ShipKills, "Ship kills");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::PodKills, "Pod kills");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::NpcKills, "NPC kills");
-                        ui.radio_value(&mut self.map_overlays.activity, ActivityMode::Jumps, "Jumps");
-                        ui.separator();
-                        ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
-                        ui.checkbox(
-                            &mut self.map_overlays.bridges,
-                            format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT),
-                        );
-                        ui.checkbox(
-                            &mut self.map_overlays.upgrades,
-                            format!("{}  Sov upgrades", icon::MAP_PIN_LINE),
-                        );
-                        ui.checkbox(
-                            &mut self.map_overlays.jump_range,
-                            format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE),
-                        );
-                        ui.separator();
-                        ui.checkbox(
-                            &mut self.map_overlays.wormholes,
-                            format!("{}  Wormhole connections", icon::SPIRAL),
-                        );
-                        ui.checkbox(
-                            &mut self.map_overlays.thera,
-                            format!("{}  Thera", icon::PLANET),
-                        );
-                        ui.checkbox(
-                            &mut self.map_overlays.turnur,
-                            format!("{}  Turnur", icon::PLANET),
-                        );
-                        if ui
-                            .checkbox(
-                                &mut self.settings.route_via_wormholes,
-                                format!("{}  Route via wormholes", icon::SPIRAL),
-                            )
-                            .on_hover_text("Set Destination adds a waypoint at each hole entrance")
-                            .changed()
-                        {
-                            self.needs_save = true;
-                        }
-                    });
+        // Sov-upgrade icon legend (only meaningful while that overlay is on).
+        if self.map_overlays.upgrades {
+            ui.separator();
+            ui.label(egui::RichText::new("Upgrade icons").strong());
+            let mut row = |g: &str, txt: &str| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(g).size(16.0));
+                    ui.label(txt);
                 });
+            };
+            row(icon::SKULL, "Ratting / threat detection");
+            row(icon::BROADCAST, "Exploration / scanning");
+            row(icon::RADIOACTIVE, "Cyno");
+            row(icon::GEAR, "Other upgrade");
+            ui.label(egui::RichText::new("Mining shows the ore icon").weak());
+            ui.horizontal(|ui| {
+                ui.label("Level:");
+                ui.colored_label(level_color(1), "1");
+                ui.colored_label(level_color(2), "2");
+                ui.colored_label(level_color(3), "3\u{2013}5");
             });
+        }
     }
 
     /// Hover tooltip for a map system: name/security/location, ESI activity, and
@@ -5782,7 +5684,8 @@ impl SpaiApp {
     /// Render the map, prefixed by a docked left SidePanel for the active mode's panel (so the
     /// panel and the map never overlap and both reflow when the window is resized).
     fn map_area(&mut self, ui: &mut egui::Ui) {
-        // Standard controls live in a left dock, not floating over the map.
+        // Docks only in normal mode — overlay mode is a minimal borderless map.
+        if !self.map_overlay_mode {
         egui::Panel::left("map_standard_dock")
             .resizable(true)
             .default_size(212.0)
@@ -5800,148 +5703,123 @@ impl SpaiApp {
                 .size_range(180.0..=340.0)
                 .show_inside(ui, |ui| self.travel_panel_content(ui));
         }
+        }
         ui.push_id("map:main", |ui| self.draw_map(ui));
     }
 
+    /// Standard map controls, laid out vertically in the left dock with titled sections and
+    /// text-labelled buttons (the dock is wider than the old floating bar).
     fn map_controls_content(&mut self, ui: &mut egui::Ui) {
-        use crate::map::MapView;
+        use crate::map::{MapLayout, MapView};
         use egui_phosphor::regular as icon;
-        ui.horizontal_wrapped(|ui| {
-                        // Mode selector — auto-adapts the overlays to the chosen mode.
-                        let mut mode = self.map_mode;
-                        egui::ComboBox::from_id_salt(ui.id().with("map_mode"))
-                            .selected_text(mode.label())
-                            .show_ui(ui, |ui| {
-                                for m in
-                                    [MapMode::Standard, MapMode::Travel, MapMode::Hunting, MapMode::Safety]
-                                {
-                                    ui.selectable_value(&mut mode, m, m.label());
-                                }
-                            });
-                        if mode != self.map_mode {
-                            self.set_map_mode(mode);
-                        }
-                        if ui
-                            .button(icon::GLOBE_HEMISPHERE_WEST)
-                            .on_hover_text("Universe map")
-                            .clicked()
-                        {
-                            self.map_go(MapView::Universe);
-                        }
-                        // (Back/forward + region navigation moved to the search box.)
-                        if ui
-                            .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
-                            .on_hover_text("Follow active character")
-                            .clicked()
-                        {
-                            self.map_follow = !self.map_follow;
-                        }
-                        // Layout: geographic / 2D / radial / tree.
-                        use crate::map::MapLayout;
-                        egui::ComboBox::from_id_salt(ui.id().with("map_layout"))
-                            .selected_text(match self.map_layout {
-                                MapLayout::Geographic => "3D",
-                                MapLayout::Spaced => "2D",
-                                MapLayout::Radial => "Radial",
-                                MapLayout::Tree => "Tree",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
-                                ui.selectable_value(&mut self.map_layout, MapLayout::Spaced, "2D (in-game layout)");
-                                ui.selectable_value(&mut self.map_layout, MapLayout::Radial, "Radial (jumps)");
-                                ui.selectable_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
-                            });
-                        if self.map_layout.is_threat() {
-                            ui.add(
-                                egui::DragValue::new(&mut self.map_threat_jumps)
-                                    .range(1..=15)
-                                    .prefix("≤")
-                                    .suffix("j"),
-                            )
-                            .on_hover_text("Max jumps shown");
-                        }
-                        if ui
-                            .button(icon::ARROW_COUNTER_CLOCKWISE)
-                            .on_hover_text("Reset view")
-                            .clicked()
-                        {
-                            self.map_pan = egui::Vec2::ZERO;
-                            self.map_zoom = 1.0;
-                            self.map_follow = false;
-                        }
-                        // Per-character pop-out maps (other characters with a known
-                        // location): one window each, centred on that character.
-                        let active = self.active_character.clone();
-                        let others: Vec<String> = {
-                            let p = self.player.lock().unwrap();
-                            let mut v: Vec<String> = p
-                                .locations
-                                .keys()
-                                .filter(|n| !n.eq_ignore_ascii_case(&active))
-                                .cloned()
-                                .collect();
-                            v.sort();
-                            v
-                        };
-                        if !others.is_empty() && !self.map_in_popout {
-                            ui.menu_button(icon::USERS_THREE, |ui| {
-                                ui.label(egui::RichText::new("Pop out character map").strong());
-                                for n in &others {
-                                    let open = self.map_char_popouts.contains(n);
-                                    if ui.selectable_label(open, n).clicked() {
-                                        if open {
-                                            self.map_char_popouts.retain(|x| x != n);
-                                            self.map_char_view.remove(n);
-                                        } else {
-                                            self.map_char_popouts.push(n.clone());
-                                        }
-                                        ui.close();
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text("Pop out a map per character");
-                        }
-                        if self.map_in_popout {
-                            // A per-character pop-out has no main-window controls.
-                        } else if !self.map_popped {
-                            if ui
-                                .button(icon::ARROW_SQUARE_OUT)
-                                .on_hover_text("Pop out map window")
-                                .clicked()
-                            {
-                                self.map_popped = true;
-                            }
-                        } else {
-                            if ui
-                                .add(egui::Button::new(icon::PUSH_PIN).selected(self.map_window_on_top))
-                                .on_hover_text("Keep window on top")
-                                .clicked()
-                            {
-                                self.map_window_on_top = !self.map_window_on_top;
-                            }
-                            if ui
-                                .button(icon::FRAME_CORNERS)
-                                .on_hover_text("Overlay mode (borderless, on top)")
-                                .clicked()
-                            {
-                                self.map_overlay_mode = true;
-                            }
-                        }
-                        if ui.button(icon::EYE_SLASH).on_hover_text("Hide controls").clicked() {
-                            self.map_controls_hidden = true;
-                        }
-                        if self.route_destination.is_some()
-                            && ui.button(icon::X).on_hover_text("Clear route").clicked()
-                        {
-                            self.route_destination = None;
-                        }
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Mode");
+            let mut mode = self.map_mode;
+            egui::ComboBox::from_id_salt(ui.id().with("map_mode"))
+                .selected_text(mode.label())
+                .show_ui(ui, |ui| {
+                    for m in [MapMode::Standard, MapMode::Travel, MapMode::Hunting, MapMode::Safety] {
+                        ui.selectable_value(&mut mode, m, m.label());
+                    }
+                });
+            if mode != self.map_mode {
+                self.set_map_mode(mode);
+            }
         });
+        ui.separator();
+
+        ui.label(egui::RichText::new("View").strong());
+        if ui.button(format!("{}  Universe map", icon::GLOBE_HEMISPHERE_WEST)).clicked() {
+            self.map_go(MapView::Universe);
+        }
+        egui::ComboBox::from_id_salt(ui.id().with("map_layout"))
+            .selected_text(match self.map_layout {
+                MapLayout::Geographic => "3D (geographic)",
+                MapLayout::Spaced => "2D (in-game layout)",
+                MapLayout::Radial => "Radial (jumps)",
+                MapLayout::Tree => "Tree (jumps)",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.map_layout, MapLayout::Geographic, "3D (geographic)");
+                ui.selectable_value(&mut self.map_layout, MapLayout::Spaced, "2D (in-game layout)");
+                ui.selectable_value(&mut self.map_layout, MapLayout::Radial, "Radial (jumps)");
+                ui.selectable_value(&mut self.map_layout, MapLayout::Tree, "Tree (jumps)");
+            });
+        if self.map_layout.is_threat() {
+            ui.horizontal(|ui| {
+                ui.label("Max jumps");
+                ui.add(egui::DragValue::new(&mut self.map_threat_jumps).range(1..=15).suffix("j"));
+            });
+        }
+        if ui
+            .add(egui::Button::new(format!("{}  Follow character", icon::CROSSHAIR)).selected(self.map_follow))
+            .clicked()
+        {
+            self.map_follow = !self.map_follow;
+        }
+        if ui.button(format!("{}  Reset view", icon::ARROW_COUNTER_CLOCKWISE)).clicked() {
+            self.map_pan = egui::Vec2::ZERO;
+            self.map_zoom = 1.0;
+            self.map_follow = false;
+        }
+        if self.route_destination.is_some() && ui.button(format!("{}  Clear route", icon::X)).clicked() {
+            self.route_destination = None;
+        }
+
+        if !self.map_in_popout {
+            ui.separator();
+            ui.label(egui::RichText::new("Window").strong());
+            let active = self.active_character.clone();
+            let others: Vec<String> = {
+                let p = self.player.lock().unwrap();
+                let mut v: Vec<String> =
+                    p.locations.keys().filter(|n| !n.eq_ignore_ascii_case(&active)).cloned().collect();
+                v.sort();
+                v
+            };
+            if !others.is_empty() {
+                ui.menu_button(format!("{}  Pop out character map", icon::USERS_THREE), |ui| {
+                    for n in &others {
+                        let open = self.map_char_popouts.contains(n);
+                        if ui.selectable_label(open, n).clicked() {
+                            if open {
+                                self.map_char_popouts.retain(|x| x != n);
+                                self.map_char_view.remove(n);
+                            } else {
+                                self.map_char_popouts.push(n.clone());
+                            }
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            if !self.map_popped {
+                if ui.button(format!("{}  Pop out map window", icon::ARROW_SQUARE_OUT)).clicked() {
+                    self.map_popped = true;
+                }
+            } else {
+                if ui
+                    .add(egui::Button::new(format!("{}  Keep on top", icon::PUSH_PIN)).selected(self.map_window_on_top))
+                    .clicked()
+                {
+                    self.map_window_on_top = !self.map_window_on_top;
+                }
+                if ui.button(format!("{}  Overlay mode", icon::FRAME_CORNERS)).clicked() {
+                    self.map_overlay_mode = true;
+                }
+            }
+        }
+
+        if !self.map_layout.is_threat() {
+            ui.separator();
+            egui::CollapsingHeader::new(format!("{}  Layers", icon::STACK_SIMPLE))
+                .default_open(true)
+                .show(ui, |ui| self.map_layers_content(ui));
+        }
     }
 
-    /// Search panel at the bottom-left of the map: systems, constellations and
-    /// regions. The input is in its own fixed-size area so it never jitters; the
-    /// keyboard-navigable results dropdown opens upward above it.
     fn map_search_overlay(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use crate::map::MapView;
         use egui_phosphor::regular as icon;
