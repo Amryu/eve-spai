@@ -4561,15 +4561,17 @@ impl SpaiApp {
         let op_links = self.settings.op_channel_links.clone();
         let mut dismiss = false;
         let mut keep = true;
-        const WIDTH: f32 = 440.0;
+        const WIDTH: f32 = 520.0;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("fleet_ping_window"),
             egui::ViewportBuilder::default()
                 .with_icon(app_icon())
                 .with_title("EVE Spai \u{2014} Fleet ping")
                 .with_inner_size([WIDTH, 320.0])
-                .with_min_inner_size([WIDTH, 100.0])
-                .with_resizable(false)
+                .with_min_inner_size([260.0, 100.0])
+                // Resizable so the user can set the width (content reflows) and the height-fit
+                // below is honoured (a fixed-size window ignores InnerSize on some platforms).
+                .with_resizable(true)
                 .with_always_on_top(),
             |vctx, _class| {
                 let inner = egui::CentralPanel::default().show(vctx, |ui| {
@@ -4581,11 +4583,12 @@ impl SpaiApp {
                     // Content height (inside the panel margin) to size the window to.
                     ui.min_rect().height()
                 });
-                // Fit the window height to the ping so there's no empty space at the bottom.
-                // The panel adds its margin on each side; resize only when meaningfully off.
+                // Fit the height to the (wrapped) content at the user's current width — so there
+                // is no empty space, while the width stays whatever the user resized it to.
                 let target = (inner.inner + 20.0).clamp(100.0, 720.0);
+                let cur_w = vctx.content_rect().width();
                 if (vctx.content_rect().height() - target).abs() > 4.0 {
-                    vctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(WIDTH, target)));
+                    vctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur_w, target)));
                 }
                 if vctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
@@ -12755,8 +12758,9 @@ fn render_ping(
     use crate::pings::{Comms, Formup, PapType, Ping};
     use egui_phosphor::regular as icon;
     // A comms row: label + "Join Mumble" (resolves the gnf.lt link to mumble://) + the raw link.
+    // Wrapped so it reflows in a narrow / resized window instead of overflowing.
     let mumble_row = |ui: &mut egui::Ui, label: String, link: &str| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(label);
             if ui
                 .button(format!("{}  Join Mumble", icon::HEADSET))
@@ -12847,7 +12851,7 @@ fn render_ping(
                         }
                     }
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if let Some(d) = doctrine {
                         // Link the doctrine name straight to its baked forum thread if known.
                         if let Some(url) = crate::doctrines::link_for(d) {
