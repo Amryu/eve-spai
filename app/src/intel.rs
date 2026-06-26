@@ -721,14 +721,11 @@ fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>
         let max = 3.min(words.len() - i);
         for len in (1..=max).rev() {
             let run = words[i..i + len].join(" ");
-            // A short single token that wasn't capitalised in the text is almost always a
-            // lower-cased English word / chat abbreviation ("gg", "sry", "ez"), not a
-            // deliberate pilot mention — real names are typed capitalised. Skip those even
-            // when a known pilot happens to share the spelling.
-            let casual = len == 1
-                && run.chars().count() <= 4
-                && run.chars().next().is_some_and(|c| !c.is_ascii_uppercase());
-            if known.contains_key(&run.to_lowercase()) && !is_pilot_stopword(&run) && !casual {
+            // Refuse only a run that is entirely stop words: a single lower-cased stop word, or
+            // a group made up of nothing but single-word stop words. A real (sub-)name is kept
+            // even when it's lower-cased ("wuming"), so it can anchor the full name.
+            let all_stop = run.split_whitespace().all(is_pilot_stopword);
+            if known.contains_key(&run.to_lowercase()) && !all_stop {
                 out.push(run);
                 adv = len;
                 break;
@@ -990,6 +987,43 @@ fn lowercase_tail_names(
             && !CLEAR_WORDS.contains(&b_lc.as_str())
             && !ship_index.contains_key(&b_lc);
         if a_ok && b_ok {
+            out.push(format!("{a} {b}"));
+        }
+    }
+    out
+}
+
+/// A known single-word character preceded by a plain lower-cased word is the full name relayed
+/// as plain text ("ji wuming", where only "wuming" is in the cache). Grab the leading word so
+/// the real name isn't truncated to its surname — as long as that word is an ordinary lower-case
+/// word (not a stop word, system, ship, or a known name in its own right).
+fn lowercase_known_compound(
+    text: &str,
+    known: &HashMap<String, i64>,
+    systems: &Systems,
+    ship_index: &HashMap<String, (i64, String)>,
+) -> Vec<String> {
+    if known.is_empty() {
+        return Vec::new();
+    }
+    let punct = |c: char| ",.;:!?\"()".contains(c);
+    let words: Vec<&str> =
+        text.split_whitespace().map(|w| w.trim_matches(punct)).filter(|w| !w.is_empty()).collect();
+    let mut out = Vec::new();
+    for w in words.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (a_lc, b_lc) = (a.to_lowercase(), b.to_lowercase());
+        // b is a known single-word character; a is a plain lower-cased leading word.
+        let ok = known.contains_key(&b_lc)
+            && a.len() >= 2
+            && a.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && a.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+            && !is_pilot_stopword(a)
+            && !CLEAR_WORDS.contains(&a_lc.as_str())
+            && resolve(systems, a).is_none()
+            && !ship_index.contains_key(&a_lc)
+            && !known.contains_key(&a_lc);
+        if ok {
             out.push(format!("{a} {b}"));
         }
     }
@@ -1301,6 +1335,14 @@ pub fn analyze_ctx(
         }
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
             pilots.push(k);
+        }
+    }
+    // A plain-text-relayed full name whose surname is the only cached part ("ji wuming") — grab
+    // the leading word so the sub-name added above doesn't stand alone (the subphrase pass then
+    // drops the bare surname in favour of the full name).
+    for n in lowercase_known_compound(&masked, known_pilots, systems, ship_index) {
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&n)) {
+            pilots.push(n);
         }
     }
     // Drag-and-drop dscan "<pilot> (<ship>)": the name and the ship (by full name,
@@ -2428,6 +2470,7 @@ mod tests {
             ("ypw-m2", "YPW-M2", 7, -0.5),
             ("amarr", "Amarr", 8, 1.0),
             ("sv5-8n", "SV5-8N", 9, -0.4),
+            ("eimj-m", "EIMJ-M", 30004946, -0.4),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -2445,6 +2488,29 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn lowercase_full_name_not_truncated_to_surname() {
+        let s = systems();
+        // In-game paste with showinfo tags: the char link is authoritative.
+        let txt = "<url=showinfo:1373//2112339969>ji wuming</url>  <url=showinfo:5//30004946>EIMJ-M</url>";
+        let mut known = noknown();
+        known.insert("wuming".into(), 999); // the surname is itself a real character
+        let r = analyze(txt, &s, &noships(), &known, 1, "ch", "Death Eater 101");
+        assert_eq!(r.pilots, vec!["ji wuming".to_string()], "got {:?}", r.pilots);
+        // Plain-text relay with the full name cached.
+        let mut known2 = noknown();
+        known2.insert("ji wuming".into(), 2112339969);
+        known2.insert("wuming".into(), 999);
+        let r2 = analyze("ji wuming  EIMJ-M", &s, &noships(), &known2, 1, "ch", "x");
+        assert_eq!(r2.pilots, vec!["ji wuming".to_string()], "got {:?}", r2.pilots);
+        // Plain-text relay where only the SURNAME is cached: the leading lower-cased word is
+        // grabbed so the name isn't truncated to "wuming".
+        let mut known3 = noknown();
+        known3.insert("wuming".into(), 999);
+        let r3 = analyze("ji wuming  EIMJ-M", &s, &noships(), &known3, 1, "ch", "x");
+        assert_eq!(r3.pilots, vec!["ji wuming".to_string()], "got {:?}", r3.pilots);
     }
 
     #[test]
