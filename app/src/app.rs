@@ -140,6 +140,35 @@ enum MapMode {
     JumpPlan,
 }
 
+/// Which kind of saved route a row in the merged Routes dialog refers to.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum RouteKind {
+    #[default]
+    Travel,
+    Jump,
+}
+
+/// How the merged Routes dialog groups its list.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum RouteView {
+    #[default]
+    ByType,
+    ByName,
+    BySystem,
+}
+
+/// A unified row for the merged Routes dialog (either route kind).
+#[derive(Clone)]
+struct RouteItem {
+    kind: RouteKind,
+    name: String,
+    folder: String,
+    from: i64,
+    to: i64,
+    jumps: usize,
+    wp: usize,
+}
+
 impl MapMode {
     fn label(self) -> &'static str {
         match self {
@@ -480,12 +509,19 @@ pub struct SpaiApp {
     travel_ingame_dest: Option<i64>,
     /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
-    /// Saved-routes dialog state.
+    /// Saved-routes dialog state (merged travel + jump routes).
     routes_dialog_open: bool,
     route_save_name: String,
     route_save_folder: String,
     route_search: String,
     route_new_folder: String,
+    /// Which route kind the dialog's Save row targets, and how the list is grouped.
+    route_kind: RouteKind,
+    route_view: RouteView,
+    /// Inline edit: (kind, original folder, original name) of the row being renamed/moved.
+    route_edit: Option<(RouteKind, String, String)>,
+    route_edit_name: String,
+    route_edit_folder: String,
     /// Systems the route must avoid.
     travel_avoid: Vec<i64>,
     /// Sov holders (alliance names) to route around, picked from the coalition tree dialog.
@@ -509,9 +545,6 @@ pub struct SpaiApp {
     jump_waypoints: Vec<i64>,
     /// Favourited systems — preferred mid-points, and toggled from the map menu (persisted).
     jump_favourites: std::collections::HashSet<i64>,
-    /// In-progress name for saving the current jump route + whether its dialog is open.
-    jump_route_name: String,
-    jump_routes_dialog_open: bool,
     /// All K-space systems with 3D coords (loaded once) for the jump graph.
     jump_systems: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
     /// The computed route, leg by leg (each anchor pair; legs can be invalid/red), its flattened
@@ -677,6 +710,16 @@ impl SpaiApp {
             settings.alerts.rules.insert(0, crate::settings::default_rule());
             settings.alerts.seeded = true;
         }
+        // One-time: force the fleet ping window on for existing users (it's now on by default).
+        // Runs once — afterwards the user can turn it back off and it stays off. Persist the
+        // marker immediately so the force can't repeat on the next launch.
+        if !settings.fleet_window_forced {
+            settings.fleet_ping_window = true;
+            settings.fleet_window_forced = true;
+            if let Some(s) = &store {
+                let _ = s.save_settings(&settings);
+            }
+        }
         // Restore persisted map/intel options (or defaults).
         let pv: PersistedView = serde_json::from_str(&settings.view_options).unwrap_or(PersistedView {
             overlays: MapOverlays::default(),
@@ -721,6 +764,18 @@ impl SpaiApp {
                 s.load_pings(2000).into_iter().filter_map(|j| serde_json::from_str(&j).ok()).collect()
             })
             .unwrap_or_default();
+        // Seed the op-channel comms-link cache from persisted well-formed pings.
+        for p in &loaded_pings {
+            if let crate::pings::Ping::Fleet {
+                comms: Some(crate::pings::Comms::Mumble { channel, link }),
+                ..
+            } = p
+            {
+                if let Some(k) = op_key(channel) {
+                    settings.op_channel_links.entry(k).or_insert_with(|| link.clone());
+                }
+            }
+        }
         // Restore persisted conversations, grouped by JID (in time order).
         let mut loaded_chats: std::collections::BTreeMap<String, Vec<crate::jabber::ChatMsg>> =
             std::collections::BTreeMap::new();
@@ -900,6 +955,11 @@ impl SpaiApp {
             route_save_folder: String::new(),
             route_search: String::new(),
             route_new_folder: String::new(),
+            route_kind: RouteKind::Travel,
+            route_view: RouteView::ByType,
+            route_edit: None,
+            route_edit_name: String::new(),
+            route_edit_folder: String::new(),
             travel_avoid: Vec::new(),
             travel_avoid_sov: std::collections::HashSet::new(),
             travel_sov_dialog_open: false,
@@ -913,8 +973,6 @@ impl SpaiApp {
             jump_skills: std::sync::Arc::new(std::sync::Mutex::new(None)),
             jump_waypoints: Vec::new(),
             jump_favourites,
-            jump_route_name: String::new(),
-            jump_routes_dialog_open: false,
             jump_systems: None,
             jump_legs: Vec::new(),
             jump_route: Vec::new(),
@@ -1174,7 +1232,7 @@ impl SpaiApp {
                 notify(f.title.clone(), f.body.clone());
             }
             if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
-                crate::sound::play(&f.sound);
+                crate::sound::play_prio(&f.sound, f.sev as u8);
             }
             self.alert_feed.push((f.report.clone(), f.sev));
             let n = self.alert_feed.len();
@@ -1378,12 +1436,36 @@ impl SpaiApp {
 
     /// Drain new-message notifications each frame: play sounds (respecting mute) and
     /// flash the taskbar when we're not focused.
+    /// Cache the gnf.lt comms link of any well-formed fleet ping, keyed by its op channel, so a
+    /// later malformed ping that only names the channel can still surface "Join Mumble".
+    fn cache_op_links(&mut self, pings: &[crate::pings::Ping]) {
+        use crate::pings::{Comms, Ping};
+        let mut changed = false;
+        for p in pings {
+            if let Ping::Fleet { comms: Some(Comms::Mumble { channel, link }), .. } = p {
+                if let Some(k) = op_key(channel) {
+                    if self.settings.op_channel_links.get(&k) != Some(link) {
+                        self.settings.op_channel_links.insert(k, link.clone());
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.needs_save = true;
+        }
+    }
+
     fn poll_jabber_notify(&mut self, ctx: &egui::Context) {
         let events: Vec<(String, bool)> =
             { std::mem::take(&mut self.jabber.lock().unwrap().notify) };
         if events.is_empty() {
             return;
         }
+        // Learn op-channel comms links from any new well-formed fleet pings.
+        let recent: Vec<crate::pings::Ping> =
+            { self.jabber.lock().unwrap().pings.iter().rev().take(10).cloned().collect() };
+        self.cache_op_links(&recent);
         let mut any = false;
         for (key, is_ping) in events {
             if self.jabber_is_muted(&key) {
@@ -1404,7 +1486,8 @@ impl SpaiApp {
             }
             any = true;
             if self.settings.jabber_sound_enabled && notify {
-                crate::sound::play(&snd);
+                // Fleet pings outrank plain messages in the sound cooldown.
+                crate::sound::play_prio(&snd, if is_ping { 1 } else { 0 });
             }
             // Fleet pings raise a desktop notification with the key details.
             if is_ping && notify {
@@ -2398,12 +2481,13 @@ impl SpaiApp {
                         let hl: Vec<bool> =
                             pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
                         let doctrine_url = self.settings.doctrine_url.clone();
+                        let op_links = self.settings.op_channel_links.clone();
                         egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
                             if pings.is_empty() {
                                 ui.label(egui::RichText::new("No pings yet.").weak());
                             }
                             for (i, p) in pings.iter().enumerate().rev() {
-                                render_ping(ui, p, &systems, hl[i], &doctrine_url);
+                                render_ping(ui, p, &systems, hl[i], &doctrine_url, &op_links);
                             }
                         });
                     }
@@ -4460,23 +4544,44 @@ impl SpaiApp {
     }
 
     /// A foreground window (grabs focus on open) showing a fleet ping with its links.
+    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
         let Some(ping) = self.ping_window.clone() else {
             return;
         };
         let systems = self.systems.clone();
         let doctrine_url = self.settings.doctrine_url.clone();
+        let op_links = self.settings.op_channel_links.clone();
         let mut dismiss = false;
-        let keep = Self::dialog_viewport(
-            ctx,
-            "fleet_ping_window",
-            "EVE Spai \u{2014} Fleet ping",
-            [440.0, 380.0],
-            |ui| {
-                render_ping(ui, &ping, &systems, true, &doctrine_url);
-                ui.add_space(8.0);
-                if ui.button("Dismiss").clicked() {
-                    dismiss = true;
+        let mut keep = true;
+        const WIDTH: f32 = 440.0;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("fleet_ping_window"),
+            egui::ViewportBuilder::default()
+                .with_icon(app_icon())
+                .with_title("EVE Spai \u{2014} Fleet ping")
+                .with_inner_size([WIDTH, 320.0])
+                .with_min_inner_size([WIDTH, 100.0])
+                .with_resizable(false)
+                .with_always_on_top(),
+            |vctx, _class| {
+                let inner = egui::CentralPanel::default().show(vctx, |ui| {
+                    render_ping(ui, &ping, &systems, true, &doctrine_url, &op_links);
+                    ui.add_space(8.0);
+                    if ui.button("Dismiss").clicked() {
+                        dismiss = true;
+                    }
+                    // Content height (inside the panel margin) to size the window to.
+                    ui.min_rect().height()
+                });
+                // Fit the window height to the ping so there's no empty space at the bottom.
+                // The panel adds its margin on each side; resize only when meaningfully off.
+                let target = (inner.inner + 20.0).clamp(100.0, 720.0);
+                if (vctx.content_rect().height() - target).abs() > 4.0 {
+                    vctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(WIDTH, target)));
+                }
+                if vctx.input(|i| i.viewport().close_requested()) {
+                    keep = false;
                 }
             },
         );
@@ -6629,41 +6734,88 @@ impl SpaiApp {
         self.plan_route();
     }
 
-    /// Save / load / organise Travel routes (named, in folders, searchable).
+    /// Save / load / organise both Travel and Jump routes (named, in folders, searchable).
     fn routes_dialog(&mut self, ctx: &egui::Context) {
         if !self.routes_dialog_open {
             return;
         }
-        let routes = self.settings.saved_routes.clone();
         let geo = self.systems.clone();
+        let nm = |id: i64| {
+            geo.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_else(|| "?".into())
+        };
+        // Unified rows from both saved-route kinds.
+        let mut items: Vec<RouteItem> = Vec::new();
+        for r in &self.settings.saved_routes {
+            items.push(RouteItem {
+                kind: RouteKind::Travel,
+                name: r.name.clone(),
+                folder: r.folder.clone(),
+                from: r.start,
+                to: r.end,
+                jumps: r.jumps,
+                wp: r.waypoints.len(),
+            });
+        }
+        for r in &self.settings.saved_jump_routes {
+            items.push(RouteItem {
+                kind: RouteKind::Jump,
+                name: r.name.clone(),
+                folder: r.folder.clone(),
+                from: r.from,
+                to: r.to,
+                jumps: r.jumps,
+                wp: r.waypoints.len(),
+            });
+        }
         let mut folders: Vec<String> = self.settings.route_folders.clone();
-        for r in &routes {
-            if !r.folder.is_empty() && !folders.contains(&r.folder) {
-                folders.push(r.folder.clone());
+        for it in &items {
+            if !it.folder.is_empty() && !folders.contains(&it.folder) {
+                folders.push(it.folder.clone());
             }
         }
         folders.sort();
         folders.dedup();
+
         let q = self.route_search.trim().to_lowercase();
-        let can_save = self.travel_start.is_some() && self.travel_end.is_some();
-        let nm = |id: i64| {
-            geo.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_else(|| "?".into())
+        let can_save = match self.route_kind {
+            RouteKind::Travel => self.travel_start.is_some() && self.travel_end.is_some(),
+            RouteKind::Jump => self.jump_plan_from.is_some() && self.jump_plan_to.is_some(),
+        };
+        let view = self.route_view;
+        let editing = self.route_edit.clone();
+        let mut edit_name = self.route_edit_name.clone();
+        let mut edit_folder = self.route_edit_folder.clone();
+        let kind_label = |k: RouteKind| match k {
+            RouteKind::Travel => "Travel",
+            RouteKind::Jump => "Jump",
         };
 
         let mut do_save = false;
         let mut new_folder = false;
-        let mut to_load: Option<crate::settings::SavedRoute> = None;
-        let mut to_delete: Option<(String, String)> = None;
+        let mut to_load: Option<RouteItem> = None;
+        let mut to_delete: Option<RouteItem> = None;
+        let mut start_edit: Option<RouteItem> = None;
+        let mut commit_edit = false;
+        let mut cancel_edit = false;
         let mut open = true;
-        egui::Window::new("Saved routes")
+
+        egui::Window::new("Routes")
             .open(&mut open)
-            .default_width(460.0)
-            .default_height(460.0)
+            .default_width(520.0)
+            .default_height(500.0)
             .show(ctx, |ui| {
+                // Save row: kind · name · folder · save.
                 ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("route_kind")
+                        .selected_text(kind_label(self.route_kind))
+                        .width(78.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.route_kind, RouteKind::Jump, "Jump");
+                            ui.selectable_value(&mut self.route_kind, RouteKind::Travel, "Travel");
+                        });
                     ui.add(
                         egui::TextEdit::singleline(&mut self.route_save_name)
-                            .desired_width(150.0)
+                            .desired_width(130.0)
                             .hint_text("Name"),
                     );
                     egui::ComboBox::from_id_salt("route_save_folder")
@@ -6679,9 +6831,9 @@ impl SpaiApp {
                             }
                         });
                     if ui
-                        .add_enabled(can_save, egui::Button::new("Save current"))
+                        .add_enabled(can_save, egui::Button::new("Save current route"))
                         .on_hover_text(if can_save {
-                            "Save the current route + its settings (blank name = auto)"
+                            "Save the current route (blank name = auto)"
                         } else {
                             "Plan a route first"
                         })
@@ -6704,6 +6856,12 @@ impl SpaiApp {
                     }
                 });
                 ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("View");
+                    ui.selectable_value(&mut self.route_view, RouteView::ByName, "By Name");
+                    ui.selectable_value(&mut self.route_view, RouteView::ByType, "By Type");
+                    ui.selectable_value(&mut self.route_view, RouteView::BySystem, "By System");
+                });
                 ui.add(
                     egui::TextEdit::singleline(&mut self.route_search)
                         .desired_width(f32::INFINITY)
@@ -6711,78 +6869,98 @@ impl SpaiApp {
                 );
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    let matches = |r: &crate::settings::SavedRoute| q.is_empty() || r.name.to_lowercase().contains(&q);
-                    for r in routes.iter().filter(|r| r.folder.is_empty() && matches(r)) {
-                        match route_row(ui, r, &nm(r.start), &nm(r.end)) {
-                            Some(true) => to_load = Some(r.clone()),
-                            Some(false) => to_delete = Some((r.folder.clone(), r.name.clone())),
-                            None => {}
+                    let visible: Vec<&RouteItem> =
+                        items.iter().filter(|it| q.is_empty() || it.name.to_lowercase().contains(&q)).collect();
+                    // Render one row; mirror its action back into the local action slots.
+                    let mut emit = |ui: &mut egui::Ui, it: &RouteItem| {
+                        let is_ed = editing
+                            .as_ref()
+                            .is_some_and(|(k, f, n)| *k == it.kind && *f == it.folder && *n == it.name);
+                        match route_item_row(
+                            ui,
+                            it,
+                            &nm(it.from),
+                            &nm(it.to),
+                            kind_label(it.kind),
+                            is_ed,
+                            &mut edit_name,
+                            &mut edit_folder,
+                            &folders,
+                        ) {
+                            RowAction::Load => to_load = Some(it.clone()),
+                            RowAction::Delete => to_delete = Some(it.clone()),
+                            RowAction::Edit => start_edit = Some(it.clone()),
+                            RowAction::Commit => commit_edit = true,
+                            RowAction::Cancel => cancel_edit = true,
+                            RowAction::None => {}
                         }
-                    }
-                    for f in &folders {
-                        let in_f: Vec<&crate::settings::SavedRoute> =
-                            routes.iter().filter(|r| &r.folder == f && matches(r)).collect();
-                        if !q.is_empty() && in_f.is_empty() {
-                            continue;
-                        }
-                        egui::CollapsingHeader::new(format!("{}  {f}", egui_phosphor::regular::FOLDER))
-                            .default_open(!q.is_empty())
-                            .show(ui, |ui| {
-                                if in_f.is_empty() {
-                                    ui.label(egui::RichText::new("(empty)").weak());
-                                }
-                                for r in in_f {
-                                    match route_row(ui, r, &nm(r.start), &nm(r.end)) {
-                                        Some(true) => to_load = Some(r.clone()),
-                                        Some(false) => to_delete = Some((r.folder.clone(), r.name.clone())),
-                                        None => {}
-                                    }
-                                }
-                            });
-                    }
-                    if routes.is_empty() {
+                    };
+                    if visible.is_empty() {
                         ui.label(egui::RichText::new("No saved routes yet.").weak());
+                    }
+                    match view {
+                        RouteView::ByName => {
+                            let mut v = visible.clone();
+                            v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            for it in v {
+                                emit(ui, it);
+                            }
+                        }
+                        RouteView::BySystem => {
+                            let mut froms: Vec<i64> = visible.iter().map(|it| it.from).collect();
+                            froms.sort();
+                            froms.dedup();
+                            for sys in froms {
+                                let label = nm(sys);
+                                egui::CollapsingHeader::new(label).default_open(true).show(ui, |ui| {
+                                    for it in visible.iter().filter(|it| it.from == sys) {
+                                        emit(ui, it);
+                                    }
+                                });
+                            }
+                        }
+                        RouteView::ByType => {
+                            for (kind, title) in
+                                [(RouteKind::Jump, "Jump Routes"), (RouteKind::Travel, "Travel routes")]
+                            {
+                                let group: Vec<&RouteItem> =
+                                    visible.iter().copied().filter(|it| it.kind == kind).collect();
+                                if group.is_empty() {
+                                    continue;
+                                }
+                                egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
+                                    for it in group.iter().filter(|it| it.folder.is_empty()) {
+                                        emit(ui, it);
+                                    }
+                                    for f in &folders {
+                                        let in_f: Vec<&&RouteItem> =
+                                            group.iter().filter(|it| &it.folder == f).collect();
+                                        if in_f.is_empty() {
+                                            continue;
+                                        }
+                                        egui::CollapsingHeader::new(format!(
+                                            "{}  {f}",
+                                            egui_phosphor::regular::FOLDER
+                                        ))
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            for it in in_f {
+                                                emit(ui, it);
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+                        }
                     }
                 });
             });
 
+        self.route_edit_name = edit_name;
+        self.route_edit_folder = edit_folder;
+
         if do_save {
-            // Blank name → auto-generate "Start → wp → … → Destination".
-            let name = if self.route_save_name.trim().is_empty() {
-                let nm = |id: i64| {
-                    self.systems
-                        .as_ref()
-                        .and_then(|g| g.info_of(id))
-                        .map(|i| i.name.clone())
-                        .unwrap_or_default()
-                };
-                let mut parts = vec![nm(self.travel_start.unwrap_or(0))];
-                parts.extend(self.travel_waypoints.iter().map(|w| nm(*w)));
-                parts.push(nm(self.travel_end.unwrap_or(0)));
-                parts.join(" \u{2192} ")
-            } else {
-                self.route_save_name.trim().to_owned()
-            };
-            let route = crate::settings::SavedRoute {
-                name,
-                folder: self.route_save_folder.clone(),
-                start: self.travel_start.unwrap_or(0),
-                end: self.travel_end.unwrap_or(0),
-                waypoints: self.travel_waypoints.clone(),
-                jumps: self.travel_route.as_ref().map(|r| r.len().saturating_sub(1)).unwrap_or(0),
-                constraints: Some(crate::settings::RouteConstraints {
-                    sec: self.travel_sec,
-                    metric: self.travel_metric.to_u8(),
-                    regional_gates: self.travel_regional_gates,
-                    jump_bridges: self.travel_jump_bridges,
-                    avoid_camps: self.travel_avoid_camps,
-                    avoid: self.travel_avoid.clone(),
-                    avoid_sov: self.travel_avoid_sov.iter().cloned().collect(),
-                }),
-            };
-            self.settings.saved_routes.push(route);
-            self.route_save_name.clear();
-            self.needs_save = true;
+            self.save_current_route();
         }
         if new_folder {
             let f = self.route_new_folder.trim().to_owned();
@@ -6792,16 +6970,163 @@ impl SpaiApp {
             self.route_new_folder.clear();
             self.needs_save = true;
         }
-        if let Some((folder, name)) = to_delete {
-            self.settings.saved_routes.retain(|r| !(r.folder == folder && r.name == name));
+        if let Some(it) = to_delete {
+            match it.kind {
+                RouteKind::Travel => self
+                    .settings
+                    .saved_routes
+                    .retain(|r| !(r.folder == it.folder && r.name == it.name)),
+                RouteKind::Jump => self
+                    .settings
+                    .saved_jump_routes
+                    .retain(|r| !(r.folder == it.folder && r.name == it.name)),
+            }
             self.needs_save = true;
         }
-        if let Some(r) = to_load {
-            self.load_route(&r);
+        if let Some(it) = start_edit {
+            self.route_edit = Some((it.kind, it.folder.clone(), it.name.clone()));
+            self.route_edit_name = it.name;
+            self.route_edit_folder = it.folder;
+        }
+        if cancel_edit {
+            self.route_edit = None;
+        }
+        if commit_edit {
+            if let Some((kind, of, on)) = self.route_edit.take() {
+                let (nn, nf) = (self.route_edit_name.trim().to_owned(), self.route_edit_folder.clone());
+                if !nn.is_empty() {
+                    match kind {
+                        RouteKind::Travel => {
+                            if let Some(r) = self
+                                .settings
+                                .saved_routes
+                                .iter_mut()
+                                .find(|r| r.folder == of && r.name == on)
+                            {
+                                r.name = nn;
+                                r.folder = nf;
+                            }
+                        }
+                        RouteKind::Jump => {
+                            if let Some(r) = self
+                                .settings
+                                .saved_jump_routes
+                                .iter_mut()
+                                .find(|r| r.folder == of && r.name == on)
+                            {
+                                r.name = nn;
+                                r.folder = nf;
+                            }
+                        }
+                    }
+                    self.needs_save = true;
+                }
+            }
+        }
+        if let Some(it) = to_load {
+            self.load_route_item(&it);
             self.routes_dialog_open = false;
         }
         if !open {
             self.routes_dialog_open = false;
+        }
+    }
+
+    /// Save the current planner state as a route of the dialog's selected kind.
+    fn save_current_route(&mut self) {
+        let nm = |id: i64| {
+            self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default()
+        };
+        match self.route_kind {
+            RouteKind::Travel => {
+                if self.travel_start.is_none() || self.travel_end.is_none() {
+                    return;
+                }
+                let name = if self.route_save_name.trim().is_empty() {
+                    let mut parts = vec![nm(self.travel_start.unwrap_or(0))];
+                    parts.extend(self.travel_waypoints.iter().map(|w| nm(*w)));
+                    parts.push(nm(self.travel_end.unwrap_or(0)));
+                    parts.join(" \u{2192} ")
+                } else {
+                    self.route_save_name.trim().to_owned()
+                };
+                self.settings.saved_routes.push(crate::settings::SavedRoute {
+                    name,
+                    folder: self.route_save_folder.clone(),
+                    start: self.travel_start.unwrap_or(0),
+                    end: self.travel_end.unwrap_or(0),
+                    waypoints: self.travel_waypoints.clone(),
+                    jumps: self.travel_route.as_ref().map(|r| r.len().saturating_sub(1)).unwrap_or(0),
+                    constraints: Some(crate::settings::RouteConstraints {
+                        sec: self.travel_sec,
+                        metric: self.travel_metric.to_u8(),
+                        regional_gates: self.travel_regional_gates,
+                        jump_bridges: self.travel_jump_bridges,
+                        avoid_camps: self.travel_avoid_camps,
+                        avoid: self.travel_avoid.clone(),
+                        avoid_sov: self.travel_avoid_sov.iter().cloned().collect(),
+                    }),
+                });
+            }
+            RouteKind::Jump => {
+                if self.jump_plan_from.is_none() || self.jump_plan_to.is_none() {
+                    return;
+                }
+                let name = if self.route_save_name.trim().is_empty() {
+                    format!("{} \u{2192} {}", nm(self.jump_plan_from.unwrap_or(0)), nm(self.jump_plan_to.unwrap_or(0)))
+                } else {
+                    self.route_save_name.trim().to_owned()
+                };
+                self.settings.saved_jump_routes.push(crate::settings::SavedJumpRoute {
+                    name,
+                    folder: self.route_save_folder.clone(),
+                    from: self.jump_plan_from.unwrap_or(0),
+                    waypoints: self.jump_waypoints.clone(),
+                    to: self.jump_plan_to.unwrap_or(0),
+                    ship: self.jump_ship,
+                    jdc: self.jump_jdc,
+                    jfc: self.jump_jfc,
+                    jumps: self.jump_route.len().saturating_sub(1),
+                });
+            }
+        }
+        self.route_save_name.clear();
+        self.needs_save = true;
+    }
+
+    /// Load a saved route (either kind) and switch the map into the matching mode.
+    fn load_route_item(&mut self, it: &RouteItem) {
+        match it.kind {
+            RouteKind::Travel => {
+                if let Some(r) = self
+                    .settings
+                    .saved_routes
+                    .iter()
+                    .find(|r| r.folder == it.folder && r.name == it.name)
+                    .cloned()
+                {
+                    self.load_route(&r);
+                    self.set_map_mode(MapMode::Travel);
+                }
+            }
+            RouteKind::Jump => {
+                if let Some(r) = self
+                    .settings
+                    .saved_jump_routes
+                    .iter()
+                    .find(|r| r.folder == it.folder && r.name == it.name)
+                    .cloned()
+                {
+                    self.jump_plan_from = Some(r.from);
+                    self.jump_waypoints = r.waypoints;
+                    self.jump_plan_to = Some(r.to);
+                    self.jump_ship = r.ship.min(crate::jumproute::SHIP_CLASSES.len() - 1);
+                    self.jump_jdc = r.jdc.min(5);
+                    self.jump_jfc = r.jfc.min(5);
+                    self.jump_route_key = None;
+                    self.set_map_mode(MapMode::JumpPlan);
+                }
+            }
         }
     }
 
@@ -6958,7 +7283,7 @@ impl SpaiApp {
                         // The in-game destination is advanced hop-by-hop by push_ingame_dest;
                         // here we only flag the change visually and warn on a big detour.
                         if much_longer {
-                            crate::sound::play("danger");
+                            crate::sound::play_prio("danger", 2);
                         }
                     }
                 }
@@ -6972,20 +7297,10 @@ impl SpaiApp {
     /// Search systems for the From/To dropdowns: (id, name, security, constellation, region).
     /// Empty when the query is blank or already exactly names the picked system.
     fn travel_suggestions(&self, q: &str, picked: Option<i64>) -> Vec<SysHit> {
+        let _ = picked;
         let q = q.trim();
         if q.is_empty() {
             return Vec::new();
-        }
-        // Already exactly the picked system → no dropdown (and skip the SDE table scan).
-        if let Some(pid) = picked {
-            if self
-                .systems
-                .as_ref()
-                .and_then(|g| g.info_of(pid))
-                .is_some_and(|i| i.name.eq_ignore_ascii_case(q))
-            {
-                return Vec::new();
-            }
         }
         let Some(store) = self.store.as_ref() else { return Vec::new() };
         store
@@ -7323,119 +7638,11 @@ impl SpaiApp {
         ui.separator();
         if ui
             .button(format!("{}  Saved routes\u{2026}", icon::FOLDER))
-            .on_hover_text("Save, load and delete named jump routes")
+            .on_hover_text("Save, load and organise routes")
             .clicked()
         {
-            self.jump_routes_dialog_open = true;
-        }
-    }
-
-    /// Save / load / delete named jump routes — mirrors the Travel "Saved routes" dialog.
-    fn jump_routes_dialog(&mut self, ctx: &egui::Context) {
-        if !self.jump_routes_dialog_open {
-            return;
-        }
-        let routes = self.settings.saved_jump_routes.clone();
-        let q = self.route_search.trim().to_lowercase();
-        let nm = |id: i64| {
-            self.systems
-                .as_ref()
-                .and_then(|g| g.info_of(id))
-                .map(|i| i.name.clone())
-                .unwrap_or_else(|| "?".into())
-        };
-        let can_save = self.jump_plan_from.is_some() && self.jump_plan_to.is_some();
-        let mut do_save = false;
-        let mut to_load: Option<crate::settings::SavedJumpRoute> = None;
-        let mut to_delete: Option<String> = None;
-        let mut open = true;
-        egui::Window::new("Saved jump routes")
-            .open(&mut open)
-            .default_width(420.0)
-            .default_height(420.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.jump_route_name)
-                            .desired_width(150.0)
-                            .hint_text("Name"),
-                    );
-                    if ui
-                        .add_enabled(can_save, egui::Button::new("Save current"))
-                        .on_hover_text(if can_save {
-                            "Save the current route + hull/skills (blank name = auto)"
-                        } else {
-                            "Set a destination first"
-                        })
-                        .clicked()
-                    {
-                        do_save = true;
-                    }
-                });
-                ui.separator();
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.route_search)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Search routes"),
-                );
-                ui.separator();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for r in routes.iter().filter(|r| q.is_empty() || r.name.to_lowercase().contains(&q)) {
-                        ui.horizontal(|ui| {
-                            if ui.button("Load").clicked() {
-                                to_load = Some(r.clone());
-                            }
-                            ui.label(egui::RichText::new(&r.name).strong());
-                            ui.label(
-                                egui::RichText::new(format!("{} \u{2192} {}", nm(r.from), nm(r.to))).weak(),
-                            );
-                            if !r.waypoints.is_empty() {
-                                ui.label(egui::RichText::new(format!("{} wp", r.waypoints.len())).weak());
-                            }
-                            if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
-                                to_delete = Some(r.name.clone());
-                            }
-                        });
-                    }
-                    if routes.is_empty() {
-                        ui.label(egui::RichText::new("No saved routes yet.").weak());
-                    }
-                });
-            });
-        if do_save {
-            let name = if self.jump_route_name.trim().is_empty() {
-                format!("{} \u{2192} {}", nm(self.jump_plan_from.unwrap_or(0)), nm(self.jump_plan_to.unwrap_or(0)))
-            } else {
-                self.jump_route_name.trim().to_string()
-            };
-            self.settings.saved_jump_routes.retain(|r| !r.name.eq_ignore_ascii_case(&name));
-            self.settings.saved_jump_routes.push(crate::settings::SavedJumpRoute {
-                name,
-                from: self.jump_plan_from.unwrap_or(0),
-                waypoints: self.jump_waypoints.clone(),
-                to: self.jump_plan_to.unwrap_or(0),
-                ship: self.jump_ship,
-                jdc: self.jump_jdc,
-                jfc: self.jump_jfc,
-            });
-            self.jump_route_name.clear();
-            self.needs_save = true;
-        }
-        if let Some(r) = to_load {
-            self.jump_plan_from = Some(r.from);
-            self.jump_waypoints = r.waypoints;
-            self.jump_plan_to = Some(r.to);
-            self.jump_ship = r.ship.min(crate::jumproute::SHIP_CLASSES.len() - 1);
-            self.jump_jdc = r.jdc.min(5);
-            self.jump_jfc = r.jfc.min(5);
-            self.jump_route_key = None;
-        }
-        if let Some(name) = to_delete {
-            self.settings.saved_jump_routes.retain(|r| r.name != name);
-            self.needs_save = true;
-        }
-        if !open {
-            self.jump_routes_dialog_open = false;
+            self.route_kind = RouteKind::Jump;
+            self.routes_dialog_open = true;
         }
     }
 
@@ -7455,8 +7662,10 @@ impl SpaiApp {
             if resp.changed() {
                 *sel = 0;
             }
-            if !suggestions.is_empty() {
-                let focused = resp.has_focus();
+            // Only while the field is focused — so a resolved field at rest ("Jita") shows no
+            // dropdown, but actively editing always does (typing "Jit"→"Jita" keeps suggesting).
+            if !suggestions.is_empty() && resp.has_focus() {
+                let focused = true;
                 let n = suggestions.len();
                 if focused {
                     let (down, up) = ui.input(|i| {
@@ -7498,6 +7707,10 @@ impl SpaiApp {
                 if focused && pick.is_none() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
                 }
+            }
+            // A pick resolves the field — drop focus so the dropdown closes (Enter, too).
+            if pick.is_some() {
+                resp.surrender_focus();
             }
             pick
         }
@@ -7627,6 +7840,7 @@ impl SpaiApp {
                 .on_hover_text("Save, organise and load named routes")
                 .clicked()
             {
+                self.route_kind = RouteKind::Travel;
                 self.routes_dialog_open = true;
             }
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
@@ -7840,7 +8054,7 @@ impl SpaiApp {
             None => {} // first tick = baseline; don't alarm for what's already there
             Some(prev) => {
                 if current.iter().any(|s| !prev.contains(s)) {
-                    crate::sound::play("danger");
+                    crate::sound::play_prio("danger", 2);
                     self.flash_until = ctx.input(|i| i.time) + 0.8;
                     ctx.request_repaint();
                 }
@@ -11421,7 +11635,6 @@ impl eframe::App for SpaiApp {
         self.fit_window(&ctx);
         self.fleet_ping_window_ui(&ctx);
         self.routes_dialog(&ctx);
-        self.jump_routes_dialog(&ctx);
         self.safety_watch(&ctx);
         self.screen_flash(&ctx);
         // Bring a just-updated window to the foreground.
@@ -12231,6 +12444,12 @@ fn rule_matches(
 
 /// A concise one-line alert string for a report.
 /// Best-effort op-channel name from ping text ("op 9", "op9") when there's no comms field.
+/// A canonical key for an op channel ("Op 4", "op4", "OP 4 - dead keepstars" → "op4"), used to
+/// match a malformed ping's channel name against the cached comms links.
+fn op_key(text: &str) -> Option<String> {
+    find_op_channel(text).map(|c| c.to_lowercase().replace(' ', ""))
+}
+
 fn find_op_channel(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     let bytes = lower.as_bytes();
@@ -12249,22 +12468,78 @@ fn find_op_channel(text: &str) -> Option<String> {
 
 /// Show a desktop notification (best-effort, off the UI thread).
 /// One saved-route row. Returns Some(true)=load, Some(false)=delete, None=nothing.
-fn route_row(ui: &mut egui::Ui, r: &crate::settings::SavedRoute, start: &str, end: &str) -> Option<bool> {
-    let mut act = None;
-    ui.horizontal(|ui| {
-        if ui.button("Load").clicked() {
-            act = Some(true);
-        }
-        ui.label(egui::RichText::new(&r.name).strong());
-        ui.label(egui::RichText::new(format!("{start} \u{2192} {end}")).weak());
-        ui.label(egui::RichText::new(format!("{}j", r.jumps)).weak());
-        if !r.waypoints.is_empty() {
-            ui.label(egui::RichText::new(format!("{} wp", r.waypoints.len())).weak());
-        }
-        if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
-            act = Some(false);
-        }
-    });
+enum RowAction {
+    None,
+    Load,
+    Delete,
+    Edit,
+    Commit,
+    Cancel,
+}
+
+/// One row in the merged Routes dialog: either the normal display row (Load / name / from→to /
+/// jumps / edit / delete) or, when `is_editing`, an inline name + folder editor.
+#[allow(clippy::too_many_arguments)]
+fn route_item_row(
+    ui: &mut egui::Ui,
+    it: &RouteItem,
+    from_name: &str,
+    to_name: &str,
+    kind_label: &str,
+    is_editing: bool,
+    edit_name: &mut String,
+    edit_folder: &mut String,
+    folders: &[String],
+) -> RowAction {
+    let mut act = RowAction::None;
+    if is_editing {
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(edit_name).desired_width(120.0).hint_text("Name"));
+            egui::ComboBox::from_id_salt(("route_edit_folder", kind_label, it.name.as_str()))
+                .selected_text(if edit_folder.is_empty() {
+                    "(root)".to_owned()
+                } else {
+                    edit_folder.clone()
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(edit_folder, String::new(), "(root)");
+                    for f in folders {
+                        ui.selectable_value(edit_folder, f.clone(), f);
+                    }
+                });
+            if ui.button("Save").clicked() {
+                act = RowAction::Commit;
+            }
+            if ui.button("Cancel").clicked() {
+                act = RowAction::Cancel;
+            }
+        });
+    } else {
+        ui.horizontal(|ui| {
+            if ui.button("Load").clicked() {
+                act = RowAction::Load;
+            }
+            ui.label(egui::RichText::new(kind_label).weak());
+            ui.label(egui::RichText::new(&it.name).strong());
+            ui.label(egui::RichText::new(format!("{from_name} \u{2192} {to_name}")).weak());
+            ui.label(egui::RichText::new(format!("{}j", it.jumps)).weak());
+            if it.wp > 0 {
+                ui.label(egui::RichText::new(format!("{} wp", it.wp)).weak());
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(egui_phosphor::regular::TRASH).on_hover_text("Delete").clicked() {
+                    act = RowAction::Delete;
+                }
+                if ui
+                    .button(egui_phosphor::regular::PENCIL_SIMPLE)
+                    .on_hover_text("Rename / move to folder")
+                    .clicked()
+                {
+                    act = RowAction::Edit;
+                }
+            });
+        });
+    }
     act
 }
 
@@ -12272,6 +12547,31 @@ fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new().summary(&summary).body(&body).show();
+    });
+}
+
+/// Resolve a gnf.lt comms short-link to its `mumble://` target and open it, so the Mumble
+/// client joins the broadcast channel directly. If anything fails (offline, page changed, no
+/// Mumble handler) we fall back to opening the original link in the browser — the same path
+/// the user had before — so they're never left with nothing.
+fn open_mumble(link: String) {
+    std::thread::spawn(move || {
+        let resolved = reqwest::blocking::Client::builder()
+            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()
+            .and_then(|c| c.get(&link).send().ok())
+            .and_then(|r| r.error_for_status().ok())
+            .and_then(|r| r.text().ok())
+            .and_then(|body| crate::pings::extract_mumble_url(&body));
+        match resolved.and_then(|url| open::that(&url).ok().map(|_| ())) {
+            Some(()) => {}
+            // Resolution or the mumble:// handler failed — open the original link instead.
+            None => {
+                let _ = open::that(&link);
+            }
+        }
     });
 }
 
@@ -12317,9 +12617,24 @@ fn render_ping(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     highlight: bool,
     doctrine_url: &str,
+    op_links: &std::collections::HashMap<String, String>,
 ) {
     use crate::pings::{Comms, Formup, PapType, Ping};
     use egui_phosphor::regular as icon;
+    // A comms row: label + "Join Mumble" (resolves the gnf.lt link to mumble://) + the raw link.
+    let mumble_row = |ui: &mut egui::Ui, label: String, link: &str| {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            if ui
+                .button(format!("{}  Join Mumble", icon::HEADSET))
+                .on_hover_text("Open the Mumble client on this channel")
+                .clicked()
+            {
+                open_mumble(link.to_owned());
+            }
+            ui.hyperlink_to(icon::LINK, link).on_hover_text(link);
+        });
+    };
     let sys_name = |id: i64| -> String {
         systems
             .as_ref()
@@ -12383,18 +12698,21 @@ fn render_ping(
                 if let Some(c) = comms {
                     match c {
                         Comms::Mumble { channel, link } => {
-                            ui.horizontal(|ui| {
-                                ui.label(format!("Comms: {channel}"));
-                                ui.hyperlink_to(icon::LINK, link);
-                            });
+                            mumble_row(ui, format!("Comms: {channel}"), link);
                         }
                         Comms::Text(t) => {
                             ui.label(format!("Comms: {t}"));
                         }
                     }
                 } else if let Some(op) = find_op_channel(description) {
-                    // No comms field — surface the op channel name from the text ("op 9").
-                    ui.label(egui::RichText::new(format!("Comms: {op}?")).weak());
+                    // Malformed ping (no comms field) — if we've cached this op channel's link
+                    // from an earlier well-formed ping, still offer "Join Mumble".
+                    match op_key(&op).and_then(|k| op_links.get(&k)) {
+                        Some(link) => mumble_row(ui, format!("Comms: {op}"), link),
+                        None => {
+                            ui.label(egui::RichText::new(format!("Comms: {op}?")).weak());
+                        }
+                    }
                 }
                 ui.horizontal(|ui| {
                     if let Some(d) = doctrine {
@@ -13782,5 +14100,22 @@ mod wh_overlay_tests {
         assert!(o.jspace_holes.contains(&30_000_001));
         // A pure J-space system is never a chain endpoint.
         assert!(!o.direct.iter().any(|&(a, b)| is_jspace(a) || is_jspace(b)));
+    }
+}
+
+#[cfg(test)]
+mod op_channel_tests {
+    use super::*;
+
+    #[test]
+    fn op_key_canonicalizes_variants() {
+        // With/without space, varying capitalization, trailing channel text all collapse.
+        assert_eq!(op_key("Op 4").as_deref(), Some("op4"));
+        assert_eq!(op_key("OP4").as_deref(), Some("op4"));
+        assert_eq!(op_key("op 4 - dead keepstars").as_deref(), Some("op4"));
+        assert_eq!(op_key("get to OP 9 now").as_deref(), Some("op9"));
+        // "op" inside another word, or with no number, isn't an op channel.
+        assert_eq!(op_key("stop shooting"), None);
+        assert_eq!(op_key("no channel here"), None);
     }
 }

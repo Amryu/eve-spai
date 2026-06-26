@@ -392,6 +392,17 @@ const PILOT_STOP: &[&str] = &[
     "scanning",
     // "drifter" / "drifters" — a wormhole type ("drifter wh"), never a pilot.
     "drifter", "drifters",
+    // Filler / hedging words ("unsure which", "too many", "kitchen sink", "catch all").
+    "unsure", "which", "too", "kitchen", "sink", "catch", "all",
+    // Question / filler words — lower-cased English the known-pilot cache otherwise matches
+    // against real players named like common words.
+    "what", "where", "when", "who", "why", "how", "well", "anyway", "huh", "hmm", "hmmm",
+    "wait", "sure", "dunno", "yes", "yeah", "yep", "yup", "nope", "nah", "ok", "okay", "kk",
+    // Chat abbreviations / reactions.
+    "sry", "sorry", "ty", "tyvm", "thx", "thanks", "thanx", "np", "yw", "cheers", "lol",
+    "lmao", "rofl", "omg", "omw", "wtf", "wth", "ffs", "gg", "wp", "ez", "gj", "gz", "grats",
+    "imo", "tbh", "idk", "ikr", "btw", "fyi", "pls", "plz", "plox", "brb", "gtg", "glhf",
+    "gl", "hf", "cya", "ttyl", "sup", "yo", "o7", "07", "rip",
 ];
 
 /// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
@@ -422,6 +433,19 @@ const SHIP_CLASSES: &[(&str, &str)] = &[
     ("marauder", "Marauder"),
     ("marauders", "Marauder"),
     ("blops", "Black Ops"),
+    // Generic hull sizes ("CRUISERS", "battleships") — a ship type, never a pilot name.
+    ("frigate", "Frigate"),
+    ("frigates", "Frigate"),
+    ("destroyer", "Destroyer"),
+    ("destroyers", "Destroyer"),
+    ("cruiser", "Cruiser"),
+    ("cruisers", "Cruiser"),
+    ("battlecruiser", "Battlecruiser"),
+    ("battlecruisers", "Battlecruiser"),
+    ("bc", "Battlecruiser"),
+    ("bcs", "Battlecruiser"),
+    ("battleship", "Battleship"),
+    ("battleships", "Battleship"),
     ("t3", "Strategic Cruiser"),
     ("t3s", "Strategic Cruiser"),
     ("t3c", "Strategic Cruiser"),
@@ -456,6 +480,8 @@ fn detect_classes(lower_tokens: &[String]) -> Vec<String> {
 pub fn is_pilot_stopword(w: &str) -> bool {
     let lw = w.to_lowercase();
     PILOT_STOP.contains(&lw.as_str())
+        // Any ship-class keyword ("cruisers", "logi", "dic", …) is a ship type, not a pilot.
+        || SHIP_CLASSES.iter().any(|(k, _)| *k == lw.as_str())
         || matches!(
             lw.as_str(),
             "ship" | "ships" | "shuttle" | "shuttles" | "navy" | "issue" | "loc"
@@ -695,7 +721,14 @@ fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>
         let max = 3.min(words.len() - i);
         for len in (1..=max).rev() {
             let run = words[i..i + len].join(" ");
-            if known.contains_key(&run.to_lowercase()) && !is_pilot_stopword(&run) {
+            // A short single token that wasn't capitalised in the text is almost always a
+            // lower-cased English word / chat abbreviation ("gg", "sry", "ez"), not a
+            // deliberate pilot mention — real names are typed capitalised. Skip those even
+            // when a known pilot happens to share the spelling.
+            let casual = len == 1
+                && run.chars().count() <= 4
+                && run.chars().next().is_some_and(|c| !c.is_ascii_uppercase());
+            if known.contains_key(&run.to_lowercase()) && !is_pilot_stopword(&run) && !casual {
                 out.push(run);
                 adv = len;
                 break;
@@ -1294,6 +1327,8 @@ pub fn analyze_ctx(
     // a system — candidates worth an ESI lookup (e.g. "I-Pustelga").
     for t in &tokens {
         if is_distinctive_name(t)
+            && !is_pilot_stopword(t)
+            && !ship_index.contains_key(&t.to_lowercase())
             && resolve(systems, t).is_none()
             && !pilots.iter().any(|p| p.eq_ignore_ascii_case(t))
         {
@@ -2447,6 +2482,22 @@ mod tests {
     }
 
     #[test]
+    fn lowercase_chat_words_not_pilots() {
+        let s = systems();
+        // Even when the cache holds real players spelled like chat words, a lower-cased
+        // mention is the word/abbreviation, not the pilot.
+        let mut known = noknown();
+        for (w, id) in [("sry", 1i64), ("gg", 2), ("ez", 3), ("neo", 4)] {
+            known.insert(w.into(), id);
+        }
+        let r = analyze("sry gg ez that was ez in Jita", &s, &noships(), &known, 1, "ch", "Anaz");
+        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
+        // A capitalised short token IS still taken as a deliberate pilot mention.
+        let r2 = analyze("Neo tackled in Jita", &s, &noships(), &known, 1, "ch", "Anaz");
+        assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("neo")), "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
     fn showinfo_pilots_survive_amend_and_clear() {
         let mut by_name = std::collections::HashMap::new();
         by_name.insert(
@@ -2662,6 +2713,17 @@ mod tests {
         let r3 = analyze("3 t3s and a t3 roaming, etc", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r3.classes.iter().any(|c| c == "Strategic Cruiser"), "classes={:?}", r3.classes);
         assert!(!r3.pilots.iter().any(|p| p.eq_ignore_ascii_case("etc")), "pilots={:?}", r3.pilots);
+        // Generic hull sizes are ship types, never pilots.
+        let r4 = analyze("CRUISERS and battleships in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r4.classes.iter().any(|c| c == "Cruiser"), "classes={:?}", r4.classes);
+        assert!(r4.classes.iter().any(|c| c == "Battleship"), "classes={:?}", r4.classes);
+        assert!(r4.pilots.is_empty(), "pilots={:?}", r4.pilots);
+        // An all-caps ship acronym ("DNI" = Drake Navy Issue) is the ship, not a pilot.
+        let mut ships = noships();
+        ships.insert("dni".into(), (37457, "Drake Navy Issue".into()));
+        let r5 = analyze("DNI in Jita", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r5.ships.iter().any(|sh| sh.name == "Drake Navy Issue"), "ships={:?}", r5.ships);
+        assert!(r5.pilots.is_empty(), "pilots={:?}", r5.pilots);
         assert!(r2.classes.iter().any(|c| c == "Logistics"), "classes={:?}", r2.classes);
         assert!(r2.classes.iter().any(|c| c == "Stealth Bomber"), "classes={:?}", r2.classes);
     }

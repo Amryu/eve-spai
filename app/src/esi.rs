@@ -258,20 +258,19 @@ fn current_access_token(
     id: i64,
     expires_at: i64,
 ) -> Option<String> {
-    let stored = tokens::load(id)?;
+    let refresh = tokens::load_refresh(id)?;
     let now = chrono::Utc::now().timestamp();
+    // Use the cached access token while it's still valid.
     if expires_at - 60 > now {
-        return Some(stored.access_token);
+        if let Some(access) = store.kv_get(&format!("access:{id}")).filter(|a| !a.is_empty()) {
+            return Some(access);
+        }
     }
 
-    let fresh = auth::refresh_access_token(client_id, &stored.refresh_token).ok()?;
-    let _ = tokens::save(
-        id,
-        &tokens::Tokens {
-            refresh_token: fresh.refresh_token.clone(),
-            access_token: fresh.access_token.clone(),
-        },
-    );
+    let fresh = auth::refresh_access_token(client_id, &refresh).ok()?;
+    // The refresh token may rotate — persist the new one.
+    let _ = tokens::save_refresh(id, &fresh.refresh_token);
+    store.kv_set(&format!("access:{id}"), &fresh.access_token);
     let _ = store.update_token_expiry(id, now + fresh.expires_in);
     Some(fresh.access_token)
 }

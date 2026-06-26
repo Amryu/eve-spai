@@ -259,6 +259,20 @@ impl Store {
         Ok(())
     }
 
+    /// Generic key/value store (used for the cached short-lived access token).
+    pub fn kv_get(&self, key: &str) -> Option<String> {
+        self.conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get(0)).ok()
+    }
+    pub fn kv_set(&self, key: &str, value: &str) {
+        let _ = self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        );
+    }
+    pub fn kv_delete(&self, key: &str) {
+        let _ = self.conn.execute("DELETE FROM kv WHERE key = ?1", params![key]);
+    }
+
     // --- SDE ---
 
     /// True when the SDE is baked at the current schema version.
@@ -1100,6 +1114,7 @@ impl Store {
 
     pub fn remove_character(&self, id: i64) -> Result<()> {
         let _ = crate::tokens::delete(id);
+        self.kv_delete(&format!("access:{id}"));
         self.conn
             .execute("DELETE FROM characters WHERE id = ?1", params![id])?;
         Ok(())
@@ -1137,13 +1152,15 @@ fn migrate_plaintext_tokens(conn: &Connection) {
     let mut all_migrated = true;
     for (id, refresh, access) in rows {
         if let Some(refresh) = refresh.filter(|s| !s.is_empty()) {
-            let tokens = crate::tokens::Tokens {
-                refresh_token: refresh,
-                access_token: access.unwrap_or_default(),
-            };
-            if let Err(e) = crate::tokens::save(id, &tokens) {
+            if let Err(e) = crate::tokens::save_refresh(id, &refresh) {
                 eprintln!("keychain migration failed for character {id}: {e:#}");
                 all_migrated = false;
+            } else {
+                // The short-lived access token is cached in the kv table, not the keychain.
+                let _ = conn.execute(
+                    "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                    params![format!("access:{id}"), access.unwrap_or_default()],
+                );
             }
         }
     }

@@ -229,6 +229,17 @@ fn parse_comms(text: &str) -> Comms {
     Comms::Text(text.to_owned())
 }
 
+/// Pull the `mumble://…` target out of a gnf.lt redirect page. The page is a one-line JS
+/// redirect (`window.location = 'mumble://host/Path/Channel?...'`); extracting it lets us
+/// open the Mumble client directly on the right channel instead of bouncing through a browser.
+pub fn extract_mumble_url(html: &str) -> Option<String> {
+    let start = html.find("mumble://")?;
+    let rest = &html[start..];
+    // Stop at the first quote / whitespace / angle bracket that ends the URL literal.
+    let end = rest.find(|c: char| c == '\'' || c == '"' || c == '<' || c.is_whitespace());
+    Some(rest[..end.unwrap_or(rest.len())].to_owned())
+}
+
 /// The free-text description: every line that isn't a key/value or the signature,
 /// with runs of blank lines collapsed.
 fn build_description(ping_text: &str) -> String {
@@ -298,6 +309,16 @@ mod tests {
             "0SHT" => Some(100000003),
             _ => None,
         }
+    }
+
+    #[test]
+    fn extracts_mumble_url() {
+        let html = "<html><script type='text/javascript'>window.location = 'mumble://mumble.goonfleet.com/Ops/Op%20Channels/OP%204%20-%20dead%20keepstars?title=Goonfleet&version=1.2.0';</script></html>";
+        assert_eq!(
+            extract_mumble_url(html).as_deref(),
+            Some("mumble://mumble.goonfleet.com/Ops/Op%20Channels/OP%204%20-%20dead%20keepstars?title=Goonfleet&version=1.2.0")
+        );
+        assert_eq!(extract_mumble_url("<html>no redirect here</html>"), None);
     }
 
     #[test]

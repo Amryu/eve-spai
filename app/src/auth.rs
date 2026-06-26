@@ -266,23 +266,22 @@ fn store_character(
     expires_at: i64,
     scopes: &str,
 ) -> Result<()> {
-    // Secrets to the keychain first — if that fails we abort before persisting
-    // anything, so we never silently fall back to plaintext.
-    crate::tokens::save(
-        id,
-        &crate::tokens::Tokens {
-            refresh_token: refresh_token.to_owned(),
-            access_token: access_token.to_owned(),
-        },
-    )?;
+    // The long-lived refresh token (the real secret) goes to the keychain first — if that
+    // fails we abort before persisting anything, so we never silently fall back to plaintext.
+    crate::tokens::save_refresh(id, refresh_token)?;
 
-    // Only non-secret metadata goes in SQLite.
+    // Metadata + the short-lived access token (cached so we don't refresh on every call; it
+    // expires in ~20 min and can't fit the Windows keychain length limit alongside the rest).
     let conn = Connection::open(path)?;
     conn.execute(
         "INSERT INTO characters (id, name, expires_at, scopes)
          VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id) DO UPDATE SET name = ?2, expires_at = ?3, scopes = ?4",
         params![id, name, expires_at, scopes],
+    )?;
+    conn.execute(
+        "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![format!("access:{id}"), access_token],
     )?;
     Ok(())
 }

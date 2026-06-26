@@ -21,19 +21,23 @@ fn entry(character_id: i64) -> Result<keyring::Entry> {
         .context("opening keychain entry (is a Secret Service / keychain available?)")
 }
 
-/// Store a character's tokens in the keychain.
-pub fn save(character_id: i64, tokens: &Tokens) -> Result<()> {
-    let json = serde_json::to_string(tokens)?;
+/// Store a character's refresh token in the keychain. Only the (small) refresh token lives
+/// here — the access-token JWT is short-lived and grows with scopes, and on Windows the
+/// Credential Manager rejects a password over 2560 UTF-16 chars; it's cached in the DB instead.
+pub fn save_refresh(character_id: i64, refresh_token: &str) -> Result<()> {
     entry(character_id)?
-        .set_password(&json)
-        .context("writing tokens to keychain")
+        .set_password(refresh_token)
+        .context("writing refresh token to keychain")
 }
 
-/// Load a character's tokens from the keychain, if present.
-#[allow(dead_code)]
-pub fn load(character_id: i64) -> Option<Tokens> {
-    let json = entry(character_id).ok()?.get_password().ok()?;
-    serde_json::from_str(&json).ok()
+/// Load a character's refresh token. Migrates the older `{refresh,access}` JSON blob format
+/// (the next save rewrites it as a plain refresh token).
+pub fn load_refresh(character_id: i64) -> Option<String> {
+    let raw = entry(character_id).ok()?.get_password().ok()?;
+    match serde_json::from_str::<Tokens>(&raw) {
+        Ok(t) => Some(t.refresh_token),
+        Err(_) => Some(raw),
+    }
 }
 
 /// Delete a character's tokens from the keychain (no-op if already absent).

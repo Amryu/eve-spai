@@ -63,9 +63,18 @@ pub struct Settings {
     /// notification.
     #[serde(default)]
     pub fleet_ping_window: bool,
+    /// One-time migration marker: the fleet ping window was force-enabled once for existing
+    /// users (it's now on by default). After that the user's own choice is respected.
+    #[serde(default)]
+    pub fleet_window_forced: bool,
     /// Auto-write the planned route into EVE (set destination hop-by-hop) while Live Mode is on.
     #[serde(default = "default_true")]
     pub travel_auto_dest: bool,
+    /// Learned op-channel comms links: normalised op key ("op4") → gnf.lt mumble link, cached
+    /// from well-formed fleet pings so malformed ones (that only name the channel) can still
+    /// offer "Join Mumble".
+    #[serde(default)]
+    pub op_channel_links: std::collections::HashMap<String, String>,
     /// User-saved Travel routes.
     #[serde(default)]
     pub saved_routes: Vec<SavedRoute>,
@@ -505,6 +514,8 @@ pub struct SovUpgrade {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedJumpRoute {
     pub name: String,
+    #[serde(default)]
+    pub folder: String,
     pub from: i64,
     #[serde(default)]
     pub waypoints: Vec<i64>,
@@ -515,6 +526,8 @@ pub struct SavedJumpRoute {
     pub jdc: u32,
     #[serde(default)]
     pub jfc: u32,
+    #[serde(default)]
+    pub jumps: usize,
 }
 
 /// A user-set capital docking permit for a system (there's no reliable public list of
@@ -618,8 +631,10 @@ impl Default for Settings {
             intel_ttl_secs: 300,
             fit_site: String::new(),
             doctrine_url: String::new(),
-            fleet_ping_window: false,
+            fleet_ping_window: true,
+            fleet_window_forced: false,
             travel_auto_dest: true,
+            op_channel_links: std::collections::HashMap::new(),
             saved_routes: Vec::new(),
             route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
