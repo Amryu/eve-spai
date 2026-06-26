@@ -140,6 +140,13 @@ enum MapMode {
     JumpPlan,
 }
 
+/// What the clipboard share-popup detected.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PasteKind {
+    Dscan,
+    Local,
+}
+
 /// Which kind of saved route a row in the merged Routes dialog refers to.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RouteKind {
@@ -436,7 +443,7 @@ pub struct SpaiApp {
     dscan_seen_hash: u64,
     dscan_dismissed_hash: u64,
     /// Pending prompt: (dscan text, row count).
-    dscan_prompt: Option<(String, usize)>,
+    dscan_prompt: Option<(String, usize, PasteKind)>,
     /// Cached screen position for the d-scan popup (bottom-right of the EVE window).
     dscan_pos: Option<(f32, f32)>,
     /// D-scan popup: whether the shared link was opened/copied, and when it last lost
@@ -10026,11 +10033,35 @@ impl SpaiApp {
         }
         self.dscan_seen_hash = h;
         if let Some(n) = crate::dscan::looks_like_dscan(&text) {
-            self.dscan_prompt = Some((text, n));
+            self.dscan_prompt = Some((text, n, PasteKind::Dscan));
+        } else if let Some(n) = crate::dscan::looks_like_local(&text) {
+            self.dscan_prompt = Some((text, n, PasteKind::Local));
         }
     }
 
     /// Prompt to share a detected d-scan, and show the resulting link.
+    /// True when the user is set up for the Imperium (an `*.imperium` intel channel).
+    fn is_imperium(&self) -> bool {
+        self.settings.intel_channels.iter().any(|c| c.trim().to_lowercase().ends_with(".imperium"))
+    }
+
+    /// Whether d-scans should go to adashboard.info/intel rather than dscan.info.
+    fn dscan_uses_adashboard(&self) -> bool {
+        match self.settings.dscan_service {
+            crate::settings::DscanService::Auto => self.is_imperium(),
+            crate::settings::DscanService::Adashboard => true,
+            crate::settings::DscanService::DscanInfo => false,
+        }
+    }
+
+    /// Imperium d-scan: copy it to the clipboard and open adashboard.info/intel, where the
+    /// member (logged in via ESI) pastes it. adashboard has no anonymous upload API, so we
+    /// can't fetch a shareable link the way dscan.info works.
+    fn open_adashboard_intel(&self, ctx: &egui::Context, text: String) {
+        ctx.copy_text(text);
+        let _ = open::that("https://adashboard.info/intel");
+    }
+
     fn start_dscan_upload(&self, ctx: &egui::Context, text: String) {
         self.dscan_share.lock().unwrap().uploading = true;
         let (share, ctx2) = (self.dscan_share.clone(), ctx.clone());
@@ -10048,6 +10079,7 @@ impl SpaiApp {
 
     #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn dscan_dialog(&mut self, ctx: &egui::Context) {
+        let adashboard = self.dscan_uses_adashboard();
         let active = self.dscan_prompt.is_some() || {
             let s = self.dscan_share.lock().unwrap();
             s.uploading || s.link.is_some() || s.error.is_some()
@@ -10057,15 +10089,24 @@ impl SpaiApp {
             self.dscan_link_used = false;
             self.dscan_unfocused_at = None;
         }
-        // Auto-upload mode: skip the prompt and upload straight away.
-        if active && self.settings.dscan_autoupload {
-            let idle = {
-                let s = self.dscan_share.lock().unwrap();
-                !s.uploading && s.link.is_none() && s.error.is_none()
-            };
-            if idle {
-                if let Some((text, _)) = self.dscan_prompt.take() {
-                    self.start_dscan_upload(ctx, text);
+        // Auto mode: act on a detected d-scan straight away (local pastes always prompt so the
+        // user can choose what to do with them).
+        let auto_dscan =
+            matches!(self.dscan_prompt, Some((_, _, PasteKind::Dscan))) && self.settings.dscan_autoupload;
+        if active && auto_dscan {
+            if adashboard {
+                if let Some((text, _, _)) = self.dscan_prompt.take() {
+                    self.open_adashboard_intel(ctx, text);
+                }
+            } else {
+                let idle = {
+                    let s = self.dscan_share.lock().unwrap();
+                    !s.uploading && s.link.is_none() && s.error.is_none()
+                };
+                if idle {
+                    if let Some((text, _, _)) = self.dscan_prompt.take() {
+                        self.start_dscan_upload(ctx, text);
+                    }
                 }
             }
         }
@@ -10090,6 +10131,8 @@ impl SpaiApp {
         };
         use egui_phosphor::regular as icon;
         let mut start_upload = false;
+        let mut open_adashboard = false;
+        let mut do_lookup = false;
         let mut dismiss = false;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("dscan_popup"),
@@ -10114,7 +10157,11 @@ impl SpaiApp {
                 ));
                 let frame = egui::Frame::central_panel(&ctx.style());
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-                    ui.label(egui::RichText::new(format!("{}  D-scan", icon::BROADCAST)).strong());
+                    let title = match &self.dscan_prompt {
+                        Some((_, _, PasteKind::Local)) => "Local list",
+                        _ => "D-scan",
+                    };
+                    ui.label(egui::RichText::new(format!("{}  {title}", icon::BROADCAST)).strong());
                     let (uploading, link, error) = (share.0, share.1.clone(), share.2.clone());
                     if let Some(link) = link {
                         ui.label("Shared:");
@@ -10142,25 +10189,59 @@ impl SpaiApp {
                                 format!("Upload failed: {e}"),
                             );
                         }
-                        if let Some((_, n)) = &self.dscan_prompt {
-                            ui.label(format!("D-scan detected ({n} rows)."));
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .button(format!("{}  Share on dscan.info", icon::UPLOAD_SIMPLE))
-                                    .clicked()
-                                {
-                                    start_upload = true;
+                        if let Some((_, n, kind)) = &self.dscan_prompt {
+                            let (n, kind) = (*n, *kind);
+                            // Hint at the configured default, but let the user pick here.
+                            let ada = format!("{}  adashboard.info", icon::UPLOAD_SIMPLE);
+                            let ada_hint =
+                                "Copy and open adashboard.info/intel — paste it there (Ctrl+V)";
+                            match kind {
+                                PasteKind::Dscan => {
+                                    ui.label(format!("D-scan detected ({n} rows). Share with:"));
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button(format!("{}  dscan.info", icon::UPLOAD_SIMPLE))
+                                            .on_hover_text("Upload to dscan.info and get a shareable link")
+                                            .clicked()
+                                        {
+                                            start_upload = true;
+                                        }
+                                        if ui.button(&ada).on_hover_text(ada_hint).clicked() {
+                                            open_adashboard = true;
+                                        }
+                                        if ui.button("Dismiss").clicked() {
+                                            dismiss = true;
+                                        }
+                                    });
+                                    let auto_label = if adashboard {
+                                        "Auto-open (also in Settings)"
+                                    } else {
+                                        "Auto-upload (also in Settings)"
+                                    };
+                                    if ui.checkbox(&mut self.settings.dscan_autoupload, auto_label).changed()
+                                    {
+                                        self.needs_save = true;
+                                    }
                                 }
-                                if ui.button("Dismiss").clicked() {
-                                    dismiss = true;
+                                PasteKind::Local => {
+                                    ui.label(format!("Local list detected ({n} pilots). Use:"));
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button(format!("{}  Look up", icon::MAGNIFYING_GLASS))
+                                            .on_hover_text("Open these pilots in the Lookup view")
+                                            .clicked()
+                                        {
+                                            do_lookup = true;
+                                        }
+                                        if ui.button(&ada).on_hover_text(ada_hint).clicked() {
+                                            open_adashboard = true;
+                                        }
+                                        if ui.button("Dismiss").clicked() {
+                                            dismiss = true;
+                                        }
+                                    });
                                 }
-                            });
-                        }
-                        if ui
-                            .checkbox(&mut self.settings.dscan_autoupload, "Auto-upload (also in Settings)")
-                            .changed()
-                        {
-                            self.needs_save = true;
+                            }
                         }
                     }
                 });
@@ -10171,12 +10252,25 @@ impl SpaiApp {
         );
 
         if start_upload {
-            if let Some((text, _)) = self.dscan_prompt.take() {
+            if let Some((text, _, _)) = self.dscan_prompt.take() {
                 self.start_dscan_upload(ctx, text);
             }
         }
+        if open_adashboard {
+            if let Some((text, _, _)) = self.dscan_prompt.take() {
+                self.open_adashboard_intel(ctx, text);
+            }
+            dismiss = true; // nothing more to show — we handed off to the browser
+        }
+        if do_lookup {
+            if let Some((text, _, _)) = self.dscan_prompt.take() {
+                self.add_lookup_names(&text);
+                self.view = View::Lookup;
+            }
+            dismiss = true;
+        }
         if dismiss {
-            if let Some((text, _)) = &self.dscan_prompt {
+            if let Some((text, _, _)) = &self.dscan_prompt {
                 self.dscan_dismissed_hash = hash_str(text);
             }
             self.dscan_prompt = None;
@@ -11203,6 +11297,7 @@ impl SpaiApp {
     fn settings_view(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let mut new_theme: Option<Theme> = None;
+        let imp_target = if self.is_imperium() { "adashboard.info" } else { "dscan.info" };
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
                     if ui
@@ -11248,6 +11343,44 @@ impl SpaiApp {
                             "Auto-upload detected d-scans (skip the prompt)",
                         )
                         .changed();
+                    ui.horizontal(|ui| {
+                        ui.label("D-scan service");
+                        use crate::settings::DscanService as Dsc;
+                        egui::ComboBox::from_id_salt("dscan_service")
+                            .selected_text(match self.settings.dscan_service {
+                                Dsc::Auto => format!("Auto ({imp_target})"),
+                                Dsc::DscanInfo => "dscan.info".to_owned(),
+                                Dsc::Adashboard => "adashboard.info".to_owned(),
+                            })
+                            .show_ui(ui, |ui| {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.dscan_service,
+                                        Dsc::Auto,
+                                        format!("Auto ({imp_target})"),
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.dscan_service,
+                                        Dsc::DscanInfo,
+                                        "dscan.info",
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.dscan_service,
+                                        Dsc::Adashboard,
+                                        "adashboard.info (Imperium)",
+                                    )
+                                    .changed();
+                            });
+                    })
+                    .response
+                    .on_hover_text(
+                        "Auto uses adashboard.info/intel when an *.imperium intel channel is configured, \
+                         else dscan.info. adashboard opens in your browser to paste (it needs your login).",
+                    );
                     changed |= ui
                         .checkbox(
                             &mut self.settings.minimize_to_tray,
@@ -13498,8 +13631,10 @@ fn intel_row(
                 if r.bubble {
                     tag(ui, "BUBBLE", warn);
                 }
-                if r.killmail {
-                    tag(ui, if is_zkill { "zKill" } else { "KILL" }, red);
+                // zKill cards already have the "zKill" open button + kill styling, so the tag
+                // would be redundant; keep "KILL" only for chat-reported killmails.
+                if r.killmail && !is_zkill {
+                    tag(ui, "KILL", red);
                 }
                 if r.cyno {
                     tag(ui, "CYNO", red);

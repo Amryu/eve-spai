@@ -172,9 +172,13 @@ pub struct Settings {
     /// Watch the clipboard for d-scans and offer to share them.
     #[serde(default = "default_true")]
     pub dscan_autoprompt: bool,
-    /// Automatically upload a detected d-scan to dscan.info (skip the share prompt).
+    /// Automatically upload a detected d-scan (skip the share prompt).
     #[serde(default)]
     pub dscan_autoupload: bool,
+    /// Where d-scans go. Auto picks adashboard.info/intel for the Imperium (when an
+    /// `*.imperium` intel channel is configured), otherwise dscan.info.
+    #[serde(default)]
+    pub dscan_service: DscanService,
     /// When setting a destination, route through known wormholes (waypoints at each
     /// hole entrance) if that's shorter than the gate route.
     #[serde(default)]
@@ -411,6 +415,16 @@ pub enum Severity {
     Warning,
     Danger,
     Critical,
+}
+
+/// Which d-scan service to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DscanService {
+    /// adashboard.info/intel for the Imperium, dscan.info for everyone else.
+    #[default]
+    Auto,
+    DscanInfo,
+    Adashboard,
 }
 
 /// Configurable mapping of intel conditions → severity level.
@@ -666,6 +680,7 @@ impl Default for Settings {
             wizard_done: false,
             dscan_autoprompt: true,
             dscan_autoupload: false,
+            dscan_service: DscanService::Auto,
             route_via_wormholes: false,
             minimize_to_tray: true,
             autostart: false,

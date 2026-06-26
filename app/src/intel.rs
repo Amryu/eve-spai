@@ -142,7 +142,11 @@ pub fn extract_links(text: &str) -> Vec<IntelLink> {
             IntelLink { kind: LinkKind::Killmail, url: url.to_owned(), kill_id }
         } else if lower.contains("br.evetools.org") || lower.contains("zkillboard.com/related/") {
             IntelLink { kind: LinkKind::BattleReport, url: url.to_owned(), kill_id: None }
-        } else if lower.contains("dscan.me") || lower.contains("dscan.org") {
+        } else if lower.contains("dscan.me")
+            || lower.contains("dscan.org")
+            || lower.contains("dscan.info")
+            || lower.contains("adashboard.info")
+        {
             IntelLink { kind: LinkKind::Dscan, url: url.to_owned(), kill_id: None }
         } else {
             continue;
