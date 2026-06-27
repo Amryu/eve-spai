@@ -7,7 +7,7 @@ reference). Account-data views (A2), A7 push extras, 9c/9d are **out of scope**.
 ## Resolved
 - **A5 — Sovereignty upgrades.** Already built (`settings::SovUpgrade` paste import +
   map overlay/filter). No work needed.
-- **A6 — LogLite (TCP intel relay).** Skipped for now (keep it simple).
+- **A6 — External log-stream relay (TCP intel intake).** Skipped for now (keep it simple).
 
 ---
 

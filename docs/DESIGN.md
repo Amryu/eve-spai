@@ -12,9 +12,8 @@ A fast, lightweight desktop intel tool for EVE Online. It watches the game's
 chat/combat logs and ESI data, parses hostile/neutral activity from intel
 channels, and surfaces it on a map and in live feeds with timely alerts.
 
-The guiding difference from existing tools: **do less, cost less.** We prioritize
-a tiny resource footprint and instant responsiveness over pixel-perfect emulation
-of the EVE client aesthetic.
+The guiding principle: **do less, cost less.** A tiny resource footprint and instant
+responsiveness come first; the UI is clean and legible rather than heavily styled.
 
 ### Primary user
 A null/low-sec EVE player running this continuously alongside the game (often on a
@@ -24,9 +23,9 @@ second monitor), who needs at-a-glance situational awareness and fast alerts.
 
 ## 2. Design principles
 
-These are requirements, not aspirations. They come directly from analyzing where a
-prior tool wasted resources (an idle footprint of ~4.5 GB driven by an oversized
-image cache, an uncapped JVM heap, ~270 threads, and heavy aesthetic rendering).
+These are requirements, not aspirations. The tool must stay small and responsive when
+left running for days alongside the game: a low idle footprint, byte-bounded caches,
+few threads, and no wasteful rendering.
 
 1. **One window.** A single primary window hosts everything. Configuration and
    occasional deep-dives use modal/secondary dialogs, not a constellation of
@@ -45,7 +44,7 @@ image cache, an uncapped JVM heap, ~270 threads, and heavy aesthetic rendering).
 6. **Offline-tolerant.** Static game data (the SDE) ships/caches locally; the app is
    usable for log parsing even when ESI is unreachable.
 7. **Cross-platform, single binary.** Windows, macOS, Linux from one codebase, with
-   no JVM/runtime to install.
+   no separate runtime to install.
 
 ### 3. Resource budget (non-functional targets)
 
@@ -224,18 +223,17 @@ cohesive.
 
 Features are split into **Essential (MVP)** and **Advanced (designed-for, built
 later)**. The architecture in §5 must accommodate all Advanced items now (interfaces,
-data model, nav-rail extensibility) even though they ship later. IDs in brackets map
-back to the source feature inventory for traceability.
+data model, nav-rail extensibility) even though they ship later.
 
 ### 7.1 ESSENTIAL — the MVP intel tool
 
-**E1. App shell** *(inv 1)*
+**E1. App shell**
 - Single window; collapsible Neocom nav rail (icon ↔ icon+label).
 - Top bar (active character, clock, connectivity, search); status bar.
 - 3-color theming + presets; light/dark; EVE-time vs local; ISK formatting.
 - Tray icon + minimize-to-tray; single-instance. **No splash screen.**
 
-**E2. Identity & static data** *(inv 2, 17)*
+**E2. Identity & static data**
 - EVE SSO OAuth (PKCE), multi-character, encrypted token storage + auto-refresh.
 - Minimal ESI scope set for MVP: location/online/ship, character affiliation,
   read contacts (for standings), write-waypoint + open-window. (Broader scopes
@@ -243,7 +241,7 @@ back to the source feature inventory for traceability.
 - SDE downloaded on first run (then refreshed when a newer version is published),
   baked into a local DB: system/region/type names, gate graph, map geometry.
 
-**E3. Intel ingestion & parsing** *(inv 3)* — core
+**E3. Intel ingestion & parsing** — core
 - Discover + tail intel chat channels (configurable; optional region binding) and
   Local for own-presence.
 - Entity detection: named characters, character counts, ships (+counts/plurals),
@@ -254,13 +252,13 @@ back to the source feature inventory for traceability.
 - State engine: decay/TTL, conversation merge window, movement tracking, clear
   handling, kill-removes-pilot, dedup, distance/jumps to active character.
 
-**E4. Intel presentation** *(inv 4)*
+**E4. Intel presentation**
 - **Intel view**: live per-system feed + chronological report list in one view
   (tabs or split). Filters: channel, space type, distance (all / my regions /
   within N jumps), entity type. Sort by time/distance. Search. Compact density.
 - New-intel highlight (brief fade) — the one allowed bit of motion.
 
-**E5. Map (lean)** *(inv 5 subset)*
+**E5. Map (lean)**
 - 2D region map + a simple cluster/region selector. Security coloring.
 - Overlays: **intel** (markers + staleness), **own character location(s)**, gate
   connections. Hover/click system info popup.
@@ -268,27 +266,27 @@ back to the source feature inventory for traceability.
 - (3D cluster, the ~24 color strategies, jump-bridge network, sov overlays,
   distance maps, map notes → Advanced.)
 
-**E6. Killboard intel** *(inv 6 subset)*
+**E6. Killboard intel**
 - Live zKillboard feed; inject kills as intel; show victim/attacker/ship/system/time.
 - (Analytics/recent-activity dashboards → Advanced.)
 
-**E7. Location tracking** *(inv 7 subset)*
+**E7. Location tracking**
 - Poll active/selected character location; Local-based system change detection;
   drive "near me" filters + map. (Fleet roster → Advanced.)
 
-**E8. Basic standings** *(inv 14.5 subset)*
+**E8. Basic standings**
 - Classify entities friendly / neutral / hostile from your ESI contacts and/or a
   manual list (and config-pack data later). Drives intel + map coloring.
 - (Full contact CRUD, labels, watch/block → Advanced.)
 
-**E9. Alerts & notifications (core)** *(inv 11–12 subset)*
+**E9. Alerts & notifications (core)**
 - Triggers: intel matches (any/named character, any/specific ship, hostile in
   system/within N jumps), channel inactivity.
 - Actions: in-app notification, native desktop toast, sound (built-in/custom),
   per-alert cooldown, enable/disable, grouping.
 - (Game-action/PI/Jabber-ping triggers + push services → Advanced.)
 
-**E10. Settings** *(inv 16.3 subset)*
+**E10. Settings**
 - Dialog-based: EVE log/settings paths (auto-detect + manual), intel channels,
   characters, theme, alerts, units/time. Robust settings load (backup on corruption).
 - (Setup wizard, config packs, "what's new", debug panel → Advanced.)
@@ -298,54 +296,53 @@ back to the source feature inventory for traceability.
 > The shell, data model, and core interfaces must leave room for these. Each becomes
 > a new nav-rail view or an extension of an existing view/dialog.
 
-**A1. Full map suite** *(inv 5 remainder)* — 3D cluster + 2D cluster layouts; all
+**A1. Full map suite** — 3D cluster + 2D cluster layouts; all
 ~24 system color strategies; configurable per-system indicators (≤6) + info box;
 jump-bridge network (import/auto-discover/export/forget, opacity); sov-upgrade
 overlay; distance/jump-band maps; map notes/markers; NPC kills, incursions, storms,
 industry indices, etc.
 
-**A2. Account-data views** *(inv 14)* — **Assets** (hierarchical, pricing, fits),
+**A2. Account-data views** — **Assets** (hierarchical, pricing, fits),
 **Wallet** (balances, journal, charts, insights, loyalty points), **Clones/implants**,
 **Contacts** (full CRUD, labels, watch/block, universe search), **Planetary Industry**
 (colony monitoring, pin maps, simulation, expiry alerts, exports), **Opportunities**
 (career/corp projects/freelance jobs). Each pulls the additional ESI scopes it needs.
 
-**A3. Game-log combat awareness** *(inv 8)* — under-attack/attacking/scrambled/
+**A3. Game-log combat awareness** — under-attack/attacking/scrambled/
 decloaked/out-of-charges/clone-jump events; recently-targeted; as alert triggers and
 a small live status.
 
-**A4. Comms** *(inv 13)* — Jabber/XMPP (roster, MUC, DMs, presence), in-app chat
+**A4. Comms** — Jabber/XMPP (roster, MUC, DMs, presence), in-app chat
 aggregation, fleet **Pings** (FC/formup/PAP/doctrine/comms parsing, open Mumble).
 
-**A5. Sovereignty upgrades** *(inv 10)* — tracking, clipboard "hack" import, map
+**A5. Sovereignty upgrades** — tracking, clipboard "hack" import, map
 overlay + filters.
 
-**A6. LogLite ingestion** *(inv 9)* — TCP intake of external EVE log streams; filter
+**A6. External log-stream ingestion** — TCP intake of EVE log relays; filter
 view.
 
-**A7. Extended alerts & push** *(inv 11–12 remainder)* — PI alerts, Jabber-ping
+**A7. Extended alerts & push** — PI alerts, Jabber-ping
 alerts, chat/regex alerts, **Pushover** + **ntfy** push, advanced notification
 positioning.
 
-**A8. Onboarding & packs** *(inv 16.1–16.2)* — first-run setup wizard; configuration
+**A8. Onboarding & packs** — first-run setup wizard; configuration
 packs (preset channels/jump-bridges/sov/standings by coalition); settings-copy between
 characters; what's-new; debug/diagnostics panel.
 
-**A9. Clipboard integrations** *(inv 16.5)* — d-scan (dscan.info/adashboard),
+**A9. Clipboard integrations** — d-scan (dscan.info/adashboard),
 jump-bridge, sov-hack paste parsing.
 
-**A10. Niceties** *(inv 16.4, 7.4)* — jukebox (likely **dropped** unless requested);
+**A10. Niceties** — jukebox (likely **dropped** unless requested);
 active-EVE-window detection + environment warnings (clock sync, fullscreen client,
 language).
 
-### 7.3 Explicitly cut (vs. the source tool)
+### 7.3 Out of scope
+Deliberately not built — each works against the resource and simplicity goals:
 - **Splash screen** — startup is fast; pointless.
-- **Animated/parallax "dynamic portraits"** (inv 15) — replaced by static low-res
-  icons. This was the OpenCV-driven, high-RAM feature; the whole feature is removed.
-- **Aesthetic transparency/blur by default** — measured GPU/CPU waste; advanced opt-in
-  at most.
-- **High-resolution portrait fetching/caching** — replaced by §6.4 policy.
-- **Telemetry/analytics (Sentry/PostHog)** — not included.
+- **Animated/parallax "dynamic portraits"** — static low-res icons instead (§6.4).
+- **Transparency/blur by default** — measured GPU/CPU waste; advanced opt-in at most.
+- **High-resolution portrait fetching/caching** — replaced by the §6.4 policy.
+- **Telemetry/analytics** — not included.
 - **Per-feature thread pools** — replaced by one shared async runtime.
 
 ---
@@ -379,8 +376,8 @@ preserving the big inter-region distances. It is NOT in the Fuzzwork CSV dump
 `mapSolarSystems.jsonl` → `position2D.x` / `position2D.y` (X follows 3D X, Y
 follows 3D Z). Until we ingest the JSONL SDE, the map approximates it: anchor each
 region at its geographic centroid and de-overlap systems only *within* a region
-(`map::spaced_layout`). TODO: add a JSONL-SDE fetch and bake `position2D` for a
-pixel-faithful in-game layout. Refs: developers.eveonline.com map-data guide.
+(`map::spaced_layout`). TODO: add a JSONL-SDE fetch and bake `position2D` for an
+accurate star-map layout. Refs: developers.eveonline.com map-data guide.
 
 ## 9d. Deferred — Jump planner (A1 extension)
 A capital jump-route planner. We already have true 3D coordinates → light-year
