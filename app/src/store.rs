@@ -596,6 +596,19 @@ impl Store {
         map
     }
 
+    /// Ship type id → hull size tier, for battle-filter hull conditions.
+    pub fn ship_sizes(&self) -> std::collections::HashMap<i64, crate::settings::ShipSize> {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, COALESCE(group_name,'') FROM sde_ships") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
+                for (id, group) in rows.flatten() {
+                    map.insert(id, crate::settings::ShipSize::from_group(&group));
+                }
+            }
+        }
+        map
+    }
+
     /// All known (ESI-confirmed) pilot names → character id, keyed lower-case.
     pub fn known_pilots(&self) -> std::collections::HashMap<String, i64> {
         let mut out = std::collections::HashMap::new();

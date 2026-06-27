@@ -390,6 +390,8 @@ const PILOT_STOP: &[&str] = &[
     // Note: the pronoun "I" needs no entry — a 1-letter token already fails `name_part`
     // (len >= 2), and listing "i" could split a real name that contains a standalone "I".
     "hacking", "hack", "hacked", "ratting", "ratted", "missing", "guess",
+    // Status words ("system clean", "reported in X").
+    "clean", "reported",
     // Engagement descriptors ("good fight", "engaged on gate"). "combat" is covered above.
     "fight", "fights", "fighting", "engaged", "engage", "engaging",
     // "etc" / "etc." (the trailing dot is trimmed by the tokenizer).

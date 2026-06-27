@@ -340,6 +340,16 @@ pub struct SpaiApp {
     battle_search: String,
     /// Battle detail: the participant currently hovered (for the involvement highlight).
     battle_hover: Option<BattleHover>,
+    /// Custom battle inclusion rules, shared live with the zKill worker.
+    battle_filter: crate::zkill::SharedBattleFilter,
+    /// Ship type id → hull size tier (for filter hull conditions).
+    ship_sizes: crate::zkill::ShipSizes,
+    /// Active character's current system, published to the worker for jumps-from-me rules.
+    player_sys_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Battle-filter dialog open.
+    battle_filter_open: bool,
+    /// Awaiting confirmation to restore default battle rules.
+    battle_filter_confirm_reset: bool,
     camps: crate::camp::SharedCamps,
     /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
     /// lock + scan the camp state every frame for every map.
@@ -865,6 +875,11 @@ impl SpaiApp {
             battle_selected: None,
             battle_search: String::new(),
             battle_hover: None,
+            battle_filter: std::sync::Arc::new(std::sync::Mutex::new(crate::settings::BattleFilter::default())),
+            ship_sizes: std::sync::Arc::new(std::collections::HashMap::new()),
+            player_sys_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            battle_filter_open: false,
+            battle_filter_confirm_reset: false,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
@@ -3366,6 +3381,9 @@ impl SpaiApp {
         let ship_ids = std::sync::Arc::new(
             store.ship_index().values().map(|(id, _)| *id).collect::<std::collections::HashSet<i64>>(),
         );
+        // Hull sizes for battle-filter rules, and the live filter config from settings.
+        self.ship_sizes = std::sync::Arc::new(store.ship_sizes());
+        *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
         crate::zkill::spawn(
             systems.clone(),
             self.intel_state.clone(),
@@ -3374,6 +3392,9 @@ impl SpaiApp {
             self.killfeed.clone(),
             camp_types,
             ship_ids,
+            self.battle_filter.clone(),
+            self.ship_sizes.clone(),
+            self.player_sys_shared.clone(),
             ctx.clone(),
         );
 
@@ -4018,6 +4039,297 @@ impl SpaiApp {
         }
     }
 
+    /// The "Battle rules" dialog: edit the custom inclusion/exclusion rules.
+    fn battle_filter_dialog(&mut self, ctx: &egui::Context) {
+        use crate::settings::{BattleCond, RuleAction, ShipSize};
+        use egui_phosphor::regular as icon;
+        if !self.battle_filter_open {
+            return;
+        }
+        let mut changed = false;
+        let keep = Self::dialog_viewport(ctx, "battle_filter", "EVE Spai — Battle rules", [580.0, 620.0], |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Battles near your intel are shown by default. Add rules to include or exclude \
+                     others. The first rule that matches a battle wins.",
+                )
+                .weak(),
+            );
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let rules = &mut self.settings.battles.rules;
+                let n = rules.len();
+                let mut delete: Option<usize> = None;
+                let mut swap: Option<(usize, usize)> = None;
+                for (i, rule) in rules.iter_mut().enumerate() {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            // Include / Exclude.
+                            let mut act = rule.action;
+                            egui::ComboBox::from_id_salt(("br_act", i))
+                                .selected_text(if act == RuleAction::Include { "Include" } else { "Exclude" })
+                                .width(84.0)
+                                .show_ui(ui, |ui| {
+                                    changed |= ui.selectable_value(&mut act, RuleAction::Include, "Include").changed();
+                                    changed |= ui.selectable_value(&mut act, RuleAction::Exclude, "Exclude").changed();
+                                });
+                            rule.action = act;
+                            // All / Any.
+                            let mut all = rule.match_all;
+                            egui::ComboBox::from_id_salt(("br_all", i))
+                                .selected_text(if all { "All of" } else { "Any of" })
+                                .width(72.0)
+                                .show_ui(ui, |ui| {
+                                    changed |= ui.selectable_value(&mut all, true, "All of").changed();
+                                    changed |= ui.selectable_value(&mut all, false, "Any of").changed();
+                                });
+                            rule.match_all = all;
+                            if rule.is_broad() {
+                                ui.label(egui::RichText::new(icon::WARNING).color(egui::Color32::from_rgb(0xE0, 0xB0, 0x4C)))
+                                    .on_hover_text("Matches anywhere in EVE — can store a lot of battle history. Add a region/constellation/system/jumps or participant condition to bound it.");
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(icon::TRASH).clicked() {
+                                    delete = Some(i);
+                                }
+                                if i + 1 < n && ui.button(icon::ARROW_DOWN).clicked() {
+                                    swap = Some((i, i + 1));
+                                }
+                                if i > 0 && ui.button(icon::ARROW_UP).clicked() {
+                                    swap = Some((i, i - 1));
+                                }
+                            });
+                        });
+                        // Conditions.
+                        let mut del_cond: Option<usize> = None;
+                        for (j, cond) in rule.conditions.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                egui::ComboBox::from_id_salt(("br_ck", i, j))
+                                    .selected_text(cond.kind_label())
+                                    .width(140.0)
+                                    .show_ui(ui, |ui| {
+                                        for k in BattleCond::kinds() {
+                                            if ui.selectable_label(cond.kind_label() == k.kind_label(), k.kind_label()).clicked()
+                                                && cond.kind_label() != k.kind_label()
+                                            {
+                                                *cond = k;
+                                                changed = true;
+                                            }
+                                        }
+                                    });
+                                match cond {
+                                    BattleCond::IntelArea => {
+                                        ui.label(egui::RichText::new("(default tracked area)").weak());
+                                    }
+                                    BattleCond::Coalition(s)
+                                    | BattleCond::Alliance(s)
+                                    | BattleCond::Corporation(s)
+                                    | BattleCond::Player(s)
+                                    | BattleCond::Region(s)
+                                    | BattleCond::Constellation(s)
+                                    | BattleCond::System(s)
+                                    | BattleCond::ShipType(s) => {
+                                        changed |= ui
+                                            .add(egui::TextEdit::singleline(s).desired_width(200.0).hint_text("name"))
+                                            .changed();
+                                    }
+                                    BattleCond::JumpsFromMe(nn) => {
+                                        changed |= ui.add(egui::DragValue::new(nn).range(0..=100).suffix(" jumps")).changed();
+                                    }
+                                    BattleCond::HullSizeAtLeast(sz) => {
+                                        egui::ComboBox::from_id_salt(("br_sz", i, j))
+                                            .selected_text(sz.label())
+                                            .show_ui(ui, |ui| {
+                                                for opt in ShipSize::CHOICES {
+                                                    changed |= ui.selectable_value(sz, opt, opt.label()).changed();
+                                                }
+                                            });
+                                    }
+                                    BattleCond::IskAtLeast(v) | BattleCond::IskAtMost(v) => {
+                                        let mut m = *v / 1e6;
+                                        if ui
+                                            .add(egui::DragValue::new(&mut m).speed(50.0).range(0.0..=1e9).suffix("M ISK"))
+                                            .changed()
+                                        {
+                                            *v = m * 1e6;
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button(icon::X).on_hover_text("Remove condition").clicked() {
+                                        del_cond = Some(j);
+                                    }
+                                });
+                            });
+                            // Hint for conditions that only filter at display (can't widen ingest).
+                            if matches!(
+                                cond,
+                                BattleCond::Alliance(_)
+                                    | BattleCond::Corporation(_)
+                                    | BattleCond::Player(_)
+                                    | BattleCond::ShipType(_)
+                            ) {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "   pairs with a region/coalition/hull condition to pull in new battles",
+                                    )
+                                    .weak()
+                                    .size(11.0),
+                                );
+                            }
+                        }
+                        if let Some(j) = del_cond {
+                            rule.conditions.remove(j);
+                            changed = true;
+                        }
+                        if ui.button(format!("{}  condition", icon::PLUS)).clicked() {
+                            rule.conditions.push(BattleCond::Region(String::new()));
+                            changed = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+                if let Some((a, b)) = swap {
+                    rules.swap(a, b);
+                    changed = true;
+                }
+                if let Some(i) = delete {
+                    rules.remove(i);
+                    changed = true;
+                }
+                if ui.button(format!("{}  Add rule", icon::PLUS)).clicked() {
+                    rules.push(crate::settings::BattleRule::default());
+                    changed = true;
+                }
+                ui.add_space(8.0);
+                ui.separator();
+                // Restore defaults (with confirmation).
+                if self.battle_filter_confirm_reset {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Replace all rules with the default?").strong());
+                        if ui.button("Restore").clicked() {
+                            *rules = crate::settings::BattleFilter::default_rules();
+                            changed = true;
+                            self.battle_filter_confirm_reset = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.battle_filter_confirm_reset = false;
+                        }
+                    });
+                } else if ui.button("Restore defaults").clicked() {
+                    self.battle_filter_confirm_reset = true;
+                }
+            });
+        });
+        if !keep {
+            self.battle_filter_open = false;
+            self.battle_filter_confirm_reset = false;
+        }
+        if changed {
+            self.needs_save = true;
+            *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
+        }
+    }
+
+    /// Battle-level facts for the filter rules (display side — names are already resolved).
+    fn battle_match_data(&self, b: &crate::battle::Battle) -> crate::settings::MatchData {
+        use crate::battle::PartyKind;
+        let mut d = crate::settings::MatchData { total_isk: Some(b.isk), ..Default::default() };
+        let systems = self.systems.clone();
+        for (id, name, _) in &b.systems {
+            d.systems.insert(name.to_lowercase());
+            if let Some(info) = systems.as_ref().and_then(|s| s.info_of(*id)) {
+                if !info.region.is_empty() {
+                    d.regions.insert(info.region.to_lowercase());
+                }
+                if !info.constellation.is_empty() {
+                    d.constellations.insert(info.constellation.to_lowercase());
+                }
+            }
+        }
+        for side in &b.sides {
+            if let Some(c) = &side.coalition {
+                d.coalitions.insert(c.to_lowercase());
+            }
+            for p in &side.parties {
+                match p.kind {
+                    PartyKind::Alliance => {
+                        d.alliances.insert(p.name.to_lowercase());
+                        if let Some(c) = crate::packs::coalition_of(p.id) {
+                            d.coalitions.insert(c.to_lowercase());
+                        }
+                    }
+                    PartyKind::Corporation => {
+                        d.corporations.insert(p.name.to_lowercase());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let type_names = self.type_names.lock().unwrap();
+        let mut max = crate::settings::ShipSize::Other;
+        let mut note_ship = |id: i64, d: &mut crate::settings::MatchData| {
+            if let Some(&sz) = self.ship_sizes.get(&id) {
+                if sz > max {
+                    max = sz;
+                }
+            }
+            if let Some(n) = type_names.get(&id) {
+                d.ship_names.insert(n.to_lowercase());
+            }
+        };
+        for e in &b.engagements {
+            note_ship(e.victim_ship, &mut d);
+            for a in &e.attackers {
+                note_ship(a.ship, &mut d);
+            }
+            d.pilots.insert(e.victim_pilot.to_lowercase());
+            for a in &e.attackers {
+                d.pilots.insert(a.pilot.to_lowercase());
+            }
+        }
+        d.max_size = max;
+        d.in_intel_area = self.battle_in_tracked_area(b);
+        // Distance from the active character to the nearest battle system.
+        if let (Some(me), Some(systems)) = (self.player_system(), &self.systems) {
+            d.min_jumps_from_me = b
+                .systems
+                .iter()
+                .filter_map(|(id, _, _)| systems.jumps(*id, me, 50))
+                .min();
+        }
+        d
+    }
+
+    /// Is a battle within the default intel-tracked area (any system within `ANCHOR_JUMPS` of an
+    /// intel-feed system)?
+    fn battle_in_tracked_area(&self, b: &crate::battle::Battle) -> bool {
+        let Some(systems) = &self.systems else { return false };
+        let intel: Vec<i64> = {
+            let st = self.intel_state.lock().unwrap();
+            st.reports.iter().flat_map(|r| r.systems.iter().map(|s| s.id)).collect()
+        };
+        b.systems.iter().any(|(id, _, _)| {
+            intel.iter().any(|&s| systems.jumps(*id, s, crate::zkill::ANCHOR_JUMPS).is_some())
+        })
+    }
+
+    /// Whether a clustered battle should be shown given the user's filter rules.
+    fn battle_shown(&self, b: &crate::battle::Battle) -> bool {
+        let rules = self.battle_filter.lock().unwrap();
+        if rules.rules.is_empty() {
+            return self.battle_in_tracked_area(b);
+        }
+        let data = self.battle_match_data(b);
+        match crate::settings::battle_decision(&rules.rules, &data) {
+            Some(crate::settings::RuleAction::Include) => true,
+            Some(crate::settings::RuleAction::Exclude) => false,
+            None => self.battle_in_tracked_area(b),
+        }
+    }
+
     /// (Re)cluster every persisted engagement into `battle_history` on a background thread.
     fn load_battle_history(&self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering;
@@ -4134,6 +4446,9 @@ impl SpaiApp {
                     self.load_battle_history(ui.ctx());
                 }
             }
+            if ui.button(format!("{}  Rules…", egui_phosphor::regular::FUNNEL)).clicked() {
+                self.battle_filter_open = true;
+            }
         });
         ui.add_space(4.0);
         let query = self.battle_search.trim().to_lowercase();
@@ -4142,9 +4457,11 @@ impl SpaiApp {
         let mut open: Option<i64> = None;
         {
             let battles = source.lock().unwrap();
-            // Only multi-kill clusters count as a "battle".
-            let shown: Vec<&crate::battle::Battle> =
-                battles.iter().filter(|b| b.kills >= 2 && b.matches(&query)).collect();
+            // Only multi-kill clusters count as a "battle", filtered by query + inclusion rules.
+            let shown: Vec<&crate::battle::Battle> = battles
+                .iter()
+                .filter(|b| b.kills >= 2 && b.matches(&query) && self.battle_shown(b))
+                .collect();
             if shown.is_empty() {
                 let msg = if self.show_history && loading {
                     "Loading full history…"
@@ -11852,6 +12169,10 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Publish the active character's system for the worker's jumps-from-me rules.
+        self.player_sys_shared
+            .store(self.player_system().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+
         // System tray: Show brings the window back; Exit quits for real. Closing the
         // window hides to the tray instead of quitting (when enabled).
         if let Some(tray) = self.tray.clone() {
@@ -11946,6 +12267,7 @@ impl eframe::App for SpaiApp {
         self.ship_window(&ctx);
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
+        self.battle_filter_dialog(&ctx);
         self.fleet_ping_window_ui(&ctx);
         self.routes_dialog(&ctx);
         self.safety_watch(&ctx);
@@ -13196,11 +13518,18 @@ fn ontop_pin(ctx: &egui::Context, id: &str) {
                 ctx.data_mut(|d| d.insert_temp(key, on));
             }
         });
-    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on {
-        egui::WindowLevel::AlwaysOnTop
-    } else {
-        egui::WindowLevel::Normal
-    }));
+    // Only send the window-level command when it changes. Sending it every frame leaves a pending
+    // viewport command that forces a repaint each frame, spinning the dialog at 100% CPU.
+    let applied_key = egui::Id::new(("ontop_applied", id));
+    let applied = ctx.data(|d| d.get_temp::<bool>(applied_key));
+    if applied != Some(on) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        }));
+        ctx.data_mut(|d| d.insert_temp(applied_key, on));
+    }
 }
 
 fn notify_os(summary: &str, body: &str) {

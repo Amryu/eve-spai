@@ -111,6 +111,9 @@ pub struct Settings {
     /// Alerting configuration (rules, sounds, custom window, push).
     #[serde(default = "default_alerts")]
     pub alerts: AlertSettings,
+    /// Custom battle-report inclusion rules (empty = default intel-area behaviour).
+    #[serde(default)]
+    pub battles: BattleFilter,
     /// Map overlay-mode window opacity (0.3–1.0).
     #[serde(default = "default_overlay_opacity")]
     pub map_overlay_opacity: f32,
@@ -660,6 +663,7 @@ impl Default for Settings {
             alliances: Vec::new(),
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
+            battles: BattleFilter::default(),
             map_overlay_opacity: 0.9,
             map_overlay_smart: false,
             jabber_enabled: false,
@@ -685,5 +689,427 @@ impl Default for Settings {
             minimize_to_tray: true,
             autostart: false,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Custom battle-report inclusion rules.
+// ---------------------------------------------------------------------------
+
+/// Ordered battle-filter rules. The first rule that matches a battle decides whether it is shown;
+/// if none match, the default intel-area behaviour applies.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BattleFilter {
+    #[serde(default)]
+    pub rules: Vec<BattleRule>,
+}
+
+impl Default for BattleFilter {
+    fn default() -> Self {
+        Self { rules: BattleFilter::default_rules() }
+    }
+}
+
+impl BattleFilter {
+    /// The shipped baseline: include battles in the intel-tracked area (today's behaviour),
+    /// as one editable rule.
+    pub fn default_rules() -> Vec<BattleRule> {
+        vec![BattleRule {
+            action: RuleAction::Include,
+            match_all: true,
+            conditions: vec![BattleCond::IntelArea],
+            expanded: true,
+        }]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleAction {
+    Include,
+    Exclude,
+}
+
+/// Hull size ladder. `Other` (industrials, freighters, pods, …) sorts lowest so "Battleship and
+/// up" never matches it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ShipSize {
+    Other,
+    Frigate,
+    Destroyer,
+    Cruiser,
+    Battlecruiser,
+    Battleship,
+    Capital,
+    Supercapital,
+}
+
+impl ShipSize {
+    /// Classify an SDE `group_name` into a size tier.
+    pub fn from_group(group: &str) -> ShipSize {
+        let g = group.to_lowercase();
+        if g.contains("titan") || g.contains("supercarrier") {
+            ShipSize::Supercapital
+        } else if g.contains("dreadnought")
+            || g.contains("carrier")
+            || g.contains("force auxiliary")
+            || g.contains("capital industrial")
+            || g == "rorqual"
+        {
+            ShipSize::Capital
+        } else if g.contains("battlecruiser") || g.contains("command ship") {
+            ShipSize::Battlecruiser
+        } else if g.contains("battleship") || g.contains("marauder") || g.contains("black ops") {
+            ShipSize::Battleship
+        } else if g.contains("frigate")
+            || g.contains("interceptor")
+            || g.contains("covert ops")
+            || g.contains("stealth bomber")
+            || g.contains("electronic attack")
+            || g.contains("corvette")
+        {
+            // Checked before "cruiser"/"logistics" so a Logistics Frigate stays a frigate.
+            ShipSize::Frigate
+        } else if g.contains("cruiser") || g.contains("logistics") || g.contains("recon") {
+            ShipSize::Cruiser
+        } else if g.contains("destroyer") || g.contains("interdictor") {
+            ShipSize::Destroyer
+        } else {
+            ShipSize::Other
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ShipSize::Other => "Other",
+            ShipSize::Frigate => "Frigate",
+            ShipSize::Destroyer => "Destroyer",
+            ShipSize::Cruiser => "Cruiser",
+            ShipSize::Battlecruiser => "Battlecruiser",
+            ShipSize::Battleship => "Battleship",
+            ShipSize::Capital => "Capital",
+            ShipSize::Supercapital => "Supercapital",
+        }
+    }
+
+    /// The tiers offered in the dialog (Frigate … Supercapital — "Other" isn't a useful floor).
+    pub const CHOICES: [ShipSize; 7] = [
+        ShipSize::Frigate,
+        ShipSize::Destroyer,
+        ShipSize::Cruiser,
+        ShipSize::Battlecruiser,
+        ShipSize::Battleship,
+        ShipSize::Capital,
+        ShipSize::Supercapital,
+    ];
+}
+
+/// One condition in a battle rule.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BattleCond {
+    /// Within the default intel-tracked area (near a system in the intel feed). This is the
+    /// app's baseline behaviour, expressed as an editable condition.
+    IntelArea,
+    Coalition(String),
+    Alliance(String),
+    Corporation(String),
+    Player(String),
+    Region(String),
+    Constellation(String),
+    System(String),
+    /// Battle within N jumps of the active character.
+    JumpsFromMe(u32),
+    HullSizeAtLeast(ShipSize),
+    ShipType(String),
+    /// Total ISK destroyed (both sides) ≥ this value.
+    IskAtLeast(f64),
+    /// Total ISK destroyed (both sides) ≤ this value.
+    IskAtMost(f64),
+}
+
+/// Resolved facts about a kill (at ingest) or a whole battle (at display) that conditions test.
+/// All name sets are lower-cased. At ingest only the locally-derivable sets are filled
+/// (coalitions, locations, hulls, jumps); alliance/corp/pilot names need ESI resolution and are
+/// only filled for already-clustered battles at display.
+#[derive(Default)]
+pub struct MatchData {
+    pub systems: std::collections::HashSet<String>,
+    pub regions: std::collections::HashSet<String>,
+    pub constellations: std::collections::HashSet<String>,
+    pub coalitions: std::collections::HashSet<String>,
+    pub alliances: std::collections::HashSet<String>,
+    pub corporations: std::collections::HashSet<String>,
+    pub pilots: std::collections::HashSet<String>,
+    pub max_size: ShipSize,
+    pub ship_names: std::collections::HashSet<String>,
+    /// Within the default intel-tracked area.
+    pub in_intel_area: bool,
+    /// Distance from the active character (None = unknown / unreachable).
+    pub min_jumps_from_me: Option<u32>,
+    /// Total ISK destroyed (None at ingest — not yet known; ISK conditions then can't disprove).
+    pub total_isk: Option<f64>,
+}
+
+impl Default for ShipSize {
+    fn default() -> Self {
+        ShipSize::Other
+    }
+}
+
+impl BattleCond {
+    pub fn matches(&self, d: &MatchData) -> bool {
+        let has = |set: &std::collections::HashSet<String>, v: &str| set.contains(&v.trim().to_lowercase());
+        match self {
+            BattleCond::IntelArea => d.in_intel_area,
+            BattleCond::Coalition(v) => has(&d.coalitions, v),
+            BattleCond::Alliance(v) => has(&d.alliances, v),
+            BattleCond::Corporation(v) => has(&d.corporations, v),
+            BattleCond::Player(v) => has(&d.pilots, v),
+            BattleCond::Region(v) => has(&d.regions, v),
+            BattleCond::Constellation(v) => has(&d.constellations, v),
+            BattleCond::System(v) => has(&d.systems, v),
+            BattleCond::JumpsFromMe(n) => d.min_jumps_from_me.is_some_and(|j| j <= *n),
+            BattleCond::HullSizeAtLeast(s) => d.max_size >= *s,
+            BattleCond::ShipType(v) => has(&d.ship_names, v),
+            BattleCond::IskAtLeast(v) => d.total_isk.map_or(true, |t| t >= *v),
+            BattleCond::IskAtMost(v) => d.total_isk.map_or(true, |t| t <= *v),
+        }
+    }
+
+    /// Spatial bound — limits *where* a rule reaches.
+    pub fn is_spatial(&self) -> bool {
+        matches!(
+            self,
+            BattleCond::IntelArea
+                | BattleCond::Region(_)
+                | BattleCond::Constellation(_)
+                | BattleCond::System(_)
+                | BattleCond::JumpsFromMe(_)
+        )
+    }
+
+    pub fn is_participant(&self) -> bool {
+        matches!(
+            self,
+            BattleCond::Coalition(_)
+                | BattleCond::Alliance(_)
+                | BattleCond::Corporation(_)
+                | BattleCond::Player(_)
+        )
+    }
+
+    /// Whether this condition can be evaluated for a single kill at ingest without ESI name
+    /// resolution. Alliance/Corp/Player/ShipType (need id→name) and ISK (need the clustered
+    /// battle) cannot, and are deferred to the display check.
+    fn local_at_ingest(&self) -> bool {
+        matches!(
+            self,
+            BattleCond::IntelArea
+                | BattleCond::Coalition(_)
+                | BattleCond::Region(_)
+                | BattleCond::Constellation(_)
+                | BattleCond::System(_)
+                | BattleCond::JumpsFromMe(_)
+                | BattleCond::HullSizeAtLeast(_)
+        )
+    }
+
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            BattleCond::IntelArea => "Intel area",
+            BattleCond::Coalition(_) => "Coalition",
+            BattleCond::Alliance(_) => "Alliance",
+            BattleCond::Corporation(_) => "Corporation",
+            BattleCond::Player(_) => "Player",
+            BattleCond::Region(_) => "Region",
+            BattleCond::Constellation(_) => "Constellation",
+            BattleCond::System(_) => "System",
+            BattleCond::JumpsFromMe(_) => "Jumps from me ≤",
+            BattleCond::HullSizeAtLeast(_) => "Hull size ≥",
+            BattleCond::ShipType(_) => "Ship type",
+            BattleCond::IskAtLeast(_) => "ISK total ≥",
+            BattleCond::IskAtMost(_) => "ISK total ≤",
+        }
+    }
+
+    /// Default instance of each condition kind, for the dialog's type picker.
+    pub fn kinds() -> Vec<BattleCond> {
+        vec![
+            BattleCond::IntelArea,
+            BattleCond::Coalition(String::new()),
+            BattleCond::Alliance(String::new()),
+            BattleCond::Corporation(String::new()),
+            BattleCond::Player(String::new()),
+            BattleCond::Region(String::new()),
+            BattleCond::Constellation(String::new()),
+            BattleCond::System(String::new()),
+            BattleCond::JumpsFromMe(5),
+            BattleCond::HullSizeAtLeast(ShipSize::Battleship),
+            BattleCond::ShipType(String::new()),
+            BattleCond::IskAtLeast(1_000_000_000.0),
+            BattleCond::IskAtMost(1_000_000_000.0),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BattleRule {
+    pub action: RuleAction,
+    /// All conditions must match (AND) vs any (OR).
+    pub match_all: bool,
+    pub conditions: Vec<BattleCond>,
+    #[serde(skip)]
+    pub expanded: bool,
+}
+
+impl Default for BattleRule {
+    fn default() -> Self {
+        Self { action: RuleAction::Include, match_all: true, conditions: Vec::new(), expanded: true }
+    }
+}
+
+impl BattleRule {
+    pub fn matches(&self, d: &MatchData) -> bool {
+        if self.match_all {
+            self.conditions.iter().all(|c| c.matches(d))
+        } else {
+            self.conditions.iter().any(|c| c.matches(d))
+        }
+    }
+
+    /// Whether an Include rule admits a single kill at ingest, using only conditions evaluable
+    /// without ESI. Conditions needing resolution (alliance/corp/player/ISK) are deferred to the
+    /// display check, so a rule with *no* locally-evaluable condition never widens ingestion.
+    pub fn admits_ingest(&self, d: &MatchData) -> bool {
+        if self.action != RuleAction::Include {
+            return false;
+        }
+        let local: Vec<&BattleCond> = self.conditions.iter().filter(|c| c.local_at_ingest()).collect();
+        if local.is_empty() {
+            return false;
+        }
+        if self.match_all {
+            local.iter().all(|c| c.matches(d))
+        } else {
+            local.iter().any(|c| c.matches(d))
+        }
+    }
+
+    /// An Include rule with no spatial or participant bound matches across all of EVE — flag it so
+    /// the user knows it can store a lot of history.
+    pub fn is_broad(&self) -> bool {
+        self.action == RuleAction::Include
+            && !self.conditions.iter().any(|c| c.is_spatial() || c.is_participant())
+    }
+}
+
+/// First matching rule's action, or `None` if no rule matches (caller falls back to default).
+pub fn battle_decision(rules: &[BattleRule], d: &MatchData) -> Option<RuleAction> {
+    rules.iter().find(|r| r.matches(d)).map(|r| r.action)
+}
+
+#[cfg(test)]
+mod battle_filter_tests {
+    use super::*;
+
+    fn data() -> MatchData {
+        let s = |v: &str| std::iter::once(v.to_lowercase()).collect::<std::collections::HashSet<_>>();
+        MatchData {
+            regions: s("delve"),
+            alliances: ["goonswarm federation".to_owned()].into_iter().collect(),
+            max_size: ShipSize::Battleship,
+            total_isk: Some(10_000_000_000.0),
+            min_jumps_from_me: Some(3),
+            systems: s("1dq1-a"),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ship_size_from_group() {
+        assert_eq!(ShipSize::from_group("Battleship"), ShipSize::Battleship);
+        assert_eq!(ShipSize::from_group("Marauder"), ShipSize::Battleship);
+        assert_eq!(ShipSize::from_group("Heavy Assault Cruiser"), ShipSize::Cruiser);
+        assert_eq!(ShipSize::from_group("Logistics Frigate"), ShipSize::Frigate);
+        assert_eq!(ShipSize::from_group("Interdictor"), ShipSize::Destroyer);
+        assert_eq!(ShipSize::from_group("Titan"), ShipSize::Supercapital);
+        assert_eq!(ShipSize::from_group("Capsule"), ShipSize::Other);
+        assert!(ShipSize::Battleship >= ShipSize::Battleship);
+        assert!(ShipSize::Capital >= ShipSize::Battleship);
+        assert!(ShipSize::Other < ShipSize::Battleship);
+    }
+
+    #[test]
+    fn condition_matching() {
+        let d = data();
+        assert!(BattleCond::Region("Delve".into()).matches(&d));
+        assert!(!BattleCond::Region("Fountain".into()).matches(&d));
+        assert!(BattleCond::Alliance("Goonswarm Federation".into()).matches(&d));
+        assert!(BattleCond::HullSizeAtLeast(ShipSize::Battleship).matches(&d));
+        assert!(!BattleCond::HullSizeAtLeast(ShipSize::Capital).matches(&d));
+        assert!(BattleCond::JumpsFromMe(5).matches(&d));
+        assert!(!BattleCond::JumpsFromMe(2).matches(&d));
+        assert!(BattleCond::IskAtLeast(1_000_000_000.0).matches(&d));
+        assert!(BattleCond::IskAtMost(1_000_000_000.0).matches(&d) == false);
+        // ISK can't be disproved before clustering.
+        let mut ingest = data();
+        ingest.total_isk = None;
+        assert!(BattleCond::IskAtMost(1.0).matches(&ingest));
+    }
+
+    #[test]
+    fn decision_first_match_wins() {
+        let rules = vec![
+            BattleRule {
+                action: RuleAction::Exclude,
+                match_all: true,
+                conditions: vec![BattleCond::IskAtMost(500_000_000.0)],
+                expanded: false,
+            },
+            BattleRule {
+                action: RuleAction::Include,
+                match_all: true,
+                conditions: vec![
+                    BattleCond::Region("Delve".into()),
+                    BattleCond::HullSizeAtLeast(ShipSize::Battleship),
+                ],
+                expanded: false,
+            },
+        ];
+        // Big Delve BS battle → second rule includes (first doesn't match: ISK not ≤ 500M).
+        assert_eq!(battle_decision(&rules, &data()), Some(RuleAction::Include));
+        // A tiny battle → first rule excludes.
+        let mut small = data();
+        small.total_isk = Some(100_000_000.0);
+        assert_eq!(battle_decision(&rules, &small), Some(RuleAction::Exclude));
+        // Unrelated battle (known ISK above the exclude floor, wrong region) → no rule matches.
+        let mut other = MatchData { total_isk: Some(2_000_000_000.0), ..MatchData::default() };
+        other.regions = ["fountain".to_owned()].into_iter().collect();
+        assert_eq!(battle_decision(&rules, &other), None);
+    }
+
+    #[test]
+    fn broad_and_widening_flags() {
+        let hull_only = BattleRule {
+            action: RuleAction::Include,
+            match_all: true,
+            conditions: vec![BattleCond::HullSizeAtLeast(ShipSize::Battleship)],
+            expanded: false,
+        };
+        assert!(hull_only.is_broad()); // no spatial/participant bound
+        assert!(hull_only.admits_ingest(&MatchData { max_size: ShipSize::Battleship, ..Default::default() }));
+        let isk_only = BattleRule {
+            action: RuleAction::Include,
+            match_all: true,
+            conditions: vec![BattleCond::IskAtLeast(1.0)],
+            expanded: false,
+        };
+        assert!(!isk_only.admits_ingest(&MatchData::default())); // ISK-only can't widen ingest
+        let located = BattleRule {
+            action: RuleAction::Include,
+            match_all: true,
+            conditions: vec![BattleCond::Region("Delve".into())],
+            expanded: false,
+        };
+        assert!(!located.is_broad());
     }
 }

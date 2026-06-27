@@ -6,6 +6,7 @@
 //! result is shared with the UI.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,11 +15,17 @@ use serde::Deserialize;
 use crate::battle::{self, Attacker, Battle, Engagement, Party, PartyKind};
 use crate::geo::Systems;
 use crate::intel::IntelState;
+use crate::settings::{BattleFilter, MatchData, ShipSize};
+
+/// Live, app-owned battle-filter config the worker reads each kill.
+pub type SharedBattleFilter = Arc<Mutex<BattleFilter>>;
+/// Ship type id → hull size tier (for filter hull conditions).
+pub type ShipSizes = Arc<HashMap<i64, ShipSize>>;
 
 const R2Z2: &str = "https://r2z2.zkillboard.com/ephemeral";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 /// Keep kills within this many jumps of a tracked intel system.
-const ANCHOR_JUMPS: u32 = 6;
+pub const ANCHOR_JUMPS: u32 = 6;
 /// Retain engagements for a day — zKillboard can deliver kills hours late, so a
 /// battle report keeps getting updated as stragglers arrive.
 const ENGAGEMENT_TTL: i64 = 86_400;
@@ -33,6 +40,9 @@ pub fn spawn(
     killfeed: SharedKillFeed,
     camp_types: crate::camp::CampTypes,
     ship_ids: Arc<std::collections::HashSet<i64>>,
+    filter: SharedBattleFilter,
+    ship_sizes: ShipSizes,
+    player_sys: Arc<AtomicI64>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -76,7 +86,7 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(5));
                     seq = fetch_sequence(&client);
                 }
-                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &mut names) {
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &mut names) {
                     Poll::Got(eng) => {
                         stuck = 0;
                         seq = Some(s + 1);
@@ -250,6 +260,9 @@ fn poll(
     killfeed: &SharedKillFeed,
     camp_types: &crate::camp::CampTypes,
     ship_ids: &std::collections::HashSet<i64>,
+    filter: &Mutex<BattleFilter>,
+    ship_sizes: &HashMap<i64, ShipSize>,
+    player_sys: &AtomicI64,
     names: &mut HashMap<i64, String>,
 ) -> Poll {
     let resp = match client.get(format!("{R2Z2}/{seq}.json")).send() {
@@ -301,10 +314,6 @@ fn poll(
         }
     }
 
-    // Only keep kills near a system currently in the intel feed.
-    if !in_tracked_area(systems, intel, pkg.killmail.solar_system_id) {
-        return Poll::Got(None);
-    }
     // Battles are about ships and structures — drop deployable kills (mobile depots,
     // tractor units, anchored bubbles, …).
     if !is_listed_hull(pkg.killmail.victim.ship_type_id.unwrap_or(0), ship_ids) {
@@ -313,6 +322,18 @@ fn poll(
     let Some(sys) = systems.info_of(pkg.killmail.solar_system_id) else {
         return Poll::Got(None);
     };
+    // Keep kills near a tracked intel system OR matching a custom Include rule.
+    let tracked = in_tracked_area(systems, intel, pkg.killmail.solar_system_id);
+    if !tracked {
+        let data = ingest_match_data(&pkg.killmail, sys, ship_sizes, systems, player_sys);
+        let admitted = {
+            let f = filter.lock().unwrap();
+            f.rules.iter().any(|r| r.admits_ingest(&data))
+        };
+        if !admitted {
+            return Poll::Got(None);
+        }
+    }
     let time = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
@@ -354,6 +375,44 @@ fn in_tracked_area(systems: &Systems, intel: &Mutex<IntelState>, kill_system: i6
     intel_systems
         .iter()
         .any(|&s| systems.jumps(kill_system, s, ANCHOR_JUMPS).is_some())
+}
+
+/// Per-kill facts a battle-filter Include rule can test at ingest (no ESI): location, coalition
+/// (via config packs), hull size, and distance from the active character.
+fn ingest_match_data(
+    km: &Killmail,
+    sys: &crate::geo::SystemInfo,
+    ship_sizes: &HashMap<i64, ShipSize>,
+    systems: &Systems,
+    player_sys: &AtomicI64,
+) -> MatchData {
+    let mut d = MatchData::default();
+    d.systems.insert(sys.name.to_lowercase());
+    if !sys.region.is_empty() {
+        d.regions.insert(sys.region.to_lowercase());
+    }
+    if !sys.constellation.is_empty() {
+        d.constellations.insert(sys.constellation.to_lowercase());
+    }
+    let mut max = ShipSize::Other;
+    for c in std::iter::once(&km.victim).chain(km.attackers.iter()) {
+        if let Some(al) = c.alliance_id {
+            if let Some(coal) = crate::packs::coalition_of(al) {
+                d.coalitions.insert(coal.to_lowercase());
+            }
+        }
+        if let Some(sz) = c.ship_type_id.and_then(|s| ship_sizes.get(&s)) {
+            if *sz > max {
+                max = *sz;
+            }
+        }
+    }
+    d.max_size = max;
+    let me = player_sys.load(Ordering::Relaxed);
+    if me != 0 {
+        d.min_jumps_from_me = systems.jumps(sys.id, me, 50);
+    }
+    d
 }
 
 /// The party for a combatant: prefer alliance, then corporation, then character.
