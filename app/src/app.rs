@@ -353,6 +353,14 @@ pub struct SpaiApp {
     battle_filter_open: bool,
     /// Awaiting confirmation to restore default battle rules.
     battle_filter_confirm_reset: bool,
+    /// Bumped whenever the battle-filter rules are edited (invalidates the card cache).
+    battle_filter_gen: u64,
+    /// Cached, capped battles list for the overview — (open kill id, jumps-from-you, battle).
+    /// Rebuilt only when inputs change, so filtering + the distance search aren't redone per frame.
+    battle_cards: Vec<(i64, Option<u32>, crate::battle::Battle)>,
+    battle_cards_sig: u64,
+    /// Total battles matching the current filter (the cards list is capped).
+    battle_cards_total: usize,
     camps: crate::camp::SharedCamps,
     /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
     /// lock + scan the camp state every frame for every map.
@@ -886,6 +894,10 @@ impl SpaiApp {
             work_throttle_shared: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             battle_filter_open: false,
             battle_filter_confirm_reset: false,
+            battle_filter_gen: 0,
+            battle_cards: Vec::new(),
+            battle_cards_sig: 0,
+            battle_cards_total: 0,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
@@ -2816,7 +2828,11 @@ impl SpaiApp {
                 continue;
             }
             let Some(report) = self.kill_report(&ev, &geo) else { continue };
-            // Persist so the card survives a restart (deduped by killmail id).
+            // The feed already carries the full killmail, so enrich the card immediately from it
+            // instead of re-fetching (zKill's per-kill API lags live kills and would otherwise
+            // leave fresh cards permanently un-enriched).
+            self.kill_cache.lock().unwrap().insert(ev.killmail_id, Some(ev.info.clone()));
+            // Persist so the card (and its enrichment) survive a restart (deduped by killmail id).
             if let Some(store) = &self.store {
                 store.add_kill_intel(
                     ev.killmail_id,
@@ -2825,6 +2841,7 @@ impl SpaiApp {
                     ev.time,
                     ev.value,
                 );
+                store.save_kill_details(&ev.info);
             }
             st.push(report);
         }
@@ -2934,7 +2951,14 @@ impl SpaiApp {
         }
         let mut reports = Vec::new();
         for (killmail_id, system_id, ship_type_id, time, value) in saved {
-            let ev = crate::zkill::KillEvent { system_id, ship_type_id, time, value, killmail_id };
+            let ev = crate::zkill::KillEvent {
+                system_id,
+                ship_type_id,
+                time,
+                value,
+                killmail_id,
+                info: Default::default(), // enrichment already preloaded into the cache above
+            };
             if let Some(report) = self.kill_report(&ev, &geo) {
                 reports.push(report);
             }
@@ -4241,6 +4265,7 @@ impl SpaiApp {
         }
         if changed {
             self.needs_save = true;
+            self.battle_filter_gen = self.battle_filter_gen.wrapping_add(1);
             *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
         }
     }
@@ -4566,45 +4591,94 @@ impl SpaiApp {
         let query = self.battle_search.trim().to_lowercase();
         let loading = self.battle_history_loading.load(std::sync::atomic::Ordering::Relaxed);
 
-        let mut open: Option<i64> = None;
-        {
-            let battles = source.lock().unwrap();
-            // Only multi-kill clusters count as a "battle", filtered by query + inclusion rules.
-            let shown: Vec<&crate::battle::Battle> = battles
-                .iter()
-                .filter(|b| b.kills >= 2 && b.matches(&query) && self.battle_shown(b))
-                .collect();
-            if shown.is_empty() {
-                let msg = if self.show_history && loading {
-                    "Loading full history…"
-                } else if self.show_history {
-                    "No recorded battles yet."
-                } else if query.is_empty() {
-                    "No active battles near the tracked area."
-                } else {
-                    "No battles match the filter."
-                };
-                ui.label(egui::RichText::new(msg).weak());
-                return;
-            }
-            ui.label(egui::RichText::new(format!("{} battles", shown.len())).weak());
-            ui.add_space(4.0);
-            let status = self.system_status.lock().unwrap();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for b in shown {
-                    // Nearest battle system to the player.
-                    let from_you = b
-                        .systems
-                        .iter()
-                        .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
-                        .min();
-                    if battle_row(ui, b, now, from_you, &systems, &status) {
-                        open = b.engagements.iter().map(|e| e.kill_id).max();
-                    }
-                    ui.add_space(4.0);
+        // Filtering + the per-battle distance search are expensive, so rebuild the (capped) card
+        // list only when an input actually changes — not every repaint. The cap keeps rendering
+        // bounded no matter how large the history grows.
+        const MAX_CARDS: usize = 150;
+        let sig = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            {
+                let b = source.lock().unwrap();
+                b.len().hash(&mut h);
+                if let Some(f) = b.first() {
+                    f.end.hash(&mut h);
+                    f.kills.hash(&mut h);
                 }
-            });
+                if let Some(l) = b.last() {
+                    l.end.hash(&mut h);
+                    l.kills.hash(&mut h);
+                }
+            }
+            query.hash(&mut h);
+            self.show_history.hash(&mut h);
+            self.player_system().unwrap_or(0).hash(&mut h);
+            self.battle_filter_gen.hash(&mut h);
+            self.intel_state.lock().unwrap().reports.len().hash(&mut h);
+            h.finish()
+        };
+        if sig != self.battle_cards_sig {
+            self.battle_cards_sig = sig;
+            let battles = source.lock().unwrap();
+            let mut total = 0usize;
+            let mut cards: Vec<(i64, Option<u32>, crate::battle::Battle)> = Vec::new();
+            for b in battles.iter() {
+                if b.kills >= 2 && b.matches(&query) && self.battle_shown(b) {
+                    total += 1;
+                    if cards.len() < MAX_CARDS {
+                        let from_you = b
+                            .systems
+                            .iter()
+                            .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
+                            .min();
+                        let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
+                        cards.push((kid, from_you, b.clone()));
+                    }
+                }
+            }
+            drop(battles);
+            self.battle_cards = cards;
+            self.battle_cards_total = total;
         }
+
+        if self.battle_cards.is_empty() {
+            let msg = if self.show_history && loading {
+                "Loading full history…"
+            } else if self.show_history {
+                "No recorded battles yet."
+            } else if query.is_empty() {
+                "No active battles near the tracked area."
+            } else {
+                "No battles match the filter."
+            };
+            ui.label(egui::RichText::new(msg).weak());
+            return;
+        }
+
+        let total = self.battle_cards_total;
+        let shown_n = self.battle_cards.len();
+        ui.label(egui::RichText::new(format!("{total} battles")).weak());
+        ui.add_space(4.0);
+        let mut open: Option<i64> = None;
+        let status = self.system_status.lock().unwrap();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (kid, from_you, b) in &self.battle_cards {
+                if battle_row(ui, b, now, *from_you, &systems, &status) {
+                    open = Some(*kid);
+                }
+                ui.add_space(4.0);
+            }
+            if total > shown_n {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Showing the newest {shown_n}. Narrow with search or rules to see the other {}.",
+                        total - shown_n
+                    ))
+                    .weak(),
+                );
+            }
+        });
+        drop(status);
         if let Some(kid) = open {
             self.battle_selected = Some(kid);
         }

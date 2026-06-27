@@ -398,8 +398,9 @@ const PILOT_STOP: &[&str] = &[
     "clean", "reported", "yet",
     // Fitting talk ("50mn fit", "shield fit") — a prop-mod size or "fit" is never a pilot.
     "50mn", "fit",
-    // Positional / quantity filler ("on grid", "off grid", "a few", "possible hostile").
-    "on", "grid", "ongrid", "offgrid", "few", "possible",
+    // Positional / quantity filler ("on grid", "off grid", "a few", "possible hostile", "clear atm").
+    "on", "grid", "ongrid", "offgrid", "few", "possible", "atm", "many", "outside", "entrance",
+    "linked",
     // Hot-drop / black-ops threat words — keywords, never pilots ("hot dropper", "blops").
     "drop", "dropper", "droppers", "hotdrop", "hotdrops", "hotdropper", "hotdroppers",
     "hotdropping", "blops", "blackops", "blackop",
@@ -1199,6 +1200,8 @@ struct UrlTags {
     systems: Vec<String>,
     /// Stargate links — the name is the destination system, i.e. a gate.
     gates: Vec<String>,
+    /// Anchored-structure (citadel/POS) links — the whole name is one token, never split.
+    structures: Vec<String>,
 }
 
 fn parse_url_tags(
@@ -1214,6 +1217,7 @@ fn parse_url_tags(
         ships: Vec::new(),
         systems: Vec::new(),
         gates: Vec::new(),
+        structures: Vec::new(),
     };
     let mut rest = text;
     while let Some(start) = rest.find("<url=") {
@@ -1265,6 +1269,12 @@ fn parse_url_tags(
                     t.ships.push((*id, name.clone()));
                 } else if resolve(systems, inner).is_some() {
                     t.systems.push(inner.to_owned());
+                } else if structure_name_by_type(type_id).is_some() || item_id >= 1_000_000_000_000 {
+                    // Anchored structure (citadel/POS) showinfo, e.g.
+                    // "C-J6MT - Why Pee Dubs (GSF …)". The whole name is one token — never split
+                    // it into pilots/ships. (After the ship/system checks: a ship in space also has
+                    // a 1e12-range item id, so type/name wins first.)
+                    t.structures.push(inner.to_owned());
                 } else if let Some((pilot, ship)) = split_pilot_ship(inner, ship_index) {
                     // A "Pilot (Ship)" killmail/fitting link (showinfo on the ship type) — the
                     // name is the pilot + their hull, not a pilot literally called "X (Hull)".
@@ -1385,6 +1395,7 @@ pub fn analyze_ctx(
     let display_text = tags.display.trim().to_owned();
     let si_char_ids = tags.char_ids;
     let si_gates = tags.gates;
+    let si_structures = tags.structures;
     let (si_pilots, si_ships, si_systems) = (tags.pilots, tags.ships, tags.systems);
     let text = tags.masked.as_str();
     let lower = text.to_lowercase();
@@ -1925,6 +1936,19 @@ pub fn analyze_ctx(
     consumed.extend(celestial_consumed);
 
     let mut pilots = drop_covered_prefixes(&pilots, text);
+    // A pilot name always contains a letter — a bare number ("warpin 100") is a count, not a name.
+    pilots.retain(|p| p.chars().any(|c| c.is_alphabetic()));
+    // A single all-caps, letters-only token ("UALX", "DT") is a system abbreviation/acronym, not a
+    // pilot — EVE names are mixed-case. Char-linked names are authoritative, so they're exempt.
+    {
+        let linked: std::collections::HashSet<String> =
+            si_char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
+        pilots.retain(|p| {
+            linked.contains(&p.to_lowercase())
+                || p.contains(' ')
+                || !p.chars().all(|c| c.is_ascii_uppercase())
+        });
+    }
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
@@ -1956,7 +1980,13 @@ pub fn analyze_ctx(
     };
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
-    let structures = detect_structures(text);
+    let mut structures = detect_structures(text);
+    // Anchored-structure showinfo links (citadels) arrive as one whole token.
+    for s in si_structures {
+        if !structures.iter().any(|(n, _)| n.eq_ignore_ascii_case(&s)) {
+            structures.push((s, None));
+        }
+    }
     let mut report = IntelReport {
         id: 0, // assigned by IntelState::push
         probes,
@@ -2669,6 +2699,8 @@ mod tests {
             ("eimj-m", "EIMJ-M", 30004946, -0.4),
             ("uitra", "Uitra", 30000148, 0.9),
             ("n3-jbx", "N3-JBX", 30000669, -0.3),
+            ("384-in", "384-IN", 30000535, -0.5),
+            ("e-jcus", "E-JCUS", 30000531, -0.5),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -4497,5 +4529,70 @@ mod tests {
         assert!(st.is_stale(&prior));
         assert!(!st.is_stale(&clear));
         assert!(!st.is_stale(&later));
+    }
+
+    fn ships_with(names: &[(&str, i64)]) -> std::collections::HashMap<String, (i64, String)> {
+        names
+            .iter()
+            .map(|(n, id)| (n.to_lowercase(), (*id, n.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn ess_keyword_recognized() {
+        // "Thorax gang at ESS" — the ESS callout must set the keyword, not be lost.
+        let s = systems();
+        let ships = ships_with(&[("Thorax", 627)]);
+        let txt = "Kaputsky Aideron > <url=showinfo:5//30000535>384-IN</url> Thorax gang at ESS";
+        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Kaputsky Aideron");
+        assert!(r.ess, "ESS keyword not recognized: ess={} text={:?}", r.ess, r.text);
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("ess")),
+            "ess wrongly a pilot: {:?}",
+            r.pilots
+        );
+    }
+
+    #[test]
+    fn char_linked_lowercase_pilot_recognized() {
+        // A char-linked name is authoritative even when lower-case ("ae ubik").
+        let s = systems();
+        let txt = "Shiva Hariere > <url=showinfo:5//30000531>E-JCUS</url>  <url=showinfo:1383//2117745198>ae ubik</url> nv";
+        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Shiva Hariere");
+        assert!(r.pilots.iter().any(|p| p == "ae ubik"), "char-linked pilot missing: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn structure_showinfo_and_bare_number_not_pilots() {
+        // A citadel showinfo is one structure token, never a giant pilot; "100" is a count.
+        let s = systems();
+        let txt = "STRG-Z > <url=showinfo:5//30000772>C-J6MT</url> camping ess outside - STRG-Z > warpin 100 <url=showinfo:35833//1050027052183>C-J6MT - Why Pee Dubs Admirals Quarters (GSF Logistics and Posting Reserves)</url> from here";
+        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "STRG-Z");
+        assert!(
+            !r.pilots.iter().any(|p| p.contains("Pee Dubs") || p.contains("GSF") || p.contains("Quarters")),
+            "structure name leaked as pilot: {:?}",
+            r.pilots
+        );
+        assert!(!r.pilots.iter().any(|p| p == "100"), "bare number became a pilot: {:?}", r.pilots);
+        assert!(r.camp, "camping should set the camp keyword: {:?}", r.text);
+        assert!(
+            r.structures.iter().any(|(n, _)| n.contains("Pee Dubs")),
+            "structure not recorded: {:?}",
+            r.structures
+        );
+    }
+
+    #[test]
+    fn unresolved_caps_code_in_gate_not_a_pilot() {
+        // DT and UALX are abbreviated system names we can't resolve — neither is a pilot.
+        let s = systems();
+        let txt = "Frizank2 > DT gate to UALX Camped";
+        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Frizank2");
+        assert!(
+            !r.pilots.iter().any(|p| p == "UALX" || p == "DT"),
+            "unresolved system code became a pilot: {:?}",
+            r.pilots
+        );
+        assert!(r.camp, "camped should set the camp keyword: {:?}", r.text);
     }
 }

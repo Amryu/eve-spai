@@ -258,14 +258,52 @@ pub struct KillEvent {
     pub time: i64,
     pub value: f64,
     pub killmail_id: i64,
+    /// Full enrichment built from the feed itself — the card shows value + parties
+    /// immediately, without the (live-lagging) per-kill zKill API re-fetch.
+    pub info: crate::kills::KillInfo,
 }
 
 pub type SharedKillFeed = std::sync::Arc<Mutex<Vec<KillEvent>>>;
 
 #[derive(Deserialize)]
 struct Zkb {
+    #[serde(default)]
+    hash: String,
     #[serde(rename = "totalValue", default)]
     total_value: f64,
+}
+
+/// Build the kill-card enrichment straight from the feed package (the R2Z2 feed already
+/// carries the full ESI killmail), so we never depend on zKill's per-kill API — which lags
+/// behind live kills and would leave fresh cards permanently un-enriched.
+fn kill_info(pkg: &Package) -> crate::kills::KillInfo {
+    let v = &pkg.killmail.victim;
+    let fb = pkg.killmail.attackers.iter().find(|a| a.final_blow);
+    let mut counts: HashMap<i64, usize> = HashMap::new();
+    for a in &pkg.killmail.attackers {
+        if let Some(al) = a.alliance_id {
+            *counts.entry(al).or_default() += 1;
+        }
+    }
+    let mut alliances: Vec<(i64, usize)> = counts.into_iter().collect();
+    alliances.sort_by(|a, b| b.1.cmp(&a.1));
+    crate::kills::KillInfo {
+        kill_id: pkg.kill_id,
+        hash: Some(pkg.zkb.hash.clone()).filter(|h| !h.is_empty()),
+        victim_char: v.character_id,
+        victim_ship: v.ship_type_id,
+        victim_corp: v.corporation_id,
+        victim_alliance: v.alliance_id,
+        system_id: pkg.killmail.solar_system_id,
+        value: pkg.zkb.total_value,
+        time: pkg.killmail.killmail_time.clone(),
+        final_blow_char: fb.and_then(|a| a.character_id),
+        final_blow_corp: fb.and_then(|a| a.corporation_id),
+        final_blow_alliance: fb.and_then(|a| a.alliance_id),
+        final_blow_ship: fb.and_then(|a| a.ship_type_id),
+        attacker_count: pkg.killmail.attackers.len(),
+        attacker_alliances: alliances.into_iter().map(|(a, _)| a).collect(),
+    }
 }
 
 fn poll(
@@ -316,6 +354,7 @@ fn poll(
             .is_some_and(|s| camp_types.bubble.contains(&s));
         camps.lock().unwrap().record(pkg.killmail.solar_system_id, t, on_gate, equip);
         if let Some(ship) = pkg.killmail.victim.ship_type_id {
+            let info = kill_info(&pkg);
             let mut kf = killfeed.lock().unwrap();
             kf.push(KillEvent {
                 system_id: pkg.killmail.solar_system_id,
@@ -323,6 +362,7 @@ fn poll(
                 time: t,
                 value: pkg.zkb.total_value,
                 killmail_id: pkg.kill_id,
+                info,
             });
             let n = kf.len();
             if n > 256 {
