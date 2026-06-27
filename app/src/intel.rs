@@ -2030,7 +2030,13 @@ pub fn analyze_ctx(
             || lower.contains("needs backup")
             || lower.contains("求救")
             || lower.contains("求助"),
-        bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble", "drag"]) || lower.contains("泡泡") || lower.contains("气泡"),
+        // Exact match, not prefix: the "drag" stem matched the destroyer Dragoon.
+        bubble: flagged_exact(
+            &lower_tokens,
+            &pilot_tokens,
+            &["bubble", "bubbles", "bubbled", "bubbling", "dragbubble", "drag", "drags"],
+        ) || lower.contains("泡泡")
+            || lower.contains("气泡"),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
         cyno: flagged_exact(
@@ -2887,6 +2893,10 @@ mod tests {
         assert!(!r.bubble);
         // A real bubble call still fires.
         assert!(analyze("bubble up on gate R0-DMM", &s, &noships(), &noknown(), 1, "ch", "x").bubble);
+        // The destroyer "Dragoon" must NOT trip the bubble flag (the old "drag" prefix did).
+        assert!(!analyze("2 Dragoons on gate R0-DMM", &s, &noships(), &noknown(), 1, "ch", "x").bubble);
+        // A drag-bubble call still fires.
+        assert!(analyze("drag bubble on the R0-DMM gate", &s, &noships(), &noknown(), 1, "ch", "x").bubble);
     }
 
     #[test]
