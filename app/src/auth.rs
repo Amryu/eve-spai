@@ -273,6 +273,7 @@ fn store_character(
     // Metadata + the short-lived access token (cached so we don't refresh on every call; it
     // expires in ~20 min and can't fit the Windows keychain length limit alongside the rest).
     let conn = Connection::open(path)?;
+    crate::store::apply_pragmas(&conn);
     conn.execute(
         "INSERT INTO characters (id, name, expires_at, scopes)
          VALUES (?1, ?2, ?3, ?4)

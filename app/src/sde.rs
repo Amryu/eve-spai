@@ -46,6 +46,7 @@ pub type SharedStatus = Arc<Mutex<SdeStatus>>;
 pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(mut conn) = Connection::open(&path) else { return };
+        crate::store::apply_pragmas(&conn);
         let baked: i64 = conn
             .query_row("SELECT COUNT(*) FROM sde_ship_traits", [], |r| r.get(0))
             .unwrap_or(0);
@@ -149,6 +150,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
 
     set(SdeStatus::Downloading("Building local database…".to_owned()));
     let mut conn = Connection::open(path)?;
+    crate::store::apply_pragmas(&conn);
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM sde_regions", [])?;
     tx.execute("DELETE FROM sde_constellations", [])?;

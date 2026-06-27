@@ -224,6 +224,7 @@ impl Store {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("eve-spai.db");
         let conn = Connection::open(&path)?;
+        apply_pragmas(&conn);
         conn.execute_batch(SCHEMA)?;
         // Add columns to pre-existing SDE tables (no-op if already there).
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN constellation_id INTEGER", []);
@@ -245,6 +246,7 @@ impl Store {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
 
     // --- Settings ---
 
@@ -1178,6 +1180,17 @@ impl Store {
 
 /// One-time migration: if an older DB stored tokens in plaintext columns, move them
 /// into the keychain and drop the columns (scrubbing the DB file with VACUUM).
+/// Enable WAL and a busy timeout on a freshly opened connection. Many threads each
+/// open their own connection to the same DB file (see `path`), so without WAL +
+/// `busy_timeout` a colliding write fails with `SQLITE_BUSY` and — since most mutations
+/// ignore the result — is silently dropped. WAL is a persistent DB property; the timeout
+/// is per-connection, so every open must set it.
+pub(crate) fn apply_pragmas(conn: &Connection) {
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    let _ = conn.pragma_update(None, "journal_mode", "WAL");
+    let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+}
+
 fn migrate_plaintext_tokens(conn: &Connection) {
     let has_legacy = conn
         .prepare("PRAGMA table_info(characters)")
