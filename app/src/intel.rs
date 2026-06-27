@@ -641,7 +641,8 @@ fn is_time_token(t: &str) -> bool {
     }
     matches!(
         &lower[de..],
-        "min" | "mins" | "m" | "s" | "sec" | "secs" | "h" | "hr" | "hrs" | "d"
+        "min" | "mins" | "minute" | "minutes" | "m" | "s" | "sec" | "secs"
+            | "second" | "seconds" | "h" | "hr" | "hrs" | "hour" | "hours" | "d"
     )
 }
 
@@ -1409,11 +1410,19 @@ pub fn analyze_ctx(
     // Multi-word hull names are ships, not 3-word pilot names — find and mask them
     // before pilot detection.
     let mw_ships = multiword_ships(text, ship_index);
+    // Structure spans ("Cyno Beacon", "Keepstar") are masked too, so a structure word
+    // is never also read as a pilot ("Beacon").
+    let struct_spans = structure_spans(&structure_words(text));
     let masked_words: String = {
         let punct = |c: char| ",.;:!?\"()".contains(c);
         let mut wv: Vec<String> =
             text.split_whitespace().map(|w| w.trim_matches(punct).to_string()).collect();
         for (start, len, _, _) in &mw_ships {
+            for k in *start..(*start + *len).min(wv.len()) {
+                wv[k].clear();
+            }
+        }
+        for (start, len, _) in &struct_spans {
             for k in *start..(*start + *len).min(wv.len()) {
                 wv[k].clear();
             }
@@ -2440,17 +2449,20 @@ fn detect_probes(text: &str) -> Option<&'static str> {
     }
 }
 
-fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
-    let words: Vec<String> = text
-        .split_whitespace()
+/// Lower-cased, punctuation-trimmed words of a message, aligned 1:1 with
+/// `text.split_whitespace()` so spans returned here can mask the same word slots
+/// elsewhere (e.g. before pilot detection).
+fn structure_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
         .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.').to_lowercase())
-        .collect();
-    let dists: Vec<(usize, String)> = words
-        .iter()
-        .enumerate()
-        .filter_map(|(i, w)| parse_distance(w, words.get(i + 1).map(|s| s.as_str())).map(|d| (i, d)))
-        .collect();
-    let mut out: Vec<(String, Option<String>)> = Vec::new();
+        .collect()
+}
+
+/// Matched structure spans as `(start, len, canonical name)` over `structure_words`
+/// positions. Shared by `detect_structures` and the pilot-masking pass so a structure
+/// like "Cyno Beacon" is never also read as a pilot ("Beacon").
+fn structure_spans(words: &[String]) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
     let mut i = 0;
     while i < words.len() {
         let mut hit: Option<(usize, String)> = None;
@@ -2467,22 +2479,36 @@ fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
             }
         }
         if let Some((len, canon)) = hit {
-            let near = dists
-                .iter()
-                .filter(|(di, _)| (*di as isize - i as isize).abs() <= 4)
-                .min_by_key(|(di, _)| (*di as isize - i as isize).unsigned_abs())
-                .map(|(_, d)| d.clone());
-            match out.iter_mut().find(|(n, _)| *n == canon) {
-                Some(e) => {
-                    if e.1.is_none() {
-                        e.1 = near;
-                    }
-                }
-                None => out.push((canon, near)),
-            }
+            out.push((i, len, canon));
             i += len;
         } else {
             i += 1;
+        }
+    }
+    out
+}
+
+fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
+    let words = structure_words(text);
+    let dists: Vec<(usize, String)> = words
+        .iter()
+        .enumerate()
+        .filter_map(|(i, w)| parse_distance(w, words.get(i + 1).map(|s| s.as_str())).map(|d| (i, d)))
+        .collect();
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for (i, _len, canon) in structure_spans(&words) {
+        let near = dists
+            .iter()
+            .filter(|(di, _)| (*di as isize - i as isize).abs() <= 4)
+            .min_by_key(|(di, _)| (*di as isize - i as isize).unsigned_abs())
+            .map(|(_, d)| d.clone());
+        match out.iter_mut().find(|(n, _)| *n == canon) {
+            Some(e) => {
+                if e.1.is_none() {
+                    e.1 = near;
+                }
+            }
+            None => out.push((canon, near)),
         }
     }
     out
@@ -3340,6 +3366,15 @@ mod tests {
         assert!(detect_structures("hostiles in Rancer").is_empty());
         // structure abbreviations aren't pilots
         assert!(is_structure_word("fort") && is_structure_word("keep") && is_structure_word("astra"));
+        // A two-word structure tail ("Beacon" in "Cyno Beacon") is masked, so it is never
+        // also read as a pilot — only the structure is reported.
+        let cb = analyze("Cyno Beacon online in Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert!(cb.structures.iter().any(|(n, _)| n == "Cyno Beacon"), "structures={:?}", cb.structures);
+        assert!(
+            !cb.pilots.iter().any(|p| p.eq_ignore_ascii_case("beacon") || p.eq_ignore_ascii_case("cyno")),
+            "structure word leaked as a pilot: {:?}",
+            cb.pilots
+        );
     }
 
     #[test]
@@ -4486,6 +4521,14 @@ mod tests {
         // Normal bank rejects an over-max minute value.
         let r3 = analyze("ESS robbed 30m", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r3.ess_time, None);
+        // A digit glued to a full-word unit ("30seconds") is the timer, not a pilot.
+        let r4 = analyze("ESS robbed 30seconds left", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r4.ess_time.as_deref(), Some("30s"));
+        assert!(
+            !r4.pilots.iter().any(|p| p.to_lowercase().contains("30seconds")),
+            "time token leaked as a pilot: {:?}",
+            r4.pilots
+        );
     }
 
     #[test]
