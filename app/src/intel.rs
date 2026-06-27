@@ -768,7 +768,7 @@ fn is_name_connector(w: &str) -> bool {
 fn is_name_capable_stopword(w: &str) -> bool {
     matches!(
         w.to_lowercase().as_str(),
-        "blue" | "blues" | "red" | "reds" | "bubble" | "bubbles"
+        "blue" | "blues" | "red" | "reds" | "bubble" | "bubbles" | "clear"
     )
 }
 
@@ -793,11 +793,14 @@ fn extract_pilots(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
-        // Connector stop words are fair game inside a multi-word name ("The Meek"); a run
-        // is rejected if it's all stop words OR contains an intel descriptor ("cloaked").
+        // Connector stop words are fair game inside a multi-word name ("The Meek"), as are
+        // name-capable keywords when Title-cased ("Clear Rain", "Blue Skies"). A run is rejected
+        // if it's all stop words OR contains a genuine intel descriptor ("cloaked").
         if (2..=3).contains(&run.len())
             && run.iter().any(|w| !is_pilot_stopword(w))
-            && !run.iter().any(|w| is_pilot_stopword(w) && !is_name_connector(w))
+            && !run
+                .iter()
+                .any(|w| is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w))
         {
             let name = run.join(" ");
             if !out.contains(&name) {
@@ -3825,6 +3828,27 @@ mod tests {
         // A genuine clear with no threat still reads as clear.
         let r2 = analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "Spai");
         assert!(r2.clear, "pure clear lost");
+        // A Title-case name starting with "Clear" is one pilot, and doesn't read as clear.
+        let r3 = analyze("got Clear Rain on gate", &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(r3.pilots.iter().any(|p| p == "Clear Rain"), "name split: {:?}", r3.pilots);
+        assert!(!r3.clear, "name 'Clear Rain' spoofed clear");
+    }
+
+    #[test]
+    fn cyno_in_linked_name_not_a_status() {
+        let s = Systems::new(sys_map(&[("1qz-y9", "1QZ-Y9", 30000720, -0.4)]), std::collections::HashMap::new());
+        let txt = "DaymondXD Styxx > <url=showinfo:1373//2123218599>Clean cyno toon</url>  <url=showinfo:5//30000720>1QZ-Y9</url>";
+        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(!r.cyno, "cyno spoofed by a pilot name: {:?}", r.pilots);
+        assert!(r.pilots.iter().any(|p| p == "Clean cyno toon"), "pilots: {:?}", r.pilots);
+        // A genuine cyno call still fires.
+        let r2 = analyze("1QZ-Y9 cyno up", &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(r2.cyno, "real cyno dropped");
+        // Plain-text (log) form, but the pilot is already known → its "cyno" is excluded.
+        let known: std::collections::HashMap<String, i64> =
+            [("clean cyno toon".to_string(), 2123218599i64)].into_iter().collect();
+        let r3 = analyze("1QZ-Y9 Clean cyno toon", &s, &noships(), &known, 1, "ch", "Spai");
+        assert!(!r3.cyno, "known pilot's 'cyno' spoofed a cyno: pilots={:?}", r3.pilots);
     }
 
     #[test]

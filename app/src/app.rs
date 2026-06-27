@@ -8380,6 +8380,7 @@ impl SpaiApp {
                 ui.checkbox(&mut self.travel_sec[1], "Lo");
                 ui.checkbox(&mut self.travel_sec[2], "Null");
             });
+            let metric_before = self.travel_metric;
             ui.horizontal(|ui| {
                 ui.label("Max");
                 ui.add(
@@ -8403,6 +8404,11 @@ impl SpaiApp {
                     });
                 ui.label("/h");
             });
+            // Picking the route metric also points the map heat at it; the overlay can then be
+            // switched freely (it's no longer forced to the metric every frame).
+            if self.travel_metric != metric_before {
+                self.map_overlays.activity = self.travel_metric;
+            }
             if ui
                 .button(format!("Avoid sov held by\u{2026} ({})", self.travel_avoid_sov.len()))
                 .clicked()
@@ -8519,9 +8525,6 @@ impl SpaiApp {
             self.travel_live_base = None;
             self.travel_ingame_dest = None;
         }
-        // Force the activity overlay to match the route's metric while in Travel mode, so the
-        // heat the route reacts to is always visible.
-        self.map_overlays.activity = self.travel_metric;
         // Auto-replan: a short debounce after the inputs settle (no Plan button). plan_route
         // stamps travel_planned_hash, so discrete actions (picks/right-click) stay instant.
         let now = ui.input(|i| i.time);
