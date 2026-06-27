@@ -1319,10 +1319,6 @@ pub fn analyze(
     analyze_ctx(text, systems, ship_index, known_pilots, received, channel, reporter, None, &[])
 }
 
-/// As [`analyze`], but with the channel's last-known system as context so an
-/// abbreviated gate ("C-J gate") can disambiguate against that system's neighbours
-/// even when the message doesn't restate a system.
-#[allow(clippy::too_many_arguments)]
 /// Localised "Kill:" prefixes from the in-game killReport link text. EVE doesn't write
 /// the `<url=killReport...>` wrapper to the chat log, so a kill is detected from the
 /// visible (localised) word, not the URL.
@@ -1378,6 +1374,10 @@ pub fn parse_motd_regions(motd: &str, known: &std::collections::HashSet<String>)
     }
     out
 }
+/// As [`analyze`], but with the channel's last-known system as context so an
+/// abbreviated gate ("C-J gate") can disambiguate against that system's neighbours
+/// even when the message doesn't restate a system.
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_ctx(
     text: &str,
     systems: &Systems,
