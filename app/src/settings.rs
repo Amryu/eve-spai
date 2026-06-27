@@ -114,6 +114,9 @@ pub struct Settings {
     /// Custom battle-report inclusion rules (empty = default intel-area behaviour).
     #[serde(default)]
     pub battles: BattleFilter,
+    /// How hard the app may work on heavy background tasks (battle feed + clustering).
+    #[serde(default)]
+    pub work_throttle: WorkThrottle,
     /// Map overlay-mode window opacity (0.3–1.0).
     #[serde(default = "default_overlay_opacity")]
     pub map_overlay_opacity: f32,
@@ -688,6 +691,7 @@ impl Default for Settings {
             route_via_wormholes: false,
             minimize_to_tray: true,
             autostart: false,
+            work_throttle: WorkThrottle::default(),
         }
     }
 }
@@ -695,6 +699,67 @@ impl Default for Settings {
 // ---------------------------------------------------------------------------
 // Custom battle-report inclusion rules.
 // ---------------------------------------------------------------------------
+
+/// How hard the app works on heavy background tasks (the battle feed + clustering). Higher
+/// throttle = lower CPU/network, at the cost of battle reports updating more slowly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum WorkThrottle {
+    /// No pacing; recluster almost immediately.
+    Full,
+    /// Light pacing — the default.
+    #[default]
+    Balanced,
+    Light,
+    /// Strongest throttle; lowest load, slowest updates.
+    Minimal,
+}
+
+impl WorkThrottle {
+    pub fn from_u8(n: u8) -> Self {
+        match n {
+            0 => WorkThrottle::Full,
+            1 => WorkThrottle::Balanced,
+            2 => WorkThrottle::Light,
+            _ => WorkThrottle::Minimal,
+        }
+    }
+    pub fn as_u8(self) -> u8 {
+        match self {
+            WorkThrottle::Full => 0,
+            WorkThrottle::Balanced => 1,
+            WorkThrottle::Light => 2,
+            WorkThrottle::Minimal => 3,
+        }
+    }
+    /// Pause after processing each feed killmail — caps CPU and request rate during catch-up.
+    pub fn feed_delay_ms(self) -> u64 {
+        match self {
+            WorkThrottle::Full => 0,
+            WorkThrottle::Balanced => 15,
+            WorkThrottle::Light => 60,
+            WorkThrottle::Minimal => 200,
+        }
+    }
+    /// Minimum interval between battle re-clusters — coalesces the O(n²) clustering work.
+    pub fn cluster_interval_ms(self) -> u64 {
+        match self {
+            WorkThrottle::Full => 800,
+            WorkThrottle::Balanced => 3_000,
+            WorkThrottle::Light => 8_000,
+            WorkThrottle::Minimal => 20_000,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            WorkThrottle::Full => "Full",
+            WorkThrottle::Balanced => "Balanced",
+            WorkThrottle::Light => "Light",
+            WorkThrottle::Minimal => "Minimal",
+        }
+    }
+    pub const CHOICES: [WorkThrottle; 4] =
+        [WorkThrottle::Full, WorkThrottle::Balanced, WorkThrottle::Light, WorkThrottle::Minimal];
+}
 
 /// Ordered battle-filter rules. The first rule that matches a battle decides whether it is shown;
 /// if none match, the default intel-area behaviour applies.
@@ -711,6 +776,37 @@ impl Default for BattleFilter {
 }
 
 impl BattleFilter {
+    /// Any Include rule that can pull in kills *beyond* the intel area (has a locally-checkable
+    /// condition other than IntelArea). When false, a non-tracked kill can be dropped immediately
+    /// without building (expensive) match data — the common case with only the default rule.
+    pub fn widens_beyond_intel(&self) -> bool {
+        self.rules.iter().any(|r| {
+            r.action == RuleAction::Include
+                && r.conditions
+                    .iter()
+                    .any(|c| c.local_at_ingest() && !matches!(c, BattleCond::IntelArea))
+        })
+    }
+
+    /// Largest "jumps from me ≤ N" used by any rule, to bound the distance search (None = no rule
+    /// uses distance, so it needn't be computed at all).
+    pub fn max_jumps_condition(&self) -> Option<u32> {
+        self.rules
+            .iter()
+            .flat_map(|r| &r.conditions)
+            .filter_map(|c| match c {
+                BattleCond::JumpsFromMe(n) => Some(*n),
+                _ => None,
+            })
+            .max()
+    }
+
+    /// Whether every condition is just IntelArea (or there are none) — the shipped default. Then
+    /// display visibility is exactly the tracked-area test, with no per-battle match data.
+    pub fn is_default_only(&self) -> bool {
+        self.rules.iter().all(|r| r.conditions.iter().all(|c| matches!(c, BattleCond::IntelArea)))
+    }
+
     /// The shipped baseline: include battles in the intel-tracked area (today's behaviour),
     /// as one editable rule.
     pub fn default_rules() -> Vec<BattleRule> {

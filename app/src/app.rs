@@ -346,6 +346,8 @@ pub struct SpaiApp {
     ship_sizes: crate::zkill::ShipSizes,
     /// Active character's current system, published to the worker for jumps-from-me rules.
     player_sys_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Work throttle level (WorkThrottle as u8), shared live with the zKill worker.
+    work_throttle_shared: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Battle-filter dialog open.
     battle_filter_open: bool,
     /// Awaiting confirmation to restore default battle rules.
@@ -878,6 +880,7 @@ impl SpaiApp {
             battle_filter: std::sync::Arc::new(std::sync::Mutex::new(crate::settings::BattleFilter::default())),
             ship_sizes: std::sync::Arc::new(std::collections::HashMap::new()),
             player_sys_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            work_throttle_shared: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             battle_filter_open: false,
             battle_filter_confirm_reset: false,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
@@ -3384,6 +3387,8 @@ impl SpaiApp {
         // Hull sizes for battle-filter rules, and the live filter config from settings.
         self.ship_sizes = std::sync::Arc::new(store.ship_sizes());
         *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
+        self.work_throttle_shared
+            .store(self.settings.work_throttle.as_u8(), std::sync::atomic::Ordering::Relaxed);
         crate::zkill::spawn(
             systems.clone(),
             self.intel_state.clone(),
@@ -3395,6 +3400,7 @@ impl SpaiApp {
             self.battle_filter.clone(),
             self.ship_sizes.clone(),
             self.player_sys_shared.clone(),
+            self.work_throttle_shared.clone(),
             ctx.clone(),
         );
 
@@ -4234,7 +4240,8 @@ impl SpaiApp {
     }
 
     /// Battle-level facts for the filter rules (display side — names are already resolved).
-    fn battle_match_data(&self, b: &crate::battle::Battle) -> crate::settings::MatchData {
+    /// `max_jumps` is the largest jumps-from-me any rule uses (None = skip the distance search).
+    fn battle_match_data(&self, b: &crate::battle::Battle, max_jumps: Option<u32>) -> crate::settings::MatchData {
         use crate::battle::PartyKind;
         let mut d = crate::settings::MatchData { total_isk: Some(b.isk), ..Default::default() };
         let systems = self.systems.clone();
@@ -4292,12 +4299,12 @@ impl SpaiApp {
         }
         d.max_size = max;
         d.in_intel_area = self.battle_in_tracked_area(b);
-        // Distance from the active character to the nearest battle system.
-        if let (Some(me), Some(systems)) = (self.player_system(), &self.systems) {
+        // Distance from the active character to the nearest battle system (only when a rule uses it).
+        if let (Some(maxj), Some(me), Some(systems)) = (max_jumps, self.player_system(), &self.systems) {
             d.min_jumps_from_me = b
                 .systems
                 .iter()
-                .filter_map(|(id, _, _)| systems.jumps(*id, me, 50))
+                .filter_map(|(id, _, _)| systems.jumps(*id, me, maxj))
                 .min();
         }
         d
@@ -4319,10 +4326,12 @@ impl SpaiApp {
     /// Whether a clustered battle should be shown given the user's filter rules.
     fn battle_shown(&self, b: &crate::battle::Battle) -> bool {
         let rules = self.battle_filter.lock().unwrap();
-        if rules.rules.is_empty() {
+        // Common case (only the default Intel-area rule): visibility is just the tracked-area
+        // test — skip building per-battle match data every frame.
+        if rules.is_default_only() {
             return self.battle_in_tracked_area(b);
         }
-        let data = self.battle_match_data(b);
+        let data = self.battle_match_data(b, rules.max_jumps_condition());
         match crate::settings::battle_decision(&rules.rules, &data) {
             Some(crate::settings::RuleAction::Include) => true,
             Some(crate::settings::RuleAction::Exclude) => false,
@@ -4448,6 +4457,22 @@ impl SpaiApp {
             }
             if ui.button(format!("{}  Rules…", egui_phosphor::regular::FUNNEL)).clicked() {
                 self.battle_filter_open = true;
+            }
+            // Work throttle — caps how hard the feed + clustering run.
+            let mut th = self.settings.work_throttle;
+            egui::ComboBox::from_id_salt("work_throttle")
+                .selected_text(format!("{}  {}", egui_phosphor::regular::GAUGE, th.label()))
+                .show_ui(ui, |ui| {
+                    for opt in crate::settings::WorkThrottle::CHOICES {
+                        ui.selectable_value(&mut th, opt, opt.label());
+                    }
+                })
+                .response
+                .on_hover_text("Throttle background work (battle feed + clustering) to limit CPU.");
+            if th != self.settings.work_throttle {
+                self.settings.work_throttle = th;
+                self.work_throttle_shared.store(th.as_u8(), std::sync::atomic::Ordering::Relaxed);
+                self.needs_save = true;
             }
         });
         ui.add_space(4.0);

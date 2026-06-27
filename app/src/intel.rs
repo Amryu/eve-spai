@@ -823,6 +823,17 @@ fn extract_pilots(text: &str) -> Vec<String> {
     out
 }
 
+/// A ship hull from a lower-cased token, also accepting a simple "-s" plural so intel like
+/// "tengus" / "lokis" / "drakes" resolves to the hull (and isn't read as a pilot name).
+fn ship_of<'a>(
+    lc: &str,
+    ship_index: &'a HashMap<String, (i64, String)>,
+) -> Option<&'a (i64, String)> {
+    ship_index
+        .get(lc)
+        .or_else(|| lc.strip_suffix('s').filter(|s| s.len() >= 3).and_then(|s| ship_index.get(s)))
+}
+
 /// Runs of name-like tokens (any case) anchored by at least one Title-Case word, for
 /// ESI sub-span resolution — catches lowercase names ("bigfoott Kepplet") that the
 /// Title-Case heuristic misses. Ships, systems and stop words break a run. The cover
@@ -871,7 +882,7 @@ fn loose_pilot_runs(
             && !looks_like_system_code(core)
             && !is_time_token(core)
             && !is_structure_word(core)
-            && !ship_index.contains_key(&lc)
+            && ship_of(&lc, ship_index).is_none()
             && systems.lookup(core).is_none();
         if namelike {
             // Anchor on a Title-Case word OR a distinctive one (digit / internal capital),
@@ -1589,7 +1600,7 @@ pub fn analyze_ctx(
             add_ship(672, "Caldari Shuttle", &mut ships);
             continue;
         }
-        if let Some((id, name)) = ship_index.get(&lower) {
+        if let Some((id, name)) = ship_of(&lower, ship_index) {
             add_ship(*id, name, &mut ships);
             continue;
         }
@@ -1918,7 +1929,7 @@ pub fn analyze_ctx(
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
     let structures = detect_structures(text);
-    IntelReport {
+    let mut report = IntelReport {
         id: 0, // assigned by IntelState::push
         probes,
         received,
@@ -1955,7 +1966,13 @@ pub fn analyze_ctx(
         bubble: flagged(&lower_tokens, &pilot_tokens, &["bubble", "drag"]) || lower.contains("泡泡") || lower.contains("气泡"),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
-        cyno: flagged_exact(&lower_tokens, &pilot_tokens, &["cyno", "cynos"]) || lower.contains("诱导") || lower.contains("诱饵"),
+        cyno: flagged_exact(
+            &lower_tokens,
+            &pilot_tokens,
+            &["cyno", "cynos", "hotdrop", "hotdrops", "hotdropper", "hotdroppers"],
+        ) || lower.contains("诱导")
+            || lower.contains("诱饵")
+            || lower.contains("hot drop"),
         dropper: flagged_exact(
             &lower_tokens,
             &pilot_tokens,
@@ -1989,7 +2006,27 @@ pub fn analyze_ctx(
         alliances,
         movement: None,
         links,
+    };
+    // "Clear" loses to any sign of a threat: a contradictory message (a pilot named "clear …",
+    // or "clear" next to real hostiles) must never downgrade severity. Prefer a false positive
+    // (missed clear) over a false negative (missed threat).
+    if report.clear
+        && (report.cyno
+            || report.dropper
+            || report.bubble
+            || report.camp
+            || report.spike
+            || report.killmail
+            || report.cap_tackled
+            || report.tackled
+            || !report.ships.is_empty()
+            || !report.pilots.is_empty()
+            || !report.char_ids.is_empty()
+            || report.count.unwrap_or(0) > 0)
+    {
+        report.clear = false;
     }
+    report
 }
 
 /// Parse a "time left" callout: "M:SS" (e.g. "5:30"), or a number followed by a
@@ -3742,6 +3779,52 @@ mod tests {
         // so only the pronoun is special-cased.
         let r5 = analyze("Lopatich R tackled in Jita", &s, &noships(), &noknown(), 1, "ch", "Spai");
         assert!(r5.pilots.iter().any(|p| p == "Lopatich R"), "non-I initial: {:?}", r5.pilots);
+    }
+
+    fn sys_map(rows: &[(&str, &str, i64, f64)]) -> std::collections::HashMap<String, SystemInfo> {
+        rows.iter()
+            .map(|(k, n, id, sec)| {
+                (k.to_string(), SystemInfo { id: *id, name: n.to_string(), security: *sec, constellation: String::new(), region: String::new(), faction: String::new() })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plural_ship_not_a_pilot() {
+        let s = Systems::new(sys_map(&[("5h-sm2", "5H-SM2", 30000581, -0.4)]), std::collections::HashMap::new());
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("tengu".to_string(), (29984i64, "Tengu".to_string()))].into_iter().collect();
+        let txt = "Asclepios Magna > <url=showinfo:5//30000581>5H-SM2</url>  \
+                   <url=showinfo:1375//1088333998>Fat Zero</url>  \
+                   <url=showinfo:1384//1461906166>Shiro She</url> +17 hotdrop tengus";
+        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Spai");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("tengus")), "tengus as pilot: {:?}", r.pilots);
+        assert!(r.ships.iter().any(|sh| sh.name == "Tengu"), "tengu ship missing: {:?}", r.ships);
+        assert!(r.cyno, "hotdrop should flag cyno");
+    }
+
+    #[test]
+    fn clear_in_linked_name_not_a_status() {
+        let s = Systems::new(sys_map(&[("5h-sm2", "5H-SM2", 30000581, -0.4)]), std::collections::HashMap::new());
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("nemesis".to_string(), (11377i64, "Nemesis".to_string()))].into_iter().collect();
+        let txt = "Asclepios Magna > <url=showinfo:5//30000581>5H-SM2</url> camped by hot dropper with anchored bubble  <url=showinfo:1377//521632954>clear rain</url> nemesis";
+        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Spai");
+        assert!(!r.clear, "'clear' from pilot name spoofed a clear status");
+        assert!(r.pilots.iter().any(|p| p == "clear rain"), "pilots: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn clear_loses_to_threats() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("nemesis".to_string(), (11377i64, "Nemesis".to_string()))].into_iter().collect();
+        // Plain-text (log) form: "clear" leaks from a name, but a dropper/bubble/ship is present.
+        let r = analyze("Rancer hot dropper bubble clear rain nemesis", &s, &ships, &noknown(), 1, "ch", "Spai");
+        assert!(!r.clear, "clear should lose to threats");
+        // A genuine clear with no threat still reads as clear.
+        let r2 = analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(r2.clear, "pure clear lost");
     }
 
     #[test]

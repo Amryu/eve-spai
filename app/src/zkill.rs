@@ -43,6 +43,7 @@ pub fn spawn(
     filter: SharedBattleFilter,
     ship_sizes: ShipSizes,
     player_sys: Arc<AtomicI64>,
+    throttle: Arc<std::sync::atomic::AtomicU8>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -74,12 +75,16 @@ pub fn spawn(
         let mut last_scan = std::time::Instant::now()
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(std::time::Instant::now);
+        // Coalesced reclustering: accumulate changes and rebuild at most once per throttle window.
+        let mut dirty = false;
+        let mut last_cluster = std::time::Instant::now();
 
         // R2Z2 (RedisQ's replacement; RedisQ was sunset 2026-05-31): killmails are numbered
         // sequentially. Start at the current sequence and iterate forward, one file each.
         let mut seq = fetch_sequence(&client);
         let mut stuck = 0u32;
         loop {
+            let throttle = crate::settings::WorkThrottle::from_u8(throttle.load(Ordering::Relaxed));
             let mut changed = false;
             match seq {
                 None => {
@@ -98,6 +103,11 @@ pub fn spawn(
                                 buffer.push(engagement);
                                 changed = true;
                             }
+                        }
+                        // Pace feed catch-up so it can't peg the machine (user throttle).
+                        let d = throttle.feed_delay_ms();
+                        if d > 0 {
+                            std::thread::sleep(Duration::from_millis(d));
                         }
                     }
                     Poll::NotReady => {
@@ -147,7 +157,14 @@ pub fn spawn(
                 }
             }
 
-            if changed {
+            dirty |= changed;
+            // Recluster at most once per throttle window — clustering is O(n²), so doing it on
+            // every kill is the main load source during busy periods.
+            if dirty
+                && last_cluster.elapsed() >= Duration::from_millis(throttle.cluster_interval_ms())
+            {
+                dirty = false;
+                last_cluster = std::time::Instant::now();
                 let now = chrono::Utc::now().timestamp();
                 // The live view clusters only the last day; persisted engagements are kept for
                 // the full searchable history (see the battles "Full history" view).
@@ -325,10 +342,23 @@ fn poll(
     // Keep kills near a tracked intel system OR matching a custom Include rule.
     let tracked = in_tracked_area(systems, intel, pkg.killmail.solar_system_id);
     if !tracked {
-        let data = ingest_match_data(&pkg.killmail, sys, ship_sizes, systems, player_sys);
         let admitted = {
             let f = filter.lock().unwrap();
-            f.rules.iter().any(|r| r.admits_ingest(&data))
+            // Common case (only the default Intel-area rule): nothing widens beyond the intel
+            // area, so drop the kill without building match data or searching jump distance.
+            if !f.widens_beyond_intel() {
+                false
+            } else {
+                let data = ingest_match_data(
+                    &pkg.killmail,
+                    sys,
+                    ship_sizes,
+                    systems,
+                    player_sys,
+                    f.max_jumps_condition(),
+                );
+                f.rules.iter().any(|r| r.admits_ingest(&data))
+            }
         };
         if !admitted {
             return Poll::Got(None);
@@ -385,6 +415,7 @@ fn ingest_match_data(
     ship_sizes: &HashMap<i64, ShipSize>,
     systems: &Systems,
     player_sys: &AtomicI64,
+    max_jumps: Option<u32>,
 ) -> MatchData {
     let mut d = MatchData::default();
     d.systems.insert(sys.name.to_lowercase());
@@ -408,9 +439,12 @@ fn ingest_match_data(
         }
     }
     d.max_size = max;
-    let me = player_sys.load(Ordering::Relaxed);
-    if me != 0 {
-        d.min_jumps_from_me = systems.jumps(sys.id, me, 50);
+    // Only search distance when a rule actually uses it, bounded by the largest N requested.
+    if let Some(maxj) = max_jumps {
+        let me = player_sys.load(Ordering::Relaxed);
+        if me != 0 {
+            d.min_jumps_from_me = systems.jumps(sys.id, me, maxj);
+        }
     }
     d
 }
