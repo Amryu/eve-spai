@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::battle::{self, Battle, Engagement, Party, PartyKind};
+use crate::battle::{self, Attacker, Battle, Engagement, Party, PartyKind};
 use crate::geo::Systems;
 use crate::intel::IntelState;
 
@@ -32,6 +32,7 @@ pub fn spawn(
     camps: crate::camp::SharedCamps,
     killfeed: SharedKillFeed,
     camp_types: crate::camp::CampTypes,
+    ship_ids: Arc<std::collections::HashSet<i64>>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -43,7 +44,22 @@ pub fn spawn(
             return;
         };
         let mut names: HashMap<i64, String> = HashMap::new();
-        let mut buffer: Vec<Engagement> = Vec::new();
+        // Reload persisted engagements so clustered battles survive a restart.
+        let store = crate::store::Store::open().ok();
+        let mut buffer: Vec<Engagement> = match &store {
+            Some(s) => s.load_engagements(chrono::Utc::now().timestamp() - ENGAGEMENT_TTL),
+            None => Vec::new(),
+        };
+        if !buffer.is_empty() {
+            let clustered = battle::cluster(
+                &buffer,
+                battle::BATTLE_WINDOW_SECS,
+                battle::BATTLE_MAX_JUMPS,
+                |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
+            );
+            *battles.lock().unwrap() = clustered;
+            ctx.request_repaint();
+        }
         let mut seen_links: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut last_scan = std::time::Instant::now()
             .checked_sub(Duration::from_secs(60))
@@ -60,12 +76,15 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(5));
                     seq = fetch_sequence(&client);
                 }
-                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &mut names) {
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &mut names) {
                     Poll::Got(eng) => {
                         stuck = 0;
                         seq = Some(s + 1);
                         if let Some(engagement) = eng {
                             if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
+                                if let Some(s) = &store {
+                                    s.save_engagement(&engagement);
+                                }
                                 buffer.push(engagement);
                                 changed = true;
                             }
@@ -108,7 +127,10 @@ pub fn spawn(
                         continue;
                     }
                     seen_links.insert(id);
-                    if let Some(eng) = fetch_posted_kill(&client, id, &systems, &mut names) {
+                    if let Some(eng) = fetch_posted_kill(&client, id, &systems, &ship_ids, &mut names) {
+                        if let Some(s) = &store {
+                            s.save_engagement(&eng);
+                        }
                         buffer.push(eng);
                         changed = true;
                     }
@@ -117,6 +139,8 @@ pub fn spawn(
 
             if changed {
                 let now = chrono::Utc::now().timestamp();
+                // The live view clusters only the last day; persisted engagements are kept for
+                // the full searchable history (see the battles "Full history" view).
                 buffer.retain(|e| now - e.time <= ENGAGEMENT_TTL);
                 let clustered = battle::cluster(
                     &buffer,
@@ -183,6 +207,9 @@ struct Combatant {
     /// Weapon used (attackers only) — for smartbomb detection.
     #[serde(default)]
     weapon_type_id: Option<i64>,
+    /// Landed the killing blow (attackers only).
+    #[serde(default)]
+    final_blow: bool,
     /// In-space position (victim only) — for on-gate detection.
     #[serde(default)]
     position: Option<Position>,
@@ -222,6 +249,7 @@ fn poll(
     camps: &crate::camp::SharedCamps,
     killfeed: &SharedKillFeed,
     camp_types: &crate::camp::CampTypes,
+    ship_ids: &std::collections::HashSet<i64>,
     names: &mut HashMap<i64, String>,
 ) -> Poll {
     let resp = match client.get(format!("{R2Z2}/{seq}.json")).send() {
@@ -277,6 +305,11 @@ fn poll(
     if !in_tracked_area(systems, intel, pkg.killmail.solar_system_id) {
         return Poll::Got(None);
     }
+    // Battles are about ships and structures — drop deployable kills (mobile depots,
+    // tractor units, anchored bubbles, …).
+    if !is_listed_hull(pkg.killmail.victim.ship_type_id.unwrap_or(0), ship_ids) {
+        return Poll::Got(None);
+    }
     let Some(sys) = systems.info_of(pkg.killmail.solar_system_id) else {
         return Poll::Got(None);
     };
@@ -286,21 +319,21 @@ fn poll(
 
     resolve_names(client, &pkg.killmail, names);
 
-    let victim = party_of(&pkg.killmail.victim, names);
-    let attackers: Vec<Party> = pkg
-        .killmail
-        .attackers
-        .iter()
-        .map(|a| party_of(a, names))
-        .collect();
-
+    // A kill scored 100% by NPCs (no capsuleer attacker) isn't part of a player battle.
+    let attackers = attackers_of(&pkg.killmail, names);
+    if attackers.is_empty() {
+        return Poll::Got(None);
+    }
     Poll::Got(Some(Engagement {
         kill_id: pkg.kill_id,
         time,
         system_id: sys.id,
         system_name: sys.name.clone(),
         security: sys.security,
-        victim,
+        victim: party_of(&pkg.killmail.victim, names),
+        victim_char: pkg.killmail.victim.character_id.unwrap_or(0),
+        victim_pilot: pilot_of(&pkg.killmail.victim, names),
+        victim_ship: pkg.killmail.victim.ship_type_id.unwrap_or(0),
         attackers,
         isk: pkg.zkb.total_value,
     }))
@@ -324,6 +357,14 @@ fn in_tracked_area(systems: &Systems, intel: &Mutex<IntelState>, kill_system: i6
 }
 
 /// The party for a combatant: prefer alliance, then corporation, then character.
+/// Whether a destroyed type belongs in a battle report: a real ship (SDE ship list), a
+/// capsule, or a structure. Everything else (deployables, drones, NPC junk) is dropped.
+fn is_listed_hull(ship: i64, ship_ids: &std::collections::HashSet<i64>) -> bool {
+    ship_ids.contains(&ship)
+        || battle::POD_TYPES.contains(&ship)
+        || crate::intel::structure_name_by_type(ship).is_some()
+}
+
 fn party_of(c: &Combatant, names: &HashMap<i64, String>) -> Party {
     let (id, kind) = if let Some(id) = c.alliance_id {
         (id, PartyKind::Alliance)
@@ -339,6 +380,36 @@ fn party_of(c: &Combatant, names: &HashMap<i64, String>) -> Party {
         name: names.get(&id).cloned().unwrap_or_else(|| "Unknown".to_owned()),
         kind,
     }
+}
+
+/// Pilot display name for a combatant: character if present, else corp/alliance.
+fn pilot_of(c: &Combatant, names: &HashMap<i64, String>) -> String {
+    let id = c.character_id.or(c.corporation_id).or(c.alliance_id).unwrap_or(0);
+    names.get(&id).cloned().unwrap_or_else(|| "Unknown".to_owned())
+}
+
+/// A killmail attacker with no capsuleer behind it — belt/incursion/mission rats and faction
+/// NPCs. Player corporations are >= 98,000,000; a player-owned structure keeps that corp id, so
+/// it is not treated as an NPC. NPCs are never credited a kill, so a side is never an NPC corp.
+fn is_npc_attacker(c: &Combatant) -> bool {
+    c.character_id.is_none() && c.corporation_id.map_or(true, |id| id < 98_000_000)
+}
+
+/// Build the attacker list (capsuleers and player structures only), carrying ship, pilot and
+/// final-blow for the battle roster. NPC attackers are dropped, so the kill is attributed to
+/// the remaining player side(s), not to whatever rat happened to land the final blow.
+fn attackers_of(km: &Killmail, names: &HashMap<i64, String>) -> Vec<Attacker> {
+    km.attackers
+        .iter()
+        .filter(|a| !is_npc_attacker(a))
+        .map(|a| Attacker {
+            party: party_of(a, names),
+            char_id: a.character_id.unwrap_or(0),
+            ship: a.ship_type_id.unwrap_or(0),
+            pilot: pilot_of(a, names),
+            final_blow: a.final_blow,
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -367,6 +438,7 @@ fn fetch_posted_kill(
     client: &reqwest::blocking::Client,
     id: i64,
     systems: &Systems,
+    ship_ids: &std::collections::HashSet<i64>,
     names: &mut HashMap<i64, String>,
 ) -> Option<Engagement> {
     let zk: Vec<ZkApiEntry> = client
@@ -386,11 +458,18 @@ fn fetch_posted_kill(
         .ok()?
         .json()
         .ok()?;
+    if !is_listed_hull(km.victim.ship_type_id.unwrap_or(0), ship_ids) {
+        return None;
+    }
     let sys = systems.info_of(km.solar_system_id)?;
     let time = chrono::DateTime::parse_from_rfc3339(&km.killmail_time)
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
     resolve_names(client, &km, names);
+    let attackers = attackers_of(&km, names);
+    if attackers.is_empty() {
+        return None; // scored 100% by NPCs
+    }
     Some(Engagement {
         kill_id: id,
         time,
@@ -398,7 +477,10 @@ fn fetch_posted_kill(
         system_name: sys.name.clone(),
         security: sys.security,
         victim: party_of(&km.victim, names),
-        attackers: km.attackers.iter().map(|a| party_of(a, names)).collect(),
+        victim_char: km.victim.character_id.unwrap_or(0),
+        victim_pilot: pilot_of(&km.victim, names),
+        victim_ship: km.victim.ship_type_id.unwrap_or(0),
+        attackers,
         isk: entry.zkb.total_value,
     })
 }
@@ -456,5 +538,18 @@ mod tests {
         // The sequence pointer file parses too.
         let seq: Sequence = serde_json::from_str(r#"{"sequence":98212646}"#).unwrap();
         assert_eq!(seq.sequence, 98212646);
+    }
+
+    #[test]
+    fn npc_attacker_detection() {
+        let parse = |j: &str| -> Combatant { serde_json::from_str(j).unwrap() };
+        // Belt/mission rat: no character, NPC corp (< 98M).
+        assert!(is_npc_attacker(&parse(r#"{"corporation_id":1000127}"#)));
+        // Faction NPC: no corp, no character.
+        assert!(is_npc_attacker(&parse(r#"{"ship_type_id":1234}"#)));
+        // Capsuleer: has a character id.
+        assert!(!is_npc_attacker(&parse(r#"{"character_id":95538921,"corporation_id":1000127}"#)));
+        // Player-owned structure: no character, but a player corp (>= 98M).
+        assert!(!is_npc_attacker(&parse(r#"{"corporation_id":98000001}"#)));
     }
 }

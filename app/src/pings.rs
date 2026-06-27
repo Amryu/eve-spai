@@ -14,6 +14,9 @@ pub enum Ping {
         text: String,
         sender: Option<String>,
         target: Option<String>,
+        /// The original ping text (signature stripped) for the Copy button.
+        #[serde(default)]
+        raw: String,
     },
     Fleet {
         timestamp: i64,
@@ -26,6 +29,9 @@ pub enum Ping {
         doctrine: Option<String>,
         source: Option<String>,
         target: Option<String>,
+        /// The original ping text (signature stripped) for the Copy button.
+        #[serde(default)]
+        raw: String,
     },
 }
 
@@ -34,6 +40,30 @@ impl Ping {
     pub fn timestamp(&self) -> i64 {
         match self {
             Ping::Plain { timestamp, .. } | Ping::Fleet { timestamp, .. } => *timestamp,
+        }
+    }
+
+    /// The original ping text for the Copy button.
+    pub fn raw(&self) -> &str {
+        match self {
+            Ping::Plain { raw, .. } | Ping::Fleet { raw, .. } => raw,
+        }
+    }
+
+    /// A fleet call worth surfacing in the popup: a structured Fleet ping, or a (often
+    /// malformed, FC-less) broadcast that reads like a cap save / form-up / urgent call.
+    pub fn is_fleet_call(&self) -> bool {
+        match self {
+            Ping::Fleet { .. } => true,
+            Ping::Plain { text, .. } => {
+                let t = text.to_lowercase();
+                const FLEET_WORDS: &[&str] = &[
+                    "save", "tackled", "tackle", "point", "cyno", "reinforce", "hostile",
+                    "form up", "formup", "form-up", "x up", "xup", "x-up", "undock", "dread",
+                    "rorq", "rorqual", "carrier", "structure", "hotdrop", "hot drop", "drop on",
+                ];
+                FLEET_WORDS.iter().any(|w| t.contains(w))
+            }
         }
     }
 }
@@ -110,6 +140,15 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
 
     let sig = parse_signature(clean);
 
+    // Original ping text without the "~~~ This was …" signature, for the Copy button.
+    let raw = ping_text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("~~~ This was"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned();
+
     if let Some(fc) = fc {
         Ping::Fleet {
             timestamp,
@@ -122,6 +161,7 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
             doctrine,
             source: sig.as_ref().and_then(|s| s.0.clone()),
             target: sig.as_ref().and_then(|s| s.2.clone()),
+            raw,
         }
     } else {
         let plain = clean
@@ -136,6 +176,7 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
             text: plain,
             sender: sig.as_ref().and_then(|s| s.1.clone()),
             target: sig.as_ref().and_then(|s| s.2.clone()),
+            raw,
         }
     }
 }
@@ -332,6 +373,7 @@ mod tests {
                 text: "Single line".to_owned(),
                 sender: Some("toaster_jane".to_owned()),
                 target: Some("all".to_owned()),
+                raw: "Single line".to_owned(),
             }]
         );
     }

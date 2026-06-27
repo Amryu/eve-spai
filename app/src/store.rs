@@ -113,6 +113,15 @@ CREATE TABLE IF NOT EXISTS kill_intel (
     value        REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_kill_intel_time ON kill_intel(time);
+-- Battle engagements (one killmail each), persisted so clustered battles survive a restart.
+-- The full Engagement is kept as JSON; the columns are for windowed load + prune.
+CREATE TABLE IF NOT EXISTS engagements (
+    kill_id   INTEGER PRIMARY KEY,
+    time      INTEGER NOT NULL,
+    system_id INTEGER NOT NULL,
+    json      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_engagements_time ON engagements(time);
 -- Enriched killmail details (zKill + ESI), so a reloaded card doesn't re-fetch them.
 CREATE TABLE IF NOT EXISTS kill_details (
     kill_id             INTEGER PRIMARY KEY,
@@ -683,6 +692,39 @@ impl Store {
             "DELETE FROM kill_details WHERE kill_id NOT IN (SELECT killmail_id FROM kill_intel)",
             [],
         );
+    }
+
+    /// Persist (or refresh) one battle engagement. Keyed by kill id, so a kill that gains
+    /// late attackers overwrites the earlier row.
+    pub fn save_engagement(&self, e: &crate::battle::Engagement) {
+        if let Ok(json) = serde_json::to_string(e) {
+            let _ = self.conn.execute(
+                "INSERT OR REPLACE INTO engagements(kill_id, time, system_id, json)
+                 VALUES(?1, ?2, ?3, ?4)",
+                params![e.kill_id, e.time, e.system_id, json],
+            );
+        }
+    }
+
+    /// Load persisted engagements newer than `since` (unix seconds), oldest first.
+    pub fn load_engagements(&self, since: i64) -> Vec<crate::battle::Engagement> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT json FROM engagements WHERE time >= ?1 ORDER BY time ASC")
+        {
+            if let Ok(rows) = stmt.query_map(params![since], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten().filter_map(|j| serde_json::from_str(&j).ok()));
+            }
+        }
+        out
+    }
+
+    /// Drop persisted engagements older than `before` (unix seconds). Currently unused — the
+    /// full history is retained — but kept for an optional retention cap.
+    #[allow(dead_code)]
+    pub fn prune_engagements(&self, before: i64) {
+        let _ = self.conn.execute("DELETE FROM engagements WHERE time < ?1", params![before]);
     }
 
     /// Persist enriched killmail details so a reloaded card shows them without re-fetching.

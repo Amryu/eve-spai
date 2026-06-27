@@ -25,6 +25,8 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("trasher", "Thrasher"),
     ("auguror", "Augoror"),
     ("porp", "Porpoise"),
+    ("rorq", "Rorqual"),
+    ("rorqs", "Rorqual"),
     ("bni", "Brutix Navy Issue"),
     ("eni", "Exequror Navy Issue"),
     // Acronym auto-gen drops "oni" as ambiguous (Omen vs Osprey Navy Issue); in common

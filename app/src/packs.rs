@@ -7,9 +7,16 @@ pub struct ConfigPack {
     pub name: &'static str,
     /// Distinct intel channel names to watch.
     pub channels: &'static [&'static str],
-    /// Member alliance IDs (for future "detect my coalition" auto-suggest).
-    #[allow(dead_code)]
+    /// Member alliance IDs (coalition membership; also used to group battle sides).
     pub member_alliance_ids: &'static [i64],
+}
+
+/// The coalition an alliance belongs to (by member id), for grouping battle sides.
+pub fn coalition_of(alliance_id: i64) -> Option<&'static str> {
+    PACKS
+        .iter()
+        .find(|p| p.member_alliance_ids.contains(&alliance_id))
+        .map(|p| p.name)
 }
 
 pub const PACKS: &[ConfigPack] = &[

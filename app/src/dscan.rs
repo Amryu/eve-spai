@@ -61,11 +61,17 @@ pub fn is_valid_char_name(s: &str) -> bool {
 /// If `text` looks like a pasted local member list — at least 3 lines, every one a valid EVE
 /// character name — return the pilot count. Used to also offer the share popup for local.
 pub fn looks_like_local(text: &str) -> Option<usize> {
-    let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-    if lines.len() < 3 {
+    // Take the first tab-separated field of each line as the name, so a copy that carries extra
+    // columns (corp/alliance/standing) still reads as a member list.
+    let names: Vec<&str> = text
+        .lines()
+        .map(|l| l.split('\t').next().unwrap_or(l).trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if names.len() < 3 {
         return None;
     }
-    lines.iter().all(|l| is_valid_char_name(l)).then_some(lines.len())
+    names.iter().all(|l| is_valid_char_name(l)).then_some(names.len())
 }
 
 /// Upload a d-scan to dscan.info; returns the shareable view URL.

@@ -57,6 +57,14 @@ commit messages.
   be wrong (the asset-id bug above).
 - EVE chat logs carry NO `<url=...>` tags. Pilots and ships arrive as plain text, so
   intel parsing cannot rely on link markup. (In-game *pastes* do carry the tags.)
+- The chat-LOG format and the in-game COPY format differ, and intel parsing must handle
+  both. In-game copies carry `<url=showinfo:...>` tags AND per-message author prefixes
+  ("Pilot Name > message"); a copied block concatenates several such entries, so the
+  author prefix appears more than once — strip every "Name > " that precedes a link, not
+  just the leading one, or a later sender's name leaks as a hostile pilot. Log lines have
+  neither, so author-stripping is gated on a following `<url=` and never touches logs.
+  When writing parser tests, mirror the right format (tags + repeated author prefixes for
+  in-game copies; plain text for logs).
 - ESI `/universe/ids/` POST: keep batches under ~200 names (1000 -> HTTP 400, 500 ->
   504). Make a failed batch return an `Option` so it does not poison the
   not-a-character cache.

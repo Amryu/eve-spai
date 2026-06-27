@@ -328,6 +328,18 @@ pub struct SpaiApp {
     intel_type: IntelTypeFilter,
     /// Clustered battle reports (shared with the zKill feed worker).
     battles: crate::zkill::SharedBattles,
+    /// Full recorded history, clustered on demand from every persisted engagement.
+    battle_history: crate::zkill::SharedBattles,
+    /// True while the history is being (re)loaded in the background.
+    battle_history_loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Battles view: show the full history instead of the live 1-day window.
+    show_history: bool,
+    /// Battles view: the opened battle's representative kill id (None = list view).
+    battle_selected: Option<i64>,
+    /// Battles view: free-text filter (system, alliance/coalition, pilot, ship).
+    battle_search: String,
+    /// Battle detail: the participant currently hovered (for the involvement highlight).
+    battle_hover: Option<BattleHover>,
     camps: crate::camp::SharedCamps,
     /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
     /// lock + scan the camp state every frame for every map.
@@ -599,6 +611,8 @@ pub struct SpaiApp {
     /// Last on-top state applied to the alert window (re-applied when it changes, so
     /// "smart" mode tracks EVE focus and the level is maintained while shown).
     alert_level_applied: Option<bool>,
+    /// Last time the alert window re-asserted always-on-top (throttled re-raise).
+    alert_level_at: Option<std::time::Instant>,
     /// A window-move drag is in progress (so the map doesn't also pan).
     map_overlay_drag: bool,
     /// How systems are laid out (geographic / spaced / radial / tree).
@@ -845,6 +859,12 @@ impl SpaiApp {
             intel_max_jumps: pv.intel_max_jumps,
             intel_type: pv.intel_type,
             battles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            battle_history: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            battle_history_loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            show_history: false,
+            battle_selected: None,
+            battle_search: String::new(),
+            battle_hover: None,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
@@ -1006,6 +1026,7 @@ impl SpaiApp {
             map_overlay_mode: false,
             map_vp_props: None,
             alert_level_applied: None,
+            alert_level_at: None,
             map_overlay_locked: false,
             map_overlay_drag: false,
             map_layout: pv.map_layout,
@@ -1499,7 +1520,9 @@ impl SpaiApp {
             // Fleet pings raise a desktop notification with the key details.
             if is_ping && notify {
                 let latest = self.jabber.lock().unwrap().pings.last().cloned();
-                if let Some(ping @ crate::pings::Ping::Fleet { .. }) = latest {
+                // Surface structured fleet pings AND malformed-but-urgent broadcasts (cap saves,
+                // form-ups) in the popup, not just FC-keyed Fleet pings.
+                if let Some(ping) = latest.filter(|p| p.is_fleet_call()) {
                     if let crate::pings::Ping::Fleet { fc, doctrine, .. } = &ping {
                         let body = match doctrine {
                             Some(d) => format!("FC: {fc} \u{00B7} {d}"),
@@ -2731,6 +2754,7 @@ impl SpaiApp {
             egui::ViewportBuilder::default().with_icon(app_icon()).with_title("EVE Spai — Jabber").with_inner_size([720.0, 560.0]),
             |ctx, _| {
                 egui::CentralPanel::default().show(ctx, |ui| self.jabber_ui(ui));
+                ontop_pin(ctx, "jabber_window");
                 if ctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
@@ -2802,7 +2826,13 @@ impl SpaiApp {
         geo: &crate::geo::Systems,
     ) -> Option<crate::intel::IntelReport> {
         let sys = geo.info_of(ev.system_id)?;
-        let ship = self.ship_by_id.get(&ev.ship_type_id).cloned().unwrap_or_default();
+        // Hull from the SDE, or an Upwell structure (not in the ship table) so structure kills show.
+        let ship = self
+            .ship_by_id
+            .get(&ev.ship_type_id)
+            .cloned()
+            .or_else(|| crate::intel::structure_name_by_type(ev.ship_type_id).map(str::to_owned))
+            .unwrap_or_default();
         let lower = ship.to_lowercase();
         // Skip noise: shuttles, rookie corvettes, cheap empty pods, and anchorable deployables.
         // Every player-anchorable deployable is a "Mobile X" (tractor unit, depot, small/medium/
@@ -3332,6 +3362,10 @@ impl SpaiApp {
 
         // The battle feed runs whenever the SDE is ready (independent of logs).
         let camp_types = self.store.as_ref().map(|s| s.load_camp_types()).unwrap_or_default();
+        // Ship type ids, so battle clustering can drop deployable kills.
+        let ship_ids = std::sync::Arc::new(
+            store.ship_index().values().map(|(id, _)| *id).collect::<std::collections::HashSet<i64>>(),
+        );
         crate::zkill::spawn(
             systems.clone(),
             self.intel_state.clone(),
@@ -3339,6 +3373,7 @@ impl SpaiApp {
             self.camps.clone(),
             self.killfeed.clone(),
             camp_types,
+            ship_ids,
             ctx.clone(),
         );
 
@@ -3700,7 +3735,13 @@ impl SpaiApp {
                 ui.label(egui::RichText::new("no nearby hostiles").weak());
             }
             ui.separator();
-            ui.label(format!("Battles: {battle_count}"));
+            if battle_count > 0 {
+                if ui.link(format!("Battles: {battle_count}")).clicked() {
+                    self.view = View::Battles;
+                }
+            } else {
+                ui.label(format!("Battles: {battle_count}"));
+            }
         });
         ui.add_space(8.0);
         ui.separator();
@@ -3725,7 +3766,8 @@ impl SpaiApp {
     /// Queue one tab per (de-duplicated) name from a block of pasted/dropped text.
     fn add_lookup_names(&mut self, text: &str) {
         for line in text.lines() {
-            let name = line.trim();
+            // First tab-separated column = the name (a pasted member list may carry more columns).
+            let name = line.split('\t').next().unwrap_or(line).trim();
             if name.len() < 3 || name.len() > 37 {
                 continue;
             }
@@ -3976,9 +4018,93 @@ impl SpaiApp {
         }
     }
 
-    #[allow(dead_code)] // battles kept for later; not in the nav for now
+    /// (Re)cluster every persisted engagement into `battle_history` on a background thread.
+    fn load_battle_history(&self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        if self.battle_history_loading.swap(true, Ordering::SeqCst) {
+            return; // already loading
+        }
+        let Some(systems) = self.systems.clone() else {
+            self.battle_history_loading.store(false, Ordering::SeqCst);
+            return;
+        };
+        let out = self.battle_history.clone();
+        let loading = self.battle_history_loading.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let battles = crate::store::Store::open()
+                .ok()
+                .map(|s| {
+                    let engs = s.load_engagements(0); // all of recorded history
+                    crate::battle::cluster(
+                        &engs,
+                        crate::battle::BATTLE_WINDOW_SECS,
+                        crate::battle::BATTLE_MAX_JUMPS,
+                        |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
+                    )
+                })
+                .unwrap_or_default();
+            *out.lock().unwrap() = battles;
+            loading.store(false, Ordering::SeqCst);
+            ctx.request_repaint();
+        });
+    }
+
     fn battles_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
+        let now = chrono::Utc::now().timestamp();
+        let player_sys = self.player_system();
+        let systems = self.systems.clone();
+        // The default view is the live 1-day cluster; "Full history" re-clusters everything ever
+        // recorded.
+        let source = if self.show_history { self.battle_history.clone() } else { self.battles.clone() };
+
+        // Detail mode: the opened battle (matched by a representative kill id).
+        if let Some(kid) = self.battle_selected {
+            let sel = source
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
+                .cloned();
+            match sel {
+                Some(b) => {
+                    if ui
+                        .button(format!("{}  Back to battles", egui_phosphor::regular::ARROW_LEFT))
+                        .clicked()
+                    {
+                        self.battle_selected = None;
+                        self.battle_hover = None;
+                    }
+                    ui.add_space(6.0);
+                    // Resolve the ship/structure type names the roster will show.
+                    let ids: Vec<i64> = b
+                        .engagements
+                        .iter()
+                        .flat_map(|e| {
+                            let mut v = vec![e.victim_ship];
+                            v.extend(e.attackers.iter().map(|a| a.ship));
+                            v
+                        })
+                        .filter(|&id| id != 0)
+                        .collect();
+                    self.ensure_type_names(&ids, ui.ctx());
+                    let type_names = self.type_names.lock().unwrap().clone();
+                    let prev_hover = self.battle_hover;
+                    let (clicked_system, hover) = battle_detail(ui, &b, &type_names, prev_hover);
+                    if hover != prev_hover {
+                        self.battle_hover = hover;
+                        ui.ctx().request_repaint(); // re-render so the highlight follows the cursor
+                    }
+                    if let Some(sid) = clicked_system {
+                        self.open_system(sid);
+                    }
+                    return;
+                }
+                // The battle aged out of the cluster — drop back to the list.
+                None => self.battle_selected = None,
+            }
+        }
 
         if self.chat_dir.is_none() && self.settings.intel_channels.is_empty() {
             ui.label(
@@ -3990,36 +4116,69 @@ impl SpaiApp {
             );
         }
 
-        let now = chrono::Utc::now().timestamp();
-        let battles = self.battles.lock().unwrap();
-        // Only multi-kill clusters count as a "battle".
-        let shown: Vec<&crate::battle::Battle> =
-            battles.iter().filter(|b| b.kills >= 2).collect();
-
-        if shown.is_empty() {
-            ui.label(
-                egui::RichText::new("No active battles near the tracked area.").weak(),
+        // Filter + scope toggle.
+        ui.horizontal(|ui| {
+            ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.battle_search)
+                    .hint_text("Filter by system, alliance, pilot…")
+                    .desired_width(240.0),
             );
-            return;
-        }
-
-        ui.label(egui::RichText::new(format!("{} battles", shown.len())).weak());
-        ui.add_space(4.0);
-        let player_sys = self.player_system();
-        let systems = self.systems.clone();
-        let status = self.system_status.lock().unwrap();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for b in shown {
-                // Nearest battle system to the player.
-                let from_you = b
-                    .systems
-                    .iter()
-                    .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
-                    .min();
-                battle_row(ui, b, now, from_you, &systems, &status);
-                ui.add_space(4.0);
+            if !self.battle_search.is_empty() && ui.button("Clear").clicked() {
+                self.battle_search.clear();
+            }
+            // "Full history" re-clusters every recorded engagement; default is the live 1-day view.
+            if ui.checkbox(&mut self.show_history, "Full history").changed() {
+                self.battle_selected = None;
+                if self.show_history {
+                    self.load_battle_history(ui.ctx());
+                }
             }
         });
+        ui.add_space(4.0);
+        let query = self.battle_search.trim().to_lowercase();
+        let loading = self.battle_history_loading.load(std::sync::atomic::Ordering::Relaxed);
+
+        let mut open: Option<i64> = None;
+        {
+            let battles = source.lock().unwrap();
+            // Only multi-kill clusters count as a "battle".
+            let shown: Vec<&crate::battle::Battle> =
+                battles.iter().filter(|b| b.kills >= 2 && b.matches(&query)).collect();
+            if shown.is_empty() {
+                let msg = if self.show_history && loading {
+                    "Loading full history…"
+                } else if self.show_history {
+                    "No recorded battles yet."
+                } else if query.is_empty() {
+                    "No active battles near the tracked area."
+                } else {
+                    "No battles match the filter."
+                };
+                ui.label(egui::RichText::new(msg).weak());
+                return;
+            }
+            ui.label(egui::RichText::new(format!("{} battles", shown.len())).weak());
+            ui.add_space(4.0);
+            let status = self.system_status.lock().unwrap();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for b in shown {
+                    // Nearest battle system to the player.
+                    let from_you = b
+                        .systems
+                        .iter()
+                        .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
+                        .min();
+                    if battle_row(ui, b, now, from_you, &systems, &status) {
+                        open = b.engagements.iter().map(|e| e.kill_id).max();
+                    }
+                    ui.add_space(4.0);
+                }
+            });
+        }
+        if let Some(kid) = open {
+            self.battle_selected = Some(kid);
+        }
     }
 
     fn refresh_characters(&mut self) {
@@ -4590,6 +4749,7 @@ impl SpaiApp {
                 if (vctx.content_rect().height() - target).abs() > 4.0 {
                     vctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur_w, target)));
                 }
+                ontop_pin(vctx, "fleet_ping_window");
                 if vctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
@@ -4766,6 +4926,21 @@ impl SpaiApp {
                         egui::WindowLevel::Normal
                     }));
                     self.alert_level_applied = Some(on_top);
+                    self.alert_level_at = Some(std::time::Instant::now());
+                }
+                // A borderless/fullscreen game can rise above an already-topmost window, so
+                // periodically re-assert the level to re-claim the top while alerts are showing.
+                // Throttled (not every frame) so it doesn't pin the app at vsync.
+                if on_top {
+                    let due =
+                        self.alert_level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
+                    if due {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                            egui::WindowLevel::AlwaysOnTop,
+                        ));
+                        self.alert_level_at = Some(std::time::Instant::now());
+                    }
+                    ctx.request_repaint_after(std::time::Duration::from_millis(800));
                 }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
@@ -7588,6 +7763,17 @@ impl SpaiApp {
             }
         }
 
+        // Saved routes above the (height-filling) hops list, so it can't be pushed off-screen.
+        if ui
+            .button(format!("{}  Saved routes\u{2026}", icon::FOLDER))
+            .on_hover_text("Save, load and organise routes")
+            .clicked()
+        {
+            self.route_kind = RouteKind::Jump;
+            self.routes_dialog_open = true;
+        }
+        ui.separator();
+
         if let Some(err) = self.jump_route_err.clone() {
             ui.label(egui::RichText::new(err).color(crate::theme::standing::HOSTILE));
         } else if any_invalid {
@@ -7643,16 +7829,6 @@ impl SpaiApp {
                 egui::RichText::new("Right-click a system on the map for \"Plan Jump Route To Here\".")
                     .weak(),
             );
-        }
-
-        ui.separator();
-        if ui
-            .button(format!("{}  Saved routes\u{2026}", icon::FOLDER))
-            .on_hover_text("Save, load and organise routes")
-            .clicked()
-        {
-            self.route_kind = RouteKind::Jump;
-            self.routes_dialog_open = true;
         }
     }
 
@@ -8967,6 +9143,7 @@ impl SpaiApp {
                     .with_min_inner_size([360.0, 280.0]),
                 |ctx, _| {
                     egui::CentralPanel::default().show(ctx, |ui| { ui.push_id(name.as_str(), |ui| self.draw_map(ui)); });
+                    ontop_pin(ctx, &format!("charmap_{name}"));
                     if ctx.input(|i| i.viewport().close_requested()) {
                         keep = false;
                     }
@@ -9020,6 +9197,7 @@ impl SpaiApp {
                         c(ui);
                     }
                 });
+                ontop_pin(ctx, id);
                 if ctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
@@ -10154,10 +10332,8 @@ impl SpaiApp {
                     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |_ui| {});
                     return;
                 }
-                // Re-assert always-on-top each frame; some WMs drop the initial hint.
-                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                    egui::WindowLevel::AlwaysOnTop,
-                ));
+                // Always-on-top toggle (re-asserted each frame; some WMs drop the initial hint).
+                ontop_pin(ctx, "dscan_popup");
                 let frame = egui::Frame::central_panel(&ctx.style());
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     let title = match &self.dscan_prompt {
@@ -11749,6 +11925,7 @@ impl eframe::App for SpaiApp {
             View::Map => self.map_view(ui),
             View::Characters => self.characters_view(ui),
             View::Intel => self.intel_view(ui),
+            View::Battles => self.battles_view(ui),
             View::Wormholes => self.wormholes_view(ui),
             View::Lookup => self.lookup_view(ui),
             View::Alerts => self.alerts_view(ui),
@@ -12441,26 +12618,90 @@ fn fmt_isk(isk: f64) -> String {
     }
 }
 
-/// Render one clustered battle.
+/// A per-side colour (blue / red / green / grey) for battle sides.
+fn side_color(i: usize) -> egui::Color32 {
+    match i {
+        0 => egui::Color32::from_rgb(0x4f, 0xc3, 0xf7),
+        1 => egui::Color32::from_rgb(0xe0, 0x4c, 0x4c),
+        2 => egui::Color32::from_rgb(0x9c, 0xcc, 0x65),
+        _ => egui::Color32::from_rgb(0xb0, 0xb0, 0xb0),
+    }
+}
+
+/// A battle party badge: its alliance/corp/character logo, hovered for the name. When
+/// `clickable`, opens that entity's zKill page.
+fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable: bool) {
+    use crate::battle::PartyKind;
+    let urls = match p.kind {
+        PartyKind::Alliance => Some((
+            format!("https://images.evetech.net/alliances/{}/logo?size=32", p.id),
+            format!("https://zkillboard.com/alliance/{}/", p.id),
+        )),
+        PartyKind::Corporation => Some((
+            format!("https://images.evetech.net/corporations/{}/logo?size=32", p.id),
+            format!("https://zkillboard.com/corporation/{}/", p.id),
+        )),
+        PartyKind::Character => Some((
+            format!("https://images.evetech.net/characters/{}/portrait?size=32", p.id),
+            format!("https://zkillboard.com/character/{}/", p.id),
+        )),
+        _ => None,
+    };
+    let Some((img_url, zkill)) = urls else {
+        ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(&p.name);
+        return;
+    };
+    let img = egui::Image::new(img_url).fit_to_exact_size(egui::Vec2::splat(size));
+    if clickable {
+        if ui.add(egui::Button::image(img)).on_hover_text(&p.name).clicked() {
+            let _ = open::that(zkill);
+        }
+    } else {
+        ui.add(img).on_hover_text(&p.name);
+    }
+}
+
+/// A destroyed-hull badge: the ship icon, or an Upwell structure's render.
+fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
+    if type_id == 0 {
+        return;
+    }
+    let url = if crate::intel::structure_name_by_type(type_id).is_some() {
+        format!("https://images.evetech.net/types/{type_id}/render?size=64")
+    } else {
+        format!("https://images.evetech.net/types/{type_id}/icon?size=32")
+    };
+    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(size)));
+}
+
+/// The display title for a side: its coalition, else its lead party's name.
+fn side_title(side: &crate::battle::Side) -> String {
+    side.coalition
+        .clone()
+        .or_else(|| side.parties.first().map(|p| p.name.clone()))
+        .unwrap_or_else(|| "?".to_owned())
+}
+
+/// Render one clustered battle as a summary card. Returns true when the card is clicked
+/// (to open the detailed view).
 fn battle_row(
     ui: &mut egui::Ui,
     b: &crate::battle::Battle,
     now: i64,
     from_you: Option<u32>,
-    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
-    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
-) {
+    _systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    _status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
+) -> bool {
     let span_min = ((b.end - b.start) / 60).max(0);
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    let resp = egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - b.end))).monospace().weak());
             from_you_chip(ui, from_you);
-            // systems involved (with security colour)
-            for (id, name, sec) in &b.systems {
+            // Systems involved — just security + name (no constellation/region clutter).
+            for (_id, name, sec) in &b.systems {
                 ui.label(security_badge(*sec));
                 ui.label(egui::RichText::new(name).strong());
-                system_chips(ui, systems, status, *id);
             }
             ui.separator();
             ui.label(format!("{} kills", b.kills));
@@ -12469,29 +12710,286 @@ fn battle_row(
                 ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
             }
         });
-        // Belligerent sides, "vs" separated.
+        // Belligerent sides: a logo + coalition/lead name + k/l, "vs"-separated.
         ui.horizontal_wrapped(|ui| {
             for (i, side) in b.sides.iter().take(2).enumerate() {
                 if i > 0 {
                     ui.label(egui::RichText::new("vs").strong());
                 }
-                let mut names: Vec<&str> = side.parties.iter().take(3).map(|s| s.as_str()).collect();
-                if side.parties.len() > 3 {
-                    names.push("…");
+                let col = side_color(i);
+                if let Some(lead) = side.parties.first() {
+                    party_badge(ui, lead, 18.0, false);
                 }
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} [{}k/{}l, {} lost]",
-                        names.join(", "),
-                        side.kills,
-                        side.losses,
-                        fmt_isk(side.isk_lost)
-                    ))
-                    ,
-                );
+                ui.label(egui::RichText::new(side_title(side)).color(col).strong());
+                ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
+            }
+        });
+    })
+    .response;
+    let resp = resp.interact(egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// How a participant row is background-highlighted relative to the hovered ship.
+#[derive(Clone, Copy, PartialEq)]
+enum ShipHighlight {
+    None,
+    /// The row currently under the cursor (a plain hover background).
+    Hovered,
+    /// A victim the hovered ship helped kill.
+    Assist,
+}
+
+/// One participating-ship row (two lines): hull + name + value on top, pilot + final blow +
+/// zKill button below. Destroyed ships (`lost`) get a reddish background and the zKill button;
+/// survivors render plain.
+fn ship_row(
+    ui: &mut egui::Ui,
+    width: f32,
+    party: &crate::battle::Party,
+    ship: i64,
+    pilot: &str,
+    name_of: &dyn Fn(i64) -> String,
+    lost: Option<&crate::battle::Lost>,
+    red: egui::Color32,
+    highlight: ShipHighlight,
+    border: bool,
+) -> egui::Response {
+    use egui_phosphor::regular as icon;
+    // Background highlight = a victim the hovered ship helped kill. A distinct amber tint (not
+    // egui's neutral hover grey); a brighter orange when the hovered ship got the final blow.
+    let fill = match highlight {
+        ShipHighlight::Assist => egui::Color32::from_rgb(0xE0, 0xB0, 0x4C).gamma_multiply(0.26),
+        // Plain neutral hover for the row under the cursor (over the loss-red base if any).
+        ShipHighlight::Hovered if lost.is_some() => red.gamma_multiply(0.28),
+        ShipHighlight::Hovered => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24),
+        ShipHighlight::None if lost.is_some() => red.gamma_multiply(0.16),
+        ShipHighlight::None => egui::Color32::TRANSPARENT,
+    };
+    // Always reserve the stroke (transparent when no border) so toggling the red border doesn't
+    // resize the row — only its colour changes.
+    let stroke = egui::Stroke::new(1.5, if border { red } else { egui::Color32::TRANSPARENT });
+    let resp = egui::Frame::new()
+        .fill(fill)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .corner_radius(4.0)
+        .stroke(stroke)
+        .show(ui, |ui| {
+            ui.set_width(width);
+            // Line 1: hull icon + ship/structure name + lost value, then a "+ pod" indicator.
+            ui.horizontal_wrapped(|ui| {
+                hull_badge(ui, ship, 28.0);
+                ui.label(egui::RichText::new(name_of(ship)).strong());
+                if let Some(l) = lost {
+                    ui.label(egui::RichText::new(fmt_isk(l.value)).color(red).strong());
+                    if l.pod_value > 0.0 {
+                        ui.label(egui::RichText::new("+").weak());
+                        // The actual capsule variant (regular / Genolution), 670 as a fallback.
+                        let pod = if l.pod_ship != 0 { l.pod_ship } else { 670 };
+                        hull_badge(ui, pod, 16.0);
+                        if l.pod_value >= 1_000_000.0 {
+                            ui.label(egui::RichText::new(fmt_isk(l.pod_value)).color(red).weak())
+                                .on_hover_text("pod value");
+                        }
+                    }
+                }
+            });
+            // Line 2: owner badge + pilot + zKill button (destroyed only).
+            ui.horizontal_wrapped(|ui| {
+                party_badge(ui, party, 14.0, true);
+                ui.label(egui::RichText::new(pilot).weak());
+                if let Some(l) = lost {
+                    if ui
+                        .button(format!("{} zKill", icon::LINK))
+                        .on_hover_text("Open on zKillboard")
+                        .clicked()
+                    {
+                        let _ = open::that(format!("https://zkillboard.com/kill/{}/", l.kill_id));
+                    }
+                }
+            });
+        })
+        .response;
+    ui.add_space(3.0);
+    resp
+}
+
+/// The participant the cursor is over in a battle detail (for the involvement highlight).
+#[derive(Clone, Copy, PartialEq)]
+struct BattleHover {
+    char_id: i64,
+    /// The kill the hovered ship died on (None if it survived) — its attackers get a red border.
+    kill_id: Option<i64>,
+}
+
+/// The detailed view of one battle: a header, then each side as its own column (horizontal
+/// scroll when they don't fit). Each column shows a summary header, then every participating
+/// ship as a row — destroyed ones (highest value first) on a reddish background with a zKill
+/// button, followed by the survivors. Returns the clicked system (to open its info) and the
+/// participant under the cursor (for next frame's highlight).
+fn battle_detail(
+    ui: &mut egui::Ui,
+    b: &crate::battle::Battle,
+    type_names: &std::collections::HashMap<i64, String>,
+    prev_hover: Option<BattleHover>,
+) -> (Option<i64>, Option<BattleHover>) {
+    use egui_phosphor::regular as icon;
+    use std::collections::HashSet;
+    let mut open_system: Option<i64> = None;
+    // Involvement cross-reference, resolved against the previously-hovered participant.
+    let inv = b.involvement();
+    // Victims the hovered ship helped kill (background highlight), and the subset it got the
+    // final blow on (special highlight).
+    let killed: HashSet<i64> =
+        prev_hover.and_then(|h| inv.killed.get(&h.char_id).cloned()).unwrap_or_default();
+    // Killers of the hovered (dead) ship, for the red border.
+    let border_set: HashSet<i64> = prev_hover
+        .and_then(|h| h.kill_id)
+        .and_then(|kid| inv.attackers.get(&kid).cloned())
+        .unwrap_or_default();
+    let new_hover = std::cell::Cell::new(None);
+    let span_min = ((b.end - b.start) / 60).max(0);
+    ui.horizontal_wrapped(|ui| {
+        for (id, name, sec) in &b.systems {
+            ui.label(security_badge(*sec));
+            // A link (hover-underlines, pointer cursor) opens the system info window.
+            if ui.link(egui::RichText::new(name).strong()).on_hover_text("Open system info").clicked() {
+                open_system = Some(*id);
+            }
+        }
+        ui.separator();
+        ui.label(format!("{} kills", b.kills));
+        ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
+        if span_min > 0 {
+            ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
+        }
+        // Live: a battle keeps accepting kills for the window after its last one, and the view
+        // updates as they arrive.
+        let now = chrono::Utc::now().timestamp();
+        let remaining = crate::battle::BATTLE_WINDOW_SECS - (now - b.end);
+        if remaining > 0 {
+            let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
+            ui.label(egui::RichText::new(format!("{} Live", icon::BROADCAST)).color(green).strong())
+                .on_hover_text(format!(
+                    "Still accepting new kills for ~{}m — the view updates live.",
+                    remaining / 60 + 1
+                ));
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+        }
+    });
+    ui.add_space(6.0);
+
+    let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
+    let red = crate::theme::standing::HOSTILE;
+    // Ship or structure name for a type id (structures are static; ships come from ESI).
+    let name_of = |id: i64| -> String {
+        if id == 0 {
+            return "?".to_owned();
+        }
+        crate::intel::structure_name_by_type(id)
+            .map(|s| s.to_owned())
+            .or_else(|| type_names.get(&id).cloned())
+            .unwrap_or_else(|| format!("Type {id}"))
+    };
+
+    // Per-column min width keeps icon + ship + pilot legible; columns scroll horizontally.
+    const SIDE_W: f32 = 360.0;
+    const MAX_ROWS: usize = 200;
+    // The column fills the rest of the viewport; the inner list caps a bit short of that so a
+    // scrollbar appears only when the ships actually overflow.
+    let col_h = (ui.available_height() - 12.0).max(180.0);
+    let list_h = (col_h - 60.0).max(120.0);
+    egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            for (i, side) in b.sides.iter().enumerate() {
+                let col = side_color(i);
+                let roster = b.roster(i);
+                egui::Frame::group(ui.style()).fill(col.gamma_multiply(0.05)).show(ui, |ui| {
+                    // The side Frame inherits the parent's horizontal layout, so force a
+                    // top-down column or the rows stack sideways.
+                    ui.vertical(|ui| {
+                        ui.set_width(SIDE_W);
+                        ui.set_min_width(SIDE_W);
+                        ui.set_min_height(col_h); // column fills the viewport height
+                        // Header: lead badge, side title, +N others.
+                        ui.horizontal_wrapped(|ui| {
+                            if let Some(lead) = side.parties.first() {
+                                party_badge(ui, lead, 22.0, true);
+                            }
+                            ui.label(egui::RichText::new(side_title(side)).color(col).strong().size(15.0));
+                            if side.parties.len() > 1 {
+                                ui.label(egui::RichText::new(format!("+{}", side.parties.len() - 1)).weak())
+                                    .on_hover_text(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+                            }
+                        });
+                        // Tallies: kills / losses, ISK efficiency, ISK lost.
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} {}  {} {}", icon::SWORD, side.kills, icon::SKULL, side.losses)).weak(),
+                            );
+                            if let Some(eff) = side.isk_efficiency() {
+                                let tint = if eff >= 50.0 { green } else { red };
+                                ui.label(egui::RichText::new(format!("{eff:.0}% eff")).color(tint).strong())
+                                    .on_hover_text(format!(
+                                        "{} destroyed / {} lost",
+                                        fmt_isk(side.isk_destroyed),
+                                        fmt_isk(side.isk_lost)
+                                    ));
+                            }
+                            ui.label(egui::RichText::new(format!("{} lost", fmt_isk(side.isk_lost))).weak());
+                        });
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("battle_side", b.start, i))
+                            .max_height(list_h)
+                            .auto_shrink([false, true]) // size to content; bar only when overflowing
+                            .show(ui, |ui| {
+                                ui.set_width(SIDE_W - 16.0);
+                                let row_w = SIDE_W - 16.0;
+                                // Participating ships grouped by hull, destroyed (reddish) before
+                                // survivors within each hull.
+                                for p in roster.iter().take(MAX_ROWS) {
+                                    let row_kill = p.lost.as_ref().map(|l| l.kill_id);
+                                    // Hover matches the exact row (a pilot may have several loss
+                                    // rows — re-shipping shuttles — so match by kill, not just pilot).
+                                    let is_hovered = p.char_id != 0
+                                        && prev_hover.map_or(false, |h| h.char_id == p.char_id && h.kill_id == row_kill);
+                                    let highlight = if is_hovered {
+                                        ShipHighlight::Hovered
+                                    } else if p.char_id != 0 && killed.contains(&p.char_id) {
+                                        ShipHighlight::Assist
+                                    } else {
+                                        ShipHighlight::None
+                                    };
+                                    let border = p.char_id != 0 && border_set.contains(&p.char_id);
+                                    let resp = ship_row(
+                                        ui, row_w, &p.party, p.ship, &p.pilot, &name_of,
+                                        p.lost.as_ref(), red, highlight, border,
+                                    );
+                                    if p.char_id != 0 && ui.rect_contains_pointer(resp.rect) {
+                                        new_hover.set(Some(BattleHover {
+                                            char_id: p.char_id,
+                                            kill_id: p.lost.as_ref().map(|l| l.kill_id),
+                                        }));
+                                    }
+                                }
+                                if roster.len() > MAX_ROWS {
+                                    ui.label(egui::RichText::new(format!("+{} more", roster.len() - MAX_ROWS)).weak());
+                                }
+                                if roster.is_empty() {
+                                    ui.label(egui::RichText::new("No ships").weak());
+                                }
+                            });
+                    });
+                });
+                ui.add_space(6.0);
             }
         });
     });
+    (open_system, new_hover.get())
 }
 
 /// Whether an alert rule's conditions all match a report.
@@ -12679,6 +13177,32 @@ fn route_item_row(
     act
 }
 
+/// A floated "always on top" pin toggle for a child window, in the content's top-right (just
+/// below the OS close button). The per-window state lives in the viewport's ctx data (default
+/// on, matching the prior always-on-top behaviour); the window level is applied every frame.
+fn ontop_pin(ctx: &egui::Context, id: &str) {
+    let key = egui::Id::new(("ontop", id));
+    let mut on = ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(true));
+    egui::Area::new(egui::Id::new(("ontop_area", id)))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-6.0, 6.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            if ui
+                .selectable_label(on, egui_phosphor::regular::PUSH_PIN)
+                .on_hover_text(if on { "Always on top (on)" } else { "Always on top (off)" })
+                .clicked()
+            {
+                on = !on;
+                ctx.data_mut(|d| d.insert_temp(key, on));
+            }
+        });
+    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on {
+        egui::WindowLevel::AlwaysOnTop
+    } else {
+        egui::WindowLevel::Normal
+    }));
+}
+
 fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {
@@ -12825,6 +13349,13 @@ fn render_ping(
                         ui.label(egui::RichText::new(t).color(c).strong());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(format!("{}  Copy", icon::COPY))
+                            .on_hover_text("Copy the ping text")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(p.raw().to_owned());
+                        }
                         ui.label(egui::RichText::new(format!("{ago} ago")).weak());
                     });
                 });
@@ -12885,6 +13416,13 @@ fn render_ping(
                     let to = target.as_deref().map(|t| format!(" {} {t}", icon::ARROW_RIGHT)).unwrap_or_default();
                     ui.label(egui::RichText::new(format!("{from}{to}")).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(format!("{}  Copy", icon::COPY))
+                            .on_hover_text("Copy the ping text")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(p.raw().to_owned());
+                        }
                         ui.label(egui::RichText::new(format!("{ago} ago")).weak());
                     });
                 });
@@ -13201,19 +13739,28 @@ fn intel_row(
                 }
 
                 // Structures mentioned (Keepstar, Fortizar, …) + distance off, if given.
+                // Show the structure's type render when we know it, else a turret icon.
                 for (name, dist) in &r.structures {
-                    let label = match dist {
-                        Some(d) => format!("{} {name}  {d}", icon::CASTLE_TURRET),
-                        None => format!("{} {name}", icon::CASTLE_TURRET),
+                    let text = match dist {
+                        Some(d) => format!("{name}  {d}"),
+                        None => name.clone(),
                     };
+                    let col = egui::Color32::from_rgb(0xc4, 0xb5, 0xfd);
+                    if let Some(tid) = crate::intel::structure_type_id(name) {
+                        let url = format!("https://images.evetech.net/types/{tid}/render?size=64");
+                        let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0));
+                        ui.add(egui::Button::image_and_text(img, egui::RichText::new(text).color(col).strong()))
+                            .on_hover_text("Structure");
+                        continue;
+                    }
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(0x2e, 0x24, 0x4a))
                         .inner_margin(egui::Margin::symmetric(6, 1))
                         .corner_radius(4.0)
                         .show(ui, |ui| {
                             ui.label(
-                                egui::RichText::new(label)
-                                    .color(egui::Color32::from_rgb(0xc4, 0xb5, 0xfd))
+                                egui::RichText::new(format!("{} {text}", icon::CASTLE_TURRET))
+                                    .color(col)
                                     .strong(),
                             );
                         })
@@ -13321,19 +13868,30 @@ fn intel_row(
                     }
                 }
 
-                // Ship panels with the real EVE hull icon (click -> ship window).
-                let ship_icon = 24.0_f32;
-                for sh in &r.ships {
-                    let url = format!("https://images.evetech.net/types/{}/icon?size=32", sh.id);
-                    let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(ship_icon));
-                    let mut panel = ui
-                        .add(egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()));
+                // Ship panel with the real EVE hull icon (or an Upwell structure's render);
+                // click -> ship window. Returns a click for the caller to record.
+                let ship_panel = |ui: &mut egui::Ui, sh: &crate::intel::DetectedShip| -> Option<IntelClick> {
+                    let url = if crate::intel::structure_name_by_type(sh.id).is_some() {
+                        format!("https://images.evetech.net/types/{}/render?size=64", sh.id)
+                    } else {
+                        format!("https://images.evetech.net/types/{}/icon?size=32", sh.id)
+                    };
+                    let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0));
+                    let mut panel =
+                        ui.add(egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()));
                     if let Some(d) = ship_details.get(&sh.id) {
                         let roles = ship_roles.get(&sh.id).map(|v| v.as_slice()).unwrap_or(&[]);
                         panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
                     }
-                    if panel.clicked() {
-                        clicked = Some(IntelClick::Ship(sh.id));
+                    panel.clicked().then_some(IntelClick::Ship(sh.id))
+                };
+                // zKill cards show the victim ship inside the kill badge (Killer > Victim > Ship),
+                // so render it there; other cards list ships here.
+                if !is_zkill {
+                    for sh in &r.ships {
+                        if let Some(c) = ship_panel(ui, sh) {
+                            clicked = Some(c);
+                        }
                     }
                 }
 
@@ -13459,7 +14017,7 @@ fn intel_row(
                         for (id, ship) in seen {
                             let url = format!("https://images.evetech.net/types/{id}/icon?size=32");
                             let img = egui::Image::new(url)
-                                .fit_to_exact_size(egui::Vec2::splat(ship_icon));
+                                .fit_to_exact_size(egui::Vec2::splat(24.0));
                             let mut panel = ui.add(egui::Button::image_and_text(
                                 img,
                                 egui::RichText::new(&ship).strong(),
@@ -13570,6 +14128,12 @@ fn intel_row(
                                         inf.victim_char,
                                         "Victim — click for zKill",
                                     );
+                                }
+                                // Victim ship / structure (Killer > Victim > Ship).
+                                for sh in &r.ships {
+                                    if let Some(c) = ship_panel(ui, sh) {
+                                        clicked = Some(c);
+                                    }
                                 }
                                 let lbl = egui::RichText::new(format!("{} zKill", icon::ARROW_SQUARE_OUT))
                                     .color(red)
