@@ -371,6 +371,10 @@ impl IntelState {
 
 const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
 
+/// Active pilots whose names embed intel keywords. Matched case-sensitively against the readable
+/// text so the keyword inside the name is never read as a status keyword. Extend as needed.
+const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon"];
+
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
     "gate", "camp", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
@@ -390,8 +394,15 @@ const PILOT_STOP: &[&str] = &[
     // Note: the pronoun "I" needs no entry — a 1-letter token already fails `name_part`
     // (len >= 2), and listing "i" could split a real name that contains a standalone "I".
     "hacking", "hack", "hacked", "ratting", "ratted", "missing", "guess",
-    // Status words ("system clean", "reported in X").
-    "clean", "reported",
+    // Status words ("system clean", "reported in X", "nothing yet").
+    "clean", "reported", "yet",
+    // Fitting talk ("50mn fit", "shield fit") — a prop-mod size or "fit" is never a pilot.
+    "50mn", "fit",
+    // Positional / quantity filler ("on grid", "off grid", "a few", "possible hostile").
+    "on", "grid", "ongrid", "offgrid", "few", "possible",
+    // Hot-drop / black-ops threat words — keywords, never pilots ("hot dropper", "blops").
+    "drop", "dropper", "droppers", "hotdrop", "hotdrops", "hotdropper", "hotdroppers",
+    "hotdropping", "blops", "blackops", "blackop",
     // Engagement descriptors ("good fight", "engaged on gate"). "combat" is covered above.
     "fight", "fights", "fighting", "engaged", "engage", "engaging",
     // "etc" / "etc." (the trailing dot is trimmed by the tokenizer).
@@ -514,7 +525,8 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "incoming" | "inc" | "primary" | "killed" | "podded"
                 | "wormhole" | "wormholes" | "hole" | "holes" | "wh"
                 | "bubbled" | "bubbles" | "bubbling" | "cloak" | "cloaked" | "cloaky"
-                | "cloaks" | "cloaking" | "decloak" | "decloaked" | "camped"
+                | "cloaks" | "cloaking" | "cloacked" | "cloack" | "cloacking"
+                | "decloak" | "decloaked" | "camped" | "camping"
                 | "ansi" | "ansiblex" | "jumpbridge" | "bridge" | "jump" | "jumps"
                 | "pls" | "plz"
                 | "dic" | "dics" | "dictor" | "dictors" | "interdictor" | "interdictors"
@@ -1549,11 +1561,18 @@ pub fn analyze_ctx(
         si_char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
     drop_subphrase_pilots(&mut pilots, &char_linked);
 
-    let pilot_tokens: std::collections::HashSet<String> = pilots
+    let mut pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
         .flat_map(|n| n.split_whitespace())
         .map(|w| w.to_lowercase())
         .collect();
+    // Active pilots whose names embed intel keywords (matched case-sensitively): their tokens are
+    // treated as a name, so the keyword inside can't spoof a status (e.g. a "cyno" alert).
+    for name in KEYWORD_NAME_PILOTS {
+        if display_text.contains(name) {
+            pilot_tokens.extend(name.split_whitespace().map(|w| w.to_lowercase()));
+        }
+    }
 
     // Wormhole signature code (e.g. "K162") named anywhere in the message.
     let wh_code =
@@ -1868,9 +1887,9 @@ pub fn analyze_ctx(
         .into_iter()
         .filter(|pn| {
             let words: Vec<&str> = pn.split_whitespace().collect();
-            if !words.is_empty() && words.iter().all(|w| ship_index.contains_key(&w.to_lowercase())) {
+            if !words.is_empty() && words.iter().all(|w| ship_of(&w.to_lowercase(), ship_index).is_some()) {
                 for w in &words {
-                    if let Some((id, name)) = ship_index.get(&w.to_lowercase()) {
+                    if let Some((id, name)) = ship_of(&w.to_lowercase(), ship_index) {
                         if !ships.iter().any(|sh| sh.id == *id)
                             && !reclassified.iter().any(|sh| sh.id == *id)
                         {
@@ -1914,6 +1933,12 @@ pub fn analyze_ctx(
     {
         let mut seen = std::collections::HashSet::new();
         pilots.retain(|p| seen.insert(p.to_lowercase()));
+    }
+    // Surface allow-listed keyword-named pilots (case-sensitive) if the heuristic missed them.
+    for name in KEYWORD_NAME_PILOTS {
+        if display_text.contains(name) && !pilots.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+            pilots.push((*name).to_string());
+        }
     }
     let (total_count, plus_count, name_number_skips) =
         parse_count(text, &consumed, systems, ship_index);
@@ -1960,7 +1985,7 @@ pub fn analyze_ctx(
         no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
-        camp: flagged(&lower_tokens, &pilot_tokens, &["camp", "gatecamp"]) || lower.contains("蹲"),
+        camp: flagged(&lower_tokens, &pilot_tokens, &["camp", "gatecamp", "camping", "camped", "gatecamping"]) || lower.contains("蹲"),
         help: flagged_exact(&lower_tokens, &pilot_tokens, &["help", "sos"])
             || lower.contains("need backup")
             || lower.contains("needs backup")
@@ -3835,6 +3860,17 @@ mod tests {
     }
 
     #[test]
+    fn plural_sabres_and_on_grid_not_pilots() {
+        let s = systems();
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("sabre".to_string(), (22456i64, "Sabre".to_string()))].into_iter().collect();
+        let r = analyze("Rancer 5 Sabres on grid", &s, &ships, &noknown(), 1, "ch", "Spai");
+        assert!(!r.pilots.iter().any(|p| p.to_lowercase().contains("sabres")), "sabres as pilot: {:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.to_lowercase().contains("grid")), "grid as pilot: {:?}", r.pilots);
+        assert!(r.ships.iter().any(|sh| sh.name == "Sabre"), "Sabre ship missing: {:?}", r.ships);
+    }
+
+    #[test]
     fn cyno_in_linked_name_not_a_status() {
         let s = Systems::new(sys_map(&[("1qz-y9", "1QZ-Y9", 30000720, -0.4)]), std::collections::HashMap::new());
         let txt = "DaymondXD Styxx > <url=showinfo:1373//2123218599>Clean cyno toon</url>  <url=showinfo:5//30000720>1QZ-Y9</url>";
@@ -3849,6 +3885,13 @@ mod tests {
             [("clean cyno toon".to_string(), 2123218599i64)].into_iter().collect();
         let r3 = analyze("1QZ-Y9 Clean cyno toon", &s, &noships(), &known, 1, "ch", "Spai");
         assert!(!r3.cyno, "known pilot's 'cyno' spoofed a cyno: pilots={:?}", r3.pilots);
+        // Plain-text, unknown to the cache, but on the case-sensitive active-pilot allowlist.
+        let r4 = analyze("1QZ-Y9 Clean cyno toon", &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(!r4.cyno, "allowlisted pilot's 'cyno' spoofed a cyno: pilots={:?}", r4.pilots);
+        assert!(r4.pilots.iter().any(|p| p == "Clean cyno toon"), "pilots: {:?}", r4.pilots);
+        // A real cyno with the exact-case name absent still fires.
+        let r5 = analyze("1QZ-Y9 clean cyno", &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(r5.cyno, "real cyno dropped");
     }
 
     #[test]

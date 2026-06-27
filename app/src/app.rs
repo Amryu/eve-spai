@@ -230,6 +230,7 @@ enum IntelClick {
     System(i64),
     Ship(i64),
     Pilot(String),
+    Dscan(String),
 }
 
 /// Which tab the map's right dock is showing (the mode panel, or docked system info).
@@ -475,6 +476,8 @@ pub struct SpaiApp {
     dscan_link_used: bool,
     dscan_unfocused_at: Option<std::time::Instant>,
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
+    /// D-scan viewer dialog (a clicked d-scan link, fetched + shown inline).
+    dscan_view: Option<DscanView>,
     /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
     /// poller and the intel watcher).
     wh_cache: Vec<crate::wormholes::Wormhole>,
@@ -957,6 +960,7 @@ impl SpaiApp {
             dscan_link_used: false,
             dscan_unfocused_at: None,
             dscan_share: std::sync::Arc::new(std::sync::Mutex::new(DscanShare::default())),
+            dscan_view: None,
             wh_cache: Vec::new(),
             wh_reloaded: None,
             wh_overlay: WhOverlay::default(),
@@ -1413,6 +1417,7 @@ impl SpaiApp {
                 self.pilot_window_open = true;
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
+            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ui.ctx()),
             None => {}
         }
     }
@@ -3644,6 +3649,7 @@ impl SpaiApp {
                 self.pilot_window_open = true;
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
+            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
             None => {}
         }
     }
@@ -4336,6 +4342,87 @@ impl SpaiApp {
             Some(crate::settings::RuleAction::Include) => true,
             Some(crate::settings::RuleAction::Exclude) => false,
             None => self.battle_in_tracked_area(b),
+        }
+    }
+
+    /// Open a clicked d-scan link: fetch + show it inline when it's a public dscan.info share,
+    /// otherwise (auth-gated or unknown host) open it in the browser as before.
+    fn open_dscan(&mut self, url: String, ctx: &egui::Context) {
+        if !url.contains("dscan.info") {
+            let _ = open::that(&url);
+            return;
+        }
+        let fetch = std::sync::Arc::new(std::sync::Mutex::new(DscanFetch::Loading));
+        self.dscan_view = Some(DscanView { url: url.clone(), fetch: fetch.clone() });
+        let ships = self.ship_index.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = fetch_dscan_ships(&url, ships.as_deref());
+            *fetch.lock().unwrap() = match result {
+                Some(v) if !v.is_empty() => DscanFetch::Ready(v),
+                _ => DscanFetch::Failed,
+            };
+            ctx.request_repaint();
+        });
+    }
+
+    /// The d-scan viewer dialog: hull counts from a fetched scan; click a hull for ship info.
+    fn dscan_view_dialog(&mut self, ctx: &egui::Context) {
+        use egui_phosphor::regular as icon;
+        let Some(view) = &self.dscan_view else { return };
+        let url = view.url.clone();
+        let state = view.fetch.lock().unwrap().snapshot();
+        let mut open_ship: Option<i64> = None;
+        let keep = Self::dialog_viewport(ctx, "dscan_view", "EVE Spai — D-scan", [340.0, 520.0], |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(format!("{}  Open on dscan.info", icon::ARROW_SQUARE_OUT)).clicked() {
+                    let _ = open::that(&url);
+                }
+            });
+            ui.separator();
+            match &state {
+                DscanFetch::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Fetching scan…");
+                    });
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+                }
+                DscanFetch::Failed => {
+                    ui.label(egui::RichText::new("Couldn't read this scan — open it on the site.").weak());
+                }
+                DscanFetch::Ready(ships) => {
+                    let total: u32 = ships.iter().map(|(_, _, n)| n).sum();
+                    ui.label(egui::RichText::new(format!("{} ships · {} types", total, ships.len())).weak());
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for (id, name, n) in ships {
+                            ui.horizontal(|ui| {
+                                hull_badge(ui, *id, 24.0);
+                                if ui
+                                    .add(egui::Label::new(
+                                        egui::RichText::new(name).color(ui.visuals().hyperlink_color),
+                                    )
+                                    .sense(egui::Sense::click()))
+                                    .on_hover_text("Ship info")
+                                    .clicked()
+                                {
+                                    open_ship = Some(*id);
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(egui::RichText::new(format!("×{n}")).strong());
+                                });
+                            });
+                        }
+                    });
+                }
+            }
+        });
+        if let Some(id) = open_ship {
+            self.open_ship(id);
+        }
+        if !keep {
+            self.dscan_view = None;
         }
     }
 
@@ -5394,6 +5481,7 @@ impl SpaiApp {
                 self.pilot_window_open = true;
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
+            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
             None => {}
         }
         // Save a moved position / resized size — but NOT on the open frame, where the window
@@ -10069,6 +10157,7 @@ impl SpaiApp {
                 self.pilot_window_open = true;
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
+            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
             None => {}
         }
         if out.show_on_map {
@@ -12296,6 +12385,7 @@ impl eframe::App for SpaiApp {
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
         self.battle_filter_dialog(&ctx);
+        self.dscan_view_dialog(&ctx);
         self.fleet_ping_window_ui(&ctx);
         self.routes_dialog(&ctx);
         self.safety_watch(&ctx);
@@ -12871,6 +12961,76 @@ struct DscanShare {
     uploading: bool,
     link: Option<String>,
     error: Option<String>,
+}
+
+/// A d-scan link being viewed inline (fetched on click).
+struct DscanView {
+    url: String,
+    fetch: std::sync::Arc<std::sync::Mutex<DscanFetch>>,
+}
+
+enum DscanFetch {
+    Loading,
+    /// (ship type id, name, count) — most numerous first.
+    Ready(Vec<(i64, String, u32)>),
+    Failed,
+}
+
+impl DscanFetch {
+    fn snapshot(&self) -> DscanFetch {
+        match self {
+            DscanFetch::Loading => DscanFetch::Loading,
+            DscanFetch::Failed => DscanFetch::Failed,
+            DscanFetch::Ready(v) => DscanFetch::Ready(v.clone()),
+        }
+    }
+}
+
+/// Fetch a public dscan.info share and tally its hulls. Format-agnostic: each line is split on
+/// tabs and any column that resolves to a known hull is counted (handles the in-game and stored
+/// column orders). Returns None when nothing parseable came back (caller opens the site instead).
+fn fetch_dscan_ships(
+    url: &str,
+    ship_index: Option<&std::collections::HashMap<String, (i64, String)>>,
+) -> Option<Vec<(i64, String, u32)>> {
+    let idx = ship_index?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .ok()?;
+    let mut candidates = vec![url.to_string()];
+    if url.contains("/v/") {
+        candidates.push(url.replace("/v/", "/")); // some shares serve raw without /v/
+    }
+    for u in candidates {
+        let Ok(resp) = client.get(&u).send() else { continue };
+        let Ok(body) = resp.error_for_status().and_then(|r| r.text()) else { continue };
+        let mut counts: std::collections::HashMap<i64, (String, u32)> = std::collections::HashMap::new();
+        for line in body.lines() {
+            if !line.contains('\t') {
+                continue;
+            }
+            for col in line.split('\t') {
+                let col = col.trim();
+                if col.len() < 3 {
+                    continue;
+                }
+                if let Some((id, name)) = idx.get(&col.to_lowercase()) {
+                    let e = counts.entry(*id).or_insert_with(|| (name.clone(), 0));
+                    e.1 += 1;
+                    break;
+                }
+            }
+        }
+        if !counts.is_empty() {
+            let mut out: Vec<(i64, String, u32)> =
+                counts.into_iter().map(|(id, (name, n))| (id, name, n)).collect();
+            out.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+            return Some(out);
+        }
+    }
+    None
 }
 
 /// Stable hash of a string (to detect clipboard changes).
@@ -13994,6 +14154,8 @@ fn intel_row(
     let show_raw = !is_zkill && ui.ctx().data(|d| d.get_temp::<bool>(toggle_id).unwrap_or(false));
 
     let mut clicked: Option<IntelClick> = None;
+    // Set when a link badge (kill/BR/dscan) consumed the click, so it doesn't also toggle raw view.
+    let mut consumed = false;
     let resp = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(8, 4))
         .fill(card_fill)
@@ -14498,6 +14660,7 @@ fn intel_row(
                                 if ui.add(egui::Button::new(lbl)).clicked() {
                                     // Open the killmail on zKill directly (no in-app kill window).
                                     let _ = open::that(&link.url);
+                                    consumed = true;
                                 }
                                 if let Some(inf) = &info {
                                     if inf.value > 0.0 {
@@ -14517,18 +14680,19 @@ fn intel_row(
                                 .clicked()
                             {
                                 let _ = open::that(&link.url);
+                                consumed = true;
                             }
                         }
                         LinkKind::Dscan => {
                             if ui
                                 .add(egui::Button::new(
-                                    egui::RichText::new(format!("{} dscan", icon::RADIO))
-                                        .color(accent),
+                                    egui::RichText::new(format!("{} dscan", icon::SCAN)).color(accent),
                                 ))
                                 .on_hover_text(&link.url)
                                 .clicked()
                             {
-                                let _ = open::that(&link.url);
+                                // Fetched + shown in a dialog when public; opens the site otherwise.
+                                clicked = Some(IntelClick::Dscan(link.url.clone()));
                             }
                         }
                     }
@@ -14617,6 +14781,7 @@ fn intel_row(
     // the raw message. Detected via input (not a card-wide click widget) so it doesn't steal
     // the inner links' clicks — the card frame would otherwise sit on top of them.
     let bg_click = clicked.is_none()
+        && !consumed
         && !is_zkill
         && ui.input(|i| {
             i.pointer.primary_clicked()
