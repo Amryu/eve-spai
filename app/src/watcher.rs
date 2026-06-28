@@ -157,12 +157,14 @@ fn scan(
                             cache.queue(&w);
                         }
                     }
-                    eprintln!(
-                        "[pilot] parsed '{}': pilots={:?} char-linked={:?}",
-                        m.author,
-                        report.pilots,
-                        report.char_ids.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                    );
+                    if cfg!(debug_assertions) {
+                        eprintln!(
+                            "[pilot] parsed '{}': pilots={:?} char-linked={:?}",
+                            m.author,
+                            report.pilots,
+                            report.char_ids.iter().map(|(n, _)| n).collect::<Vec<_>>()
+                        );
+                    }
                 }
 
                 // Successive messages from the same reporter (same/no system, ≤1 min)
