@@ -6092,9 +6092,16 @@ impl SpaiApp {
                     }
                 }
             }
-            edge_len.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let terr =
-                edge_len.get(edge_len.len() / 2).copied().unwrap_or(dot * 6.0).max(dot * 3.0) * 0.72;
+            // Median via quickselect (O(n)) instead of a full sort — same value, no full order.
+            let terr = if edge_len.is_empty() {
+                (dot * 6.0).max(dot * 3.0) * 0.72
+            } else {
+                let mid = edge_len.len() / 2;
+                edge_len.select_nth_unstable_by(mid, |a, b| {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                edge_len[mid].max(dot * 3.0) * 0.72
+            };
             // Muted, opaque region colour (keeps dots/labels readable on top).
             let region = |c: egui::Color32| {
                 egui::Color32::from_rgb(
