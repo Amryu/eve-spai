@@ -857,6 +857,20 @@ impl Store {
     /// (so a hole reported from both sides is one connection, not two); otherwise the
     /// (system, type, dest) dedup key is used. Returns the row id.
     pub fn upsert_wormhole(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
+        // The find-then-insert/update below is a read-modify-write; two scout/watcher
+        // connections could both miss the row and both INSERT, and the loser's INSERT would
+        // hit the dedup UNIQUE constraint and be silently dropped. BEGIN IMMEDIATE takes the
+        // write lock up front so concurrent upserts serialize. The body has no panic paths,
+        // so the connection can't be left mid-transaction.
+        let in_tx = self.conn.execute_batch("BEGIN IMMEDIATE").is_ok();
+        let id = self.upsert_wormhole_locked(incoming);
+        if in_tx {
+            let _ = self.conn.execute_batch("COMMIT");
+        }
+        id
+    }
+
+    fn upsert_wormhole_locked(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
         // Signature-based pairing against either endpoint.
         if let Some(sig) = incoming.signature.as_deref().filter(|s| !s.is_empty()) {
             if let Some(mut near) = self.wormhole_where(
