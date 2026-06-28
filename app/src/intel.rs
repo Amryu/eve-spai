@@ -649,22 +649,6 @@ fn is_time_token(t: &str) -> bool {
 /// A lower/digit-leading handle ("0xtomorrow", "xX1Mortis"): contains a digit and a
 /// run of at least three letters, so it is name-shaped even without a Title-case first
 /// letter. Excludes system codes (hyphen, no letters) and ISK/count tokens like "334m".
-fn is_handle_like(t: &str) -> bool {
-    if looks_like_system_code(t) || is_time_token(t) || !t.chars().any(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    let mut cur = 0usize;
-    let mut max = 0usize;
-    for c in t.chars() {
-        if c.is_ascii_alphabetic() {
-            cur += 1;
-            max = max.max(cur);
-        } else {
-            cur = 0;
-        }
-    }
-    max >= 3
-}
 
 /// A single token distinctive enough to be a name candidate on its own (worth an
 /// ESI lookup): a hyphen/apostrophe, internal capital ("SokoleOko"), or a digit —
@@ -2975,12 +2959,13 @@ mod tests {
         let r = analyze("0xtomorrow AGCP-I", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.pilots.iter().any(|p| p == "0xtomorrow"), "pilots={:?}", r.pilots);
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("AGCP-I")), "pilots={:?}", r.pilots);
-        // ISK/count tokens and system abbreviations stay out.
-        assert!(!is_handle_like("334m") && !is_handle_like("88A") && !is_handle_like("1DH-SX"));
+        // ISK/count tokens and system abbreviations may be candidates but ESI confirms no
+        // character, so they never surface as pilots.
+        let junk = analyze("334m 88A 1DH-SX in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(esi_resolve(&junk.pilots, &[]).is_empty(), "junk pilots: {:?}", junk.pilots);
         // Time tokens are not names ("4min" = 4 minutes for an ESS post).
         assert!(is_time_token("4min") && is_time_token("30s") && is_time_token("2h"));
-        assert!(!is_handle_like("4min") && !is_time_token("0xtomorrow") && !is_time_token("c137m"));
-        assert!(is_handle_like("0xtomorrow"));
+        assert!(!is_time_token("0xtomorrow") && !is_time_token("c137m"));
     }
 
     #[test]
