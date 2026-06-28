@@ -69,12 +69,17 @@ pub fn spawn(
         // (the scan was O(n²) during catch-up). Kept in sync on every push/eviction.
         let mut buffer_ids: std::collections::HashSet<i64> =
             buffer.iter().map(|e| e.kill_id).collect();
+        // Reuse unchanged battles across re-clusters: only battles whose kill set changed are
+        // rebuilt (side inference is the expensive part), so a few new kills don't re-infer the
+        // whole day's battles. Keyed by the battle's kill-id set hash.
+        let mut battle_cache: HashMap<u64, battle::Battle> = HashMap::new();
         if !buffer.is_empty() {
-            let clustered = battle::cluster(
+            let clustered = battle::cluster_cached(
                 &buffer,
                 battle::BATTLE_WINDOW_SECS,
                 battle::BATTLE_MAX_JUMPS,
                 |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
+                &mut battle_cache,
             );
             // Keep only battles that touch the watched area (>= 1 anchored kill); candidate-only
             // clusters elsewhere are dropped.
@@ -205,11 +210,12 @@ pub fn spawn(
                 if buffer.len() != before {
                     buffer_ids = buffer.iter().map(|e| e.kill_id).collect();
                 }
-                let clustered = battle::cluster(
+                let clustered = battle::cluster_cached(
                     &buffer,
                     battle::BATTLE_WINDOW_SECS,
                     battle::BATTLE_MAX_JUMPS,
                     |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
+                    &mut battle_cache,
                 );
                 // Keep only battles that touch the watched area (>= 1 anchored kill).
                 *battles.lock().unwrap() =

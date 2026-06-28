@@ -356,6 +356,55 @@ pub fn cluster(
     max_jumps: u32,
     dist: impl Fn(i64, i64) -> Option<u32>,
 ) -> Vec<Battle> {
+    let mut battles: Vec<Battle> = group_indices(engagements, window, max_jumps, dist)
+        .into_iter()
+        .map(|idxs| build_battle(idxs.iter().map(|&i| engagements[i].clone()).collect()))
+        .collect();
+    battles.sort_by(|a, b| b.end.cmp(&a.end)); // newest first
+    battles
+}
+
+/// Like [`cluster`], but reuses a battle from `cache` whenever its exact engagement set (kill ids)
+/// is unchanged — so a re-cluster after a handful of new kills only rebuilds the battles that
+/// actually changed instead of re-inferring every side every time. `cache` is replaced with the
+/// new generation (stale battles drop out).
+pub fn cluster_cached(
+    engagements: &[Engagement],
+    window: i64,
+    max_jumps: u32,
+    dist: impl Fn(i64, i64) -> Option<u32>,
+    cache: &mut HashMap<u64, Battle>,
+) -> Vec<Battle> {
+    use std::hash::{Hash, Hasher};
+    let mut next: HashMap<u64, Battle> = HashMap::new();
+    let mut battles: Vec<Battle> = group_indices(engagements, window, max_jumps, dist)
+        .into_iter()
+        .map(|idxs| {
+            let mut kids: Vec<i64> = idxs.iter().map(|&i| engagements[i].kill_id).collect();
+            kids.sort_unstable();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            kids.hash(&mut h);
+            let sig = h.finish();
+            let b = cache.get(&sig).cloned().unwrap_or_else(|| {
+                build_battle(idxs.iter().map(|&i| engagements[i].clone()).collect())
+            });
+            next.insert(sig, b.clone());
+            b
+        })
+        .collect();
+    *cache = next;
+    battles.sort_by(|a, b| b.end.cmp(&a.end)); // newest first
+    battles
+}
+
+/// Partition engagement indices into battles: two engagements chain when they share a participant
+/// and are within `window` seconds and `max_jumps` jumps (transitively).
+fn group_indices(
+    engagements: &[Engagement],
+    window: i64,
+    max_jumps: u32,
+    dist: impl Fn(i64, i64) -> Option<u32>,
+) -> Vec<Vec<usize>> {
     let n = engagements.len();
     // Belligerent ids per engagement (victim + attackers). Two engagements only chain into the
     // same battle if they share a participant — otherwise unrelated fights close in space and
@@ -408,14 +457,7 @@ pub fn cluster(
     for i in 0..n {
         groups.entry(uf.find(i)).or_default().push(i);
     }
-
-    let mut battles: Vec<Battle> = groups
-        .into_values()
-        .map(|idxs| build_battle(idxs.iter().map(|&i| engagements[i].clone()).collect()))
-        .collect();
-    // Newest battles first.
-    battles.sort_by(|a, b| b.end.cmp(&a.end));
-    battles
+    groups.into_values().collect()
 }
 
 fn build_battle(mut engs: Vec<Engagement>) -> Battle {
@@ -798,6 +840,31 @@ mod tests {
         let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
         assert_eq!(battles.len(), 1);
         assert_eq!(battles[0].kills, 2);
+    }
+
+    #[test]
+    fn cluster_cached_matches_cluster_and_reuses() {
+        let engs = vec![
+            eng(1, 0, 1, "Red", "Blue"),
+            eng(2, 120, 1, "Red", "Blue"),
+            eng(3, 5000, 3, "Green", "Gold"), // separate battle (far in time)
+        ];
+        let plain = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let mut cache = std::collections::HashMap::new();
+        let first = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist, &mut cache);
+        // Same partition (kills + side counts) as the uncached clustering, and the cache holds
+        // one entry per battle so the next pass can reuse the unchanged ones.
+        let sig = |bs: &[Battle]| {
+            let mut v: Vec<(usize, usize)> = bs.iter().map(|b| (b.kills, b.sides.len())).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(sig(&first), sig(&plain));
+        assert_eq!(cache.len(), plain.len());
+        // A second pass over the SAME engagements yields the same result and keeps the cache stable.
+        let second = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist, &mut cache);
+        assert_eq!(sig(&second), sig(&plain));
+        assert_eq!(cache.len(), plain.len());
     }
 
     #[test]
