@@ -61,6 +61,10 @@ pub fn spawn(
             Some(s) => s.load_engagements(chrono::Utc::now().timestamp() - ENGAGEMENT_TTL),
             None => Vec::new(),
         };
+        // Kill ids in `buffer`, for O(1) dedup instead of an O(n) scan per incoming kill
+        // (the scan was O(n²) during catch-up). Kept in sync on every push/eviction.
+        let mut buffer_ids: std::collections::HashSet<i64> =
+            buffer.iter().map(|e| e.kill_id).collect();
         if !buffer.is_empty() {
             let clustered = battle::cluster(
                 &buffer,
@@ -101,7 +105,7 @@ pub fn spawn(
                         retries = 0;
                         seq = Some(s + 1);
                         if let Some(engagement) = eng {
-                            if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
+                            if buffer_ids.insert(engagement.kill_id) {
                                 if let Some(s) = &store {
                                     s.save_engagement(&engagement);
                                 }
@@ -158,7 +162,7 @@ pub fn spawn(
                         .collect()
                 };
                 for id in posted {
-                    if seen_links.contains(&id) || buffer.iter().any(|e| e.kill_id == id) {
+                    if seen_links.contains(&id) || buffer_ids.contains(&id) {
                         continue;
                     }
                     seen_links.insert(id);
@@ -166,6 +170,7 @@ pub fn spawn(
                         if let Some(s) = &store {
                             s.save_engagement(&eng);
                         }
+                        buffer_ids.insert(eng.kill_id);
                         buffer.push(eng);
                         changed = true;
                     }
@@ -183,7 +188,11 @@ pub fn spawn(
                 let now = chrono::Utc::now().timestamp();
                 // The live view clusters only the last day; persisted engagements are kept for
                 // the full searchable history (see the battles "Full history" view).
+                let before = buffer.len();
                 buffer.retain(|e| now - e.time <= ENGAGEMENT_TTL);
+                if buffer.len() != before {
+                    buffer_ids = buffer.iter().map(|e| e.kill_id).collect();
+                }
                 let clustered = battle::cluster(
                     &buffer,
                     battle::BATTLE_WINDOW_SECS,
