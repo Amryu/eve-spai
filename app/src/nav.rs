@@ -90,7 +90,7 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[Vie
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             ui.label(
-                egui::RichText::new(format!("{}  EVE SPAI", icon::DETECTIVE))
+                egui::RichText::new("EVE SPAI")
                     .color(accent)
                     .strong()
                     .size(16.0),
