@@ -93,7 +93,12 @@ longer span is still pending. No "refuse all-singles" guard — `A`+`B`+`C` is a
 1. Run `cover` on each blob → the confirmed pilot names. **Reserve** their token offsets.
 2. Over the **unreserved** tokens only, parse:
    - **systems / gates** — a candidate system whose tokens weren't reserved by a name is a real
-     system (`Bob in Jita` → Jita; `Jita Trader` → Jita reserved, no system).
+     system (`Bob in Jita` → Jita; `Jita Trader` → Jita reserved, no system). **If the only
+     system token is ambiguous (held inside a name blob), the report's location is *held back*
+     until ESI resolves the blob** — rare, but it happens (`Jita Trader` with no other system).
+     The card shows no location (and the `…` pilot placeholder) until the verdict arrives, then
+     fills in either the pilot (name claimed the token) or the system (name rejected). A report
+     with no resolved location yet is parked, not dropped.
    - **status keywords** — two classes:
      - *Soft* (clear / nv / status / eyes …): fire only from **unreserved** tokens, so
        `The Bubble Boy`-style names don't spoof them and a noise blob can't silence a real one.
