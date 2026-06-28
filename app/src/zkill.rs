@@ -460,7 +460,7 @@ fn poll(
     resolve_names(client, &pkg.killmail, names);
 
     // A kill scored 100% by NPCs (no capsuleer attacker) isn't part of a player battle.
-    let attackers = attackers_of(&pkg.killmail, names);
+    let attackers = attackers_of(&pkg.killmail, names, ship_ids);
     if attackers.is_empty() {
         return Poll::Got(None);
     }
@@ -586,18 +586,33 @@ fn is_npc_attacker(c: &Combatant) -> bool {
 /// Build the attacker list (capsuleers and player structures only), carrying ship, pilot and
 /// final-blow for the battle roster. NPC attackers are dropped, so the kill is attributed to
 /// the remaining player side(s), not to whatever rat happened to land the final blow.
-fn attackers_of(km: &Killmail, names: &HashMap<i64, String>) -> Vec<Attacker> {
+fn attackers_of(
+    km: &Killmail,
+    names: &HashMap<i64, String>,
+    ship_ids: &std::collections::HashSet<i64>,
+) -> Vec<Attacker> {
     km.attackers
         .iter()
         .filter(|a| !is_npc_attacker(a))
         .map(|a| Attacker {
             party: party_of(a, names),
             char_id: a.character_id.unwrap_or(0),
-            ship: a.ship_type_id.unwrap_or(0),
+            ship: attacker_ship(a, ship_ids),
             pilot: pilot_of(a, names),
             final_blow: a.final_blow,
         })
         .collect()
+}
+
+/// The hull an attacker flew. ESI often omits `ship_type_id` and instead records the ship in
+/// `weapon_type_id` (e.g. a smartbombing or ramming Praxis), which would otherwise show as a
+/// blank "?" hull. Fall back to the weapon when it is itself a listed hull; a real module/fighter
+/// weapon (a launcher, a warp scrambler) is ignored, leaving the hull genuinely unknown (0).
+fn attacker_ship(a: &Combatant, ship_ids: &std::collections::HashSet<i64>) -> i64 {
+    a.ship_type_id
+        .filter(|&s| s != 0)
+        .or_else(|| a.weapon_type_id.filter(|&w| is_listed_hull(w, ship_ids)))
+        .unwrap_or(0)
 }
 
 #[derive(Deserialize)]
@@ -654,7 +669,7 @@ fn fetch_posted_kill(
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
     resolve_names(client, &km, names);
-    let attackers = attackers_of(&km, names);
+    let attackers = attackers_of(&km, names, ship_ids);
     if attackers.is_empty() {
         return None; // scored 100% by NPCs
     }
@@ -766,5 +781,19 @@ mod tests {
         assert!(!is_npc_attacker(&parse(r#"{"character_id":95538921,"corporation_id":1000127}"#)));
         // Player-owned structure: no character, but a player corp (>= 98M).
         assert!(!is_npc_attacker(&parse(r#"{"corporation_id":98000001}"#)));
+    }
+
+    #[test]
+    fn attacker_ship_falls_back_to_weapon_hull() {
+        let parse = |j: &str| -> Combatant { serde_json::from_str(j).unwrap() };
+        let hulls: std::collections::HashSet<i64> = [47466].into_iter().collect(); // Praxis
+        // ship_type_id present → used directly.
+        assert_eq!(attacker_ship(&parse(r#"{"ship_type_id":587}"#), &hulls), 587);
+        // ship_type_id absent but weapon_type_id is a listed hull (Praxis) → recovered.
+        assert_eq!(attacker_ship(&parse(r#"{"weapon_type_id":47466}"#), &hulls), 47466);
+        // ship_type_id absent and weapon is a module (not a hull) → genuinely unknown (0).
+        assert_eq!(attacker_ship(&parse(r#"{"weapon_type_id":448}"#), &hulls), 0);
+        // Nothing at all → 0.
+        assert_eq!(attacker_ship(&parse(r#"{"character_id":3}"#), &hulls), 0);
     }
 }
