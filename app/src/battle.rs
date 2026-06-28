@@ -486,9 +486,6 @@ fn build_battle(mut engs: Vec<Engagement>) -> Battle {
     }
 }
 
-/// Number of kills between two parties (either direction) that marks a *real* fight rather than
-/// stray friendly fire — below this they may end up on the same side.
-const SIGNIF: u32 = 2;
 
 /// Partition the belligerents into sides. Allies are parties that fought together and didn't
 /// significantly shoot each other; sides are then merged by shared aggression ("we both fought
@@ -533,78 +530,62 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
     let mutual = |a: usize, b: usize| {
         hostility.get(&(a, b)).copied().unwrap_or(0) + hostility.get(&(b, a)).copied().unwrap_or(0)
     };
-    // Distinct party pairs that ever interacted, with their (fixed) mutual strength. Hostility is
-    // sparse, so iterating these is far cheaper than the O(n²) all-pairs scan the fixpoint below
-    // would otherwise repeat every pass.
-    let edges: Vec<(usize, usize, u32)> = {
-        let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
-        for &(a, b) in hostility.keys() {
-            seen.insert((a.min(b), a.max(b)));
-        }
-        seen.into_iter().map(|(a, b)| (a, b, mutual(a, b))).collect()
+    // Partition into sides by AGGLOMERATIVE NET ALLIANCE. Two parties belong together when they
+    // fought *together* at least as much as they fought *each other*: the pairwise score is
+    // (co-attacks − mutual kills). Repeatedly merge the components with the highest score while it
+    // stays ≥ 0; stop once every remaining pair is net-hostile. Because the strongest allies
+    // coalesce first, a stray cross-side kill-steal (one shared killmail) can never bridge two
+    // coalitions — at the coalition level their mutual hostility dwarfs the lone co-attack, so the
+    // score is deeply negative and they stay apart. A near-neutral straggler (only a victim, say)
+    // folds into the side it is not hostile to rather than splintering into its own "side".
+    let net_pair = |a: usize, b: usize| -> i64 {
+        let (lo, hi) = (a.min(b), a.max(b));
+        coattack.get(&(lo, hi)).copied().unwrap_or(0) as i64 - mutual(a, b) as i64
     };
-    // Hard-enemy party pairs (fought ≥ SIGNIF) — two of these must never share a side.
-    let hard_pairs: Vec<(usize, usize)> =
-        edges.iter().filter(|&&(_, _, m)| m >= SIGNIF).map(|&(a, b, _)| (a, b)).collect();
-
-    // 1) Union co-attackers that aren't significant enemies — STRONGEST co-attack first so the real
-    //    coalitions coalesce before any weak (kill-steal) co-attack is considered, and NEVER unite a
-    //    pair whose components are already hard enemies. A single shared killmail across two
-    //    overwhelmingly-hostile coalitions must not bridge them into one side.
-    let mut uf = UnionFind::new(n.max(1));
-    let mut allies: Vec<((usize, usize), u32)> =
-        coattack.into_iter().filter(|&((a, b), _)| mutual(a, b) < SIGNIF).collect();
-    allies.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
-    for ((a, b), _) in allies {
-        let (ra, rb) = (uf.find(a), uf.find(b));
-        if ra != rb && !unites_enemies(&mut uf, ra, rb, &hard_pairs) {
-            uf.union(a, b);
+    let mut net = vec![vec![0i64; n]; n];
+    for a in 0..n {
+        for b in (a + 1)..n {
+            let v = net_pair(a, b);
+            net[a][b] = v;
+            net[b][a] = v;
         }
     }
-    // 2) Merge components that share a common enemy and aren't enemies of each other (repeat to
-    //    a fixpoint so "A fought X, B fought X" chains collapse into one side).
+    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let mut alive = vec![true; n];
     loop {
-        // Two enemy views per component: `hard` (fought ≥ SIGNIF, marks genuine opponents we must
-        // not merge) and `any` (shot at all, a shared aggression target). Groups that share an
-        // aggression target and didn't significantly fight each other are the same side — this is
-        // what merges alliance-less players (each in their own NPC corp) who each landed a hit or
-        // two on the same enemy, instead of splitting them into many one-corp "sides".
-        let mut hard: HashMap<usize, BTreeSet<usize>> = HashMap::new();
-        let mut any: HashMap<usize, BTreeSet<usize>> = HashMap::new();
-        for &(a, b, m) in &edges {
-            let (ra, rb) = (uf.find(a), uf.find(b));
-            if m >= 1 {
-                any.entry(ra).or_default().insert(rb);
-                any.entry(rb).or_default().insert(ra);
+        let mut best: Option<(usize, usize)> = None;
+        let mut best_net = -1i64; // accept the largest score that is ≥ 0
+        for i in 0..n {
+            if !alive[i] {
+                continue;
             }
-            if m >= SIGNIF {
-                hard.entry(ra).or_default().insert(rb);
-                hard.entry(rb).or_default().insert(ra);
-            }
-        }
-        let roots: Vec<usize> = (0..n).map(|i| uf.find(i)).collect::<BTreeSet<_>>().into_iter().collect();
-        let mut merged = false;
-        'outer: for i in 0..roots.len() {
-            for j in (i + 1)..roots.len() {
-                let (ra, rb) = (roots[i], roots[j]);
-                let ha = hard.get(&ra).cloned().unwrap_or_default();
-                let hb = hard.get(&rb).cloned().unwrap_or_default();
-                let are_enemies = ha.contains(&rb) || hb.contains(&ra);
-                let aa = any.get(&ra).cloned().unwrap_or_default();
-                let ab = any.get(&rb).cloned().unwrap_or_default();
-                let common_enemy = aa.intersection(&ab).next().is_some();
-                if !are_enemies && common_enemy {
-                    uf.union(ra, rb);
-                    merged = true;
-                    break 'outer;
+            for j in (i + 1)..n {
+                if alive[j] && net[i][j] >= 0 && net[i][j] > best_net {
+                    best_net = net[i][j];
+                    best = Some((i, j));
                 }
             }
         }
-        if !merged {
-            break;
+        let Some((i, j)) = best else { break };
+        let moved = std::mem::take(&mut members[j]);
+        members[i].extend(moved);
+        alive[j] = false;
+        for k in 0..n {
+            if alive[k] && k != i {
+                net[i][k] += net[j][k];
+                net[k][i] = net[i][k];
+            }
         }
     }
-    let root: Vec<usize> = (0..n).map(|i| uf.find(i)).collect();
+    // Component representative per party (the surviving index of its component).
+    let mut root = vec![0usize; n];
+    for i in 0..n {
+        if alive[i] {
+            for &m in &members[i] {
+                root[m] = i;
+            }
+        }
+    }
 
     #[derive(Default)]
     struct Agg {
@@ -675,16 +656,6 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
         (b.kills + b.losses).cmp(&(a.kills + a.losses)).then_with(|| tiebreak(a).cmp(&tiebreak(b)))
     });
     out
-}
-
-/// True if uniting components `ra` and `rb` would put two hard-enemy parties (mutual ≥ SIGNIF)
-/// on the same side — the invariant that must never be violated, so overwhelming hostility
-/// always keeps the belligerents on opposite sides.
-fn unites_enemies(uf: &mut UnionFind, ra: usize, rb: usize, hard_pairs: &[(usize, usize)]) -> bool {
-    hard_pairs.iter().any(|&(x, y)| {
-        let (fx, fy) = (uf.find(x), uf.find(y));
-        (fx == ra && fy == rb) || (fx == rb && fy == ra)
-    })
 }
 
 struct UnionFind {
@@ -865,6 +836,33 @@ mod tests {
         let second = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist, &mut cache);
         assert_eq!(sig(&second), sig(&plain));
         assert_eq!(cache.len(), plain.len());
+    }
+
+    #[test]
+    fn real_3usx_fight_infers_two_sides() {
+        // A real >50B-ISK fight in 3USX-F (411 killmails). The previous union-find inference
+        // fragmented it into FIVE sides (two coalitions plus stranded stragglers); net-alliance
+        // clustering recovers the two belligerent coalitions. Fixture: one line per kill — first id
+        // is the victim party, the rest are attacker parties (real alliance/corp ids).
+        let data = include_str!("battle_3usx_fight.txt");
+        let engs: Vec<Engagement> = data
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                let ids: Vec<i64> = line.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+                let (&victim, attackers) = ids.split_first()?;
+                Some(Engagement {
+                    victim: party(victim, &victim.to_string()),
+                    victim_char: victim,
+                    attackers: attackers.iter().map(|&id| atk(party(id, &id.to_string()))).collect(),
+                    ..eng(i as i64, i as i64, 1, "v", "v")
+                })
+            })
+            .collect();
+        let sides = infer_sides(&engs);
+        let sizes: Vec<usize> = sides.iter().map(|s| s.parties.len()).collect();
+        assert_eq!(sides.len(), 2, "expected two coalitions, got sizes {sizes:?}");
+        assert!(sizes.iter().all(|&n| n >= 3), "a side is a lone straggler: {sizes:?}");
     }
 
     #[test]
