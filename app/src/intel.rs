@@ -1346,23 +1346,31 @@ pub fn parse_motd_regions(motd: &str, known: &std::collections::HashSet<String>)
         Some(i) => &motd[i + "Channel MOTD:".len()..],
         None => motd,
     };
-    let lc = body.to_lowercase();
-    let lcb = lc.as_bytes();
-    let orig = body.as_bytes();
+    // Scan the original bytes with a case-insensitive compare so the boundary checks
+    // read original case at correct offsets (lowercasing isn't byte-length-preserving for
+    // non-ASCII MOTD prose, which would desync a separate lowercased copy). Region names
+    // are ASCII, so byte indexing here never splits or panics on multi-byte chars.
+    let bb = body.as_bytes();
     let mut hits: Vec<(usize, &String)> = Vec::new();
     for region in known {
-        let r = region.as_str();
-        let mut from = 0;
-        while let Some(rel) = lc[from..].find(r) {
-            let at = from + rel;
-            let before_ok = at == 0 || !(lcb[at - 1] as char).is_ascii_alphabetic();
-            let after = at + r.len();
-            let after_ok = after >= orig.len() || !(orig[after] as char).is_ascii_lowercase();
-            if before_ok && after_ok {
-                hits.push((at, region));
-                break;
+        let r = region.as_bytes();
+        if r.is_empty() {
+            continue;
+        }
+        let mut at = 0;
+        while at + r.len() <= bb.len() {
+            if bb[at..at + r.len()].eq_ignore_ascii_case(r) {
+                let before_ok = at == 0 || !(bb[at - 1] as char).is_ascii_alphabetic();
+                let after = at + r.len();
+                // A lower-case letter right after means we're mid-word ("Catchy"); an
+                // upper-case letter or non-letter is a new token ("CATCHPlease").
+                let after_ok = after >= bb.len() || !(bb[after] as char).is_ascii_lowercase();
+                if before_ok && after_ok {
+                    hits.push((at, region));
+                    break;
+                }
             }
-            from = at + 1;
+            at += 1;
         }
     }
     hits.sort_by_key(|(pos, _)| *pos);
@@ -2955,6 +2963,10 @@ mod tests {
         assert_eq!(parse_motd_regions(glued, &known), vec!["tenerifis", "immensea", "impass", "catch"]);
         // Unknown segments ("Cache" absent from `known`) are ignored.
         assert_eq!(parse_motd_regions("Channel MOTD:  Wicked Creek //  Cache", &known), vec!["wicked creek"]);
+        // Non-ASCII prose before a region must not desync byte offsets (regression: the
+        // boundary check used to index the original string with lowercased offsets).
+        let utf8 = "Channel MOTD: Привет диплома // CATCH glued";
+        assert_eq!(parse_motd_regions(utf8, &known), vec!["catch"]);
     }
 
     #[test]
