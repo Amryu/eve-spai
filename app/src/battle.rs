@@ -385,9 +385,14 @@ pub fn cluster(
             if (a.time - b.time).abs() >= window {
                 continue;
             }
+            // Shared participant is the cheap, deciding test — apply it before the (potentially
+            // expensive) jump-distance BFS, and skip pairs already in the same battle.
+            if parties[i].is_disjoint(&parties[j]) || uf.find(i) == uf.find(j) {
+                continue;
+            }
             let close = a.system_id == b.system_id
                 || dist(a.system_id, b.system_id).is_some_and(|d| d <= max_jumps);
-            if close && !parties[i].is_disjoint(&parties[j]) {
+            if close {
                 uf.union(i, j);
             }
         }
