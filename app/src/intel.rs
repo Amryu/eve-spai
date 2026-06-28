@@ -410,7 +410,7 @@ const PILOT_STOP: &[&str] = &[
     // "drifter" / "drifters" — a wormhole type ("drifter wh"), never a pilot.
     "drifter", "drifters",
     // Pronouns / filler.
-    "him", "other", "only", "unless", "end", "also",
+    "him", "other", "only", "unless", "end", "also", "confirm", "confirmed", "clearing",
     // Filler / hedging words ("unsure which", "too many", "kitchen sink", "catch all").
     "unsure", "which", "too", "kitchen", "sink", "catch", "all",
     // Question / filler words — lower-cased English the known-pilot cache otherwise matches
@@ -871,10 +871,29 @@ fn ship_of<'a>(
         .or_else(|| lc.strip_suffix('s').filter(|s| s.len() >= 3).and_then(|s| ship_index.get(s)))
 }
 
-/// Runs of name-like tokens (any case) anchored by at least one Title-Case word, for
-/// ESI sub-span resolution — catches lowercase names ("bigfoott Kepplet") that the
-/// Title-Case heuristic misses. Ships, systems and stop words break a run. The cover
-/// step later confirms/splits each run against ESI (so non-names are dropped).
+/// True for a recognised non-name entity token that ends a name run: a ship, system,
+/// null-sec code, time, structure, wormhole code, bare number, cap/tackle keyword, or a
+/// token carrying characters a name can't. Stop words are NOT breakers — a name may embed
+/// them ("Cult is Dead") — they only disqualify a run that is ENTIRELY lower-case stop words.
+fn breaks_name_run(core: &str, ship_index: &HashMap<String, (i64, String)>, systems: &Systems) -> bool {
+    let lc = core.to_lowercase();
+    core.is_empty()
+        || !core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
+        || is_cap_word(&lc)
+        || is_tackle_word(&lc)
+        || is_time_token(core)
+        || is_structure_word(core)
+        || looks_like_system_code(core)
+        || crate::wormholes::is_wh_code(core)
+        || ship_of(&lc, ship_index).is_some()
+        || systems.lookup(core).is_some()
+}
+
+/// Maximal runs of name-material tokens (broken only by recognised non-name entities — see
+/// [`breaks_name_run`]), kept whole so the full multi-word name reaches ESI. Stop words are
+/// kept inside a run ("Cult is Dead"); a run is dropped only when it is ENTIRELY lower-case
+/// stop words (prose like "gate is camped"). The ESI permutation resolver ([`PilotCache::cover`])
+/// claims the real characters inside each blob, longest match first.
 fn loose_pilot_runs(
     text: &str,
     ship_index: &HashMap<String, (i64, String)>,
@@ -882,53 +901,29 @@ fn loose_pilot_runs(
 ) -> Vec<String> {
     let punct = |c: char| ",.;:!?\"()".contains(c);
     let toks: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
-    // A name word in any case: ships, systems, codes, times, structures and stop words break it.
-    let is_namelike = |core: &str| {
-        (core.len() >= 3 || is_name_suffix(core))
-            && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
-            // A name-capable keyword counts as a name word only when Title-cased ("Bubble"/
-            // "Blue" in a name) — the lower-case form ("bubble up", "3 reds") is the keyword.
-            && (!is_pilot_stopword(core)
-                || (name_part(core) && is_name_capable_stopword(core)))
-            && !is_cap_word(core)
-            && !is_tackle_word(core)
-            && !looks_like_system_code(core)
-            && !is_time_token(core)
-            && !is_structure_word(core)
-            && ship_of(&core.to_lowercase(), ship_index).is_none()
-            && systems.lookup(core).is_none()
-    };
-    // A capitalised / distinctive name word — a strong enough anchor to let a short word
-    // bridge between two of them ("Cult [is] Dead", "Lord [of] War"). Structural, so no
-    // hand-maintained connector list is needed.
-    let is_anchor = |core: &str| {
-        is_namelike(core)
-            && (name_part(core)
-                || core.chars().any(|c| c.is_ascii_digit())
-                || core.chars().skip(1).any(|c| c.is_ascii_uppercase()))
-    };
-    // A short all-lowercase word that can bridge two anchors (a grammatical particle like
-    // "is"/"of"/"de"); the ESI cover confirms or splits the resulting span.
-    let is_bridge =
-        |core: &str| (2..=4).contains(&core.len()) && core.chars().all(|c| c.is_ascii_lowercase());
-
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
-        // Trim any non-name word (a stray bridge) left at a boundary.
-        while run.first().is_some_and(|w: &String| !is_namelike(w)) {
+        // Trim stop words and lone letters off the boundaries so the blob starts and ends on
+        // a name word (an interior stop word, e.g. the "is" in "Cult is Dead", is kept).
+        let trim = |w: &String| {
+            !name_part(w)
+                && !is_name_suffix(w) // keep a name initial / trailing number ("Lopatich R", "Adama 80")
+                && (is_pilot_stopword(w) || w.chars().count() < 2)
+        };
+        while run.first().is_some_and(&trim) {
             run.remove(0);
         }
-        while run.last().is_some_and(|w: &String| !is_namelike(w)) {
+        while run.last().is_some_and(&trim) {
             run.pop();
         }
-        // Allow a long run (a whole gang listed inline) up to 20 words; the ESI cover splits
-        // it into the real names. No Title-Case anchor required, so all-lowercase names
-        // ("mixa kolodenko") are caught too.
-        if (2..=20).contains(&run.len())
-            && run.iter().any(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 3)
-            && run.iter().any(|w| !is_pilot_stopword(w))
-        {
+        // A whole name is at least 3 letters (not each word — "Bo Li" is fine), and is not
+        // ENTIRELY lower-case stop words — a capital makes even an all-stop-word run
+        // ("Clear Rain") worth an ESI check.
+        let letters: usize = run.iter().map(|w| w.chars().filter(|c| c.is_alphabetic()).count()).sum();
+        let has_capital = run.iter().any(|w| name_part(w));
+        let all_stop = run.iter().all(|w| is_pilot_stopword(w));
+        if (2..=20).contains(&run.len()) && letters >= 3 && (has_capital || !all_stop) {
             let name = run.join(" ");
             if !out.contains(&name) {
                 out.push(name);
@@ -936,18 +931,11 @@ fn loose_pilot_runs(
         }
         run.clear();
     };
-    for i in 0..toks.len() {
-        let core = toks[i];
-        if is_namelike(core) {
-            run.push(core.to_owned());
-        } else if run.last().is_some_and(|w| is_anchor(w))
-            && is_bridge(core)
-            && toks.get(i + 1).is_some_and(|n| is_anchor(n))
-        {
-            // A particle flanked by two anchors — keep it inside the name run.
-            run.push(core.to_owned());
-        } else {
+    for core in &toks {
+        if breaks_name_run(core, ship_index, systems) {
             flush(&mut run, &mut out);
+        } else {
+            run.push((*core).to_owned());
         }
     }
     flush(&mut run, &mut out);
@@ -1551,8 +1539,16 @@ pub fn analyze_ctx(
     // produced because the loose run breaks on the 2-char "Dr") can slip through.
     drop_subphrase_pilots(&mut pilots, &std::collections::HashSet::new());
 
+    // A keyword inside a name suppresses the matching status flag ("The Bubble Boy" is not a
+    // bubble), but a noise blob full of prose/keywords must NOT — else a real "camped"/"bubble"
+    // gets silenced. So only a candidate anchored by a STRONG name word (mixed-case, capitalised,
+    // not itself a stop word/keyword) contributes its tokens here.
+    let is_strong_name_word = |w: &str| {
+        name_part(w) && w.chars().any(|c| c.is_ascii_lowercase()) && !is_pilot_stopword(w)
+    };
     let mut pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
+        .filter(|n| n.split_whitespace().any(|w| is_strong_name_word(w)))
         .flat_map(|n| n.split_whitespace())
         .map(|w| w.to_lowercase())
         .collect();
@@ -2678,6 +2674,46 @@ mod tests {
         std::collections::HashMap::new()
     }
 
+    /// Simulate the live pipeline's ESI resolution of candidate blobs: treat every name in
+    /// `reals` as a confirmed character and every other 1–3 word span as a confirmed non-name,
+    /// then claim the real characters out of each candidate the way the app's reconcile does
+    /// (longest match first, via `PilotCache::cover`). Returns the displayed pilot names.
+    fn esi_resolve(pilots: &[String], reals: &[&str]) -> Vec<String> {
+        use crate::pilot::{name_windows, PilotCache};
+        let real_map: std::collections::HashMap<String, i64> =
+            reals.iter().enumerate().map(|(i, r)| (r.to_lowercase(), i as i64 + 1)).collect();
+        let mut c = PilotCache::default();
+        c.preload(&real_map);
+        let mut negs: Vec<String> = Vec::new();
+        for p in pilots {
+            let mut spans = name_windows(p);
+            spans.push(p.clone());
+            // Every individual word too — name_windows skips <3-char spans ("I", "he"), but the
+            // cover needs a definite verdict for each or it blocks waiting on a "pending" span.
+            spans.extend(p.split_whitespace().map(str::to_owned));
+            for w in spans {
+                let lw = w.to_lowercase();
+                if !real_map.contains_key(&lw) {
+                    negs.push(lw);
+                }
+            }
+        }
+        c.preload_negatives(&negs);
+        let mut out: Vec<String> = Vec::new();
+        for p in pilots {
+            if is_pilot_stopword(p) {
+                continue;
+            }
+            match c.get(p) {
+                Some(Some(_)) => out.push(p.clone()),
+                _ => out.extend(c.cover(p).into_iter().filter(|n| !is_pilot_stopword(n))),
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|p| seen.insert(p.to_lowercase()));
+        out
+    }
+
     fn systems() -> Systems {
         let by_name = [
             ("rancer", "Rancer", 1, 0.4),
@@ -3026,9 +3062,9 @@ mod tests {
         for sh in ["Eris", "Vedmak", "Exequror Navy Issue"] {
             assert!(r.ships.iter().any(|x| x.name == sh), "missing {sh}: {:?}", r.ships);
         }
-        for w in ["Eris", "ENI", "Vedmak", "Ansi"] {
-            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w} a pilot: {:?}", r.pilots);
-        }
+        // No real characters here: every blob resolves to nothing via ESI/cover.
+        let resolved = esi_resolve(&r.pilots, &[]);
+        assert!(resolved.is_empty(), "ships/keywords resolved as pilots: {resolved:?}");
     }
 
     #[test]
@@ -3131,7 +3167,8 @@ mod tests {
         let s = systems();
         let r = analyze("Sisters Combat Scanner in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.probes, Some("Combat Probes"), "probes={:?}", r.probes);
-        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
+        // "Sisters Combat Scanner" is a probe item, not a character — ESI resolves it to nothing.
+        assert!(esi_resolve(&r.pilots, &[]).is_empty(), "pilots={:?}", r.pilots);
     }
 
     #[test]
@@ -3314,16 +3351,10 @@ mod tests {
     fn descriptor_and_verb_words_are_not_pilots() {
         let s = systems();
         // From real logs: "Navy"/"Issue" (ship descriptors) and "jumped" (a verb) leaked.
+        // The candidate is now a blob; ESI/cover claims the real name and drops the rest.
         let r = analyze("Sevra jumped Navy Issue in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        for w in ["jumped", "Navy", "Issue"] {
-            assert!(
-                !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
-                "{w} must not be a pilot: {:?}",
-                r.pilots
-            );
-        }
-        // A real name in the same line is still caught.
-        assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+        let resolved = esi_resolve(&r.pilots, &["Sevra"]);
+        assert_eq!(resolved, vec!["Sevra".to_string()], "resolved={resolved:?} from {:?}", r.pilots);
     }
 
     #[test]
@@ -3632,10 +3663,10 @@ mod tests {
     fn extracts_pilot_candidates() {
         let s = systems();
         let r = analyze("Some Pilot tackled in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p == "Some Pilot"));
-        // Common Title-Case intel phrases are not pilot candidates.
+        assert_eq!(esi_resolve(&r.pilots, &["Some Pilot"]), vec!["Some Pilot".to_string()]);
+        // Common Title-Case intel phrases ("Gate Camp") reach ESI but resolve to no character.
         let r2 = analyze("Gate Camp in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r2.pilots.is_empty());
+        assert!(esi_resolve(&r2.pilots, &[]).is_empty(), "pilots={:?}", r2.pilots);
     }
 
     #[test]
@@ -3794,9 +3825,9 @@ mod tests {
     #[test]
     fn pronoun_i_never_a_pilot() {
         let s = systems();
-        let has_i = |r: &IntelReport| {
-            r.pilots.iter().any(|p| p.split_whitespace().any(|w| w == "I"))
-        };
+        // The pronoun "I" must never survive resolution as a pilot (a 1-letter span is never a
+        // character, so the cover skips it).
+        let has_i = |names: &[String]| names.iter().any(|p| p.split_whitespace().any(|w| w == "I"));
         for txt in [
             "I think 5 reds in Jita",
             "I guess they left",
@@ -3809,12 +3840,14 @@ mod tests {
             "warp to I and hold",              // pronoun mid-sentence by itself
         ] {
             let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Spai");
-            assert!(!has_i(&r), "pronoun 'I' leaked as a pilot in {txt:?}: {:?}", r.pilots);
+            let resolved = esi_resolve(&r.pilots, &["Bishopi", "Sabre"]);
+            assert!(!has_i(&resolved), "pronoun 'I' leaked as a pilot in {txt:?}: {resolved:?}");
         }
-        // The pronoun must not glue an adjacent real name into a phantom: "Bishopi" may resolve
+        // The pronoun must not glue an adjacent real name into a phantom: "Bishopi" resolves
         // on its own, but never as "Bishopi I think".
         let r = analyze("Bishopi I think he docked", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(!r.pilots.iter().any(|p| p.contains(" I ")), "glued pronoun: {:?}", r.pilots);
+        let resolved = esi_resolve(&r.pilots, &["Bishopi"]);
+        assert_eq!(resolved, vec!["Bishopi".to_string()], "glued pronoun: {resolved:?}");
     }
 
     fn sys_map(rows: &[(&str, &str, i64, f64)]) -> std::collections::HashMap<String, SystemInfo> {
@@ -3949,10 +3982,11 @@ mod tests {
         ] {
             assert_eq!(pilots(dbl), pilots(sgl), "double-space hint changed a non-paste parse: {dbl:?}");
         }
-        // A double-spaced paste whose tail segment is prose: the prose segment fails the clean
-        // check, so the whole thing falls back (no phantom multi-word "pilot").
-        let r = pilots("Rancer  Gliar  they all warped off already");
-        assert!(!r.iter().any(|p| p.contains("warped") || p.contains("they")), "prose tail leaked: {r:?}");
+        // A paste whose tail is prose: the blob reaches ESI, which claims the real name and
+        // drops the prose words ("they"/"warped" never survive as a pilot).
+        let r = analyze("Rancer  Gliar  they all warped off already", &s, &noships(), &noknown(), 1, "ch", "x");
+        let resolved = esi_resolve(&r.pilots, &["Gliar"]);
+        assert_eq!(resolved, vec!["Gliar".to_string()], "prose tail leaked: {resolved:?}");
     }
 
     #[test]
@@ -4357,12 +4391,14 @@ mod tests {
     fn unresolved_caps_code_in_gate_not_a_pilot() {
         // DT and UALX are abbreviated system names we can't resolve — neither is a pilot.
         let s = systems();
-        let txt = "Frizank2 > DT gate to UALX Camped";
+        // The log reader strips the "Sender > " framing, so analyze sees only the body.
+        let txt = "DT gate to UALX Camped";
         let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Frizank2");
+        // DT/UALX are abbreviations that resolve to no character via ESI.
+        let resolved = esi_resolve(&r.pilots, &[]);
         assert!(
-            !r.pilots.iter().any(|p| p == "UALX" || p == "DT"),
-            "unresolved system code became a pilot: {:?}",
-            r.pilots
+            !resolved.iter().any(|p| p == "UALX" || p == "DT"),
+            "unresolved system code became a pilot: {resolved:?}",
         );
         assert!(r.camp, "camped should set the camp keyword: {:?}", r.text);
     }

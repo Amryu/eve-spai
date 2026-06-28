@@ -14641,6 +14641,23 @@ fn intel_row(
                     }
                 }
 
+                // Candidate names still being checked against ESI: show one animated "…"
+                // placeholder rather than the raw candidate text, so the feed never displays a
+                // half-parsed blob ("Sevra jumped Navy Issue") while resolution is in flight.
+                let resolving = r.pilots.iter().any(|name| {
+                    !crate::intel::is_pilot_stopword(name) && !resolved_pilots.contains_key(name)
+                });
+                if resolving {
+                    let phase = (now as f64 * 2.0) as usize % 3 + 1;
+                    let dots = ".".repeat(phase);
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new(egui::RichText::new(format!("{} {dots}", icon::USER)).weak()),
+                    )
+                    .on_hover_text("Resolving pilot…");
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(450));
+                }
+
                 // No ship reported now: show each pilot's most recent (≤60 min) hull
                 // under a "Last seen as:" label, with the regular ship tooltip.
                 if r.ships.is_empty() {
