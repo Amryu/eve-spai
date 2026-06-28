@@ -348,6 +348,8 @@ pub struct SpaiApp {
     /// Battle detail: condensed mode stacks each side's ships by hull (count + losses) instead of
     /// listing every pilot. Off by default.
     battle_condensed: bool,
+    /// Battle detail: how the roster rows are ordered (by value or by hull size).
+    battle_roster_sort: RosterSort,
     /// Custom battle inclusion rules, shared live with the zKill worker.
     battle_filter: crate::zkill::SharedBattleFilter,
     /// Ship type id → hull size tier (for filter hull conditions).
@@ -910,6 +912,7 @@ impl SpaiApp {
             battle_selected: None,
             battle_detail_cache: None,
             battle_condensed: false,
+            battle_roster_sort: RosterSort::default(),
             battle_search: String::new(),
             battle_hover: None,
             battle_filter: std::sync::Arc::new(std::sync::Mutex::new(crate::settings::BattleFilter::default())),
@@ -4638,6 +4641,25 @@ impl SpaiApp {
                             ui.separator();
                             ui.checkbox(&mut self.battle_condensed, "Condensed")
                                 .on_hover_text("Stack each side's ships by hull (count + losses)");
+                            ui.separator();
+                            ui.label("Sort");
+                            egui::ComboBox::from_id_salt("battle_roster_sort")
+                                .selected_text(match self.battle_roster_sort {
+                                    RosterSort::Value => "ISK loss",
+                                    RosterSort::Hull => "Hull size",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.battle_roster_sort,
+                                        RosterSort::Value,
+                                        "ISK loss",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.battle_roster_sort,
+                                        RosterSort::Hull,
+                                        "Hull size",
+                                    );
+                                });
                         });
                         if go_back {
                             self.battle_selected = None;
@@ -4648,6 +4670,8 @@ impl SpaiApp {
                         ui.add_space(6.0);
                         let prev_hover = self.battle_hover;
                         let condensed = self.battle_condensed;
+                        let sort = self.battle_roster_sort;
+                        let ship_sizes = self.ship_sizes.clone();
                         let cache = self.battle_detail_cache.as_ref().unwrap();
                         // Read type names LIVE each frame — they resolve asynchronously, so a
                         // snapshot taken when the cache was built would freeze unresolved hulls as
@@ -4661,6 +4685,8 @@ impl SpaiApp {
                                 &cache.inv,
                                 &cache.rosters,
                                 condensed,
+                                sort,
+                                &ship_sizes,
                                 prev_hover,
                             )
                         };
@@ -13631,6 +13657,16 @@ fn ship_row(
     resp
 }
 
+/// How the battle-detail roster is ordered (user-selectable).
+#[derive(Clone, Copy, PartialEq, Default)]
+enum RosterSort {
+    /// Highest total kill value (ship + pod) first.
+    #[default]
+    Value,
+    /// Largest hull class first (XL → S), then value within a class.
+    Hull,
+}
+
 /// The participant the cursor is over in a battle detail (for the involvement highlight).
 #[derive(Clone, Copy, PartialEq)]
 struct BattleHover {
@@ -13662,6 +13698,8 @@ fn battle_detail(
     inv: &crate::battle::Involvement,
     rosters: &[Vec<crate::battle::Participant>],
     condensed: bool,
+    sort: RosterSort,
+    ship_sizes: &std::collections::HashMap<i64, crate::settings::ShipSize>,
     prev_hover: Option<BattleHover>,
 ) -> (Option<i64>, Option<BattleHover>) {
     use egui_phosphor::regular as icon;
@@ -13796,12 +13834,28 @@ fn battle_detail(
                                             e.3 += l.pod_value;
                                         }
                                     }
-                                    // Most-destroyed first, then biggest fleet, then name.
+                                    // Order per the selected sort: by ISK lost, or by hull size.
                                     order.sort_by(|a, b| {
                                         let (ta, tb) = (agg[a], agg[b]);
-                                        tb.1.cmp(&ta.1)
-                                            .then(tb.0.cmp(&ta.0))
-                                            .then_with(|| name_of(*a).cmp(&name_of(*b)))
+                                        let (va, vb) = (ta.2 + ta.3, tb.2 + tb.3); // ship+pod ISK
+                                        match sort {
+                                            RosterSort::Value => vb
+                                                .total_cmp(&va)
+                                                .then(tb.1.cmp(&ta.1))
+                                                .then(tb.0.cmp(&ta.0)),
+                                            RosterSort::Hull => {
+                                                let sa = ship_sizes
+                                                    .get(a)
+                                                    .copied()
+                                                    .unwrap_or(crate::settings::ShipSize::Other);
+                                                let sb = ship_sizes
+                                                    .get(b)
+                                                    .copied()
+                                                    .unwrap_or(crate::settings::ShipSize::Other);
+                                                sb.cmp(&sa).then_with(|| vb.total_cmp(&va))
+                                            }
+                                        }
+                                        .then_with(|| name_of(*a).cmp(&name_of(*b)))
                                     });
                                     for ship in &order {
                                         let (total, lost, ship_isk, pod_isk) = agg[ship];
@@ -13821,9 +13875,30 @@ fn battle_detail(
                                     }
                                     return;
                                 }
-                                // Participating ships grouped by hull, destroyed (reddish) before
-                                // survivors within each hull.
-                                for p in roster.iter().take(MAX_ROWS) {
+                                // Rows ordered per the selected sort. roster() already returns
+                                // highest-value first (the Value mode); Hull mode re-sorts by hull
+                                // size (XL→S), then hull type, then value.
+                                let mut rows: Vec<&crate::battle::Participant> = roster.iter().collect();
+                                if matches!(sort, RosterSort::Hull) {
+                                    let val = |p: &crate::battle::Participant| {
+                                        p.lost.as_ref().map_or(0.0, |l| l.value + l.pod_value)
+                                    };
+                                    rows.sort_by(|a, b| {
+                                        let sa = ship_sizes
+                                            .get(&a.ship)
+                                            .copied()
+                                            .unwrap_or(crate::settings::ShipSize::Other);
+                                        let sb = ship_sizes
+                                            .get(&b.ship)
+                                            .copied()
+                                            .unwrap_or(crate::settings::ShipSize::Other);
+                                        sb.cmp(&sa)
+                                            .then(a.ship.cmp(&b.ship))
+                                            .then_with(|| val(b).total_cmp(&val(a)))
+                                            .then(a.pilot.cmp(&b.pilot))
+                                    });
+                                }
+                                for p in rows.into_iter().take(MAX_ROWS) {
                                     let row_kill = p.lost.as_ref().map(|l| l.kill_id);
                                     // Hover matches the exact row (a pilot may have several loss
                                     // rows — re-shipping shuttles — so match by kill, not just pilot).
