@@ -3403,11 +3403,12 @@ impl SpaiApp {
             if !store.traits_baked() {
                 sde::spawn_traits_bake(store.path().to_path_buf(), ctx.clone());
             }
-            // Pre-load remembered pilot names so they're recognised immediately.
+            // Pre-load remembered pilot names so they're recognised immediately. Negatives are
+            // NOT preloaded — they live in-memory with a TTL (see NEG_TTL), so a name ESI once
+            // missed is re-checked rather than cached as "not a name" across restarts.
             {
                 let mut c = self.pilots.lock().unwrap();
                 c.preload(&store.known_pilots());
-                c.preload_negatives(&store.known_negatives());
             }
         }
 

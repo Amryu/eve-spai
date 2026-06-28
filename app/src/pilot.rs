@@ -10,10 +10,18 @@ use std::sync::{Arc, Mutex};
 
 const ESI_IDS: &str = "https://esi.evetech.net/latest/universe/ids/";
 
+/// A "not a character" verdict is cached only this long, then re-queried — ESI can miss a
+/// brand-new character or transiently drop a name, and a permanent negative made real names
+/// (e.g. "River Pixies") vanish forever.
+const NEG_TTL: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
+
 #[derive(Default)]
 pub struct PilotCache {
     /// name_lower -> Some(character_id) if a character, None if confirmed not one.
     resolved: HashMap<String, Option<i64>>,
+    /// When each negative verdict was recorded, for the NEG_TTL re-check. A negative without
+    /// a timestamp (test fixture / preloaded) never expires.
+    neg_at: HashMap<String, std::time::Instant>,
     queued: std::collections::HashSet<String>,
     queue: VecDeque<String>,
 }
@@ -49,11 +57,25 @@ impl PilotCache {
         }
     }
 
-    /// Pre-load persisted non-name verdicts (multi-word bridging spans) so the cover can
-    /// skip them at once instead of re-querying after every restart.
+    /// Seed non-name verdicts (used by tests to simulate the resolver). Production negatives
+    /// live in-memory with a TTL and aren't preloaded.
+    #[allow(dead_code)]
     pub fn preload_negatives(&mut self, names: &[String]) {
         for lc in names {
             self.resolved.entry(lc.clone()).or_insert(None);
+        }
+    }
+
+    /// Drop negative verdicts older than [`NEG_TTL`] so they are re-queried instead of being
+    /// cached as "not a name" forever. Called periodically by the resolver.
+    pub fn expire_negatives(&mut self) {
+        let stale: Vec<String> =
+            self.neg_at.iter().filter(|(_, t)| t.elapsed() > NEG_TTL).map(|(n, _)| n.clone()).collect();
+        for n in stale {
+            self.neg_at.remove(&n);
+            if matches!(self.resolved.get(&n), Some(None)) {
+                self.resolved.remove(&n); // a later positive must stick, so only forget negatives
+            }
         }
     }
 
@@ -162,6 +184,7 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
             // more than a stale backlog). 200/batch stays under ESI's limit + timeout.
             let batch: Vec<String> = {
                 let mut c = cache.lock().unwrap();
+                c.expire_negatives(); // re-query verdicts older than NEG_TTL
                 (0..200).map_while(|_| c.queue.pop_back()).collect()
             };
             if batch.is_empty() {
@@ -181,14 +204,12 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                         c.queued.remove(&name.to_lowercase());
                         let id = chars.get(&name.to_lowercase()).copied();
                         c.resolved.insert(name.to_lowercase(), id);
-                        if let Some(store) = &store {
-                            match id {
-                                Some(cid) => store.add_known_pilot(name, cid),
-                                // Persist only multi-word non-names (the bridging spans the
-                                // cover trips on); single junk words aren't worth a row.
-                                None if name.contains(' ') => store.add_known_pilot(name, 0),
-                                None => {}
-                            }
+                        // Negatives are kept in-memory with a TTL (see NEG_TTL), never persisted
+                        // — a persisted "not a name" verdict is what made real names vanish.
+                        if id.is_none() {
+                            c.neg_at.insert(name.to_lowercase(), std::time::Instant::now());
+                        } else if let (Some(store), Some(cid)) = (&store, id) {
+                            store.add_known_pilot(name, cid);
                         }
                     }
                 } else {
@@ -253,6 +274,27 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_verdict_expires_after_ttl() {
+        let mut c = PilotCache::default();
+        // A timestamped negative older than the TTL is forgotten (re-queried as pending).
+        if let Some(past) = std::time::Instant::now()
+            .checked_sub(NEG_TTL + std::time::Duration::from_secs(1))
+        {
+            c.resolved.insert("river pixies".into(), None);
+            c.neg_at.insert("river pixies".into(), past);
+            c.expire_negatives();
+            assert_eq!(c.get("river pixies"), None, "stale negative should be re-queried");
+        }
+        // A fresh negative is kept; one with no timestamp (test fixture) never expires.
+        c.resolved.insert("real keyword".into(), None);
+        c.neg_at.insert("real keyword".into(), std::time::Instant::now());
+        c.resolved.insert("fixture".into(), None);
+        c.expire_negatives();
+        assert_eq!(c.get("real keyword"), Some(None));
+        assert_eq!(c.get("fixture"), Some(None));
+    }
 
     #[test]
     fn cover_splits_glued_names() {

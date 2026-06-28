@@ -636,8 +636,9 @@ impl Store {
         out
     }
 
-    /// Multi-word spans confirmed by ESI to NOT be characters (stored with char_id 0),
-    /// so the over-glued-name cover doesn't re-block on them after a restart.
+    /// Multi-word spans confirmed by ESI to NOT be characters (stored with char_id 0). No
+    /// longer loaded at startup — negatives now live in-memory with a TTL — kept for tooling.
+    #[allow(dead_code)]
     pub fn known_negatives(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc FROM known_pilots WHERE char_id = 0") {
