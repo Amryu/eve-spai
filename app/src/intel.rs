@@ -882,6 +882,17 @@ fn hard_name_breaker(core: &str, ship_index: &HashMap<String, (i64, String)>) ->
         || ship_of(&lc, ship_index).is_some()
 }
 
+/// True if a candidate name blob still contains a system/code token — a location *held* inside a
+/// name, pending ESI. Such a report is parked (kept) rather than dropped for lacking a location,
+/// so the reconcile can re-derive the location once the name resolves and frees the token.
+pub(crate) fn has_held_system(report: &IntelReport, systems: &Systems) -> bool {
+    report
+        .pilots
+        .iter()
+        .flat_map(|p| p.split_whitespace())
+        .any(|w| is_system_token(w, systems))
+}
+
 /// A system name or null-sec code (but not a code-shaped *name* like "Luo-xi").
 fn is_system_token(core: &str, systems: &Systems) -> bool {
     (looks_like_system_code(core) && !is_code_lookalike_name(core, systems))
@@ -1281,7 +1292,7 @@ pub fn parse_motd_regions(motd: &str, known: &std::collections::HashSet<String>)
 /// `analyze_ctx` so the post-ESI reconcile can re-run it once confirmed names free their tokens
 /// (the held model: a system inside a name blob is held, then re-derived if the name is rejected).
 #[allow(clippy::too_many_arguments)]
-fn detect_location(
+pub(crate) fn detect_location(
     tokens: &[&str],
     lower_tokens: &[String],
     reserved: &std::collections::HashSet<String>,
@@ -2678,7 +2689,7 @@ fn parse_count(
 }
 
 /// Split into candidate tokens, keeping `-` and `'` (used in system/char names).
-fn tokenize(text: &str) -> Vec<&str> {
+pub(crate) fn tokenize(text: &str) -> Vec<&str> {
     // Apostrophes are kept (O'Brien), but a leading/trailing one is stray punctuation
     // ("PeshyHod'" is the character "PeshyHod"), so trim it off the token ends.
     text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '\''))

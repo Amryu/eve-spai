@@ -1215,6 +1215,11 @@ impl SpaiApp {
             const KILLMAIL_ALERT_WINDOW: i64 = 600; // 10 min
             let state = self.intel_state.lock().unwrap();
             for r in &state.reports {
+                // A parked report (location held inside an unresolved name) must never alert —
+                // a wrong/absent location would be a false alarm. Wait for the confirmed location.
+                if r.primary_system().is_none() && r.gates.is_empty() {
+                    continue;
+                }
                 let fresh = if r.killmail {
                     now - r.received < KILLMAIL_ALERT_WINDOW && !self.alerted.contains_key(&r.id)
                 } else {
@@ -3078,6 +3083,28 @@ impl SpaiApp {
                 changed = true;
                 r.pilots = deduped;
             }
+            // Held-location re-derivation: a report whose only system was a token inside a name
+            // blob shows no location at parse time (the held model — never a guessed location).
+            // Once ESI confirms the names and frees the remaining tokens, derive the location
+            // from them. Only fires while there's no location yet, so a context-resolved system
+            // from parse time is never clobbered.
+            if r.systems.is_empty() && r.gates.is_empty() && !r.pilots.is_empty() {
+                let reserved: std::collections::HashSet<String> = r
+                    .pilots
+                    .iter()
+                    .flat_map(|p| p.split_whitespace())
+                    .map(|w| w.to_lowercase())
+                    .collect();
+                let tokens = crate::intel::tokenize(&r.text);
+                let lower: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+                let (detected, gates, _) =
+                    crate::intel::detect_location(&tokens, &lower, &reserved, &geo, None, &[]);
+                if !detected.is_empty() || !gates.is_empty() {
+                    r.systems = detected;
+                    r.gates = gates;
+                    changed = true;
+                }
+            }
             // Count fallback: a bare number tentatively read as a name component ("Adama
             // 80") is counted after all if ESI says the "{name} {n}" candidate isn't a
             // real character ("Bob 80" -> 80 was a hostile count).
@@ -3556,6 +3583,9 @@ impl SpaiApp {
         let mut matches: Vec<&crate::intel::IntelReport> = state
             .reports
             .iter()
+            // A parked report (location held inside an unresolved name) has no system/gate yet —
+            // don't show it until the reconcile derives a confirmed location (no false alarms).
+            .filter(|r| r.primary_system().is_some() || !r.gates.is_empty())
             .filter(|r| type_filter.matches(r))
             .filter(|r| {
                 max_jumps == 0

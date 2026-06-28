@@ -171,8 +171,13 @@ fn scan(
                     continue;
                 }
 
-                // Ignore non-placeable chatter: nothing to anchor without a system/gate.
-                if report.systems.is_empty() && report.gates.is_empty() {
+                // Ignore non-placeable chatter: nothing to anchor without a system/gate. A held
+                // location (a system token still inside an unresolved name blob) is the exception
+                // — park it so the reconcile can derive the location once ESI frees the token.
+                if report.systems.is_empty()
+                    && report.gates.is_empty()
+                    && !intel::has_held_system(&report, systems)
+                {
                     continue;
                 }
 
