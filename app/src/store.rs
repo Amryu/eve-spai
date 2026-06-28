@@ -636,8 +636,14 @@ impl Store {
 
     /// Remember an ESI-confirmed pilot (char_id > 0) or non-name (char_id 0).
     pub fn add_known_pilot(&self, name: &str, char_id: i64) {
+        // Upgrade a previously-stored negative (char_id 0) once ESI confirms a real
+        // character with the same name, but never downgrade a confirmed pilot back to 0
+        // (the WHERE guards that). Plain OR IGNORE left the stale 0 row forever, hiding the
+        // pilot from `known_pilots`, which filters char_id != 0.
         let _ = self.conn.execute(
-            "INSERT OR IGNORE INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)",
+            "INSERT INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)
+             ON CONFLICT(name_lc) DO UPDATE SET char_id=excluded.char_id, name=excluded.name
+             WHERE excluded.char_id != 0",
             params![name.to_lowercase(), name, char_id],
         );
     }
@@ -1302,4 +1308,48 @@ fn trigrams(s: &str) -> std::collections::HashSet<[u8; 3]> {
         set.insert([w[0], w[1], w[2]]);
     }
     set
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, Connection};
+
+    /// The exact upsert `add_known_pilot` runs, against an in-memory DB.
+    fn add(conn: &Connection, name: &str, char_id: i64) {
+        conn.execute(
+            "INSERT INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)
+             ON CONFLICT(name_lc) DO UPDATE SET char_id=excluded.char_id, name=excluded.name
+             WHERE excluded.char_id != 0",
+            params![name.to_lowercase(), name, char_id],
+        )
+        .unwrap();
+    }
+
+    fn char_id(conn: &Connection, name_lc: &str) -> i64 {
+        conn.query_row(
+            "SELECT char_id FROM known_pilots WHERE name_lc = ?1",
+            params![name_lc],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn known_pilot_negative_is_upgraded_but_never_downgraded() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE known_pilots (name_lc TEXT PRIMARY KEY, name TEXT, char_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        // Stored first as a negative (ESI: not a character).
+        add(&conn, "Comet Navy", 0);
+        assert_eq!(char_id(&conn, "comet navy"), 0);
+        // ESI later confirms a real character -> upgrade.
+        add(&conn, "Comet Navy", 12345);
+        assert_eq!(char_id(&conn, "comet navy"), 12345);
+        // A stray later negative must NOT downgrade the confirmed pilot.
+        add(&conn, "Comet Navy", 0);
+        assert_eq!(char_id(&conn, "comet navy"), 12345);
+    }
 }
