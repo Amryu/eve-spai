@@ -3002,12 +3002,7 @@ impl SpaiApp {
             let mut new_pilots: Vec<String> = Vec::new();
             for p in original.iter().cloned() {
                 if crate::intel::is_pilot_stopword(&p) {
-                    continue; // blacklist overrides any cached/char-linked verdict
-                }
-                let char_linked = r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&p));
-                if char_linked {
-                    new_pilots.push(p);
-                    continue;
+                    continue; // blacklist overrides any cached verdict
                 }
                 match cache.get(&p) {
                     // Confirmed character — keep as-is.
@@ -3580,6 +3575,29 @@ impl SpaiApp {
 
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
+        // Nothing matched: if any filter is narrowing the feed, say so and offer a one-click
+        // reset (jumps, search text, and the type buttons) so a stale filter can't look like
+        // "no intel". Disjoint-field mutations below run while `state` is still borrowed.
+        let filters_active = !query.is_empty()
+            || type_filter != IntelTypeFilter::All
+            || max_jumps != 0;
+        if matches.is_empty() && filters_active {
+            let mut clear = false;
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("No reports match the current filters.").weak(),
+                );
+                ui.add_space(8.0);
+                clear = ui.button("Clear Filters").clicked();
+            });
+            if clear {
+                self.intel_query.clear();
+                self.intel_type = IntelTypeFilter::All;
+                self.intel_max_jumps = 0;
+            }
+            return;
+        }
         // Ship details (cached) for hull names/icons mentioned in the reports.
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = matches
             .iter()
@@ -14561,25 +14579,16 @@ fn intel_row(
                     tackled_badge(ui, "TACKLED".to_string());
                 }
 
-                // Pilot panels: names confirmed as real characters — either by ESI
-                // (resolved_pilots) or authoritatively by an in-game showinfo char link
-                // (char_ids), which always wins regardless of the ESI cache state.
+                // Pilot panels: names confirmed as real characters by the ESI resolver.
                 for name in &r.pilots {
-                    // A blacklisted word is never a pilot, even if it's cached/char-linked.
+                    // A blacklisted word is never a pilot, even if it's cached.
                     if crate::intel::is_pilot_stopword(name) {
                         continue;
                     }
-                    let char_linked =
-                        r.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
-                    if !char_linked && !resolved_pilots.contains_key(name) {
+                    if !resolved_pilots.contains_key(name) {
                         continue;
                     }
-                    let char_id = r
-                        .char_ids
-                        .iter()
-                        .find(|(n, _)| n.eq_ignore_ascii_case(name))
-                        .map(|(_, id)| *id)
-                        .or_else(|| resolved_pilots.get(name).copied());
+                    let char_id = resolved_pilots.get(name).copied();
                     // Queue + read this pilot's corp/alliance (resolved in the background).
                     let aff = char_id.and_then(|cid| {
                         let mut c = affil.lock().unwrap();

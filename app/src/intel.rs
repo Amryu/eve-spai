@@ -44,9 +44,6 @@ pub struct IntelReport {
     pub classes: Vec<String>,
     /// Candidate pilot names (Title-Case word runs); confirmed by ESI later.
     pub pilots: Vec<String>,
-    /// Characters with their id already known (from in-game showinfo links) — no
-    /// ESI lookup needed to display/link them.
-    pub char_ids: Vec<(String, i64)>,
     /// Approximate hostile/ship count parsed from the message, if any.
     pub count: Option<u32>,
     /// Bare numbers tentatively treated as name components ("Adama 80"): (candidate, n).
@@ -252,18 +249,9 @@ impl IntelState {
                     prev.pilots.push(p.clone());
                 }
             }
-            // Authoritative showinfo char-ids and alliance mentions must merge too, else
-            // a merged pilot loses its char-link and is dropped from the card.
-            for c in &new.char_ids {
-                if !prev.char_ids.iter().any(|(n, _)| n.eq_ignore_ascii_case(&c.0)) {
-                    prev.char_ids.push(c.clone());
-                }
-            }
-            // Sub-phrase dedup AFTER char-ids merge, protecting every char-linked name so a
-            // glued plain-text relay can't evict an authoritative one.
-            let protected: std::collections::HashSet<String> =
-                prev.char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
-            drop_subphrase_pilots(&mut prev.pilots, &protected);
+            // Sub-phrase dedup over the merged pilot list (no protected set: all names are
+            // ESI-confirmed candidates, none authoritative).
+            drop_subphrase_pilots(&mut prev.pilots, &std::collections::HashSet::new());
             for a in &new.alliances {
                 if !prev.alliances.iter().any(|(n, _)| n.eq_ignore_ascii_case(&a.0)) {
                     prev.alliances.push(a.clone());
@@ -383,6 +371,8 @@ const PILOT_STOP: &[&str] = &[
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
     "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went", "going",
     "help", "sos", "backup", "need",
+    // Location/address prose ("hostiles in space", "you guys", "in Jita") — never pilots.
+    "guys", "in", "space",
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
@@ -394,13 +384,18 @@ const PILOT_STOP: &[&str] = &[
     // Note: the pronoun "I" needs no entry — a 1-letter token already fails `name_part`
     // (len >= 2), and listing "i" could split a real name that contains a standalone "I".
     "hacking", "hack", "hacked", "ratting", "ratted", "missing", "guess",
+    // Hedging verbs ("i think", "i thought", "i believe", "maybe", "probably") — the
+    // known-pilot cache otherwise matches real players named "Think"/"Believe" here.
+    "think", "thought", "believe", "maybe", "probably", "prob", "probs",
     // Status words ("system clean", "reported in X", "nothing yet").
     "clean", "reported", "yet",
     // Fitting talk ("50mn fit", "shield fit") — a prop-mod size or "fit" is never a pilot.
     "50mn", "fit",
     // Positional / quantity filler ("on grid", "off grid", "a few", "possible hostile", "clear atm").
     "on", "grid", "ongrid", "offgrid", "few", "possible", "atm", "many", "outside", "entrance",
-    "linked",
+    "linked", "side", // "other side of the gate" — "side" is never a pilot.
+    // Structure-grief verbs ("skyhook theft", "poco bash") — keywords, never pilots.
+    "theft", "stealing", "stole", "bash", "bashing", "reinforced", "reinforce", "rf",
     // Hot-drop / black-ops threat words — keywords, never pilots ("hot dropper", "blops").
     "drop", "dropper", "droppers", "hotdrop", "hotdrops", "hotdropper", "hotdroppers",
     "hotdropping", "blops", "blackops", "blackop",
@@ -415,7 +410,7 @@ const PILOT_STOP: &[&str] = &[
     // "drifter" / "drifters" — a wormhole type ("drifter wh"), never a pilot.
     "drifter", "drifters",
     // Pronouns / filler.
-    "him", "other",
+    "him", "other", "only", "unless", "end", "also",
     // Filler / hedging words ("unsure which", "too many", "kitchen sink", "catch all").
     "unsure", "which", "too", "kitchen", "sink", "catch", "all",
     // Question / filler words — lower-cased English the known-pilot cache otherwise matches
@@ -886,16 +881,50 @@ fn loose_pilot_runs(
     systems: &Systems,
 ) -> Vec<String> {
     let punct = |c: char| ",.;:!?\"()".contains(c);
+    let toks: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+    // A name word in any case: ships, systems, codes, times, structures and stop words break it.
+    let is_namelike = |core: &str| {
+        (core.len() >= 3 || is_name_suffix(core))
+            && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
+            // A name-capable keyword counts as a name word only when Title-cased ("Bubble"/
+            // "Blue" in a name) — the lower-case form ("bubble up", "3 reds") is the keyword.
+            && (!is_pilot_stopword(core)
+                || (name_part(core) && is_name_capable_stopword(core)))
+            && !is_cap_word(core)
+            && !is_tackle_word(core)
+            && !looks_like_system_code(core)
+            && !is_time_token(core)
+            && !is_structure_word(core)
+            && ship_of(&core.to_lowercase(), ship_index).is_none()
+            && systems.lookup(core).is_none()
+    };
+    // A capitalised / distinctive name word — a strong enough anchor to let a short word
+    // bridge between two of them ("Cult [is] Dead", "Lord [of] War"). Structural, so no
+    // hand-maintained connector list is needed.
+    let is_anchor = |core: &str| {
+        is_namelike(core)
+            && (name_part(core)
+                || core.chars().any(|c| c.is_ascii_digit())
+                || core.chars().skip(1).any(|c| c.is_ascii_uppercase()))
+    };
+    // A short all-lowercase word that can bridge two anchors (a grammatical particle like
+    // "is"/"of"/"de"); the ESI cover confirms or splits the resulting span.
+    let is_bridge =
+        |core: &str| (2..=4).contains(&core.len()) && core.chars().all(|c| c.is_ascii_lowercase());
+
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
-    let mut anchored = false;
-    let flush = |run: &mut Vec<String>, out: &mut Vec<String>, anchored: &mut bool| {
-        // Allow longer runs than a single name (EVE names are <=3 words): several
-        // adjacent names ("Bunk Boi Bunk Helper") are one run that the ESI cover splits
-        // into the real names, instead of leaking a stray sub-word.
-        // Allow a long run (a whole gang listed inline) up to 20 words; the ESI cover
-        // splits it into the real names. No Title-Case anchor required, so all-lowercase
-        // names ("mixa kolodenko") are caught too.
+    let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
+        // Trim any non-name word (a stray bridge) left at a boundary.
+        while run.first().is_some_and(|w: &String| !is_namelike(w)) {
+            run.remove(0);
+        }
+        while run.last().is_some_and(|w: &String| !is_namelike(w)) {
+            run.pop();
+        }
+        // Allow a long run (a whole gang listed inline) up to 20 words; the ESI cover splits
+        // it into the real names. No Title-Case anchor required, so all-lowercase names
+        // ("mixa kolodenko") are caught too.
         if (2..=20).contains(&run.len())
             && run.iter().any(|w| w.chars().filter(|c| c.is_alphabetic()).count() >= 3)
             && run.iter().any(|w| !is_pilot_stopword(w))
@@ -906,41 +935,22 @@ fn loose_pilot_runs(
             }
         }
         run.clear();
-        *anchored = false;
     };
-    for raw in text.split_whitespace() {
-        let core = raw.trim_matches(punct);
-        let lc = core.to_lowercase();
-        // EVE names allow digits ("c137"); ships/systems/stop words still break a run.
-        let namelike = (core.len() >= 3 || is_name_suffix(core))
-            && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
-            // A name-capable keyword counts as a name word only when Title-cased ("Bubble"/
-            // "Blue" in a name) — the lower-case form ("bubble up", "3 reds") is the keyword.
-            && (!is_pilot_stopword(core)
-                || is_name_connector(core)
-                || (name_part(core) && is_name_capable_stopword(core)))
-            && !is_cap_word(core)
-            && !is_tackle_word(core)
-            && !looks_like_system_code(core)
-            && !is_time_token(core)
-            && !is_structure_word(core)
-            && ship_of(&lc, ship_index).is_none()
-            && systems.lookup(core).is_none();
-        if namelike {
-            // Anchor on a Title-Case word OR a distinctive one (digit / internal capital),
-            // so an all-lowercase name with a code-like part ("rick c137 sancgez") still
-            // forms a run.
-            let distinctive = core.chars().any(|c| c.is_ascii_digit())
-                || core.chars().skip(1).any(|c| c.is_ascii_uppercase());
-            if name_part(core) || distinctive {
-                anchored = true;
-            }
+    for i in 0..toks.len() {
+        let core = toks[i];
+        if is_namelike(core) {
+            run.push(core.to_owned());
+        } else if run.last().is_some_and(|w| is_anchor(w))
+            && is_bridge(core)
+            && toks.get(i + 1).is_some_and(|n| is_anchor(n))
+        {
+            // A particle flanked by two anchors — keep it inside the name run.
             run.push(core.to_owned());
         } else {
-            flush(&mut run, &mut out, &mut anchored);
+            flush(&mut run, &mut out);
         }
     }
-    flush(&mut run, &mut out, &mut anchored);
+    flush(&mut run, &mut out);
     out
 }
 
@@ -1171,163 +1181,7 @@ fn preprocess_intel(text: &str) -> String {
             t = t[i + 1..].trim_start();
         }
     }
-    strip_author_prefixes(t).replace('*', "")
-}
-
-/// Remove EVE in-game chat author prefixes ("Pilot Name > ") that sit in front of a showinfo
-/// link. A copied-from-game block concatenates several "Sender > <message>" entries, so this
-/// fires for each (bounded by a newline or a " - " join), not just the leading one — otherwise
-/// a later sender's name leaks out as a hostile pilot. Plain-text chat LOGS carry no `<url=`
-/// tags, so the trailing-link guard means this never touches them.
-fn strip_author_prefixes(t: &str) -> String {
-    let mut out = String::with_capacity(t.len());
-    let mut rest = t;
-    while let Some(i) = rest.find(" > ") {
-        let before = &rest[..i];
-        let after = rest[i + 3..].trim_start();
-        // The author is the word run since the previous message boundary.
-        let bstart = ["\n", " - "]
-            .iter()
-            .filter_map(|sep| before.rfind(sep).map(|j| j + sep.len()))
-            .max()
-            .unwrap_or(0);
-        let author = before[bstart..].trim();
-        let is_author = after.starts_with("<url=")
-            && !author.is_empty()
-            && !author.contains("<url=")
-            && author.split_whitespace().count() <= 4;
-        if is_author {
-            out.push_str(&before[..bstart]);
-            rest = after;
-        } else {
-            out.push_str(&rest[..i + 3]);
-            rest = &rest[i + 3..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Parse EVE in-game "<url=showinfo:TYPE//ID>Name</url>" links (present when intel
-/// is pasted straight from the client) — chat-log intel has the tags stripped, so
-/// this only matters for pastes. Returns the cleaned text (each tag replaced by its
-/// inner name) plus authoritatively classified pilots / ships / systems.
-struct UrlTags {
-    /// Readable text: each tag replaced by its inner name (for display).
-    display: String,
-    /// Parse text: tagged spans blanked out (their entities are classified here, so
-    /// the heuristic must not re-read them and merge adjacent names into one run).
-    masked: String,
-    pilots: Vec<String>,
-    /// Characters whose id is known from the link (name, character id).
-    char_ids: Vec<(String, i64)>,
-    ships: Vec<(i64, String)>,
-    systems: Vec<String>,
-    /// Stargate links — the name is the destination system, i.e. a gate.
-    gates: Vec<String>,
-    /// Anchored-structure (citadel/POS) links — the whole name is one token, never split.
-    structures: Vec<String>,
-}
-
-fn parse_url_tags(
-    text: &str,
-    systems: &Systems,
-    ship_index: &std::collections::HashMap<String, (i64, String)>,
-) -> UrlTags {
-    let mut t = UrlTags {
-        display: String::with_capacity(text.len()),
-        masked: String::with_capacity(text.len()),
-        pilots: Vec::new(),
-        char_ids: Vec::new(),
-        ships: Vec::new(),
-        systems: Vec::new(),
-        gates: Vec::new(),
-        structures: Vec::new(),
-    };
-    let mut rest = text;
-    while let Some(start) = rest.find("<url=") {
-        t.display.push_str(&rest[..start]);
-        t.masked.push_str(&rest[..start]);
-        let after = &rest[start + 5..];
-        let bail = |t: &mut UrlTags| {
-            t.display.push_str(&rest[start..]);
-            t.masked.push_str(&rest[start..]);
-        };
-        let Some(gt) = after.find('>') else {
-            bail(&mut t);
-            rest = "";
-            break;
-        };
-        let attr = &after[..gt];
-        let body = &after[gt + 1..];
-        let Some(end) = body.find("</url>") else {
-            bail(&mut t);
-            rest = "";
-            break;
-        };
-        let inner = body[..end].trim();
-        t.display.push_str(inner);
-        t.display.push(' ');
-        t.masked.push(' '); // blank the linked span for the heuristic
-        if let Some(rest_attr) = attr.strip_prefix("showinfo:") {
-            let type_id: i64 = rest_attr.split("//").next().unwrap_or("").parse().unwrap_or(0);
-            let item_id: i64 = rest_attr.split("//").nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-            if !inner.is_empty() {
-                // The itemID range disambiguates a stargate (50M) from a solar system
-                // (30M). A character is identified by BOTH its bloodline typeID
-                // (1373–1390) and its itemID range — so a newer bloodline whose typeID
-                // we don't list is still caught by its id (chars: 90–98M and the modern
-                // 2.10–2.147B range), authoritative even when the name is also a system.
-                let is_char_id = (90_000_000..98_000_000).contains(&item_id)
-                    || (2_100_000_000..=2_147_483_647).contains(&item_id);
-                if (50_000_000..60_000_000).contains(&item_id) {
-                    // A stargate link — its name is the destination system: a gate.
-                    t.gates.push(inner.to_owned());
-                } else if type_id == 5 {
-                    // EVE appends "*" to a system name that's set as a route waypoint; strip it
-                    // (and any trailing space) so the system still resolves.
-                    t.systems.push(inner.trim_end_matches('*').trim().to_owned());
-                } else if (1373..=1390).contains(&type_id) || is_char_id {
-                    t.pilots.push(inner.to_owned());
-                    t.char_ids.push((inner.to_owned(), item_id));
-                } else if let Some((id, name)) = ship_index.get(&inner.to_lowercase()) {
-                    t.ships.push((*id, name.clone()));
-                } else if resolve(systems, inner).is_some() {
-                    t.systems.push(inner.to_owned());
-                } else if structure_name_by_type(type_id).is_some() || item_id >= 1_000_000_000_000 {
-                    // Anchored structure (citadel/POS) showinfo, e.g.
-                    // "C-J6MT - Why Pee Dubs (GSF …)". The whole name is one token — never split
-                    // it into pilots/ships. (After the ship/system checks: a ship in space also has
-                    // a 1e12-range item id, so type/name wins first.)
-                    t.structures.push(inner.to_owned());
-                } else if let Some((pilot, ship)) = split_pilot_ship(inner, ship_index) {
-                    // A "Pilot (Ship)" killmail/fitting link (showinfo on the ship type) — the
-                    // name is the pilot + their hull, not a pilot literally called "X (Hull)".
-                    t.pilots.push(pilot.to_owned());
-                    t.ships.push(ship);
-                } else {
-                    t.pilots.push(inner.to_owned());
-                }
-            }
-        }
-        rest = &body[end + 6..];
-    }
-    t.display.push_str(rest);
-    t.masked.push_str(rest);
-    t
-}
-
-/// Split a "Pilot (Hull)" link display into the pilot name + resolved ship, when the
-/// parenthesised part is a known hull (killmail / fitting links use this form).
-fn split_pilot_ship<'a>(
-    inner: &'a str,
-    ship_index: &std::collections::HashMap<String, (i64, String)>,
-) -> Option<(&'a str, (i64, String))> {
-    let (name, rest) = inner.rsplit_once(" (")?;
-    let hull = rest.strip_suffix(')')?;
-    let ship = ship_index.get(&hull.to_lowercase())?;
-    let name = name.trim();
-    (!name.is_empty()).then(|| (name, ship.clone()))
+    t.replace('*', "")
 }
 
 /// Analyse one message into a structured report (movement is added later).
@@ -1424,14 +1278,7 @@ pub fn analyze_ctx(
 ) -> IntelReport {
     let cleaned = preprocess_intel(text);
     let text = cleaned.as_str();
-    // Resolve in-game showinfo links first; parse the masked text, display the names.
-    let tags = parse_url_tags(text, systems, ship_index);
-    let display_text = tags.display.trim().to_owned();
-    let si_char_ids = tags.char_ids;
-    let si_gates = tags.gates;
-    let si_structures = tags.structures;
-    let (si_pilots, si_ships, si_systems) = (tags.pilots, tags.ships, tags.systems);
-    let text = tags.masked.as_str();
+    let display_text = text.trim().to_owned();
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
@@ -1544,12 +1391,6 @@ pub fn analyze_ctx(
             && !pilots.iter().any(|p| p.eq_ignore_ascii_case(t))
         {
             pilots.push((*t).to_owned());
-        }
-    }
-    // Characters from in-game showinfo links are authoritative.
-    for p in &si_pilots {
-        if !pilots.iter().any(|x| x.eq_ignore_ascii_case(p)) {
-            pilots.push(p.clone());
         }
     }
     // Drop a candidate that is a contiguous sub-phrase of a longer candidate (so a
@@ -1708,9 +1549,7 @@ pub fn analyze_ctx(
     // The loose-run and single-token sources are added after the earlier sub-phrase filter,
     // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
     // produced because the loose run breaks on the 2-char "Dr") can slip through.
-    let char_linked: std::collections::HashSet<String> =
-        si_char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
-    drop_subphrase_pilots(&mut pilots, &char_linked);
+    drop_subphrase_pilots(&mut pilots, &std::collections::HashSet::new());
 
     let mut pilot_tokens: std::collections::HashSet<String> = pilots
         .iter()
@@ -1815,10 +1654,6 @@ pub fn analyze_ctx(
     for (_, _, id, name) in mw_ships {
         add_ship(id, &name, &mut ships);
     }
-    // Ships from in-game showinfo links.
-    for (id, name) in &si_ships {
-        add_ship(*id, name, &mut ships);
-    }
 
     let mut detected: Vec<DetectedSystem> = Vec::new();
     // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
@@ -1861,19 +1696,6 @@ pub fn analyze_ctx(
                         security: info.security,
                     });
                 }
-            }
-        }
-    }
-
-    // Systems from in-game showinfo links.
-    for name in &si_systems {
-        if let Some(info) = resolve(systems, name) {
-            if !detected.iter().any(|d| d.id == info.id) {
-                detected.push(DetectedSystem {
-                    id: info.id,
-                    name: info.name.clone(),
-                    security: info.security,
-                });
             }
         }
     }
@@ -1970,18 +1792,6 @@ pub fn analyze_ctx(
             detected.retain(|d| d.id != info.id);
         }
         break;
-    }
-
-    // A stargate showinfo link names the destination system — that's the gate.
-    if gate.is_none() {
-        if let Some(g) = si_gates.first() {
-            let name = resolve(systems, g).map(|i| i.name.clone());
-            // Don't double-list the gate's destination as a plain system.
-            if let Some(n) = &name {
-                detected.retain(|d| &d.name != n);
-            }
-            gate = Some(name.unwrap_or_else(|| g.clone()));
-        }
     }
 
     // "Ansi"/"Ansiblex" = the Ansiblex jump bridge in the report's system; treat it as
@@ -2091,16 +1901,8 @@ pub fn analyze_ctx(
     // A pilot name always contains a letter — a bare number ("warpin 100") is a count, not a name.
     pilots.retain(|p| p.chars().any(|c| c.is_alphabetic()));
     // A single all-caps, letters-only token ("UALX", "DT") is a system abbreviation/acronym, not a
-    // pilot — EVE names are mixed-case. Char-linked names are authoritative, so they're exempt.
-    {
-        let linked: std::collections::HashSet<String> =
-            si_char_ids.iter().map(|(n, _)| n.to_lowercase()).collect();
-        pilots.retain(|p| {
-            linked.contains(&p.to_lowercase())
-                || p.contains(' ')
-                || !p.chars().all(|c| c.is_ascii_uppercase())
-        });
-    }
+    // pilot — EVE names are mixed-case.
+    pilots.retain(|p| p.contains(' ') || !p.chars().all(|c| c.is_ascii_uppercase()));
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
@@ -2132,13 +1934,7 @@ pub fn analyze_ctx(
     };
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
-    let mut structures = detect_structures(text);
-    // Anchored-structure showinfo links (citadels) arrive as one whole token.
-    for s in si_structures {
-        if !structures.iter().any(|(n, _)| n.eq_ignore_ascii_case(&s)) {
-            structures.push((s, None));
-        }
-    }
+    let structures = detect_structures(text);
     let mut report = IntelReport {
         id: 0, // assigned by IntelState::push
         probes,
@@ -2147,7 +1943,6 @@ pub fn analyze_ctx(
         reporter: reporter.to_owned(),
         text: display_text,
         pilots,
-        char_ids: si_char_ids,
         systems: detected,
         ships,
         classes,
@@ -2217,7 +2012,7 @@ pub fn analyze_ctx(
         } else {
             None
         },
-        skyhook: lower.contains("skyhook"),
+        skyhook: lower.contains("skyhook") || lower_tokens.iter().any(|t| is_skyhook_typo(t)),
         gates,
         alliances,
         movement: None,
@@ -2237,7 +2032,6 @@ pub fn analyze_ctx(
             || report.tackled
             || !report.ships.is_empty()
             || !report.pilots.is_empty()
-            || !report.char_ids.is_empty()
             || report.count.unwrap_or(0) > 0)
     {
         report.clear = false;
@@ -2497,7 +2291,15 @@ pub fn structure_name_by_type(id: i64) -> Option<&'static str> {
 /// Whether a single lower-case token names a structure (so it isn't read as a pilot).
 fn is_structure_word(t: &str) -> bool {
     let lw = t.to_lowercase();
-    STRUCTURES.iter().any(|(m, _)| !m.contains(' ') && *m == lw.as_str())
+    STRUCTURES.iter().any(|(m, _)| !m.contains(' ') && *m == lw.as_str()) || is_skyhook_typo(&lw)
+}
+
+/// A near-miss spelling of "skyhook" ("skhook", "skyook", "skyhok") — edit distance <= 1
+/// with a "sk" prefix so real names aren't swept in. Skyhooks dominate null-sec intel and
+/// are routinely fat-fingered, so the typo should still raise the structure.
+fn is_skyhook_typo(w: &str) -> bool {
+    let w = w.to_lowercase();
+    w.len() >= 5 && w.starts_with("sk") && crate::shipnames::edit_distance(&w, "skyhook") <= 1
 }
 
 /// A distance off a structure: "500km", "2au"/"2AU", or a bare number followed by
@@ -2622,6 +2424,11 @@ fn structure_spans(words: &[String]) -> Vec<(usize, usize, String)> {
                 hit = Some((len, canon));
                 break;
             }
+            // A single-word skyhook typo ("skhook") still raises the Skyhook structure.
+            if len == 1 && is_skyhook_typo(&phrase) {
+                hit = Some((len, "Skyhook".to_string()));
+                break;
+            }
         }
         if let Some((len, canon)) = hit {
             out.push((i, len, canon));
@@ -2744,7 +2551,11 @@ fn parse_count(
         if raw.contains('-') {
             continue;
         }
-        let t = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != 'x');
+        // Lower-case so an upper-case multiplier ("X5") decorates a count just like "x5".
+        let t = raw
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != 'x' && c != 'X')
+            .to_ascii_lowercase();
+        let t = t.as_str();
         let digits = t.trim_start_matches(['+', 'x']).trim_end_matches(['x', '+']);
         if digits.is_empty() || digits.len() > 3 {
             continue;
@@ -2905,12 +2716,6 @@ mod tests {
     fn surname_that_is_a_system_is_not_a_gate() {
         let s = systems();
         // "alexpanda Uitra" is a pilot; "Uitra" (a real system) must not become a bogus gate.
-        let tagged = "<url=showinfo:5//30000669>N3-JBX*</url>  <url=showinfo:1375//95838898>alexpanda Uitra</url>";
-        let r = analyze(tagged, &s, &noships(), &noknown(), 1, "ch", "AnewSs");
-        assert!(r.pilots.iter().any(|p| p == "alexpanda Uitra"), "pilots={:?}", r.pilots);
-        assert_eq!(r.systems.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), vec!["N3-JBX"]);
-        assert!(r.gates.is_empty(), "gates={:?}", r.gates);
-        // Same line relayed as plain text (no showinfo tags).
         let r2 = analyze("N3-JBX* alexpanda Uitra", &s, &noships(), &noknown(), 1, "ch", "AnewSs");
         assert!(r2.pilots.iter().any(|p| p == "alexpanda Uitra"), "pilots={:?}", r2.pilots);
         assert_eq!(r2.systems.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), vec!["N3-JBX"]);
@@ -2928,12 +2733,6 @@ mod tests {
     #[test]
     fn lowercase_full_name_not_truncated_to_surname() {
         let s = systems();
-        // In-game paste with showinfo tags: the char link is authoritative.
-        let txt = "<url=showinfo:1373//2112339969>ji wuming</url>  <url=showinfo:5//30004946>EIMJ-M</url>";
-        let mut known = noknown();
-        known.insert("wuming".into(), 999); // the surname is itself a real character
-        let r = analyze(txt, &s, &noships(), &known, 1, "ch", "Death Eater 101");
-        assert_eq!(r.pilots, vec!["ji wuming".to_string()], "got {:?}", r.pilots);
         // Plain-text relay with the full name cached.
         let mut known2 = noknown();
         known2.insert("ji wuming".into(), 2112339969);
@@ -2949,16 +2748,12 @@ mod tests {
     }
 
     #[test]
-    fn showinfo_name_not_split_into_ship_and_pilot() {
+    fn full_name_not_split_into_ship_and_pilot() {
         let s = systems();
-        // A char-linked "Wolf E Kristjansson" must stay one pilot — never "Wolf" (the
-        // assault frigate) + "Kristjansson". Plain-text relays match it via the known cache.
-        let txt = "vin > <url=showinfo:1377//2122822665>Wolf E Kristjansson</url> nv";
+        // "Wolf E Kristjansson" must stay one pilot — never "Wolf" (the assault frigate) +
+        // "Kristjansson". A plain-text relay matches it whole via the known cache.
         let mut ships = noships();
         ships.insert("wolf".into(), (11371, "Wolf".into()));
-        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "x");
-        assert_eq!(r.pilots, vec!["Wolf E Kristjansson".to_string()]);
-        assert!(r.ships.is_empty(), "ships={:?}", r.ships);
         // Plain-text relay with the full name already known resolves whole, no "Wolf" ship.
         let mut known = noknown();
         known.insert("wolf e kristjansson".into(), 2122822665);
@@ -2996,37 +2791,6 @@ mod tests {
         // A capitalised short token IS still taken as a deliberate pilot mention.
         let r2 = analyze("Neo tackled in Jita", &s, &noships(), &known, 1, "ch", "Anaz");
         assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("neo")), "pilots={:?}", r2.pilots);
-    }
-
-    #[test]
-    fn showinfo_pilots_survive_amend_and_clear() {
-        let mut by_name = std::collections::HashMap::new();
-        by_name.insert(
-            "q-k2t7".to_string(),
-            SystemInfo { id: 30000682, name: "Q-K2T7".into(), security: -0.5,
-                constellation: String::new(), region: String::new(), faction: String::new() },
-        );
-        let s = Systems::new(by_name, HashMap::new());
-        let mut ships = noships();
-        ships.insert("jackdaw".into(), (34562, "Jackdaw".into()));
-        let mut st = IntelState::default();
-        let msgs = [
-            "<url=showinfo:1377//2122822665>Wolf E Kristjansson</url>  <url=showinfo:1386//2124246974>Kristin Vuld</url>  <url=showinfo:1386//2124278733>Hedgeborn Ragamuffin</url>  <url=showinfo:1378//94277160>Callas Plaude</url>  <url=showinfo:5//30000682>Q-K2T7</url> nv",
-            "1 jackdaw, rest NV",
-            "<url=showinfo:5//30000682>Q-K2T7</url> clear",
-        ];
-        for (i, m) in msgs.iter().enumerate() {
-            let r = analyze(m, &s, &ships, &noknown(), 100 + i as i64, "ch", "Anaz Dian");
-            if !st.try_amend(&r, 60) {
-                st.push(r);
-            }
-        }
-        // The sighting keeps all four char-linked pilots and the jackdaw; "rest" never leaks.
-        let sighting = st.reports.iter().find(|r| !r.clear).expect("sighting report");
-        assert_eq!(sighting.pilots.len(), 4, "pilots={:?}", sighting.pilots);
-        assert!(!sighting.pilots.iter().any(|p| p.eq_ignore_ascii_case("rest")));
-        assert_eq!(sighting.char_ids.len(), 4);
-        assert!(sighting.ships.iter().any(|sh| sh.name == "Jackdaw"));
     }
 
     #[test]
@@ -3355,20 +3119,6 @@ mod tests {
     }
 
     #[test]
-    fn pilot_ship_killmail_link_splits() {
-        // The "Pilot (Hull)" display from a killmail/fitting link splits into the pilot + hull.
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("retribution".to_string(), (11393i64, "Retribution".to_string()))]
-                .into_iter()
-                .collect();
-        let (pilot, ship) = split_pilot_ship("Wolf E Kristjansson (Retribution)", &ships).unwrap();
-        assert_eq!(pilot, "Wolf E Kristjansson");
-        assert_eq!(ship.0, 11393);
-        // A plain pilot name (no known hull in parens) doesn't split.
-        assert!(split_pilot_ship("Just A Pilot", &ships).is_none());
-    }
-
-    #[test]
     fn thera_hole_is_a_wormhole() {
         let s = systems();
         let r = analyze("thera hole in Rancer", &s, &noships(), &noknown(), 1, "ch", "wwhh");
@@ -3484,6 +3234,80 @@ mod tests {
         let r = analyze("Federation Navy Comet Docteur West in Rancer", &s, &ships, &known, 1, "ch", "x");
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Navy")), "pilots={:?}", r.pilots);
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Comet")), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn hedging_think_not_a_pilot_even_if_known() {
+        let s = systems();
+        // A real player is named "Think"; "i think they're in Rancer" must not read it as a pilot.
+        let known: std::collections::HashMap<String, i64> =
+            [("think".to_string(), 1i64)].into_iter().collect();
+        let r = analyze("i think Sevra is in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("think")), "pilots={:?}", r.pilots);
+        assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+    }
+
+    #[test]
+    fn other_side_and_theft_are_not_pilots() {
+        let s = systems();
+        // "other side" (positional filler) and "theft" (a structure-grief verb) leaked as
+        // single-word pilots; neither is a player.
+        for m in ["Other Side in Jita", "skyhook Theft in Jita", "Other Side gang in Jita"] {
+            let r = analyze(m, &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(
+                !r.pilots.iter().any(|p| ["side", "other", "theft"].contains(&p.to_lowercase().as_str())),
+                "{m} -> spurious pilot: {:?}",
+                r.pilots
+            );
+        }
+    }
+
+    #[test]
+    fn mid_name_connector_keeps_name_whole() {
+        let s = systems();
+        // A linking word inside a name ("is", "of") must not split it into two pilots.
+        for (m, want) in [
+            ("Cult is Dead in Rancer", "Cult is Dead"),
+            ("Lord of War in Rancer", "Lord of War"),
+        ] {
+            let r = analyze(m, &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(r.pilots.iter().any(|p| p == want), "{m} -> {:?}", r.pilots);
+            assert!(!r.pilots.iter().any(|p| p == "Cult" || p == "Dead" || p == "War"), "{m} -> {:?}", r.pilots);
+        }
+        // A linking word at a name boundary is grammar, not part of the name.
+        let r = analyze("Sevra is in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p == "Sevra is"), "pilots={:?}", r.pilots);
+        // "X is Y" prose with a keyword isn't a name.
+        let r2 = analyze("gate is camped in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.pilots.is_empty(), "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
+    fn uppercase_x_multiplier_is_a_count() {
+        let s = systems();
+        // "X5"/"x5" both decorate a hostile count (case-insensitive). "X5" can also be part
+        // of a pilot name, so we only assert the count is read here, not pilot exclusion.
+        for m in ["x5 in Rancer", "X5 in Rancer", "X12 hostiles Rancer"] {
+            let r = analyze(m, &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(r.count.is_some(), "{m} -> count {:?}", r.count);
+        }
+        assert_eq!(analyze("X5 in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").count, Some(5));
+        assert_eq!(analyze("x5 in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").count, Some(5));
+    }
+
+    #[test]
+    fn skyhook_typo_still_detected() {
+        let s = systems();
+        // "skhook" (a common fat-finger of "skyhook") still raises the Skyhook structure and
+        // is not read as a pilot.
+        let r = analyze("skhook theft in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.skyhook, "skyhook flag not set: {:?}", r.text);
+        assert!(r.structures.iter().any(|(n, _)| n.as_str() == "Skyhook"), "structs={:?}", r.structures);
+        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
+        // A real (non-skyhook) word is not swept in by the typo tolerance.
+        let r2 = analyze("Schook in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r2.skyhook, "schook wrongly flagged as skyhook");
     }
 
     #[test]
@@ -3768,27 +3592,6 @@ mod tests {
     }
 
     #[test]
-    fn two_char_links_both_detected() {
-        let s = systems();
-        let r = analyze(
-            "<url=showinfo:1375//2123842340>bigfoott</url>  <url=showinfo:1374//2124452380>Kepplet</url>  <url=showinfo:5//30000593>GRHS-B</url>",
-            &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|x| x == "bigfoott"), "pilots={:?}", r.pilots);
-        assert!(r.pilots.iter().any(|x| x == "Kepplet"), "pilots={:?}", r.pilots);
-        assert!(r.char_ids.iter().any(|(n, _)| n == "bigfoott"), "char_ids={:?}", r.char_ids);
-        assert!(r.char_ids.iter().any(|(n, _)| n == "Kepplet"), "char_ids={:?}", r.char_ids);
-    }
-
-    #[test]
-    fn pilot_link_before_system() {
-        let s = systems();
-        let r = analyze(
-            "<url=showinfo:1379//115252465>Rondrasil</url>  <url=showinfo:5//30000775>8-WYQZ</url> nv",
-            &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p == "Rondrasil"), "pilots={:?}", r.pilots);
-    }
-
-    #[test]
     fn multiword_ship_not_double_counted() {
         let s = systems();
         let ships: std::collections::HashMap<String, (i64, String)> = [
@@ -3808,22 +3611,6 @@ mod tests {
         // Chinese killReport text (no url wrapper in the log) is recognised as a kill.
         let r = analyze("DZ Sharisa > 击杀：Wolf E Kristjansson", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r.killmail, "should flag a kill from the Chinese keyword");
-    }
-
-    #[test]
-    fn merge_keeps_char_link() {
-        // A pilot's showinfo char-id must survive a report merge, else the card filters
-        // the pilot out (char-linked names always display; unresolved bare names don't).
-        let s = systems();
-        let mut state = IntelState::default();
-        state.push(analyze("hostile in Rancer", &s, &noships(), &noknown(), 100, "ch", "Scout"));
-        let follow = analyze(
-            "<url=showinfo:1379//115252465>Rondrasil</url>",
-            &s, &noships(), &noknown(), 130, "ch", "Scout");
-        assert!(state.try_amend(&follow, 60));
-        let r = &state.reports[0];
-        assert!(r.pilots.iter().any(|p| p == "Rondrasil"), "pilots={:?}", r.pilots);
-        assert!(r.char_ids.iter().any(|(n, _)| n == "Rondrasil"), "char_ids={:?}", r.char_ids);
     }
 
     #[test]
@@ -4030,38 +3817,6 @@ mod tests {
         assert!(!r.pilots.iter().any(|p| p.contains(" I ")), "glued pronoun: {:?}", r.pilots);
     }
 
-    #[test]
-    fn names_with_i_still_recognized() {
-        let s = systems();
-        // Plain-text Title-case name whose words contain the letter I.
-        let r = analyze("Iris Bishopi in Jita", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(r.pilots.iter().any(|p| p == "Iris Bishopi"), "plain name: {:?}", r.pilots);
-
-        // Hyphenated name beginning with "I" (the I-Pustelga case from name_part docs).
-        let r2 = analyze("I-Pustelga tackled in Jita", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(r2.pilots.iter().any(|p| p == "I-Pustelga"), "hyphen name: {:?}", r2.pilots);
-
-        // A showinfo character link whose name has a standalone "I" token stays whole.
-        let r3 = analyze(
-            "x > <url=showinfo:1375//2120000001>Big I Deal</url> in Jita",
-            &s, &noships(), &noknown(), 1, "ch", "Spai",
-        );
-        assert!(r3.pilots.iter().any(|p| p == "Big I Deal"), "linked name: {:?}", r3.pilots);
-
-        // A name that is literally just "I" is impossible in EVE (min 3 chars), but a 2-letter
-        // capitalised handle like "Ix" with a system mention is still a name candidate via links.
-        let r4 = analyze(
-            "<url=showinfo:1375//2120000002>Ivan I Petrov</url> Rancer",
-            &s, &noships(), &noknown(), 1, "ch", "Spai",
-        );
-        assert!(r4.pilots.iter().any(|p| p == "Ivan I Petrov"), "linked 3-word: {:?}", r4.pilots);
-
-        // Control: a single capital initial that is NOT "I" still extends a plain-text name,
-        // so only the pronoun is special-cased.
-        let r5 = analyze("Lopatich R tackled in Jita", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(r5.pilots.iter().any(|p| p == "Lopatich R"), "non-I initial: {:?}", r5.pilots);
-    }
-
     fn sys_map(rows: &[(&str, &str, i64, f64)]) -> std::collections::HashMap<String, SystemInfo> {
         rows.iter()
             .map(|(k, n, id, sec)| {
@@ -4201,31 +3956,6 @@ mod tests {
     }
 
     #[test]
-    fn plural_ship_not_a_pilot() {
-        let s = Systems::new(sys_map(&[("5h-sm2", "5H-SM2", 30000581, -0.4)]), std::collections::HashMap::new());
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("tengu".to_string(), (29984i64, "Tengu".to_string()))].into_iter().collect();
-        let txt = "Asclepios Magna > <url=showinfo:5//30000581>5H-SM2</url>  \
-                   <url=showinfo:1375//1088333998>Fat Zero</url>  \
-                   <url=showinfo:1384//1461906166>Shiro She</url> +17 hotdrop tengus";
-        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Spai");
-        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("tengus")), "tengus as pilot: {:?}", r.pilots);
-        assert!(r.ships.iter().any(|sh| sh.name == "Tengu"), "tengu ship missing: {:?}", r.ships);
-        assert!(r.cyno, "hotdrop should flag cyno");
-    }
-
-    #[test]
-    fn clear_in_linked_name_not_a_status() {
-        let s = Systems::new(sys_map(&[("5h-sm2", "5H-SM2", 30000581, -0.4)]), std::collections::HashMap::new());
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("nemesis".to_string(), (11377i64, "Nemesis".to_string()))].into_iter().collect();
-        let txt = "Asclepios Magna > <url=showinfo:5//30000581>5H-SM2</url> camped by hot dropper with anchored bubble  <url=showinfo:1377//521632954>clear rain</url> nemesis";
-        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Spai");
-        assert!(!r.clear, "'clear' from pilot name spoofed a clear status");
-        assert!(r.pilots.iter().any(|p| p == "clear rain"), "pilots: {:?}", r.pilots);
-    }
-
-    #[test]
     fn lowercase_clear_rain_pilot_detected() {
         let s = systems();
         // The real pilot is the all-lowercase "clear rain" (char 521632954). In a plain-text
@@ -4267,120 +3997,6 @@ mod tests {
     }
 
     #[test]
-    fn cyno_in_linked_name_not_a_status() {
-        let s = Systems::new(sys_map(&[("1qz-y9", "1QZ-Y9", 30000720, -0.4)]), std::collections::HashMap::new());
-        let txt = "DaymondXD Styxx > <url=showinfo:1373//2123218599>Clean cyno toon</url>  <url=showinfo:5//30000720>1QZ-Y9</url>";
-        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(!r.cyno, "cyno spoofed by a pilot name: {:?}", r.pilots);
-        assert!(r.pilots.iter().any(|p| p == "Clean cyno toon"), "pilots: {:?}", r.pilots);
-        // A genuine cyno call still fires.
-        let r2 = analyze("1QZ-Y9 cyno up", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(r2.cyno, "real cyno dropped");
-        // Plain-text (log) form, but the pilot is already known → its "cyno" is excluded.
-        let known: std::collections::HashMap<String, i64> =
-            [("clean cyno toon".to_string(), 2123218599i64)].into_iter().collect();
-        let r3 = analyze("1QZ-Y9 Clean cyno toon", &s, &noships(), &known, 1, "ch", "Spai");
-        assert!(!r3.cyno, "known pilot's 'cyno' spoofed a cyno: pilots={:?}", r3.pilots);
-        // Plain-text, unknown to the cache, but on the case-sensitive active-pilot allowlist.
-        let r4 = analyze("1QZ-Y9 Clean cyno toon", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(!r4.cyno, "allowlisted pilot's 'cyno' spoofed a cyno: pilots={:?}", r4.pilots);
-        assert!(r4.pilots.iter().any(|p| p == "Clean cyno toon"), "pilots: {:?}", r4.pilots);
-        // A real cyno with the exact-case name absent still fires.
-        let r5 = analyze("1QZ-Y9 clean cyno", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(r5.cyno, "real cyno dropped");
-    }
-
-    #[test]
-    fn scan_keyword_not_a_pilot() {
-        let by_name: std::collections::HashMap<String, SystemInfo> = [("u104-3", "U104-3", 30000555i64, -0.3)]
-            .into_iter()
-            .map(|(k, n, id, sec)| {
-                (k.to_string(), SystemInfo { id, name: n.to_string(), security: sec, constellation: String::new(), region: String::new(), faction: String::new() })
-            })
-            .collect();
-        let s = Systems::new(by_name, std::collections::HashMap::new());
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("vedmak".to_string(), (47271i64, "Vedmak".to_string()))].into_iter().collect();
-        // Worst case: a real player happens to be named "Scan" (cached) — it must still be a
-        // keyword, not a hostile.
-        let known: std::collections::HashMap<String, i64> = [("scan".to_string(), 90000001i64)].into_iter().collect();
-        let txt = "LawrenceNewton > <url=showinfo:5//30000555>U104-3</url>  \
-                   <url=showinfo:1380//1275657095>Preestar</url> vedmak on scan";
-        let r = analyze(txt, &s, &ships, &known, 1, "ch", "Spai");
-        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("scan")), "'scan' leaked: {:?}", r.pilots);
-        assert!(r.pilots.iter().any(|p| p == "Preestar"), "Preestar missing: {:?}", r.pilots);
-    }
-
-    #[test]
-    fn repro_consecutive_char_links() {
-        let by_name: std::collections::HashMap<String, SystemInfo> = [("04ei-u", "04EI-U", 30000623i64, -0.4)]
-            .into_iter()
-            .map(|(k, n, id, sec)| {
-                (k.to_string(), SystemInfo { id, name: n.to_string(), security: sec, constellation: String::new(), region: String::new(), faction: String::new() })
-            })
-            .collect();
-        let s = Systems::new(by_name, std::collections::HashMap::new());
-        let txt = "Qun Xing1 > <url=showinfo:5//30000623>04EI-U</url>  \
-                   <url=showinfo:1384//2123169168>Abcde66666</url>  \
-                   <url=showinfo:1376//2119040439>FASTPIPIXIA</url>  \
-                   <url=showinfo:1383//2121749433>IMWeight</url>  \
-                   <url=showinfo:1383//2121169132>kirikoz</url>  \
-                   <url=showinfo:1375//2123386417>sreaphck</url> ess hacking for 110m";
-        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Spai");
-        let mut pilots = r.pilots.clone();
-        pilots.sort();
-        assert_eq!(
-            pilots,
-            vec!["Abcde66666", "FASTPIPIXIA", "IMWeight", "kirikoz", "sreaphck"],
-            "char pilots wrong (phantom from 'ess hacking for'?): {:?}",
-            r.pilots
-        );
-        assert!(r.ess, "ESS not recognized");
-        assert_eq!(r.isk, Some(110_000_000)); // "for 110m" with ESS context
-    }
-
-    #[test]
-    fn double_system_code_mention_no_phantom_pilot() {
-        let by_name: std::collections::HashMap<String, SystemInfo> = [
-            ("c-j6mt", "C-J6MT", 5i64, -0.6),
-            ("88a-ra", "88A-RA", 30000770i64, -0.5),
-        ]
-        .into_iter()
-        .map(|(k, n, id, sec)| {
-            (
-                k.to_string(),
-                SystemInfo {
-                    id,
-                    name: n.to_string(),
-                    security: sec,
-                    constellation: String::new(),
-                    region: String::new(),
-                    faction: String::new(),
-                },
-            )
-        })
-        .collect();
-        let adj = std::collections::HashMap::from([(5i64, vec![30000770i64]), (30000770i64, vec![5i64])]);
-        let s = Systems::new(by_name, adj);
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("exequror navy issue".to_string(), (29344i64, "Exequror Navy Issue".to_string()))]
-                .into_iter()
-                .collect();
-        let txt = "Asukichi > <url=showinfo:1379//94988888>Yesraffut Groslard</url>  \
-                   <url=showinfo:5//30000770>88A-RA</url> on C-J gate Exequror Navy Issue - \
-                   Asukichi > <url=showinfo:1373//2120110232>R3B3LKiwi</url> Jumped to C-J already maybe";
-        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Spai");
-        let mut pilots = r.pilots.clone();
-        pilots.sort();
-        assert_eq!(
-            pilots,
-            vec!["R3B3LKiwi".to_string(), "Yesraffut Groslard".to_string()],
-            "phantom pilot detected: {:?}",
-            r.pilots
-        );
-    }
-
-    #[test]
     fn multiword_ship_is_not_a_pilot() {
         let s = systems();
         let ships: std::collections::HashMap<String, (i64, String)> = [(
@@ -4394,82 +4010,6 @@ mod tests {
         assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Exequror Navy Issue")));
     }
 
-    #[test]
-    fn showinfo_links_classify_entities() {
-        let s = systems();
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("sleipnir".to_string(), (22444i64, "Sleipnir".to_string()))].into_iter().collect();
-        let r = analyze(
-            "x > <url=showinfo:5//30001242>Rancer</url> \
-             <url=showinfo:1375//625637028>Catastrophic</url> \
-             <url=showinfo:22444//1054499194005>Sleipnir</url>",
-            &s,
-            &ships,
-            &noknown(),
-            1,
-            "ch",
-            "x",
-        );
-        assert!(r.pilots.iter().any(|p| p == "Catastrophic"));
-        assert!(r.ships.iter().any(|sh| sh.name == "Sleipnir"));
-        assert!(r.systems.iter().any(|d| d.name == "Rancer"));
-        assert!(!r.pilots.iter().any(|p| p == "Sleipnir"));
-    }
-
-    #[test]
-    fn showinfo_full_card_has_system_ship_pilot() {
-        let s = systems();
-        let ships: std::collections::HashMap<String, (i64, String)> =
-            [("hecate".to_string(), (35683i64, "Hecate".to_string()))].into_iter().collect();
-        let r = analyze(
-            "<url=showinfo:5//30002187>Rancer</url> \
-             <url=showinfo:1375//91643796>Venum Einherjar's</url> \
-             <url=showinfo:35683//1054509319774>Hecate</url>",
-            &s,
-            &ships,
-            &noknown(),
-            1,
-            "ch",
-            "Masiell Hinken",
-        );
-        assert!(r.systems.iter().any(|d| d.name == "Rancer"), "system missing: {:?}", r.systems);
-        assert!(r.ships.iter().any(|sh| sh.name == "Hecate"), "ship missing: {:?}", r.ships);
-        assert!(r.pilots.iter().any(|p| p == "Venum Einherjar's"), "pilot missing: {:?}", r.pilots);
-    }
-
-    #[test]
-    fn showinfo_name_with_space_and_hyphen() {
-        let s = systems();
-        // "Nine -3" (typeID 1375 = character) — a name with an internal space + hyphen.
-        let r = analyze(
-            "<url=showinfo:1375//2121803366>Nine -3</url> <url=showinfo:5//30000469>9-02G0</url>",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "x",
-        );
-        assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
-    }
-
-
-    #[test]
-    fn showinfo_system_strips_waypoint_star() {
-        let s = systems();
-        // EVE appends "*" to a system set as a route waypoint; it must still resolve.
-        let r = analyze(
-            "<url=showinfo:5//30001242>Rancer*</url> <url=showinfo:1375//2121803366>Nine -3</url>",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "x",
-        );
-        assert!(r.systems.iter().any(|d| d.name == "Rancer"), "systems: {:?}", r.systems);
-        assert!(r.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r.pilots);
-    }
 
     #[test]
     fn pilot_name_keeps_alt_suffix() {
@@ -4479,23 +4019,6 @@ mod tests {
         assert!(r.pilots.iter().any(|p| p == "Nine -L"), "pilots: {:?}", r.pilots);
         let r2 = analyze("Nine -3", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r2.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r2.pilots);
-    }
-
-    #[test]
-    fn showinfo_character_typeid_makes_pilot() {
-        let s = systems();
-        // typeID 1380 is a character bloodline → "Sindend" is a character, even
-        // though the name resolves to no system or ship (it must not be typo'd).
-        let r = analyze(
-            "<url=showinfo:1380//2124077067>Sindend</url> <url=showinfo:5//30000669>N3-JBX</url>",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "x",
-        );
-        assert!(r.pilots.iter().any(|p| p == "Sindend"));
     }
 
     #[test]
@@ -4535,27 +4058,6 @@ mod tests {
     }
 
     #[test]
-    fn showinfo_character_name_containing_system_word() {
-        let s = systems();
-        // "Amarr slave 3424" (typeID 1379 = character) must be a pilot, not detected
-        // as the Amarr system from the leading word.
-        let r = analyze(
-            "<url=showinfo:5//30001158>SV5-8N</url> \
-             <url=showinfo:1379//2123880778>Amarr slave 3424</url> \
-             <url=showinfo:1376//2124463618>CIYUAN</url>",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "x",
-        );
-        assert!(r.pilots.iter().any(|p| p == "Amarr slave 3424"), "pilots: {:?}", r.pilots);
-        assert!(!r.systems.iter().any(|d| d.name == "Amarr"), "systems: {:?}", r.systems);
-        assert!(r.systems.iter().any(|d| d.name == "SV5-8N"));
-    }
-
-    #[test]
     fn detects_wormhole_code() {
         let s = systems();
         let r = analyze("Rancer K162 just appeared", &s, &noships(), &noknown(), 1, "ch", "x");
@@ -4569,22 +4071,6 @@ mod tests {
         let r3 = analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(!r3.wormhole);
         assert!(r3.wh_type.is_none());
-    }
-
-    #[test]
-    fn showinfo_stargate_is_gate() {
-        let s = systems();
-        let r = analyze(
-            "<url=showinfo:5//30004937>Rancer</url> 和 <url=showinfo:17//50012542>Jita</url> 相似",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "x",
-        );
-        assert_eq!(r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Rancer"]);
-        assert_eq!(r.gates.first().map(|s| s.as_str()), Some("Jita")); // the stargate link → gate
     }
 
     #[test]
@@ -4715,36 +4201,6 @@ mod tests {
     }
 
     #[test]
-    fn showinfo_char_link_recognised_by_typeid_and_itemid() {
-        let s = systems();
-        // A character whose bloodline typeID we list (1378) is recognised, AND its
-        // char id is captured from the itemID (in the modern 2.1B character range).
-        let r = analyze(
-            "<url=showinfo:1378//2116583018>The Meek</url> proteus",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "Reporter",
-        );
-        assert!(r.pilots.iter().any(|p| p == "The Meek"));
-        assert!(r.char_ids.iter().any(|(n, id)| n == "The Meek" && *id == 2116583018));
-        // A character whose typeID is NOT in our bloodline list is still caught by its
-        // itemID being in the character range.
-        let r2 = analyze(
-            "<url=showinfo:99//94000123>Nobody Known</url>",
-            &s,
-            &noships(),
-            &noknown(),
-            1,
-            "ch",
-            "Reporter",
-        );
-        assert!(r2.char_ids.iter().any(|(n, id)| n == "Nobody Known" && *id == 94000123));
-    }
-
-    #[test]
     fn gate_resolves_neighbour_prefix() {
         use std::collections::HashMap;
         let by_name = [
@@ -4809,19 +4265,6 @@ mod tests {
         // No system in the message: the channel's last system (context) disambiguates.
         let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
         assert_eq!(r2.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
-    }
-
-    #[test]
-    fn one_system_extra_mentions_become_gates() {
-        let s = systems();
-        // Three system links → only the first stays; the rest become gates.
-        let txt = "<url=showinfo:5//1>Rancer</url> <url=showinfo:5//2>Jita</url> <url=showinfo:5//8>Amarr</url>";
-        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "x");
-        assert_eq!(
-            r.systems.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
-            vec!["Rancer"]
-        );
-        assert_eq!(r.gates, vec!["Jita".to_owned(), "Amarr".to_owned()]);
     }
 
     #[test]
@@ -4908,50 +4351,6 @@ mod tests {
             .iter()
             .map(|(n, id)| (n.to_lowercase(), (*id, n.to_string())))
             .collect()
-    }
-
-    #[test]
-    fn ess_keyword_recognized() {
-        // "Thorax gang at ESS" — the ESS callout must set the keyword, not be lost.
-        let s = systems();
-        let ships = ships_with(&[("Thorax", 627)]);
-        let txt = "Kaputsky Aideron > <url=showinfo:5//30000535>384-IN</url> Thorax gang at ESS";
-        let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Kaputsky Aideron");
-        assert!(r.ess, "ESS keyword not recognized: ess={} text={:?}", r.ess, r.text);
-        assert!(
-            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("ess")),
-            "ess wrongly a pilot: {:?}",
-            r.pilots
-        );
-    }
-
-    #[test]
-    fn char_linked_lowercase_pilot_recognized() {
-        // A char-linked name is authoritative even when lower-case ("ae ubik").
-        let s = systems();
-        let txt = "Shiva Hariere > <url=showinfo:5//30000531>E-JCUS</url>  <url=showinfo:1383//2117745198>ae ubik</url> nv";
-        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "Shiva Hariere");
-        assert!(r.pilots.iter().any(|p| p == "ae ubik"), "char-linked pilot missing: {:?}", r.pilots);
-    }
-
-    #[test]
-    fn structure_showinfo_and_bare_number_not_pilots() {
-        // A citadel showinfo is one structure token, never a giant pilot; "100" is a count.
-        let s = systems();
-        let txt = "STRG-Z > <url=showinfo:5//30000772>C-J6MT</url> camping ess outside - STRG-Z > warpin 100 <url=showinfo:35833//1050027052183>C-J6MT - Why Pee Dubs Admirals Quarters (GSF Logistics and Posting Reserves)</url> from here";
-        let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "STRG-Z");
-        assert!(
-            !r.pilots.iter().any(|p| p.contains("Pee Dubs") || p.contains("GSF") || p.contains("Quarters")),
-            "structure name leaked as pilot: {:?}",
-            r.pilots
-        );
-        assert!(!r.pilots.iter().any(|p| p == "100"), "bare number became a pilot: {:?}", r.pilots);
-        assert!(r.camp, "camping should set the camp keyword: {:?}", r.text);
-        assert!(
-            r.structures.iter().any(|(n, _)| n.contains("Pee Dubs")),
-            "structure not recorded: {:?}",
-            r.structures
-        );
     }
 
     #[test]

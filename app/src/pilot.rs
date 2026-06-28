@@ -42,14 +42,6 @@ impl PilotCache {
         }
     }
 
-    /// Mark a name as a confirmed character (e.g. from an in-game showinfo link that
-    /// carries the character id) — resolved immediately, no ESI round-trip.
-    pub fn confirm(&mut self, name: &str, id: i64) {
-        let lw = name.to_lowercase();
-        self.resolved.insert(lw.clone(), Some(id));
-        self.queued.remove(&lw);
-    }
-
     /// Pre-load the known (persisted) pilot names so they're recognised at once.
     pub fn preload(&mut self, known: &HashMap<String, i64>) {
         for (lc, id) in known {
@@ -120,12 +112,13 @@ impl PilotCache {
                 }
             }
         }
-        // A candidate that splits into 3+ single-word names is almost always ONE character
-        // with a multi-word name ("I Forgot Who") whose individual words each happen to be
-        // real characters — not several glued-together names. Never reuse one run to emit
-        // that many separate pilots; refuse the split (the whole, ESI-rejected name is
-        // dropped instead of exploding into spurious singles).
-        if out.len() >= 3 && out.iter().all(|n| !n.contains(' ')) {
+        // A candidate that splits into ONLY single-word names (2+) is almost always ONE
+        // character with a multi-word name ("Andy Shank", "I Forgot Who") whose individual
+        // words each happen to be real players — not several glued-together names. Try the
+        // multi-word name first: refuse the all-singles split (the whole, ESI-rejected name
+        // is dropped instead of exploding into spurious singles). A real glued list always
+        // carries at least one multi-word name, which keeps that case splitting.
+        if out.len() >= 2 && out.iter().all(|n| !n.contains(' ')) {
             return Vec::new();
         }
         out
@@ -331,6 +324,31 @@ mod tests {
         c.resolved.insert("ace hodgens 30".into(), None); // resolved as a non-name
         // "30" is a count ("Ace hodgens +30 kikimoras"), not part of the name.
         assert_eq!(c.cover("Ace hodgens 30"), vec!["Ace hodgens"]);
+    }
+
+    #[test]
+    fn cover_keeps_two_word_name_over_two_single_players() {
+        let mut c = PilotCache::default();
+        // "Andy" and "Shank" are each real players, but "Andy Shank" is one character. With
+        // the pair confirmed it is taken whole.
+        c.resolved.insert("andy".into(), Some(1));
+        c.resolved.insert("shank".into(), Some(2));
+        c.resolved.insert("andy shank".into(), Some(3));
+        assert_eq!(c.cover("Andy Shank"), vec!["Andy Shank"]);
+        // If ESI marks the pair a non-name (stale/partial), never explode it into the two
+        // coincidental singles — prefer the multi-word reading and refuse the split.
+        let mut c2 = PilotCache::default();
+        c2.resolved.insert("andy".into(), Some(1));
+        c2.resolved.insert("shank".into(), Some(2));
+        c2.resolved.insert("andy shank".into(), None);
+        assert!(c2.cover("Andy Shank").is_empty(), "must not split into two singles");
+        // A genuine glued list still splits — it carries a multi-word name as the anchor.
+        let mut c3 = PilotCache::default();
+        c3.resolved.insert("redhorn mastro".into(), Some(1));
+        c3.resolved.insert("falcon".into(), Some(2));
+        c3.resolved.insert("redhorn mastro falcon".into(), None);
+        c3.resolved.insert("mastro falcon".into(), None);
+        assert_eq!(c3.cover("Redhorn Mastro Falcon"), vec!["Redhorn Mastro", "Falcon"]);
     }
 
     #[test]

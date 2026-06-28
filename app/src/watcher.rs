@@ -134,7 +134,7 @@ fn scan(
             .unwrap_or_else(|| messages.len().saturating_sub(FIRST_SIGHT_BACKLOG));
         if messages.len() > start {
             let now = chrono::Utc::now().timestamp();
-            let mut known = pilots.lock().unwrap().confirmed();
+            let known = pilots.lock().unwrap().confirmed();
             let mut st = state.lock().unwrap();
             for m in &messages[start..] {
                 // Never parse the channel MOTD / system notices (posted by EVE System).
@@ -149,41 +149,19 @@ fn scan(
                     &regions,
                 );
 
-                // Characters from in-game showinfo links already carry their id —
-                // confirm them at once (and persist), then queue the rest for ESI.
-                if !report.pilots.is_empty() || !report.char_ids.is_empty() {
+                // Queue every candidate name (plus its 1–3 word sub-spans) for the ESI
+                // resolver, which confirms the real characters and lets the cover split an
+                // over-glued run ("Wwallddo Lulu Uanid" → Wwallddo + Lulu Uanid).
+                if !report.pilots.is_empty() {
                     let mut cache = pilots.lock().unwrap();
-                    if !report.char_ids.is_empty() {
-                        for (name, id) in &report.char_ids {
-                            cache.confirm(name, *id);
-                            // Make the confirmed full name visible to later messages in this
-                            // same batch, so a plain-text relay of the same intel (no showinfo
-                            // markup) matches "Wolf E Kristjansson" whole instead of reading
-                            // "Wolf" as the ship and "Kristjansson" as a separate pilot.
-                            known.insert(name.to_lowercase(), *id);
-                            if let Some(s) = db {
-                                let _ = s.add_known_pilot(name, *id);
-                            }
-                        }
-                    }
-                    // Queue 1–3 word sub-spans so the resolver can confirm the real names
-                    // inside an over-glued run ("Wwallddo Lulu Uanid" → Wwallddo + Lulu Uanid).
                     for name in &report.pilots {
-                        // The full candidate too (name_windows only yields 1–3 word spans),
-                        // so a 4+ word over-glued run resolves to not-a-character and the
-                        // cover can split it.
                         cache.queue(name);
                         for w in crate::pilot::name_windows(name) {
                             cache.queue(&w);
                         }
                     }
                     if cfg!(debug_assertions) {
-                        eprintln!(
-                            "[pilot] parsed '{}': pilots={:?} char-linked={:?}",
-                            m.author,
-                            report.pilots,
-                            report.char_ids.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                        );
+                        eprintln!("[pilot] parsed '{}': pilots={:?}", m.author, report.pilots);
                     }
                 }
 
