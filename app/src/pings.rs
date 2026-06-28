@@ -182,11 +182,12 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
 }
 
 fn clean_text(text: &str) -> String {
+    static DOCTRINE_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[^\n]Doctrine:").unwrap());
     let mut t = text.replace('\u{200D}', "").replace('\u{FEFF}', "");
     t = t.replace("PAP \nType:", "\nPAP Type:");
     // Put "Doctrine:" on its own line when it follows other text on a line.
-    let re = regex::Regex::new(r"[^\n]Doctrine:").unwrap();
-    re.replace_all(&t, "\nDoctrine:").into_owned()
+    DOCTRINE_RE.replace_all(&t, "\nDoctrine:").into_owned()
 }
 
 /// A ping can carry several fleets (each block with its own FC). Split on blank
@@ -212,18 +213,22 @@ fn split_multi_fleet(text: &str) -> Vec<String> {
 type Sig = (Option<String>, Option<String>, Option<String>);
 
 fn parse_signature(clean: &str) -> Option<Sig> {
+    static SIG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"~~~ This was a (?P<source>.*?) ?broadcast from (?P<sender>.*) to (?P<target>.*) at .* ~~~",
+        )
+        .unwrap()
+    });
     let last = clean.lines().last()?;
-    let re = regex::Regex::new(
-        r"~~~ This was a (?P<source>.*?) ?broadcast from (?P<sender>.*) to (?P<target>.*) at .* ~~~",
-    )
-    .unwrap();
-    let c = re.captures(last)?;
+    let c = SIG_RE.captures(last)?;
     let pick = |n: &str| c.name(n).map(|m| m.as_str().trim().to_owned()).filter(|s| !s.is_empty());
     Some((pick("source"), pick("sender"), pick("target")))
 }
 
 fn parse_formups(text: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Vec<Formup> {
-    let re = regex::Regex::new(r"[\s/&]+").unwrap();
+    static SEP_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"[\s/&]+").unwrap());
+    let re = &*SEP_RE;
     let parts: Vec<&str> = if re.is_match(text) {
         re.split(text).filter(|p| !matches!(p.trim().to_lowercase().as_str(), "" | "and" | "or" | "-")).collect()
     } else {
@@ -260,8 +265,10 @@ fn parse_pap(text: &str) -> Option<PapType> {
 }
 
 fn parse_comms(text: &str) -> Comms {
-    let re = regex::Regex::new(r"(?P<channel>.*) (?P<link>https://gnf\.lt/.*\.html)").unwrap();
-    if let Some(c) = re.captures(text) {
+    static COMMS_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?P<channel>.*) (?P<link>https://gnf\.lt/.*\.html)").unwrap()
+    });
+    if let Some(c) = COMMS_RE.captures(text) {
         return Comms::Mumble {
             channel: c.name("channel").unwrap().as_str().to_owned(),
             link: c.name("link").unwrap().as_str().to_owned(),
