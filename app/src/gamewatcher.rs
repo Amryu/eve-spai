@@ -21,9 +21,11 @@ pub fn spawn(
 ) {
     std::thread::spawn(move || {
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
+        // Per-file (size, mtime) so an unchanged game log isn't re-read+parsed every poll.
+        let mut file_sigs: HashMap<PathBuf, (u64, i64)> = HashMap::new();
         let mut cooldown: HashMap<CombatKind, i64> = HashMap::new();
         loop {
-            scan(&game_dir, &alerts, &notify_on, &ctx, &mut processed, &mut cooldown);
+            scan(&game_dir, &alerts, &notify_on, &ctx, &mut processed, &mut file_sigs, &mut cooldown);
             std::thread::sleep(POLL);
         }
     });
@@ -42,6 +44,7 @@ fn scan(
     notify_on: &std::sync::atomic::AtomicBool,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
+    file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
     cooldown: &mut HashMap<CombatKind, i64>,
 ) {
     let Ok(entries) = std::fs::read_dir(game_dir) else {
@@ -53,6 +56,21 @@ fn scan(
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("txt") {
             continue;
+        }
+        // Skip a game log unchanged (same size + mtime) since we last processed it.
+        let sig = entry.metadata().ok().map(|md| {
+            let mtime = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            (md.len(), mtime)
+        });
+        if let Some(sig) = sig {
+            if processed.contains_key(&path) && file_sigs.get(&path) == Some(&sig) {
+                continue;
+            }
         }
         let lines = gamelog::read(&path);
         // First sight: skip the backlog — only alert on live events.
@@ -76,6 +94,9 @@ fn scan(
             }
             alerts.lock().unwrap().push((now, text));
             fired = true;
+        }
+        if let Some(sig) = sig {
+            file_sigs.insert(path.clone(), sig);
         }
         processed.insert(path, lines.len());
     }
