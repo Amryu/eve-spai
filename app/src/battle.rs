@@ -214,12 +214,6 @@ impl Battle {
     }
 }
 
-impl Participant {
-    fn value(&self) -> f64 {
-        self.lost.as_ref().map_or(0.0, |l| l.value)
-    }
-}
-
 impl Battle {
     /// Which side a party belongs to (match by id, or by name when the id is unknown).
     pub fn side_of(&self, p: &Party) -> Option<usize> {
@@ -343,12 +337,14 @@ impl Battle {
             }
         }
 
-        // Group by hull type; within a hull, destroyed first (highest value), then survivors.
+        // Highest-value kills first (ship + pod), descending; survivors (no loss) sink to the
+        // bottom, then same hulls and pilots stay together for a stable order.
+        let total = |p: &Participant| p.lost.as_ref().map_or(0.0, |l| l.value + l.pod_value);
         parts.sort_by(|a, b| {
-            a.ship
-                .cmp(&b.ship)
+            total(b)
+                .total_cmp(&total(a))
                 .then(b.lost.is_some().cmp(&a.lost.is_some()))
-                .then(b.value().total_cmp(&a.value()))
+                .then(a.ship.cmp(&b.ship))
                 .then(a.pilot.cmp(&b.pilot))
         });
         parts
@@ -1027,22 +1023,21 @@ mod tests {
     }
 
     #[test]
-    fn roster_groups_by_hull_lost_first() {
-        // Same hull (24692): one lost (Red), one survivor (Blue who also flew 24692). Plus Blue
-        // loses a different hull. Expect grouping by ship type, destroyed before survived.
+    fn roster_orders_by_value_descending() {
+        // Red loses a pricey Abaddon (24692, 100 ISK) and a cheap Rifter (587, 5 ISK). The roster
+        // lists the highest-value kill first.
         let v = |kill, time, victim: &str, ship, attacker: &str, isk| Engagement {
             victim_ship: ship,
             isk,
             ..eng(kill, time, 1, victim, attacker)
         };
-        // Blue (attacker, ship unknown here) kills Red's Abaddon(24692) and Red's Rifter(587).
-        let engs = [v(1, 0, "Red", 24692, "Blue", 100.0), v(2, 30, "Red", 587, "Blue", 5.0)];
+        let engs = [v(1, 0, "Red", 587, "Blue", 5.0), v(2, 30, "Red", 24692, "Blue", 100.0)];
         let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
         let red = b.side_of(&party(pid("Red"), "Red")).unwrap();
         let roster = b.roster(red);
-        // Both are Red losses, grouped ascending by ship type id (587 then 24692).
+        // Most valuable loss (Abaddon, 100) before the cheap one (Rifter, 5).
         let ships: Vec<i64> = roster.iter().map(|p| p.ship).collect();
-        assert_eq!(ships, vec![587, 24692]);
+        assert_eq!(ships, vec![24692, 587]);
         assert!(roster.iter().all(|p| p.lost.is_some()));
     }
 
