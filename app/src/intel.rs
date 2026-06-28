@@ -3799,6 +3799,36 @@ mod tests {
     }
 
     #[test]
+    fn system_detection_coverage() {
+        let s = systems(); // Rancer, Jita, C-J6MT, Uitra, N3-JBX, Amarr, …
+        let det = |m: &str| {
+            let r = analyze(m, &s, &noships(), &noknown(), 1, "ch", "x");
+            (r.systems.iter().map(|x| x.name.clone()).collect::<Vec<String>>(), r.gates.clone())
+        };
+        // A single system anywhere in the message is the location.
+        assert_eq!(det("hostiles in Jita").0, vec!["Jita"]);
+        assert_eq!(det("Jita").0, vec!["Jita"]);
+        assert_eq!(det("5 reds Jita").0, vec!["Jita"]);
+        // A null-sec code resolves to its system.
+        assert_eq!(det("C-J6MT clear").0, vec!["C-J6MT"]);
+        // EVE's route-waypoint "*" suffix is stripped.
+        assert_eq!(det("Jita* hostiles").0, vec!["Jita"]);
+        // Two systems: the first is the location, the second a gate.
+        let (sysd, gates) = det("N3-JBX Uitra");
+        assert_eq!(sysd, vec!["N3-JBX"]);
+        assert!(gates.iter().any(|g| g == "Uitra"), "gates={gates:?}");
+        // An abbreviated "<code> gate" resolves the gate's destination system.
+        assert!(det("on C-J gate").1.iter().any(|g| g == "C-J6MT"), "{:?}", det("on C-J gate"));
+        // A system mentioned alongside a pilot is still the location; the pilot is not a system.
+        assert_eq!(det("Sevra in Jita").0, vec!["Jita"]);
+        // A plain word that isn't a system never invents one.
+        assert!(det("hostiles incoming").0.is_empty());
+        // A lower-case word matching a system name IS the system ("clear in here" must NOT,
+        // handled elsewhere) — a code is matched case-insensitively.
+        assert_eq!(det("c-j6mt clear").0, vec!["C-J6MT"]);
+    }
+
+    #[test]
     fn detects_systems_count_and_flags() {
         let s = systems();
 

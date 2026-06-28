@@ -54,12 +54,11 @@ or entity ever spans it. Within a segment, classify each token as exactly one of
   point / scram / cyno / bubble / dread …). By the safety bias (principle 6) these *win* a
   collision: their tokens are recorded as the entity/keyword and end a name run. They may still
   be enqueued to ESI as part of an adjacent span, but the keyword/ship flag fires regardless.
-- **Ambiguous** — a system name or null-sec code, **except the first one in the message**. By
-  Q2, the *first* system/code token is always the intel **location** — a hard entity, reserved,
-  never part of a name. Every *subsequent* system token is ambiguous: recorded as a candidate
-  system but its tokens are NOT yet consumed, since they may belong to a name (`Rancer  Jita
-  Killer` → Rancer is the location, `Jita Killer` is checked against ESI). Does not end a name
-  run.
+- **Ambiguous** — a system name or null-sec code that is **flanked by a name word** (`Bob
+  Uitra`, `jita trader`). It is held as name-material and resolved by ESI; it becomes a system
+  only if ESI rejects the name containing it (no positional rule — see Q2). A system/code token
+  *not* adjacent to a name word (`hostiles in Jita`, `N3-JBX Uitra`) is a plain system and ends
+  a name run.
 - **Name material** — everything else, *including stop words and lower-case words*.
 
 A **candidate blob** is a maximal run of {name-material ∪ ambiguous} tokens between hard
@@ -135,9 +134,12 @@ the feed updates as verdicts arrive rather than blocking.
 ## Open questions for you
 
 1. ~~**Status-flag timing**~~ — **decided: immediate-then-correct** (see Transient behaviour).
-2. ~~**Systems shown before resolution**~~ — **decided: first system token = intel location**
-   (hard entity, never a name); every later system token is ambiguous and ESI-checked as a
-   possible name part.
+2. ~~**Systems shown before resolution**~~ — **decided (revised): a token is accepted as a
+   system only once ESI confirms it is NOT part of a name.** There is *no* positional rule (the
+   first system is not necessarily the location). A system/code token flanked by a name word
+   (`Bob Uitra`, `jita trader`) is held as name-material and resolved by ESI; a system token not
+   inside any candidate name (`hostiles in Jita`, `N3-JBX Uitra`) is accepted immediately. If
+   ESI rejects the name blob, its system tokens are re-accepted as systems in the reconcile.
 3. ~~**Offline tests**~~ — **decided: the current suite defines the expected outcomes**; keep
    those intents as the spec and adjust the test *mechanics* to the phase contract as needed
    (Phase A blob → `esi_resolve` → Phase C leftovers). Don't weaken what a test asserts is
