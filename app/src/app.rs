@@ -14609,16 +14609,22 @@ fn intel_row(
                     } else {
                         ui.add(egui::Button::new(egui::RichText::new(format!("{} {name}", icon::USER))))
                     };
+                    let corp_id = aff.as_ref().and_then(|a| a.corp);
+                    let alliance_id = aff.as_ref().and_then(|a| a.alliance);
                     let corp_name = aff.as_ref().and_then(|a| a.corp_name.clone());
                     let alliance_name = aff.as_ref().and_then(|a| a.alliance_name.clone());
                     let resp = resp.on_hover_ui(|ui| {
-                        ui.strong(name);
-                        if let Some(an) = &alliance_name {
-                            ui.label(an);
-                        }
-                        if let Some(cn) = &corp_name {
-                            ui.label(cn);
-                        }
+                        // The pilot name comes from the intel text (authoritative), corp/alliance
+                        // from the affiliation cache — same identity block as the kill-card badges.
+                        tooltip_identity(
+                            ui,
+                            alliance_id,
+                            alliance_name.clone(),
+                            corp_id,
+                            corp_name.clone(),
+                            char_id,
+                            Some(name.to_string()),
+                        );
                         ui.label(egui::RichText::new("Click to look up").weak());
                     });
                     if resp.clicked() {
@@ -14742,24 +14748,17 @@ fn intel_row(
                                                 a.want(c);
                                                 a.get(c)
                                             });
-                                            let row = |ui: &mut egui::Ui, url: String, name: Option<String>| {
-                                                ui.horizontal(|ui| {
-                                                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(22.0)));
-                                                    ui.label(name.unwrap_or_else(|| "…".to_owned()));
-                                                });
-                                            };
-                                            if let Some(a) = info.as_ref().and_then(|i| i.alliance).or(alliance) {
-                                                row(ui, format!("https://images.evetech.net/alliances/{a}/logo?size=32"),
-                                                    info.as_ref().and_then(|i| i.alliance_name.clone()));
-                                            }
-                                            if let Some(c) = info.as_ref().and_then(|i| i.corp).or(corp) {
-                                                row(ui, format!("https://images.evetech.net/corporations/{c}/logo?size=32"),
-                                                    info.as_ref().and_then(|i| i.corp_name.clone()));
-                                            }
-                                            if let Some(ch) = character {
-                                                row(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"),
-                                                    info.as_ref().and_then(|i| i.char_name.clone()));
-                                            }
+                                            // Prefer the resolved (current) corp/alliance for the
+                                            // names; fall back to the kill-time ids for the icons.
+                                            tooltip_identity(
+                                                ui,
+                                                info.as_ref().and_then(|i| i.alliance).or(alliance),
+                                                info.as_ref().and_then(|i| i.alliance_name.clone()),
+                                                info.as_ref().and_then(|i| i.corp).or(corp),
+                                                info.as_ref().and_then(|i| i.corp_name.clone()),
+                                                character,
+                                                info.as_ref().and_then(|i| i.char_name.clone()),
+                                            );
                                         });
                                         if resp.clicked() {
                                             if let Some(url) = zkill {
@@ -14940,6 +14939,43 @@ fn intel_row(
         ui.ctx().data_mut(|d| d.insert_temp(toggle_id, !show_raw));
     }
     clicked
+}
+
+/// Shared identity block for hover tooltips: alliance, corporation, and pilot — one per row,
+/// each with its icon (alliance/corp logo, character portrait). Used by both the chat pilot
+/// badge and the zKill killer/victim badges so they look and behave the same. A row is omitted
+/// when its id is unknown; the pilot row shows the name even without a portrait, and a name that
+/// hasn't resolved yet shows "…".
+fn tooltip_identity(
+    ui: &mut egui::Ui,
+    alliance: Option<i64>,
+    alliance_name: Option<String>,
+    corp: Option<i64>,
+    corp_name: Option<String>,
+    char_id: Option<i64>,
+    char_name: Option<String>,
+) {
+    let sz = egui::Vec2::splat(22.0);
+    let logo_row = |ui: &mut egui::Ui, url: String, name: Option<String>| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Image::new(url).fit_to_exact_size(sz));
+            ui.label(name.unwrap_or_else(|| "…".to_owned()));
+        });
+    };
+    if let Some(a) = alliance {
+        logo_row(ui, format!("https://images.evetech.net/alliances/{a}/logo?size=32"), alliance_name);
+    }
+    if let Some(c) = corp {
+        logo_row(ui, format!("https://images.evetech.net/corporations/{c}/logo?size=32"), corp_name);
+    }
+    if let Some(ch) = char_id {
+        logo_row(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"), char_name);
+    } else if let Some(n) = char_name {
+        ui.horizontal(|ui| {
+            ui.label(egui_phosphor::regular::USER);
+            ui.label(n);
+        });
+    }
 }
 
 /// Hover tooltip for a ship panel: group, resists, tank, drones, hardpoints, speed.
