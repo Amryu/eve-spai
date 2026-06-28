@@ -1,0 +1,37 @@
+name: Version check
+
+# Guard the version invariant on main: the committed Cargo.toml version must never be BEHIND the
+# latest published release tag. A stale Cargo.toml is what makes local/dev builds report an old
+# version and flag themselves "a version behind" against the release. After tagging vX.Y.Z, bump
+# Cargo.toml to the next dev version (see CLAUDE.md). Runs only on main.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  version-not-behind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the full tag history to find the latest release
+
+      - name: Cargo.toml must not be behind the latest release tag
+        shell: bash
+        run: |
+          CARGO=$(perl -0ne 'print $1 if /\[workspace\.package\][^\[]*?version = "([^"]+)"/s' Cargo.toml)
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+          if [ -z "$CARGO" ]; then
+            echo "::error::Could not read the workspace version from Cargo.toml."
+            exit 1
+          fi
+          if [ -z "$LATEST" ]; then
+            echo "No release tags yet — nothing to compare against."
+            exit 0
+          fi
+          SMALLEST=$(printf '%s\n%s\n' "$CARGO" "$LATEST" | sort -V | head -1)
+          if [ "$CARGO" != "$LATEST" ] && [ "$SMALLEST" = "$CARGO" ]; then
+            echo "::error::Cargo.toml version $CARGO is BEHIND the latest release v$LATEST. Bump [workspace.package] version to at least $LATEST (ideally the next dev version)."
+            exit 1
+          fi
+          echo "Cargo.toml $CARGO is not behind the latest release v$LATEST — OK."

@@ -30,16 +30,19 @@ commit messages.
   vX.Y.Z`). Pushing the tag is the trigger for the release workflow
   (`.github/workflows/release.yml`): it cross-builds every platform and publishes the
   GitHub Release. Without the pushed tag no release is produced (this is what stalled
-  releases between 0.2.10 and 0.3.6). CI sets the binary's reported version from the tag,
-  so the tag is the source of truth — keep `Cargo.toml`, the tag, and the release in sync.
-- **After tagging a release, bump `Cargo.toml` to the NEXT version.** CI sets the
-  *release binary's* version from the tag, but a LOCAL `cargo build` uses the
-  `[workspace.package]` version verbatim. If `Cargo.toml` is left at the just-released
-  version (or older), every local/dev build reports that stale version and the in-app
-  update check flags it as "a version behind" against the published release. So the
-  moment a `vX.Y.Z` tag is pushed, set `Cargo.toml` to `X.Y.(Z+1)` (the next dev
-  version) so local builds read as newer than the latest release, not behind it. This is
-  what stranded 0.3.6: v0.3.7 was tagged/released but `Cargo.toml` stayed 0.3.6.
+  releases between 0.2.10 and 0.3.6). **`Cargo.toml` is the source of truth for the
+  version** — the release workflow now VERIFIES that the pushed tag matches the committed
+  `[workspace.package]` version and FAILS the build on a mismatch (it no longer silently
+  overwrites Cargo.toml from the tag). So `Cargo.toml` must already equal `X.Y.Z` before
+  you push `vX.Y.Z`. Keep `Cargo.toml`, the tag, and the release in sync.
+- **After tagging a release, bump `Cargo.toml` to the NEXT version.** A LOCAL `cargo
+  build` uses the `[workspace.package]` version verbatim. If `Cargo.toml` is left at the
+  just-released version (or older), every local/dev build reports that stale version and
+  the in-app update check flags it as "a version behind" against the published release. So
+  the moment a `vX.Y.Z` release is cut, bump `Cargo.toml` to `X.Y.(Z+1)` for ongoing dev.
+  This is what stranded 0.3.6: v0.3.7 was tagged/released but `Cargo.toml` stayed 0.3.6.
+  CI enforces this: `.github/workflows/version-check.yml` runs on every push to `main` and
+  FAILS if `Cargo.toml` is behind the latest release tag.
 
 ## Release process
 

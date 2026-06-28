@@ -55,14 +55,21 @@ jobs:
             libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxcursor-dev \
             libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config
 
-      # Make the binary's reported version match the release tag (for the updater).
-      - name: Set version from tag
+      # The committed Cargo.toml version is the source of truth: a release tag must match it
+      # exactly, so the published binary, the tag, and the source all agree. Reject the build on a
+      # mismatch instead of silently rewriting it (a stale Cargo.toml then made local builds report
+      # an old version and flag themselves "a version behind").
+      - name: Verify Cargo.toml version matches tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          perl -0pi -e "s/(\[workspace\.package\][^\[]*?version = \")[^\"]*/\${1}$VERSION/s" Cargo.toml
-          echo "Built version: $VERSION"
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO=$(perl -0ne 'print $1 if /\[workspace\.package\][^\[]*?version = "([^"]+)"/s' Cargo.toml)
+          if [ "$TAG" != "$CARGO" ]; then
+            echo "::error::Tag v$TAG does not match Cargo.toml version $CARGO. Bump Cargo.toml to $TAG and commit before tagging."
+            exit 1
+          fi
+          echo "Version $CARGO matches tag v$TAG."
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
