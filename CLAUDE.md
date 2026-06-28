@@ -32,6 +32,14 @@ commit messages.
   GitHub Release. Without the pushed tag no release is produced (this is what stalled
   releases between 0.2.10 and 0.3.6). CI sets the binary's reported version from the tag,
   so the tag is the source of truth — keep `Cargo.toml`, the tag, and the release in sync.
+- **After tagging a release, bump `Cargo.toml` to the NEXT version.** CI sets the
+  *release binary's* version from the tag, but a LOCAL `cargo build` uses the
+  `[workspace.package]` version verbatim. If `Cargo.toml` is left at the just-released
+  version (or older), every local/dev build reports that stale version and the in-app
+  update check flags it as "a version behind" against the published release. So the
+  moment a `vX.Y.Z` tag is pushed, set `Cargo.toml` to `X.Y.(Z+1)` (the next dev
+  version) so local builds read as newer than the latest release, not behind it. This is
+  what stranded 0.3.6: v0.3.7 was tagged/released but `Cargo.toml` stayed 0.3.6.
 
 ## Release process
 
