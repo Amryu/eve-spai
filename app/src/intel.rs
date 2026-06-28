@@ -1906,8 +1906,12 @@ pub fn analyze_ctx(
         add_ship(id, &name, &mut ships);
     }
 
+    // Reserve EVERY candidate-name token (not the strong-name-filtered `pilot_tokens` used for
+    // keyword suppression) so a system inside a lower-case name blob ("bob uitra") is held too.
+    let name_tokens: std::collections::HashSet<String> =
+        pilots.iter().flat_map(|p| p.split_whitespace()).map(|w| w.to_lowercase()).collect();
     let (detected, gates, mut consumed) = detect_location(
-        &tokens, &lower_tokens, &pilot_tokens, systems, context_system, channel_regions,
+        &tokens, &lower_tokens, &name_tokens, systems, context_system, channel_regions,
     );
 
     // Alliance shorthands ("frat", "init", …) → logos on the card.
@@ -2884,6 +2888,27 @@ mod tests {
         assert!(pilots.is_empty(), "pilots={pilots:?}");
         assert_eq!(sysd, vec!["N3-JBX".to_string()]);
         assert!(gates.iter().any(|g| g == "Uitra"), "gates={gates:?}");
+    }
+
+    #[test]
+    fn held_model_lowercase_name_with_system() {
+        let s = systems();
+        // A lower-case name whose surname is a system ("bob uitra"): "uitra" is held inside the
+        // name until ESI, and C-J6MT (also adjacent to the name) is held too — so at parse time
+        // the report has NO location and is parked.
+        let r = analyze("C-J6MT bob uitra", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.systems.is_empty(), "location must be held: {:?}", r.systems);
+        assert!(has_held_system(&r, &s), "report should be parked");
+        // ESI confirms "bob uitra": it's the pilot, C-J6MT is re-derived as the location, and
+        // "Uitra" never becomes a bogus gate.
+        let (pilots, sysd, gates) = resolve_report(&r, &["bob uitra"], &s);
+        assert_eq!(pilots, vec!["bob uitra".to_string()]);
+        assert_eq!(sysd, vec!["C-J6MT".to_string()]);
+        assert!(gates.is_empty(), "gates={gates:?}");
+        // If ESI says "bob uitra" is NOT a character, nothing is a pilot and the location stands.
+        let (pilots, sysd, _) = resolve_report(&r, &[], &s);
+        assert!(pilots.is_empty(), "pilots={pilots:?}");
+        assert!(sysd.iter().any(|n| n == "C-J6MT"), "systems={sysd:?}");
     }
 
     #[test]
