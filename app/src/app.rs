@@ -337,6 +337,10 @@ pub struct SpaiApp {
     show_history: bool,
     /// Battles view: the opened battle's representative kill id (None = list view).
     battle_selected: Option<i64>,
+    /// Cached heavy data for the open battle detail (clone + involvement + per-side rosters),
+    /// rebuilt only when the underlying battle changes — the detail repaints every frame for the
+    /// "Live" badge and hover, and recomputing this for a big fight each frame is the slow path.
+    battle_detail_cache: Option<BattleDetailCache>,
     /// Battles view: free-text filter (system, alliance/coalition, pilot, ship).
     battle_search: String,
     /// Battle detail: the participant currently hovered (for the involvement highlight).
@@ -892,6 +896,7 @@ impl SpaiApp {
             battle_history_loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             show_history: false,
             battle_selected: None,
+            battle_detail_cache: None,
             battle_search: String::new(),
             battle_hover: None,
             battle_filter: std::sync::Arc::new(std::sync::Mutex::new(crate::settings::BattleFilter::default())),
@@ -4555,50 +4560,86 @@ impl SpaiApp {
         // recorded.
         let source = if self.show_history { self.battle_history.clone() } else { self.battles.clone() };
 
-        // Detail mode: the opened battle (matched by a representative kill id).
+        // Detail mode: the opened battle (matched by a representative kill id). The heavy data
+        // (clone + involvement + per-side rosters) is cached and rebuilt only when the battle
+        // changes — the view repaints every frame (Live badge, hover) and recomputing it each
+        // frame for a big fight is the slow path.
         if let Some(kid) = self.battle_selected {
-            let sel = source
+            // Cheap change signature under the lock — no clone unless the battle actually changed.
+            let sig = source
                 .lock()
                 .unwrap()
                 .iter()
                 .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
-                .cloned();
-            match sel {
-                Some(b) => {
-                    if ui
-                        .button(format!("{}  Back to battles", egui_phosphor::regular::ARROW_LEFT))
-                        .clicked()
-                    {
-                        self.battle_selected = None;
-                        self.battle_hover = None;
-                    }
-                    ui.add_space(6.0);
-                    // Resolve the ship/structure type names the roster will show.
-                    let ids: Vec<i64> = b
-                        .engagements
-                        .iter()
-                        .flat_map(|e| {
-                            let mut v = vec![e.victim_ship];
-                            v.extend(e.attackers.iter().map(|a| a.ship));
-                            v
-                        })
-                        .filter(|&id| id != 0)
-                        .collect();
-                    self.ensure_type_names(&ids, ui.ctx());
-                    let type_names = self.type_names.lock().unwrap().clone();
-                    let prev_hover = self.battle_hover;
-                    let (clicked_system, hover) = battle_detail(ui, &b, &type_names, prev_hover);
-                    if hover != prev_hover {
-                        self.battle_hover = hover;
-                        ui.ctx().request_repaint(); // re-render so the highlight follows the cursor
-                    }
-                    if let Some(sid) = clicked_system {
-                        self.open_system(sid);
-                    }
-                    return;
+                .map(|b| (b.kills, b.end));
+            match sig {
+                None => {
+                    // The battle aged out of the cluster — drop back to the list.
+                    self.battle_selected = None;
+                    self.battle_detail_cache = None;
                 }
-                // The battle aged out of the cluster — drop back to the list.
-                None => self.battle_selected = None,
+                Some(sig) => {
+                    let stale = self
+                        .battle_detail_cache
+                        .as_ref()
+                        .is_none_or(|c| c.kid != kid || c.sig != sig);
+                    if stale {
+                        let b = source
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
+                            .cloned();
+                        if let Some(b) = b {
+                            let ids: Vec<i64> = b
+                                .engagements
+                                .iter()
+                                .flat_map(|e| {
+                                    let mut v = vec![e.victim_ship];
+                                    v.extend(e.attackers.iter().map(|a| a.ship));
+                                    v
+                                })
+                                .filter(|&id| id != 0)
+                                .collect();
+                            self.ensure_type_names(&ids, ui.ctx());
+                            let type_names = self.type_names.lock().unwrap().clone();
+                            let inv = b.involvement();
+                            let rosters: Vec<Vec<crate::battle::Participant>> =
+                                (0..b.sides.len()).map(|i| b.roster(i)).collect();
+                            self.battle_detail_cache =
+                                Some(BattleDetailCache { kid, sig, battle: b, inv, rosters, type_names });
+                        }
+                    }
+                    if let Some(cache) = self.battle_detail_cache.as_ref() {
+                        if ui
+                            .button(format!("{}  Back to battles", egui_phosphor::regular::ARROW_LEFT))
+                            .clicked()
+                        {
+                            self.battle_selected = None;
+                            self.battle_hover = None;
+                            self.battle_detail_cache = None;
+                            return;
+                        }
+                        ui.add_space(6.0);
+                        let prev_hover = self.battle_hover;
+                        let (clicked_system, hover) = battle_detail(
+                            ui,
+                            &cache.battle,
+                            &cache.type_names,
+                            &cache.inv,
+                            &cache.rosters,
+                            prev_hover,
+                        );
+                        if hover != prev_hover {
+                            self.battle_hover = hover;
+                            ui.ctx().request_repaint();
+                        }
+                        if let Some(sid) = clicked_system {
+                            self.open_system(sid);
+                        }
+                        return;
+                    }
+                }
             }
         }
 
@@ -13498,6 +13539,18 @@ struct BattleHover {
     kill_id: Option<i64>,
 }
 
+/// Heavy, per-battle data for the open detail view, cached so it's rebuilt only when the battle
+/// changes (`sig`) rather than every frame.
+struct BattleDetailCache {
+    kid: i64,
+    /// Cheap change signature: (kill count, last-kill time). Same engagements → same sides.
+    sig: (usize, i64),
+    battle: crate::battle::Battle,
+    inv: crate::battle::Involvement,
+    rosters: Vec<Vec<crate::battle::Participant>>,
+    type_names: std::collections::HashMap<i64, String>,
+}
+
 /// The detailed view of one battle: a header, then each side as its own column (horizontal
 /// scroll when they don't fit). Each column shows a summary header, then every participating
 /// ship as a row — destroyed ones (highest value first) on a reddish background with a zKill
@@ -13507,13 +13560,13 @@ fn battle_detail(
     ui: &mut egui::Ui,
     b: &crate::battle::Battle,
     type_names: &std::collections::HashMap<i64, String>,
+    inv: &crate::battle::Involvement,
+    rosters: &[Vec<crate::battle::Participant>],
     prev_hover: Option<BattleHover>,
 ) -> (Option<i64>, Option<BattleHover>) {
     use egui_phosphor::regular as icon;
     use std::collections::HashSet;
     let mut open_system: Option<i64> = None;
-    // Involvement cross-reference, resolved against the previously-hovered participant.
-    let inv = b.involvement();
     // Victims the hovered ship helped kill (background highlight), and the subset it got the
     // final blow on (special highlight).
     let killed: HashSet<i64> =
@@ -13579,7 +13632,7 @@ fn battle_detail(
         ui.horizontal_top(|ui| {
             for (i, side) in b.sides.iter().enumerate() {
                 let col = side_color(i);
-                let roster = b.roster(i);
+                let roster = &rosters[i];
                 egui::Frame::group(ui.style()).fill(col.gamma_multiply(0.05)).show(ui, |ui| {
                     // The side Frame inherits the parent's horizontal layout, so force a
                     // top-down column or the rows stack sideways.
