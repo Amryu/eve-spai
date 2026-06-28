@@ -144,8 +144,11 @@ the feed updates as verdicts arrive rather than blocking.
    correct; only change how it's expressed.
 4. ~~**Scope/sequencing**~~ — **decided: incremental, starting now.**
    - **Step 1 — Phase A:** rebuild segmentation into clean blobs (double-space hard boundary,
-     ship/threat keywords as hard entities, no capitalization). Delete `extract_pilots` and the
-     lowercase/known-cache patch passes. Keep system/keyword detection parse-time for now.
+     ship/threat keywords as hard entities, no capitalization). Case-insensitive single-word
+     candidates: **done**. NB: `extract_pilots` and the lowercase-lead/known-compound patches
+     are still load-bearing for **names that contain a system** (`Bob Uitra`) — they can only be
+     deleted *after* Phase C makes non-first systems ambiguous + reservable. Until then they
+     stay. Double-space hard boundary: still TODO (needs masking to preserve double spaces).
    - **Step 2 — Phase B:** 4 h negative TTL in the resolver (done). `cover` does the
      permutation claim, but **keeps** the all-singles guard as a safety net — prose like
      `I Forgot Who` (three words each coincidentally a real player) must not explode into three
