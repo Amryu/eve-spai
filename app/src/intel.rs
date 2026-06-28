@@ -1432,15 +1432,21 @@ pub fn analyze_ctx(
             pilots.push(r);
         }
     }
-    // Single Title-Case tokens (plain-text logs carry no char links) — queued for ESI so
-    // standalone names like "Sevra" are recognised. Uses the ship/paren-masked tokens so
-    // a multi-word hull's words ("Comet" in "Federation Navy Comet") aren't read as names.
+    // Single-word names queued for ESI. Case-INSENSITIVE: pilots are usually proper-case but
+    // are sometimes typed all lower-case ("bigfoott"), and those must not be dropped — only a
+    // stop-word or a recognised entity (ship/system/code/keyword) is excluded. Uses the
+    // ship/paren-masked tokens so a multi-word hull's words aren't read as names.
     let masked_tokens = tokenize(&masked);
     for t in &masked_tokens {
         let lc = t.to_lowercase();
-        if (name_part(t) || is_handle_like(t))
-            && t.len() >= 3
+        let name_word = t.chars().count() >= 3
+            && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
+            && t.chars().any(|c| c.is_ascii_alphabetic());
+        if name_word
             && !is_pilot_stopword(t)
+            && !is_cap_word(&lc)
+            && !is_tackle_word(&lc)
+            && !is_time_token(t)
             && (!looks_like_system_code(t) || is_code_lookalike_name(t, systems))
             && !CLEAR_WORDS.contains(&lc.as_str())
             && ship_index.get(&lc).is_none()
@@ -3972,13 +3978,16 @@ mod tests {
             analyze("rorqual  pointed in Jita", &s, &noships(), &noknown(), 1, "ch", "x").cap_tackled,
             "cap detection must survive a stray double space"
         );
+        // Prose words that aren't on the stop list ("lads") are candidates, but ESI confirms
+        // no character — so the resolved set is empty.
         for t in [
             "reds  pointed in Jita",
             "they  warped off to Jita",
             "got him  tackled in Jita now",
             "Rancer  is clear now lads",
         ] {
-            assert!(pilots(t).is_empty(), "prose treated as paste for {t:?}: {:?}", pilots(t));
+            let resolved = esi_resolve(&pilots(t), &[]);
+            assert!(resolved.is_empty(), "prose treated as paste for {t:?}: {resolved:?}");
         }
         // The decisive property: for any NON-paste input, the double-space hint must not change the
         // parse versus the same text with single spaces (it falls back to normal logic). This
