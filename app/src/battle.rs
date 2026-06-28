@@ -488,6 +488,16 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
     let mutual = |a: usize, b: usize| {
         hostility.get(&(a, b)).copied().unwrap_or(0) + hostility.get(&(b, a)).copied().unwrap_or(0)
     };
+    // Distinct party pairs that ever interacted, with their (fixed) mutual strength. Hostility is
+    // sparse, so iterating these is far cheaper than the O(n²) all-pairs scan the fixpoint below
+    // would otherwise repeat every pass.
+    let edges: Vec<(usize, usize, u32)> = {
+        let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for &(a, b) in hostility.keys() {
+            seen.insert((a.min(b), a.max(b)));
+        }
+        seen.into_iter().map(|(a, b)| (a, b, mutual(a, b))).collect()
+    };
 
     // 1) Union co-attackers that aren't significant enemies of each other.
     let mut uf = UnionFind::new(n.max(1));
@@ -506,18 +516,15 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
         // two on the same enemy, instead of splitting them into many one-corp "sides".
         let mut hard: HashMap<usize, BTreeSet<usize>> = HashMap::new();
         let mut any: HashMap<usize, BTreeSet<usize>> = HashMap::new();
-        for a in 0..n {
-            for b in 0..n {
-                if a == b {
-                    continue;
-                }
-                let m = mutual(a, b);
-                if m >= 1 {
-                    any.entry(uf.find(a)).or_default().insert(uf.find(b));
-                }
-                if m >= SIGNIF {
-                    hard.entry(uf.find(a)).or_default().insert(uf.find(b));
-                }
+        for &(a, b, m) in &edges {
+            let (ra, rb) = (uf.find(a), uf.find(b));
+            if m >= 1 {
+                any.entry(ra).or_default().insert(rb);
+                any.entry(rb).or_default().insert(ra);
+            }
+            if m >= SIGNIF {
+                hard.entry(ra).or_default().insert(rb);
+                hard.entry(rb).or_default().insert(ra);
             }
         }
         let roots: Vec<usize> = (0..n).map(|i| uf.find(i)).collect::<BTreeSet<_>>().into_iter().collect();
