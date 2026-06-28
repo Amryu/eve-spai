@@ -728,6 +728,31 @@ fn extract_dscan_drops(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Whether a double-space-delimited paste segment looks like a (single) pilot name. Names may be
+/// lowercase, so the disqualifiers are: nothing alphabetic, all words being stop words, an
+/// embedded solar system (a real name wouldn't carry one — that's prose), or a lowercase
+/// intel-descriptor stop word ("in", "jumped"). Title-case stop words allowed inside names
+/// ("The", "Blue") are fine. Used only to decide whether a double-space block is a clean paste.
+fn segment_is_name(seg: &str, systems: &Systems) -> bool {
+    let words: Vec<&str> = seg.split_whitespace().collect();
+    // EVE names are >= 3 characters; the length floor also drops casual double-spaced chat
+    // ("he  hi", "u  gg") from being mistaken for a paste.
+    if words.is_empty()
+        || seg.chars().filter(|c| !c.is_whitespace()).count() < 3
+        || !seg.chars().any(|c| c.is_alphabetic())
+    {
+        return false;
+    }
+    words.iter().any(|w| !is_pilot_stopword(w))
+        && !words.iter().any(|w| {
+            resolve(systems, w).is_some()
+                || (w.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                    && is_pilot_stopword(w)
+                    && !is_name_connector(w)
+                    && !is_name_capable_stopword(w))
+        })
+}
+
 /// Match against the local cache of known (ESI-confirmed) pilot names, longest run
 /// first so a shorter name that's a subset of a longer one ("Hold" inside "Hold Me
 /// Balls") never short-circuits the longer match.
@@ -1583,13 +1608,67 @@ pub fn analyze_ctx(
     // A structure name (Keepstar, Fortizar, …) is never a pilot, even if a character is
     // named after one — it's reported as a structure badge, not a player.
     pilots.retain(|p| !is_structure_word(p));
-    // Un-glue a mis-joined list of single-word handles. The heuristic glues space-separated
-    // handles ("clol23 MuskQAQ rm712 wenmg") into one run; if the cache confirms >= 2 distinct
-    // pilots inside it (and the run as a whole isn't itself a known name), the run is really
-    // several pilots, so drop it and surface each known sub-span plus any uncovered gap token
-    // (an as-yet-uncached handle the resolver can still confirm).
+    // HINT (pasted chat links only): an in-game copy/paste separates each linked entity (pilot,
+    // ship, system) with a double space, and a name/ship never contains one — so each
+    // double-space segment is exactly one entity. Hand-typed text has no double spaces (handled
+    // by the un-glue below), so this only augments: when present, drop any multi-word candidate
+    // that straddles a boundary (a mis-glue of separate links) and surface each name-shaped
+    // segment as a pilot. A segment is a name unless it is a system, a ship, or made up entirely
+    // of lowercase stop words (names may otherwise be lowercase, e.g. "wenmg").
+    if text.contains("  ") {
+        let segments: Vec<&str> =
+            text.split("  ").map(str::trim).filter(|s| !s.is_empty()).collect();
+        // Only treat it as a paste when EVERY segment is a clean single entity (system, ship, or
+        // name) — a real link paste is, but prose with a stray double space ("rorqual  pointed in
+        // Jita") isn't, so we fall back to normal logic there. Names to surface are collected.
+        let names: Option<Vec<&str>> = (segments.len() > 1)
+            .then(|| {
+                let mut names = Vec::new();
+                let mut anchor = false; // a system/ship/structure confirming this is intel, not chat
+                for seg in &segments {
+                    let lc = seg.to_lowercase();
+                    let is_system = looks_like_system_code(seg) || resolve(systems, seg).is_some();
+                    let is_ship = ship_index.contains_key(&lc)
+                        || is_structure_word(seg)
+                        || crate::wormholes::is_wh_code(seg);
+                    if is_system || is_ship {
+                        anchor = true;
+                        continue;
+                    }
+                    if segment_is_name(seg, systems) {
+                        names.push(*seg);
+                    } else {
+                        return None; // a prose segment — not a paste
+                    }
+                }
+                // Require an anchor so arbitrary double-spaced chat ("cats  love  fish") isn't
+                // mistaken for a pilot paste; real intel pastes carry the location/hull.
+                (anchor && !names.is_empty()).then_some(names)
+            })
+            .flatten();
+        if let Some(names) = names {
+            // Drop any multi-word candidate that straddles a boundary (a mis-glue of separate
+            // links): it must fit inside a single segment.
+            let seg_padded: Vec<String> =
+                segments.iter().map(|s| format!(" {} ", s.to_lowercase())).collect();
+            pilots.retain(|p| {
+                !p.contains(' ')
+                    || seg_padded.iter().any(|s| s.contains(&format!(" {} ", p.to_lowercase())))
+            });
+            for seg in names {
+                if !pilots.iter().any(|p| p.eq_ignore_ascii_case(seg)) {
+                    pilots.push(seg.to_string());
+                }
+            }
+        }
+    }
+    // Un-glue a hand-typed (no double-space) mis-joined list of handles. The heuristic glues
+    // space-separated handles ("Gliar Mliarvis Sliarhia") into one run; if the cache confirms
+    // >= 2 distinct pilots inside it (and the run isn't itself a known name), the run is really
+    // several pilots, so drop it and surface each known sub-span (proper-cased — they may have
+    // been dropped earlier as sub-phrases of this very run) plus any uncovered gap token.
     if !known_matched.is_empty() {
-        let mut gap_tokens: Vec<String> = Vec::new();
+        let mut add_back: Vec<String> = Vec::new();
         let mut keep: Vec<bool> = vec![true; pilots.len()];
         for (i, p) in pilots.iter().enumerate() {
             let pl = p.to_lowercase();
@@ -1597,25 +1676,29 @@ pub fn analyze_ctx(
                 continue; // single token, or the whole run is itself a known name
             }
             let padded = format!(" {pl} ");
-            let inside: Vec<&String> = known_matched
+            let inside = known_matched
                 .iter()
                 .filter(|k| **k != pl && padded.contains(&format!(" {k} ")))
-                .collect();
-            if inside.len() < 2 {
+                .count();
+            if inside < 2 {
                 continue;
             }
             keep[i] = false;
-            let covered: std::collections::HashSet<&str> =
-                inside.iter().flat_map(|k| k.split_whitespace()).collect();
+            let parts = match_known_pilots(p, known_pilots);
+            let covered: std::collections::HashSet<String> = parts
+                .iter()
+                .flat_map(|k| k.split_whitespace().map(|w| w.to_lowercase()))
+                .collect();
+            add_back.extend(parts.iter().cloned());
             for t in p.split_whitespace() {
-                if !covered.contains(t.to_lowercase().as_str()) {
-                    gap_tokens.push(t.to_owned());
+                if !covered.contains(&t.to_lowercase()) {
+                    add_back.push(t.to_owned());
                 }
             }
         }
         let mut it = keep.iter();
         pilots.retain(|_| *it.next().unwrap());
-        for g in gap_tokens {
+        for g in add_back {
             if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&g)) {
                 pilots.push(g);
             }
@@ -2971,10 +3054,11 @@ mod tests {
         by_name.insert("9olq-6".to_string(), SystemInfo { id: 30000800, name: "9OLQ-6".into(),
             security: -0.5, constellation: String::new(), region: String::new(), faction: String::new() });
         let s = Systems::new(by_name, HashMap::new());
-        // Plain-text intel (no showinfo tags — real chat logs have none). "Blue" is a standing
+        // Hand-typed plain-text intel (single spaces, no showinfo tags). "Blue" is a standing
         // colour, but it begins the real name "Blue RandomAttac". The full span (incl. "Blue")
-        // must be captured so the ESI cover can split it; previously "Blue" broke the run.
-        let r = analyze("Blue RandomAttac  Redhorn Mastro  9OLQ-6", &s, &noships(), &noknown(), 1, "ch", "Ariel Afuran");
+        // must be captured so the ESI cover can split it; previously "Blue" broke the run. (The
+        // double-space *paste* form of this is split directly — see the paste tests.)
+        let r = analyze("Blue RandomAttac Redhorn Mastro 9OLQ-6", &s, &noships(), &noknown(), 1, "ch", "Ariel Afuran");
         assert_eq!(r.pilots, vec!["Blue RandomAttac Redhorn Mastro".to_string()]);
         assert!(r.systems.iter().any(|d| d.name == "9OLQ-6"));
     }
@@ -4013,6 +4097,107 @@ mod tests {
         // "Comet Rider" stays intact (only one known sub-span).
         assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Comet Rider")) || r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("comet")), "pilots: {:?}", r2.pilots);
         assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Rider")), "Comet Rider wrongly split: {:?}", r2.pilots);
+    }
+
+    #[test]
+    fn double_space_paste_recognises_pilots() {
+        let s = Systems::new(
+            sys_map(&[
+                ("l-fm3p", "L-FM3P", 30000540, -0.5),
+                ("9-ougj", "9-OUGJ", 30000454, -0.5),
+                ("ypw-m4", "YPW-M4", 30000785, -0.5),
+            ]),
+            std::collections::HashMap::new(),
+        );
+        let lc = |r: &IntelReport| {
+            let mut v: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
+            v.sort();
+            v
+        };
+
+        // Reported case 1: system + single-word Title names, NO cache.
+        let r = analyze("L-FM3P  Gliar  Mliarvis  Sliarhia", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["gliar", "mliarvis", "sliarhia"]);
+        assert!(r.systems.iter().any(|d| d.name == "L-FM3P"), "system kept: {:?}", r.systems);
+
+        // Reported case 2: lowercase + digit handles, system last.
+        let r = analyze("clol23  MuskQAQ  rm712  wenmg  9-OUGJ", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["clol23", "muskqaq", "rm712", "wenmg"]);
+
+        // Reported case 3: Title+digit names, system carries the "*" route marker (stripped).
+        let r = analyze("YPW-M4*  Boris95  BorisDread95  Destroyer95", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["boris95", "borisdread95", "destroyer95"]);
+        assert!(r.systems.iter().any(|d| d.name == "YPW-M4"), "system: {:?}", r.systems);
+
+        // Two-word names split AT the double space, never within it.
+        let r = analyze("L-FM3P  First Last  Second Guy", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["first last", "second guy"]);
+
+        // 3+ spaces also delimit.
+        let r = analyze("L-FM3P    Gliar    Mliarvis", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["gliar", "mliarvis"]);
+
+        // Identical result with the cache populated.
+        let known: std::collections::HashMap<String, i64> =
+            [("gliar".to_string(), 1i64), ("mliarvis".to_string(), 2), ("sliarhia".to_string(), 3)]
+                .into_iter()
+                .collect();
+        let r = analyze("L-FM3P  Gliar  Mliarvis  Sliarhia", &s, &noships(), &known, 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["gliar", "mliarvis", "sliarhia"]);
+
+        // A ship segment is a ship, not a pilot (still a valid anchor).
+        let ships: std::collections::HashMap<String, (i64, String)> =
+            [("sabre".to_string(), (22456i64, "Sabre".to_string()))].into_iter().collect();
+        let r = analyze("L-FM3P  Gliar  Sabre", &s, &ships, &noknown(), 1, "ch", "x");
+        assert_eq!(lc(&r), vec!["gliar"], "sabre must not be a pilot");
+        assert!(r.ships.iter().any(|sh| sh.name == "Sabre"), "sabre is a ship: {:?}", r.ships);
+    }
+
+    #[test]
+    fn double_space_falls_back_on_prose_and_bad_grammar() {
+        let s = systems(); // has Jita, Rancer, 78-AAA, …
+        let pilots = |t: &str| {
+            let mut v = analyze(t, &s, &noships(), &noknown(), 1, "ch", "x").pilots;
+            v.sort();
+            v
+        };
+        // Prose with a stray double space and an embedded system: NOT a paste — and the normal
+        // cap-tackle detection still works (regression for "rorqual  pointed in Jita").
+        assert!(
+            analyze("rorqual  pointed in Jita", &s, &noships(), &noknown(), 1, "ch", "x").cap_tackled,
+            "cap detection must survive a stray double space"
+        );
+        for t in [
+            "reds  pointed in Jita",
+            "they  warped off to Jita",
+            "got him  tackled in Jita now",
+            "Rancer  is clear now lads",
+        ] {
+            assert!(pilots(t).is_empty(), "prose treated as paste for {t:?}: {:?}", pilots(t));
+        }
+        // The decisive property: for any NON-paste input, the double-space hint must not change the
+        // parse versus the same text with single spaces (it falls back to normal logic). This
+        // covers casual chat / bad grammar with stray double spaces, including all-lowercase runs
+        // that normal logic may already glue (e.g. "cats love fish") — the hint neither helps nor
+        // harms there.
+        for (dbl, sgl) in [
+            ("reds  pointed in Jita", "reds pointed in Jita"),
+            ("they  warped off to Jita", "they warped off to Jita"),
+            ("lol  gg  wp", "lol gg wp"),
+            ("he  said  hi", "he said hi"),
+            ("idk  man  lol", "idk man lol"),
+            ("u  see  them", "u see them"),
+            ("ok  ok  sure", "ok ok sure"),
+            ("cats  love  fish", "cats love fish"),
+            ("nice  one  mate", "nice one mate"),
+            ("Rancer  is clear now lads", "Rancer is clear now lads"),
+        ] {
+            assert_eq!(pilots(dbl), pilots(sgl), "double-space hint changed a non-paste parse: {dbl:?}");
+        }
+        // A double-spaced paste whose tail segment is prose: the prose segment fails the clean
+        // check, so the whole thing falls back (no phantom multi-word "pilot").
+        let r = pilots("Rancer  Gliar  they all warped off already");
+        assert!(!r.iter().any(|p| p.contains("warped") || p.contains("they")), "prose tail leaked: {r:?}");
     }
 
     #[test]
