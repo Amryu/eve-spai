@@ -171,6 +171,12 @@ pub fn spawn(
                     if seen_links.contains(&id) || buffer_ids.contains(&id) {
                         continue;
                     }
+                    // Bound the dedup set: intel-posted links are infrequent and successful
+                    // fetches are also covered by buffer_ids, so resetting at a generous cap only
+                    // risks an occasional harmless re-fetch.
+                    if seen_links.len() > 4000 {
+                        seen_links.clear();
+                    }
                     seen_links.insert(id);
                     if let Some(eng) = fetch_posted_kill(&client, id, &systems, &ship_ids, &mut names) {
                         if let Some(s) = &store {
