@@ -377,19 +377,25 @@ pub fn cluster(
         })
         .collect();
     let mut uf = UnionFind::new(n);
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let a = &engagements[i];
-            let b = &engagements[j];
-            // "less than `window` seconds since an engagement" — strict.
-            if (a.time - b.time).abs() >= window {
-                continue;
+    // Compare only engagements within `window` of each other: visit in time order and slide a
+    // window forward, breaking as soon as a pair is too far apart. Engagements far apart in time
+    // (the bulk of full battle history) are never compared, so this is ~O(n × kills-per-window)
+    // instead of O(n²).
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| engagements[i].time);
+    for oi in 0..n {
+        let i = order[oi];
+        for &j in order.iter().skip(oi + 1) {
+            // Sorted by time, so the gap only grows — once it reaches the window, stop.
+            if engagements[j].time - engagements[i].time >= window {
+                break;
             }
             // Shared participant is the cheap, deciding test — apply it before the (potentially
             // expensive) jump-distance BFS, and skip pairs already in the same battle.
             if parties[i].is_disjoint(&parties[j]) || uf.find(i) == uf.find(j) {
                 continue;
             }
+            let (a, b) = (&engagements[i], &engagements[j]);
             let close = a.system_id == b.system_id
                 || dist(a.system_id, b.system_id).is_some_and(|d| d <= max_jumps);
             if close {
