@@ -2593,8 +2593,11 @@ fn parse_count(
     let mut name_skips: Vec<(String, u32)> = Vec::new();
     // A bare number directly before one of these is an ISK/quantity amount ("334
     // million"), not a hostile count.
-    const MAGNITUDE: &[&str] =
-        &["m", "mil", "mill", "million", "millions", "b", "bil", "billion", "k", "isk"];
+    // Mirror parse_isk's suffixes so a spaced amount ("300 kk", "5 bill") isn't a count.
+    const MAGNITUDE: &[&str] = &[
+        "m", "mil", "mill", "million", "millions", "kk", "b", "bil", "bill", "billion",
+        "billions", "k", "isk",
+    ];
     let mut best: Option<u32> = None;
     let mut plus: u32 = 0;
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -2936,6 +2939,11 @@ mod tests {
         // "334 million" is ISK; the count is the 2 hostiles.
         let r = analyze("ESS raid 2 Bellicose 334 million 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.count, Some(2), "ISK amount must not inflate the count");
+        // Spaced "kk" / "bill" magnitudes are ISK too, not a hostile count.
+        let r2 = analyze("ESS raid 2 Bellicose 300 kk 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r2.count, Some(2), "300 kk must not be counted: {:?}", r2.count);
+        let r3 = analyze("ESS raid 2 Bellicose 5 bill 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r3.count, Some(2), "5 bill must not be counted: {:?}", r3.count);
     }
 
     #[test]
