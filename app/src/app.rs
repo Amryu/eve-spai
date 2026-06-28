@@ -345,6 +345,9 @@ pub struct SpaiApp {
     battle_search: String,
     /// Battle detail: the participant currently hovered (for the involvement highlight).
     battle_hover: Option<BattleHover>,
+    /// Battle detail: condensed mode stacks each side's ships by hull (count + losses) instead of
+    /// listing every pilot. Off by default.
+    battle_condensed: bool,
     /// Custom battle inclusion rules, shared live with the zKill worker.
     battle_filter: crate::zkill::SharedBattleFilter,
     /// Ship type id → hull size tier (for filter hull conditions).
@@ -899,6 +902,7 @@ impl SpaiApp {
             show_history: false,
             battle_selected: None,
             battle_detail_cache: None,
+            battle_condensed: false,
             battle_search: String::new(),
             battle_hover: None,
             battle_filter: std::sync::Arc::new(std::sync::Mutex::new(crate::settings::BattleFilter::default())),
@@ -4613,11 +4617,20 @@ impl SpaiApp {
                                 Some(BattleDetailCache { kid, sig, battle: b, inv, rosters });
                         }
                     }
-                    if let Some(cache) = self.battle_detail_cache.as_ref() {
-                        if ui
-                            .button(format!("{}  Back to battles", egui_phosphor::regular::ARROW_LEFT))
-                            .clicked()
-                        {
+                    if self.battle_detail_cache.is_some() {
+                        let mut go_back = false;
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("{}  Back to battles", egui_phosphor::regular::ARROW_LEFT))
+                                .clicked()
+                            {
+                                go_back = true;
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut self.battle_condensed, "Condensed")
+                                .on_hover_text("Stack each side's ships by hull (count + losses)");
+                        });
+                        if go_back {
                             self.battle_selected = None;
                             self.battle_hover = None;
                             self.battle_detail_cache = None;
@@ -4625,6 +4638,8 @@ impl SpaiApp {
                         }
                         ui.add_space(6.0);
                         let prev_hover = self.battle_hover;
+                        let condensed = self.battle_condensed;
+                        let cache = self.battle_detail_cache.as_ref().unwrap();
                         // Read type names LIVE each frame — they resolve asynchronously, so a
                         // snapshot taken when the cache was built would freeze unresolved hulls as
                         // "Type <id>". The heavy involvement/rosters stay cached.
@@ -4636,6 +4651,7 @@ impl SpaiApp {
                                 &type_names,
                                 &cache.inv,
                                 &cache.rosters,
+                                condensed,
                                 prev_hover,
                             )
                         };
@@ -13620,6 +13636,7 @@ fn battle_detail(
     type_names: &std::collections::HashMap<i64, String>,
     inv: &crate::battle::Involvement,
     rosters: &[Vec<crate::battle::Participant>],
+    condensed: bool,
     prev_hover: Option<BattleHover>,
 ) -> (Option<i64>, Option<BattleHover>) {
     use egui_phosphor::regular as icon;
@@ -13733,6 +13750,48 @@ fn battle_detail(
                             .show(ui, |ui| {
                                 ui.set_width(SIDE_W - 16.0);
                                 let row_w = SIDE_W - 16.0;
+                                if condensed {
+                                    // Stack ships by hull: one row per type with the fleet count and
+                                    // how many were destroyed. Hover highlights only that row — the
+                                    // participating/killer cross-links don't apply to a stack.
+                                    let mut order: Vec<i64> = Vec::new();
+                                    let mut agg: std::collections::HashMap<i64, (u32, u32, f64)> =
+                                        std::collections::HashMap::new();
+                                    for p in roster.iter() {
+                                        let e = agg.entry(p.ship).or_insert_with(|| {
+                                            order.push(p.ship);
+                                            (0, 0, 0.0)
+                                        });
+                                        e.0 += 1;
+                                        if let Some(l) = &p.lost {
+                                            e.1 += 1;
+                                            e.2 += l.value;
+                                        }
+                                    }
+                                    // Most-destroyed first, then biggest fleet, then name.
+                                    order.sort_by(|a, b| {
+                                        let (ta, tb) = (agg[a], agg[b]);
+                                        tb.1.cmp(&ta.1)
+                                            .then(tb.0.cmp(&ta.0))
+                                            .then_with(|| name_of(*a).cmp(&name_of(*b)))
+                                    });
+                                    for ship in &order {
+                                        let (total, lost, isk_lost) = agg[ship];
+                                        let resp = condensed_row(
+                                            ui, row_w, *ship, total, lost, isk_lost, &name_of, red,
+                                        );
+                                        if resp.hovered() {
+                                            let hl = egui::Color32::from_rgba_unmultiplied(
+                                                col.r(), col.g(), col.b(), 32,
+                                            );
+                                            ui.painter().rect_filled(resp.rect, 4.0, hl);
+                                        }
+                                    }
+                                    if roster.is_empty() {
+                                        ui.label(egui::RichText::new("No ships").weak());
+                                    }
+                                    return;
+                                }
                                 // Participating ships grouped by hull, destroyed (reddish) before
                                 // survivors within each hull.
                                 for p in roster.iter().take(MAX_ROWS) {
@@ -13774,6 +13833,35 @@ fn battle_detail(
         });
     });
     (open_system, new_hover.get())
+}
+
+/// One stacked-by-hull row in the condensed battle view: hull badge, ship name, fleet count, and
+/// how many were destroyed. Returns the row response so the caller can highlight it on hover.
+fn condensed_row(
+    ui: &mut egui::Ui,
+    row_w: f32,
+    ship: i64,
+    total: u32,
+    lost: u32,
+    isk_lost: f64,
+    name_of: &dyn Fn(i64) -> String,
+    red: egui::Color32,
+) -> egui::Response {
+    let resp = ui
+        .horizontal(|ui| {
+            ui.set_min_width(row_w);
+            hull_badge(ui, ship, 26.0);
+            ui.label(egui::RichText::new(name_of(ship)).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if lost > 0 {
+                    ui.label(egui::RichText::new(format!("{lost} lost")).color(red).strong())
+                        .on_hover_text(format!("{} destroyed", fmt_isk(isk_lost)));
+                }
+                ui.label(egui::RichText::new(format!("\u{00d7}{total}")).strong());
+            });
+        })
+        .response;
+    resp.interact(egui::Sense::hover())
 }
 
 /// Whether an alert rule's conditions all match a report.
