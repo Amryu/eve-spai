@@ -468,7 +468,10 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
 
     // attacker -> victim kill counts, and co-attacker pair counts.
     let mut hostility: HashMap<(usize, usize), u32> = HashMap::new();
-    let mut coattack: BTreeSet<(usize, usize)> = BTreeSet::new();
+    // How many killmails each pair co-attacked on. Genuine allies fight together repeatedly; a
+    // cross-side kill-steal (both landing on one third-party victim) co-attacks only once or twice,
+    // so the count lets the real coalitions coalesce before any weak bridge is even considered.
+    let mut coattack: HashMap<(usize, usize), u32> = HashMap::new();
     for e in engs {
         let v = idx[&key(&e.victim)];
         let mut atk: Vec<usize> = e.attackers.iter().map(|a| idx[&key(&a.party)]).collect();
@@ -481,7 +484,7 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
         }
         for i in 0..atk.len() {
             for j in (i + 1)..atk.len() {
-                coattack.insert((atk[i], atk[j]));
+                *coattack.entry((atk[i], atk[j])).or_default() += 1;
             }
         }
     }
@@ -498,11 +501,21 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
         }
         seen.into_iter().map(|(a, b)| (a, b, mutual(a, b))).collect()
     };
+    // Hard-enemy party pairs (fought ≥ SIGNIF) — two of these must never share a side.
+    let hard_pairs: Vec<(usize, usize)> =
+        edges.iter().filter(|&&(_, _, m)| m >= SIGNIF).map(|&(a, b, _)| (a, b)).collect();
 
-    // 1) Union co-attackers that aren't significant enemies of each other.
+    // 1) Union co-attackers that aren't significant enemies — STRONGEST co-attack first so the real
+    //    coalitions coalesce before any weak (kill-steal) co-attack is considered, and NEVER unite a
+    //    pair whose components are already hard enemies. A single shared killmail across two
+    //    overwhelmingly-hostile coalitions must not bridge them into one side.
     let mut uf = UnionFind::new(n.max(1));
-    for &(a, b) in &coattack {
-        if mutual(a, b) < SIGNIF {
+    let mut allies: Vec<((usize, usize), u32)> =
+        coattack.into_iter().filter(|&((a, b), _)| mutual(a, b) < SIGNIF).collect();
+    allies.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
+    for ((a, b), _) in allies {
+        let (ra, rb) = (uf.find(a), uf.find(b));
+        if ra != rb && !unites_enemies(&mut uf, ra, rb, &hard_pairs) {
             uf.union(a, b);
         }
     }
@@ -620,6 +633,16 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
         (b.kills + b.losses).cmp(&(a.kills + a.losses)).then_with(|| tiebreak(a).cmp(&tiebreak(b)))
     });
     out
+}
+
+/// True if uniting components `ra` and `rb` would put two hard-enemy parties (mutual ≥ SIGNIF)
+/// on the same side — the invariant that must never be violated, so overwhelming hostility
+/// always keeps the belligerents on opposite sides.
+fn unites_enemies(uf: &mut UnionFind, ra: usize, rb: usize, hard_pairs: &[(usize, usize)]) -> bool {
+    hard_pairs.iter().any(|&(x, y)| {
+        let (fx, fy) = (uf.find(x), uf.find(y));
+        (fx == ra && fy == rb) || (fx == rb && fy == ra)
+    })
 }
 
 struct UnionFind {
@@ -775,6 +798,34 @@ mod tests {
         let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
         assert_eq!(battles.len(), 1);
         assert_eq!(battles[0].kills, 2);
+    }
+
+    #[test]
+    fn opposing_coalitions_not_bridged_by_a_killsteal() {
+        // Two coalitions, each two alliances, with overwhelming mutual hostility (A1↔B1, A2↔B2).
+        // A single cross-side kill-steal (A1 and B2 both land on a neutral Z) must NOT bridge the
+        // coalitions into one side — they fought each other far too much.
+        let multi = |k: i64, victim: &str, attackers: &[&str]| Engagement {
+            attackers: attackers.iter().map(|n| atk(party(pid(n), n))).collect(),
+            ..eng(k, k, 1, victim, attackers[0])
+        };
+        // Distinct names (the test pid() hashes by byte sum, so e.g. "A2"/"B1" would collide).
+        // Side A = Alpha+Bravo, Side B = Foxtrot+Golf. Bravo and Golf never fight each other —
+        // they only co-attack a neutral Zulu once (the kill-steal that previously bridged sides).
+        let engs = vec![
+            multi(1, "Foxtrot", &["Alpha", "Bravo"]), // A hits B's Foxtrot
+            multi(2, "Foxtrot", &["Alpha", "Bravo"]),
+            multi(3, "Alpha", &["Foxtrot", "Golf"]), // B hits A's Alpha
+            multi(4, "Alpha", &["Foxtrot", "Golf"]),
+            multi(5, "Zulu", &["Bravo", "Golf"]), // kill-steal: cross-side, no direct hostility
+        ];
+        let sides = infer_sides(&engs);
+        let side_of =
+            |name: &str| sides.iter().position(|s| s.parties.iter().any(|p| p.name == name));
+        // Alpha/Bravo vs Foxtrot/Golf are overwhelmingly hostile — never one side.
+        assert_ne!(side_of("Alpha"), side_of("Foxtrot"), "opposing coalitions bridged into one side");
+        assert_eq!(side_of("Alpha"), side_of("Bravo"), "A coalition split apart");
+        assert_eq!(side_of("Foxtrot"), side_of("Golf"), "B coalition split apart");
     }
 
     #[test]
