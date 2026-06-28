@@ -373,7 +373,7 @@ const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
 
 /// Active pilots whose names embed intel keywords. Matched case-sensitively against the readable
 /// text so the keyword inside the name is never read as a status keyword. Extend as needed.
-const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe"];
+const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe", "clear rain"];
 
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
@@ -3969,6 +3969,19 @@ mod tests {
         let r = analyze(txt, &s, &ships, &noknown(), 1, "ch", "Spai");
         assert!(!r.clear, "'clear' from pilot name spoofed a clear status");
         assert!(r.pilots.iter().any(|p| p == "clear rain"), "pilots: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn lowercase_clear_rain_pilot_detected() {
+        let s = systems();
+        // The real pilot is the all-lowercase "clear rain" (char 521632954). In a plain-text
+        // log line it can't be found heuristically (name_part needs a capital, and "clear" is a
+        // stop/clear word), and it isn't in the cache — so it relies on the allowlist.
+        let r = analyze("Rancer clear rain nemesis on gate", &s, &noships(), &noknown(), 1, "ch", "Spai");
+        assert!(r.pilots.iter().any(|p| p == "clear rain"), "clear rain not a pilot: {:?}", r.pilots);
+        assert!(!r.clear, "pilot name 'clear rain' spoofed a clear status");
+        // A genuine clear (no "rain") still reads as clear.
+        assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "Spai").clear);
     }
 
     #[test]
