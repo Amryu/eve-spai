@@ -609,6 +609,8 @@ pub struct SpaiApp {
     map_last_rect: Option<egui::Rect>,
     map_zoom: f32,
     map_follow: bool,
+    /// Cached (player system, its region) so map-follow doesn't query the DB every frame.
+    map_follow_region: Option<(i64, i64)>,
     map_popped: bool,
     /// True while drawing a per-character pop-out window, so its controls hide the
     /// main-window management buttons (pop-out, on-top, overlay) that don't apply there.
@@ -1055,6 +1057,7 @@ impl SpaiApp {
             map_last_rect: None,
             map_zoom: 1.0,
             map_follow: false,
+            map_follow_region: None,
             map_popped: false,
             map_in_popout: false,
             map_char_popouts: Vec::new(),
@@ -5752,10 +5755,21 @@ impl SpaiApp {
             self.map_initialized = true;
         }
 
-        // Follow: keep the view on the player's region.
+        // Follow: keep the view on the player's region. Cache the player-system→region
+        // lookup so this doesn't hit SQLite every frame (the map repaints continuously).
         if self.map_follow {
             if let (MapView::Region(r), Some(psys)) = (self.map_view, player_sys) {
-                if let Some(pr) = self.store.as_ref().and_then(|s| s.region_of_system(psys)) {
+                let pr = match self.map_follow_region {
+                    Some((s, reg)) if s == psys => Some(reg),
+                    _ => {
+                        let reg = self.store.as_ref().and_then(|s| s.region_of_system(psys));
+                        if let Some(reg) = reg {
+                            self.map_follow_region = Some((psys, reg));
+                        }
+                        reg
+                    }
+                };
+                if let Some(pr) = pr {
                     if pr != r {
                         self.map_view = MapView::Region(pr);
                     }
