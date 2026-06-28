@@ -4770,7 +4770,20 @@ impl SpaiApp {
                             .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
                             .min();
                         let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
-                        cards.push((kid, from_you, b.clone()));
+                        // The list row only needs the summary (systems, sides, kills, isk, span) —
+                        // NOT the engagements, which are heavy to clone for a big fight. Strip them
+                        // so rebuilding the cards (e.g. on every ISK-filter drag tick) stays cheap;
+                        // the detail view clones the full battle on open.
+                        let light = crate::battle::Battle {
+                            engagements: Vec::new(),
+                            start: b.start,
+                            end: b.end,
+                            systems: b.systems.clone(),
+                            sides: b.sides.clone(),
+                            kills: b.kills,
+                            isk: b.isk,
+                        };
+                        cards.push((kid, from_you, light));
                     }
                 }
             }
