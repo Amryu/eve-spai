@@ -17,6 +17,7 @@ const ALLIANCES: &[(&[&str], &str, i64)] = &[
     (&["shadow", "scl"], "Shadow Cartel", 495729389),
     (&["bastion"], "The Bastion", 99004425),
     (&["xdeath", "xxdeathxx", "deth"], "Legion of xXDEATHXx", 1411711376),
+    (&["uni", "euni", "e-uni"], "EVE University", 937872513), // alliance: Ivy League
 ];
 
 /// Look up an alliance by one of its shorthands → (canonical name, id).
@@ -34,6 +35,7 @@ mod tests {
 
     #[test]
     fn resolves_known_shorthands() {
+        assert_eq!(lookup("uni"), Some(("EVE University", 937872513)));
         assert_eq!(lookup("frat"), Some(("Fraternity.", 99003581)));
         assert_eq!(lookup("INIT"), Some(("The Initiative.", 1900696668)));
         assert_eq!(lookup("nobody"), None);
