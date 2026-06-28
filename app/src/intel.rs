@@ -376,7 +376,7 @@ const PILOT_STOP: &[&str] = &[
     // Common English filler words that are never pilot names (kept conservative so we
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
-    "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there",
+    "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there", "to",
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
     // "rest" as in "1 jackdaw, rest NV" — never a pilot, even though a character is named "Rest".
     "rest", "stop",
@@ -1980,9 +1980,9 @@ pub fn analyze_ctx(
     let mut pilots = drop_covered_prefixes(&pilots, text);
     // A pilot name always contains a letter — a bare number ("warpin 100") is a count, not a name.
     pilots.retain(|p| p.chars().any(|c| c.is_alphabetic()));
-    // A single all-caps, letters-only token ("UALX", "DT") is a system abbreviation/acronym, not a
-    // pilot — EVE names are mixed-case.
-    pilots.retain(|p| p.contains(' ') || !p.chars().all(|c| c.is_ascii_uppercase()));
+    // A single token with NO lower-case letter ("UALX", "DT", "F2A") is a system code/acronym, not
+    // a pilot — EVE names carry lower-case. (Multi-word candidates are exempt.)
+    pilots.retain(|p| p.contains(' ') || p.chars().any(|c| c.is_ascii_lowercase()));
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
