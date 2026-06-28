@@ -257,7 +257,21 @@ impl Store {
                 r.get(0)
             })
             .ok()?;
-        serde_json::from_str(&json).ok()
+        match serde_json::from_str(&json) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                // One unknown enum variant fails the whole parse; don't silently wipe the
+                // user's config. Log it and stash the raw blob so the next save (with
+                // defaults) doesn't overwrite the only copy.
+                eprintln!("[settings] stored settings didn't parse, using defaults: {e}");
+                let _ = self.conn.execute(
+                    "INSERT INTO kv (key, value) VALUES ('settings.bad', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = ?1",
+                    params![json],
+                );
+                None
+            }
+        }
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
