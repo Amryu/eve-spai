@@ -22,9 +22,34 @@ these principles:
    dangerous false-negative — better to misfire as the keyword group than to swallow it into a
    name. This is the one explicit exception to principle 4.
 7. **Double-space is a hard separator.** An in-game paste separates distinct entities with a
-   double space and never puts one *inside* a name. So `Rorqual  Tackled` (double space) is
-   unambiguously two entities — a Rorqual hull + a Tackled keyword — never a two-word pilot.
-   Double-spacing overrides blob-gluing and resolves most collisions cleanly when present.
+   double space and **a name or ship NEVER contains a double space**. So `Rorqual  Tackled`
+   (double space) is unambiguously two entities — a Rorqual hull + a Tackled keyword — never a
+   two-word pilot. Double-spacing overrides blob-gluing and resolves most collisions cleanly when
+   present; since multi-entity intel comes from pastes, this is the *primary* disambiguator and
+   it makes the held/parking case rare.
+
+   **Entities only — not prose.** The delimiter meaning applies only when the segments are
+   *entities* (names/ships/systems/structures). A double space in plain prose carries no entity
+   meaning: `rorqual  tackled` is still a ship + a keyword and the cap-tackle flag must fire —
+   not a two-entity paste. So a block is a paste only when every segment is a clean entity with
+   at least one anchor (system/ship/structure); otherwise fall back to normal keyword/ship/name
+   detection. (Existing rule at `intel.rs:1454`; `double_space_falls_back_on_prose` covers it.)
+
+   **Cache short-circuit (perf win, not a windowing skip).** A double-space segment is one
+   entity, so *if the cache already has a confirmed verdict for the whole segment* (`Andy Shank`
+   → known character) we use it directly — zero ESI, no permutation. But on a cache **miss** the
+   full permutation/windowing still runs (we don't blindly trust the segment is a single known
+   name). So: cache hit → short-circuit; cache miss → normal `name_windows` + `cover`. For a
+   paste of repeat pilots this means almost all resolve from cache with no ESI calls, while
+   first-seen names still get the full safe resolution.
+
+   **Implementation dependency:** today `masked_words` is built with `text.split_whitespace()`,
+   which collapses runs of spaces, and the multi-word-ship / structure mask indices are computed
+   on those collapsed tokens. So the original double-space positions are lost before
+   `loose_pilot_runs` runs. To honour this rule the masking must preserve double spaces (mask
+   entities by char-span over the original text, like `mask_parens` does, or process per
+   double-space segment) — which re-aligns every downstream token index. This is part of the
+   same Phase C coupled change, not a standalone tweak.
 
 ## The core problem
 
