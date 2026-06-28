@@ -895,7 +895,6 @@ fn loose_pilot_runs(
     systems: &Systems,
 ) -> Vec<String> {
     let punct = |c: char| ",.;:!?\"()".contains(c);
-    let toks: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
@@ -932,11 +931,12 @@ fn loose_pilot_runs(
         }
         run.clear();
     };
-    for core in &toks {
+    for raw in text.split_whitespace() {
+        let core = raw.trim_matches(punct);
         if breaks_name_run(core, ship_index, systems) {
             flush(&mut run, &mut out);
         } else {
-            run.push((*core).to_owned());
+            run.push(core.to_owned());
         }
     }
     flush(&mut run, &mut out);
@@ -1282,21 +1282,40 @@ pub fn analyze_ctx(
     // Structure spans ("Cyno Beacon", "Keepstar") are masked too, so a structure word
     // is never also read as a pilot ("Beacon").
     let struct_spans = structure_spans(&structure_words(text));
+    // Mask ship/structure spans by blanking their characters in place (replacing with spaces)
+    // rather than collapsing to single-spaced words — this PRESERVES the original whitespace,
+    // so a paste's double-space entity delimiters survive into segmentation (a name/ship never
+    // contains a double space).
     let masked_words: String = {
-        let punct = |c: char| ",.;:!?\"()".contains(c);
-        let mut wv: Vec<String> =
-            text.split_whitespace().map(|w| w.trim_matches(punct).to_string()).collect();
-        for (start, len, _, _) in &mw_ships {
-            for k in *start..(*start + *len).min(wv.len()) {
-                wv[k].clear();
+        // Byte span of each whitespace-delimited token, in split_whitespace order.
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut start: Option<usize> = None;
+        for (i, c) in text.char_indices() {
+            if c.is_whitespace() {
+                if let Some(s) = start.take() {
+                    spans.push((s, i));
+                }
+            } else if start.is_none() {
+                start = Some(i);
             }
         }
-        for (start, len, _) in &struct_spans {
-            for k in *start..(*start + *len).min(wv.len()) {
-                wv[k].clear();
+        if let Some(s) = start {
+            spans.push((s, text.len()));
+        }
+        let mut blank: Vec<(usize, usize)> = Vec::new();
+        for (w, len, _, _) in &mw_ships {
+            for k in *w..(*w + *len).min(spans.len()) {
+                blank.push(spans[k]);
             }
         }
-        wv.join(" ")
+        for (w, len, _) in &struct_spans {
+            for k in *w..(*w + *len).min(spans.len()) {
+                blank.push(spans[k]);
+            }
+        }
+        text.char_indices()
+            .map(|(i, c)| if blank.iter().any(|(s, e)| i >= *s && i < *e) { ' ' } else { c })
+            .collect()
     };
     // Run the general heuristic with parenthesised spans (drag-drop ships) and the
     // multi-word ship spans masked, so neither is read as a pilot.
