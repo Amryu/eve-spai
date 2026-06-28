@@ -8,9 +8,7 @@ EVE Spai is a desktop intel and situational-awareness tool for EVE Online, writt
 Rust with egui/eframe. It watches EVE chat logs, parses intel into cards, shows a star
 map, raises configurable alerts, and embeds XMPP fleet chat plus zKillboard lookups.
 
-It is an independent, ground-up project that uses only EVE's public static data. Do not
-reference, compare to, or attribute it to other third-party tools in code, docs, or
-commit messages.
+It uses only EVE's public static data.
 
 ## Build, test, run
 
