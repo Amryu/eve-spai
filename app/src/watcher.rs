@@ -33,6 +33,8 @@ pub fn spawn(
     std::thread::spawn(move || {
         let channels: Vec<String> = channels.iter().map(|c| c.to_lowercase()).collect();
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
+        // Per-file (size, mtime) so an unchanged log isn't re-read+decoded every poll.
+        let mut file_sigs: HashMap<PathBuf, (u64, i64)> = HashMap::new();
         // Last sighting per channel: (system id, system name, pilot names lower-cased).
         let mut last_system: HashMap<String, (i64, String, Vec<String>)> = HashMap::new();
         // One SQLite connection for the watcher's lifetime — opening per message ran the
@@ -50,6 +52,7 @@ pub fn spawn(
                 &state,
                 &ctx,
                 &mut processed,
+                &mut file_sigs,
                 &mut last_system,
                 db.as_ref(),
                 &known_regions,
@@ -70,6 +73,7 @@ fn scan(
     state: &Mutex<IntelState>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
+    file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
     last_system: &mut HashMap<String, (i64, String, Vec<String>)>,
     db: Option<&crate::store::Store>,
     known_regions: &std::collections::HashSet<String>,
@@ -84,6 +88,22 @@ fn scan(
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("txt") {
             continue;
+        }
+        // Skip a log that hasn't changed (same size + mtime) since we last processed it —
+        // avoids re-reading and UTF-16-decoding every file every poll.
+        let sig = entry.metadata().ok().map(|md| {
+            let mtime = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            (md.len(), mtime)
+        });
+        if let Some(sig) = sig {
+            if processed.contains_key(&path) && file_sigs.get(&path) == Some(&sig) {
+                continue;
+            }
         }
         let Some((meta, messages)) = crate::chatlog::read(&path) else {
             continue;
@@ -240,6 +260,9 @@ fn scan(
             // the user-configurable outdated threshold; the UI marks staleness.
             st.prune(3600, now);
             any_new = true;
+        }
+        if let Some(sig) = sig {
+            file_sigs.insert(path.clone(), sig);
         }
         processed.insert(path, messages.len());
     }
