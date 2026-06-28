@@ -373,7 +373,7 @@ const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
 
 /// Active pilots whose names embed intel keywords. Matched case-sensitively against the readable
 /// text so the keyword inside the name is never read as a status keyword. Extend as needed.
-const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon"];
+const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe"];
 
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
@@ -1934,8 +1934,20 @@ pub fn analyze_ctx(
     ships.extend(reclassified);
 
     // Scanning probes (Core/Combat Scanner Probe items + slang) are reported as a badge,
-    // never as the Probe frigate — drop the frigate so it isn't double-detected.
-    let probes = detect_probes(text);
+    // never as the Probe frigate — drop the frigate so it isn't double-detected. First mask
+    // case-sensitive keyword-named pilots ("RSS Scanner Probe") so a player's name doesn't
+    // trigger a probe badge. Real probe items ("Sisters Core Scanner Probe") don't contain
+    // those exact names, so legitimate detection is unaffected.
+    let probe_text = {
+        let mut t = std::borrow::Cow::Borrowed(text);
+        for name in KEYWORD_NAME_PILOTS {
+            if t.contains(name) {
+                t = std::borrow::Cow::Owned(t.replace(name, &" ".repeat(name.len())));
+            }
+        }
+        t
+    };
+    let probes = detect_probes(&probe_text);
     if probes.is_some() {
         ships.retain(|s| !s.name.eq_ignore_ascii_case("Probe"));
     }
@@ -3441,6 +3453,20 @@ mod tests {
         // "prob" is shorthand for "probably", not scanning probes.
         assert!(analyze("prob cyno in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").probes.is_none());
         assert_eq!(analyze("combat probes on dscan", &s, &noships(), &noknown(), 1, "ch", "x").probes, Some("Combat Probes"));
+        // The PILOT "RSS Scanner Probe" (case-sensitive) must be a pilot, not a probe alert.
+        let rp = analyze("RSS Scanner Probe tackled in Rancer", &s, &si, &noknown(), 1, "ch", "x");
+        assert_eq!(rp.probes, None, "pilot name triggered a probe badge: {:?}", rp.probes);
+        assert!(
+            rp.pilots.iter().any(|p| p == "RSS Scanner Probe"),
+            "RSS Scanner Probe not a pilot: {:?}",
+            rp.pilots
+        );
+        // A genuine probe call in the same message still fires (different, real wording).
+        assert_eq!(
+            analyze("RSS Scanner Probe and Sisters Combat Scanner Probe on dscan", &s, &si, &noknown(), 1, "ch", "x").probes,
+            Some("Combat Probes"),
+            "real probes after the pilot name should still fire"
+        );
     }
 
     #[test]
