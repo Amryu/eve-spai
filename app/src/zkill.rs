@@ -83,6 +83,10 @@ pub fn spawn(
         // sequentially. Start at the current sequence and iterate forward, one file each.
         let mut seq = fetch_sequence(&client);
         let mut stuck = 0u32;
+        // Consecutive Poll::Retry on the *same* sequence. A transient network error clears
+        // on the next try, but a permanently-unparseable payload would otherwise block the
+        // feed forever, so skip the sequence after a few attempts.
+        let mut retries = 0u32;
         loop {
             let throttle = crate::settings::WorkThrottle::from_u8(throttle.load(Ordering::Relaxed));
             let mut changed = false;
@@ -94,6 +98,7 @@ pub fn spawn(
                 Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &mut names) {
                     Poll::Got(eng) => {
                         stuck = 0;
+                        retries = 0;
                         seq = Some(s + 1);
                         if let Some(engagement) = eng {
                             if !buffer.iter().any(|e| e.kill_id == engagement.kill_id) {
@@ -113,6 +118,7 @@ pub fn spawn(
                     Poll::NotReady => {
                         // Caught up (this sequence isn't uploaded yet). Wait; if stuck a while
                         // there may be a gap, so re-sync to the current sequence.
+                        retries = 0;
                         stuck += 1;
                         std::thread::sleep(Duration::from_secs(2));
                         if stuck >= 15 {
@@ -126,7 +132,16 @@ pub fn spawn(
                             }
                         }
                     }
-                    Poll::Retry => std::thread::sleep(Duration::from_secs(5)),
+                    Poll::Retry => {
+                        retries += 1;
+                        // After ~5 failed attempts the payload is almost certainly bad, not
+                        // a network blip — skip it so the feed doesn't stall on one sequence.
+                        if retries >= 5 {
+                            retries = 0;
+                            seq = Some(s + 1);
+                        }
+                        std::thread::sleep(Duration::from_secs(5));
+                    }
                 },
             }
 
