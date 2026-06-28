@@ -620,6 +620,17 @@ fn looks_like_system_code(t: &str) -> bool {
     has_digit || longest_segment <= 3
 }
 
+/// A short code-shaped token ("F2A", "f2a", "5E") — 2–5 alphanumerics carrying both a digit and a
+/// letter (so plain words and bare counts are excluded). Used to resolve a bare, un-hyphenated
+/// null-sec abbreviation against a neighbouring system (a "gate" callout to an adjacent system).
+fn is_short_code_token(t: &str) -> bool {
+    let n = t.chars().count();
+    (2..=5).contains(&n)
+        && t.chars().all(|c| c.is_ascii_alphanumeric())
+        && t.chars().any(|c| c.is_ascii_digit())
+        && t.chars().any(|c| c.is_ascii_alphabetic())
+}
+
 /// A token shaped like a null-sec code but mixed-case and resolving to no real system (exact
 /// or prefix) — far likelier a hyphenated pilot name ("Luo-xi") than a system we simply lack.
 /// All-caps codes ("C-J") and any real/prefix-matched system are excluded, so a genuine
@@ -1379,6 +1390,38 @@ pub(crate) fn detect_location(
         }
     }
 
+    // Secondary-system gate callout: a short code-shaped token with a digit ("F2A", "f2a", "5E")
+    // that prefix-matches a NEIGHBOUR of the primary system is a gate to that adjacent system —
+    // a real neighbour is a strong enough signal to reclaim the token even if it was tentatively
+    // read as a name (these intel callouts name the next system over). The neighbour set is small,
+    // so even a 2-char prefix is unambiguous. Case-insensitive. Resolved as a system here; the
+    // gate-demotion pass below turns an adjacent secondary system into a gate.
+    {
+        let primary = detected.first().map(|d| d.id).or(context_system);
+        if let Some(p) = primary {
+            for tok in tokens.iter() {
+                let lc = tok.to_lowercase();
+                if consumed.contains(&lc)
+                    || looks_like_system_code(tok) // hyphenated codes handled above
+                    || !is_short_code_token(tok)
+                    || resolve(systems, tok).is_some()
+                {
+                    continue;
+                }
+                let hit = systems.neighbors(p).iter().find_map(|&nid| {
+                    systems.info_of(nid).filter(|info| info.name.to_lowercase().starts_with(&lc))
+                });
+                if let Some(info) = hit {
+                    let (id, name, security) = (info.id, info.name.clone(), info.security);
+                    consumed.push(lc);
+                    if !detected.iter().any(|d| d.id == id) {
+                        detected.push(DetectedSystem { id, name, security });
+                    }
+                }
+            }
+        }
+    }
+
     // Gate: "... <System> gate" — hostiles are on the gate *to* <System>. Record it
     // (resolved name, or the raw token if abbreviated/unknown) and don't also list
     // it as a plain system.
@@ -1986,6 +2029,27 @@ pub fn analyze_ctx(
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
+    // A code-shaped token resolved as a neighbour-gate abbreviation ("F2A") must also be stripped
+    // from any name blob it gummed onto ("5 reds f2a" → "5 reds", "Bob f2a" → "Bob"); a blob left
+    // empty is dropped. Only code-shaped consumed tokens are stripped, so a consumed system *name*
+    // never carves a word out of a real pilot.
+    let code_consumed: std::collections::HashSet<String> =
+        consumed.iter().filter(|c| is_short_code_token(c)).cloned().collect();
+    if !code_consumed.is_empty() {
+        pilots = pilots
+            .into_iter()
+            .filter_map(|p| {
+                if !p.contains(' ') {
+                    return Some(p);
+                }
+                let kept: Vec<&str> = p
+                    .split_whitespace()
+                    .filter(|w| !code_consumed.contains(&w.to_lowercase()))
+                    .collect();
+                (!kept.is_empty()).then(|| kept.join(" "))
+            })
+            .collect();
+    }
     // Dedupe (case-insensitive) so the same name repeated — in one message or across merged
     // re-posts — never inflates the hostile count ("X X X" is one hostile, not three).
     {
@@ -2861,6 +2925,37 @@ mod tests {
         })
         .collect();
         Systems::new(by_name, HashMap::new())
+    }
+
+    // Rancer (1) gate-adjacent to F2A-3X (100); used for neighbour-abbreviation tests.
+    fn systems_with_neighbor() -> Systems {
+        let by_name = [("rancer", "Rancer", 1i64, 0.4), ("f2a-3x", "F2A-3X", 100, -0.4), ("jita", "Jita", 2, 0.9)]
+            .into_iter()
+            .map(|(k, n, id, sec)| {
+                (k.to_string(), SystemInfo { id, name: n.to_string(), security: sec, constellation: String::new(), region: String::new(), faction: String::new() })
+            })
+            .collect();
+        let adjacency = [(1i64, vec![100i64]), (100, vec![1])].into_iter().collect();
+        Systems::new(by_name, adjacency)
+    }
+
+    #[test]
+    fn short_code_resolves_as_neighbour_gate_not_pilot() {
+        let s = systems_with_neighbor();
+        // Channel's last-known system is Rancer (1); "F2A"/"f2a" is the abbreviation of its
+        // neighbour F2A-3X — a gate callout to the adjacent system, not a pilot.
+        // Bare "F2A"/"f2a" (new block) plus a hyphenated prefix "f2a-3" (the existing null-sec
+        // code path) — null-sec coded systems carry exactly one hyphen, so a prefix may include it.
+        for msg in ["Bob f2a", "hostiles F2A", "hostiles f2a-3"] {
+            let r = analyze_ctx(msg, &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
+            let on_f2a = r.gates.iter().any(|g| g.eq_ignore_ascii_case("F2A-3X"))
+                || r.systems.iter().any(|d| d.name == "F2A-3X");
+            assert!(on_f2a, "{msg}: F2A not resolved — gates={:?} systems={:?}", r.gates, r.systems.iter().map(|d| &d.name).collect::<Vec<_>>());
+            assert!(!r.pilots.iter().any(|p| p.to_lowercase().contains("f2a")), "{msg}: F2A as pilot {:?}", r.pilots);
+        }
+        // The flanking name word survives — only the code is carved out of the blob.
+        let r = analyze_ctx("Bob f2a", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
+        assert!(r.pilots.iter().any(|p| p == "Bob"), "Bob lost: {:?}", r.pilots);
     }
 
     #[test]
