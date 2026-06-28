@@ -362,8 +362,15 @@ pub struct SpaiApp {
     battle_filter_confirm_reset: bool,
     /// Bumped whenever the battle-filter rules are edited (invalidates the card cache).
     battle_filter_gen: u64,
+    /// All overview battles matching everything EXCEPT the ISK threshold — (open kill id,
+    /// jumps-from-you, cumulative ISK, light battle). This holds the expensive work (the custom
+    /// battle-filter match + per-battle distance search), rebuilt only when the underlying battles
+    /// / query / area change — NOT when the ISK slider moves.
+    battle_candidates: Vec<(i64, Option<u32>, f64, crate::battle::Battle)>,
+    battle_candidates_sig: u64,
     /// Cached, capped battles list for the overview — (open kill id, jumps-from-you, battle).
-    /// Rebuilt only when inputs change, so filtering + the distance search aren't redone per frame.
+    /// Derived cheaply from `battle_candidates` by applying the ISK threshold, so dragging the
+    /// ISK filter doesn't re-run the expensive candidate selection.
     battle_cards: Vec<(i64, Option<u32>, crate::battle::Battle)>,
     battle_cards_sig: u64,
     /// Total battles matching the current filter (the cards list is capped).
@@ -912,6 +919,8 @@ impl SpaiApp {
             battle_filter_open: false,
             battle_filter_confirm_reset: false,
             battle_filter_gen: 0,
+            battle_candidates: Vec::new(),
+            battle_candidates_sig: 0,
             battle_cards: Vec::new(),
             battle_cards_sig: 0,
             battle_cards_total: 0,
@@ -4740,7 +4749,12 @@ impl SpaiApp {
         // list only when an input actually changes — not every repaint. The cap keeps rendering
         // bounded no matter how large the history grows.
         const MAX_CARDS: usize = 150;
-        let sig = {
+        // Safety bound on the candidate set (well above MAX_CARDS so the ISK filter still has room
+        // to choose from); in-area battles are normally far fewer.
+        const MAX_CANDIDATES: usize = 1000;
+        // Candidate signature: everything EXCEPT the ISK threshold. Only this triggers the
+        // expensive selection (custom-filter match + distance BFS per battle).
+        let cand_sig = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             {
@@ -4759,54 +4773,62 @@ impl SpaiApp {
             self.show_history.hash(&mut h);
             self.player_system().unwrap_or(0).hash(&mut h);
             self.battle_filter_gen.hash(&mut h);
-            self.settings.min_battle_isk.to_bits().hash(&mut h);
             self.intel_state.lock().unwrap().reports.len().hash(&mut h);
             h.finish()
         };
-        if sig != self.battle_cards_sig {
-            self.battle_cards_sig = sig;
+        if cand_sig != self.battle_candidates_sig {
+            self.battle_candidates_sig = cand_sig;
             let battles = source.lock().unwrap();
-            let min_isk = self.settings.min_battle_isk;
-            let mut total = 0usize;
-            let mut filtered = 0usize;
-            let mut cards: Vec<(i64, Option<u32>, crate::battle::Battle)> = Vec::new();
+            let mut cands: Vec<(i64, Option<u32>, f64, crate::battle::Battle)> = Vec::new();
             for b in battles.iter() {
                 if b.kills >= 2 && b.matches(&query) && self.battle_shown(b) {
-                    // Cumulative-ISK-loss minimum: a small skirmish below the threshold is hidden
-                    // but counted so the user sees "(N filtered)".
-                    if b.isk < min_isk {
-                        filtered += 1;
-                        continue;
-                    }
-                    total += 1;
-                    if cards.len() < MAX_CARDS {
-                        let from_you = b
-                            .systems
-                            .iter()
-                            .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
-                            .min();
-                        let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
-                        // The list row only needs the summary (systems, sides, kills, isk, span) —
-                        // NOT the engagements, which are heavy to clone for a big fight. Strip them
-                        // so rebuilding the cards (e.g. on every ISK-filter drag tick) stays cheap;
-                        // the detail view clones the full battle on open.
-                        let light = crate::battle::Battle {
-                            engagements: Vec::new(),
-                            start: b.start,
-                            end: b.end,
-                            systems: b.systems.clone(),
-                            sides: b.sides.clone(),
-                            kills: b.kills,
-                            isk: b.isk,
-                        };
-                        cards.push((kid, from_you, light));
+                    let from_you = b
+                        .systems
+                        .iter()
+                        .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
+                        .min();
+                    let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
+                    // The list row only needs the summary (systems, sides, kills, isk, span) — NOT
+                    // the engagements, which are heavy to clone for a big fight. Strip them; the
+                    // detail view clones the full battle on open.
+                    let light = crate::battle::Battle {
+                        engagements: Vec::new(),
+                        start: b.start,
+                        end: b.end,
+                        systems: b.systems.clone(),
+                        sides: b.sides.clone(),
+                        kills: b.kills,
+                        isk: b.isk,
+                    };
+                    cands.push((kid, from_you, b.isk, light));
+                    if cands.len() >= MAX_CANDIDATES {
+                        break;
                     }
                 }
             }
             drop(battles);
-            self.battle_cards = cards;
-            self.battle_cards_total = total;
-            self.battle_cards_filtered = filtered;
+            self.battle_candidates = cands;
+            self.battle_cards_sig = 0; // force the cheap card derivation below to re-run
+        }
+        // Cheap: apply the ISK threshold to the candidates. Re-runs when the candidates or the
+        // threshold change — so dragging the ISK slider only does this numeric pass, not the
+        // expensive selection above.
+        let cards_sig = self
+            .battle_candidates_sig
+            .wrapping_add(self.settings.min_battle_isk.to_bits());
+        if cards_sig != self.battle_cards_sig {
+            self.battle_cards_sig = cards_sig;
+            let min_isk = self.settings.min_battle_isk;
+            self.battle_cards_total =
+                self.battle_candidates.iter().filter(|c| c.2 >= min_isk).count();
+            self.battle_cards_filtered = self.battle_candidates.len() - self.battle_cards_total;
+            self.battle_cards = self
+                .battle_candidates
+                .iter()
+                .filter(|c| c.2 >= min_isk)
+                .take(MAX_CARDS)
+                .map(|(kid, from_you, _, b)| (*kid, *from_you, b.clone()))
+                .collect();
         }
 
         if self.battle_cards.is_empty() {
