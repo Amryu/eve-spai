@@ -429,9 +429,6 @@ const PILOT_STOP: &[&str] = &[
     "gl", "hf", "cya", "ttyl", "sup", "yo", "o7", "07", "rip",
 ];
 
-/// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
-/// as a pilot even if some character happens to share it (used to filter resolver
-/// sub-span covers). Conservative so real names aren't dropped.
 /// Intel keywords that name a ship *class* (not a specific hull) -> canonical class.
 const SHIP_CLASSES: &[(&str, &str)] = &[
     ("dic", "Interdictor"),
@@ -501,6 +498,9 @@ fn detect_classes(lower_tokens: &[String]) -> Vec<String> {
     out
 }
 
+/// Whether a (sub-)name is a stop / ship-descriptor word that should never be accepted
+/// as a pilot even if some character happens to share it (used to filter resolver
+/// sub-span covers). Conservative so real names aren't dropped.
 pub fn is_pilot_stopword(w: &str) -> bool {
     let lw = w.to_lowercase();
     PILOT_STOP.contains(&lw.as_str())
@@ -589,9 +589,6 @@ fn name_part(t: &str) -> bool {
         && (!t.contains('-') || t.chars().any(|c| c.is_ascii_lowercase()))
 }
 
-/// A single token distinctive enough to be a name candidate on its own (worth an
-/// ESI lookup): a hyphen/apostrophe, internal capital ("SokoleOko"), or a digit —
-/// patterns that plain words/ship names don't have.
 /// Nullsec system codes / abbreviations ("C-J", "88A-RA", "1DH-SX"): all-uppercase
 /// alphanumerics joined by a hyphen, never lower-case. Used to keep them out of pilot
 /// detection (player names carry lower-case letters).
@@ -626,9 +623,6 @@ fn looks_like_system_code(t: &str) -> bool {
     has_digit || longest_segment <= 3
 }
 
-/// A lower/digit-leading handle ("0xtomorrow", "xX1Mortis"): contains a digit and a
-/// run of at least three letters, so it is name-shaped even without a Title-case first
-/// letter. Excludes system codes (hyphen, no letters) and ISK/count tokens like "334m".
 /// A number glued to a time unit ("4min", "30s", "2h", "5m") — an ESS/timer duration,
 /// not a name. Only leading digits count, so a handle like "0xtomorrow" is unaffected.
 fn is_time_token(t: &str) -> bool {
@@ -646,6 +640,9 @@ fn is_time_token(t: &str) -> bool {
     )
 }
 
+/// A lower/digit-leading handle ("0xtomorrow", "xX1Mortis"): contains a digit and a
+/// run of at least three letters, so it is name-shaped even without a Title-case first
+/// letter. Excludes system codes (hyphen, no letters) and ISK/count tokens like "334m".
 fn is_handle_like(t: &str) -> bool {
     if looks_like_system_code(t) || is_time_token(t) || !t.chars().any(|c| c.is_ascii_digit()) {
         return false;
@@ -663,6 +660,9 @@ fn is_handle_like(t: &str) -> bool {
     max >= 3
 }
 
+/// A single token distinctive enough to be a name candidate on its own (worth an
+/// ESI lookup): a hyphen/apostrophe, internal capital ("SokoleOko"), or a digit —
+/// patterns that plain words/ship names don't have.
 fn is_distinctive_name(t: &str) -> bool {
     name_part(t)
         && !looks_like_system_code(t)
@@ -1115,11 +1115,6 @@ fn lowercase_lead_system_names(
     out
 }
 
-/// Analyse one message into a structured report (movement is added later).
-/// Pre-clean intel text before parsing: drop EVE's "*" route-waypoint marker (so a marked
-/// system like "NB-ALM*" still resolves), and strip a re-pasted chat line's
-/// "[ time ] Sender > " prefix when the body is an in-game-link paste (the inner sender is
-/// not a hostile).
 /// Drop a pilot that is a contiguous sub-phrase of a longer one (e.g. "Nine" when "Nine -3"
 /// is also present) — used after a merge, since each message is filtered individually.
 /// A `protect`ed name (one with an authoritative showinfo char-id) is never dropped: a
@@ -1140,6 +1135,10 @@ fn drop_subphrase_pilots(pilots: &mut Vec<String>, protect: &std::collections::H
     pilots.retain(|_| it.next().unwrap_or(true));
 }
 
+/// Pre-clean intel text before parsing: drop EVE's "*" route-waypoint marker (so a marked
+/// system like "NB-ALM*" still resolves), and strip a re-pasted chat line's
+/// "[ time ] Sender > " prefix when the body is an in-game-link paste (the inner sender is
+/// not a hostile).
 fn preprocess_intel(text: &str) -> String {
     let mut t = text.trim();
     if t.starts_with('[') {
@@ -1306,6 +1305,7 @@ fn split_pilot_ship<'a>(
     (!name.is_empty()).then(|| (name, ship.clone()))
 }
 
+/// Analyse one message into a structured report (movement is added later).
 #[allow(dead_code)] // thin no-context wrapper, kept for the public API + tests
 pub fn analyze(
     text: &str,
@@ -2303,11 +2303,6 @@ fn resolve<'a>(systems: &'a Systems, token: &str) -> Option<&'a crate::geo::Syst
     }
 }
 
-/// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number. A `+`/`x`
-/// decorated number is always a count; a bare number is a count only if it wasn't
-/// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
-/// An approximate ISK amount posted in intel ("300kk", "1.5b", "300 mil", "300 million"),
-/// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
 /// EVE structures + their common in-game abbreviations (verified against player usage,
 /// not invented). Single-word entries match whole tokens; two-word entries match phrases.
 const STRUCTURES: &[(&str, &str)] = &[
@@ -2388,11 +2383,6 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
     }
 }
 
-/// Structures mentioned in the message, each with an optional distance off it
-/// ("Keepstar 500km", "Astrahus 2AU").
-/// Scanning probes — Core/Combat Scanner Probe items (incl. Sisters/RSS/Satori-Horigu) and
-/// the "core/combat probes" slang — as a badge label, distinct from the Probe frigate. A
-/// lone "probe" (no Core/Combat/scanner qualifier) is the ship, so returns None.
 /// Celestial locations named in intel: "planet"/"moon" + an arabic number or roman numeral
 /// ("planet 1", "moon IV"), and a standalone "sun". Returns the display labels plus the
 /// tokens consumed (the celestial word + its number) so they aren't read as a hostile count
@@ -2443,6 +2433,9 @@ fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
     (labels, consumed)
 }
 
+/// Scanning probes — Core/Combat Scanner Probe items (incl. Sisters/RSS/Satori-Horigu) and
+/// the "core/combat probes" slang — as a badge label, distinct from the Probe frigate. A
+/// lone "probe" (no Core/Combat/scanner qualifier) is the ship, so returns None.
 fn detect_probes(text: &str) -> Option<&'static str> {
     let lower = text.to_lowercase();
     // Match the "prob" stem so abbreviations like "combat prob" count too.
@@ -2502,6 +2495,8 @@ fn structure_spans(words: &[String]) -> Vec<(usize, usize, String)> {
     out
 }
 
+/// Structures mentioned in the message, each with an optional distance off it
+/// ("Keepstar 500km", "Astrahus 2AU").
 fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
     let words = structure_words(text);
     let dists: Vec<(usize, String)> = words
@@ -2528,6 +2523,8 @@ fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// An approximate ISK amount posted in intel ("300kk", "1.5b", "300 mil", "300 million"),
+/// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
 fn parse_isk(text: &str, ess: bool) -> Option<u64> {
     let mult = |s: &str| -> Option<f64> {
         match s {
@@ -2584,6 +2581,9 @@ pub fn format_isk(isk: u64) -> String {
     }
 }
 
+/// Parse an approximate count: `+5`, `x4`, `4x`, or a bare small number. A `+`/`x`
+/// decorated number is always a count; a bare number is a count only if it wasn't
+/// consumed as a system/gate (so "78" in "on 78 gate" isn't 78 hostiles).
 fn parse_count(
     text: &str,
     consumed: &[String],
