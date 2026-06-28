@@ -149,15 +149,20 @@ fn scan(
                     &regions,
                 );
 
-                // Queue every candidate name (plus its 1–3 word sub-spans) for the ESI
-                // resolver, which confirms the real characters and lets the cover split an
+                // Queue every candidate name for the ESI resolver. A name already CONFIRMED in
+                // the cache needs no permutation windowing — a double-space paste of a known
+                // pilot resolves straight from cache with no extra ESI calls; only an unconfirmed
+                // candidate is windowed into 1–3 word sub-spans so the cover can split an
                 // over-glued run ("Wwallddo Lulu Uanid" → Wwallddo + Lulu Uanid).
                 if !report.pilots.is_empty() {
                     let mut cache = pilots.lock().unwrap();
                     for name in &report.pilots {
+                        let confirmed = matches!(cache.get(name), Some(Some(_)));
                         cache.queue(name);
-                        for w in crate::pilot::name_windows(name) {
-                            cache.queue(&w);
+                        if !confirmed {
+                            for w in crate::pilot::name_windows(name) {
+                                cache.queue(&w);
+                            }
                         }
                     }
                     if cfg!(debug_assertions) {
