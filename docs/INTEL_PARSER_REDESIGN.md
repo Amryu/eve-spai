@@ -189,8 +189,12 @@ Until ESI answers, a blob shows an animated `…`.
      `I Forgot Who` (three words each coincidentally a real player) must not explode into three
      pilots; a real multi-word name confirms as the longer span (with the TTL re-checking), so
      the guard only blocks the spurious case.
-   - **Step 3 — Phase C (held model, big).** Done so far: masking now preserves whitespace
-     (`6b584b9`). Remaining, in order (each its own green commit where possible):
+   - **Step 3 — Phase C (held model): IMPLEMENTED.** Landed across `6b584b9` (masking-preserve),
+     `0673126` (extract `detect_location`), `a9a4026` (flanking + `resolve_report`/`apply_resolution`
+     test helpers + 8 migrated tests), `bac7fd4` (live reconcile re-derivation, watcher parking,
+     feed+alert hide), `42286ce` (cache short-circuit), `d278068` (hold systems in lower-case
+     blobs, via an unfiltered `name_tokens` reserved set). Tests emulate ESI verdicts via
+     `resolve_report`. The original step list, all done:
      1. **Extract `detect_location`** — pull the system/gate block (`intel.rs` ~1687–1854) into
         `fn detect_location(tokens, lower_tokens, reserved: &HashSet<String>, systems,
         context_system, channel_regions) -> (Vec<DetectedSystem>, gates, consumed)`. Call it from
