@@ -1454,6 +1454,7 @@ pub fn analyze_ctx(
         }
     }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
+    let mut known_matched: std::collections::HashSet<String> = std::collections::HashSet::new();
     for k in match_known_pilots(&masked, known_pilots) {
         // A standalone word that's a known ship is the ship ("Buzzard"); a null-sec
         // code is the system, not a player who happens to be named like it ("C-J").
@@ -1468,6 +1469,7 @@ pub fn analyze_ctx(
         {
             continue;
         }
+        known_matched.insert(k.to_lowercase());
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
             pilots.push(k);
         }
@@ -1581,6 +1583,44 @@ pub fn analyze_ctx(
     // A structure name (Keepstar, Fortizar, …) is never a pilot, even if a character is
     // named after one — it's reported as a structure badge, not a player.
     pilots.retain(|p| !is_structure_word(p));
+    // Un-glue a mis-joined list of single-word handles. The heuristic glues space-separated
+    // handles ("clol23 MuskQAQ rm712 wenmg") into one run; if the cache confirms >= 2 distinct
+    // pilots inside it (and the run as a whole isn't itself a known name), the run is really
+    // several pilots, so drop it and surface each known sub-span plus any uncovered gap token
+    // (an as-yet-uncached handle the resolver can still confirm).
+    if !known_matched.is_empty() {
+        let mut gap_tokens: Vec<String> = Vec::new();
+        let mut keep: Vec<bool> = vec![true; pilots.len()];
+        for (i, p) in pilots.iter().enumerate() {
+            let pl = p.to_lowercase();
+            if !p.contains(' ') || known_matched.contains(&pl) {
+                continue; // single token, or the whole run is itself a known name
+            }
+            let padded = format!(" {pl} ");
+            let inside: Vec<&String> = known_matched
+                .iter()
+                .filter(|k| **k != pl && padded.contains(&format!(" {k} ")))
+                .collect();
+            if inside.len() < 2 {
+                continue;
+            }
+            keep[i] = false;
+            let covered: std::collections::HashSet<&str> =
+                inside.iter().flat_map(|k| k.split_whitespace()).collect();
+            for t in p.split_whitespace() {
+                if !covered.contains(t.to_lowercase().as_str()) {
+                    gap_tokens.push(t.to_owned());
+                }
+            }
+        }
+        let mut it = keep.iter();
+        pilots.retain(|_| *it.next().unwrap());
+        for g in gap_tokens {
+            if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&g)) {
+                pilots.push(g);
+            }
+        }
+    }
     // Final pass: drop any pilot that is a contiguous sub-phrase of a longer detected one.
     // The loose-run and single-token sources are added after the earlier sub-phrase filter,
     // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
@@ -3944,6 +3984,35 @@ mod tests {
                 (k.to_string(), SystemInfo { id: *id, name: n.to_string(), security: *sec, constellation: String::new(), region: String::new(), faction: String::new() })
             })
             .collect()
+    }
+
+    #[test]
+    fn glued_oneword_handles_split_via_cache() {
+        let s = Systems::new(sys_map(&[("9-ougj", "9-OUGJ", 30000454, -0.5)]), std::collections::HashMap::new());
+        // The real cache has clol23, rm712, wenmg as confirmed pilots; MuskQAQ is not yet cached.
+        let known: std::collections::HashMap<String, i64> = [
+            ("clol23".to_string(), 2124249172i64),
+            ("rm712".to_string(), 2117556515),
+            ("wenmg".to_string(), 2121075688),
+        ]
+        .into_iter()
+        .collect();
+        let plain = "clol23 MuskQAQ rm712 wenmg 9-OUGJ";
+        let r = analyze(plain, &s, &noships(), &known, 1, "ch", "TreeBeard Elderling");
+        let lc: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
+        for want in ["clol23", "rm712", "wenmg", "muskqaq"] {
+            assert!(lc.contains(&want.to_string()), "missing {want}: {:?}", r.pilots);
+        }
+        // The bogus glued 4-word run is gone.
+        assert!(!r.pilots.iter().any(|p| p.split_whitespace().count() >= 3), "glued run remained: {:?}", r.pilots);
+
+        // Guard: a genuine 2-word name that merely contains ONE known handle is NOT split.
+        let known2: std::collections::HashMap<String, i64> =
+            [("comet".to_string(), 90i64)].into_iter().collect();
+        let r2 = analyze("Comet Rider in 9-OUGJ", &s, &noships(), &known2, 1, "ch", "x");
+        // "Comet Rider" stays intact (only one known sub-span).
+        assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Comet Rider")) || r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("comet")), "pilots: {:?}", r2.pilots);
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Rider")), "Comet Rider wrongly split: {:?}", r2.pilots);
     }
 
     #[test]
