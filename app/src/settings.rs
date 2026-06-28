@@ -306,6 +306,12 @@ pub struct AlertRule {
     // --- actions ---
     /// Suppress the alert entirely (takes precedence over the action toggles).
     pub suppress: bool,
+    /// Override the matched event's severity for this alert (None = leave unchanged).
+    /// Lets a rule show an event quietly (e.g. force Info, whose default sound is silent)
+    /// or louder without changing the severity rules. Applied after matching, so the
+    /// rule's `min_severity` condition still tests the event's natural severity.
+    #[serde(default)]
+    pub severity_override: Option<Severity>,
     pub system_notification: bool,
     pub custom_window: bool,
     pub push: bool,
@@ -333,6 +339,7 @@ impl Default for AlertRule {
             require: Vec::new(),
             characters: Vec::new(),
             suppress: false,
+            severity_override: None,
             system_notification: true,
             custom_window: true,
             push: false,

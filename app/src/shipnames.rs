@@ -86,6 +86,7 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("oracle", "Oracle"),
     ("sabre", "Sabre"),
     ("flycatcher", "Flycatcher"),
+    ("fly catcher", "Flycatcher"), // spaced spelling — matched as a two-word phrase
     ("heretic", "Heretic"),
     ("eris", "Eris"),
     ("broadsword", "Broadsword"),
@@ -160,6 +161,7 @@ mod tests {
             (2, "Hurricane"),
             (3, "Cyclone Fleet Issue"),
             (4, "Raven Navy Issue"),
+            (5, "Flycatcher"),
         ]
         .into_iter()
         .map(|(id, n)| (n.to_lowercase(), (id, n.to_string())))
@@ -169,6 +171,8 @@ mod tests {
         assert_eq!(map.get("cane").map(|e| e.0), Some(2));
         assert_eq!(map.get("cfi").map(|e| e.0), Some(3)); // acronym
         assert_eq!(map.get("rni").map(|e| e.0), Some(4));
+        // Spaced nickname: "fly catcher" is keyed as a two-word phrase for `multiword_ships`.
+        assert_eq!(map.get("fly catcher").map(|e| e.0), Some(5));
     }
 
     #[test]

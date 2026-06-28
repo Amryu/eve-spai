@@ -1272,6 +1272,10 @@ impl SpaiApp {
                 if ru.suppress {
                     continue;
                 }
+                // The rule may override the event's severity for this alert (matching above
+                // used the natural severity). This drives the sound default below, the sound
+                // priority, and the alert-window colour.
+                let sev = ru.severity_override.unwrap_or(sev);
                 let sound = if ru.sound.is_empty() {
                     acfg.sounds.get(sev as usize).cloned().unwrap_or_default()
                 } else {
@@ -11700,6 +11704,31 @@ impl SpaiApp {
                         changed |= ui
                             .add(egui::TextEdit::singleline(&mut ru.sound).desired_width(90.0).hint_text("default"))
                             .changed();
+                        ui.label("severity");
+                        egui::ComboBox::from_id_salt(("rsevover", i))
+                            .selected_text(match ru.severity_override {
+                                None => "keep".to_owned(),
+                                Some(s) => format!("{s:?}"),
+                            })
+                            .show_ui(ui, |ui| {
+                                changed |= ui
+                                    .selectable_value(&mut ru.severity_override, None, "keep")
+                                    .changed();
+                                for lvl in [Info, Warning, Danger, Critical] {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut ru.severity_override,
+                                            Some(lvl),
+                                            format!("{lvl:?}"),
+                                        )
+                                        .changed();
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "Override the alert's severity (sound + colour). Leave 'keep' \
+                                 to use the event's own severity. Set Info to show it silently.",
+                            );
                     }
                     ui.label("cooldown");
                     changed |= ui
@@ -14779,6 +14808,8 @@ fn intel_row(
                         icon::MOON
                     } else if cel.starts_with("Sun") {
                         icon::SUN
+                    } else if cel.ends_with("Belt") {
+                        icon::GRAINS
                     } else {
                         icon::PLANET
                     };

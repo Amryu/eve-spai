@@ -1,8 +1,7 @@
 # EVE Spai — Design Document
 
 > Name: **EVE Spai** (EVE slang for an intelligence "spy"). Workspace: `eve-spai`.
-> Status: draft. This is a ground-up design. Everything here describes intended
-> behavior and our own structure.
+> Status: draft. Everything here describes intended behavior and our own structure.
 
 ---
 
