@@ -91,7 +91,7 @@ impl PilotCache {
     /// while any longer span is still pending resolution, so the longest name wins.
     pub fn cover(&self, candidate: &str) -> Vec<String> {
         let words: Vec<&str> = candidate.split_whitespace().collect();
-        let mut out = Vec::new();
+        let mut claims: Vec<(usize, usize)> = Vec::new(); // (start word, length) of each claim
         let mut i = 0;
         while i < words.len() {
             // A short bare number is a count ("Ace hodgens 30" = pilot + 30 ships), never a
@@ -101,13 +101,11 @@ impl PilotCache {
                 i += 1;
                 continue;
             }
-            // Take the longest CONFIRMED character name starting here. WAIT (return empty)
-            // if a longer span is still *pending* — otherwise a coincidental shorter name
-            // ("Yan" / "Watt", which are also real players) gets grabbed before the real
-            // "Yan Fan" / "Watt Watt" resolves, and the reconcile commits that wrong split
-            // permanently. A span resolved as a *non-name* (the bridging "Grim Iskander
-            // Felmilia") is skipped, so once it has resolved the split isn't blocked — which
-            // is why we persist negative verdicts too (see the resolver).
+            // Take the longest CONFIRMED character name starting here — always try 3, then 2,
+            // then 1 word. WAIT (return empty) if a longer span is still *pending* — otherwise a
+            // coincidental shorter name ("Yan" / "Watt", which are also real players) gets grabbed
+            // before the real "Yan Fan" / "Watt Watt" resolves. A span resolved as a *non-name*
+            // (the bridging "Grim Iskander Felmilia") is skipped to try a shorter span.
             let mut matched = None;
             for len in (1..=3.min(words.len() - i)).rev() {
                 let span = words[i..i + len].join(" ");
@@ -122,7 +120,7 @@ impl PilotCache {
             }
             match matched {
                 Some(len) => {
-                    out.push(words[i..i + len].join(" "));
+                    claims.push((i, len));
                     i += len;
                 }
                 None => {
@@ -134,14 +132,30 @@ impl PilotCache {
                 }
             }
         }
-        // A candidate that splits into ONLY single-word names (2+) is almost always ONE
-        // character with a multi-word name ("Andy Shank", "I Forgot Who") whose individual
-        // words each happen to be real players — not several glued-together names. Try the
-        // multi-word name first: refuse the all-singles split (the whole, ESI-rejected name
-        // is dropped instead of exploding into spurious singles). A real glued list always
-        // carries at least one multi-word name, which keeps that case splitting.
-        if out.len() >= 2 && out.iter().all(|n| !n.contains(' ')) {
-            return Vec::new();
+        // Refuse any CONTIGUOUS run of 2+ single-word claims: a stretch of adjacent single names
+        // is almost always ONE multi-word character ("Zantor Thes", "Andy Shank", "I Forgot Who")
+        // that ESI hasn't confirmed *as a whole* yet — its words just happen to also be real
+        // players. Dropping the run leaves it as the pending blob (re-queried) instead of
+        // exploding into spurious singles; a genuine glued list carries multi-word names that
+        // break the run, so those still split.
+        let mut out = Vec::new();
+        let mut k = 0;
+        while k < claims.len() {
+            let mut j = k;
+            while j + 1 < claims.len()
+                && claims[j].1 == 1
+                && claims[j + 1].1 == 1
+                && claims[j].0 + claims[j].1 == claims[j + 1].0
+            {
+                j += 1; // extend a contiguous single-word run
+            }
+            if claims[k].1 == 1 && j > k {
+                k = j + 1; // 2+ adjacent singles — drop the whole run
+            } else {
+                let (s, l) = claims[k];
+                out.push(words[s..s + l].join(" "));
+                k += 1;
+            }
         }
         out
     }
@@ -366,6 +380,24 @@ mod tests {
         c.resolved.insert("ace hodgens 30".into(), None); // resolved as a non-name
         // "30" is a count ("Ace hodgens +30 kikimoras"), not part of the name.
         assert_eq!(c.cover("Ace hodgens 30"), vec!["Ace hodgens"]);
+    }
+
+    #[test]
+    fn cover_refuses_adjacent_singles_inside_a_mixed_run() {
+        let mut c = PilotCache::default();
+        // "Zantor Thes" carries a (stale/transient) negative, but each word is a confirmed
+        // player and the next pair "Vasiliy Tochilkin" is confirmed. The two adjacent singles
+        // must NOT split into separate pilots — only the genuine pair does.
+        c.resolved.insert("zantor".into(), Some(1));
+        c.resolved.insert("thes".into(), Some(2));
+        c.resolved.insert("vasiliy tochilkin".into(), Some(3));
+        for s in ["zantor thes", "zantor thes vasiliy", "thes vasiliy", "thes vasiliy tochilkin"] {
+            c.resolved.insert(s.into(), None);
+        }
+        assert_eq!(
+            c.cover("Zantor Thes Vasiliy Tochilkin"),
+            vec!["Vasiliy Tochilkin".to_string()]
+        );
     }
 
     #[test]
