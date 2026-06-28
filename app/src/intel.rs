@@ -618,6 +618,17 @@ fn looks_like_system_code(t: &str) -> bool {
     has_digit || longest_segment <= 3
 }
 
+/// A token shaped like a null-sec code but mixed-case and resolving to no real system (exact
+/// or prefix) — far likelier a hyphenated pilot name ("Luo-xi") than a system we simply lack.
+/// All-caps codes ("C-J") and any real/prefix-matched system are excluded, so a genuine
+/// abbreviation isn't mistaken for a player.
+fn is_code_lookalike_name(t: &str, systems: &Systems) -> bool {
+    looks_like_system_code(t)
+        && t.chars().any(|c| c.is_ascii_lowercase())
+        && resolve(systems, t).is_none()
+        && systems.lookup_prefix(t).is_none()
+}
+
 /// A number glued to a time unit ("4min", "30s", "2h", "5m") — an ESS/timer duration,
 /// not a name. Only leading digits count, so a handle like "0xtomorrow" is unaffected.
 fn is_time_token(t: &str) -> bool {
@@ -883,7 +894,7 @@ fn breaks_name_run(core: &str, ship_index: &HashMap<String, (i64, String)>, syst
         || is_tackle_word(&lc)
         || is_time_token(core)
         || is_structure_word(core)
-        || looks_like_system_code(core)
+        || (looks_like_system_code(core) && !is_code_lookalike_name(core, systems))
         || crate::wormholes::is_wh_code(core)
         || ship_of(&lc, ship_index).is_some()
         || systems.lookup(core).is_some()
@@ -904,12 +915,18 @@ fn loose_pilot_runs(
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
-        // Trim stop words and lone letters off the boundaries so the blob starts and ends on
-        // a name word (an interior stop word, e.g. the "is" in "Cult is Dead", is kept).
+        // Trim stop words and lone letters off the boundaries so the blob starts and ends on a
+        // name word (an interior stop word, e.g. the "is" in "Cult is Dead", is kept). A name-
+        // capable stop word (Blue/Red/Bubble/Clear) can end a name ("Sky Blue") so it stays; an
+        // all-caps status word ("NV") is trimmed even though it passes name_part.
         let trim = |w: &String| {
-            !name_part(w)
-                && !is_name_suffix(w) // keep a name initial / trailing number ("Lopatich R", "Adama 80")
-                && (is_pilot_stopword(w) || w.chars().count() < 2)
+            if is_pilot_stopword(w) {
+                // A name-capable keyword stays only when capitalised ("Sky Blue"); lower-case
+                // ("clear", "bubble") it is the status word, and "NV" is trimmed too.
+                !(is_name_capable_stopword(w) && name_part(w))
+            } else {
+                !name_part(w) && !is_name_suffix(w) && w.chars().count() < 2
+            }
         };
         while run.first().is_some_and(&trim) {
             run.remove(0);
@@ -1424,7 +1441,7 @@ pub fn analyze_ctx(
         if (name_part(t) || is_handle_like(t))
             && t.len() >= 3
             && !is_pilot_stopword(t)
-            && !looks_like_system_code(t)
+            && (!looks_like_system_code(t) || is_code_lookalike_name(t, systems))
             && !CLEAR_WORDS.contains(&lc.as_str())
             && ship_index.get(&lc).is_none()
             && resolve(systems, t).is_none()

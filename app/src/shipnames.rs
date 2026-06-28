@@ -182,14 +182,22 @@ mod tests {
 pub fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
+    // Optimal string alignment: like Levenshtein but an adjacent transposition ("saber" vs
+    // "sabre") costs 1, not 2 — the most common keyboard typo. Needs the row two back.
+    let mut prev2: Vec<usize> = vec![0; b.len() + 1];
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut cur = vec![0usize; b.len() + 1];
     for (i, &ca) in a.iter().enumerate() {
         cur[0] = i + 1;
         for (j, &cb) in b.iter().enumerate() {
             let cost = usize::from(ca != cb);
-            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+            let mut v = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+            if i > 0 && j > 0 && ca == b[j - 1] && a[i - 1] == cb {
+                v = v.min(prev2[j - 1] + 1);
+            }
+            cur[j + 1] = v;
         }
+        std::mem::swap(&mut prev2, &mut prev);
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[b.len()]
