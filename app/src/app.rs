@@ -648,6 +648,8 @@ pub struct SpaiApp {
     threat_include_bridges: bool,
     /// Safety Mode: systems threatened on the last watch tick (to alarm only on a new one).
     safety_prev: Option<std::collections::HashSet<i64>>,
+    /// egui time of the last Safety watch scan, to throttle its per-report BFS off the frame rate.
+    safety_last_scan: f64,
     /// Map layout to restore when leaving Safety mode (Safety forces the Tree view).
     safety_prev_layout: Option<crate::map::MapLayout>,
     /// egui time the red screen-flash overlay stays up until (Safety alarm).
@@ -1068,6 +1070,7 @@ impl SpaiApp {
             map_threat_center: None,
             threat_include_bridges: true,
             safety_prev: None,
+            safety_last_scan: 0.0,
             safety_prev_layout: None,
             flash_until: 0.0,
             map_draw: Vec::new(),
@@ -8719,6 +8722,14 @@ impl SpaiApp {
         let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
             return;
         };
+        // The scan runs a BFS per nearby report/kill; throttle to ~1s so it doesn't ride the
+        // frame rate. The alarm is edge-triggered (new threatened system vs. the last scan),
+        // so a coarser tick only delays an AFK alert by up to a second.
+        let now = ctx.input(|i| i.time);
+        if now - self.safety_last_scan < 1.0 {
+            return;
+        }
+        self.safety_last_scan = now;
         let range = self.map_threat_jumps;
         let mut current: std::collections::HashSet<i64> = std::collections::HashSet::new();
         {
