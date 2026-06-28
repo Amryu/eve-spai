@@ -4605,12 +4605,11 @@ impl SpaiApp {
                                 .filter(|&id| id != 0)
                                 .collect();
                             self.ensure_type_names(&ids, ui.ctx());
-                            let type_names = self.type_names.lock().unwrap().clone();
                             let inv = b.involvement();
                             let rosters: Vec<Vec<crate::battle::Participant>> =
                                 (0..b.sides.len()).map(|i| b.roster(i)).collect();
                             self.battle_detail_cache =
-                                Some(BattleDetailCache { kid, sig, battle: b, inv, rosters, type_names });
+                                Some(BattleDetailCache { kid, sig, battle: b, inv, rosters });
                         }
                     }
                     if let Some(cache) = self.battle_detail_cache.as_ref() {
@@ -4625,14 +4624,20 @@ impl SpaiApp {
                         }
                         ui.add_space(6.0);
                         let prev_hover = self.battle_hover;
-                        let (clicked_system, hover) = battle_detail(
-                            ui,
-                            &cache.battle,
-                            &cache.type_names,
-                            &cache.inv,
-                            &cache.rosters,
-                            prev_hover,
-                        );
+                        // Read type names LIVE each frame — they resolve asynchronously, so a
+                        // snapshot taken when the cache was built would freeze unresolved hulls as
+                        // "Type <id>". The heavy involvement/rosters stay cached.
+                        let (clicked_system, hover) = {
+                            let type_names = self.type_names.lock().unwrap();
+                            battle_detail(
+                                ui,
+                                &cache.battle,
+                                &type_names,
+                                &cache.inv,
+                                &cache.rosters,
+                                prev_hover,
+                            )
+                        };
                         if hover != prev_hover {
                             self.battle_hover = hover;
                             ui.ctx().request_repaint();
@@ -13588,7 +13593,6 @@ struct BattleDetailCache {
     battle: crate::battle::Battle,
     inv: crate::battle::Involvement,
     rosters: Vec<Vec<crate::battle::Participant>>,
-    type_names: std::collections::HashMap<i64, String>,
 }
 
 /// The detailed view of one battle: a header, then each side as its own column (horizontal
