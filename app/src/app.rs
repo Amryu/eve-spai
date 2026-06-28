@@ -4483,6 +4483,11 @@ impl SpaiApp {
                         crate::battle::BATTLE_MAX_JUMPS,
                         |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
                     )
+                    .into_iter()
+                    // Only battles that touched the watched area (the anchor flag is persisted
+                    // per engagement, so this works without the live intel state).
+                    .filter(|b| b.is_anchored())
+                    .collect()
                 })
                 .unwrap_or_default();
             *out.lock().unwrap() = battles;

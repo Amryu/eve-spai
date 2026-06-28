@@ -24,8 +24,12 @@ pub type ShipSizes = Arc<HashMap<i64, ShipSize>>;
 
 const R2Z2: &str = "https://r2z2.zkillboard.com/ephemeral";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
-/// Keep kills within this many jumps of a tracked intel system.
+/// A kill within this many jumps of an intel report (or the active character) anchors a battle.
 pub const ANCHOR_JUMPS: u32 = 6;
+/// Buffer kills this far out as battle *candidates* — far enough that anything able to cluster
+/// with an anchored kill (within BATTLE_MAX_JUMPS of it) is retained, so a fight that touches the
+/// watched area is recorded whole. Candidates that never join an anchored battle are dropped.
+const CANDIDATE_JUMPS: u32 = ANCHOR_JUMPS + crate::battle::BATTLE_MAX_JUMPS;
 /// Retain engagements for a day — zKillboard can deliver kills hours late, so a
 /// battle report keeps getting updated as stragglers arrive.
 const ENGAGEMENT_TTL: i64 = 86_400;
@@ -72,7 +76,9 @@ pub fn spawn(
                 battle::BATTLE_MAX_JUMPS,
                 |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
             );
-            *battles.lock().unwrap() = clustered;
+            // Keep only battles that touch the watched area (>= 1 anchored kill); candidate-only
+            // clusters elsewhere are dropped.
+            *battles.lock().unwrap() = clustered.into_iter().filter(|b| b.is_anchored()).collect();
             ctx.request_repaint();
         }
         let mut seen_links: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -199,7 +205,9 @@ pub fn spawn(
                     battle::BATTLE_MAX_JUMPS,
                     |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
                 );
-                *battles.lock().unwrap() = clustered;
+                // Keep only battles that touch the watched area (>= 1 anchored kill).
+                *battles.lock().unwrap() =
+                    clustered.into_iter().filter(|b| b.is_anchored()).collect();
                 ctx.request_repaint();
             }
         }
@@ -403,40 +411,35 @@ fn poll(
     let Some(sys) = systems.info_of(pkg.killmail.solar_system_id) else {
         return Poll::Got(None);
     };
-    // Keep kills near a tracked intel system, near the active character, OR matching a custom
-    // Include rule. The player-proximity anchor captures battles you're part of even before
-    // chat intel marks the area as tracked: such a kill already shows as an intel card via the
-    // same player-range gate (ingest_killfeed), but the engagement filter previously required a
-    // nearby *intel report*, so a kill that arrived before the area was reported (e.g. the first
-    // kills of a fight) was dropped from every battle report. Anchoring on the player's own
-    // location closes that gap.
+    // Two concentric tests so a battle that touches the watched area is recorded *whole*:
+    //   - `anchored`: the kill is genuinely in the watched area (within ANCHOR_JUMPS of an intel
+    //     report or the active character, or matched by a custom Include rule). A battle is
+    //     surfaced only if it contains an anchored kill (see Battle::is_anchored).
+    //   - `candidate`: within clustering reach of the anchor zone (ANCHOR_JUMPS + BATTLE_MAX_JUMPS).
+    //     Such a kill is buffered even when it isn't itself anchored, so a kill just outside intel
+    //     range — or one that arrived before the area was reported (the first kills of a fight) —
+    //     can still join an anchored battle. Non-candidate kills are dropped.
+    let kill_sys = pkg.killmail.solar_system_id;
     let me = player_sys.load(Ordering::Relaxed);
-    let player_near =
-        me != 0 && systems.jumps(me, pkg.killmail.solar_system_id, ANCHOR_JUMPS).is_some();
-    let tracked =
-        player_near || in_tracked_area(systems, intel, pkg.killmail.solar_system_id);
-    if !tracked {
-        let admitted = {
-            let f = filter.lock().unwrap();
-            // Common case (only the default Intel-area rule): nothing widens beyond the intel
-            // area, so drop the kill without building match data or searching jump distance.
-            if !f.widens_beyond_intel() {
-                false
-            } else {
-                let data = ingest_match_data(
-                    &pkg.killmail,
-                    sys,
-                    ship_sizes,
-                    systems,
-                    player_sys,
-                    f.max_jumps_condition(),
-                );
-                f.rules.iter().any(|r| r.admits_ingest(&data))
-            }
-        };
-        if !admitted {
-            return Poll::Got(None);
+    // One BFS, capped at the wider radius; reuse its result for both thresholds.
+    let player_jumps =
+        if me != 0 { systems.jumps(me, kill_sys, CANDIDATE_JUMPS) } else { None };
+    let custom_match = {
+        let f = filter.lock().unwrap();
+        if !f.widens_beyond_intel() {
+            false
+        } else {
+            let data = ingest_match_data(&pkg.killmail, sys, ship_sizes, systems, player_sys, f.max_jumps_condition());
+            f.rules.iter().any(|r| r.admits_ingest(&data))
         }
+    };
+    let intel_jumps = nearest_intel_jumps(systems, intel, kill_sys, CANDIDATE_JUMPS);
+    let anchored = custom_match
+        || player_jumps.is_some_and(|d| d <= ANCHOR_JUMPS)
+        || intel_jumps.is_some_and(|d| d <= ANCHOR_JUMPS);
+    let candidate = anchored || player_jumps.is_some() || intel_jumps.is_some();
+    if !candidate {
+        return Poll::Got(None);
     }
     let time = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
         .map(|dt| dt.timestamp())
@@ -461,10 +464,18 @@ fn poll(
         victim_ship: pkg.killmail.victim.ship_type_id.unwrap_or(0),
         attackers,
         isk: pkg.zkb.total_value,
+        anchored,
     }))
 }
 
-fn in_tracked_area(systems: &Systems, intel: &Mutex<IntelState>, kill_system: i64) -> bool {
+/// Smallest jump distance from the kill system to any current intel-report system, capped at
+/// `cap` (None if none is within `cap`). One scan answers both the anchor and candidate radii.
+fn nearest_intel_jumps(
+    systems: &Systems,
+    intel: &Mutex<IntelState>,
+    kill_system: i64,
+    cap: u32,
+) -> Option<u32> {
     let intel_systems: Vec<i64> = {
         let state = intel.lock().unwrap();
         let mut ids: Vec<i64> = state
@@ -476,9 +487,7 @@ fn in_tracked_area(systems: &Systems, intel: &Mutex<IntelState>, kill_system: i6
         ids.dedup();
         ids
     };
-    intel_systems
-        .iter()
-        .any(|&s| systems.jumps(kill_system, s, ANCHOR_JUMPS).is_some())
+    intel_systems.iter().filter_map(|&s| systems.jumps(kill_system, s, cap)).min()
 }
 
 /// Per-kill facts a battle-filter Include rule can test at ingest (no ESI): location, coalition
@@ -649,6 +658,8 @@ fn fetch_posted_kill(
         victim_ship: km.victim.ship_type_id.unwrap_or(0),
         attackers,
         isk: entry.zkb.total_value,
+        // A kill posted as a link in intel is explicitly referenced, so it anchors a battle.
+        anchored: true,
     })
 }
 

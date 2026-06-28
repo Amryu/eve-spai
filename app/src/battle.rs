@@ -70,6 +70,19 @@ pub struct Engagement {
     pub victim_ship: i64,
     pub attackers: Vec<Attacker>,
     pub isk: f64,
+    /// Whether this kill was genuinely in the watched area at ingest (within ANCHOR_JUMPS of
+    /// intel or the active character, or matched by a custom Include rule). Kills just outside
+    /// the area are still buffered as battle *candidates* (`anchored = false`); a battle is only
+    /// surfaced if it contains at least one anchored kill, so a fight that touches the watched
+    /// area is recorded whole — including its out-of-range kills — without surfacing battles that
+    /// are entirely elsewhere. Defaults to true so engagements persisted before this field
+    /// (all of which were in-area) still count as anchors.
+    #[serde(default = "default_true")]
+    pub anchored: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Engagement {
@@ -166,6 +179,13 @@ pub struct Involvement {
 }
 
 impl Battle {
+    /// True if any engagement was in the watched area at ingest. Battles with no anchored
+    /// engagement are entirely outside the watched area (only buffered as cluster candidates)
+    /// and must not be surfaced.
+    pub fn is_anchored(&self) -> bool {
+        self.engagements.iter().any(|e| e.anchored)
+    }
+
     /// Build the hover cross-reference maps from the engagements.
     pub fn involvement(&self) -> Involvement {
         let mut inv = Involvement::default();
@@ -653,6 +673,7 @@ mod tests {
             victim_ship: 587,
             attackers: vec![atk(party(pid(attacker), attacker))],
             isk: 1.0,
+            anchored: true,
         }
     }
 
@@ -681,6 +702,32 @@ mod tests {
         let big = battles.iter().max_by_key(|b| b.kills).unwrap();
         assert_eq!(big.kills, 2);
         assert_eq!(big.systems.len(), 2);
+    }
+
+    #[test]
+    fn anchored_battle_keeps_unanchored_kills_whole() {
+        // The Kronos scenario: an out-of-range / pre-report kill (anchored=false) that shares a
+        // belligerent with an anchored kill in the same window clusters into ONE battle, and that
+        // battle counts as anchored — so the whole fight (including the unanchored kill) is kept.
+        let unanchored = Engagement { anchored: false, ..eng(1, 0, 1, "Kronos", "Blue") };
+        let anchored = eng(2, 420, 1, "Rorqual", "Blue"); // 7 min later, same system, shares Blue
+        let battles = cluster(&[unanchored, anchored], BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        assert_eq!(battles.len(), 1, "should be one battle");
+        assert_eq!(battles[0].kills, 2, "both kills present");
+        assert!(battles[0].is_anchored(), "battle touches the anchor, so it's kept");
+    }
+
+    #[test]
+    fn fully_unanchored_battle_is_not_surfaced() {
+        // A fight entirely outside the watched area (every kill anchored=false) shares no
+        // belligerent with anything anchored -> its cluster is not anchored and is dropped.
+        let e1 = Engagement { anchored: false, ..eng(1, 0, 2, "Red", "Blue") };
+        let e2 = Engagement { anchored: false, ..eng(2, 60, 2, "Blue", "Red") };
+        let battles = cluster(&[e1, e2], BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        assert_eq!(battles.len(), 1);
+        assert!(!battles[0].is_anchored(), "fully out-of-area battle must be filtered out");
+        // The post-cluster filter the app applies:
+        assert_eq!(battles.into_iter().filter(|b| b.is_anchored()).count(), 0);
     }
 
     #[test]
@@ -898,6 +945,7 @@ mod tests {
             victim_ship: 587,
             attackers: vec![atk(goon), atk(imp2)],
             isk: 1.0,
+            anchored: true,
         };
         let b = &cluster(std::slice::from_ref(&e), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
         let imp = b.sides.iter().find(|s| s.parties.iter().any(|p| p.id == 1354830081)).unwrap();
