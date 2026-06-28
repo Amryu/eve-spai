@@ -650,6 +650,8 @@ pub struct SpaiApp {
     safety_prev: Option<std::collections::HashSet<i64>>,
     /// egui time of the last Safety watch scan, to throttle its per-report BFS off the frame rate.
     safety_last_scan: f64,
+    /// egui time of the last sov-alliance auto-discovery scan (throttled off the frame rate).
+    sov_discover_last: f64,
     /// Map layout to restore when leaving Safety mode (Safety forces the Tree view).
     safety_prev_layout: Option<crate::map::MapLayout>,
     /// egui time the red screen-flash overlay stays up until (Safety alarm).
@@ -1071,6 +1073,7 @@ impl SpaiApp {
             threat_include_bridges: true,
             safety_prev: None,
             safety_last_scan: 0.0,
+            sov_discover_last: 0.0,
             safety_prev_layout: None,
             flash_until: 0.0,
             map_draw: Vec::new(),
@@ -10294,7 +10297,15 @@ impl SpaiApp {
 
     /// Record any newly-seen sov-holding alliance (from ESI) in the settings list.
     /// Never prunes — alliances persist after they stop holding sov.
-    fn discover_sov_alliances(&mut self) {
+    fn discover_sov_alliances(&mut self, ctx: &egui::Context) {
+        // Sov data changes slowly (ESI poll cadence), and this only ever *adds* newly-seen
+        // alliances, so throttle off the frame rate instead of rebuilding the name set and
+        // scanning settings.alliances every frame.
+        let now = ctx.input(|i| i.time);
+        if now - self.sov_discover_last < 3.0 {
+            return;
+        }
+        self.sov_discover_last = now;
         let names: std::collections::HashSet<String> = {
             let st = self.system_status.lock().unwrap();
             st.values().filter_map(|f| f.sov.clone()).collect()
@@ -12434,7 +12445,7 @@ impl eframe::App for SpaiApp {
         self.ping_rules_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
-        self.discover_sov_alliances();
+        self.discover_sov_alliances(&ctx);
         self.os_notify
             .store(self.settings.alert_combat, std::sync::atomic::Ordering::Relaxed);
         self.check_alerts();
