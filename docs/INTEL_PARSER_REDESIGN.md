@@ -189,15 +189,27 @@ Until ESI answers, a blob shows an animated `…`.
      `I Forgot Who` (three words each coincidentally a real player) must not explode into three
      pilots; a real multi-word name confirms as the longer span (with the TTL re-checking), so
      the guard only blocks the spurious case.
-   - **Step 3 — Phase C (held model, big):** move system + keyword + count parsing to the
-     post-ESI reconcile over unreserved tokens; soft/threat keyword split. **A report whose
-     location is still ambiguous (only-system token held in a name blob) must be PARKED, not
-     dropped** — today `watcher.rs` does `if systems.is_empty() && gates.is_empty() { continue }`
-     which would discard it. Parking + re-deriving the location after ESI is the crux: it needs
-     the ~170-line system/gate detection extracted into a reusable pass that runs over the
-     reserved-token set, plus a pending-report holding area in `IntelState`, plus the live-ESI
-     path validated (offline tests can't exercise the resolver thread). This is a dedicated
-     multi-component effort, not a tail-of-session change.
+   - **Step 3 — Phase C (held model, big).** Done so far: masking now preserves whitespace
+     (`6b584b9`). Remaining, in order (each its own green commit where possible):
+     1. **Extract `detect_location`** — pull the system/gate block (`intel.rs` ~1687–1854) into
+        `fn detect_location(tokens, lower_tokens, reserved: &HashSet<String>, systems,
+        context_system, channel_regions) -> (Vec<DetectedSystem>, gates, consumed)`. Call it from
+        `analyze_ctx` with `reserved = pilot_tokens` (behaviour-neutral; commit green).
+     2. **Flanking segmentation** — a system/code flanked by a name word becomes name-material
+        (`hard_name_breaker` + `is_system_token` + `is_name_anchor`, neighbour check in
+        `loose_pilot_runs`). Held systems land in `pilot_tokens`, so `detect_location` skips them.
+     3. **Offline test helper `resolve_report(report, reals)`** — `esi_resolve` the pilots,
+        reserve their tokens, then re-run `detect_location` with `reserved = confirmed tokens` to
+        re-derive the location. Migrate the ~8 affected tests + `system_detection_coverage` to it.
+     4. **Live reconcile** — after `cover`, re-run `detect_location` over reserved-confirmed
+        tokens; update `r.systems`/`r.gates`.
+     5. **Parking** — `watcher.rs` `if systems.is_empty() && gates.is_empty() { continue }` must
+        instead PARK a report that still has unresolved name blobs containing system tokens, in a
+        pending area in `IntelState`; re-evaluate each reconcile pass; admit when a location
+        resolves; drop on a TTL if it never does. **Validate live (`/run`, `/verify`)** — the
+        resolver thread is not exercised by offline tests.
+     6. **Cache short-circuit** — flag segment-derived (double-space paste) candidates "solid";
+        the watcher skips `name_windows` for them on a confirmed cache hit.
    - Tests are ported to the phase contract as each step lands; the app stays working between
      steps.
 
