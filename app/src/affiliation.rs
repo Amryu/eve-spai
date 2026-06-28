@@ -14,6 +14,8 @@ pub struct Affil {
     pub alliance: Option<i64>,
     pub corp_name: Option<String>,
     pub alliance_name: Option<String>,
+    /// The character's own name (resolved alongside corp/alliance), for kill-card tooltips.
+    pub char_name: Option<String>,
 }
 
 /// Re-resolve a character's affiliation after this many seconds — corp/alliance
@@ -86,10 +88,11 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                     .and_then(|r| r.json::<Vec<AffilResp>>());
                 match resp {
                     Ok(list) => {
-                        // Resolve corp + alliance ids to names (one /universe/names batch) so the
-                        // pilot badge tooltip can show them.
+                        // Resolve character + corp + alliance ids to names (one /universe/names
+                        // batch) so the pilot badge and kill-card tooltips can show them.
                         let mut ids: Vec<i64> = Vec::new();
                         for a in &list {
+                            ids.push(a.character_id);
                             ids.push(a.corporation_id);
                             if let Some(al) = a.alliance_id {
                                 ids.push(al);
@@ -107,6 +110,7 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                                     alliance: a.alliance_id,
                                     corp_name: names.get(&a.corporation_id).cloned(),
                                     alliance_name: a.alliance_id.and_then(|al| names.get(&al).cloned()),
+                                    char_name: names.get(&a.character_id).cloned(),
                                 },
                             );
                         }

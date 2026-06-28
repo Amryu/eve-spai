@@ -14714,7 +14714,7 @@ fn intel_row(
                                                  alliance: Option<i64>,
                                                  corp: Option<i64>,
                                                  character: Option<i64>,
-                                                 hover: &str| {
+                                                 title: &str| {
                                         let parts: Vec<String> = [
                                             alliance.map(|a| format!("https://images.evetech.net/alliances/{a}/logo?size=32")),
                                             corp.map(|c| format!("https://images.evetech.net/corporations/{c}/logo?size=32")),
@@ -14732,7 +14732,36 @@ fn intel_row(
                                             .map(|c| format!("https://zkillboard.com/character/{c}/"))
                                             .or_else(|| corp.map(|c| format!("https://zkillboard.com/corporation/{c}/")))
                                             .or_else(|| alliance.map(|a| format!("https://zkillboard.com/alliance/{a}/")));
-                                        if ui.add(egui::Button::new(atoms)).on_hover_text(hover).clicked() {
+                                        let resp = ui.add(egui::Button::new(atoms)).on_hover_ui(|ui| {
+                                            // Alliance / corporation / pilot, one per row, each with
+                                            // its icon. Names resolve via the affiliation cache (the
+                                            // killmail only carries ids); "…" until they land.
+                                            ui.strong(title);
+                                            let info = character.and_then(|c| {
+                                                let mut a = affil.lock().unwrap();
+                                                a.want(c);
+                                                a.get(c)
+                                            });
+                                            let row = |ui: &mut egui::Ui, url: String, name: Option<String>| {
+                                                ui.horizontal(|ui| {
+                                                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(22.0)));
+                                                    ui.label(name.unwrap_or_else(|| "…".to_owned()));
+                                                });
+                                            };
+                                            if let Some(a) = info.as_ref().and_then(|i| i.alliance).or(alliance) {
+                                                row(ui, format!("https://images.evetech.net/alliances/{a}/logo?size=32"),
+                                                    info.as_ref().and_then(|i| i.alliance_name.clone()));
+                                            }
+                                            if let Some(c) = info.as_ref().and_then(|i| i.corp).or(corp) {
+                                                row(ui, format!("https://images.evetech.net/corporations/{c}/logo?size=32"),
+                                                    info.as_ref().and_then(|i| i.corp_name.clone()));
+                                            }
+                                            if let Some(ch) = character {
+                                                row(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"),
+                                                    info.as_ref().and_then(|i| i.char_name.clone()));
+                                            }
+                                        });
+                                        if resp.clicked() {
                                             if let Some(url) = zkill {
                                                 let _ = open::that(url);
                                             }
