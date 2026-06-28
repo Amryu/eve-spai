@@ -403,8 +403,18 @@ fn poll(
     let Some(sys) = systems.info_of(pkg.killmail.solar_system_id) else {
         return Poll::Got(None);
     };
-    // Keep kills near a tracked intel system OR matching a custom Include rule.
-    let tracked = in_tracked_area(systems, intel, pkg.killmail.solar_system_id);
+    // Keep kills near a tracked intel system, near the active character, OR matching a custom
+    // Include rule. The player-proximity anchor captures battles you're part of even before
+    // chat intel marks the area as tracked: such a kill already shows as an intel card via the
+    // same player-range gate (ingest_killfeed), but the engagement filter previously required a
+    // nearby *intel report*, so a kill that arrived before the area was reported (e.g. the first
+    // kills of a fight) was dropped from every battle report. Anchoring on the player's own
+    // location closes that gap.
+    let me = player_sys.load(Ordering::Relaxed);
+    let player_near =
+        me != 0 && systems.jumps(me, pkg.killmail.solar_system_id, ANCHOR_JUMPS).is_some();
+    let tracked =
+        player_near || in_tracked_area(systems, intel, pkg.killmail.solar_system_id);
     if !tracked {
         let admitted = {
             let f = filter.lock().unwrap();
