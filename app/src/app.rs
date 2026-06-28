@@ -13755,17 +13755,20 @@ fn battle_detail(
                                     // how many were destroyed. Hover highlights only that row — the
                                     // participating/killer cross-links don't apply to a stack.
                                     let mut order: Vec<i64> = Vec::new();
-                                    let mut agg: std::collections::HashMap<i64, (u32, u32, f64)> =
+                                    // Per hull: (fleet count, ships lost, cumulative ship ISK,
+                                    // cumulative pod ISK). Ship and pod losses are kept apart.
+                                    let mut agg: std::collections::HashMap<i64, (u32, u32, f64, f64)> =
                                         std::collections::HashMap::new();
                                     for p in roster.iter() {
                                         let e = agg.entry(p.ship).or_insert_with(|| {
                                             order.push(p.ship);
-                                            (0, 0, 0.0)
+                                            (0, 0, 0.0, 0.0)
                                         });
                                         e.0 += 1;
                                         if let Some(l) = &p.lost {
                                             e.1 += 1;
                                             e.2 += l.value;
+                                            e.3 += l.pod_value;
                                         }
                                     }
                                     // Most-destroyed first, then biggest fleet, then name.
@@ -13776,9 +13779,10 @@ fn battle_detail(
                                             .then_with(|| name_of(*a).cmp(&name_of(*b)))
                                     });
                                     for ship in &order {
-                                        let (total, lost, isk_lost) = agg[ship];
+                                        let (total, lost, ship_isk, pod_isk) = agg[ship];
                                         let resp = condensed_row(
-                                            ui, row_w, *ship, total, lost, isk_lost, &name_of, red,
+                                            ui, row_w, *ship, total, lost, ship_isk, pod_isk,
+                                            &name_of, red,
                                         );
                                         if resp.hovered() {
                                             let hl = egui::Color32::from_rgba_unmultiplied(
@@ -13837,13 +13841,15 @@ fn battle_detail(
 
 /// One stacked-by-hull row in the condensed battle view: hull badge, ship name, fleet count, and
 /// how many were destroyed. Returns the row response so the caller can highlight it on hover.
+#[allow(clippy::too_many_arguments)]
 fn condensed_row(
     ui: &mut egui::Ui,
     row_w: f32,
     ship: i64,
     total: u32,
     lost: u32,
-    isk_lost: f64,
+    ship_isk: f64,
+    pod_isk: f64,
     name_of: &dyn Fn(i64) -> String,
     red: egui::Color32,
 ) -> egui::Response {
@@ -13852,12 +13858,20 @@ fn condensed_row(
             ui.set_min_width(row_w);
             hull_badge(ui, ship, 26.0);
             ui.label(egui::RichText::new(name_of(ship)).strong());
+            ui.label(egui::RichText::new(format!("\u{00d7}{total}")).weak());
+            // Right-aligned: ships lost, cumulative ship ISK, then pod ISK (separate).
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if lost > 0 {
-                    ui.label(egui::RichText::new(format!("{lost} lost")).color(red).strong())
-                        .on_hover_text(format!("{} destroyed", fmt_isk(isk_lost)));
+                if pod_isk > 0.0 {
+                    ui.label(egui::RichText::new(format!("+{} pods", fmt_isk(pod_isk))).weak())
+                        .on_hover_text("Cumulative pod ISK lost");
                 }
-                ui.label(egui::RichText::new(format!("\u{00d7}{total}")).strong());
+                if ship_isk > 0.0 {
+                    ui.label(egui::RichText::new(fmt_isk(ship_isk)).color(red))
+                        .on_hover_text("Cumulative ship ISK lost");
+                }
+                if lost > 0 {
+                    ui.label(egui::RichText::new(format!("{lost} lost")).color(red).strong());
+                }
             });
         })
         .response;
