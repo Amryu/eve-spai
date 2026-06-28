@@ -866,11 +866,11 @@ fn ship_of<'a>(
         .or_else(|| lc.strip_suffix('s').filter(|s| s.len() >= 3).and_then(|s| ship_index.get(s)))
 }
 
-/// True for a recognised non-name entity token that ends a name run: a ship, system,
-/// null-sec code, time, structure, wormhole code, bare number, cap/tackle keyword, or a
-/// token carrying characters a name can't. Stop words are NOT breakers — a name may embed
-/// them ("Cult is Dead") — they only disqualify a run that is ENTIRELY lower-case stop words.
-fn breaks_name_run(core: &str, ship_index: &HashMap<String, (i64, String)>, systems: &Systems) -> bool {
+/// A recognised non-name entity that ALWAYS ends a name run — a ship, time, structure,
+/// wormhole code, cap/tackle keyword, or a token with characters a name can't have. Stop
+/// words are NOT breakers (a name may embed them, "Cult is Dead"); systems/codes are handled
+/// separately — they break only when not flanked by a name word (see `loose_pilot_runs`).
+fn hard_name_breaker(core: &str, ship_index: &HashMap<String, (i64, String)>) -> bool {
     let lc = core.to_lowercase();
     core.is_empty()
         || !core.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-')
@@ -878,10 +878,24 @@ fn breaks_name_run(core: &str, ship_index: &HashMap<String, (i64, String)>, syst
         || is_tackle_word(&lc)
         || is_time_token(core)
         || is_structure_word(core)
-        || (looks_like_system_code(core) && !is_code_lookalike_name(core, systems))
         || crate::wormholes::is_wh_code(core)
         || ship_of(&lc, ship_index).is_some()
+}
+
+/// A system name or null-sec code (but not a code-shaped *name* like "Luo-xi").
+fn is_system_token(core: &str, systems: &Systems) -> bool {
+    (looks_like_system_code(core) && !is_code_lookalike_name(core, systems))
         || systems.lookup(core).is_some()
+}
+
+/// A plausible real name word: not a hard entity, not a system, not a stop word, >=3 letters.
+/// Used to decide whether an adjacent system token is part of a name ("Bob Uitra") or stands
+/// alone as a location/gate ("N3-JBX Uitra", "hostiles in Jita").
+fn is_name_anchor(core: &str, ship_index: &HashMap<String, (i64, String)>, systems: &Systems) -> bool {
+    !hard_name_breaker(core, ship_index)
+        && !is_system_token(core, systems)
+        && !is_pilot_stopword(core)
+        && core.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 3
 }
 
 /// Maximal runs of name-material tokens (broken only by recognised non-name entities — see
@@ -931,12 +945,24 @@ fn loose_pilot_runs(
         }
         run.clear();
     };
-    for raw in text.split_whitespace() {
-        let core = raw.trim_matches(punct);
-        if breaks_name_run(core, ship_index, systems) {
+    let toks: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+    for (i, core) in toks.iter().enumerate() {
+        let breaks = if hard_name_breaker(core, ship_index) {
+            true
+        } else if is_system_token(core, systems) {
+            // A system/code breaks UNLESS flanked by a real name word — then it may be part of a
+            // name ("Bob Uitra", "jita trader") and is kept for ESI to confirm; "hostiles in
+            // Jita" / "N3-JBX Uitra" have no adjacent name word, so the system stands alone.
+            let prev = i.checked_sub(1).and_then(|j| toks.get(j));
+            let next = toks.get(i + 1);
+            ![prev, next].into_iter().flatten().any(|n| is_name_anchor(n, ship_index, systems))
+        } else {
+            false
+        };
+        if breaks {
             flush(&mut run, &mut out);
         } else {
-            run.push(core.to_owned());
+            run.push((*core).to_owned());
         }
     }
     flush(&mut run, &mut out);
@@ -2760,6 +2786,37 @@ mod tests {
         out
     }
 
+    /// Emulate the live reconcile: resolve a report's candidate blobs against `reals`, reserve
+    /// the confirmed names' tokens, then re-derive the location from the unreserved tokens.
+    /// Returns (pilots, system names, gates) as the card would show them after ESI answers.
+    fn resolve_report(
+        r: &IntelReport,
+        reals: &[&str],
+        systems: &Systems,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let pilots = esi_resolve(&r.pilots, reals);
+        let reserved: std::collections::HashSet<String> =
+            pilots.iter().flat_map(|p| p.split_whitespace()).map(|w| w.to_lowercase()).collect();
+        let tokens: Vec<&str> = tokenize(&r.text);
+        let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+        let (detected, gates, _) =
+            detect_location(&tokens, &lower_tokens, &reserved, systems, None, &[]);
+        (pilots, detected.into_iter().map(|d| d.name).collect(), gates)
+    }
+
+    /// Apply [`resolve_report`] in place — mirrors the live reconcile updating a report once ESI
+    /// answers (confirmed pilots, re-derived systems/gates).
+    fn apply_resolution(r: &mut IntelReport, reals: &[&str], systems: &Systems) {
+        let (pilots, sysnames, gates) = resolve_report(r, reals, systems);
+        r.pilots = pilots;
+        r.systems = sysnames
+            .iter()
+            .filter_map(|n| resolve(systems, n))
+            .map(|i| DetectedSystem { id: i.id, name: i.name.clone(), security: i.security })
+            .collect();
+        r.gates = gates;
+    }
+
     fn systems() -> Systems {
         let by_name = [
             ("rancer", "Rancer", 1, 0.4),
@@ -2797,19 +2854,25 @@ mod tests {
     #[test]
     fn surname_that_is_a_system_is_not_a_gate() {
         let s = systems();
-        // "alexpanda Uitra" is a pilot; "Uitra" (a real system) must not become a bogus gate.
+        // "alexpanda Uitra" is a pilot; "Uitra" must not become a bogus gate, and N3-JBX is the
+        // location — re-derived once ESI confirms the name and frees its token (held model).
         let r2 = analyze("N3-JBX* alexpanda Uitra", &s, &noships(), &noknown(), 1, "ch", "AnewSs");
-        assert!(r2.pilots.iter().any(|p| p == "alexpanda Uitra"), "pilots={:?}", r2.pilots);
-        assert_eq!(r2.systems.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), vec!["N3-JBX"]);
-        assert!(r2.gates.is_empty(), "gates={:?}", r2.gates);
+        let (pilots, sysd, gates) = resolve_report(&r2, &["alexpanda Uitra"], &s);
+        assert_eq!(pilots, vec!["alexpanda Uitra".to_string()]);
+        assert_eq!(sysd, vec!["N3-JBX".to_string()]);
+        assert!(gates.is_empty(), "gates={gates:?}");
         // Title-case first name + system surname is also a pilot, not a gate.
         let r3 = analyze("N3-JBX Bob Uitra", &s, &noships(), &noknown(), 1, "ch", "AnewSs");
-        assert!(r3.pilots.iter().any(|p| p == "Bob Uitra"), "pilots={:?}", r3.pilots);
-        assert!(r3.gates.is_empty(), "gates={:?}", r3.gates);
+        let (pilots, sysd, gates) = resolve_report(&r3, &["Bob Uitra"], &s);
+        assert_eq!(pilots, vec!["Bob Uitra".to_string()]);
+        assert_eq!(sysd, vec!["N3-JBX".to_string()]);
+        assert!(gates.is_empty(), "gates={gates:?}");
         // But a genuine two-system mention (no name word) still yields a gate.
         let r4 = analyze("N3-JBX Uitra", &s, &noships(), &noknown(), 1, "ch", "AnewSs");
-        assert!(r4.pilots.is_empty(), "pilots={:?}", r4.pilots);
-        assert!(r4.gates.iter().any(|g| g == "Uitra"), "gates={:?}", r4.gates);
+        let (pilots, sysd, gates) = resolve_report(&r4, &[], &s);
+        assert!(pilots.is_empty(), "pilots={pilots:?}");
+        assert_eq!(sysd, vec!["N3-JBX".to_string()]);
+        assert!(gates.iter().any(|g| g == "Uitra"), "gates={gates:?}");
     }
 
     #[test]
@@ -2905,8 +2968,9 @@ mod tests {
         // must be captured so the ESI cover can split it; previously "Blue" broke the run. (The
         // double-space *paste* form of this is split directly — see the paste tests.)
         let r = analyze("Blue RandomAttac Redhorn Mastro 9OLQ-6", &s, &noships(), &noknown(), 1, "ch", "Ariel Afuran");
-        assert_eq!(r.pilots, vec!["Blue RandomAttac Redhorn Mastro".to_string()]);
-        assert!(r.systems.iter().any(|d| d.name == "9OLQ-6"));
+        let (pilots, sysd, _) = resolve_report(&r, &["Blue RandomAttac", "Redhorn Mastro"], &s);
+        assert_eq!(pilots, vec!["Blue RandomAttac".to_string(), "Redhorn Mastro".to_string()]);
+        assert!(sysd.iter().any(|d| d == "9OLQ-6"), "systems={sysd:?}");
     }
 
     #[test]
@@ -2996,8 +3060,8 @@ mod tests {
         let s = systems();
         // "0xtomorrow" starts with a digit, so the Title-case paths miss it.
         let r = analyze("0xtomorrow AGCP-I", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p == "0xtomorrow"), "pilots={:?}", r.pilots);
-        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("AGCP-I")), "pilots={:?}", r.pilots);
+        let (pilots, _, _) = resolve_report(&r, &["0xtomorrow"], &s);
+        assert_eq!(pilots, vec!["0xtomorrow".to_string()], "pilots={pilots:?}");
         // ISK/count tokens and system abbreviations may be candidates but ESI confirms no
         // character, so they never surface as pilots.
         let junk = analyze("334m 88A 1DH-SX in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
@@ -3011,11 +3075,12 @@ mod tests {
     fn trailing_apostrophe_stripped_from_name() {
         let s = systems();
         let r = analyze("MO-I1W PeshyHod'", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p == "PeshyHod"), "pilots={:?}", r.pilots);
-        assert!(!r.pilots.iter().any(|p| p.contains('\'')), "pilots={:?}", r.pilots);
+        let (pilots, _, _) = resolve_report(&r, &["PeshyHod"], &s);
+        assert_eq!(pilots, vec!["PeshyHod".to_string()], "pilots={pilots:?}");
         // Internal apostrophes are preserved.
         let r2 = analyze("O'Brien in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r2.pilots.iter().any(|p| p == "O'Brien"), "pilots={:?}", r2.pilots);
+        let (pilots, _, _) = resolve_report(&r2, &["O'Brien"], &s);
+        assert_eq!(pilots, vec!["O'Brien".to_string()], "pilots={pilots:?}");
     }
 
     #[test]
@@ -3171,8 +3236,10 @@ mod tests {
         let known: std::collections::HashMap<String, i64> =
             [("c-j".to_string(), 2119528359i64)].into_iter().collect();
         let r = analyze("Gorika Galrog C-J in Rancer", &s, &noships(), &known, 1, "ch", "x");
-        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("C-J")), "pilots={:?}", r.pilots);
-        assert!(r.pilots.iter().any(|p| p == "Gorika Galrog"), "pilots={:?}", r.pilots);
+        // ESI confirms "Gorika Galrog"; the flanked code "C-J" is left behind (a system), never
+        // surfaced as a pilot.
+        let (pilots, _, _) = resolve_report(&r, &["Gorika Galrog"], &s);
+        assert_eq!(pilots, vec!["Gorika Galrog".to_string()], "pilots={pilots:?}");
     }
 
     #[test]
@@ -3741,13 +3808,15 @@ mod tests {
         let k1: std::collections::HashMap<String, i64> =
             [("bigfoott".to_string(), 2i64)].into_iter().collect();
         let r = analyze("Rancer bigfoott", &s, &noships(), &k1, 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p.eq_ignore_ascii_case("bigfoott")));
+        let (pilots, _, _) = resolve_report(&r, &["bigfoott"], &s);
+        assert!(pilots.iter().any(|p| p.eq_ignore_ascii_case("bigfoott")), "{pilots:?}");
         // A name that is a subset of a longer one must not short-circuit it.
         let k2: std::collections::HashMap<String, i64> =
             [("hold me balls".to_string(), 1i64), ("hold".to_string(), 3i64)].into_iter().collect();
         let r2 = analyze("E-JCUS HOLD ME BALLS", &s, &noships(), &k2, 1, "ch", "x");
-        assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("hold me balls")));
-        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("hold")));
+        let (pilots, _, _) = resolve_report(&r2, &["hold me balls"], &s);
+        assert!(pilots.iter().any(|p| p.eq_ignore_ascii_case("hold me balls")), "{pilots:?}");
+        assert!(!pilots.iter().any(|p| p.eq_ignore_ascii_case("hold")), "{pilots:?}");
     }
 
     #[test]
@@ -3792,11 +3861,15 @@ mod tests {
         let loki: std::collections::HashMap<String, (i64, String)> =
             [("loki".to_string(), (29990i64, "Loki".to_string()))].into_iter().collect();
         let mut state = IntelState::default();
-        // Scout A: a hyphenated system + a pilot with a digit in the name.
-        state.push(analyze("C-J6MT Pericle No1", &s, &noships(), &noknown(), 100, "ch", "Kobayashi Mika"));
-        assert_eq!(state.reports[0].pilots, vec!["Pericle No1".to_string()]);
+        // Scout A: a hyphenated system + a pilot with a digit in the name. Resolved as the live
+        // reconcile would (C-J6MT freed as the location once "Pericle No1" is confirmed).
+        let mut a = analyze("C-J6MT Pericle No1", &s, &noships(), &noknown(), 100, "ch", "Kobayashi Mika");
+        apply_resolution(&mut a, &["Pericle No1"], &s);
+        assert_eq!(a.pilots, vec!["Pericle No1".to_string()]);
+        state.push(a);
         // Scout B (different reporter): same pilot, no system, adds the ship.
-        let follow = analyze("Pericle No1 loki", &s, &loki, &noknown(), 130, "ch", "Wallie Warptunnel");
+        let mut follow = analyze("Pericle No1 loki", &s, &loki, &noknown(), 130, "ch", "Wallie Warptunnel");
+        apply_resolution(&mut follow, &["Pericle No1"], &s);
         assert!(state.try_amend(&follow, 60));
         assert_eq!(state.reports.len(), 1);
         assert!(state.reports[0].ships.iter().any(|sh| sh.name == "Loki"));
@@ -4157,7 +4230,8 @@ mod tests {
     fn lowercase_family_name_recognised() {
         let s = systems();
         let r = analyze("78-0R6 Psychopathic beemaster", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"));
+        let (pilots, _, _) = resolve_report(&r, &["Psychopathic beemaster"], &s);
+        assert!(pilots.iter().any(|p| p == "Psychopathic beemaster"), "{pilots:?}");
     }
 
     #[test]
