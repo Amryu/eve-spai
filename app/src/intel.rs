@@ -391,6 +391,7 @@ const PILOT_STOP: &[&str] = &[
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there", "to",
+    "crit", "wrong", "channel", "see", "nothing", "else",
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
     // "rest" as in "1 jackdaw, rest NV" — never a pilot, even though a character is named "Rest".
     "rest", "stop",

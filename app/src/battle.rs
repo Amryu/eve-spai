@@ -186,6 +186,13 @@ impl Battle {
         self.engagements.iter().any(|e| e.anchored)
     }
 
+    /// A real battle has at least two belligerent sides. A single inferred side means the kills
+    /// were friendly fire, or a gank/loss with only NPC or structure attackers (NPCs are never a
+    /// side) — not a fight worth a report.
+    pub fn is_two_sided(&self) -> bool {
+        self.sides.len() >= 2
+    }
+
     /// Build the hover cross-reference maps from the engagements.
     pub fn involvement(&self) -> Involvement {
         let mut inv = Involvement::default();
@@ -836,6 +843,16 @@ mod tests {
         let second = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist, &mut cache);
         assert_eq!(sig(&second), sig(&plain));
         assert_eq!(cache.len(), plain.len());
+    }
+
+    #[test]
+    fn one_sided_battle_is_discarded() {
+        // Friendly fire (a party killing its own) infers to a single side — not a real fight.
+        let ff = build_battle(vec![eng(1, 0, 1, "Blue", "Blue"), eng(2, 60, 1, "Blue", "Blue")]);
+        assert!(!ff.is_two_sided(), "friendly fire should be one-sided: {:?}", ff.sides.len());
+        // A genuine fight has two sides.
+        let real = build_battle(vec![eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 1, "Blue", "Red")]);
+        assert!(real.is_two_sided());
     }
 
     #[test]

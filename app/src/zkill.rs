@@ -83,7 +83,7 @@ pub fn spawn(
             );
             // Keep only battles that touch the watched area (>= 1 anchored kill); candidate-only
             // clusters elsewhere are dropped.
-            *battles.lock().unwrap() = clustered.into_iter().filter(|b| b.is_anchored()).collect();
+            *battles.lock().unwrap() = clustered.into_iter().filter(|b| b.is_anchored() && b.is_two_sided()).collect();
             ctx.request_repaint();
         }
         let mut seen_links: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -219,7 +219,7 @@ pub fn spawn(
                 );
                 // Keep only battles that touch the watched area (>= 1 anchored kill).
                 *battles.lock().unwrap() =
-                    clustered.into_iter().filter(|b| b.is_anchored()).collect();
+                    clustered.into_iter().filter(|b| b.is_anchored() && b.is_two_sided()).collect();
                 ctx.request_repaint();
             }
         }

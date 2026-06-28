@@ -4541,9 +4541,10 @@ impl SpaiApp {
                         |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
                     )
                     .into_iter()
-                    // Only battles that touched the watched area (the anchor flag is persisted
-                    // per engagement, so this works without the live intel state).
-                    .filter(|b| b.is_anchored())
+                    // Only real fights that touched the watched area: anchored (the flag is
+                    // persisted per engagement) and with two belligerent sides (drop friendly
+                    // fire / NPC-only losses).
+                    .filter(|b| b.is_anchored() && b.is_two_sided())
                     .collect()
                 })
                 .unwrap_or_default();
