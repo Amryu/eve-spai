@@ -250,6 +250,14 @@ pub fn save_fitting(
     });
 }
 
+/// Per-character lock serialising token refresh across the ESI helper threads.
+fn refresh_lock(id: i64) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    LOCKS.lock().unwrap().entry(id).or_default().clone()
+}
+
 /// Return a valid access token, refreshing via the keychain refresh token if the
 /// stored one is within a minute of expiry.
 fn current_access_token(
@@ -258,7 +266,6 @@ fn current_access_token(
     id: i64,
     expires_at: i64,
 ) -> Option<String> {
-    let refresh = tokens::load_refresh(id)?;
     let now = chrono::Utc::now().timestamp();
     // Use the cached access token while it's still valid.
     if expires_at - 60 > now {
@@ -267,6 +274,20 @@ fn current_access_token(
         }
     }
 
+    // EVE SSO rotates the refresh token on each use, so two threads refreshing the same
+    // character concurrently would invalidate each other and log it out. Serialise per
+    // character, then re-check: another thread may have just refreshed while we waited.
+    let lock = refresh_lock(id);
+    let _guard = lock.lock().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    if store.token_expiry(id).is_some_and(|exp| exp - 60 > now) {
+        if let Some(access) = store.kv_get(&format!("access:{id}")).filter(|a| !a.is_empty()) {
+            return Some(access);
+        }
+    }
+
+    // Load the refresh token inside the lock so we pick up a rotation from another thread.
+    let refresh = tokens::load_refresh(id)?;
     let fresh = auth::refresh_access_token(client_id, &refresh).ok()?;
     // The refresh token may rotate — persist the new one.
     let _ = tokens::save_refresh(id, &fresh.refresh_token);

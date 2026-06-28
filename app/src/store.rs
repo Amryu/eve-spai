@@ -1189,6 +1189,16 @@ impl Store {
         Ok(())
     }
 
+    /// The stored access-token expiry (unix seconds) for a character, if any.
+    pub fn token_expiry(&self, id: i64) -> Option<i64> {
+        self.conn
+            .query_row("SELECT expires_at FROM characters WHERE id = ?1", params![id], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .ok()
+            .flatten()
+    }
+
     pub fn remove_character(&self, id: i64) -> Result<()> {
         let _ = crate::tokens::delete(id);
         self.kv_delete(&format!("access:{id}"));
