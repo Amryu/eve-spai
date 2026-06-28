@@ -2389,7 +2389,10 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
 /// or a pilot.
 fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
     let is_roman = |t: &str| {
+        // A lone "I" collides with the pronoun ("moon I think it's clear"), so require a
+        // real numeral of length >= 2 or a non-I single letter (V/X).
         (1..=5).contains(&t.len())
+            && !t.eq_ignore_ascii_case("i")
             && t.chars().all(|c| matches!(c.to_ascii_uppercase(), 'I' | 'V' | 'X'))
     };
     let mut labels: Vec<String> = Vec::new();
@@ -3389,6 +3392,9 @@ mod tests {
         assert!(p1.count.is_none(), "count={:?}", p1.count);
         let m = analyze("moon IV in Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(m.celestials, vec!["Moon IV".to_string()]);
+        // A lone "I" after "moon" is the pronoun, not roman 1 — no phantom "Moon I".
+        let mi = analyze("moon I think it's clear Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert!(mi.celestials.is_empty(), "phantom celestial: {:?}", mi.celestials);
         let sun = analyze("camped at the sun Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(sun.celestials, vec!["Sun".to_string()]);
         assert_eq!(detect_structures("POS bash Rancer"), vec![("POS".to_string(), None)]);
