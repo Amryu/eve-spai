@@ -196,33 +196,10 @@ impl Systems {
         None
     }
 
-    /// Shortest gate path from `from` to `to` (inclusive of both), via BFS.
+    /// Shortest path from `from` to `to` (inclusive of both) over all edges, via BFS.
+    /// Includes jump bridges. Equivalent to an unconstrained [`Self::route`].
     pub fn path(&self, from: i64, to: i64) -> Option<Vec<i64>> {
-        if from == to {
-            return Some(vec![from]);
-        }
-        let mut prev: HashMap<i64, i64> = HashMap::new();
-        let mut visited: HashSet<i64> = HashSet::from([from]);
-        let mut queue: VecDeque<i64> = VecDeque::from([from]);
-        while let Some(sys) = queue.pop_front() {
-            for &n in self.adjacency.get(&sys).into_iter().flatten() {
-                if visited.insert(n) {
-                    prev.insert(n, sys);
-                    if n == to {
-                        let mut route = vec![to];
-                        let mut cur = to;
-                        while let Some(&p) = prev.get(&cur) {
-                            route.push(p);
-                            cur = p;
-                        }
-                        route.reverse();
-                        return Some(route);
-                    }
-                    queue.push_back(n);
-                }
-            }
-        }
-        None
+        self.route(from, to, true, true, |_| true)
     }
 
     /// Constrained shortest (fewest-jumps) route from `from` to `to`. Intermediate systems
@@ -351,5 +328,14 @@ mod tests {
         // A node mask excluding C blocks the only path.
         assert_eq!(g.route(1, 4, true, true, |s| s != 3), None);
         assert_eq!(g.route(2, 2, true, true, |_| true), Some(vec![2]));
+    }
+
+    #[test]
+    fn path_matches_unconstrained_route() {
+        let g = line_graph();
+        assert_eq!(g.path(1, 4), g.route(1, 4, true, true, |_| true));
+        assert_eq!(g.path(1, 4), Some(vec![1, 2, 3, 4]));
+        assert_eq!(g.path(2, 2), Some(vec![2]));
+        assert_eq!(g.path(1, 99), None);
     }
 }
