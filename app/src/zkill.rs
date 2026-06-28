@@ -636,16 +636,41 @@ fn resolve_names(
     km.attackers.iter().for_each(&mut add);
     wanted.sort_unstable();
     wanted.dedup();
-    if wanted.is_empty() {
+    // /universe/names allows up to 1000 ids; chunk well under that. A big fleet fight can
+    // reference thousands of ids, so an un-chunked POST would overflow the limit.
+    for chunk in wanted.chunks(200) {
+        resolve_names_batch(client, chunk, names);
+    }
+}
+
+/// Resolve one batch of ids, inserting results into `names`. ESI returns 404 for the
+/// *entire* request if even one id is unresolvable (e.g. a deleted character), so on a
+/// 404 we bisect to isolate and skip the bad id instead of blanking the whole roster.
+/// Transport/rate-limit errors just return (the kill stays partly "Unknown", retried later).
+fn resolve_names_batch(
+    client: &reqwest::blocking::Client,
+    ids: &[i64],
+    names: &mut HashMap<i64, String>,
+) {
+    if ids.is_empty() {
         return;
     }
-
-    if let Ok(resp) = client.post(NAMES_URL).json(&wanted).send() {
-        if let Ok(entries) = resp.json::<Vec<NameEntry>>() {
-            for e in entries {
-                names.insert(e.id, e.name);
+    match client.post(NAMES_URL).json(&ids).send() {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(entries) = resp.json::<Vec<NameEntry>>() {
+                for e in entries {
+                    names.insert(e.id, e.name);
+                }
             }
         }
+        // 404 = at least one id in this batch is unresolvable. Bisect to find it; a lone
+        // failing id is simply skipped so the rest of the batch still resolves.
+        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND && ids.len() > 1 => {
+            let mid = ids.len() / 2;
+            resolve_names_batch(client, &ids[..mid], names);
+            resolve_names_batch(client, &ids[mid..], names);
+        }
+        _ => {}
     }
 }
 
