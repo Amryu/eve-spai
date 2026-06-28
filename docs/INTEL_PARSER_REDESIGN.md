@@ -130,11 +130,14 @@ decided by ESI, not by case.
 
 Until ESI answers, a blob shows an animated `…`.
 
-**Decided (Q1): immediate-then-correct.** Status keywords are computed from the
-unreserved-so-far tokens right away (so a real threat is never delayed); once ESI confirms a
-name that reserves a *soft*-keyword token, that flag is recomputed/cleared on the next reconcile
-pass. Threat keywords (principle 6) stand regardless. This matches the transient `…` for names —
-the feed updates as verdicts arrive rather than blocking.
+**Decided (Q1, revised): split by stakes.**
+- **Names + soft keywords:** immediate-then-correct — show the `…` placeholder and update as
+  ESI verdicts arrive.
+- **The report's SYSTEM/location: NOT immediate.** The location drives alert/filter rules, so a
+  wrong one causes false alarms. A report whose location is **ambiguous** (the only system token
+  is held inside a name blob) is **parked and not shown at all** until ESI resolves whether that
+  token is a name or a system. No show-then-retract for systems. A report with an *unambiguous*
+  system (token not inside any name blob) shows immediately as today.
 
 ## Open questions for you
 
@@ -161,8 +164,15 @@ the feed updates as verdicts arrive rather than blocking.
      `I Forgot Who` (three words each coincidentally a real player) must not explode into three
      pilots; a real multi-word name confirms as the longer span (with the TTL re-checking), so
      the guard only blocks the spurious case.
-   - **Step 3 — Phase C:** move system + keyword + count parsing to the post-ESI reconcile over
-     unreserved tokens; first-system-is-location; soft/threat keyword split.
+   - **Step 3 — Phase C (held model, big):** move system + keyword + count parsing to the
+     post-ESI reconcile over unreserved tokens; soft/threat keyword split. **A report whose
+     location is still ambiguous (only-system token held in a name blob) must be PARKED, not
+     dropped** — today `watcher.rs` does `if systems.is_empty() && gates.is_empty() { continue }`
+     which would discard it. Parking + re-deriving the location after ESI is the crux: it needs
+     the ~170-line system/gate detection extracted into a reusable pass that runs over the
+     reserved-token set, plus a pending-report holding area in `IntelState`, plus the live-ESI
+     path validated (offline tests can't exercise the resolver thread). This is a dedicated
+     multi-component effort, not a tail-of-session change.
    - Tests are ported to the phase contract as each step lands; the app stays working between
      steps.
 
