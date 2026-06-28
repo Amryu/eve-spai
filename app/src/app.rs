@@ -13591,12 +13591,20 @@ fn rule_matches(
     // substring match if it isn't a valid regex). zKill killmails aren't from a chat channel,
     // so a channel-filtered rule must not silently exclude them.
     if !ru.channels.is_empty() && !r.killmail {
+        // Compile each channel pattern once and memoize it (keyed by the raw pattern);
+        // None caches a pattern that isn't a valid regex (it falls back to substring).
+        static RE_CACHE: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::HashMap<String, Option<regex::Regex>>>,
+        > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
         let ch = r.channel.to_lowercase();
         let matched = ru.channels.iter().any(|pat| {
-            let p = pat.to_lowercase();
-            match regex::Regex::new(&format!("(?i){pat}")) {
-                Ok(re) => re.is_match(&r.channel),
-                Err(_) => ch.contains(&p),
+            let mut cache = RE_CACHE.lock().unwrap();
+            let re = cache
+                .entry(pat.clone())
+                .or_insert_with(|| regex::Regex::new(&format!("(?i){pat}")).ok());
+            match re {
+                Some(re) => re.is_match(&r.channel),
+                None => ch.contains(&pat.to_lowercase()),
             }
         });
         if !matched {
