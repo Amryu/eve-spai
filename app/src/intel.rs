@@ -412,7 +412,7 @@ const PILOT_STOP: &[&str] = &[
     // Pronouns / filler.
     "him", "other", "only", "unless", "end", "also", "confirm", "confirmed", "clearing",
     // Enemy/location prose ("an enemy roaming somewhere", "mostly around the gate").
-    "enemies", "enemy", "mostly", "around", "an", "roaming", "somewhere",
+    "enemies", "enemy", "mostly", "around", "an", "roaming", "somewhere", "support",
     // Filler / hedging words ("unsure which", "too many", "kitchen sink", "catch all").
     "unsure", "which", "too", "kitchen", "sink", "catch", "all",
     // Question / filler words — lower-cased English the known-pilot cache otherwise matches
@@ -925,18 +925,13 @@ fn loose_pilot_runs(
     let mut out: Vec<String> = Vec::new();
     let mut run: Vec<String> = Vec::new();
     let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
-        // Trim stop words and lone letters off the boundaries so the blob starts and ends on a
-        // name word (an interior stop word, e.g. the "is" in "Cult is Dead", is kept). A name-
-        // capable stop word (Blue/Red/Bubble/Clear) can end a name ("Sky Blue") so it stays; an
-        // all-caps status word ("NV") is trimmed even though it passes name_part.
+        // Trim only short connective/filler stop words ("in", "the", "nv") and lone letters off
+        // the BOUNDARIES — never a longer content word. A real name can end in a content word
+        // that is also a keyword ("High Plains Drifter"), so those stay and the ESI cover decides;
+        // stop words otherwise only discard a candidate that is ENTIRELY prose (all-stop below).
         let trim = |w: &String| {
-            if is_pilot_stopword(w) {
-                // A name-capable keyword stays only when capitalised ("Sky Blue"); lower-case
-                // ("clear", "bubble") it is the status word, and "NV" is trimmed too.
-                !(is_name_capable_stopword(w) && name_part(w))
-            } else {
-                !name_part(w) && !is_name_suffix(w) && w.chars().count() < 2
-            }
+            !is_name_suffix(w)
+                && ((is_pilot_stopword(w) && w.chars().count() <= 3) || w.chars().count() < 2)
         };
         while run.first().is_some_and(&trim) {
             run.remove(0);
@@ -3182,7 +3177,7 @@ mod tests {
         let r4 = analyze("CRUISERS and battleships in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(r4.classes.iter().any(|c| c == "Cruiser"), "classes={:?}", r4.classes);
         assert!(r4.classes.iter().any(|c| c == "Battleship"), "classes={:?}", r4.classes);
-        assert!(r4.pilots.is_empty(), "pilots={:?}", r4.pilots);
+        assert!(esi_resolve(&r4.pilots, &[]).is_empty(), "pilots={:?}", r4.pilots);
         // An all-caps ship acronym ("DNI" = Drake Navy Issue) is the ship, not a pilot.
         let mut ships = noships();
         ships.insert("dni".into(), (37457, "Drake Navy Issue".into()));
@@ -3385,14 +3380,10 @@ mod tests {
     fn cloaked_is_a_state_not_a_pilot() {
         let s = systems();
         let r = analyze("Psychopathic beemaster cloaked in bubble", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("cloaked")), "pilots={:?}", r.pilots);
-        assert!(
-            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Psychopathic beemaster cloaked")),
-            "glued name leaked: {:?}",
-            r.pilots
-        );
-        // The real pilot is still detected.
-        assert!(r.pilots.iter().any(|p| p == "Psychopathic beemaster"), "pilots={:?}", r.pilots);
+        // The blob carries the trailing "cloaked … bubble" keywords, but ESI confirms only the
+        // real pilot — "cloaked" / the glued form never survive.
+        let (pilots, _, _) = resolve_report(&r, &["Psychopathic beemaster"], &s);
+        assert_eq!(pilots, vec!["Psychopathic beemaster".to_string()], "pilots={pilots:?}");
     }
 
     #[test]
@@ -3432,8 +3423,20 @@ mod tests {
         let known: std::collections::HashMap<String, i64> =
             [("think".to_string(), 1i64)].into_iter().collect();
         let r = analyze("i think Sevra is in Rancer", &s, &noships(), &known, 1, "ch", "x");
-        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("think")), "pilots={:?}", r.pilots);
-        assert!(r.pilots.iter().any(|p| p == "Sevra"), "pilots={:?}", r.pilots);
+        let (pilots, _, _) = resolve_report(&r, &["Sevra"], &s);
+        assert!(!pilots.iter().any(|p| p.eq_ignore_ascii_case("think")), "pilots={pilots:?}");
+        assert!(pilots.iter().any(|p| p == "Sevra"), "pilots={pilots:?}");
+    }
+
+    #[test]
+    fn content_keyword_kept_inside_name() {
+        let s = systems();
+        // "Drifter" is an intel keyword, but here it ends the real name "High Plains Drifter".
+        // A stop word must never be trimmed off a genuine name — only short connective words and
+        // ENTIRELY-prose candidates are dropped.
+        let r = analyze("High Plains Drifter in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        let (pilots, _, _) = resolve_report(&r, &["High Plains Drifter"], &s);
+        assert_eq!(pilots, vec!["High Plains Drifter".to_string()], "pilots={pilots:?}");
     }
 
     #[test]
@@ -4206,7 +4209,8 @@ mod tests {
         assert!(r2.clear, "pure clear lost");
         // A Title-case name starting with "Clear" is one pilot, and doesn't read as clear.
         let r3 = analyze("got Clear Rain on gate", &s, &noships(), &noknown(), 1, "ch", "Spai");
-        assert!(r3.pilots.iter().any(|p| p == "Clear Rain"), "name split: {:?}", r3.pilots);
+        let (pilots, _, _) = resolve_report(&r3, &["Clear Rain"], &s);
+        assert!(pilots.iter().any(|p| p == "Clear Rain"), "name split: {pilots:?}");
         assert!(!r3.clear, "name 'Clear Rain' spoofed clear");
     }
 
@@ -4241,9 +4245,11 @@ mod tests {
         let s = systems();
         // "-L" / "-3" are alt-name suffixes, not system shorthands, and must stay on the name.
         let r = analyze("hostiles Nine -L in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.pilots.iter().any(|p| p == "Nine -L"), "pilots: {:?}", r.pilots);
+        let (pilots, _, _) = resolve_report(&r, &["Nine -L"], &s);
+        assert!(pilots.iter().any(|p| p == "Nine -L"), "pilots: {pilots:?}");
         let r2 = analyze("Nine -3", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r2.pilots.iter().any(|p| p == "Nine -3"), "pilots: {:?}", r2.pilots);
+        let (pilots, _, _) = resolve_report(&r2, &["Nine -3"], &s);
+        assert!(pilots.iter().any(|p| p == "Nine -3"), "pilots: {pilots:?}");
     }
 
     #[test]
