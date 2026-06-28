@@ -378,7 +378,7 @@ const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe", "
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
     "gate", "camp", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
-    "station", "kill", "killmail", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
+    "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
     "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went", "going",
@@ -394,6 +394,12 @@ const PILOT_STOP: &[&str] = &[
     // Note: the pronoun "I" needs no entry — a 1-letter token already fails `name_part`
     // (len >= 2), and listing "i" could split a real name that contains a standalone "I".
     "hacking", "hack", "hacked", "ratting", "ratted", "missing", "guess",
+    // Time references, never pilots ("downtime in 5", "DT time"). Asteroid/ice belts are
+    // handled as a celestial location badge (see `belt_locations`), not stop-listed.
+    "time",
+    // "autopilot" is a keyword on its own but appears inside real names ("Ms Autopilot"), so
+    // it's also name-capable below; "dead" is a kill status, handled as a plain stop word above.
+    "autopilot",
     // Status words ("system clean", "reported in X", "nothing yet").
     "clean", "reported", "yet",
     // Fitting talk ("50mn fit", "shield fit") — a prop-mod size or "fit" is never a pilot.
@@ -807,7 +813,7 @@ fn is_name_connector(w: &str) -> bool {
 fn is_name_capable_stopword(w: &str) -> bool {
     matches!(
         w.to_lowercase().as_str(),
-        "blue" | "blues" | "red" | "reds" | "bubble" | "bubbles" | "clear"
+        "blue" | "blues" | "red" | "reds" | "bubble" | "bubbles" | "clear" | "autopilot"
     )
 }
 
@@ -1444,8 +1450,11 @@ pub fn analyze_ctx(
     // before pilot detection.
     let mw_ships = multiword_ships(text, ship_index);
     // Structure spans ("Cyno Beacon", "Keepstar") are masked too, so a structure word
-    // is never also read as a pilot ("Beacon").
-    let struct_spans = structure_spans(&structure_words(text));
+    // is never also read as a pilot ("Beacon"). Asteroid/ice belt spans are masked the same
+    // way so "Belt"/"Ice Belt" is a location badge, never a pilot.
+    let cel_words = structure_words(text);
+    let struct_spans = structure_spans(&cel_words);
+    let belt_spans = belt_locations(&cel_words);
     let masked_words: String = {
         let punct = |c: char| ",.;:!?\"()".contains(c);
         let mut wv: Vec<String> =
@@ -1455,7 +1464,7 @@ pub fn analyze_ctx(
                 wv[k].clear();
             }
         }
-        for (start, len, _) in &struct_spans {
+        for (start, len, _) in struct_spans.iter().chain(belt_spans.iter()) {
             for k in *start..(*start + *len).min(wv.len()) {
                 wv[k].clear();
             }
@@ -1669,6 +1678,7 @@ pub fn analyze_ctx(
     // been dropped earlier as sub-phrases of this very run) plus any uncovered gap token.
     if !known_matched.is_empty() {
         let mut add_back: Vec<String> = Vec::new();
+        let mut dismantled: Vec<String> = Vec::new();
         let mut keep: Vec<bool> = vec![true; pilots.len()];
         for (i, p) in pilots.iter().enumerate() {
             let pl = p.to_lowercase();
@@ -1680,24 +1690,52 @@ pub fn analyze_ctx(
                 .iter()
                 .filter(|k| **k != pl && padded.contains(&format!(" {k} ")))
                 .count();
-            if inside < 2 {
-                continue;
-            }
-            keep[i] = false;
             let parts = match_known_pilots(p, known_pilots);
             let covered: std::collections::HashSet<String> = parts
                 .iter()
                 .flat_map(|k| k.split_whitespace().map(|w| w.to_lowercase()))
                 .collect();
-            add_back.extend(parts.iter().cloned());
-            for t in p.split_whitespace() {
-                if !covered.contains(&t.to_lowercase()) {
-                    add_back.push(t.to_owned());
-                }
+            let extras: Vec<String> = p
+                .split_whitespace()
+                .filter(|t| !covered.contains(&t.to_lowercase()))
+                .map(str::to_owned)
+                .collect();
+            // Also un-glue when exactly one *multi-word* known name is a prefix and the only
+            // leftover tokens are lowercase handles: the cache is authoritative for that name's
+            // boundary, so a trailing lowercase word ("malexict" after "Shining Baldman") is a
+            // separate pilot, not part of the name. A Title-case leftover ("Smith" after a cached
+            // "John") stays glued — it may be one real name.
+            let lone_known_plus_handle = inside == 1
+                && parts.iter().any(|n| n.contains(' '))
+                && !extras.is_empty()
+                && extras.iter().all(|t| {
+                    let c = t.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '\'');
+                    c.chars().next().is_some_and(|ch| ch.is_ascii_lowercase())
+                        && c.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 3
+                        && !is_pilot_stopword(c)
+                });
+            if inside < 2 && !lone_known_plus_handle {
+                continue;
             }
+            keep[i] = false;
+            dismantled.push(pl.clone());
+            add_back.extend(parts.iter().cloned());
+            add_back.extend(extras);
         }
         let mut it = keep.iter();
         pilots.retain(|_| *it.next().unwrap());
+        // Drop other heuristic fragments of a dismantled run (e.g. "Baldman malexict" from
+        // "Shining Baldman malexict", produced by the lowercase-tail pass) — the authoritative
+        // decomposition in `add_back` replaces them.
+        if !dismantled.is_empty() {
+            let ab_lc: std::collections::HashSet<String> =
+                add_back.iter().map(|s| s.to_lowercase()).collect();
+            pilots.retain(|p| {
+                let plc = p.to_lowercase();
+                ab_lc.contains(&plc)
+                    || !dismantled.iter().any(|d| format!(" {d} ").contains(&format!(" {plc} ")))
+            });
+        }
         for g in add_back {
             if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&g)) {
                 pilots.push(g);
@@ -1965,7 +2003,14 @@ pub fn analyze_ctx(
             break;
         }
         gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
-        consumed.push(cand.to_lowercase());
+        let cand_lc = cand.to_lowercase();
+        consumed.push(cand_lc.clone());
+        // "<X> gate" proves X is a location, so a coincidental single-token pilot of the
+        // same name is really the gate, not a player ("on the IAS gate" → the IAS gate, not
+        // a pilot "IAS"). The token resolves as a gate via prefix even though `resolve`
+        // leaves it for pilot detection, so drop it here.
+        pilots.retain(|p| p.contains(' ') || !p.eq_ignore_ascii_case(&cand_lc));
+        pilot_tokens.remove(&cand_lc);
         if let Some(info) = resolved {
             detected.retain(|d| d.id != info.id);
         }
@@ -2084,8 +2129,18 @@ pub fn analyze_ctx(
     // they aren't read as a hostile count or a pilot. Uses the raw split (tokenize drops bare
     // numbers, which are exactly the celestial index).
     let raw_tokens: Vec<&str> = text.split_whitespace().collect();
-    let (celestials, celestial_consumed) = detect_celestials(&raw_tokens);
+    let (mut celestials, celestial_consumed) = detect_celestials(&raw_tokens);
     consumed.extend(celestial_consumed);
+    // Asteroid/ice belts (spans found before pilot detection) are celestial-style location
+    // badges; consume their words so they aren't also read as a count or system.
+    for (start, len, label) in &belt_spans {
+        if !celestials.iter().any(|c| c.eq_ignore_ascii_case(label)) {
+            celestials.push(label.clone());
+        }
+        for w in cel_words.iter().skip(*start).take(*len) {
+            consumed.push(w.clone());
+        }
+    }
 
     let mut pilots = drop_covered_prefixes(&pilots, text);
     // A pilot name always contains a letter — a bare number ("warpin 100") is a count, not a name.
@@ -2518,6 +2573,26 @@ fn parse_distance(word: &str, next: Option<&str>) -> Option<String> {
     }
 }
 
+/// Asteroid/ice belt mentions as `(start, len, label)` over `structure_words` slots — a
+/// celestial-style location badge ("Ice Belt", "Asteroid Belt", or a bare "Belt"). The
+/// qualifier precedes the belt word, so a leading "ice"/"asteroid" is folded into the span.
+fn belt_locations(words: &[String]) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        if w != "belt" {
+            continue;
+        }
+        let prev = i.checked_sub(1).and_then(|p| words.get(p)).map(String::as_str);
+        let (start, len, label) = match prev {
+            Some("ice") => (i - 1, 2, "Ice Belt"),
+            Some("asteroid") => (i - 1, 2, "Asteroid Belt"),
+            _ => (i, 1, "Belt"),
+        };
+        out.push((start, len, label.to_owned()));
+    }
+    out
+}
+
 /// Celestial locations named in intel: "planet"/"moon" + an arabic number or roman numeral
 /// ("planet 1", "moon IV"), and a standalone "sun". Returns the display labels plus the
 /// tokens consumed (the celestial word + its number) so they aren't read as a hostile count
@@ -2923,6 +2998,142 @@ mod tests {
         let r4 = analyze("N3-JBX Uitra", &s, &noships(), &noknown(), 1, "ch", "AnewSs");
         assert!(r4.pilots.is_empty(), "pilots={:?}", r4.pilots);
         assert!(r4.gates.iter().any(|g| g == "Uitra"), "gates={:?}", r4.gates);
+    }
+
+    #[test]
+    fn fly_catcher_is_the_flycatcher_hull() {
+        let s = systems();
+        // "fly catcher" (spaced) is the Flycatcher interdictor, matched case-insensitively as a
+        // two-word phrase — not two pilots "Fly"/"Catcher".
+        let mut by_name = std::collections::HashMap::new();
+        by_name.insert("flycatcher".to_string(), (16242i64, "Flycatcher".to_string()));
+        let mut ships = by_name.clone();
+        for (slug, e) in crate::shipnames::aliases(&by_name) {
+            ships.entry(slug).or_insert(e);
+        }
+        let r = analyze("Fly Catcher on gate in Jita", &s, &ships, &noknown(), 1, "ch", "Scout");
+        assert!(r.ships.iter().any(|sh| sh.name == "Flycatcher"), "ships={:?}", r.ships);
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("fly") || p.eq_ignore_ascii_case("catcher")),
+            "pilots={:?}",
+            r.pilots
+        );
+    }
+
+    #[test]
+    fn system_gate_token_is_not_also_a_pilot() {
+        // "<X> gate" proves X is a location: "on the IAS gate" is the gate to IAS-X, not a
+        // pilot "IAS" (which the title-case/distinctive passes would otherwise add).
+        let mut by_name = std::collections::HashMap::new();
+        for (key, name, id, sec) in
+            [("o3-4mn", "O3-4MN", 100i64, -0.5f64), ("ias-x", "IAS-X", 101, -0.5)]
+        {
+            by_name.insert(
+                key.to_string(),
+                SystemInfo {
+                    id,
+                    name: name.to_string(),
+                    security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            );
+        }
+        let adjacency = [(100i64, vec![101i64]), (101, vec![100])].into_iter().collect();
+        let s = Systems::new(by_name, adjacency);
+        let r = analyze("O3-4MN gang on the IAS gate", &s, &noships(), &noknown(), 1, "ch", "Scout");
+        assert!(r.gates.iter().any(|g| g == "IAS-X"), "gates={:?}", r.gates);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("ias")), "pilots={:?}", r.pilots);
+        assert_eq!(
+            r.systems.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
+            vec!["O3-4MN"],
+            "systems={:?}",
+            r.systems
+        );
+    }
+
+    #[test]
+    fn shining_baldman_stays_one_name_across_messages() {
+        let mut by_name = std::collections::HashMap::new();
+        by_name.insert(
+            "78-0r6".to_string(),
+            SystemInfo { id: 30000773, name: "78-0R6".into(), security: -0.5,
+                constellation: String::new(), region: String::new(), faction: String::new() },
+        );
+        let s = Systems::new(by_name, HashMap::new());
+        let msgs = [
+            ("Tobez", "78-0R6 Shining Baldman"),
+            ("totu", "Shining Baldman 78-0R6"),
+            ("totu", "Shining Baldman malexict"),
+        ];
+        // After msgs 1-2 the char-linked "Shining Baldman" is resolved into the known cache, so
+        // the third message ("Shining Baldman malexict") must split into the known full name plus
+        // the separate lowercase handle — not glue "malexict" onto the name.
+        let mut known = noknown();
+        known.insert("shining baldman".into(), 2118534277);
+        let r3 = analyze("Shining Baldman malexict", &s, &noships(), &known, 102, "ch", "totu");
+        assert_eq!(
+            r3.pilots,
+            vec!["Shining Baldman".to_string(), "malexict".to_string()],
+            "msg3 pilots={:?}",
+            r3.pilots
+        );
+        let mut st = IntelState::default();
+        for (i, (reporter, m)) in msgs.iter().enumerate() {
+            let r = analyze(m, &s, &noships(), &known, 100 + i as i64, "ch", reporter);
+            if !st.try_amend(&r, 60) {
+                st.push(r);
+            }
+        }
+        let sighting = st.reports.iter().find(|r| !r.clear).expect("sighting");
+        assert!(
+            sighting.pilots.iter().any(|p| p == "Shining Baldman"),
+            "merged pilots={:?}",
+            sighting.pilots
+        );
+        assert!(
+            !sighting.pilots.iter().any(|p| p.eq_ignore_ascii_case("shining baldman malexict")),
+            "name should not be glued: {:?}",
+            sighting.pilots
+        );
+    }
+
+    #[test]
+    fn autopilot_and_dead_are_not_pilots() {
+        let s = systems();
+        // From "Ms Autopilot ... DEAD": the real pilot "Ms Autopilot" survives ("autopilot" is
+        // name-capable), but neither a bare "Autopilot" nor "Dead"/"DEAD" is a pilot.
+        let r = analyze("Ms Autopilot in Jita DEAD", &s, &noships(), &noknown(), 1, "ch", "Scout");
+        assert!(r.pilots.iter().any(|p| p == "Ms Autopilot"), "pilots={:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("dead")), "pilots={:?}", r.pilots);
+        // Bare keywords on their own are never pilots ("ded" is a common spelling of "dead").
+        let r2 = analyze("Autopilot DEAD in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.pilots.is_empty(), "pilots={:?}", r2.pilots);
+        let r3 = analyze("Autopilot Ded in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r3.pilots.is_empty(), "pilots={:?}", r3.pilots);
+    }
+
+    #[test]
+    fn belt_is_a_location_badge_not_a_pilot() {
+        let s = systems();
+        // "Ice Belt" / "Asteroid Belt" / a bare "Belt" are celestial location badges, never
+        // pilots — even when title-cased.
+        let r = analyze("Ice Belt in Jita", &s, &noships(), &noknown(), 1, "ch", "Scout");
+        assert!(r.celestials.iter().any(|c| c == "Ice Belt"), "celestials={:?}", r.celestials);
+        assert!(r.pilots.is_empty(), "pilots={:?}", r.pilots);
+
+        let r2 =
+            analyze("hostiles at Asteroid Belt in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            r2.celestials.iter().any(|c| c == "Asteroid Belt"),
+            "celestials={:?}",
+            r2.celestials
+        );
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("belt")), "pilots={:?}", r2.pilots);
+
+        let r3 = analyze("camp on belt in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r3.celestials.iter().any(|c| c == "Belt"), "celestials={:?}", r3.celestials);
     }
 
     #[test]
