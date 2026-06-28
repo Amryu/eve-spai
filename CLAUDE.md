@@ -22,8 +22,16 @@ commit messages.
   relaunching the app, or you will run a stale binary and "fixes" will look like they
   did nothing.
 - The version lives once in the root `Cargo.toml` `[workspace.package]`; `app` inherits
-  it. User-agent strings track it via `env!("CARGO_PKG_VERSION")`, so bumping the
-  workspace version is enough.
+  it (user-agent strings track it via `env!("CARGO_PKG_VERSION")`).
+- **Bumping a version means starting a GitHub build run.** It is NOT enough to edit the
+  `Cargo.toml` version — that builds nothing. To bump a version you must: (1) edit the
+  `Cargo.toml` `[workspace.package]` version, (2) commit it and push `main`, then (3)
+  create and push the matching `vX.Y.Z` git tag (`git tag vX.Y.Z && git push origin
+  vX.Y.Z`). Pushing the tag is the trigger for the release workflow
+  (`.github/workflows/release.yml`): it cross-builds every platform and publishes the
+  GitHub Release. Without the pushed tag no release is produced (this is what stalled
+  releases between 0.2.10 and 0.3.6). CI sets the binary's reported version from the tag,
+  so the tag is the source of truth — keep `Cargo.toml`, the tag, and the release in sync.
 
 ## Release process
 
@@ -55,16 +63,14 @@ commit messages.
 
 - Verify the install path end-to-end against a real release; a plausible script can still
   be wrong (the asset-id bug above).
-- EVE chat logs carry NO `<url=...>` tags. Pilots and ships arrive as plain text, so
-  intel parsing cannot rely on link markup. (In-game *pastes* do carry the tags.)
-- The chat-LOG format and the in-game COPY format differ, and intel parsing must handle
-  both. In-game copies carry `<url=showinfo:...>` tags AND per-message author prefixes
-  ("Pilot Name > message"); a copied block concatenates several such entries, so the
-  author prefix appears more than once — strip every "Name > " that precedes a link, not
-  just the leading one, or a later sender's name leaks as a hostile pilot. Log lines have
-  neither, so author-stripping is gated on a following `<url=` and never touches logs.
-  When writing parser tests, mirror the right format (tags + repeated author prefixes for
-  in-game copies; plain text for logs).
+- The parser handles **plain-text chat-LOG lines only**. EVE chat logs carry NO
+  `<url=...>` tags — pilots and ships arrive as plain text, so parsing cannot rely on link
+  markup. The log reader strips the `[ timestamp ] Sender >` framing and passes the
+  message body plus the reporter separately, so `analyze` never sees an author prefix
+  either. The in-game COPY format (`<url=showinfo:...>` tags + per-message "Name >"
+  prefixes) is NOT supported — that machinery was removed. Write all parser tests as plain
+  text; never put `<url=>` tags or a "Name > " prefix in a test (those are just how
+  in-game examples get pasted into chat, not our input).
 - ESI `/universe/ids/` POST: keep batches under ~200 names (1000 -> HTTP 400, 500 ->
   504). Make a failed batch return an `Option` so it does not poison the
   not-a-character cache.
