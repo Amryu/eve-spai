@@ -172,7 +172,7 @@ fn scan(
 
                 // Successive messages from the same reporter (same/no system, ≤1 min)
                 // amend their previous report rather than adding a new one.
-                if st.try_amend(&report, AMEND_GRACE) {
+                if st.try_amend(&report, AMEND_GRACE, systems) {
                     continue;
                 }
 

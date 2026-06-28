@@ -193,7 +193,7 @@ impl IntelState {
     /// adding a new one — for intel split across successive messages. Only when the
     /// new message mentions the **same system or no system** (a gate is not a
     /// system) and actually adds something. Returns true if it amended.
-    pub fn try_amend(&mut self, new: &IntelReport, grace: i64) -> bool {
+    pub fn try_amend(&mut self, new: &IntelReport, grace: i64, systems: &Systems) -> bool {
         // A clear is always its own report — it must never merge into (and overwrite
         // the threat info of) a prior sighting.
         if new.clear {
@@ -216,13 +216,27 @@ impl IntelState {
         let new_sys = new.primary_system().map(|s| s.id);
         let new_pilots: std::collections::HashSet<String> =
             new.pilots.iter().map(|p| p.to_lowercase()).collect();
+        // Individual pilot *words*, minus any held system token — so two reports of the same pilot
+        // whose name still holds a system link by the actual name word even when the unresolved
+        // blobs differ ("G-EURJ Keeves" and "Keeves G-EURJ" both share "keeves", not "g-eurj").
+        let name_words = |pilots: &[String]| -> std::collections::HashSet<String> {
+            pilots
+                .iter()
+                .flat_map(|p| p.split_whitespace())
+                .filter(|w| !is_system_token(w, systems))
+                .map(|w| w.to_lowercase())
+                .collect()
+        };
+        let new_words = name_words(&new.pilots);
         for prev in self.reports.iter_mut().rev() {
             // Link by the same reporter (split message) OR a shared pilot name (one
             // scout reports the hostile, another adds the ship/route on the same
             // pilot — not linked by system, but by player).
             let same_reporter = prev.reporter == new.reporter;
-            let shares_pilot = !new_pilots.is_empty()
-                && prev.pilots.iter().any(|p| new_pilots.contains(&p.to_lowercase()));
+            let shares_pilot = (!new_pilots.is_empty()
+                && prev.pilots.iter().any(|p| new_pilots.contains(&p.to_lowercase())))
+                || (!new_words.is_empty()
+                    && name_words(&prev.pilots).intersection(&new_words).next().is_some());
             if !same_reporter && !shares_pilot {
                 continue;
             }
@@ -970,7 +984,7 @@ fn loose_pilot_runs(
             true
         } else if is_system_token(core, systems) {
             // A system/code breaks UNLESS flanked by a real name word — then it may be part of a
-            // name ("Bob Uitra", "jita trader") and is kept for ESI to confirm; "hostiles in
+            // name ("Bob Uitra", "G-EURJ Keeves") and is kept for ESI to confirm; "hostiles in
             // Jita" / "N3-JBX Uitra" have no adjacent name word, so the system stands alone.
             let prev = i.checked_sub(1).and_then(|j| toks.get(j));
             let next = toks.get(i + 1);
@@ -3920,21 +3934,43 @@ mod tests {
     }
 
     #[test]
+    fn amend_merges_ship_when_system_held_in_name_blob() {
+        let s = systems();
+        let sh: std::collections::HashMap<String, (i64, String)> =
+            [("gila".to_string(), (17715i64, "Gila".to_string()))].into_iter().collect();
+        // Two different scouts on the same hostile in C-J6MT. The system is held inside each
+        // unresolved name blob ("C-J6MT Keeves" vs "Keeves C-J6MT"), and the second adds the ship.
+        // They must still link by the shared pilot WORD ("keeves", not the held system) and merge
+        // the Gila — otherwise the ship badge is stranded on a separate card.
+        let orig = analyze("C-J6MT Keeves nv", &s, &sh, &noknown(), 100, "ch", "Super Logico");
+        let amend = analyze("Keeves C-J6MT Gila ?", &s, &sh, &noknown(), 140, "ch", "Yhana Malkav 2");
+        let mut state = IntelState::default();
+        state.push(orig);
+        assert!(state.try_amend(&amend, 60, &s), "should amend on the shared pilot word");
+        assert_eq!(state.reports.len(), 1);
+        assert!(
+            state.reports[0].ships.iter().any(|x| x.name == "Gila"),
+            "Gila not merged: {:?}",
+            state.reports[0].ships
+        );
+    }
+
+    #[test]
     fn amends_successive_reporter_messages() {
         let s = systems();
         let mut state = IntelState::default();
         state.push(analyze("hostile in Rancer", &s, &noships(), &noknown(), 100, "ch", "Scout"));
         // Same reporter, no system (gate only), within grace -> amends.
         let follow = analyze("on 78- gate", &s, &noships(), &noknown(), 130, "ch", "Scout");
-        assert!(state.try_amend(&follow, 60));
+        assert!(state.try_amend(&follow, 60, &s));
         assert_eq!(state.reports.len(), 1);
         assert!(!state.reports[0].gates.is_empty());
         // A different system is a new sighting, not an amendment.
         let other = analyze("hostile in Jita", &s, &noships(), &noknown(), 140, "ch", "Scout");
-        assert!(!state.try_amend(&other, 60));
+        assert!(!state.try_amend(&other, 60, &s));
         // A clear is never amended into a sighting (it must not wipe ship info).
         let clear = analyze("Rancer clear", &s, &noships(), &noknown(), 150, "ch", "Scout");
-        assert!(!state.try_amend(&clear, 60));
+        assert!(!state.try_amend(&clear, 60, &s));
     }
 
     #[test]
@@ -4006,7 +4042,7 @@ mod tests {
         // Scout B (different reporter): same pilot, no system, adds the ship.
         let mut follow = analyze("Pericle No1 loki", &s, &loki, &noknown(), 130, "ch", "Wallie Warptunnel");
         apply_resolution(&mut follow, &["Pericle No1"], &s);
-        assert!(state.try_amend(&follow, 60));
+        assert!(state.try_amend(&follow, 60, &s));
         assert_eq!(state.reports.len(), 1);
         assert!(state.reports[0].ships.iter().any(|sh| sh.name == "Loki"));
     }
