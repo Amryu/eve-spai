@@ -4663,7 +4663,7 @@ impl SpaiApp {
         let status = self.system_status.lock().unwrap();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (kid, from_you, b) in &self.battle_cards {
-                if battle_row(ui, b, now, *from_you, &systems, &status) {
+                if battle_row(ui, b, now, *from_you) {
                     open = Some(*kid);
                 }
                 ui.add_space(4.0);
@@ -7985,8 +7985,7 @@ impl SpaiApp {
     /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
     /// Search systems for the From/To dropdowns: (id, name, security, constellation, region).
     /// Empty when the query is blank or already exactly names the picked system.
-    fn travel_suggestions(&self, q: &str, picked: Option<i64>) -> Vec<SysHit> {
-        let _ = picked;
+    fn travel_suggestions(&self, q: &str) -> Vec<SysHit> {
         let q = q.trim();
         if q.is_empty() {
             return Vec::new();
@@ -8417,15 +8416,15 @@ impl SpaiApp {
             self.travel_end,
         );
         if key != self.travel_sugg_key {
-            let s0 = self.travel_suggestions(&self.travel_start_q, self.travel_start);
-            let s1 = self.travel_suggestions(&self.travel_end_q, self.travel_end);
+            let s0 = self.travel_suggestions(&self.travel_start_q);
+            let s1 = self.travel_suggestions(&self.travel_end_q);
             self.travel_sugg = (s0, s1);
             self.travel_sugg_key = key;
         }
         let start_suggestions = self.travel_sugg.0.clone();
         let end_suggestions = self.travel_sugg.1.clone();
         if self.travel_wp_q != self.travel_wp_sugg_key {
-            self.travel_wp_sugg = self.travel_suggestions(&self.travel_wp_q, None);
+            self.travel_wp_sugg = self.travel_suggestions(&self.travel_wp_q);
             self.travel_wp_sugg_key = self.travel_wp_q.clone();
         }
         let wp_suggestions = self.travel_wp_sugg.clone();
@@ -13273,8 +13272,6 @@ fn battle_row(
     b: &crate::battle::Battle,
     now: i64,
     from_you: Option<u32>,
-    _systems: &Option<std::sync::Arc<crate::geo::Systems>>,
-    _status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
 ) -> bool {
     let span_min = ((b.end - b.start) / 60).max(0);
     let resp = egui::Frame::group(ui.style()).show(ui, |ui| {
