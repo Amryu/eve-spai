@@ -2809,9 +2809,6 @@ impl SpaiApp {
         }
     }
 
-    /// A pilot candidate that ESI confirms is NOT a character falls back to being a
-    /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
-    /// it's not a real pilot). showinfo-confirmed characters are never demoted.
     /// Turn buffered zkill killmails into intel cards when within range and worth showing
     /// (skips shuttles, rookie corvettes and empty pods).
     fn ingest_killfeed(&mut self) {
@@ -2984,6 +2981,9 @@ impl SpaiApp {
         }
     }
 
+    /// A pilot candidate that ESI confirms is NOT a character falls back to being a
+    /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
+    /// it's not a real pilot). showinfo-confirmed characters are never demoted.
     fn reconcile_unresolved_pilots(&mut self) -> bool {
         let due = self.pilot_reconcile_checked.map(|t| t.elapsed().as_millis() > 700).unwrap_or(true);
         if !due {
@@ -3828,7 +3828,6 @@ impl SpaiApp {
         }
     }
 
-    /// The Battle Report view: clusters of killmails near the tracked area.
     /// Queue one tab per (de-duplicated) name from a block of pasted/dropped text.
     fn add_lookup_names(&mut self, text: &str) {
         for line in text.lines() {
@@ -4492,6 +4491,7 @@ impl SpaiApp {
         });
     }
 
+    /// The Battle Report view: clusters of killmails near the tracked area.
     fn battles_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         let now = chrono::Utc::now().timestamp();
@@ -4839,8 +4839,6 @@ impl SpaiApp {
         }
     }
 
-    /// Pilot lookup: resolve a name, pull recent zKill losses, and show the hulls
-    /// the pilot flies (click a hull for its ship window).
     /// Cached role badges for a ship (derived from its baked role bonuses).
     fn ship_roles_cached(&self, id: i64) -> Vec<(&'static str, &'static str)> {
         if let Some(r) = self.ship_roles_cache.borrow().get(&id) {
@@ -5278,8 +5276,6 @@ impl SpaiApp {
         }
     }
 
-    /// Track the last externally-focused window (throttled), so the alert window can
-    /// return focus to it. Only meaningful when the custom window is enabled.
     /// Custom notification window: a floating, always-on-top feed of intel that
     /// passed the alert filters. Auto-hides `window_timeout` s after the last alert;
     /// hovering pauses the countdown (and bumps it to ≥3 s).
@@ -7156,8 +7152,6 @@ impl SpaiApp {
         }
     }
 
-    /// Hover tooltip for a map system: name/security/location, ESI activity, and
-    /// any current intel. (Click the system for the full interactive window.)
     /// Wormhole connections in/out of a system (from the cached store), shown in the
     /// map tooltip and the system-info window. No-op if the system has no known holes.
     fn wormhole_section(&self, ui: &mut egui::Ui, id: i64) {
@@ -7229,6 +7223,8 @@ impl SpaiApp {
         }
     }
 
+    /// Hover tooltip for a map system: name/security/location, ESI activity, and
+    /// any current intel. (Click the system for the full interactive window.)
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
         // Compact + translucent so it doesn't hide nearby/jumpable systems; extra-translucent
         // while the jump-range overlay is on so the rings stay readable through it.
@@ -7369,7 +7365,6 @@ impl SpaiApp {
             });
     }
 
-    /// Floating controls over the map (scope, navigation, follow, pop-out).
     /// The active character's current system — from the per-character location map, so the
     /// map and distances follow the character selected at the top of the window, not
     /// whichever character ESI happened to update last.
@@ -7417,9 +7412,6 @@ impl SpaiApp {
         self.needs_save = true;
     }
 
-    /// Compute the Travel route from the typed start/end + the active constraints.
-    /// The next system on the planned route after the character's current position (None at the
-    /// end or with no route). Used to advance the in-game destination one hop at a time.
     /// Load a saved route into Travel mode (set start/end/waypoints, then re-plan).
     fn load_route(&mut self, r: &crate::settings::SavedRoute) {
         let nm = |id: i64| {
@@ -7839,6 +7831,8 @@ impl SpaiApp {
         }
     }
 
+    /// The next system on the planned route after the character's current position (None at the
+    /// end or with no route). Used to advance the in-game destination one hop at a time.
     fn next_route_hop(&self) -> Option<i64> {
         let route = self.travel_route.as_ref()?;
         if route.len() < 2 {
@@ -7888,6 +7882,7 @@ impl SpaiApp {
         h.finish()
     }
 
+    /// Compute the Travel route from the typed start/end + the active constraints.
     fn plan_route(&mut self) {
         let Some(geo) = self.systems.clone() else { return };
         if let Some(store) = self.store.as_ref() {
@@ -8026,7 +8021,6 @@ impl SpaiApp {
             .collect()
     }
 
-    /// Travel Mode panel content, rendered inside a docked SidePanel (see `map_area`).
     /// §8.6 — left-clicking the map in Jump Plan mode edits the route: set the destination if
     /// there isn't one, otherwise add the clicked system as a waypoint.
     fn jump_click_edit(&mut self, id: i64) {
@@ -8355,6 +8349,7 @@ impl SpaiApp {
         }
     }
 
+    /// Travel Mode panel content, rendered inside a docked SidePanel (see `map_area`).
     fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
         // A field with a keyboard-navigable suggestion dropdown (system, sec, const, region).
         fn travel_field(
@@ -10644,10 +10639,6 @@ impl SpaiApp {
         }
     }
 
-    /// Jump-bridge configuration: paste a coalition list (any separator); each
-    /// line's first two SDE systems become a bridge. Drawn green on the map.
-    /// Coalition editor: name + member alliance names (one per line). Unlisted
-    /// alliances are independent.
     /// "Update available" prompt: Yes (download + self-replace), No (don't ask again
     /// for this version), or Ask Me Again Later (re-prompt next launch).
     fn update_dialog(&mut self, ctx: &egui::Context) {
@@ -11592,6 +11583,8 @@ impl SpaiApp {
         }
     }
 
+    /// Coalition editor: name + member alliance names (one per line). Unlisted
+    /// alliances are independent.
     fn coalitions_window(&mut self, ctx: &egui::Context) {
         if !self.coalitions_open {
             return;
@@ -11805,6 +11798,8 @@ impl SpaiApp {
         }
     }
 
+    /// Jump-bridge configuration: paste a coalition list (any separator); each
+    /// line's first two SDE systems become a bridge. Drawn green on the map.
     fn jump_bridges_window(&mut self, ctx: &egui::Context) {
         if !self.jump_bridges_open {
             return;
@@ -13701,7 +13696,6 @@ fn rule_matches(
     true
 }
 
-/// A concise one-line alert string for a report.
 /// Best-effort op-channel name from ping text ("op 9", "op9") when there's no comms field.
 /// A canonical key for an op channel ("Op 4", "op4", "OP 4 - dead keepstars" → "op4"), used to
 /// match a malformed ping's channel name against the cached comms links.
@@ -13725,8 +13719,6 @@ fn find_op_channel(text: &str) -> Option<String> {
     None
 }
 
-/// Show a desktop notification (best-effort, off the UI thread).
-/// One saved-route row. Returns Some(true)=load, Some(false)=delete, None=nothing.
 enum RowAction {
     None,
     Load,
@@ -13835,6 +13827,7 @@ fn ontop_pin(ctx: &egui::Context, id: &str) {
     }
 }
 
+/// Show a desktop notification (best-effort, off the UI thread).
 fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {
@@ -13867,6 +13860,7 @@ fn open_mumble(link: String) {
     });
 }
 
+/// A concise one-line alert string for a report.
 fn alert_text(r: &crate::intel::IntelReport) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(s) = r.primary_system() {
@@ -14160,10 +14154,6 @@ fn fmt_age(secs: i64) -> String {
     }
 }
 
-/// Render a single intel report row in the concise, parsed format. `stale` means a
-/// later "clear" has outdated it; `from_you` is jumps from the active character.
-/// Render one intel report as typed, clickable panels (no raw message inline; the
-/// raw text is available on hover). Returns a clicked system id to focus the map.
 /// A bottom-right resize grip for a borderless viewport (the map overlay, the alert
 /// window): hover highlights the diagonal ticks and shows the resize cursor; dragging
 /// begins a window resize. Call last so it paints over the content.
@@ -14207,6 +14197,9 @@ fn report_key(r: &crate::intel::IntelReport) -> u64 {
     h.finish()
 }
 
+/// Render one intel report as typed, clickable panels (no raw message inline; the raw text
+/// is available on hover). `stale` means a later "clear" has outdated it; `from_you` is jumps
+/// from the active character. Returns a clicked system id to focus the map.
 fn intel_row(
     ui: &mut egui::Ui,
     r: &crate::intel::IntelReport,
@@ -14917,7 +14910,6 @@ fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails, roles: &[(&'stat
     ship_stats(ui, d);
 }
 
-/// Resists / tank / hardpoints / drones / speed for a ship.
 /// Pick the loss whose fit to show: latest, or the most common fit signature.
 fn pick_loss(
     report: &crate::lookup::PilotReport,
@@ -15226,6 +15218,7 @@ fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
     hp / (1.0 - avg_resist).max(0.01)
 }
 
+/// Resists / tank / hardpoints / drones / speed for a ship.
 fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
     // Damage-type colours (EM / thermal / kinetic / explosive), aligned in columns.
     let dmg_col = [
@@ -15328,7 +15321,6 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
     }
 }
 
-/// Colour for a security status: green (hi-sec) / amber (lo-sec) / red (null).
 /// Stable pseudo-id from a coalition name (so it gets a consistent colour).
 fn coalition_hash(name: &str) -> i64 {
     let mut h: u64 = 1469598103934665603;
