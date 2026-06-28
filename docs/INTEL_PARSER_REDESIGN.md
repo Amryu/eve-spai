@@ -146,8 +146,11 @@ the feed updates as verdicts arrive rather than blocking.
    - **Step 1 — Phase A:** rebuild segmentation into clean blobs (double-space hard boundary,
      ship/threat keywords as hard entities, no capitalization). Delete `extract_pilots` and the
      lowercase/known-cache patch passes. Keep system/keyword detection parse-time for now.
-   - **Step 2 — Phase B:** 4 h negative TTL in the resolver; confirm `cover` does the
-     permutation claim with no all-singles guard.
+   - **Step 2 — Phase B:** 4 h negative TTL in the resolver (done). `cover` does the
+     permutation claim, but **keeps** the all-singles guard as a safety net — prose like
+     `I Forgot Who` (three words each coincidentally a real player) must not explode into three
+     pilots; a real multi-word name confirms as the longer span (with the TTL re-checking), so
+     the guard only blocks the spurious case.
    - **Step 3 — Phase C:** move system + keyword + count parsing to the post-ESI reconcile over
      unreserved tokens; first-system-is-location; soft/threat keyword split.
    - Tests are ported to the phase contract as each step lands; the app stays working between
