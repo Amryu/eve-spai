@@ -1250,6 +1250,198 @@ pub fn parse_motd_regions(motd: &str, known: &std::collections::HashSet<String>)
     }
     out
 }
+/// Detect the report's location — solar systems, the gate destination, and the tokens consumed
+/// doing so. `reserved` holds tokens already claimed by a name (skipped). Extracted from
+/// `analyze_ctx` so the post-ESI reconcile can re-run it once confirmed names free their tokens
+/// (the held model: a system inside a name blob is held, then re-derived if the name is rejected).
+#[allow(clippy::too_many_arguments)]
+fn detect_location(
+    tokens: &[&str],
+    lower_tokens: &[String],
+    reserved: &std::collections::HashSet<String>,
+    systems: &Systems,
+    context_system: Option<i64>,
+    channel_regions: &[String],
+) -> (Vec<DetectedSystem>, Vec<String>, Vec<String>) {
+    let pilot_tokens = reserved; // alias so the moved body reads unchanged
+    let mut detected: Vec<DetectedSystem> = Vec::new();
+    // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
+    // "on 78 gate" is a gate, not 78 hostiles).
+    let mut consumed: Vec<String> = Vec::new();
+    // A bare 1–2 digit number is ambiguous: it could be a system/gate code prefix
+    // (e.g. "78" → 78-) or a hostile count (e.g. "10 neut"). Defer these and accept
+    // them as a system only if they're a direct neighbour of a named system.
+    let mut deferred: Vec<&str> = Vec::new();
+    for tok in tokens {
+        if pilot_tokens.contains(&tok.to_lowercase()) {
+            continue;
+        }
+        if is_short_number(tok) {
+            deferred.push(tok);
+            continue;
+        }
+        if let Some(info) = resolve(systems, tok) {
+            consumed.push(tok.to_lowercase());
+            if !detected.iter().any(|d| d.id == info.id) {
+                detected.push(DetectedSystem {
+                    id: info.id,
+                    name: info.name.clone(),
+                    security: info.security,
+                });
+            }
+        }
+    }
+    // Neighbours of the confidently-named systems.
+    let neighbours: std::collections::HashSet<i64> =
+        detected.iter().flat_map(|d| systems.neighbors(d.id).iter().copied()).collect();
+    for tok in &deferred {
+        if let Some(info) = resolve(systems, tok) {
+            if neighbours.contains(&info.id) {
+                consumed.push(tok.to_lowercase());
+                if !detected.iter().any(|d| d.id == info.id) {
+                    detected.push(DetectedSystem {
+                        id: info.id,
+                        name: info.name.clone(),
+                        security: info.security,
+                    });
+                }
+            }
+        }
+    }
+
+    // Standalone null-sec abbreviation ("C-J" when both C-J6MT and C-J7CR exist, with
+    // no "gate" word): resolve by prefix against an already-named system's neighbours or
+    // the channel context. Prefix-only and hyphenated-code-only, so plain words and
+    // suffixes ("6MT") never match.
+    {
+        let ctx: Vec<i64> = detected.iter().map(|d| d.id).chain(context_system).collect();
+        for (i, tok) in tokens.iter().enumerate() {
+            let lc = tok.to_lowercase();
+            if consumed.contains(&lc)
+                || pilot_tokens.contains(&lc)
+                || !looks_like_system_code(tok)
+                || resolve(systems, tok).is_some()
+                || tokens.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case("gate"))
+            {
+                continue;
+            }
+            let hit = ctx
+                .iter()
+                .find_map(|&c| {
+                    systems.neighbors(c).iter().find_map(|&n| {
+                        systems.info_of(n).filter(|info| info.name.to_lowercase().starts_with(&lc))
+                    })
+                })
+                // Hint: an Imperium channel's regions (from its MOTD) pick C-J6MT over the
+                // Vale of the Silent C-J7CR even with no nearby named system.
+                .or_else(|| systems.lookup_prefix_in_regions(tok, channel_regions));
+            if let Some(info) = hit {
+                let (id, name, security) = (info.id, info.name.clone(), info.security);
+                consumed.push(lc);
+                if !detected.iter().any(|d| d.id == id) {
+                    detected.push(DetectedSystem { id, name, security });
+                }
+            }
+        }
+    }
+
+    // Gate: "... <System> gate" — hostiles are on the gate *to* <System>. Record it
+    // (resolved name, or the raw token if abbreviated/unknown) and don't also list
+    // it as a plain system.
+    let mut gate: Option<String> = None;
+    // Prefer a system named in this message; otherwise fall back to the channel's
+    // last-known system so a bare "C-J gate" still resolves against its neighbours.
+    let primary = detected.first().map(|d| d.id).or(context_system);
+    for (i, tok) in tokens.iter().enumerate() {
+        if !tok.eq_ignore_ascii_case("gate") || i == 0 {
+            continue;
+        }
+        let cand = tokens[i - 1];
+        if cand.eq_ignore_ascii_case("on") || cand.eq_ignore_ascii_case("the") {
+            continue;
+        }
+        // An explicit "<x> gate" keyword is authoritative for a resolvable code, but
+        // a bare number that doesn't resolve is never a gate name (a single digit
+        // never is, and e.g. "5 gate" means five hostiles).
+        let resolved = resolve(systems, cand)
+            .or_else(|| {
+                // The gate leads to a *neighbour* of the report's system, and there are
+                // only a handful — so even a 1–2 char prefix is unambiguous: "C-J6MT >
+                // 5e gate" → 5E-CFL. (A bare number is a hostile count, not a name.)
+                if cand.chars().all(|c| c.is_ascii_digit()) {
+                    return None;
+                }
+                let lc = cand.to_lowercase();
+                primary.and_then(|p| {
+                    systems.neighbors(p).iter().find_map(|&nid| {
+                        systems.info_of(nid).filter(|i| i.name.to_lowercase().starts_with(&lc))
+                    })
+                })
+            })
+            .or_else(|| {
+                // Still nothing: accept an unambiguous global abbreviation (e.g. "YPW").
+                let abbrev = cand.len() >= 2
+                    && cand.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '-');
+                if abbrev { systems.lookup_prefix(cand) } else { None }
+            });
+        // "O3-4MN Gate camp" is the "gate camp" keyword, not "O3-4MN gate": don't demote
+        // the report's own system to a gate when "gate" is immediately followed by "camp".
+        if resolved.is_some()
+            && resolved.map(|s| s.id) == primary
+            && tokens.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case("camp"))
+        {
+            continue;
+        }
+        if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
+            break;
+        }
+        gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
+        consumed.push(cand.to_lowercase());
+        if let Some(info) = resolved {
+            detected.retain(|d| d.id != info.id);
+        }
+        break;
+    }
+
+    // "Ansi"/"Ansiblex" = the Ansiblex jump bridge in the report's system; treat it as
+    // the gate it leads to (the configured bridge's destination), so "camp on the Ansi"
+    // points at the system the bridge reaches.
+    if gate.is_none() && lower_tokens.iter().any(|t| t == "ansi" || t == "ansiblex") {
+        if let Some(dest) = primary.and_then(|p| systems.jump_bridge_dest(p)) {
+            detected.retain(|d| d.id != dest.id);
+            gate = Some(dest.name.clone());
+        }
+    }
+
+    // One system per card: keep the first mentioned, and demote any further system
+    // mentions to gates (a report can list several gates). Combined with any explicit
+    // "<X> gate" already found above.
+    let mut gates: Vec<String> = Vec::new();
+    if let Some(g) = gate {
+        gates.push(g);
+    }
+    if detected.len() > 1 {
+        // A further system is only a gate if it's actually gate-adjacent to the primary.
+        // A non-adjacent mention is a wormhole/route destination, not a gate ("R959-U WH to
+        // Agaullores"), so don't demote it to one.
+        let primary = detected[0].id;
+        let adjacent: std::collections::HashSet<i64> =
+            systems.neighbors(primary).iter().copied().collect();
+        for d in detected.split_off(1) {
+            // When we know the primary's gate neighbours and this system isn't among them,
+            // it's a wormhole/route destination, not a gate. With no adjacency data we can't
+            // know, so we fall back to demoting it.
+            if !adjacent.is_empty() && !adjacent.contains(&d.id) {
+                continue;
+            }
+            if !gates.iter().any(|g| g.eq_ignore_ascii_case(&d.name)) {
+                gates.push(d.name);
+            }
+        }
+    }
+    (detected, gates, consumed)
+}
+
 /// As [`analyze`], but with the channel's last-known system as context so an
 /// abbreviated gate ("C-J gate") can disambiguate against that system's neighbours
 /// even when the message doesn't restate a system.
@@ -1677,181 +1869,9 @@ pub fn analyze_ctx(
         add_ship(id, &name, &mut ships);
     }
 
-    let mut detected: Vec<DetectedSystem> = Vec::new();
-    // Tokens consumed as systems/gates must not also be counted (e.g. "78" in
-    // "on 78 gate" is a gate, not 78 hostiles).
-    let mut consumed: Vec<String> = Vec::new();
-    // A bare 1–2 digit number is ambiguous: it could be a system/gate code prefix
-    // (e.g. "78" → 78-) or a hostile count (e.g. "10 neut"). Defer these and accept
-    // them as a system only if they're a direct neighbour of a named system.
-    let mut deferred: Vec<&str> = Vec::new();
-    for tok in &tokens {
-        if pilot_tokens.contains(&tok.to_lowercase()) {
-            continue;
-        }
-        if is_short_number(tok) {
-            deferred.push(tok);
-            continue;
-        }
-        if let Some(info) = resolve(systems, tok) {
-            consumed.push(tok.to_lowercase());
-            if !detected.iter().any(|d| d.id == info.id) {
-                detected.push(DetectedSystem {
-                    id: info.id,
-                    name: info.name.clone(),
-                    security: info.security,
-                });
-            }
-        }
-    }
-    // Neighbours of the confidently-named systems.
-    let neighbours: std::collections::HashSet<i64> =
-        detected.iter().flat_map(|d| systems.neighbors(d.id).iter().copied()).collect();
-    for tok in &deferred {
-        if let Some(info) = resolve(systems, tok) {
-            if neighbours.contains(&info.id) {
-                consumed.push(tok.to_lowercase());
-                if !detected.iter().any(|d| d.id == info.id) {
-                    detected.push(DetectedSystem {
-                        id: info.id,
-                        name: info.name.clone(),
-                        security: info.security,
-                    });
-                }
-            }
-        }
-    }
-
-    // Standalone null-sec abbreviation ("C-J" when both C-J6MT and C-J7CR exist, with
-    // no "gate" word): resolve by prefix against an already-named system's neighbours or
-    // the channel context. Prefix-only and hyphenated-code-only, so plain words and
-    // suffixes ("6MT") never match.
-    {
-        let ctx: Vec<i64> = detected.iter().map(|d| d.id).chain(context_system).collect();
-        for (i, tok) in tokens.iter().enumerate() {
-            let lc = tok.to_lowercase();
-            if consumed.contains(&lc)
-                || pilot_tokens.contains(&lc)
-                || !looks_like_system_code(tok)
-                || resolve(systems, tok).is_some()
-                || tokens.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case("gate"))
-            {
-                continue;
-            }
-            let hit = ctx
-                .iter()
-                .find_map(|&c| {
-                    systems.neighbors(c).iter().find_map(|&n| {
-                        systems.info_of(n).filter(|info| info.name.to_lowercase().starts_with(&lc))
-                    })
-                })
-                // Hint: an Imperium channel's regions (from its MOTD) pick C-J6MT over the
-                // Vale of the Silent C-J7CR even with no nearby named system.
-                .or_else(|| systems.lookup_prefix_in_regions(tok, channel_regions));
-            if let Some(info) = hit {
-                let (id, name, security) = (info.id, info.name.clone(), info.security);
-                consumed.push(lc);
-                if !detected.iter().any(|d| d.id == id) {
-                    detected.push(DetectedSystem { id, name, security });
-                }
-            }
-        }
-    }
-
-    // Gate: "... <System> gate" — hostiles are on the gate *to* <System>. Record it
-    // (resolved name, or the raw token if abbreviated/unknown) and don't also list
-    // it as a plain system.
-    let mut gate: Option<String> = None;
-    // Prefer a system named in this message; otherwise fall back to the channel's
-    // last-known system so a bare "C-J gate" still resolves against its neighbours.
-    let primary = detected.first().map(|d| d.id).or(context_system);
-    for (i, tok) in tokens.iter().enumerate() {
-        if !tok.eq_ignore_ascii_case("gate") || i == 0 {
-            continue;
-        }
-        let cand = tokens[i - 1];
-        if cand.eq_ignore_ascii_case("on") || cand.eq_ignore_ascii_case("the") {
-            continue;
-        }
-        // An explicit "<x> gate" keyword is authoritative for a resolvable code, but
-        // a bare number that doesn't resolve is never a gate name (a single digit
-        // never is, and e.g. "5 gate" means five hostiles).
-        let resolved = resolve(systems, cand)
-            .or_else(|| {
-                // The gate leads to a *neighbour* of the report's system, and there are
-                // only a handful — so even a 1–2 char prefix is unambiguous: "C-J6MT >
-                // 5e gate" → 5E-CFL. (A bare number is a hostile count, not a name.)
-                if cand.chars().all(|c| c.is_ascii_digit()) {
-                    return None;
-                }
-                let lc = cand.to_lowercase();
-                primary.and_then(|p| {
-                    systems.neighbors(p).iter().find_map(|&nid| {
-                        systems.info_of(nid).filter(|i| i.name.to_lowercase().starts_with(&lc))
-                    })
-                })
-            })
-            .or_else(|| {
-                // Still nothing: accept an unambiguous global abbreviation (e.g. "YPW").
-                let abbrev = cand.len() >= 2
-                    && cand.chars().all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit() || c == '-');
-                if abbrev { systems.lookup_prefix(cand) } else { None }
-            });
-        // "O3-4MN Gate camp" is the "gate camp" keyword, not "O3-4MN gate": don't demote
-        // the report's own system to a gate when "gate" is immediately followed by "camp".
-        if resolved.is_some()
-            && resolved.map(|s| s.id) == primary
-            && tokens.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case("camp"))
-        {
-            continue;
-        }
-        if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
-            break;
-        }
-        gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
-        consumed.push(cand.to_lowercase());
-        if let Some(info) = resolved {
-            detected.retain(|d| d.id != info.id);
-        }
-        break;
-    }
-
-    // "Ansi"/"Ansiblex" = the Ansiblex jump bridge in the report's system; treat it as
-    // the gate it leads to (the configured bridge's destination), so "camp on the Ansi"
-    // points at the system the bridge reaches.
-    if gate.is_none() && lower_tokens.iter().any(|t| t == "ansi" || t == "ansiblex") {
-        if let Some(dest) = primary.and_then(|p| systems.jump_bridge_dest(p)) {
-            detected.retain(|d| d.id != dest.id);
-            gate = Some(dest.name.clone());
-        }
-    }
-
-    // One system per card: keep the first mentioned, and demote any further system
-    // mentions to gates (a report can list several gates). Combined with any explicit
-    // "<X> gate" already found above.
-    let mut gates: Vec<String> = Vec::new();
-    if let Some(g) = gate {
-        gates.push(g);
-    }
-    if detected.len() > 1 {
-        // A further system is only a gate if it's actually gate-adjacent to the primary.
-        // A non-adjacent mention is a wormhole/route destination, not a gate ("R959-U WH to
-        // Agaullores"), so don't demote it to one.
-        let primary = detected[0].id;
-        let adjacent: std::collections::HashSet<i64> =
-            systems.neighbors(primary).iter().copied().collect();
-        for d in detected.split_off(1) {
-            // When we know the primary's gate neighbours and this system isn't among them,
-            // it's a wormhole/route destination, not a gate. With no adjacency data we can't
-            // know, so we fall back to demoting it.
-            if !adjacent.is_empty() && !adjacent.contains(&d.id) {
-                continue;
-            }
-            if !gates.iter().any(|g| g.eq_ignore_ascii_case(&d.name)) {
-                gates.push(d.name);
-            }
-        }
-    }
+    let (detected, gates, mut consumed) = detect_location(
+        &tokens, &lower_tokens, &pilot_tokens, systems, context_system, channel_regions,
+    );
 
     // Alliance shorthands ("frat", "init", …) → logos on the card.
     let mut alliances: Vec<(String, i64)> = Vec::new();
