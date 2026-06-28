@@ -411,6 +411,8 @@ const PILOT_STOP: &[&str] = &[
     "drifter", "drifters",
     // Pronouns / filler.
     "him", "other", "only", "unless", "end", "also", "confirm", "confirmed", "clearing",
+    // Enemy/location prose ("an enemy roaming somewhere", "mostly around the gate").
+    "enemies", "enemy", "mostly", "around", "an", "roaming", "somewhere",
     // Filler / hedging words ("unsure which", "too many", "kitchen sink", "catch all").
     "unsure", "which", "too", "kitchen", "sink", "catch", "all",
     // Question / filler words — lower-cased English the known-pilot cache otherwise matches
