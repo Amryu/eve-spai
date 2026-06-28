@@ -4781,7 +4781,10 @@ impl SpaiApp {
             let battles = source.lock().unwrap();
             let mut cands: Vec<(i64, Option<u32>, f64, crate::battle::Battle)> = Vec::new();
             for b in battles.iter() {
-                if b.kills >= 2 && b.matches(&query) && self.battle_shown(b) {
+                // "Full history" is the comprehensive view — show every recorded battle, not just
+                // those near current intel; the live view still applies the tracked-area filter.
+                let shown = self.show_history || self.battle_shown(b);
+                if b.kills >= 2 && b.matches(&query) && shown {
                     let from_you = b
                         .systems
                         .iter()
