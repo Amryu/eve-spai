@@ -5532,22 +5532,6 @@ impl SpaiApp {
                 if ctx.input(|i| i.viewport().close_requested()) {
                     dismiss = true;
                 }
-                // Once the shared link has been opened/copied, close after 5 s without
-                // focus, so it doesn't linger over the game.
-                if self.dscan_link_used {
-                    if ctx.input(|i| i.viewport().focused).unwrap_or(false) {
-                        self.dscan_unfocused_at = None;
-                    } else if self
-                        .dscan_unfocused_at
-                        .get_or_insert_with(std::time::Instant::now)
-                        .elapsed()
-                        .as_secs_f32()
-                        >= 5.0
-                    {
-                        dismiss = true;
-                    }
-                    ctx.request_repaint_after(std::time::Duration::from_millis(500));
-                }
             },
         );
         // A click in the feed opens the relevant window (in the main viewport).
@@ -10960,6 +10944,22 @@ impl SpaiApp {
                 });
                 if ctx.input(|i| i.viewport().close_requested()) {
                     dismiss = true;
+                }
+                // Once the shared link has been opened/copied, close after 5 s without
+                // focus, so it doesn't linger over the game.
+                if self.dscan_link_used {
+                    if ctx.input(|i| i.viewport().focused).unwrap_or(false) {
+                        self.dscan_unfocused_at = None;
+                    } else if self
+                        .dscan_unfocused_at
+                        .get_or_insert_with(std::time::Instant::now)
+                        .elapsed()
+                        .as_secs_f32()
+                        >= 5.0
+                    {
+                        dismiss = true;
+                    }
+                    ctx.request_repaint_after(std::time::Duration::from_millis(500));
                 }
             },
         );
