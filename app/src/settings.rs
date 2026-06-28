@@ -114,6 +114,9 @@ pub struct Settings {
     /// Custom battle-report inclusion rules (empty = default intel-area behaviour).
     #[serde(default)]
     pub battles: BattleFilter,
+    /// Minimum cumulative ISK destroyed for a battle to be listed (0 = no minimum). Persisted.
+    #[serde(default)]
+    pub min_battle_isk: f64,
     /// How hard the app may work on heavy background tasks (battle feed + clustering).
     #[serde(default)]
     pub work_throttle: WorkThrottle,
@@ -667,6 +670,7 @@ impl Default for Settings {
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
             battles: BattleFilter::default(),
+            min_battle_isk: 0.0,
             map_overlay_opacity: 0.9,
             map_overlay_smart: false,
             jabber_enabled: false,

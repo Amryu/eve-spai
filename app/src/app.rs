@@ -365,6 +365,8 @@ pub struct SpaiApp {
     battle_cards_sig: u64,
     /// Total battles matching the current filter (the cards list is capped).
     battle_cards_total: usize,
+    /// Battles dropped solely by the minimum-ISK filter (shown as "(N filtered)").
+    battle_cards_filtered: usize,
     camps: crate::camp::SharedCamps,
     /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
     /// lock + scan the camp state every frame for every map.
@@ -909,6 +911,7 @@ impl SpaiApp {
             battle_cards: Vec::new(),
             battle_cards_sig: 0,
             battle_cards_total: 0,
+            battle_cards_filtered: 0,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
@@ -4664,6 +4667,22 @@ impl SpaiApp {
             if !self.battle_search.is_empty() && ui.button("Clear").clicked() {
                 self.battle_search.clear();
             }
+            // Minimum cumulative ISK destroyed (in billions) — hides small skirmishes. Persisted.
+            ui.separator();
+            ui.label("\u{2265} ISK").on_hover_text("Only list battles whose total ISK destroyed is at least this many billions");
+            let mut bn = self.settings.min_battle_isk / 1e9;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut bn)
+                        .range(0.0..=100_000.0)
+                        .speed(0.5)
+                        .custom_formatter(|n, _| if n == 0.0 { "off".to_owned() } else { format!("{n:.0}B") }),
+                )
+                .changed()
+            {
+                self.settings.min_battle_isk = (bn * 1e9).max(0.0);
+                self.needs_save = true;
+            }
             // "Full history" re-clusters every recorded engagement; default is the live 1-day view.
             if ui.checkbox(&mut self.show_history, "Full history").changed() {
                 self.battle_selected = None;
@@ -4718,16 +4737,25 @@ impl SpaiApp {
             self.show_history.hash(&mut h);
             self.player_system().unwrap_or(0).hash(&mut h);
             self.battle_filter_gen.hash(&mut h);
+            self.settings.min_battle_isk.to_bits().hash(&mut h);
             self.intel_state.lock().unwrap().reports.len().hash(&mut h);
             h.finish()
         };
         if sig != self.battle_cards_sig {
             self.battle_cards_sig = sig;
             let battles = source.lock().unwrap();
+            let min_isk = self.settings.min_battle_isk;
             let mut total = 0usize;
+            let mut filtered = 0usize;
             let mut cards: Vec<(i64, Option<u32>, crate::battle::Battle)> = Vec::new();
             for b in battles.iter() {
                 if b.kills >= 2 && b.matches(&query) && self.battle_shown(b) {
+                    // Cumulative-ISK-loss minimum: a small skirmish below the threshold is hidden
+                    // but counted so the user sees "(N filtered)".
+                    if b.isk < min_isk {
+                        filtered += 1;
+                        continue;
+                    }
                     total += 1;
                     if cards.len() < MAX_CARDS {
                         let from_you = b
@@ -4743,17 +4771,24 @@ impl SpaiApp {
             drop(battles);
             self.battle_cards = cards;
             self.battle_cards_total = total;
+            self.battle_cards_filtered = filtered;
         }
 
         if self.battle_cards.is_empty() {
             let msg = if self.show_history && loading {
-                "Loading full history…"
+                "Loading full history…".to_owned()
+            } else if self.battle_cards_filtered > 0 {
+                format!(
+                    "{} battle(s) below the {} ISK minimum.",
+                    self.battle_cards_filtered,
+                    fmt_isk(self.settings.min_battle_isk)
+                )
             } else if self.show_history {
-                "No recorded battles yet."
+                "No recorded battles yet.".to_owned()
             } else if query.is_empty() {
-                "No active battles near the tracked area."
+                "No active battles near the tracked area.".to_owned()
             } else {
-                "No battles match the filter."
+                "No battles match the filter.".to_owned()
             };
             ui.label(egui::RichText::new(msg).weak());
             return;
@@ -4761,7 +4796,12 @@ impl SpaiApp {
 
         let total = self.battle_cards_total;
         let shown_n = self.battle_cards.len();
-        ui.label(egui::RichText::new(format!("{total} battles")).weak());
+        let count_txt = if self.battle_cards_filtered > 0 {
+            format!("{total} battles ({} filtered)", self.battle_cards_filtered)
+        } else {
+            format!("{total} battles")
+        };
+        ui.label(egui::RichText::new(count_txt).weak());
         ui.add_space(4.0);
         let mut open: Option<i64> = None;
         let status = self.system_status.lock().unwrap();
