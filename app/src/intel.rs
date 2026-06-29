@@ -410,6 +410,15 @@ const PILOT_STOP: &[&str] = &[
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there", "to",
     "crit", "wrong", "channel", "see", "nothing", "else",
+    // Common English words that are ALSO real cached pilot names (found by scanning the known-pilot
+    // cache against an English dictionary). Stop-listed so the cache doesn't false-match them when
+    // they appear as plain prose — a player happening to be named "Time"/"Worm" loses to the word.
+    "about", "after", "because", "call", "came", "can", "come", "could", "day", "did", "die",
+    "even", "feel", "find", "first", "form", "get", "give", "good", "her", "his", "its", "keep",
+    "know", "leave", "let", "like", "look", "lose", "love", "make", "mean", "most", "new", "our",
+    "pay", "people", "put", "read", "run", "said", "saw", "send", "set", "she", "show", "stand",
+    "start", "stay", "take", "talk", "tell", "than", "then", "these", "time", "took", "try", "two",
+    "understand", "use", "want", "watch", "will", "win", "work", "worm",
     "from", "got", "off", "out", "near", "into", "onto", "over", "your", "youre", "again",
     // "rest" as in "1 jackdaw, rest NV" — never a pilot, even though a character is named "Rest".
     "rest", "stop",
