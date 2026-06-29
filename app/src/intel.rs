@@ -1873,6 +1873,17 @@ pub fn analyze_ctx(
             if !p.contains(' ') || known_matched.contains(&pl) {
                 continue; // single token, or the whole run is itself a known name
             }
+            // A double-space paste segment is one deliberate entity (a name never contains a double
+            // space), so never un-glue it even if its words are separately cached players
+            // ("5E-CMA  Ghost Magician" → the pilot is "Ghost Magician", not "Ghost" + "Magician").
+            if text.contains("  ")
+                && text
+                    .split("  ")
+                    .map(str::trim)
+                    .any(|seg| trim_paste_location_tail(seg).eq_ignore_ascii_case(p))
+            {
+                continue;
+            }
             let padded = format!(" {pl} ");
             let inside = known_matched
                 .iter()
@@ -3210,6 +3221,18 @@ mod tests {
         // A "?" makes it a question, never a clear.
         assert!(!analyze("Rancer clear?", &s, &noships(), &noknown(), 1, "ch", "x").clear);
         assert!(!analyze("is Rancer safe?", &s, &noships(), &noknown(), 1, "ch", "x").clear);
+    }
+
+    #[test]
+    fn paste_segment_is_not_unglued_by_the_cache() {
+        let s = systems();
+        let mut known = noknown();
+        known.insert("ghost".into(), 1);
+        known.insert("magician".into(), 2);
+        // A double-space paste segment is one entity, even though "Ghost" and "Magician" are
+        // separately cached players — it must not be un-glued into two pilots.
+        let r = analyze("C-J6MT  Ghost Magician", &s, &noships(), &known, 1, "ch", "x");
+        assert_eq!(r.pilots, vec!["Ghost Magician".to_string()], "pilots={:?}", r.pilots);
     }
 
     #[test]
