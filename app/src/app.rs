@@ -5661,6 +5661,11 @@ impl SpaiApp {
                         .show(ctx, |_ui| {});
                     return;
                 }
+                // Minimizing the MAIN window can iconify this (owned) viewport with it; while an
+                // alert is showing it must stay up and keep working, so never let it stay minimized.
+                if ctx.input(|i| i.viewport().minimized) == Some(true) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                }
                 // A new alert: bring the window forward once — Windows only. On Linux/X11 a
                 // focus request steals focus from the game (winit#1160), which the user doesn't
                 // want; there the window is already mapped + visible, so seeing it is enough.
@@ -5842,6 +5847,12 @@ impl SpaiApp {
         // feed many times a second (this drove the high CPU).
         let ms = if hovered { 100 } else { 1000 };
         ctx.request_repaint_after(std::time::Duration::from_millis(ms));
+        // If the MAIN window is minimized, eframe may stop driving update(), freezing the alert
+        // viewport. While an alert is active keep the loop ticking so it stays live (and can
+        // un-minimize itself above) — this only runs during the brief alert window.
+        if active && ctx.input(|i| i.viewport().minimized) == Some(true) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(ms));
+        }
     }
 
     /// Persist map overlay + intel-filter options when they change.
