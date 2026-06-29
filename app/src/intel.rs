@@ -809,7 +809,12 @@ fn segment_is_name(seg: &str, systems: &Systems) -> bool {
 /// is left intact.
 fn trim_paste_location_tail(seg: &str) -> String {
     const LOC_PREP: &[&str] = &["at", "in", "on", "near"];
-    let words: Vec<&str> = seg.split_whitespace().collect();
+    let mut words: Vec<&str> = seg.split_whitespace().collect();
+    // Drop a trailing decorated count ("01XcerberusX01 +3" → "01XcerberusX01"): a "+N"/"xN"/"N+"
+    // is the hostile count, parsed separately, and is never part of the pasted name.
+    while words.len() >= 2 && is_decorated_count(words[words.len() - 1]) {
+        words.pop();
+    }
     match words
         .iter()
         .enumerate()
@@ -817,8 +822,21 @@ fn trim_paste_location_tail(seg: &str) -> String {
         .map(|(i, _)| i)
     {
         Some(cut) => words[..cut].join(" "),
-        None => seg.to_string(),
+        None => words.join(" "),
     }
+}
+
+/// A decorated approximate-count token: `+3`, `x4`, `4x`, `3+` (digits plus a leading/trailing
+/// `+`/`x`). Unambiguous — unlike a bare trailing number, which can be part of a name ("Malcolm 41").
+fn is_decorated_count(w: &str) -> bool {
+    let t = w.trim();
+    let decorated = t.starts_with('+')
+        || t.starts_with(['x', 'X'])
+        || t.ends_with('+')
+        || t.ends_with(['x', 'X']);
+    decorated
+        && t.chars().any(|c| c.is_ascii_digit())
+        && t.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | 'x' | 'X'))
 }
 
 /// Match against the local cache of known (ESI-confirmed) pilot names, longest run
@@ -3187,6 +3205,20 @@ mod tests {
         assert_eq!(trim_paste_location_tail("Man in Black"), "Man in Black");
         assert_eq!(trim_paste_location_tail("Lord of War"), "Lord of War");
         assert_eq!(trim_paste_location_tail("Garen Willow at taj"), "Garen Willow");
+    }
+
+    #[test]
+    fn paste_segment_drops_trailing_count() {
+        let s = systems();
+        // "F3-8X2  01XcerberusX01 +3": the pasted name keeps its digits, the "+3" is the count,
+        // not part of the name. (Real copy: two showinfo url tags, double-spaced.)
+        let r = analyze("C-J6MT  01XcerberusX01 +3", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.pilots, vec!["01XcerberusX01".to_string()], "pilots={:?}", r.pilots);
+        assert_eq!(r.count, Some(4), "count={:?}", r.count); // the named pilot + 3 more
+        // A bare trailing number ("Malcolm 41") is ambiguous and is NOT trimmed.
+        assert_eq!(trim_paste_location_tail("Malcolm 41"), "Malcolm 41");
+        assert_eq!(trim_paste_location_tail("01XcerberusX01 +3"), "01XcerberusX01");
+        assert_eq!(trim_paste_location_tail("Drake x4"), "Drake");
     }
 
     #[test]
