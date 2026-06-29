@@ -3070,6 +3070,12 @@ impl SpaiApp {
                             .collect();
                         if !cover.is_empty() {
                             new_pilots.extend(cover);
+                        } else if p.split_whitespace().count() == 2 && !cache.is_reverified(&p) {
+                            // A two-word block whose pair ESI rejected: re-verify the pair once
+                            // (in case the negative is stale) before deciding. Keep showing it as
+                            // pending; once the negative is re-confirmed, cover splits it.
+                            cache.force_requeue(&p);
+                            new_pilots.push(p);
                         } else {
                             for w in crate::pilot::name_windows(&p) {
                                 cache.queue(&w);

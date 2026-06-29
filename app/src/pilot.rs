@@ -22,6 +22,10 @@ pub struct PilotCache {
     /// When each negative verdict was recorded, for the NEG_TTL re-check. A negative without
     /// a timestamp (test fixture / preloaded) never expires.
     neg_at: HashMap<String, std::time::Instant>,
+    /// Names whose "not a character" verdict was re-confirmed by a SECOND ESI lookup — a
+    /// stale-free negative. A two-word block is only split into its two single-word players once
+    /// its pair is in here, so a real two-word name with a transient negative isn't torn apart.
+    reverified: std::collections::HashSet<String>,
     queued: std::collections::HashSet<String>,
     queue: VecDeque<String>,
 }
@@ -50,6 +54,23 @@ impl PilotCache {
         }
     }
 
+    /// Whether a name's "not a character" verdict has been re-confirmed a second time
+    /// (a stale-free negative). Used by [`cover`] to decide it's safe to split a two-word block.
+    pub fn is_reverified(&self, name: &str) -> bool {
+        self.reverified.contains(&name.to_lowercase())
+    }
+
+    /// Re-queue a name for a FRESH ESI lookup even though it already resolved — used to confirm a
+    /// "not a character" verdict isn't stale before acting on it (splitting a two-word block).
+    pub fn force_requeue(&mut self, name: &str) {
+        let lw = name.to_lowercase();
+        if self.reverified.contains(&lw) || self.queued.contains(&lw) {
+            return; // already re-confirmed, or a re-check is already pending
+        }
+        self.queued.insert(lw);
+        self.queue.push_back(name.to_owned());
+    }
+
     /// Pre-load the known (persisted) pilot names so they're recognised at once.
     pub fn preload(&mut self, known: &HashMap<String, i64>) {
         for (lc, id) in known {
@@ -73,6 +94,7 @@ impl PilotCache {
             self.neg_at.iter().filter(|(_, t)| t.elapsed() > NEG_TTL).map(|(n, _)| n.clone()).collect();
         for n in stale {
             self.neg_at.remove(&n);
+            self.reverified.remove(&n); // re-verify from scratch after the TTL
             if matches!(self.resolved.get(&n), Some(None)) {
                 self.resolved.remove(&n); // a later positive must stick, so only forget negatives
             }
@@ -150,7 +172,18 @@ impl PilotCache {
                 j += 1; // extend a contiguous single-word run
             }
             if claims[k].1 == 1 && j == k + 1 {
-                k = j + 1; // exactly two adjacent singles — drop (keep the name whole)
+                // Exactly two adjacent singles: almost always ONE two-word name whose pair ESI
+                // hasn't confirmed — keep it whole (drop, re-queried) UNLESS the pair's negative
+                // has been re-confirmed (stale-free), in which case it's genuinely two players in a
+                // mangled block, so surface both.
+                let pair = format!("{} {}", words[claims[k].0], words[claims[k].0 + 1]).to_lowercase();
+                if self.reverified.contains(&pair) {
+                    for m in k..=j {
+                        let (s, l) = claims[m];
+                        out.push(words[s..s + l].join(" "));
+                    }
+                }
+                k = j + 1;
             } else {
                 for m in k..=j {
                     let (s, l) = claims[m];
@@ -217,15 +250,25 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                     for name in &batch {
                         // Resolved (or confirmed not-a-character) — free it from the dedup
                         // set and record the outcome.
-                        c.queued.remove(&name.to_lowercase());
-                        let id = chars.get(&name.to_lowercase()).copied();
-                        c.resolved.insert(name.to_lowercase(), id);
+                        let lw = name.to_lowercase();
+                        c.queued.remove(&lw);
+                        let id = chars.get(&lw).copied();
+                        // A name that resolves "not a character" AGAIN (it was already negative —
+                        // i.e. a forced re-check) is a stale-free negative we can act on.
+                        let was_negative = matches!(c.resolved.get(&lw), Some(None));
+                        c.resolved.insert(lw.clone(), id);
                         // Negatives are kept in-memory with a TTL (see NEG_TTL), never persisted
                         // — a persisted "not a name" verdict is what made real names vanish.
                         if id.is_none() {
-                            c.neg_at.insert(name.to_lowercase(), std::time::Instant::now());
-                        } else if let (Some(store), Some(cid)) = (&store, id) {
-                            store.add_known_pilot(name, cid);
+                            c.neg_at.insert(lw.clone(), std::time::Instant::now());
+                            if was_negative {
+                                c.reverified.insert(lw);
+                            }
+                        } else {
+                            c.reverified.remove(&lw); // it's a character after all
+                            if let (Some(store), Some(cid)) = (&store, id) {
+                                store.add_known_pilot(name, cid);
+                            }
                         }
                     }
                 } else {
@@ -425,6 +468,22 @@ mod tests {
         c3.resolved.insert("redhorn mastro falcon".into(), None);
         c3.resolved.insert("mastro falcon".into(), None);
         assert_eq!(c3.cover("Redhorn Mastro Falcon"), vec!["Redhorn Mastro", "Falcon"]);
+    }
+
+    #[test]
+    fn cover_splits_two_word_block_only_when_negative_is_reverified() {
+        let mut c = PilotCache::default();
+        c.resolved.insert("ghost".into(), Some(1));
+        c.resolved.insert("magician".into(), Some(2));
+        c.resolved.insert("ghost magician".into(), None);
+        // First "not a character" verdict (could be stale) → keep whole, don't split.
+        assert!(c.cover("Ghost Magician").is_empty());
+        // Once the negative is re-confirmed (stale-free), it's genuinely two players → split.
+        c.reverified.insert("ghost magician".into());
+        assert_eq!(
+            c.cover("Ghost Magician"),
+            vec!["Ghost".to_string(), "Magician".to_string()]
+        );
     }
 
     #[test]
