@@ -102,6 +102,51 @@ const COMMS: Key = Key { names: &["Comms"], multiline: false };
 const DOCTRINE: Key = Key { names: &["Doctrine"], multiline: true };
 const ALL_KEYS: &[&Key] = &[&FC, &FLEET, &FORMUP, &PAP, &COMMS, &DOCTRINE];
 
+/// First enabled ping rule whose filters all match `p` (FC, pap, doctrine, formup, keyword).
+/// Shared by the UI (window/badge decision) and the Jabber thread (sound/notification firing).
+pub fn match_ping_rule<'a>(
+    rules: &'a [crate::settings::PingRule],
+    p: &Ping,
+) -> Option<&'a crate::settings::PingRule> {
+    let (fc, pap, doctrine, formup_txt, all) = match p {
+        Ping::Fleet { fc, pap, doctrine, formup, description, .. } => {
+            let formup_txt = formup
+                .iter()
+                .map(|f| match f {
+                    Formup::Text(t) => t.clone(),
+                    Formup::System(_) => String::new(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let pap_s = match pap {
+                Some(PapType::Strategic) => "strategic",
+                Some(PapType::Peacetime) => "peacetime",
+                _ => "",
+            };
+            let all = format!("{fc} {} {description}", doctrine.clone().unwrap_or_default());
+            (
+                fc.to_lowercase(),
+                pap_s,
+                doctrine.clone().unwrap_or_default().to_lowercase(),
+                formup_txt.to_lowercase(),
+                all.to_lowercase(),
+            )
+        }
+        Ping::Plain { text, .. } => {
+            (String::new(), "", String::new(), String::new(), text.to_lowercase())
+        }
+    };
+    let has = |field: &str, hay: &str| field.trim().is_empty() || hay.contains(&field.to_lowercase());
+    rules.iter().find(|r| {
+        r.enabled
+            && has(&r.fc, &fc)
+            && (r.pap.trim().is_empty() || r.pap.eq_ignore_ascii_case(pap))
+            && has(&r.doctrine, &doctrine)
+            && has(&r.formup, &formup_txt)
+            && has(&r.keyword, &all)
+    })
+}
+
 /// Parse a directorbot message into zero or more pings. `resolve` maps a formup
 /// token to a solar-system id (None ⇒ keep as text).
 pub fn parse_ping(timestamp: i64, text: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Vec<Ping> {

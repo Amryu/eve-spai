@@ -108,6 +108,17 @@ pub enum Cmd {
     SetPresence { show: Presence, status: String },
 }
 
+/// Snapshot of the notification settings the UI publishes each frame, so the background client
+/// thread can fire sounds + desktop notifications itself (working while the window is minimized).
+#[derive(Clone, Default)]
+pub struct JabberNotifyCfg {
+    pub sound_enabled: bool,
+    pub ping_sound: String,
+    pub msg_sound: String,
+    pub ping_rules: Vec<crate::settings::PingRule>,
+    pub muted: std::collections::BTreeMap<String, i64>,
+}
+
 #[derive(Default)]
 pub struct JabberState {
     /// The user wants the connection up (cleared to stop the background loop).
@@ -135,6 +146,50 @@ pub struct JabberState {
     pub unread: std::collections::BTreeSet<String>,
     /// Parsed fleet pings (oldest first).
     pub pings: Vec<Ping>,
+    /// Notification settings snapshot, refreshed by the UI each frame.
+    pub notify_cfg: JabberNotifyCfg,
+}
+
+fn is_muted(muted: &std::collections::BTreeMap<String, i64>, key: &str) -> bool {
+    muted
+        .get(key)
+        .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
+}
+
+/// Fire the sound + desktop notification for a new arrival OFF the UI thread, so it works while the
+/// window is minimized. `ping` is set for a fleet-ping-feed event (else a 1:1/room message). The
+/// fleet-ping window + unread badge are still raised by the UI when it next paints.
+fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Ping>) {
+    if is_muted(&cfg.muted, key) {
+        return;
+    }
+    // (suppress, notify, sound, sound-priority). Pings outrank plain messages in the cooldown.
+    let (suppress, notify, sound, prio) = match ping {
+        Some(p) => match crate::pings::match_ping_rule(&cfg.ping_rules, p) {
+            Some(r) => (
+                r.suppress,
+                r.notify,
+                if r.sound.is_empty() { cfg.ping_sound.clone() } else { r.sound.clone() },
+                1u8,
+            ),
+            None => (false, true, cfg.ping_sound.clone(), 1u8),
+        },
+        None => (false, true, cfg.msg_sound.clone(), 0u8),
+    };
+    if suppress || !notify {
+        return;
+    }
+    if cfg.sound_enabled && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
+        crate::sound::play_prio(&sound, prio);
+    }
+    // A fleet call also raises a desktop notification with the key details.
+    if let Some(Ping::Fleet { fc, doctrine, .. }) = ping.filter(|p| p.is_fleet_call()) {
+        let body = match doctrine {
+            Some(d) => format!("FC: {fc} \u{00B7} {d}"),
+            None => format!("FC: {fc}"),
+        };
+        crate::app::notify_os("Fleet ping", &body);
+    }
 }
 
 pub type SharedJabber = Arc<Mutex<JabberState>>;
@@ -174,17 +229,28 @@ fn push_msg(
     if let Some(s) = store {
         s.add_chat(key, &msg.from, &msg.body, msg.time, msg.outgoing);
     }
-    let mut s = state.lock().unwrap();
-    let conv = s.chats.entry(key.to_owned()).or_default();
-    conv.push(msg);
-    // Bound in-memory history per conversation (full history stays in the DB).
-    let n = conv.len();
-    if n > 1000 {
-        conv.drain(0..n - 1000);
-    }
-    if mark_unread {
-        s.unread.insert(key.to_owned());
-        s.notify.push((key.to_owned(), false));
+    let fire_cfg = {
+        let mut s = state.lock().unwrap();
+        let conv = s.chats.entry(key.to_owned()).or_default();
+        conv.push(msg);
+        // Bound in-memory history per conversation (full history stays in the DB).
+        let n = conv.len();
+        if n > 1000 {
+            conv.drain(0..n - 1000);
+        }
+        if mark_unread {
+            s.unread.insert(key.to_owned());
+            s.notify.push((key.to_owned(), false));
+            Some(s.notify_cfg.clone())
+        } else {
+            None
+        }
+    };
+    // Fire the message sound off-thread (works while minimized). A directorbot fleet ping also
+    // lands here as a DM; its ping-feed event fires first at higher priority, so play_prio's
+    // cooldown keeps it from double-sounding.
+    if let Some(cfg) = fire_cfg {
+        fire_arrival_notification(&cfg, key, None);
     }
 }
 
@@ -442,15 +508,24 @@ fn handle_event(
                             }
                         }
                     }
-                    let mut s = state.lock().unwrap();
-                    s.pings.extend(parsed);
-                    let n = s.pings.len();
-                    if n > 2000 {
-                        s.pings.drain(0..n - 2000);
-                    }
-                    if !delayed {
-                        s.pings_unread = true;
-                        s.notify.push((PING_FEED_KEY.to_owned(), true));
+                    let fire = {
+                        let mut s = state.lock().unwrap();
+                        s.pings.extend(parsed);
+                        let n = s.pings.len();
+                        if n > 2000 {
+                            s.pings.drain(0..n - 2000);
+                        }
+                        if !delayed {
+                            s.pings_unread = true;
+                            s.notify.push((PING_FEED_KEY.to_owned(), true));
+                            s.pings.last().cloned().map(|p| (s.notify_cfg.clone(), p))
+                        } else {
+                            None
+                        }
+                    };
+                    // Fire the sound + desktop notification off-thread (works while minimized).
+                    if let Some((cfg, ping)) = fire {
+                        fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping));
                     }
                 }
             }

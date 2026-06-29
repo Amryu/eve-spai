@@ -1435,8 +1435,17 @@ impl SpaiApp {
     }
 
     fn poll_jabber_notify(&mut self, ctx: &egui::Context) {
-        let events: Vec<(String, bool)> =
-            { std::mem::take(&mut self.jabber.lock().unwrap().notify) };
+        // Publish the notification settings each frame so the Jabber thread can fire sounds +
+        // desktop notifications itself — that path keeps working while the window is minimized.
+        let events: Vec<(String, bool)> = {
+            let mut st = self.jabber.lock().unwrap();
+            st.notify_cfg.sound_enabled = self.settings.jabber_sound_enabled;
+            st.notify_cfg.ping_sound = self.settings.jabber_ping_sound.clone();
+            st.notify_cfg.msg_sound = self.settings.jabber_msg_sound.clone();
+            st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
+            st.notify_cfg.muted = self.settings.jabber_muted.clone();
+            std::mem::take(&mut st.notify)
+        };
         if events.is_empty() {
             return;
         }
@@ -1449,37 +1458,27 @@ impl SpaiApp {
             if self.jabber_is_muted(&key) {
                 continue;
             }
-            // Resolve the ping's matching rule → (suppress, notify, sound).
-            let (suppress, notify, snd) = if is_ping {
+            // The sound + desktop notification are fired by the Jabber thread (off the UI thread);
+            // here we only do the UI-side bits — raise the fleet-ping window and the unread
+            // attention — so still resolve whether the ping is suppressed.
+            let (suppress, notify) = if is_ping {
                 let latest = self.jabber.lock().unwrap().pings.last().cloned();
                 match latest.as_ref().and_then(|p| self.matching_ping_rule(p)) {
-                    Some(r) => (r.suppress, r.notify, r.sound.clone()),
-                    None => (false, true, self.settings.jabber_ping_sound.clone()),
+                    Some(r) => (r.suppress, r.notify),
+                    None => (false, true),
                 }
             } else {
-                (false, true, self.settings.jabber_msg_sound.clone())
+                (false, true)
             };
             if suppress {
-                continue; // no sound, badge or attention for suppressed pings
+                continue; // no badge or attention for suppressed pings
             }
             any = true;
-            if self.settings.jabber_sound_enabled && notify {
-                // Fleet pings outrank plain messages in the sound cooldown.
-                crate::sound::play_prio(&snd, if is_ping { 1 } else { 0 });
-            }
-            // Fleet pings raise a desktop notification with the key details.
             if is_ping && notify {
                 let latest = self.jabber.lock().unwrap().pings.last().cloned();
                 // Surface structured fleet pings AND malformed-but-urgent broadcasts (cap saves,
                 // form-ups) in the popup, not just FC-keyed Fleet pings.
                 if let Some(ping) = latest.filter(|p| p.is_fleet_call()) {
-                    if let crate::pings::Ping::Fleet { fc, doctrine, .. } = &ping {
-                        let body = match doctrine {
-                            Some(d) => format!("FC: {fc} \u{00B7} {d}"),
-                            None => format!("FC: {fc}"),
-                        };
-                        notify_os("Fleet ping", &body);
-                    }
                     if self.settings.fleet_ping_window {
                         // Newest first; skip a duplicate re-detection of the same ping.
                         if self.ping_window.first().map(|s| &s.ping) != Some(&ping) {
@@ -1508,40 +1507,9 @@ impl SpaiApp {
         format!("directorbot@{domain}")
     }
 
-    /// The first enabled ping-alert rule a fleet ping matches (for sound + highlight).
+    /// The first enabled ping-alert rule a fleet ping matches (for the window/highlight).
     fn matching_ping_rule(&self, p: &crate::pings::Ping) -> Option<&crate::settings::PingRule> {
-        use crate::pings::{PapType, Ping};
-        let (fc, pap, doctrine, formup_txt, all) = match p {
-            Ping::Fleet { fc, pap, doctrine, formup, description, .. } => {
-                let formup_txt = formup
-                    .iter()
-                    .map(|f| match f {
-                        crate::pings::Formup::Text(t) => t.clone(),
-                        crate::pings::Formup::System(_) => String::new(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let pap_s = match pap {
-                    Some(PapType::Strategic) => "strategic",
-                    Some(PapType::Peacetime) => "peacetime",
-                    _ => "",
-                };
-                let all = format!("{fc} {} {description}", doctrine.clone().unwrap_or_default());
-                (fc.to_lowercase(), pap_s, doctrine.clone().unwrap_or_default().to_lowercase(), formup_txt.to_lowercase(), all.to_lowercase())
-            }
-            Ping::Plain { text, .. } => {
-                (String::new(), "", String::new(), String::new(), text.to_lowercase())
-            }
-        };
-        let has = |field: &str, hay: &str| field.trim().is_empty() || hay.contains(&field.to_lowercase());
-        self.settings.jabber_ping_rules.iter().find(|r| {
-            r.enabled
-                && has(&r.fc, &fc)
-                && (r.pap.trim().is_empty() || r.pap.eq_ignore_ascii_case(pap))
-                && has(&r.doctrine, &doctrine)
-                && has(&r.formup, &formup_txt)
-                && has(&r.keyword, &all)
-        })
+        crate::pings::match_ping_rule(&self.settings.jabber_ping_rules, p)
     }
 
     /// Resolve a DM target the user typed: a bare local part gets the user's own JID
@@ -14399,7 +14367,7 @@ fn ontop_pin(ctx: &egui::Context, id: &str) {
 }
 
 /// Show a desktop notification (best-effort, off the UI thread).
-fn notify_os(summary: &str, body: &str) {
+pub(crate) fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {
         let _ = notify_rust::Notification::new().summary(&summary).body(&body).show();
