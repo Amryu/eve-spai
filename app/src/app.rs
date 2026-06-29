@@ -4164,6 +4164,8 @@ impl SpaiApp {
                         &engs,
                         crate::battle::BATTLE_WINDOW_SECS,
                         crate::battle::BATTLE_MAX_JUMPS,
+                        crate::battle::BATTLE_BREAK_SECS,
+                        &crate::battle::Overrides::default(),
                         |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
                     )
                     .into_iter()
@@ -4438,6 +4440,8 @@ impl SpaiApp {
                         sides: b.sides.clone(),
                         kills: b.kills,
                         isk: b.isk,
+                        ambiguous: b.ambiguous,
+                        suggested_splits: b.suggested_splits.clone(),
                     };
                     cands.push((kid, from_you, b.isk, light));
                     if cands.len() >= MAX_CANDIDATES {

@@ -6,12 +6,41 @@
 //! the geo graph, which already includes configured jump bridges.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// 10 minutes between linked engagements.
 pub const BATTLE_WINDOW_SECS: i64 = 600;
 /// Up to 3 jumps (gates or configured bridges) between linked engagements.
 pub const BATTLE_MAX_JUMPS: u32 = 3;
+/// A lull of this many seconds (5 min) inside one cluster hard-splits it into separate battles:
+/// activity that stops for this long and resumes is a fresh engagement, not the same fight.
+pub const BATTLE_BREAK_SECS: i64 = 300;
+/// Two segments merge as one running fight (a chase) only when their participant overlap is at
+/// least this share of the smaller roster.
+const CHASE_OVERLAP: f64 = 0.5;
+/// A chase may bridge a lull up to this long (20 min) between its two nearest kills.
+const MERGE_MAX_GAP: i64 = 1200;
+/// A chase may span up to this many jumps between any pair of its systems.
+const MERGE_MAX_JUMPS: u32 = 10;
+/// A merged chase may not span more than this long end-to-end (2 h) — beyond it, two bursts that
+/// share pilots are separate fights, not one running engagement.
+const MERGE_MAX_SPAN: i64 = 7200;
+/// A "dense core" / real burst is at least this many kills; segments smaller than this are strays.
+const DENSE_MIN: usize = 3;
+
+/// Manual clustering overrides applied before automatic grouping. Plumbed through the pipeline so
+/// later phases can let the user correct a battle's boundaries; Phase 1 always passes the default
+/// (empty) set, so the behaviour is fully automatic.
+#[derive(Default, Clone)]
+pub struct Overrides {
+    /// kill_id -> group tag: kills sharing a tag are forced into one battle and never split or
+    /// merged across tags.
+    pub tag: HashMap<i64, i64>,
+    /// kill_ids to drop entirely before clustering.
+    pub excluded: HashSet<i64>,
+    /// (kill_id, char_id) attacker entries to scrub from a kill before clustering.
+    pub scrubs: HashSet<(i64, i64)>,
+}
 
 #[allow(dead_code)] // Faction is for future faction-warfare kills
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +172,12 @@ pub struct Battle {
     pub sides: Vec<Side>,
     pub kills: usize,
     pub isk: f64,
+    /// The automatic clustering is unsure where this battle's boundaries are (e.g. a near-threshold
+    /// lull or a single bridge kill joining two bursts); `suggested_splits` then holds candidate
+    /// split times for a later phase to surface.
+    pub ambiguous: bool,
+    /// Candidate split times (unix seconds), at most 3, sorted; empty when unambiguous.
+    pub suggested_splits: Vec<i64>,
 }
 
 /// Extra info for a destroyed participant: its killmail and hull value, plus the value of a
@@ -357,11 +392,15 @@ pub fn cluster(
     engagements: &[Engagement],
     window: i64,
     max_jumps: u32,
+    break_gap: i64,
+    overrides: &Overrides,
     dist: impl Fn(i64, i64) -> Option<u32>,
 ) -> Vec<Battle> {
-    let mut battles: Vec<Battle> = group_indices(engagements, window, max_jumps, dist)
+    let (filtered, groups) =
+        partition_battles(engagements, window, max_jumps, break_gap, overrides, &dist);
+    let mut battles: Vec<Battle> = groups
         .into_iter()
-        .map(|idxs| build_battle(idxs.iter().map(|&i| engagements[i].clone()).collect()))
+        .map(|idxs| build_battle(idxs.iter().map(|&i| filtered[i].clone()).collect(), break_gap))
         .collect();
     battles.sort_by(|a, b| b.end.cmp(&a.end)); // newest first
     battles
@@ -375,21 +414,25 @@ pub fn cluster_cached(
     engagements: &[Engagement],
     window: i64,
     max_jumps: u32,
+    break_gap: i64,
+    overrides: &Overrides,
     dist: impl Fn(i64, i64) -> Option<u32>,
     cache: &mut HashMap<u64, Battle>,
 ) -> Vec<Battle> {
     use std::hash::{Hash, Hasher};
+    let (filtered, groups) =
+        partition_battles(engagements, window, max_jumps, break_gap, overrides, &dist);
     let mut next: HashMap<u64, Battle> = HashMap::new();
-    let mut battles: Vec<Battle> = group_indices(engagements, window, max_jumps, dist)
+    let mut battles: Vec<Battle> = groups
         .into_iter()
         .map(|idxs| {
-            let mut kids: Vec<i64> = idxs.iter().map(|&i| engagements[i].kill_id).collect();
+            let mut kids: Vec<i64> = idxs.iter().map(|&i| filtered[i].kill_id).collect();
             kids.sort_unstable();
             let mut h = std::collections::hash_map::DefaultHasher::new();
             kids.hash(&mut h);
             let sig = h.finish();
             let b = cache.get(&sig).cloned().unwrap_or_else(|| {
-                build_battle(idxs.iter().map(|&i| engagements[i].clone()).collect())
+                build_battle(idxs.iter().map(|&i| filtered[i].clone()).collect(), break_gap)
             });
             next.insert(sig, b.clone());
             b
@@ -400,13 +443,62 @@ pub fn cluster_cached(
     battles
 }
 
+/// The clustering pipeline: apply `overrides` (exclude kills, scrub attackers), partition the
+/// surviving engagements into battle index-groups, segment long lulls, and re-merge running chases.
+/// Returns the filtered engagements together with the final index-groups into them.
+fn partition_battles(
+    engagements: &[Engagement],
+    window: i64,
+    max_jumps: u32,
+    break_gap: i64,
+    overrides: &Overrides,
+    dist: &impl Fn(i64, i64) -> Option<u32>,
+) -> (Vec<Engagement>, Vec<Vec<usize>>) {
+    // (a) Apply overrides: drop excluded kills and scrub flagged attacker entries.
+    let filtered: Vec<Engagement> = engagements
+        .iter()
+        .filter(|e| !overrides.excluded.contains(&e.kill_id))
+        .map(|e| {
+            let mut e = e.clone();
+            if !overrides.scrubs.is_empty() {
+                let kid = e.kill_id;
+                e.attackers.retain(|a| !overrides.scrubs.contains(&(kid, a.char_id)));
+            }
+            e
+        })
+        .collect();
+
+    // (b) Proximity/participant grouping (with manual tags forcing/forbidding merges).
+    let groups = group_indices(&filtered, window, max_jumps, &overrides.tag, dist);
+
+    // (c) Tagged groups pass through whole; untagged groups are segmented at lulls.
+    let mut tagged_groups: Vec<Vec<usize>> = Vec::new();
+    let mut untagged_segments: Vec<Vec<usize>> = Vec::new();
+    for group in groups {
+        let first_tag = overrides.tag.get(&filtered[group[0]].kill_id).copied();
+        let all_tagged = first_tag.is_some()
+            && group.iter().all(|&i| overrides.tag.get(&filtered[i].kill_id).copied() == first_tag);
+        if all_tagged {
+            tagged_groups.push(group);
+        } else {
+            untagged_segments.extend(segment_indices(&filtered, group, break_gap));
+        }
+    }
+
+    // (d) Re-merge running chases over the untagged segments only; tagged groups are untouched.
+    let mut final_groups = merge_chases(&filtered, untagged_segments, dist);
+    final_groups.extend(tagged_groups);
+    (filtered, final_groups)
+}
+
 /// Partition engagement indices into battles: two engagements chain when they share a participant
 /// and are within `window` seconds and `max_jumps` jumps (transitively).
 fn group_indices(
     engagements: &[Engagement],
     window: i64,
     max_jumps: u32,
-    dist: impl Fn(i64, i64) -> Option<u32>,
+    tags: &HashMap<i64, i64>,
+    dist: &impl Fn(i64, i64) -> Option<u32>,
 ) -> Vec<Vec<usize>> {
     let n = engagements.len();
     // Belligerent ids per engagement (victim + attackers). Two engagements only chain into the
@@ -429,6 +521,28 @@ fn group_indices(
         })
         .collect();
     let mut uf = UnionFind::new(n);
+
+    // Manual tags: every kill carrying the same tag is a must-link (forced into one component,
+    // regardless of time/space), and differing tags are a cannot-link (never merged). Track each
+    // component's tag so the proximity pass below can refuse a merge that would cross tags.
+    let elem_tag: Vec<Option<i64>> = engagements.iter().map(|e| tags.get(&e.kill_id).copied()).collect();
+    let mut by_tag: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (i, t) in elem_tag.iter().enumerate() {
+        if let Some(t) = t {
+            by_tag.entry(*t).or_default().push(i);
+        }
+    }
+    for members in by_tag.values() {
+        for w in members.windows(2) {
+            uf.union(w[0], w[1]);
+        }
+    }
+    // Component root -> tag (kept current via `find` after each union).
+    let mut root_tag: HashMap<usize, i64> = HashMap::new();
+    for (t, members) in &by_tag {
+        root_tag.insert(uf.find(members[0]), *t);
+    }
+
     // Compare only engagements within `window` of each other: visit in time order and slide a
     // window forward, breaking as soon as a pair is too far apart. Engagements far apart in time
     // (the bulk of full battle history) are never compared, so this is ~O(n × kills-per-window)
@@ -442,16 +556,28 @@ fn group_indices(
             if engagements[j].time - engagements[i].time >= window {
                 break;
             }
+            let (ri, rj) = (uf.find(i), uf.find(j));
             // Shared participant is the cheap, deciding test — apply it before the (potentially
             // expensive) jump-distance BFS, and skip pairs already in the same battle.
-            if parties[i].is_disjoint(&parties[j]) || uf.find(i) == uf.find(j) {
+            if parties[i].is_disjoint(&parties[j]) || ri == rj {
                 continue;
+            }
+            // Cannot-link: two tagged components with different tags never merge.
+            if let (Some(ta), Some(tb)) = (root_tag.get(&ri).copied(), root_tag.get(&rj).copied()) {
+                if ta != tb {
+                    continue;
+                }
             }
             let (a, b) = (&engagements[i], &engagements[j]);
             let close = a.system_id == b.system_id
                 || dist(a.system_id, b.system_id).is_some_and(|d| d <= max_jumps);
             if close {
                 uf.union(i, j);
+                // The merged component inherits whichever side's tag is set.
+                let merged_tag = root_tag.get(&ri).copied().or_else(|| root_tag.get(&rj).copied());
+                if let Some(t) = merged_tag {
+                    root_tag.insert(uf.find(i), t);
+                }
             }
         }
     }
@@ -463,7 +589,7 @@ fn group_indices(
     groups.into_values().collect()
 }
 
-fn build_battle(mut engs: Vec<Engagement>) -> Battle {
+fn build_battle(mut engs: Vec<Engagement>, break_gap: i64) -> Battle {
     engs.sort_by_key(|e| e.time);
     let start = engs.first().map_or(0, |e| e.time);
     let end = engs.last().map_or(0, |e| e.time);
@@ -475,6 +601,7 @@ fn build_battle(mut engs: Vec<Engagement>) -> Battle {
         isk += e.isk;
     }
 
+    let (ambiguous, suggested_splits) = battle_ambiguity(&engs, break_gap);
     Battle {
         kills: engs.len(),
         isk,
@@ -485,8 +612,287 @@ fn build_battle(mut engs: Vec<Engagement>) -> Battle {
         sides: infer_sides(&engs),
         start,
         end,
+        ambiguous,
+        suggested_splits,
         engagements: engs,
     }
+}
+
+/// Distinct character ids on a set of engagements (victim + attackers), ignoring 0 (NPC/structure).
+fn segment_chars(engs: &[Engagement], idxs: &[usize]) -> HashSet<i64> {
+    let mut s: HashSet<i64> = HashSet::new();
+    for &i in idxs {
+        if engs[i].victim_char != 0 {
+            s.insert(engs[i].victim_char);
+        }
+        for a in &engs[i].attackers {
+            if a.char_id != 0 {
+                s.insert(a.char_id);
+            }
+        }
+    }
+    s
+}
+
+/// The earliest and latest kill time over a set of engagement indices.
+fn time_bounds(engs: &[Engagement], idxs: &[usize]) -> (i64, i64) {
+    let mut lo = i64::MAX;
+    let mut hi = i64::MIN;
+    for &i in idxs {
+        lo = lo.min(engs[i].time);
+        hi = hi.max(engs[i].time);
+    }
+    (lo, hi)
+}
+
+/// Split one cluster's engagement indices into separate battles at lulls. First a hard split at any
+/// consecutive gap `>= break_gap`; then, within a long hard segment, a density-valley refinement
+/// that separates two dense bursts joined only by a sparse string of stray kills.
+fn segment_indices(engs: &[Engagement], mut idxs: Vec<usize>, break_gap: i64) -> Vec<Vec<usize>> {
+    idxs.sort_by_key(|&i| engs[i].time);
+    // (a) Hard split at any lull >= break_gap.
+    let mut hard: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    for &i in &idxs {
+        if let Some(&last) = cur.last() {
+            if engs[i].time - engs[last].time >= break_gap {
+                hard.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.push(i);
+    }
+    if !cur.is_empty() {
+        hard.push(cur);
+    }
+    // (b) Density-valley refinement of each hard segment.
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for seg in hard {
+        refine_density(engs, seg, break_gap, &mut out);
+    }
+    out
+}
+
+/// Recursively split a hard segment where two dense cores are separated by a sparse valley.
+fn refine_density(engs: &[Engagement], seg: Vec<usize>, break_gap: i64, out: &mut Vec<Vec<usize>>) {
+    if seg.len() < 2 * DENSE_MIN {
+        out.push(seg);
+        return;
+    }
+    match valley_split(engs, &seg, break_gap) {
+        Some(k) => {
+            let mut left = seg;
+            let right = left.split_off(k);
+            refine_density(engs, left, break_gap, out);
+            refine_density(engs, right, break_gap, out);
+        }
+        None => out.push(seg),
+    }
+}
+
+/// Find a split index in a (time-sorted) segment where two dense bursts are joined only by a sparse
+/// valley of stray kills. Buckets the segment into `break_gap`-wide bins; a valley is a maximal run
+/// of low bins (`<= 1` kill) whose strays span `>= break_gap`, flanked on each side by a dense core
+/// (a contiguous run of busy bins summing `>= DENSE_MIN`). Splits at the middle of the valley so the
+/// strays attach to the nearer burst. Returns None when there is no such valley.
+fn valley_split(engs: &[Engagement], seg: &[usize], break_gap: i64) -> Option<usize> {
+    let start = engs[seg[0]].time;
+    let to_bin = |t: i64| ((t - start) / break_gap) as usize;
+    let nbins = to_bin(engs[*seg.last().unwrap()].time) + 1;
+    if nbins < 3 {
+        return None; // need core | valley | core
+    }
+    let mut counts = vec![0usize; nbins];
+    for &i in seg {
+        counts[to_bin(engs[i].time)] += 1;
+    }
+    // Scan for an interior run of low bins.
+    let mut b = 0;
+    while b < nbins {
+        if counts[b] > 1 {
+            b += 1;
+            continue;
+        }
+        let lo = b;
+        while b < nbins && counts[b] <= 1 {
+            b += 1;
+        }
+        let hi = b - 1; // low run is bins [lo, hi]
+        if lo == 0 || hi == nbins - 1 {
+            continue; // not interior — no burst on one side
+        }
+        // Dense core immediately left of the valley: walk back over busy (>= 2) bins.
+        let mut core_l = 0usize;
+        let mut p = lo;
+        while p > 0 && counts[p - 1] >= 2 {
+            p -= 1;
+            core_l += counts[p];
+        }
+        // Dense core immediately right of the valley.
+        let mut core_r = 0usize;
+        let mut q = hi + 1;
+        while q < nbins && counts[q] >= 2 {
+            core_r += counts[q];
+            q += 1;
+        }
+        if core_l < DENSE_MIN || core_r < DENSE_MIN {
+            continue;
+        }
+        // The valley's strays must actually span a lull of >= break_gap.
+        let strays: Vec<usize> = seg
+            .iter()
+            .copied()
+            .filter(|&i| (lo..=hi).contains(&to_bin(engs[i].time)))
+            .collect();
+        let (sl, sh) = time_bounds(engs, &strays);
+        if sh - sl < break_gap {
+            continue;
+        }
+        // Split at the middle bin boundary of the valley; strays before it attach left, after right.
+        let cut_bin = lo + (hi - lo + 1) / 2;
+        let k = seg.iter().position(|&i| to_bin(engs[i].time) >= cut_bin)?;
+        if k == 0 || k == seg.len() {
+            continue;
+        }
+        return Some(k);
+    }
+    None
+}
+
+/// Re-merge segments that are one running fight (a chase): the same pilots pursued across a short
+/// lull and a few jumps. Greedy single pass over segments in time order — each segment either folds
+/// into an already-accumulated segment it chases with, or starts a new one. Distinct pilots (e.g.
+/// separate skirmishes by the same alliance) never merge, since the overlap test is character-level.
+fn merge_chases(
+    engs: &[Engagement],
+    segments: Vec<Vec<usize>>,
+    dist: &impl Fn(i64, i64) -> Option<u32>,
+) -> Vec<Vec<usize>> {
+    let mut segs = segments;
+    segs.sort_by_key(|s| time_bounds(engs, s).0);
+    let mut acc: Vec<Vec<usize>> = Vec::new();
+    for seg in segs {
+        let mut merged = false;
+        for a in acc.iter_mut() {
+            if chases(engs, a, &seg, dist) {
+                a.extend(seg.iter().copied());
+                merged = true;
+                break;
+            }
+        }
+        if !merged {
+            acc.push(seg);
+        }
+    }
+    acc
+}
+
+/// Whether segment `b` continues the same fight as accumulated segment `a`: enough shared pilots,
+/// within the chase time gap and jump range, and without overrunning the span cap.
+fn chases(
+    engs: &[Engagement],
+    a: &[usize],
+    b: &[usize],
+    dist: &impl Fn(i64, i64) -> Option<u32>,
+) -> bool {
+    let ca = segment_chars(engs, a);
+    let cb = segment_chars(engs, b);
+    let shared = ca.intersection(&cb).count();
+    let min_len = ca.len().min(cb.len());
+    if shared < 3 || min_len == 0 || (shared as f64) / (min_len as f64) < CHASE_OVERLAP {
+        return false;
+    }
+    let (amin, amax) = time_bounds(engs, a);
+    let (bmin, bmax) = time_bounds(engs, b);
+    let gap = if amax < bmin {
+        bmin - amax
+    } else if bmax < amin {
+        amin - bmax
+    } else {
+        0
+    };
+    if gap >= MERGE_MAX_GAP {
+        return false;
+    }
+    if amax.max(bmax) - amin.min(bmin) > MERGE_MAX_SPAN {
+        return false;
+    }
+    let sa: HashSet<i64> = a.iter().map(|&i| engs[i].system_id).collect();
+    let sb: HashSet<i64> = b.iter().map(|&i| engs[i].system_id).collect();
+    sa.iter().any(|&x| {
+        sb.iter().any(|&y| x == y || dist(x, y).is_some_and(|d| d <= MERGE_MAX_JUMPS))
+    })
+}
+
+/// Detect whether a battle's boundaries are ambiguous, returning candidate split times (<= 3,
+/// sorted). `engs` must be time-sorted. Flags: (1) a near-threshold lull; (2) a single bridge kill
+/// joining two dense halves; (3) a finer re-segmentation that finds multiple dense sub-battles.
+fn battle_ambiguity(engs: &[Engagement], break_gap: i64) -> (bool, Vec<i64>) {
+    let n = engs.len();
+    let mut splits: Vec<i64> = Vec::new();
+
+    // (1) Largest internal lull G with 0.6*break_gap <= G < break_gap — close to a hard split.
+    if n >= 2 {
+        let mut max_gap = 0i64;
+        let mut at = 0usize;
+        for m in 1..n {
+            let g = engs[m].time - engs[m - 1].time;
+            if g > max_gap {
+                max_gap = g;
+                at = m;
+            }
+        }
+        if 0.6 * (break_gap as f64) <= max_gap as f64 && max_gap < break_gap {
+            splits.push(engs[at].time);
+        }
+    }
+
+    // (2) A single bridge kill: no participant spans strictly across it, and both sides are dense.
+    if n >= 2 * DENSE_MIN {
+        let mut first: HashMap<i64, usize> = HashMap::new();
+        let mut last: HashMap<i64, usize> = HashMap::new();
+        for (k, e) in engs.iter().enumerate() {
+            let mut ids: Vec<i64> = Vec::new();
+            if e.victim.id != 0 {
+                ids.push(e.victim.id);
+            }
+            for a in &e.attackers {
+                if a.party.id != 0 {
+                    ids.push(a.party.id);
+                }
+            }
+            for id in ids {
+                first.entry(id).or_insert(k);
+                last.insert(id, k);
+            }
+        }
+        for k in 0..n {
+            let spans = first
+                .iter()
+                .any(|(id, &f)| f < k && last.get(id).copied().unwrap_or(0) > k);
+            if !spans && k >= DENSE_MIN && n - 1 - k >= DENSE_MIN {
+                splits.push(engs[k].time);
+            }
+        }
+    }
+
+    // (3) Re-segment at half the lull: >= 2 dense sub-segments means there are interior boundaries.
+    {
+        let subs = segment_indices(engs, (0..n).collect(), break_gap / 2);
+        if subs.iter().filter(|s| s.len() >= DENSE_MIN).count() >= 2 {
+            let mut subs = subs;
+            subs.sort_by_key(|s| time_bounds(engs, s).0);
+            for w in subs.windows(2) {
+                if w[0].len() >= DENSE_MIN && w[1].len() >= DENSE_MIN {
+                    splits.push(time_bounds(engs, &w[1]).0);
+                }
+            }
+        }
+    }
+
+    splits.sort_unstable();
+    splits.dedup();
+    splits.truncate(3);
+    (!splits.is_empty(), splits)
 }
 
 
@@ -734,6 +1140,31 @@ mod tests {
         }
     }
 
+    // One kill with several attacker parties (each pilot's char_id == its party id, like atk()).
+    fn eng_multi(kill: i64, time: i64, sys: i64, victim: &str, attackers: &[&str]) -> Engagement {
+        Engagement {
+            attackers: attackers.iter().map(|n| atk(party(pid(n), n))).collect(),
+            ..eng(kill, time, sys, victim, attackers[0])
+        }
+    }
+
+    // An attacker in `alliance` flown by a specific character id (distinct from the alliance id),
+    // for staging tests where the same alliance fields different pilots across a lull.
+    fn atk_char(alliance: &str, char_id: i64) -> Attacker {
+        Attacker {
+            char_id,
+            pilot: format!("c{char_id}"),
+            party: party(pid(alliance), alliance),
+            ship: 0,
+            final_blow: false,
+        }
+    }
+
+    // A kill with an explicit attacker list.
+    fn eng_av(kill: i64, time: i64, sys: i64, victim: &str, attackers: Vec<Attacker>) -> Engagement {
+        Engagement { attackers, ..eng(kill, time, sys, victim, victim) }
+    }
+
     // Distance over a line: 1 - 2 - 3 - 4 - 5, plus a bridge 1 <-> 5.
     fn dist(a: i64, b: i64) -> Option<u32> {
         let gate = (a - b).unsigned_abs() as u32;
@@ -747,14 +1178,14 @@ mod tests {
 
     #[test]
     fn chains_within_time_and_jumps() {
-        // A@sys1 t=0, B@sys2 t=300 (1 jump, 5 min) -> same battle (chained).
+        // A@sys1 t=0, B@sys2 t=200 (1 jump, < break_gap) -> same battle (chained).
         // C@sys4 t=1000 is >10 min after both -> separate battle.
         let engs = [
             eng(1, 0, 1, "Red", "Blue"),
-            eng(2, 300, 2, "Blue", "Red"),
+            eng(2, 200, 2, "Blue", "Red"),
             eng(3, 1000, 4, "Green", "Blue"),
         ];
-        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         assert_eq!(battles.len(), 2);
         let big = battles.iter().max_by_key(|b| b.kills).unwrap();
         assert_eq!(big.kills, 2);
@@ -767,8 +1198,8 @@ mod tests {
         // belligerent with an anchored kill in the same window clusters into ONE battle, and that
         // battle counts as anchored — so the whole fight (including the unanchored kill) is kept.
         let unanchored = Engagement { anchored: false, ..eng(1, 0, 1, "Kronos", "Blue") };
-        let anchored = eng(2, 420, 1, "Rorqual", "Blue"); // 7 min later, same system, shares Blue
-        let battles = cluster(&[unanchored, anchored], BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let anchored = eng(2, 240, 1, "Rorqual", "Blue"); // 4 min later, same system, shares Blue
+        let battles = cluster(&[unanchored, anchored], BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         assert_eq!(battles.len(), 1, "should be one battle");
         assert_eq!(battles[0].kills, 2, "both kills present");
         assert!(battles[0].is_anchored(), "battle touches the anchor, so it's kept");
@@ -780,7 +1211,7 @@ mod tests {
         // belligerent with anything anchored -> its cluster is not anchored and is dropped.
         let e1 = Engagement { anchored: false, ..eng(1, 0, 2, "Red", "Blue") };
         let e2 = Engagement { anchored: false, ..eng(2, 60, 2, "Blue", "Red") };
-        let battles = cluster(&[e1, e2], BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(&[e1, e2], BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         assert_eq!(battles.len(), 1);
         assert!(!battles[0].is_anchored(), "fully out-of-area battle must be filtered out");
         // The post-cluster filter the app applies:
@@ -791,7 +1222,7 @@ mod tests {
     fn unrelated_fights_do_not_merge() {
         // Same system, same time, but disjoint belligerents — two separate battles.
         let engs = [eng(1, 0, 1, "Red", "Blue"), eng(2, 30, 1, "Green", "Yellow")];
-        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         assert_eq!(battles.len(), 2, "unrelated fights merged into one BR");
     }
 
@@ -799,7 +1230,7 @@ mod tests {
     fn shared_party_chains_across_systems() {
         // Fights in different systems sharing Blue chain into one battle.
         let engs = [eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 2, "Green", "Blue")];
-        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         assert_eq!(battles.len(), 1);
         assert_eq!(battles[0].kills, 2);
     }
@@ -811,7 +1242,7 @@ mod tests {
             eng(1, 0, 1, "Red", "Blue"),
             eng(2, 120, 5, "Blue", "Red"),
         ];
-        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         assert_eq!(battles.len(), 1);
         assert_eq!(battles[0].kills, 2);
     }
@@ -823,9 +1254,9 @@ mod tests {
             eng(2, 120, 1, "Red", "Blue"),
             eng(3, 5000, 3, "Green", "Gold"), // separate battle (far in time)
         ];
-        let plain = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let plain = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         let mut cache = std::collections::HashMap::new();
-        let first = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist, &mut cache);
+        let first = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist, &mut cache);
         // Same partition (kills + side counts) as the uncached clustering, and the cache holds
         // one entry per battle so the next pass can reuse the unchanged ones.
         let sig = |bs: &[Battle]| {
@@ -836,7 +1267,7 @@ mod tests {
         assert_eq!(sig(&first), sig(&plain));
         assert_eq!(cache.len(), plain.len());
         // A second pass over the SAME engagements yields the same result and keeps the cache stable.
-        let second = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist, &mut cache);
+        let second = cluster_cached(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist, &mut cache);
         assert_eq!(sig(&second), sig(&plain));
         assert_eq!(cache.len(), plain.len());
     }
@@ -844,10 +1275,16 @@ mod tests {
     #[test]
     fn one_sided_battle_is_discarded() {
         // Friendly fire (a party killing its own) infers to a single side — not a real fight.
-        let ff = build_battle(vec![eng(1, 0, 1, "Blue", "Blue"), eng(2, 60, 1, "Blue", "Blue")]);
+        let ff = build_battle(
+            vec![eng(1, 0, 1, "Blue", "Blue"), eng(2, 60, 1, "Blue", "Blue")],
+            BATTLE_BREAK_SECS,
+        );
         assert!(!ff.is_two_sided(), "friendly fire should be one-sided: {:?}", ff.sides.len());
         // A genuine fight has two sides.
-        let real = build_battle(vec![eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 1, "Blue", "Red")]);
+        let real = build_battle(
+            vec![eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 1, "Blue", "Red")],
+            BATTLE_BREAK_SECS,
+        );
         assert!(real.is_two_sided());
     }
 
@@ -909,7 +1346,7 @@ mod tests {
     #[test]
     fn sides_split_by_kills_and_losses() {
         let engs = [eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 1, "Red", "Blue")];
-        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         let b = &battles[0];
         assert_eq!(b.sides.len(), 2);
         let has = |s: &&Side, name: &str| s.parties.iter().any(|p| p.name == name);
@@ -924,7 +1361,7 @@ mod tests {
         // Blue + Green kill Red together -> one side {Blue, Green} vs {Red}.
         let mut e = eng(1, 0, 1, "Red", "Blue");
         e.attackers.push(atk(party(3, "Green")));
-        let battles = cluster(std::slice::from_ref(&e), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist);
+        let battles = cluster(std::slice::from_ref(&e), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist);
         let b = &battles[0];
         assert_eq!(b.sides.len(), 2);
         let allied = b.sides.iter().find(|s| s.parties.iter().any(|p| p.name == "Blue")).unwrap();
@@ -937,7 +1374,7 @@ mod tests {
         // Two pilots in different NPC corps (no alliance) each kill the same enemy once, on
         // separate mails — never shooting each other. They are one side, not two.
         let engs = [eng(1, 0, 1, "Foe", "Aay"), eng(2, 60, 1, "Foe", "Bee")];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         assert_eq!(b.sides.len(), 2);
         let aay = b.side_of(&party(pid("Aay"), "Aay")).unwrap();
         let bee = b.side_of(&party(pid("Bee"), "Bee")).unwrap();
@@ -955,7 +1392,7 @@ mod tests {
             eng(3, 20, 1, "Cee", "Bee"),
             eng(4, 30, 1, "Bee", "Aay"), // single friendly-fire kill
         ];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         let a = b.sides.iter().position(|s| s.parties.iter().any(|p| p.name == "Aay")).unwrap();
         let bee = b.sides.iter().position(|s| s.parties.iter().any(|p| p.name == "Bee")).unwrap();
         assert_eq!(a, bee, "friendly fire split the side: {:?}", b.sides);
@@ -970,7 +1407,7 @@ mod tests {
             val(2, 60, "Red", "Blue", 10.0),
             val(3, 120, "Blue", "Red", 10.0),
         ];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         let blue = b.sides.iter().find(|s| s.parties.iter().any(|p| p.name == "Blue")).unwrap();
         let red = b.sides.iter().find(|s| s.parties.iter().any(|p| p.name == "Red")).unwrap();
         // Blue: destroyed 20, lost 10 -> 66.7%. Red: destroyed 10, lost 20 -> 33.3%.
@@ -983,7 +1420,7 @@ mod tests {
         // Blue + Green kill Red on one mail.
         let mut k1 = eng(1, 0, 1, "Red", "Blue");
         k1.attackers.push(atk(party(pid("Green"), "Green")));
-        let b = &cluster(std::slice::from_ref(&k1), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(std::slice::from_ref(&k1), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         let inv = b.involvement();
         // Both helped kill Red.
         assert!(inv.killed[&pid("Blue")].contains(&pid("Red")));
@@ -1003,7 +1440,7 @@ mod tests {
         let mut k1 = loss_eng(1, 0, "Red", 24692, "Blue", 100.0);
         k1.attackers.push(atk(party(pid("Green"), "Green")));
         let engs = [k1, loss_eng(2, 5, "Red", 670, "Blue", 1.0)];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
 
         let red = b.side_of(&party(pid("Red"), "Red")).unwrap();
         let red_roster = b.roster(red);
@@ -1032,7 +1469,7 @@ mod tests {
             ..eng(kill, time, 1, victim, attacker)
         };
         let engs = [v(1, 0, "Red", 587, "Blue", 5.0), v(2, 30, "Red", 24692, "Blue", 100.0)];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         let red = b.side_of(&party(pid("Red"), "Red")).unwrap();
         let roster = b.roster(red);
         // Most valuable loss (Abaddon, 100) before the cheap one (Rifter, 5).
@@ -1044,7 +1481,7 @@ mod tests {
     #[test]
     fn matches_filters_by_system_and_pilot() {
         let engs = [eng(1, 0, 1, "Red", "Blue"), eng(2, 60, 1, "Red", "Blue")];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         assert!(b.matches(""));            // empty query matches all
         assert!(b.matches("s1"));          // system name (eng() names systems "S{id}")
         assert!(b.matches("red"));         // victim party / pilot, case-insensitive
@@ -1065,7 +1502,7 @@ mod tests {
             val(2, 30, "Blue", "Red", 100.0),
             val(3, 60, "Blue", "Blue", 40.0),
         ];
-        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(&engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         let blue = b.sides.iter().find(|s| s.parties.iter().any(|p| p.name == "Blue")).unwrap();
         assert!((blue.isk_destroyed - 100.0).abs() < 1e-6, "destroyed={}", blue.isk_destroyed);
         assert!((blue.isk_lost - 140.0).abs() < 1e-6, "lost={}", blue.isk_lost);
@@ -1093,9 +1530,125 @@ mod tests {
             isk: 1.0,
             anchored: true,
         };
-        let b = &cluster(std::slice::from_ref(&e), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, dist)[0];
+        let b = &cluster(std::slice::from_ref(&e), BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)[0];
         let imp = b.sides.iter().find(|s| s.parties.iter().any(|p| p.id == 1354830081)).unwrap();
         assert_eq!(imp.coalition.as_deref(), Some("The Imperium"));
         assert!(imp.parties.iter().any(|p| p.id == 99010079));
+    }
+
+    fn cluster_def(engs: &[Engagement]) -> Vec<Battle> {
+        cluster(engs, BATTLE_WINDOW_SECS, BATTLE_MAX_JUMPS, BATTLE_BREAK_SECS, &Overrides::default(), dist)
+    }
+
+    #[test]
+    fn auto_segment_splits_on_long_lull() {
+        // A shared-party chain across a lull longer than break_gap is two battles; a shorter lull
+        // keeps it as one.
+        let long = [eng(1, 0, 1, "Red", "Blue"), eng(2, 400, 1, "Blue", "Red")];
+        assert_eq!(cluster_def(&long).len(), 2, "a > break_gap lull should split the battle");
+
+        let short = [eng(1, 0, 1, "Red", "Blue"), eng(2, 200, 1, "Blue", "Red")];
+        assert_eq!(cluster_def(&short).len(), 1, "a < break_gap lull stays one battle");
+    }
+
+    #[test]
+    fn stray_kills_do_not_bridge_dense_segments() {
+        // Two dense bursts (3 kills each) joined only by a string of strays, each < break_gap apart
+        // (so no hard split) — the density valley separates them into two dense battles.
+        let times = [0, 30, 60, 350, 640, 930, 1220, 1250, 1280];
+        let engs: Vec<Engagement> =
+            times.iter().enumerate().map(|(i, &t)| eng(i as i64 + 1, t, 1, "Red", "Blue")).collect();
+        let battles = cluster_def(&engs);
+        assert_eq!(battles.len(), 2, "density valley should split the strays-bridged bursts");
+        assert!(battles.iter().all(|b| b.kills >= DENSE_MIN), "a split side is not dense");
+    }
+
+    #[test]
+    fn single_stray_does_not_split_a_dense_fight() {
+        // One trailing stray within break_gap of a dense fight must not split it.
+        let times = [0, 30, 60, 90, 120, 150, 400];
+        let engs: Vec<Engagement> =
+            times.iter().enumerate().map(|(i, &t)| eng(i as i64 + 1, t, 1, "Red", "Blue")).collect();
+        let battles = cluster_def(&engs);
+        assert_eq!(battles.len(), 1, "a single stray split a dense fight");
+        assert_eq!(battles[0].kills, 7);
+    }
+
+    #[test]
+    fn chase_merges_across_gap_same_pilots() {
+        // Two bursts by the SAME pilots, ~12 min apart and in range — one running fight (a chase).
+        let atks = ["P1", "P2", "P3", "P4"];
+        let engs = vec![
+            eng_multi(1, 0, 1, "VA1", &atks),
+            eng_multi(2, 30, 1, "VA2", &atks),
+            eng_multi(3, 60, 1, "VA3", &atks),
+            eng_multi(4, 780, 1, "VB1", &atks),
+            eng_multi(5, 810, 1, "VB2", &atks),
+            eng_multi(6, 840, 1, "VB3", &atks),
+        ];
+        let battles = cluster_def(&engs);
+        assert_eq!(battles.len(), 1, "same pilots across the gap should chase-merge");
+        assert_eq!(battles[0].kills, 6);
+    }
+
+    #[test]
+    fn staging_skirmishes_same_alliance_do_not_chase_merge() {
+        // Same alliance, but DIFFERENT pilots on each side of the gap (two separate skirmishes from
+        // a staging system) — char-level overlap is zero, so they must not chase-merge.
+        let a = |id| atk_char("Ally", id);
+        let engs = vec![
+            eng_av(1, 0, 1, "VA1", vec![a(1001), a(1002), a(1003)]),
+            eng_av(2, 30, 1, "VA2", vec![a(1001), a(1002), a(1003)]),
+            eng_av(3, 60, 1, "VA3", vec![a(1001), a(1002), a(1003)]),
+            eng_av(4, 780, 1, "VB1", vec![a(2001), a(2002), a(2003)]),
+            eng_av(5, 810, 1, "VB2", vec![a(2001), a(2002), a(2003)]),
+            eng_av(6, 840, 1, "VB3", vec![a(2001), a(2002), a(2003)]),
+        ];
+        let battles = cluster_def(&engs);
+        assert_eq!(battles.len(), 2, "distinct pilots of one alliance must not chase-merge");
+    }
+
+    #[test]
+    fn chase_merge_respects_span_cap() {
+        // A long run of bursts by the same pilots, each merge-gap apart: the accumulated chase stops
+        // growing once it would exceed MERGE_MAX_SPAN, leaving the final burst as its own battle.
+        let atks = ["P1", "P2", "P3"];
+        let times = [0, 1100, 2200, 3300, 4400, 5500, 6600, 7700];
+        let engs: Vec<Engagement> = times
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| eng_multi(i as i64 + 1, t, 1, &format!("V{i}"), &atks))
+            .collect();
+        let battles = cluster_def(&engs);
+        assert_eq!(battles.len(), 2, "span cap should cut the over-long chase");
+    }
+
+    #[test]
+    fn ambiguity_flags_bridge_kill() {
+        // Left burst {L} kills, a single bridge kill (L hits R), then a right burst {R} kills. No
+        // participant spans across the bridge -> it is flagged as a suggested split point.
+        let engs = vec![
+            eng(0, 0, 1, "v0", "L"),
+            eng(1, 30, 1, "v1", "L"),
+            eng(2, 60, 1, "v2", "L"),
+            eng(3, 90, 1, "R", "L"),
+            eng(4, 120, 1, "v4", "R"),
+            eng(5, 150, 1, "v5", "R"),
+            eng(6, 180, 1, "v6", "R"),
+        ];
+        let b = build_battle(engs, BATTLE_BREAK_SECS);
+        assert!(b.ambiguous, "bridge kill should make the battle ambiguous");
+        assert!(b.suggested_splits.contains(&90), "splits {:?}", b.suggested_splits);
+    }
+
+    #[test]
+    fn ambiguity_flags_near_threshold_gap() {
+        // A lull just under break_gap (240s vs 300) keeps the battle whole but flags it as ambiguous
+        // with the lull as a suggested split.
+        let engs = [eng(1, 0, 1, "Red", "Blue"), eng(2, 240, 1, "Blue", "Red")];
+        let battles = cluster_def(&engs);
+        assert_eq!(battles.len(), 1);
+        assert!(battles[0].ambiguous, "near-threshold lull should be ambiguous");
+        assert!(battles[0].suggested_splits.contains(&240));
     }
 }

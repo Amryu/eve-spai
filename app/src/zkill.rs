@@ -78,6 +78,8 @@ pub fn spawn(
                 &buffer,
                 battle::BATTLE_WINDOW_SECS,
                 battle::BATTLE_MAX_JUMPS,
+                battle::BATTLE_BREAK_SECS,
+                &battle::Overrides::default(),
                 |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
                 &mut battle_cache,
             );
@@ -214,6 +216,8 @@ pub fn spawn(
                     &buffer,
                     battle::BATTLE_WINDOW_SECS,
                     battle::BATTLE_MAX_JUMPS,
+                    battle::BATTLE_BREAK_SECS,
+                    &battle::Overrides::default(),
                     |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
                     &mut battle_cache,
                 );
