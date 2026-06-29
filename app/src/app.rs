@@ -738,8 +738,11 @@ pub struct SpaiApp {
     fit_view: Option<(i64, FitMode)>,
     /// A specific clicked killmail to show in the fit window (takes precedence over fit_view).
     fit_loss: Option<crate::lookup::Loss>,
-    /// A fleet ping to show in a foreground window (None = closed).
-    ping_window: Option<crate::pings::Ping>,
+    /// Fleet pings shown in the foreground window, newest first (empty = closed). Each carries
+    /// when it was added so a freshly-arrived ping can blink faintly for its first few seconds.
+    ping_window: Vec<PingShown>,
+    /// Set when a ping is added so the window foregrounds itself once (on open or a new ping).
+    ping_window_raise: bool,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
     /// Character → corp/alliance cache for pilot badges + the lookup window.
@@ -1139,7 +1142,8 @@ impl SpaiApp {
             pilot_tab: PilotTab::default(),
             fit_view: None,
             fit_loss: None,
-            ping_window: None,
+            ping_window: Vec::new(),
+            ping_window_raise: false,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -1608,7 +1612,12 @@ impl SpaiApp {
                         notify_os("Fleet ping", &body);
                     }
                     if self.settings.fleet_ping_window {
-                        self.ping_window = Some(ping);
+                        // Newest first; skip a duplicate re-detection of the same ping.
+                        if self.ping_window.first().map(|s| &s.ping) != Some(&ping) {
+                            self.ping_window
+                                .insert(0, PingShown { ping, shown_at: std::time::Instant::now() });
+                            self.ping_window_raise = true;
+                        }
                     }
                 }
             }
@@ -5447,13 +5456,17 @@ impl SpaiApp {
     /// A foreground window (grabs focus on open) showing a fleet ping with its links.
     #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
     fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
-        let Some(ping) = self.ping_window.clone() else {
+        if self.ping_window.is_empty() {
             return;
-        };
+        }
         let systems = self.systems.clone();
         let doctrine_url = self.settings.doctrine_url.clone();
         let op_links = self.settings.op_channel_links.clone();
-        let mut dismiss = false;
+        let pings = self.ping_window.clone();
+        // Raise/focus once when the window opens or a new ping arrives (instead of always-on-top).
+        let raise = std::mem::take(&mut self.ping_window_raise);
+        // Any ping still in its first 3 s blinks faintly; keep repainting while it does.
+        let blinking = pings.iter().any(|s| s.shown_at.elapsed().as_secs_f32() < 3.0);
         let mut keep = true;
         const WIDTH: f32 = 520.0;
         ctx.show_viewport_immediate(
@@ -5463,35 +5476,46 @@ impl SpaiApp {
                 .with_title("EVE Spai \u{2014} Fleet ping")
                 .with_inner_size([WIDTH, 320.0])
                 .with_min_inner_size([260.0, 100.0])
-                // Resizable so the user can set the width (content reflows) and the height-fit
-                // below is honoured (a fixed-size window ignores InnerSize on some platforms).
-                .with_resizable(true)
-                .with_always_on_top(),
+                .with_resizable(true),
             |vctx, _class| {
-                let inner = egui::CentralPanel::default().show(vctx, |ui| {
-                    render_ping(ui, &ping, &systems, true, &doctrine_url, &op_links);
-                    ui.add_space(8.0);
-                    if ui.button("Dismiss").clicked() {
-                        dismiss = true;
-                    }
-                    // Content height (inside the panel margin) to size the window to.
-                    ui.min_rect().height()
-                });
-                // Fit the height to the (wrapped) content at the user's current width — so there
-                // is no empty space, while the width stays whatever the user resized it to.
-                let target = (inner.inner + 20.0).clamp(100.0, 720.0);
-                let cur_w = vctx.content_rect().width();
-                if (vctx.content_rect().height() - target).abs() > 4.0 {
-                    vctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur_w, target)));
+                if raise {
+                    vctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
-                ontop_pin(vctx, "fleet_ping_window");
+                egui::CentralPanel::default().show(vctx, |ui| {
+                    // Multiple pings: newest first, scrollable. The window close button dismisses
+                    // the whole window (no Dismiss button).
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for (i, s) in pings.iter().enumerate() {
+                            if i > 0 {
+                                ui.separator();
+                            }
+                            let resp = ui
+                                .scope(|ui| {
+                                    render_ping(ui, &s.ping, &systems, true, &doctrine_url, &op_links);
+                                })
+                                .response;
+                            // Faint blink for the first 3 s after a ping is shown.
+                            let t = s.shown_at.elapsed().as_secs_f32();
+                            if t < 3.0 {
+                                let pulse = (t * std::f32::consts::PI * 3.0).sin() * 0.5 + 0.5;
+                                let alpha = (pulse * 26.0) as u8; // faint (max ~10%)
+                                let tint =
+                                    egui::Color32::from_rgba_unmultiplied(0xff, 0xd1, 0x66, alpha);
+                                ui.painter().rect_filled(resp.rect, 4.0, tint);
+                            }
+                        }
+                    });
+                });
+                if blinking {
+                    vctx.request_repaint();
+                }
                 if vctx.input(|i| i.viewport().close_requested()) {
                     keep = false;
                 }
             },
         );
-        if dismiss || !keep {
-            self.ping_window = None;
+        if !keep {
+            self.ping_window.clear();
         }
     }
 
@@ -13684,6 +13708,13 @@ fn ship_row(
         .response;
     ui.add_space(3.0);
     resp
+}
+
+/// A fleet ping shown in the foreground window, with when it was added (for the new-ping blink).
+#[derive(Clone)]
+struct PingShown {
+    ping: crate::pings::Ping,
+    shown_at: std::time::Instant,
 }
 
 /// How the battle-detail roster is ordered (user-selectable).
