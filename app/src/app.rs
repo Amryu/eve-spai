@@ -12714,6 +12714,16 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Keep processing while minimized. eframe only repaints a minimized window when a repaint
+        // is explicitly requested, and clamps that to 10 fps (to avoid a known 100%-CPU bug on
+        // minimised macOS/Windows windows). Without a heartbeat the loop just Waits, so time-driven
+        // work — alert countdowns, pilot re-resolution, the alert window — stalls between
+        // background events. Re-requesting here keeps update() ticking (capped at ~10 fps by
+        // eframe, so it's cheap) so intel and alerts keep flowing while the game is foregrounded.
+        if ctx.input(|i| i.viewport().minimized) == Some(true) {
+            ctx.request_repaint();
+        }
+
         // Publish the active character's system for the worker's jumps-from-me rules.
         self.player_sys_shared
             .store(self.player_system().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
