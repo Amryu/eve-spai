@@ -121,6 +121,24 @@ pub struct IntelLink {
     pub kill_id: Option<i64>,
 }
 
+/// Blank every pasted http(s) URL token (replace its characters with spaces, preserving spacing so
+/// double-space paste delimiters survive) so the parser never reads a link's host/path/hash
+/// fragments as pilots, ships, or systems. Links are captured by [`extract_links`] beforehand.
+fn strip_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for tok in text.split_inclusive(char::is_whitespace) {
+        let word = tok.trim_end_matches(char::is_whitespace);
+        let bare = word.trim_start_matches(|c: char| "<>()[]\"'".contains(c));
+        if bare.starts_with("http://") || bare.starts_with("https://") {
+            out.extend(word.chars().map(|_| ' '));
+            out.push_str(&tok[word.len()..]); // keep the trailing whitespace
+        } else {
+            out.push_str(tok);
+        }
+    }
+    out
+}
+
 /// Find pasted killmail / battle-report / dscan URLs in a message.
 pub fn extract_links(text: &str) -> Vec<IntelLink> {
     let mut out = Vec::new();
@@ -1552,10 +1570,16 @@ pub fn analyze_ctx(
     let cleaned = preprocess_intel(text);
     let text = cleaned.as_str();
     let display_text = text.trim().to_owned();
+    // Capture pasted links (dscan / zKill / battle report) BEFORE stripping — `display_text` keeps
+    // the original so the card can still show/click them.
+    let links = extract_links(text);
+    // A consumed URL must not be considered for any other parsing: blank every http(s) token out of
+    // the text the parser sees, so its host/path/hash fragments aren't read as pilots/ships/systems.
+    let stripped = strip_urls(text);
+    let text = stripped.as_str();
     let lower = text.to_lowercase();
     let tokens: Vec<&str> = tokenize(text);
     let lower_tokens: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
-    let links = extract_links(text);
 
     // Candidate pilot names first: their tokens must not be parsed as ships or
     // systems (player names often contain hull/system names, e.g. "Sabre Pilot" or
@@ -3132,6 +3156,22 @@ mod tests {
             "systems={:?}",
             r.systems
         );
+    }
+
+    #[test]
+    fn pasted_urls_are_not_parsed_as_pilots() {
+        let s = systems();
+        // A dscan link + system: the URL is captured as a link, never read as a pilot, and the
+        // system still resolves.
+        let r = analyze("https://dscan.info/v/a626d009ffc3  Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.is_empty(), "url leaked as pilots: {:?}", r.pilots);
+        assert_eq!(r.links.len(), 1, "dscan link should be captured");
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"));
+        // A URL mid-sentence: its host/path fragments ("example", "Foo-Bar") are not pilots, but a
+        // real adjacent name survives.
+        let r2 = analyze("Bob https://example.com/Foo-Bar in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r2.pilots.iter().any(|p| p.to_lowercase().contains("foo") || p.contains("example") || p.contains("http")), "url fragments leaked: {:?}", r2.pilots);
+        assert!(r2.pilots.iter().any(|p| p == "Bob"), "real name dropped: {:?}", r2.pilots);
     }
 
     #[test]
