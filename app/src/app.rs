@@ -6956,6 +6956,14 @@ impl SpaiApp {
                 continue; // off-screen system — skip its dot, rings and label
             }
             painter.circle_filled(p, dot, security_color(s.security));
+            // Bookmarked systems: a teal outline on the dot itself (not a separate ring, same size).
+            if self.settings.bookmarks.contains(&s.id) {
+                painter.circle_stroke(
+                    p,
+                    dot,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0x4D, 0xB6, 0xAC)),
+                );
+            }
             if let Some((sev, received)) = intel_map.get(&s.id) {
                 let base = severity_color(*sev);
                 let fresh = now_ts - received < 15;
@@ -10191,6 +10199,24 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
                 ui.heading(&info.name);
+                // Bookmark toggle: a teal outline appears on this system's dot on the map.
+                let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
+                let marked = self.settings.bookmarks.contains(&id);
+                let icon = egui::RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
+                    .size(18.0)
+                    .color(if marked { teal } else { ui.visuals().weak_text_color() });
+                if ui
+                    .add(egui::Button::new(icon).frame(false))
+                    .on_hover_text(if marked { "Remove bookmark" } else { "Bookmark this system" })
+                    .clicked()
+                {
+                    if marked {
+                        self.settings.bookmarks.retain(|&b| b != id);
+                    } else {
+                        self.settings.bookmarks.push(id);
+                    }
+                    self.needs_save = true;
+                }
                 // Docked: a screen-anchored Area floats at the main window's corner, not the
                 // panel's, so render the sov logo + ADM inline on the right of the name row.
                 if docked {
