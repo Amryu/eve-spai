@@ -798,6 +798,24 @@ fn segment_is_name(seg: &str, systems: &Systems) -> bool {
         })
 }
 
+/// Trim a trailing location phrase typed after a pasted name in one double-space segment
+/// ("Garen Willow at taj" → "Garen Willow"). Only a locational preposition that FOLLOWS a >= 2-word
+/// name starts the prose, so a 1-word-prefix name that legitimately contains one ("Man in Black")
+/// is left intact.
+fn trim_paste_location_tail(seg: &str) -> String {
+    const LOC_PREP: &[&str] = &["at", "in", "on", "near"];
+    let words: Vec<&str> = seg.split_whitespace().collect();
+    match words
+        .iter()
+        .enumerate()
+        .find(|(i, w)| *i >= 2 && LOC_PREP.contains(&w.to_lowercase().as_str()))
+        .map(|(i, _)| i)
+    {
+        Some(cut) => words[..cut].join(" "),
+        None => seg.to_string(),
+    }
+}
+
 /// Match against the local cache of known (ESI-confirmed) pilot names, longest run
 /// first so a shorter name that's a subset of a longer one ("Hold" inside "Hold Me
 /// Balls") never short-circuits the longer match.
@@ -1832,8 +1850,11 @@ pub fn analyze_ctx(
                     || seg_padded.iter().any(|s| s.contains(&format!(" {} ", p.to_lowercase())))
             });
             for seg in names {
-                if !pilots.iter().any(|p| p.eq_ignore_ascii_case(seg)) {
-                    pilots.push(seg.to_string());
+                // A paste segment may carry a typed location tail ("Garen Willow at taj"); surface
+                // just the pasted name.
+                let name = trim_paste_location_tail(seg);
+                if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
+                    pilots.push(name);
                 }
             }
         }
@@ -3165,6 +3186,20 @@ mod tests {
             "systems={:?}",
             r.systems
         );
+    }
+
+    #[test]
+    fn paste_segment_drops_typed_location_tail() {
+        let s = systems();
+        // A double-space paste of "C-J6MT  Garen Willow" with a typed " at <loc>" tail: surface the
+        // pasted name, not "Garen Willow at taj".
+        let r = analyze("C-J6MT  Garen Willow at taj", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.pilots, vec!["Garen Willow".to_string()], "pilots={:?}", r.pilots);
+        assert!(r.systems.iter().any(|d| d.name == "C-J6MT"));
+        // A 1-word-prefix name that legitimately contains a preposition is NOT truncated.
+        assert_eq!(trim_paste_location_tail("Man in Black"), "Man in Black");
+        assert_eq!(trim_paste_location_tail("Lord of War"), "Lord of War");
+        assert_eq!(trim_paste_location_tail("Garen Willow at taj"), "Garen Willow");
     }
 
     #[test]
