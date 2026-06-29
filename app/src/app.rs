@@ -373,6 +373,25 @@ pub struct SpaiApp {
     /// invalidate the candidate/detail caches.
     battle_overrides_gen: u64,
     battle_overrides_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Kill ids the editor asked to add (zKill link / recent-kills browser); the worker fetches +
+    /// buffers them so the next cluster groups them by the tag the edit already recorded.
+    battle_add_queue: std::sync::Arc<std::sync::Mutex<Vec<i64>>>,
+    /// Cached excluded-kill / scrubbed-pilot counts (refreshed on edit, not per frame).
+    battle_excluded_count: usize,
+    battle_scrub_count: usize,
+    /// Battle editor: in the detail view this is the per-kill split/exclude editor; in the list
+    /// view it's merge mode (a checkbox per battle card).
+    battle_edit_mode: bool,
+    /// Editor: kill_ids selected in the per-kill list (the half to split off).
+    battle_kill_sel: std::collections::HashSet<i64>,
+    /// List merge mode: representative kill-ids of the battles ticked for merging.
+    battle_merge_sel: std::collections::HashSet<i64>,
+    /// "Add kill" panel open, and its zKill-link input.
+    battle_add_open: bool,
+    battle_add_link: String,
+    /// Review panels: excluded kills and scrubbed pilots.
+    battle_excluded_open: bool,
+    battle_scrubs_open: bool,
     /// All overview battles matching everything EXCEPT the ISK threshold — (open kill id,
     /// jumps-from-you, cumulative ISK, light battle). This holds the expensive work (the custom
     /// battle-filter match + per-battle distance search), rebuilt only when the underlying battles
@@ -958,6 +977,16 @@ impl SpaiApp {
             battle_break_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(crate::battle::BATTLE_BREAK_SECS)),
             battle_overrides_gen: 0,
             battle_overrides_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            battle_add_queue: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            battle_excluded_count: 0,
+            battle_scrub_count: 0,
+            battle_edit_mode: false,
+            battle_kill_sel: std::collections::HashSet::new(),
+            battle_merge_sel: std::collections::HashSet::new(),
+            battle_add_open: false,
+            battle_add_link: String::new(),
+            battle_excluded_open: false,
+            battle_scrubs_open: false,
             battle_candidates: Vec::new(),
             battle_candidates_sig: 0,
             battle_cards: Vec::new(),
@@ -3096,6 +3125,8 @@ impl SpaiApp {
         self.ship_sizes = std::sync::Arc::new(store.ship_sizes());
         *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
         *self.battle_overrides.lock().unwrap() = store.load_battle_overrides();
+        self.battle_excluded_count = store.count_excluded();
+        self.battle_scrub_count = store.count_scrubs();
         self.battle_break_shared
             .store(self.settings.battle_break_secs, std::sync::atomic::Ordering::Relaxed);
         self.work_throttle_shared
@@ -3115,6 +3146,7 @@ impl SpaiApp {
             self.battle_break_shared.clone(),
             self.battle_overrides.clone(),
             self.battle_overrides_gen_shared.clone(),
+            self.battle_add_queue.clone(),
             ctx.clone(),
         );
 
@@ -4207,13 +4239,14 @@ impl SpaiApp {
     /// clear, using `Store::next_battle_tag` etc.), then republish the override map to the worker
     /// and bump the generation so the live + history clusters and the candidate/detail caches all
     /// refresh. Persisted, so the edit survives the constant re-clustering and a restart.
-    #[allow(dead_code)] // used by the battle-editor UI (next phase)
     fn apply_battle_edit(&mut self, ctx: &egui::Context, f: impl FnOnce(&crate::store::Store)) {
         {
             let Some(store) = &self.store else { return };
             f(store);
             let fresh = store.load_battle_overrides();
             *self.battle_overrides.lock().unwrap() = fresh;
+            self.battle_excluded_count = store.count_excluded();
+            self.battle_scrub_count = store.count_scrubs();
         }
         self.battle_overrides_gen = self.battle_overrides_gen.wrapping_add(1);
         self.battle_overrides_gen_shared
@@ -4223,6 +4256,492 @@ impl SpaiApp {
         // re-run it explicitly when it's the active source.
         if self.show_history {
             self.load_battle_history(ctx);
+        }
+    }
+
+    /// The battle-editor body (shown in place of the side columns when Edit is on): a suggested-split
+    /// strip, a split preview when kills are selected, the time-sorted per-kill list (select / open /
+    /// remove), and a pilots sub-panel (purge a pilot from this battle).
+    fn battle_edit_view(&mut self, ui: &mut egui::Ui, now: i64) {
+        use egui_phosphor::regular as icon;
+        let ctx = ui.ctx().clone();
+        // Snapshot the open battle's engagements (a cheap clone, edit-mode only) so the rest of the
+        // method has full &mut self without holding the detail-cache borrow.
+        let mut engs: Vec<crate::battle::Engagement> = self
+            .battle_detail_cache
+            .as_ref()
+            .map(|c| c.battle.engagements.clone())
+            .unwrap_or_default();
+        engs.sort_by_key(|e| e.time);
+        let splits = self
+            .battle_detail_cache
+            .as_ref()
+            .map(|c| c.battle.suggested_splits.clone())
+            .unwrap_or_default();
+        if engs.is_empty() {
+            ui.label(egui::RichText::new("No kills to edit.").weak());
+            return;
+        }
+        // Resolve victim-hull names (async) and snapshot what's resolved this frame.
+        let ship_ids: Vec<i64> = engs.iter().map(|e| e.victim_ship).filter(|&i| i != 0).collect();
+        self.ensure_type_names(&ship_ids, &ctx);
+        let names: std::collections::HashMap<i64, String> = {
+            let g = self.type_names.lock().unwrap();
+            ship_ids
+                .iter()
+                .map(|&id| (id, g.get(&id).cloned().unwrap_or_else(|| format!("Type {id}"))))
+                .collect()
+        };
+        let name_of = |id: i64| -> String {
+            if id == 0 {
+                return "?".to_owned();
+            }
+            crate::intel::structure_name_by_type(id)
+                .map(|s| s.to_owned())
+                .or_else(|| names.get(&id).cloned())
+                .unwrap_or_else(|| format!("Type {id}"))
+        };
+        let break_gap = self.settings.battle_break_secs;
+
+        // Deferred actions (applied after the UI borrows end).
+        let mut do_exclude: Option<i64> = None;
+        let mut open_sys: Option<i64> = None;
+        let mut purge_pilot: Option<i64> = None;
+        let mut do_split = false;
+
+        // --- Suggested-splits strip ---
+        if !splits.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Suggested splits:").strong());
+                for &boundary in &splits {
+                    let before = engs.iter().filter(|e| e.time < boundary).count();
+                    let after = engs.len() - before;
+                    let hhmm = chrono::DateTime::from_timestamp(boundary, 0)
+                        .map(|t| t.format("%H:%M").to_string())
+                        .unwrap_or_default();
+                    if ui
+                        .button(format!("{} Split at {hhmm} ({before}k before / {after}k after)", icon::SCISSORS))
+                        .on_hover_text("Select every kill from this time onward")
+                        .clicked()
+                    {
+                        self.battle_kill_sel =
+                            engs.iter().filter(|e| e.time >= boundary).map(|e| e.kill_id).collect();
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+
+        // --- Split preview (when a selection exists) ---
+        let sel_ids = self.battle_kill_sel.clone();
+        if !sel_ids.is_empty() {
+            let sel: Vec<crate::battle::Engagement> =
+                engs.iter().filter(|e| sel_ids.contains(&e.kill_id)).cloned().collect();
+            let rest: Vec<crate::battle::Engagement> =
+                engs.iter().filter(|e| !sel_ids.contains(&e.kill_id)).cloned().collect();
+            let rest_empty = rest.is_empty();
+            let pa = crate::battle::preview_battle(sel, break_gap);
+            let pb = crate::battle::preview_battle(rest, break_gap);
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(format!("Split preview — {} kills selected", sel_ids.len())).strong(),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    battle_preview_summary(ui, "Split off", &pa);
+                    ui.separator();
+                    battle_preview_summary(ui, "Remaining", &pb);
+                });
+                ui.horizontal(|ui| {
+                    if rest_empty {
+                        ui.label(
+                            egui::RichText::new("Leave at least one kill behind.")
+                                .color(crate::theme::standing::WARNING),
+                        );
+                    } else if ui
+                        .button(format!("{} Split off {} kills", icon::SCISSORS, sel_ids.len()))
+                        .on_hover_text("Tag both halves so they cluster as two separate battles")
+                        .clicked()
+                    {
+                        do_split = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.battle_kill_sel.clear();
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        }
+
+        // --- Per-kill list ---
+        let avail_h = (ui.available_height() - 8.0).max(160.0);
+        egui::ScrollArea::vertical().id_salt("battle_edit_kills").max_height(avail_h).show(ui, |ui| {
+            for e in &engs {
+                let mut sel = self.battle_kill_sel.contains(&e.kill_id);
+                egui::Frame::new()
+                    .fill(if sel {
+                        crate::theme::standing::WARNING.gamma_multiply(0.12)
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    })
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .corner_radius(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut sel, "").changed() {
+                                if sel {
+                                    self.battle_kill_sel.insert(e.kill_id);
+                                } else {
+                                    self.battle_kill_sel.remove(&e.kill_id);
+                                }
+                            }
+                            ui.label(
+                                egui::RichText::new(format!("{:>7}", fmt_age(now - e.time))).monospace().weak(),
+                            );
+                            hull_badge(ui, e.victim_ship, 22.0);
+                            ui.label(egui::RichText::new(name_of(e.victim_ship)).strong());
+                            ui.label(&e.victim_pilot);
+                            if ui
+                                .link(egui::RichText::new(&e.system_name).weak())
+                                .on_hover_text("Open system info")
+                                .clicked()
+                            {
+                                open_sys = Some(e.system_id);
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .button(egui_phosphor::regular::TRASH)
+                                    .on_hover_text("Remove this kill from battle reports")
+                                    .clicked()
+                                {
+                                    do_exclude = Some(e.kill_id);
+                                }
+                                ui.label(egui::RichText::new(fmt_isk(e.isk)).weak());
+                            });
+                        });
+                    });
+                ui.add_space(2.0);
+            }
+
+            // --- Pilots sub-panel: purge a pilot from this battle ---
+            ui.add_space(6.0);
+            egui::CollapsingHeader::new(
+                egui::RichText::new(format!("{} Pilots", egui_phosphor::regular::USERS)).strong(),
+            )
+            .id_salt("battle_edit_pilots")
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Purge removes a pilot from this battle: their losses are excluded and their \
+                         attacker entries scrubbed.",
+                    )
+                    .weak(),
+                );
+                let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+                let mut pilots: Vec<(i64, String)> = Vec::new();
+                for e in &engs {
+                    if e.victim_char != 0 && seen.insert(e.victim_char) {
+                        pilots.push((e.victim_char, e.victim_pilot.clone()));
+                    }
+                    for a in &e.attackers {
+                        if a.char_id != 0 && seen.insert(a.char_id) {
+                            pilots.push((a.char_id, a.pilot.clone()));
+                        }
+                    }
+                }
+                pilots.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                for (char_id, pilot) in &pilots {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(pilot).strong());
+                        if ui
+                            .button(format!("{} Remove pilot", egui_phosphor::regular::USER_MINUS))
+                            .on_hover_text("Exclude their losses and scrub their attacker entries here")
+                            .clicked()
+                        {
+                            purge_pilot = Some(*char_id);
+                        }
+                    });
+                }
+                if pilots.is_empty() {
+                    ui.label(egui::RichText::new("No identified pilots.").weak());
+                }
+            });
+        });
+
+        // --- Apply deferred actions ---
+        if let Some(sid) = open_sys {
+            self.open_system(sid);
+        }
+        if let Some(kid) = do_exclude {
+            self.apply_battle_edit(&ctx, |s| s.set_battle_excluded(kid, true));
+        }
+        if let Some(p) = purge_pilot {
+            let engs2 = engs.clone();
+            self.apply_battle_edit(&ctx, move |s| {
+                for e in &engs2 {
+                    if e.victim_char == p {
+                        s.set_battle_excluded(e.kill_id, true);
+                    } else if e.attackers.iter().any(|a| a.char_id == p) {
+                        s.set_scrub(e.kill_id, p, true);
+                    }
+                }
+            });
+        }
+        if do_split {
+            let selected: Vec<i64> =
+                engs.iter().map(|e| e.kill_id).filter(|k| sel_ids.contains(k)).collect();
+            let rest_ids: Vec<i64> =
+                engs.iter().map(|e| e.kill_id).filter(|k| !sel_ids.contains(k)).collect();
+            self.apply_battle_edit(&ctx, move |s| {
+                let ta = s.next_battle_tag();
+                for kid in &selected {
+                    s.set_battle_tag(*kid, Some(ta));
+                }
+                let tb = ta + 1;
+                for kid in &rest_ids {
+                    s.set_battle_tag(*kid, Some(tb));
+                }
+            });
+            // Drop back to the list so the re-cluster surfaces both halves.
+            self.battle_kill_sel.clear();
+            self.battle_edit_mode = false;
+            self.battle_selected = None;
+            self.battle_detail_cache = None;
+        }
+    }
+
+    /// The floating review panels: excluded kills, scrubbed pilots, and the add-kill browser.
+    fn battle_review_panels(&mut self, ctx: &egui::Context) {
+        use egui_phosphor::regular as icon;
+        let now = chrono::Utc::now().timestamp();
+
+        // --- Excluded kills ---
+        if self.battle_excluded_open {
+            let list = self.store.as_ref().map(|s| s.list_excluded_engagements()).unwrap_or_default();
+            let ids: Vec<i64> = list.iter().map(|e| e.victim_ship).filter(|&i| i != 0).collect();
+            self.ensure_type_names(&ids, ctx);
+            let names: std::collections::HashMap<i64, String> = {
+                let g = self.type_names.lock().unwrap();
+                ids.iter()
+                    .map(|&id| (id, g.get(&id).cloned().unwrap_or_else(|| format!("Type {id}"))))
+                    .collect()
+            };
+            let hull = |id: i64| -> String {
+                crate::intel::structure_name_by_type(id)
+                    .map(|s| s.to_owned())
+                    .or_else(|| names.get(&id).cloned())
+                    .unwrap_or_else(|| "?".to_owned())
+            };
+            let mut open = true;
+            let mut restore: Option<i64> = None;
+            egui::Window::new(format!("{} Excluded kills", icon::TRASH))
+                .open(&mut open)
+                .resizable(true)
+                .default_width(460.0)
+                .show(ctx, |ui| {
+                    if list.is_empty() {
+                        ui.label(egui::RichText::new("No excluded kills.").weak());
+                    }
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for e in &list {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{:>7}", fmt_age(now - e.time)))
+                                        .monospace()
+                                        .weak(),
+                                );
+                                hull_badge(ui, e.victim_ship, 20.0);
+                                ui.label(egui::RichText::new(hull(e.victim_ship)).strong());
+                                ui.label(&e.victim_pilot);
+                                ui.label(egui::RichText::new(&e.system_name).weak());
+                                ui.label(egui::RichText::new(fmt_isk(e.isk)).weak());
+                                if ui
+                                    .button(format!("{} Restore", icon::ARROW_COUNTER_CLOCKWISE))
+                                    .clicked()
+                                {
+                                    restore = Some(e.kill_id);
+                                }
+                            });
+                        }
+                    });
+                });
+            self.battle_excluded_open = open;
+            if let Some(kid) = restore {
+                self.apply_battle_edit(ctx, |s| s.set_battle_excluded(kid, false));
+            }
+        }
+
+        // --- Scrubbed pilots ---
+        if self.battle_scrubs_open {
+            let list = self.store.as_ref().map(|s| s.list_scrubs()).unwrap_or_default();
+            let mut open = true;
+            let mut restore: Option<(i64, i64)> = None;
+            egui::Window::new(format!("{} Scrubbed pilots", icon::BROOM))
+                .open(&mut open)
+                .resizable(true)
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    if list.is_empty() {
+                        ui.label(egui::RichText::new("No scrubbed pilots.").weak());
+                    }
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for (kill_id, char_id) in &list {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("kill {kill_id}")).monospace().weak());
+                                ui.label(format!("char {char_id}"));
+                                if ui
+                                    .button(format!("{} Restore", icon::ARROW_COUNTER_CLOCKWISE))
+                                    .clicked()
+                                {
+                                    restore = Some((*kill_id, *char_id));
+                                }
+                            });
+                        }
+                    });
+                });
+            self.battle_scrubs_open = open;
+            if let Some((kill_id, char_id)) = restore {
+                self.apply_battle_edit(ctx, |s| s.set_scrub(kill_id, char_id, false));
+            }
+        }
+
+        // --- Add kill ---
+        if self.battle_add_open {
+            // The target battle is the open one; its current kills (to tag the whole group) and any
+            // existing group tag.
+            let target_kids: Vec<i64> = self
+                .battle_detail_cache
+                .as_ref()
+                .map(|c| c.battle.engagements.iter().map(|e| e.kill_id).collect())
+                .unwrap_or_default();
+            let existing_tag = {
+                let o = self.battle_overrides.lock().unwrap();
+                target_kids.iter().find_map(|k| o.tag.get(k).copied())
+            };
+            // Every kill id already in a known battle (live + history), for the "in a BR" badge.
+            let known: std::collections::HashSet<i64> = {
+                let mut s = std::collections::HashSet::new();
+                for src in [&self.battles, &self.battle_history] {
+                    for b in src.lock().unwrap().iter() {
+                        for e in &b.engagements {
+                            s.insert(e.kill_id);
+                        }
+                    }
+                }
+                s
+            };
+            let mut rows = self.store.as_ref().map(|s| s.load_kill_intel(now - 86_400)).unwrap_or_default();
+            rows.reverse(); // newest first
+            rows.truncate(300);
+            let ship_ids: Vec<i64> = rows.iter().map(|r| r.2).filter(|&i| i != 0).collect();
+            self.ensure_type_names(&ship_ids, ctx);
+            let names: std::collections::HashMap<i64, String> = {
+                let g = self.type_names.lock().unwrap();
+                ship_ids
+                    .iter()
+                    .map(|&id| (id, g.get(&id).cloned().unwrap_or_else(|| format!("Type {id}"))))
+                    .collect()
+            };
+            let systems = self.systems.clone();
+            let sys_name = |id: i64| -> String {
+                systems
+                    .as_ref()
+                    .and_then(|g| g.info_of(id))
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| format!("Sys {id}"))
+            };
+            let hull = |id: i64| -> String {
+                crate::intel::structure_name_by_type(id)
+                    .map(|s| s.to_owned())
+                    .or_else(|| names.get(&id).cloned())
+                    .unwrap_or_else(|| "?".to_owned())
+            };
+
+            let mut open = true;
+            let mut add_kid: Option<i64> = None;
+            let mut link_input = std::mem::take(&mut self.battle_add_link);
+            egui::Window::new(format!("{} Add kill to battle", icon::PLUS))
+                .open(&mut open)
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("zKill link");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut link_input)
+                                .hint_text("https://zkillboard.com/kill/…")
+                                .desired_width(300.0),
+                        );
+                        if ui.button("Add").clicked() {
+                            if let Some(k) =
+                                crate::intel::extract_links(&link_input).into_iter().find_map(|l| l.kill_id)
+                            {
+                                add_kid = Some(k);
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Recent kills (last 24h) — pick one to attach to this battle.")
+                            .weak(),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "A kill not yet in a battle is tagged now and will appear when fetched.",
+                        )
+                        .weak(),
+                    );
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for (kill_id, system_id, ship_type_id, time, value) in &rows {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{:>7}", fmt_age(now - time)))
+                                        .monospace()
+                                        .weak(),
+                                );
+                                hull_badge(ui, *ship_type_id, 20.0);
+                                ui.label(egui::RichText::new(hull(*ship_type_id)).strong());
+                                ui.label(egui::RichText::new(sys_name(*system_id)).weak());
+                                ui.label(egui::RichText::new(fmt_isk(*value)).weak());
+                                if known.contains(kill_id) {
+                                    ui.label(
+                                        egui::RichText::new("in a BR")
+                                            .color(crate::theme::standing::WARNING),
+                                    )
+                                    .on_hover_text("Already part of a clustered battle");
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button(format!("{} Add", icon::PLUS)).clicked() {
+                                            add_kid = Some(*kill_id);
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
+                });
+            self.battle_add_link = link_input;
+            self.battle_add_open = open;
+            if let Some(nk) = add_kid {
+                // A kill that isn't a persisted engagement yet is still tagged here; the tag attaches
+                // when the engagement is fetched. Tagging an existing engagement's kill is immediate.
+                let tids = target_kids.clone();
+                self.apply_battle_edit(ctx, move |s| {
+                    let tag = existing_tag.unwrap_or_else(|| s.next_battle_tag());
+                    if existing_tag.is_none() {
+                        for k in &tids {
+                            s.set_battle_tag(*k, Some(tag));
+                        }
+                    }
+                    s.set_battle_tag(nk, Some(tag));
+                });
+                // Ask the worker to fetch + buffer the killmail if it isn't a persisted engagement
+                // yet; once it arrives the recorded tag pulls it into this battle's group.
+                self.battle_add_queue.lock().unwrap().push(nk);
+                self.battle_add_link.clear();
+            }
         }
     }
 
@@ -4286,14 +4805,22 @@ impl SpaiApp {
                         }
                     }
                     if self.battle_detail_cache.is_some() {
+                        use egui_phosphor::regular as icon;
+                        let ambiguous =
+                            self.battle_detail_cache.as_ref().map(|c| c.battle.ambiguous).unwrap_or(false);
+                        let excl_n = self.battle_excluded_count;
+                        let scrub_n = self.battle_scrub_count;
                         let mut go_back = false;
                         ui.horizontal(|ui| {
                             if ui
-                                .button(format!("{}  Back to battles", egui_phosphor::regular::ARROW_LEFT))
+                                .button(format!("{}  Back to battles", icon::ARROW_LEFT))
                                 .clicked()
                             {
                                 go_back = true;
                             }
+                            ui.separator();
+                            ui.toggle_value(&mut self.battle_edit_mode, format!("{}  Edit", icon::PENCIL))
+                                .on_hover_text("Split off kills, remove kills/pilots, add a kill");
                             ui.separator();
                             ui.checkbox(&mut self.battle_condensed, "Condensed")
                                 .on_hover_text("Stack each side's ships by hull (count + losses)");
@@ -4316,14 +4843,54 @@ impl SpaiApp {
                                         "Hull size",
                                     );
                                 });
+                            ui.separator();
+                            if ui.button(format!("{}  Add kill", icon::PLUS)).clicked() {
+                                self.battle_add_open = true;
+                            }
+                            if ui.button(format!("{} Excluded ({excl_n})", icon::TRASH)).clicked() {
+                                self.battle_excluded_open = true;
+                            }
+                            if ui.button(format!("{} Scrubbed ({scrub_n})", icon::BROOM)).clicked() {
+                                self.battle_scrubs_open = true;
+                            }
                         });
                         if go_back {
                             self.battle_selected = None;
                             self.battle_hover = None;
                             self.battle_detail_cache = None;
+                            self.battle_edit_mode = false;
+                            self.battle_kill_sel.clear();
                             return;
                         }
                         ui.add_space(6.0);
+                        // The review panels float above whichever body is shown.
+                        self.battle_review_panels(ui.ctx());
+                        if ambiguous && !self.battle_edit_mode {
+                            egui::Frame::new()
+                                .fill(crate::theme::standing::WARNING.gamma_multiply(0.14))
+                                .inner_margin(egui::Margin::symmetric(8, 5))
+                                .corner_radius(4.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}  Possible separate engagements",
+                                                icon::WARNING
+                                            ))
+                                            .color(crate::theme::standing::WARNING)
+                                            .strong(),
+                                        );
+                                        if ui.button(format!("{} Review / split", icon::SCISSORS)).clicked() {
+                                            self.battle_edit_mode = true;
+                                        }
+                                    });
+                                });
+                            ui.add_space(6.0);
+                        }
+                        if self.battle_edit_mode {
+                            self.battle_edit_view(ui, now);
+                            return;
+                        }
                         let prev_hover = self.battle_hover;
                         let condensed = self.battle_condensed;
                         let sort = self.battle_roster_sort;
@@ -4395,6 +4962,21 @@ impl SpaiApp {
             {
                 self.settings.min_battle_isk = (bn * 1e9).max(0.0);
                 self.needs_save = true;
+            }
+            // Activity-break gap: a lull longer than this auto-splits one battle into two.
+            ui.separator();
+            ui.label("Split gap (min)")
+                .on_hover_text("Auto-split a battle when there's a lull longer than this.");
+            let mut mins = (self.settings.battle_break_secs / 60).clamp(1, 30);
+            if ui
+                .add(egui::DragValue::new(&mut mins).range(1..=30).speed(0.2))
+                .on_hover_text("Auto-split a battle when there's a lull longer than this.")
+                .changed()
+            {
+                let secs = mins.clamp(1, 30) * 60;
+                self.settings.battle_break_secs = secs;
+                self.needs_save = true;
+                self.battle_break_shared.store(secs, std::sync::atomic::Ordering::Relaxed);
             }
             // "Full history" re-clusters every recorded engagement; default is the live 1-day view.
             if ui.checkbox(&mut self.show_history, "Full history").changed() {
@@ -4547,13 +5129,50 @@ impl SpaiApp {
         } else {
             format!("{total} battles")
         };
-        ui.label(egui::RichText::new(count_txt).weak());
+        let mut do_merge = false;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(count_txt).weak());
+            ui.separator();
+            ui.toggle_value(
+                &mut self.battle_edit_mode,
+                format!("{}  Merge", egui_phosphor::regular::ARROWS_MERGE),
+            )
+            .on_hover_text("Tick two or more battles to merge them into one");
+            if self.battle_edit_mode {
+                let n = self.battle_merge_sel.len();
+                if n >= 2
+                    && ui
+                        .button(format!("{} Merge {n} battles", egui_phosphor::regular::ARROWS_MERGE))
+                        .clicked()
+                {
+                    do_merge = true;
+                }
+                if n > 0 && ui.button("Clear").clicked() {
+                    self.battle_merge_sel.clear();
+                }
+            }
+        });
         ui.add_space(4.0);
         let mut open: Option<i64> = None;
-        let status = self.system_status.lock().unwrap();
+        let edit = self.battle_edit_mode;
+        let mut merge_sel = std::mem::take(&mut self.battle_merge_sel);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (kid, from_you, b) in &self.battle_cards {
-                if battle_row(ui, b, now, *from_you) {
+                if edit {
+                    ui.horizontal(|ui| {
+                        let mut on = merge_sel.contains(kid);
+                        if ui.checkbox(&mut on, "").changed() {
+                            if on {
+                                merge_sel.insert(*kid);
+                            } else {
+                                merge_sel.remove(kid);
+                            }
+                        }
+                        if battle_row(ui, b, now, *from_you) {
+                            open = Some(*kid);
+                        }
+                    });
+                } else if battle_row(ui, b, now, *from_you) {
                     open = Some(*kid);
                 }
                 ui.add_space(4.0);
@@ -4568,9 +5187,36 @@ impl SpaiApp {
                 );
             }
         });
-        drop(status);
+        self.battle_merge_sel = merge_sel;
         if let Some(kid) = open {
+            // Opening a battle leaves merge mode; the detail view's own Edit toggle drives the
+            // per-kill editor.
             self.battle_selected = Some(kid);
+            self.battle_edit_mode = false;
+        }
+        if do_merge {
+            // Collect the selected battles' kill ids from the clustered source (matched by their
+            // representative = max kill id), then tag them all into one group. Drop the lock first.
+            let sel = self.battle_merge_sel.clone();
+            let mut kids: Vec<i64> = Vec::new();
+            {
+                let guard = source.lock().unwrap();
+                for b in guard.iter() {
+                    let rep = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
+                    if sel.contains(&rep) {
+                        kids.extend(b.engagements.iter().map(|e| e.kill_id));
+                    }
+                }
+            }
+            let ctx = ui.ctx().clone();
+            self.apply_battle_edit(&ctx, move |s| {
+                let t = s.next_battle_tag();
+                for kid in &kids {
+                    s.set_battle_tag(*kid, Some(t));
+                }
+            });
+            self.battle_merge_sel.clear();
+            self.battle_edit_mode = false;
         }
     }
 
@@ -13786,6 +14432,27 @@ fn side_title(side: &crate::battle::Side) -> String {
         .unwrap_or_else(|| "?".to_owned())
 }
 
+/// A compact one-line summary of a previewed battle half (kills, ISK, each side's lead + k/l),
+/// shown in the split preview.
+fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Battle) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(label).strong());
+        ui.label(format!("{} kills", b.kills));
+        ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
+        for (i, side) in b.sides.iter().take(2).enumerate() {
+            if i > 0 {
+                ui.label(egui::RichText::new("vs").weak());
+            }
+            let name = side.parties.first().map(|p| p.name.as_str()).unwrap_or("?");
+            ui.label(egui::RichText::new(name).color(side_color(i)).strong());
+            ui.label(egui::RichText::new(format!("{}k/{}l", side.kills, side.losses)).weak());
+        }
+        if b.sides.is_empty() {
+            ui.label(egui::RichText::new("no clear sides").weak());
+        }
+    });
+}
+
 /// Render one clustered battle as a summary card. Returns true when the card is clicked
 /// (to open the detailed view).
 fn battle_row(
@@ -13807,6 +14474,14 @@ fn battle_row(
             }
             ui.separator();
             ui.label(format!("{} kills", b.kills));
+            if b.ambiguous {
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::WARNING)
+                        .color(crate::theme::standing::WARNING)
+                        .strong(),
+                )
+                .on_hover_text("This battle may be two fights — open to review.");
+            }
             ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
             if span_min > 0 {
                 ui.label(egui::RichText::new(format!("over {span_min}m")).weak());

@@ -589,6 +589,12 @@ fn group_indices(
     groups.into_values().collect()
 }
 
+/// Build a one-off `Battle` from an arbitrary engagement subset (for the split-preview UI):
+/// re-infers sides + tallies exactly as the clusterer does.
+pub fn preview_battle(engs: Vec<Engagement>, break_gap: i64) -> Battle {
+    build_battle(engs, break_gap)
+}
+
 fn build_battle(mut engs: Vec<Engagement>, break_gap: i64) -> Battle {
     engs.sort_by_key(|e| e.time);
     let start = engs.first().map_or(0, |e| e.time);

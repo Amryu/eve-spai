@@ -887,6 +887,20 @@ impl Store {
         out
     }
 
+    /// Cheap counts (no JSON parse) for the editor's "Excluded (n)" / "Scrubbed (n)" labels.
+    pub fn count_excluded(&self) -> usize {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM battle_overrides WHERE excluded=1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0) as usize
+    }
+    pub fn count_scrubs(&self) -> usize {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM battle_scrubs", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0) as usize
+    }
+
     /// Persist enriched killmail details so a reloaded card shows them without re-fetching.
     pub fn save_kill_details(&self, k: &crate::kills::KillInfo) {
         let alliances: String =

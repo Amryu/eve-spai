@@ -53,6 +53,7 @@ pub fn spawn(
     break_gap: Arc<AtomicI64>,
     overrides: SharedOverrides,
     overrides_gen: Arc<std::sync::atomic::AtomicU64>,
+    add_queue: Arc<Mutex<Vec<i64>>>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -201,6 +202,23 @@ pub fn spawn(
                         buffer.push(eng);
                         changed = true;
                     }
+                }
+            }
+
+            // User-requested kills (zKill link / recent-kills "Add"): fetch + buffer them so the
+            // next cluster groups them by the tag the editor UI already recorded for the kill id.
+            let requested: Vec<i64> = std::mem::take(&mut *add_queue.lock().unwrap());
+            for id in requested {
+                if buffer_ids.contains(&id) {
+                    continue; // already buffered; the recorded tag will pull it into the battle
+                }
+                if let Some(eng) = fetch_posted_kill(&client, id, &systems, &ship_ids, &mut names) {
+                    if let Some(s) = &store {
+                        s.save_engagement(&eng);
+                    }
+                    buffer_ids.insert(eng.kill_id);
+                    buffer.push(eng);
+                    changed = true;
                 }
             }
 
