@@ -398,13 +398,10 @@ pub struct SpaiApp {
     bridges_applied: Vec<crate::settings::JumpBridge>,
     /// Live per-system status (incursion/FW/sov), shared with the ESI poller.
     system_status: crate::systemstatus::SharedStatus,
-    /// Only alert on reports newer than this (set to launch time to skip backlog).
-    last_alert_time: i64,
-    /// Per-system alert cooldown (system id -> last alert unix seconds).
-    alert_cooldown: std::collections::HashMap<i64, i64>,
-    /// Report ids that have already raised an alert, so an amended message never re-fires.
-    alerted: std::collections::HashMap<u64, i64>,
-    /// Recent fired alerts (unix, text) — shared with the game-log watcher.
+    /// Off-UI-thread alert evaluation + firing (sound, OS notification, pushover). Owns the
+    /// dedup/cooldown/last-alert-time state the old `check_alerts` held on `self`.
+    alerts_engine: std::sync::Arc<AlertEngine>,
+    /// Recent fired alerts (unix, text) — shared with the game-log watcher and the alert engine.
     recent_alerts: crate::gamewatcher::AlertLog,
     /// Reports shown in the custom notification window, with their severity.
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
@@ -884,6 +881,23 @@ impl SpaiApp {
         let jump_favourites: std::collections::HashSet<i64> =
             settings.jump_favourites.iter().copied().collect();
 
+        // Intel state + recent-alert log are shared with the off-thread alert daemon, so build
+        // them as locals here and hand the daemon its own clones before moving them into `self`.
+        let intel_state =
+            std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default()));
+        let recent_alerts: crate::gamewatcher::AlertLog =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let alerts_engine = std::sync::Arc::new(AlertEngine::new(
+            recent_alerts.clone(),
+            chrono::Utc::now().timestamp(),
+        ));
+        spawn_alert_daemon(
+            alerts_engine.clone(),
+            intel_state.clone(),
+            player.clone(),
+            cc.egui_ctx.clone(),
+        );
+
         Self {
             store,
             settings,
@@ -902,7 +916,7 @@ impl SpaiApp {
             sde_status,
             auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
             characters,
-            intel_state: std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default())),
+            intel_state,
             watcher_started: false,
             chat_dir: None,
             intel_query: String::new(),
@@ -946,10 +960,8 @@ impl SpaiApp {
                 crate::systemstatus::spawn(status.clone(), cc.egui_ctx.clone());
                 status
             },
-            last_alert_time: chrono::Utc::now().timestamp(),
-            alert_cooldown: std::collections::HashMap::new(),
-            alerted: std::collections::HashMap::new(),
-            recent_alerts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            alerts_engine,
+            recent_alerts,
             alert_feed: Vec::new(),
             alert_window_secs: 0.0,
             alert_window_open: false,
@@ -1188,166 +1200,26 @@ impl SpaiApp {
     /// Evaluate new intel against the alert rules and dispatch the resulting actions
     /// (system notification / sound / custom window / push). Only reports newer than
     /// the last watermark are considered.
-    fn check_alerts(&mut self) {
-        if !self.settings.alert_enabled {
-            return;
-        }
-        let systems = self.systems.clone();
-        let now = chrono::Utc::now().timestamp();
-        let mut newest = self.last_alert_time;
-        let acfg = self.settings.alerts.clone();
-        let sev_rules = self.settings.severity.clone();
-        let only_undocked = self.settings.alert_only_undocked;
-        let disabled = self.settings.intel_disabled_chars.clone();
-        // Snapshot every linked character's location (name → system, docked).
-        let locations: std::collections::HashMap<String, (i64, bool)> =
-            self.player.lock().unwrap().locations.clone();
-
-        // The set of character systems a rule should measure distance from: the
-        // rule's characters (if any), else every enabled character; docked ones are
-        // dropped when "only alert while undocked" is set.
-        let char_systems = |chars: &[String]| -> Vec<i64> {
-            locations
-                .iter()
-                .filter(|(name, _)| {
-                    if !chars.is_empty() {
-                        chars.iter().any(|c| c.eq_ignore_ascii_case(name))
-                    } else {
-                        !disabled.iter().any(|d| d.eq_ignore_ascii_case(name))
-                    }
-                })
-                .filter(|(_, (_, docked))| !(only_undocked && *docked))
-                .map(|(_, (sys, _))| *sys)
-                .collect()
-        };
-
-        struct Fire {
-            id: u64,
-            sys_id: i64,
-            title: String,
-            text: String,
-            body: String,
-            report: crate::intel::IntelReport,
-            sev: crate::settings::Severity,
-            sound: String,
-            sys: bool,
-            win: bool,
-            push: bool,
-        }
-        let mut fired: Vec<Fire> = Vec::new();
+    /// Publish the current alert config to the daemon and drain the alerts it fired into the UI
+    /// (feed + notification window). The heavy evaluation + side effects run on the alert daemon
+    /// (see [`AlertEngine`]) so they keep working while the window is minimized.
+    fn drain_alerts(&mut self) {
         {
-            // zKill killmail timestamps lag the real event by minutes (zKill delivers late), so
-            // the "newer than the last alert" check would wrongly skip them. Gate killmails on
-            // recency + the per-id `alerted` dedup instead, so a freshly-ingested kill alerts
-            // once. (Reloaded-at-startup kills are pre-marked alerted in load_persisted_kills.)
-            const KILLMAIL_ALERT_WINDOW: i64 = 600; // 10 min
-            let state = self.intel_state.lock().unwrap();
-            for r in &state.reports {
-                // A parked report (location held inside an unresolved name) must never alert —
-                // a wrong/absent location would be a false alarm. Wait for the confirmed location.
-                if r.primary_system().is_none() && r.gates.is_empty() {
-                    continue;
-                }
-                let fresh = if r.killmail {
-                    now - r.received < KILLMAIL_ALERT_WINDOW && !self.alerted.contains_key(&r.id)
-                } else {
-                    r.received > self.last_alert_time
-                };
-                if !fresh {
-                    continue;
-                }
-                if !r.killmail {
-                    newest = newest.max(r.received);
-                }
-                let sev = severity_of(r, &sev_rules);
-                let target = r.primary_system().map(|s| s.id);
-                // First enabled rule whose conditions all match (jumps measured from
-                // the rule's relevant characters).
-                let mut chosen: Option<(&crate::settings::AlertRule, Option<u32>)> = None;
-                for ru in acfg.rules.iter().filter(|ru| ru.enabled) {
-                    let srcs = char_systems(&ru.characters);
-                    let jumps = min_jumps_from(&systems, &srcs, target, ru.count_bridges);
-                    if rule_matches(ru, r, sev, jumps, &systems) {
-                        chosen = Some((ru, jumps));
-                        break;
-                    }
-                }
-                let Some((ru, jumps)) = chosen else { continue };
-                if ru.suppress {
-                    continue;
-                }
-                // The rule may override the event's severity for this alert (matching above
-                // used the natural severity). This drives the sound default below, the sound
-                // priority, and the alert-window colour.
-                let sev = ru.severity_override.unwrap_or(sev);
-                let sound = if ru.sound.is_empty() {
-                    acfg.sounds.get(sev as usize).cloned().unwrap_or_default()
-                } else {
-                    ru.sound.clone()
-                };
-                let (sys, win, push, cd) =
-                    (ru.system_notification, ru.custom_window, ru.push, ru.cooldown_secs);
-                let sys_id = r.primary_system().map_or(0, |s| s.id);
-                if now - self.alert_cooldown.get(&sys_id).copied().unwrap_or(0) < cd {
-                    continue;
-                }
-                // Never fire twice for the same report — e.g. when the poster amends the
-                // message (which refreshes its timestamp and would otherwise re-trigger).
-                if self.alerted.contains_key(&r.id) {
-                    continue;
-                }
-                let title = r
-                    .primary_system()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| "Intel".to_owned());
-                let title = match jumps {
-                    Some(j) if j > 0 => format!("{title} — {j} jumps"),
-                    Some(_) => format!("{title} — here"),
-                    None => title,
-                };
-                let text = alert_text(r);
-                let body = format!("{text}\n— {} · {}", r.reporter, r.channel);
-                fired.push(Fire {
-                    id: r.id,
-                    sys_id,
-                    title,
-                    text,
-                    body,
-                    report: r.clone(),
-                    sev,
-                    sound,
-                    sys,
-                    win,
-                    push,
-                });
-            }
+            let mut cfg = self.alerts_engine.config.lock().unwrap();
+            cfg.enabled = self.settings.alert_enabled;
+            cfg.alerts = self.settings.alerts.clone();
+            cfg.severity = self.settings.severity.clone();
+            cfg.only_undocked = self.settings.alert_only_undocked;
+            cfg.disabled = self.settings.intel_disabled_chars.clone();
+            cfg.systems = self.systems.clone();
         }
-        self.last_alert_time = newest;
-        // Keep the alerted-report set bounded (those reports are long pruned).
-        if self.alerted.len() > 4000 {
-            self.alerted.retain(|_, t| now - *t < 7200);
-        }
+        let fired = std::mem::take(&mut self.alerts_engine.runtime.lock().unwrap().fired_ui);
         if fired.is_empty() {
             return;
         }
-
-        let mut log = self.recent_alerts.lock().unwrap();
-        for f in fired {
-            self.alert_cooldown.insert(f.sys_id, now);
-            self.alerted.insert(f.id, now);
-            log.push((now, f.text.clone()));
-            if f.sys {
-                notify(f.title.clone(), f.body.clone());
-            }
-            if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
-                crate::sound::play_prio(&f.sound, f.sev as u8);
-            }
-            self.alert_feed.push((f.report.clone(), f.sev));
-            let n = self.alert_feed.len();
-            if n > 100 {
-                self.alert_feed.drain(0..n - 100);
-            }
-            if f.win {
+        for (report, sev, win) in fired {
+            self.alert_feed.push((report, sev));
+            if win {
                 self.alert_window_secs = if self.settings.alerts.window_timeout <= 0.0 {
                     f32::INFINITY // never auto-hide
                 } else {
@@ -1355,13 +1227,10 @@ impl SpaiApp {
                 };
                 self.alert_focus_pending = true; // bring the window forward once
             }
-            if f.push && acfg.push_enabled {
-                crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
-            }
         }
-        let len = log.len();
-        if len > 50 {
-            log.drain(0..len - 50);
+        let n = self.alert_feed.len();
+        if n > 100 {
+            self.alert_feed.drain(0..n - 100);
         }
     }
 
@@ -3016,10 +2885,13 @@ impl SpaiApp {
             reports.into_iter().map(|report| st.push(report)).collect()
         };
         // These are historical kills, not live events — pre-mark them alerted so the recency
-        // gate in check_alerts doesn't pop them into the alert window at startup.
+        // gate in the alert daemon doesn't pop them into the alert window at startup.
         let now = chrono::Utc::now().timestamp();
-        for id in ids {
-            self.alerted.insert(id, now);
+        {
+            let mut rt = self.alerts_engine.runtime.lock().unwrap();
+            for id in ids {
+                rt.alerted.insert(id, now);
+            }
         }
     }
 
@@ -12710,6 +12582,227 @@ impl SpaiApp {
     }
 }
 
+// ============================== Alert daemon ==============================
+// Alert evaluation + firing runs on a background thread so it keeps working when the window is
+// minimized/occluded (eframe parks the UI thread then). The UI publishes a config snapshot each
+// frame and drains the `fired_ui` queue for the alert window/feed; the daemon itself fires the
+// thread-safe side effects — sound, OS notification, pushover — and records recent alerts.
+
+#[derive(Clone, Default)]
+struct AlertConfig {
+    enabled: bool,
+    alerts: crate::settings::AlertSettings,
+    severity: crate::settings::SeverityRules,
+    only_undocked: bool,
+    disabled: Vec<String>,
+    systems: Option<std::sync::Arc<crate::geo::Systems>>,
+}
+
+#[derive(Default)]
+struct AlertRuntime {
+    last_alert_time: i64,
+    cooldown: std::collections::HashMap<i64, i64>,
+    alerted: std::collections::HashMap<u64, i64>,
+    /// Drained by the UI into the alert feed / window: (report, severity, raise_window).
+    fired_ui: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>,
+}
+
+struct AlertEngine {
+    config: std::sync::Mutex<AlertConfig>,
+    runtime: std::sync::Mutex<AlertRuntime>,
+    recent: crate::gamewatcher::AlertLog,
+}
+
+impl AlertEngine {
+    fn new(recent: crate::gamewatcher::AlertLog, last_alert_time: i64) -> Self {
+        Self {
+            config: std::sync::Mutex::new(AlertConfig::default()),
+            runtime: std::sync::Mutex::new(AlertRuntime { last_alert_time, ..Default::default() }),
+            recent,
+        }
+    }
+
+    /// Evaluate all current reports and fire any new alerts. Returns true if anything fired.
+    /// Mirrors the former `SpaiApp::check_alerts`, but runs off the UI thread.
+    fn evaluate(
+        &self,
+        intel_state: &std::sync::Mutex<crate::intel::IntelState>,
+        player: &std::sync::Mutex<crate::esi::Player>,
+    ) -> bool {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled {
+            return false;
+        }
+        let systems = cfg.systems.clone(); // Option<Arc<Systems>>; helpers handle None (no jumps)
+        let acfg = &cfg.alerts;
+        let sev_rules = &cfg.severity;
+        let only_undocked = cfg.only_undocked;
+        let disabled = &cfg.disabled;
+        let now = chrono::Utc::now().timestamp();
+        let locations: std::collections::HashMap<String, (i64, bool)> =
+            player.lock().unwrap().locations.clone();
+
+        let char_systems = |chars: &[String]| -> Vec<i64> {
+            locations
+                .iter()
+                .filter(|(name, _)| {
+                    if !chars.is_empty() {
+                        chars.iter().any(|c| c.eq_ignore_ascii_case(name))
+                    } else {
+                        !disabled.iter().any(|d| d.eq_ignore_ascii_case(name))
+                    }
+                })
+                .filter(|(_, (_, docked))| !(only_undocked && *docked))
+                .map(|(_, (sys, _))| *sys)
+                .collect()
+        };
+
+        struct Fire {
+            id: u64,
+            sys_id: i64,
+            title: String,
+            text: String,
+            body: String,
+            report: crate::intel::IntelReport,
+            sev: crate::settings::Severity,
+            sound: String,
+            sys: bool,
+            win: bool,
+            push: bool,
+        }
+        let mut fired: Vec<Fire> = Vec::new();
+        let mut rt = self.runtime.lock().unwrap();
+        let mut newest = rt.last_alert_time;
+        {
+            const KILLMAIL_ALERT_WINDOW: i64 = 600; // 10 min
+            let state = intel_state.lock().unwrap();
+            for r in &state.reports {
+                if r.primary_system().is_none() && r.gates.is_empty() {
+                    continue;
+                }
+                let fresh = if r.killmail {
+                    now - r.received < KILLMAIL_ALERT_WINDOW && !rt.alerted.contains_key(&r.id)
+                } else {
+                    r.received > rt.last_alert_time
+                };
+                if !fresh {
+                    continue;
+                }
+                if !r.killmail {
+                    newest = newest.max(r.received);
+                }
+                let sev = severity_of(r, sev_rules);
+                let target = r.primary_system().map(|s| s.id);
+                let mut chosen: Option<(&crate::settings::AlertRule, Option<u32>)> = None;
+                for ru in acfg.rules.iter().filter(|ru| ru.enabled) {
+                    let srcs = char_systems(&ru.characters);
+                    let jumps = min_jumps_from(&systems, &srcs, target, ru.count_bridges);
+                    if rule_matches(ru, r, sev, jumps, &systems) {
+                        chosen = Some((ru, jumps));
+                        break;
+                    }
+                }
+                let Some((ru, jumps)) = chosen else { continue };
+                if ru.suppress {
+                    continue;
+                }
+                let sev = ru.severity_override.unwrap_or(sev);
+                let sound = if ru.sound.is_empty() {
+                    acfg.sounds.get(sev as usize).cloned().unwrap_or_default()
+                } else {
+                    ru.sound.clone()
+                };
+                let (sys, win, push, cd) =
+                    (ru.system_notification, ru.custom_window, ru.push, ru.cooldown_secs);
+                let sys_id = r.primary_system().map_or(0, |s| s.id);
+                if now - rt.cooldown.get(&sys_id).copied().unwrap_or(0) < cd {
+                    continue;
+                }
+                if rt.alerted.contains_key(&r.id) {
+                    continue;
+                }
+                let title = r
+                    .primary_system()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| "Intel".to_owned());
+                let title = match jumps {
+                    Some(j) if j > 0 => format!("{title} — {j} jumps"),
+                    Some(_) => format!("{title} — here"),
+                    None => title,
+                };
+                let text = alert_text(r);
+                let body = format!("{text}\n— {} · {}", r.reporter, r.channel);
+                fired.push(Fire {
+                    id: r.id,
+                    sys_id,
+                    title,
+                    text,
+                    body,
+                    report: r.clone(),
+                    sev,
+                    sound,
+                    sys,
+                    win,
+                    push,
+                });
+            }
+        }
+        rt.last_alert_time = newest;
+        if rt.alerted.len() > 4000 {
+            rt.alerted.retain(|_, t| now - *t < 7200);
+        }
+        if fired.is_empty() {
+            return false;
+        }
+        // Single daemon, so no double-fire race: record dedup/cooldown + queue the UI bits, then
+        // release the runtime lock BEFORE the (possibly slow) notify/sound so the UI drain can't
+        // block on them.
+        for f in &fired {
+            rt.cooldown.insert(f.sys_id, now);
+            rt.alerted.insert(f.id, now);
+            rt.fired_ui.push((f.report.clone(), f.sev, f.win));
+        }
+        drop(rt);
+        {
+            let mut log = self.recent.lock().unwrap();
+            for f in &fired {
+                log.push((now, f.text.clone()));
+            }
+            let len = log.len();
+            if len > 50 {
+                log.drain(0..len - 50);
+            }
+        }
+        for f in &fired {
+            if f.sys {
+                notify(f.title.clone(), f.body.clone());
+            }
+            if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
+                crate::sound::play_prio(&f.sound, f.sev as u8);
+            }
+            if f.push && acfg.push_enabled {
+                crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
+            }
+        }
+        true
+    }
+}
+
+/// Background loop: evaluate alerts every 400 ms regardless of the window's visibility.
+fn spawn_alert_daemon(
+    engine: std::sync::Arc<AlertEngine>,
+    intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
+    player: crate::esi::SharedPlayer,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if engine.evaluate(&intel_state, &player) {
+            ctx.request_repaint(); // wake the UI to show the alert window / feed
+        }
+    });
+}
+
 impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -12781,7 +12874,7 @@ impl eframe::App for SpaiApp {
         self.discover_sov_alliances(&ctx);
         self.os_notify
             .store(self.settings.alert_combat, std::sync::atomic::Ordering::Relaxed);
-        self.check_alerts();
+        self.drain_alerts();
         self.top_bar(ui);
         self.status_bar(ui);
         self.nav_rail(ui);
