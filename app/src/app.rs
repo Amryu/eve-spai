@@ -14162,6 +14162,7 @@ fn rule_matches(
             "wormhole" | "wh" => r.wormhole,
             "spike" => r.spike,
             "skyhook" => r.skyhook,
+            "filament" | "needlejack" | "trace" => r.filament,
             "nv" | "novisual" => r.no_visual,
             "help" | "sos" | "backup" => r.help,
             _ => true,
@@ -14354,6 +14355,9 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
     }
     if r.cyno {
         parts.push("CYNO".into());
+    }
+    if r.filament {
+        parts.push("FILAMENT".into());
     }
     if r.dropper {
         parts.push("DROPPER".into());
@@ -15368,6 +15372,9 @@ fn intel_row(
                 }
                 if r.skyhook {
                     tag(ui, "SKYHOOK", warn);
+                }
+                if r.filament {
+                    tag(ui, "FILAMENT", warn);
                 }
 
                 if let Some(m) = &r.movement {

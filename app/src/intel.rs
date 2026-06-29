@@ -94,6 +94,8 @@ pub struct IntelReport {
     /// Time left until the ESS is hacked, when called out (e.g. "5:30", "3m").
     pub ess_time: Option<String>,
     pub skyhook: bool,
+    /// A filament / needlejack / trace was called out — a roaming gang jumping in.
+    pub filament: bool,
     /// Gate the hostiles are reported on, e.g. "78-" in "C-J +20 on 78- gate".
     /// Gates mentioned in the report (a card has one system but may name several
     /// gates — extra system mentions are demoted to gates).
@@ -227,6 +229,7 @@ impl IntelState {
             || new.bubble
             || new.cyno
             || new.dropper
+            || new.filament
             || new.cap_tackled;
         if !adds {
             return false;
@@ -333,6 +336,7 @@ impl IntelState {
             prev.help |= new.help;
             prev.bubble |= new.bubble;
             prev.cyno |= new.cyno;
+            prev.filament |= new.filament;
             prev.dropper |= new.dropper;
             prev.cap_tackled |= new.cap_tackled;
             prev.tackled |= new.tackled;
@@ -399,6 +403,7 @@ const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe", "
 const PILOT_STOP: &[&str] = &[
     "gate", "camp", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
     "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
+    "filament", "filaments", "needlejack", "needlejacks", "trace", "traces",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
     "afk", "warpin", "system", "and", "for", "status", "stat", "eyes", "any", "report", "intel", "went", "going",
@@ -2198,6 +2203,11 @@ pub fn analyze_ctx(
             None
         },
         skyhook: lower.contains("skyhook") || lower_tokens.iter().any(|t| is_skyhook_typo(t)),
+        filament: flagged_exact(
+            &lower_tokens,
+            &pilot_tokens,
+            &["filament", "filaments", "needlejack", "needlejacks", "trace", "traces"],
+        ),
         gates,
         alliances,
         movement: None,
@@ -4338,6 +4348,11 @@ mod tests {
         assert!(analyze("wh in Jita k162", &s, &noships(), &noknown(), 1, "ch", "x").wormhole);
         assert!(analyze("ess being robbed", &s, &noships(), &noknown(), 1, "ch", "x").ess);
         assert!(analyze("skyhook theft Rancer", &s, &noships(), &noknown(), 1, "ch", "x").skyhook);
+        for w in ["filament", "needlejack", "trace", "filaments", "needlejacks"] {
+            let r = analyze(&format!("{w} in Rancer"), &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(r.filament, "{w} should set filament");
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w} is a keyword, not a pilot");
+        }
         // lower-case common words that are system names are not matched
         assert!(analyze("clear in here", &s, &noships(), &noknown(), 1, "ch", "x").systems.is_empty());
     }
