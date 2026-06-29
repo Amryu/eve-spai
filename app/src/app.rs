@@ -884,6 +884,20 @@ impl SpaiApp {
         let jump_favourites: std::collections::HashSet<i64> =
             settings.jump_favourites.iter().copied().collect();
 
+        // Keep the event loop ticking even when the window is minimized/occluded, so the per-frame
+        // work that drives alerts (check_alerts, killfeed ingest, pilot reconcile) keeps running.
+        // eframe parks a minimized window in a Wait state and only wakes it on an explicit repaint
+        // request; this external poke runs on its own thread regardless of the UI's state — unlike
+        // an in-update() heartbeat, which can never restart a loop that has already gone idle.
+        // (The proper long-term fix is to move alert evaluation off the UI thread entirely.)
+        {
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                ctx.request_repaint();
+            });
+        }
+
         Self {
             store,
             settings,
@@ -12714,15 +12728,8 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Keep processing while minimized. eframe only repaints a minimized window when a repaint
-        // is explicitly requested, and clamps that to 10 fps (to avoid a known 100%-CPU bug on
-        // minimised macOS/Windows windows). Without a heartbeat the loop just Waits, so time-driven
-        // work — alert countdowns, pilot re-resolution, the alert window — stalls between
-        // background events. Re-requesting here keeps update() ticking (capped at ~10 fps by
-        // eframe, so it's cheap) so intel and alerts keep flowing while the game is foregrounded.
-        if ctx.input(|i| i.viewport().minimized) == Some(true) {
-            ctx.request_repaint();
-        }
+        // (Keeping the loop alive while minimized is handled by a background ticker thread spawned
+        // in `new()` — an in-update heartbeat can't bootstrap itself once update() has stalled.)
 
         // Publish the active character's system for the worker's jumps-from-me rules.
         self.player_sys_shared
