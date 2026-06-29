@@ -425,7 +425,10 @@ fn handle_event(
                 .first()
                 .map(|d| d.stamp.0.timestamp())
                 .unwrap_or(now);
-            let key = from.to_string();
+            // Key by the BARE JID (no /resource): outgoing DMs and presences use the bare form, and
+            // the UI's DM list only surfaces conversations whose key is a valid bare JID — a full
+            // JID here fragmented the thread and hid the incoming DM entirely.
+            let key = from.to_bare().to_string();
             let local = key.split('@').next().unwrap_or_default();
             // directorbot broadcasts are also parsed into fleet pings.
             if local.eq_ignore_ascii_case(PING_SENDER) {
