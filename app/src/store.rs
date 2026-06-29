@@ -122,6 +122,19 @@ CREATE TABLE IF NOT EXISTS engagements (
     json      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_engagements_time ON engagements(time);
+-- User overrides for battle reports: per-kill group re-tag / exclusion, persisted so a
+-- manually corrected battle stays corrected across restarts.
+CREATE TABLE IF NOT EXISTS battle_overrides (
+    kill_id   INTEGER PRIMARY KEY,
+    group_tag INTEGER,
+    excluded  INTEGER NOT NULL DEFAULT 0
+);
+-- Per-kill characters marked as scrubs (non-combatants / pod-only) in a battle.
+CREATE TABLE IF NOT EXISTS battle_scrubs (
+    kill_id INTEGER NOT NULL,
+    char_id INTEGER NOT NULL,
+    PRIMARY KEY (kill_id, char_id)
+);
 -- Enriched killmail details (zKill + ESI), so a reloaded card doesn't re-fetch them.
 CREATE TABLE IF NOT EXISTS kill_details (
     kill_id             INTEGER PRIMARY KEY,
@@ -763,6 +776,117 @@ impl Store {
         let _ = self.conn.execute("DELETE FROM engagements WHERE time < ?1", params![before]);
     }
 
+    // --- Battle-report overrides (manual re-tag / exclude / scrub, persisted) ----
+
+    /// Re-tag a kill into a battle group (None unsets the tag), preserving its excluded flag.
+    #[allow(dead_code)]
+    pub fn set_battle_tag(&self, kill_id: i64, tag: Option<i64>) {
+        let _ = self.conn.execute(
+            "INSERT INTO battle_overrides(kill_id, group_tag, excluded) VALUES(?1, ?2, 0)
+             ON CONFLICT(kill_id) DO UPDATE SET group_tag=?2",
+            params![kill_id, tag],
+        );
+    }
+
+    /// Mark a kill as excluded from (or re-included in) battle reports, preserving its tag.
+    #[allow(dead_code)]
+    pub fn set_battle_excluded(&self, kill_id: i64, excluded: bool) {
+        let _ = self.conn.execute(
+            "INSERT INTO battle_overrides(kill_id, group_tag, excluded) VALUES(?1, NULL, ?2)
+             ON CONFLICT(kill_id) DO UPDATE SET excluded=?2",
+            params![kill_id, excluded as i64],
+        );
+    }
+
+    /// Drop any override (tag + exclusion) for a kill.
+    #[allow(dead_code)]
+    pub fn clear_battle_override(&self, kill_id: i64) {
+        let _ = self.conn.execute("DELETE FROM battle_overrides WHERE kill_id=?1", params![kill_id]);
+    }
+
+    /// Next free battle group tag (1 on an empty table).
+    #[allow(dead_code)]
+    pub fn next_battle_tag(&self) -> i64 {
+        self.conn
+            .query_row("SELECT COALESCE(MAX(group_tag),0)+1 FROM battle_overrides", [], |r| r.get(0))
+            .unwrap_or(1)
+    }
+
+    /// Mark (or unmark) a character on a kill as a scrub.
+    #[allow(dead_code)]
+    pub fn set_scrub(&self, kill_id: i64, char_id: i64, on: bool) {
+        let _ = if on {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO battle_scrubs(kill_id, char_id) VALUES(?1, ?2)",
+                params![kill_id, char_id],
+            )
+        } else {
+            self.conn.execute(
+                "DELETE FROM battle_scrubs WHERE kill_id=?1 AND char_id=?2",
+                params![kill_id, char_id],
+            )
+        };
+    }
+
+    /// Load all persisted battle overrides (tags, exclusions, scrubs) into an `Overrides`.
+    #[allow(dead_code)]
+    pub fn load_battle_overrides(&self) -> crate::battle::Overrides {
+        let mut o = crate::battle::Overrides::default();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT kill_id, group_tag, excluded FROM battle_overrides")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?))
+            }) {
+                for (kill_id, tag, excluded) in rows.flatten() {
+                    if let Some(tag) = tag {
+                        o.tag.insert(kill_id, tag);
+                    }
+                    if excluded != 0 {
+                        o.excluded.insert(kill_id);
+                    }
+                }
+            }
+        }
+        if let Ok(mut stmt) = self.conn.prepare("SELECT kill_id, char_id FROM battle_scrubs") {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))) {
+                for pair in rows.flatten() {
+                    o.scrubs.insert(pair);
+                }
+            }
+        }
+        o
+    }
+
+    /// Excluded kills' engagements (for an "excluded" review list), newest first.
+    #[allow(dead_code)]
+    pub fn list_excluded_engagements(&self) -> Vec<crate::battle::Engagement> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT e.json FROM engagements e JOIN battle_overrides o ON e.kill_id=o.kill_id
+             WHERE o.excluded=1 ORDER BY e.time DESC",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                out.extend(rows.flatten().filter_map(|j| serde_json::from_str(&j).ok()));
+            }
+        }
+        out
+    }
+
+    /// All persisted (kill_id, char_id) scrub pairs.
+    #[allow(dead_code)]
+    pub fn list_scrubs(&self) -> Vec<(i64, i64)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT kill_id, char_id FROM battle_scrubs ORDER BY kill_id")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
     /// Persist enriched killmail details so a reloaded card shows them without re-fetching.
     pub fn save_kill_details(&self, k: &crate::kills::KillInfo) {
         let alliances: String =
@@ -1351,7 +1475,60 @@ fn trigrams(s: &str) -> std::collections::HashSet<[u8; 3]> {
 
 #[cfg(test)]
 mod tests {
+    use super::{Store, SCHEMA};
     use rusqlite::{params, Connection};
+
+    /// A `Store` backed by a fresh in-memory DB with the full schema applied.
+    fn mem_store() -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        Store {
+            conn,
+            path: std::path::PathBuf::new(),
+            sys_cache: std::cell::RefCell::new(None),
+            place_cache: std::cell::RefCell::new(None),
+        }
+    }
+
+    #[test]
+    fn battle_overrides_roundtrip() {
+        let s = mem_store();
+
+        // Empty table -> first tag is 1.
+        assert_eq!(s.next_battle_tag(), 1);
+
+        // Tag a kill, exclude another, scrub a char on a third.
+        s.set_battle_tag(100, Some(7));
+        s.set_battle_excluded(200, true);
+        s.set_scrub(300, 42, true);
+
+        let o = s.load_battle_overrides();
+        assert_eq!(o.tag.get(&100), Some(&7));
+        assert!(o.excluded.contains(&200));
+        assert!(o.scrubs.contains(&(300, 42)));
+        assert_eq!(s.list_scrubs(), vec![(300, 42)]);
+
+        // next_battle_tag tracks the max existing tag.
+        assert_eq!(s.next_battle_tag(), 8);
+
+        // Tagging preserves a prior exclusion on the same kill, and vice-versa.
+        s.set_battle_excluded(100, true);
+        s.set_battle_tag(100, Some(9));
+        let o = s.load_battle_overrides();
+        assert_eq!(o.tag.get(&100), Some(&9));
+        assert!(o.excluded.contains(&100));
+
+        // Opposite values clear: un-exclude, untag, unscrub.
+        s.set_battle_excluded(200, false);
+        s.set_scrub(300, 42, false);
+        s.set_battle_tag(100, None);
+        s.clear_battle_override(100);
+        let o = s.load_battle_overrides();
+        assert!(o.tag.is_empty());
+        assert!(o.excluded.is_empty());
+        assert!(o.scrubs.is_empty());
+        assert!(s.list_scrubs().is_empty());
+    }
 
     /// The exact upsert `add_known_pilot` runs, against an in-memory DB.
     fn add(conn: &Connection, name: &str, char_id: i64) {

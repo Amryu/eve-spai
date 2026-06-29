@@ -364,6 +364,15 @@ pub struct SpaiApp {
     battle_filter_confirm_reset: bool,
     /// Bumped whenever the battle-filter rules are edited (invalidates the card cache).
     battle_filter_gen: u64,
+    /// Manual battle overrides (split/merge tags, excluded kills, scrubbed pilots), shared live
+    /// with the zKill worker and the history clusterer.
+    battle_overrides: crate::zkill::SharedOverrides,
+    /// Activity-break gap (seconds) the worker segments battles on, shared live.
+    battle_break_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Bumped (RAM + shared atomic) on every manual battle edit, to force a re-cluster and
+    /// invalidate the candidate/detail caches.
+    battle_overrides_gen: u64,
+    battle_overrides_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// All overview battles matching everything EXCEPT the ISK threshold — (open kill id,
     /// jumps-from-you, cumulative ISK, light battle). This holds the expensive work (the custom
     /// battle-filter match + per-battle distance search), rebuilt only when the underlying battles
@@ -945,6 +954,10 @@ impl SpaiApp {
             battle_filter_open: false,
             battle_filter_confirm_reset: false,
             battle_filter_gen: 0,
+            battle_overrides: std::sync::Arc::new(std::sync::Mutex::new(crate::battle::Overrides::default())),
+            battle_break_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(crate::battle::BATTLE_BREAK_SECS)),
+            battle_overrides_gen: 0,
+            battle_overrides_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             battle_candidates: Vec::new(),
             battle_candidates_sig: 0,
             battle_cards: Vec::new(),
@@ -3082,6 +3095,9 @@ impl SpaiApp {
         // Hull sizes for battle-filter rules, and the live filter config from settings.
         self.ship_sizes = std::sync::Arc::new(store.ship_sizes());
         *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
+        *self.battle_overrides.lock().unwrap() = store.load_battle_overrides();
+        self.battle_break_shared
+            .store(self.settings.battle_break_secs, std::sync::atomic::Ordering::Relaxed);
         self.work_throttle_shared
             .store(self.settings.work_throttle.as_u8(), std::sync::atomic::Ordering::Relaxed);
         crate::zkill::spawn(
@@ -3096,6 +3112,9 @@ impl SpaiApp {
             self.ship_sizes.clone(),
             self.player_sys_shared.clone(),
             self.work_throttle_shared.clone(),
+            self.battle_break_shared.clone(),
+            self.battle_overrides.clone(),
+            self.battle_overrides_gen_shared.clone(),
             ctx.clone(),
         );
 
@@ -4154,18 +4173,20 @@ impl SpaiApp {
         };
         let out = self.battle_history.clone();
         let loading = self.battle_history_loading.clone();
+        let break_gap = self.settings.battle_break_secs;
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let battles = crate::store::Store::open()
                 .ok()
                 .map(|s| {
                     let engs = s.load_engagements(0); // all of recorded history
+                    let overrides = s.load_battle_overrides();
                     crate::battle::cluster(
                         &engs,
                         crate::battle::BATTLE_WINDOW_SECS,
                         crate::battle::BATTLE_MAX_JUMPS,
-                        crate::battle::BATTLE_BREAK_SECS,
-                        &crate::battle::Overrides::default(),
+                        break_gap,
+                        &overrides,
                         |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
                     )
                     .into_iter()
@@ -4180,6 +4201,29 @@ impl SpaiApp {
             loading.store(false, Ordering::SeqCst);
             ctx.request_repaint();
         });
+    }
+
+    /// Run a manual battle-override edit (`f` does the store writes — set tag / exclude / scrub /
+    /// clear, using `Store::next_battle_tag` etc.), then republish the override map to the worker
+    /// and bump the generation so the live + history clusters and the candidate/detail caches all
+    /// refresh. Persisted, so the edit survives the constant re-clustering and a restart.
+    #[allow(dead_code)] // used by the battle-editor UI (next phase)
+    fn apply_battle_edit(&mut self, ctx: &egui::Context, f: impl FnOnce(&crate::store::Store)) {
+        {
+            let Some(store) = &self.store else { return };
+            f(store);
+            let fresh = store.load_battle_overrides();
+            *self.battle_overrides.lock().unwrap() = fresh;
+        }
+        self.battle_overrides_gen = self.battle_overrides_gen.wrapping_add(1);
+        self.battle_overrides_gen_shared
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.battle_detail_cache = None;
+        // The live worker re-clusters on the gen bump; the history view is a one-shot cluster, so
+        // re-run it explicitly when it's the active source.
+        if self.show_history {
+            self.load_battle_history(ctx);
+        }
     }
 
     /// The Battle Report view: clusters of killmails near the tracked area.
@@ -4203,7 +4247,7 @@ impl SpaiApp {
                 .unwrap()
                 .iter()
                 .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
-                .map(|b| (b.kills, b.end));
+                .map(|b| (b.kills, b.end, self.battle_overrides_gen));
             match sig {
                 None => {
                     // The battle aged out of the cluster — drop back to the list.
@@ -4411,6 +4455,8 @@ impl SpaiApp {
             self.show_history.hash(&mut h);
             self.player_system().unwrap_or(0).hash(&mut h);
             self.battle_filter_gen.hash(&mut h);
+            self.battle_overrides_gen.hash(&mut h);
+            self.settings.battle_break_secs.hash(&mut h);
             self.intel_state.lock().unwrap().reports.len().hash(&mut h);
             h.finish()
         };
@@ -13902,8 +13948,9 @@ struct BattleHover {
 /// changes (`sig`) rather than every frame.
 struct BattleDetailCache {
     kid: i64,
-    /// Cheap change signature: (kill count, last-kill time). Same engagements → same sides.
-    sig: (usize, i64),
+    /// Cheap change signature: (kill count, last-kill time, overrides generation). Same
+    /// engagements + no edit → same sides.
+    sig: (usize, i64, u64),
     battle: crate::battle::Battle,
     inv: crate::battle::Involvement,
     rosters: Vec<Vec<crate::battle::Participant>>,

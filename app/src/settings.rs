@@ -117,6 +117,9 @@ pub struct Settings {
     /// Minimum cumulative ISK destroyed for a battle to be listed (0 = no minimum). Persisted.
     #[serde(default)]
     pub min_battle_isk: f64,
+    /// Seconds of quiet that splits one battle into two (the battle-clustering break gap).
+    #[serde(default = "default_battle_break")]
+    pub battle_break_secs: i64,
     /// Bookmarked solar-system ids — drawn with a teal outline on the map.
     #[serde(default)]
     pub bookmarks: Vec<i64>,
@@ -610,6 +613,10 @@ fn default_intel_ttl() -> i64 {
     300
 }
 
+fn default_battle_break() -> i64 {
+    crate::battle::BATTLE_BREAK_SECS
+}
+
 fn default_true() -> bool {
     true
 }
@@ -681,6 +688,7 @@ impl Default for Settings {
             alerts: AlertSettings::default(),
             battles: BattleFilter::default(),
             min_battle_isk: 0.0,
+            battle_break_secs: default_battle_break(),
             bookmarks: Vec::new(),
             map_overlay_opacity: 0.9,
             map_overlay_smart: false,

@@ -19,6 +19,8 @@ use crate::settings::{BattleFilter, MatchData, ShipSize};
 
 /// Live, app-owned battle-filter config the worker reads each kill.
 pub type SharedBattleFilter = Arc<Mutex<BattleFilter>>;
+/// Live, app-owned manual battle overrides (split/merge tags, excluded kills, scrubbed pilots).
+pub type SharedOverrides = Arc<Mutex<crate::battle::Overrides>>;
 /// Ship type id → hull size tier (for filter hull conditions).
 pub type ShipSizes = Arc<HashMap<i64, ShipSize>>;
 
@@ -48,6 +50,9 @@ pub fn spawn(
     ship_sizes: ShipSizes,
     player_sys: Arc<AtomicI64>,
     throttle: Arc<std::sync::atomic::AtomicU8>,
+    break_gap: Arc<AtomicI64>,
+    overrides: SharedOverrides,
+    overrides_gen: Arc<std::sync::atomic::AtomicU64>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -73,13 +78,16 @@ pub fn spawn(
         // rebuilt (side inference is the expensive part), so a few new kills don't re-infer the
         // whole day's battles. Keyed by the battle's kill-id set hash.
         let mut battle_cache: HashMap<u64, battle::Battle> = HashMap::new();
+        let mut last_ov_gen = overrides_gen.load(std::sync::atomic::Ordering::Relaxed);
         if !buffer.is_empty() {
+            let bg = break_gap.load(std::sync::atomic::Ordering::Relaxed);
+            let ov = overrides.lock().unwrap().clone();
             let clustered = battle::cluster_cached(
                 &buffer,
                 battle::BATTLE_WINDOW_SECS,
                 battle::BATTLE_MAX_JUMPS,
-                battle::BATTLE_BREAK_SECS,
-                &battle::Overrides::default(),
+                bg,
+                &ov,
                 |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
                 &mut battle_cache,
             );
@@ -197,6 +205,14 @@ pub fn spawn(
             }
 
             dirty |= changed;
+            // A manual edit (split/merge/exclude/scrub) or a break-gap change must re-cluster even
+            // with no new kills, and invalidates the kill-set cache (grouping itself changed).
+            let g = overrides_gen.load(std::sync::atomic::Ordering::Relaxed);
+            if g != last_ov_gen {
+                last_ov_gen = g;
+                dirty = true;
+                battle_cache.clear();
+            }
             // Recluster at most once per throttle window — clustering is O(n²), so doing it on
             // every kill is the main load source during busy periods.
             if dirty
@@ -212,12 +228,14 @@ pub fn spawn(
                 if buffer.len() != before {
                     buffer_ids = buffer.iter().map(|e| e.kill_id).collect();
                 }
+                let bg = break_gap.load(std::sync::atomic::Ordering::Relaxed);
+                let ov = overrides.lock().unwrap().clone();
                 let clustered = battle::cluster_cached(
                     &buffer,
                     battle::BATTLE_WINDOW_SECS,
                     battle::BATTLE_MAX_JUMPS,
-                    battle::BATTLE_BREAK_SECS,
-                    &battle::Overrides::default(),
+                    bg,
+                    &ov,
                     |a, b| systems.jumps(a, b, battle::BATTLE_MAX_JUMPS),
                     &mut battle_cache,
                 );
