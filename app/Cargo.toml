@@ -55,3 +55,8 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 # is switched to wgpu on Windows in main.rs; Linux/macOS stay on glow.
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.34", features = ["wgpu"] }
+
+# System tray on Windows + macOS (Linux uses ksni above). Created on the main thread and
+# driven through the winit/eframe event loop.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = "0.19"

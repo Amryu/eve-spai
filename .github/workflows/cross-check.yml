@@ -1,0 +1,23 @@
+name: Cross check
+
+# Compile-check the platform-specific code (tray, autostart, window helpers) on Windows and macOS,
+# which can't be built on the Linux dev machine. Catches cfg-gated breakage before a release tag.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --workspace --all-targets

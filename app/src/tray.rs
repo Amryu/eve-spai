@@ -26,9 +26,56 @@ pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
             let _ = std::fs::remove_file(autostart_path());
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    // Windows: a per-user Run value pointing at the (quoted, for spaces) executable.
+    #[cfg(target_os = "windows")]
     {
-        let _ = enabled; // TODO: Windows (Run key) / macOS (LaunchAgent)
+        const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        const VALUE: &str = "EVE Spai";
+        let status = if enabled {
+            let exe = std::env::current_exe()?;
+            std::process::Command::new("reg")
+                .args(["add", RUN_KEY, "/v", VALUE, "/t", "REG_SZ", "/d"])
+                .arg(format!("\"{}\"", exe.display()))
+                .arg("/f")
+                .status()
+        } else {
+            std::process::Command::new("reg")
+                .args(["delete", RUN_KEY, "/v", VALUE, "/f"])
+                .status()
+        };
+        // Best-effort: a missing value on delete returns non-zero, which is fine.
+        let _ = status;
+    }
+    // macOS: a LaunchAgent plist with RunAtLoad (loaded at login).
+    #[cfg(target_os = "macos")]
+    {
+        let path = macos_agent_path();
+        if enabled {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let exe = std::env::current_exe()?;
+            std::fs::write(
+                &path,
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                     <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+                     \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                     <plist version=\"1.0\"><dict>\n\
+                     \t<key>Label</key><string>com.evespai.app</string>\n\
+                     \t<key>ProgramArguments</key><array><string>{}</string></array>\n\
+                     \t<key>RunAtLoad</key><true/>\n\
+                     </dict></plist>\n",
+                    exe.display()
+                ),
+            )?;
+        } else {
+            let _ = std::fs::remove_file(macos_agent_path());
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        let _ = enabled;
     }
     Ok(())
 }
@@ -40,9 +87,18 @@ fn autostart_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("eve-spai.desktop"))
 }
 
+#[cfg(target_os = "macos")]
+fn macos_agent_path() -> std::path::PathBuf {
+    directories::BaseDirs::new()
+        .map(|b| b.home_dir().join("Library/LaunchAgents/com.evespai.app.plist"))
+        .unwrap_or_else(|| std::path::PathBuf::from("com.evespai.app.plist"))
+}
+
 #[cfg(target_os = "linux")]
 pub use linux::{spawn, TrayCmd};
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub use desktop::{spawn, TrayCmd};
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub use other::{spawn, TrayCmd};
 
 #[cfg(target_os = "linux")]
@@ -218,7 +274,110 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+// Windows + macOS: a tray via the `tray-icon` crate. The StatusItem/Shell_NotifyIcon handle must
+// be created and live on the main (event-loop) thread, so `spawn` runs from `SpaiApp::new` (main
+// thread) and the icon is parked in a thread-local to stay alive. Menu clicks arrive through a
+// global event handler that flips the same atomics the Linux path uses and wakes the UI.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+mod desktop {
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::{TrayIcon, TrayIconBuilder};
+
+    #[derive(Clone, Default)]
+    pub struct TrayCmd {
+        show: Arc<AtomicBool>,
+        exit: Arc<AtomicBool>,
+        attention: Arc<AtomicBool>,
+    }
+
+    impl TrayCmd {
+        pub fn take_show(&self) -> bool {
+            self.show.swap(false, Ordering::SeqCst)
+        }
+        pub fn exit_requested(&self) -> bool {
+            self.exit.load(Ordering::SeqCst)
+        }
+        /// Show/clear the unread badge by swapping the tray icon (main thread only).
+        pub fn set_attention(&self, on: bool) {
+            if self.attention.swap(on, Ordering::SeqCst) != on {
+                TRAY.with(|t| {
+                    if let (Some(tray), Some(icon)) = (t.borrow().as_ref(), make_icon(on)) {
+                        let _ = tray.set_icon(Some(icon));
+                    }
+                });
+            }
+        }
+    }
+
+    // Keeps the tray handle alive for the app's lifetime (dropped only at main-thread exit).
+    thread_local! {
+        static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
+    }
+
+    /// The program logo as a tray icon (RGBA), with an optional red unread badge bottom-right.
+    fn make_icon(badge: bool) -> Option<tray_icon::Icon> {
+        let img = image::load_from_memory(include_bytes!("../../assets/eve-spai.png")).ok()?.to_rgba8();
+        let (w, h) = img.dimensions();
+        let mut rgba = img.into_raw();
+        if badge {
+            let r = (w.min(h) as f32) / 5.0;
+            let (cx, cy) = (w as f32 - r - 1.0, h as f32 - r - 1.0);
+            for y in 0..h {
+                for x in 0..w {
+                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                    if dx * dx + dy * dy <= r * r {
+                        let i = ((y * w + x) * 4) as usize;
+                        rgba[i..i + 4].copy_from_slice(&[0xE0, 0x4C, 0x4C, 0xFF]);
+                    }
+                }
+            }
+        }
+        tray_icon::Icon::from_rgba(rgba, w, h).ok()
+    }
+
+    pub fn spawn(ctx: egui::Context) -> Option<TrayCmd> {
+        let cmd = TrayCmd::default();
+        let menu = Menu::new();
+        let show = MenuItem::new("Show EVE Spai", true, None);
+        let exit = MenuItem::new("Exit", true, None);
+        menu.append(&show).ok()?;
+        menu.append(&exit).ok()?;
+        let show_id = show.id().clone();
+        let exit_id = exit.id().clone();
+
+        let mut builder = TrayIconBuilder::new().with_tooltip("EVE Spai").with_menu(Box::new(menu));
+        if let Some(icon) = make_icon(false) {
+            builder = builder.with_icon(icon);
+        }
+        let tray = match builder.build() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[tray] unavailable: {e}");
+                return None;
+            }
+        };
+        TRAY.with(|t| *t.borrow_mut() = Some(tray));
+
+        // Route menu clicks to the shared atomics and wake the UI immediately (the handler runs on
+        // the event-loop thread, same as the channel would deliver).
+        let show_flag = cmd.show.clone();
+        let exit_flag = cmd.exit.clone();
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            if event.id == show_id {
+                show_flag.store(true, Ordering::SeqCst);
+            } else if event.id == exit_id {
+                exit_flag.store(true, Ordering::SeqCst);
+            }
+            ctx.request_repaint();
+        }));
+        Some(cmd)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 mod other {
     #[derive(Clone, Default)]
     pub struct TrayCmd;
