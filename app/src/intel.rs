@@ -2135,12 +2135,9 @@ pub fn analyze_ctx(
     let mut pilots = drop_covered_prefixes(&pilots, text);
     // A pilot name always contains a letter — a bare number ("warpin 100") is a count, not a name.
     pilots.retain(|p| p.chars().any(|c| c.is_alphabetic()));
-    // A SHORT single token with NO lower-case letter ("UALX", "DT", "F2A") is a system
-    // code/acronym, not a pilot. A longer all-caps token is a genuine name ("PORTOS11"), so only
-    // drop the short ones; ESI rejects any remaining non-character. (Multi-word candidates exempt.)
-    pilots.retain(|p| {
-        p.contains(' ') || p.chars().count() > 4 || p.chars().any(|c| c.is_ascii_lowercase())
-    });
+    // Case and length don't decide a name: EVE names can be all-caps and short ("DT", "PORTOS11").
+    // System codes are caught by `looks_like_system_code` / the neighbour-gate resolution and ship
+    // acronyms by the ship index; anything else is left for ESI to confirm or reject.
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
@@ -3194,14 +3191,14 @@ mod tests {
     }
 
     #[test]
-    fn long_all_caps_name_is_a_pilot_short_acronym_is_not() {
+    fn all_caps_names_are_pilots_regardless_of_length() {
         let s = systems();
-        // A longer all-caps token is a real name and survives, even pasted after a system.
+        // Case and length don't disqualify a name: a long all-caps name resolves...
         let r = analyze("C-J6MT  PORTOS11", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(esi_resolve(&r.pilots, &["PORTOS11"]), vec!["PORTOS11".to_string()]);
-        // A short all-caps acronym is still dropped (system code / ship acronym).
-        let r2 = analyze("DT in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r2.pilots.is_empty(), "pilots={:?}", r2.pilots);
+        // ...and a short all-caps name does too (ESI confirms it).
+        let r2 = analyze("XEN in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(esi_resolve(&r2.pilots, &["XEN"]), vec!["XEN".to_string()]);
     }
 
     #[test]
