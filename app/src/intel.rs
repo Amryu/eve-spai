@@ -389,7 +389,7 @@ impl IntelState {
     }
 }
 
-const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+"];
+const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+", "safe"];
 
 /// Active pilots whose names embed intel keywords. Matched case-sensitively against the readable
 /// text so the keyword inside the name is never read as a status keyword. Extend as needed.
@@ -409,7 +409,7 @@ const PILOT_STOP: &[&str] = &[
     // don't drop real character names).
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there", "to",
-    "crit", "wrong", "channel", "see", "nothing", "else",
+    "crit", "wrong", "channel", "see", "nothing", "else", "safe",
     // Common English words that are ALSO real cached pilot names (found by scanning the known-pilot
     // cache against an English dictionary). Stop-listed so the cache doesn't false-match them when
     // they appear as plain prose — a player happening to be named "Time"/"Worm" loses to the word.
@@ -2208,10 +2208,12 @@ pub fn analyze_ctx(
         structures,
         celestials,
         // Status keywords ignore words that belong to a pilot-name run, so a pilot
-        // named e.g. "Clear Skies" can't spoof a "clear" status.
-        clear: lower_tokens
-            .iter()
-            .any(|t| CLEAR_WORDS.contains(&t.as_str()) && !pilot_tokens.contains(t)),
+        // named e.g. "Clear Skies" can't spoof a "clear" status. A "?" makes it a question
+        // ("clear?", "is it safe?"), not an assertion — never a clear.
+        clear: !lower.contains('?')
+            && lower_tokens
+                .iter()
+                .any(|t| CLEAR_WORDS.contains(&t.as_str()) && !pilot_tokens.contains(t)),
         status: lower_tokens
             .iter()
             .any(|t| matches!(t.as_str(), "status" | "stat" | "eyes") && !pilot_tokens.contains(t)),
@@ -3186,6 +3188,17 @@ mod tests {
             "systems={:?}",
             r.systems
         );
+    }
+
+    #[test]
+    fn safe_is_a_clear_and_question_mark_suppresses_it() {
+        let s = systems();
+        // "safe" is equivalent to "clear" (when not part of a pilot name).
+        assert!(analyze("Rancer safe", &s, &noships(), &noknown(), 1, "ch", "x").clear);
+        assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x").clear);
+        // A "?" makes it a question, never a clear.
+        assert!(!analyze("Rancer clear?", &s, &noships(), &noknown(), 1, "ch", "x").clear);
+        assert!(!analyze("is Rancer safe?", &s, &noships(), &noknown(), 1, "ch", "x").clear);
     }
 
     #[test]
