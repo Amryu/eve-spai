@@ -1673,7 +1673,6 @@ pub fn analyze_ctx(
         }
     }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
-    let mut known_matched: std::collections::HashSet<String> = std::collections::HashSet::new();
     for k in match_known_pilots(&masked, known_pilots) {
         // A standalone word that's a known ship is the ship ("Buzzard"); a null-sec
         // code is the system, not a player who happens to be named like it ("C-J").
@@ -1688,7 +1687,6 @@ pub fn analyze_ctx(
         {
             continue;
         }
-        known_matched.insert(k.to_lowercase());
         if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&k)) {
             pilots.push(k);
         }
@@ -1856,91 +1854,6 @@ pub fn analyze_ctx(
                 if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
                     pilots.push(name);
                 }
-            }
-        }
-    }
-    // Un-glue a hand-typed (no double-space) mis-joined list of handles. The heuristic glues
-    // space-separated handles ("Gliar Mliarvis Sliarhia") into one run; if the cache confirms
-    // >= 2 distinct pilots inside it (and the run isn't itself a known name), the run is really
-    // several pilots, so drop it and surface each known sub-span (proper-cased — they may have
-    // been dropped earlier as sub-phrases of this very run) plus any uncovered gap token.
-    if !known_matched.is_empty() {
-        let mut add_back: Vec<String> = Vec::new();
-        let mut dismantled: Vec<String> = Vec::new();
-        let mut keep: Vec<bool> = vec![true; pilots.len()];
-        for (i, p) in pilots.iter().enumerate() {
-            let pl = p.to_lowercase();
-            // Never un-glue a 1-2 word candidate: it may be a single real name whose two words are
-            // separately cached players ("Ghost Magician"). Keep it whole so the normal windowing
-            // queries the full name and ESI confirms it — only split a longer (3+ word) run, which
-            // is far more likely a genuinely mis-joined list of handles.
-            if p.split_whitespace().count() <= 2 || known_matched.contains(&pl) {
-                continue;
-            }
-            // A double-space paste segment is one deliberate entity (a name never contains a double
-            // space), so never un-glue it even if its words are separately cached players.
-            if text.contains("  ")
-                && text
-                    .split("  ")
-                    .map(str::trim)
-                    .any(|seg| trim_paste_location_tail(seg).eq_ignore_ascii_case(p))
-            {
-                continue;
-            }
-            let padded = format!(" {pl} ");
-            let inside = known_matched
-                .iter()
-                .filter(|k| **k != pl && padded.contains(&format!(" {k} ")))
-                .count();
-            let parts = match_known_pilots(p, known_pilots);
-            let covered: std::collections::HashSet<String> = parts
-                .iter()
-                .flat_map(|k| k.split_whitespace().map(|w| w.to_lowercase()))
-                .collect();
-            let extras: Vec<String> = p
-                .split_whitespace()
-                .filter(|t| !covered.contains(&t.to_lowercase()))
-                .map(str::to_owned)
-                .collect();
-            // Also un-glue when exactly one *multi-word* known name is a prefix and the only
-            // leftover tokens are lowercase handles: the cache is authoritative for that name's
-            // boundary, so a trailing lowercase word ("malexict" after "Shining Baldman") is a
-            // separate pilot, not part of the name. A Title-case leftover ("Smith" after a cached
-            // "John") stays glued — it may be one real name.
-            let lone_known_plus_handle = inside == 1
-                && parts.iter().any(|n| n.contains(' '))
-                && !extras.is_empty()
-                && extras.iter().all(|t| {
-                    let c = t.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '\'');
-                    c.chars().next().is_some_and(|ch| ch.is_ascii_lowercase())
-                        && c.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 3
-                        && !is_pilot_stopword(c)
-                });
-            if inside < 2 && !lone_known_plus_handle {
-                continue;
-            }
-            keep[i] = false;
-            dismantled.push(pl.clone());
-            add_back.extend(parts.iter().cloned());
-            add_back.extend(extras);
-        }
-        let mut it = keep.iter();
-        pilots.retain(|_| *it.next().unwrap());
-        // Drop other heuristic fragments of a dismantled run (e.g. "Baldman malexict" from
-        // "Shining Baldman malexict", produced by the lowercase-tail pass) — the authoritative
-        // decomposition in `add_back` replaces them.
-        if !dismantled.is_empty() {
-            let ab_lc: std::collections::HashSet<String> =
-                add_back.iter().map(|s| s.to_lowercase()).collect();
-            pilots.retain(|p| {
-                let plc = p.to_lowercase();
-                ab_lc.contains(&plc)
-                    || !dismantled.iter().any(|d| format!(" {d} ").contains(&format!(" {plc} ")))
-            });
-        }
-        for g in add_back {
-            if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&g)) {
-                pilots.push(g);
             }
         }
     }
@@ -3232,20 +3145,24 @@ mod tests {
         let mut known = noknown();
         known.insert("ghost".into(), 1);
         known.insert("magician".into(), 2);
-        // A 1-2 word name is never un-glued, even when its two words are separately cached players
-        // — whether pasted (double space) or typed (single space). It stays one name for ESI to
-        // confirm. (A genuine mis-joined list is 3+ words; see below.)
+        // Nothing is un-glued pre-ESI: a candidate stays one name until ESI confirms the WHOLE
+        // isn't a character. So a 2-word name whose words are separately cached stays whole...
         let paste = analyze("C-J6MT  Ghost Magician", &s, &noships(), &known, 1, "ch", "x");
         assert_eq!(paste.pilots, vec!["Ghost Magician".to_string()], "{:?}", paste.pilots);
         let typed = analyze("Ghost Magician in Rancer", &s, &noships(), &known, 1, "ch", "x");
         assert_eq!(typed.pilots, vec!["Ghost Magician".to_string()], "{:?}", typed.pilots);
-        // A 3-word run of separately-cached handles IS un-glued (a mis-joined list).
+        // ...and a 3-word run also stays whole at parse time — only once ESI rejects the whole and
+        // confirms the handles does the reconcile (cover) split it into the list.
         let mut k3 = known.clone();
         k3.insert("gliar".into(), 3);
         k3.insert("mliarvis".into(), 4);
         k3.insert("sliarhia".into(), 5);
         let list = analyze("Gliar Mliarvis Sliarhia in Rancer", &s, &noships(), &k3, 1, "ch", "x");
-        assert_eq!(list.pilots.len(), 3, "should un-glue a 3-word list: {:?}", list.pilots);
+        assert_eq!(list.pilots.len(), 1, "kept whole at parse time: {:?}", list.pilots);
+        let split = esi_resolve(&list.pilots, &["Gliar", "Mliarvis", "Sliarhia"]);
+        assert_eq!(split.len(), 3, "ESI-rejected whole + confirmed handles → list: {:?}", split);
+        // A 2-word whole stays whole through ESI too (the handles aren't surfaced).
+        assert!(esi_resolve(&paste.pilots, &["Ghost", "Magician"]).is_empty());
     }
 
     #[test]
@@ -4476,20 +4393,21 @@ mod tests {
         .collect();
         let plain = "clol23 MuskQAQ rm712 wenmg 9-OUGJ";
         let r = analyze(plain, &s, &noships(), &known, 1, "ch", "TreeBeard Elderling");
-        let lc: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
+        // Kept whole at parse time — ESI decides. Once it rejects the 4-word whole and confirms the
+        // handles (MuskQAQ included), the reconcile splits it into them.
+        let split = esi_resolve(&r.pilots, &["clol23", "MuskQAQ", "rm712", "wenmg"]);
+        let lc: Vec<String> = split.iter().map(|p| p.to_lowercase()).collect();
         for want in ["clol23", "rm712", "wenmg", "muskqaq"] {
-            assert!(lc.contains(&want.to_string()), "missing {want}: {:?}", r.pilots);
+            assert!(lc.contains(&want.to_string()), "missing {want}: {:?}", split);
         }
-        // The bogus glued 4-word run is gone.
-        assert!(!r.pilots.iter().any(|p| p.split_whitespace().count() >= 3), "glued run remained: {:?}", r.pilots);
 
-        // Guard: a genuine 2-word name that merely contains ONE known handle is NOT split.
+        // Guard: a 2-word name with ONE known handle is NEVER split (kept whole, ESI confirms it).
         let known2: std::collections::HashMap<String, i64> =
             [("comet".to_string(), 90i64)].into_iter().collect();
         let r2 = analyze("Comet Rider in 9-OUGJ", &s, &noships(), &known2, 1, "ch", "x");
-        // "Comet Rider" stays intact (only one known sub-span).
-        assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Comet Rider")) || r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("comet")), "pilots: {:?}", r2.pilots);
-        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Rider")), "Comet Rider wrongly split: {:?}", r2.pilots);
+        let resolved = esi_resolve(&r2.pilots, &["Comet Rider"]);
+        assert!(resolved.iter().any(|p| p.eq_ignore_ascii_case("Comet Rider")), "pilots: {resolved:?}");
+        assert!(!resolved.iter().any(|p| p.eq_ignore_ascii_case("Rider")), "wrongly split: {resolved:?}");
     }
 
     #[test]

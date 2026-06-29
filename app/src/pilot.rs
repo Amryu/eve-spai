@@ -132,12 +132,12 @@ impl PilotCache {
                 }
             }
         }
-        // Refuse any CONTIGUOUS run of 2+ single-word claims: a stretch of adjacent single names
-        // is almost always ONE multi-word character ("Zantor Thes", "Andy Shank", "I Forgot Who")
-        // that ESI hasn't confirmed *as a whole* yet — its words just happen to also be real
-        // players. Dropping the run leaves it as the pending blob (re-queried) instead of
-        // exploding into spurious singles; a genuine glued list carries multi-word names that
-        // break the run, so those still split.
+        // A CONTIGUOUS run of EXACTLY two single-word claims is almost always ONE two-word
+        // character ("Zantor Thes", "Andy Shank", "Ghost Magician") that ESI hasn't confirmed as a
+        // whole yet — its words just happen to also be real players — so drop it (kept as the
+        // pending blob, re-queried) rather than exploding into two spurious singles. A LONGER run
+        // (3+) is, once ESI has rejected the whole name, a genuinely mis-joined list of handles
+        // ("Gliar Mliarvis Sliarhia"), so surface each. A lone single or a multi-word claim stands.
         let mut out = Vec::new();
         let mut k = 0;
         while k < claims.len() {
@@ -149,12 +149,14 @@ impl PilotCache {
             {
                 j += 1; // extend a contiguous single-word run
             }
-            if claims[k].1 == 1 && j > k {
-                k = j + 1; // 2+ adjacent singles — drop the whole run
+            if claims[k].1 == 1 && j == k + 1 {
+                k = j + 1; // exactly two adjacent singles — drop (keep the name whole)
             } else {
-                let (s, l) = claims[k];
-                out.push(words[s..s + l].join(" "));
-                k += 1;
+                for m in k..=j {
+                    let (s, l) = claims[m];
+                    out.push(words[s..s + l].join(" "));
+                }
+                k = j + 1;
             }
         }
         out
@@ -426,18 +428,27 @@ mod tests {
     }
 
     #[test]
-    fn cover_refuses_three_single_word_split() {
+    fn cover_splits_three_handles_but_keeps_a_two_word_name() {
         let mut c = PilotCache::default();
-        // "I Forgot Who" is one character whose individual words each happen to be real
-        // players. The whole name resolved as a non-name, but it must NOT explode into
-        // three separate single-word pilots.
-        c.resolved.insert("i".into(), Some(1));
-        c.resolved.insert("forgot".into(), Some(2));
-        c.resolved.insert("who".into(), Some(3));
-        c.resolved.insert("i forgot".into(), None);
-        c.resolved.insert("forgot who".into(), None);
-        c.resolved.insert("i forgot who".into(), None);
-        assert!(c.cover("I Forgot Who").is_empty());
+        // Three separately-confirmed handles whose 3-word join ESI rejected as a name: a genuinely
+        // mis-joined list, so surface each.
+        for n in ["gliar", "mliarvis", "sliarhia"] {
+            c.resolved.insert(n.into(), Some(1));
+        }
+        for n in ["gliar mliarvis", "mliarvis sliarhia", "gliar mliarvis sliarhia"] {
+            c.resolved.insert(n.into(), None);
+        }
+        assert_eq!(
+            c.cover("Gliar Mliarvis Sliarhia"),
+            vec!["Gliar".to_string(), "Mliarvis".to_string(), "Sliarhia".to_string()]
+        );
+        // But EXACTLY two adjacent singles stay whole — a likely two-word name ("Zantor Thes")
+        // whose words just happen to be players, kept as the pending blob.
+        let mut c2 = PilotCache::default();
+        c2.resolved.insert("zantor".into(), Some(1));
+        c2.resolved.insert("thes".into(), Some(2));
+        c2.resolved.insert("zantor thes".into(), None);
+        assert!(c2.cover("Zantor Thes").is_empty());
     }
 
     #[test]
