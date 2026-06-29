@@ -458,8 +458,6 @@ pub struct SpaiApp {
     eve_focused: bool,
     /// Throttle for the EVE-focus check.
     eve_focus_checked: Option<std::time::Instant>,
-    /// Throttle for reconciling pilot candidates that turned out not to be characters.
-    pilot_reconcile_checked: Option<std::time::Instant>,
     /// Ship name -> (id, name), for reclassifying ship-words wrongly read as pilots.
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     /// Update-checker state + one-shot startup check + per-session "ask later" flag.
@@ -885,6 +883,11 @@ impl SpaiApp {
         // them as locals here and hand the daemon its own clones before moving them into `self`.
         let intel_state =
             std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default()));
+        let pilots: crate::pilot::SharedPilots =
+            std::sync::Arc::new(std::sync::Mutex::new(crate::pilot::PilotCache::default()));
+        crate::pilot::spawn_resolver(pilots.clone(), cc.egui_ctx.clone());
+        let killfeed: crate::zkill::SharedKillFeed =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recent_alerts: crate::gamewatcher::AlertLog =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let alerts_engine = std::sync::Arc::new(AlertEngine::new(
@@ -894,7 +897,10 @@ impl SpaiApp {
         spawn_alert_daemon(
             alerts_engine.clone(),
             intel_state.clone(),
+            pilots.clone(),
             player.clone(),
+            killfeed.clone(),
+            kill_cache.clone(),
             cc.egui_ctx.clone(),
         );
 
@@ -948,7 +954,7 @@ impl SpaiApp {
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
-            killfeed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            killfeed,
             ship_by_id: std::collections::HashMap::new(),
             kills_loaded: false,
             player,
@@ -990,7 +996,6 @@ impl SpaiApp {
             session_start: chrono::Utc::now().timestamp(),
             eve_focused: true,
             eve_focus_checked: None,
-            pilot_reconcile_checked: None,
             ship_index: None,
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked: false,
@@ -1160,13 +1165,7 @@ impl SpaiApp {
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             type_names_loading: std::sync::Arc::new(std::sync::Mutex::new(false)),
-            pilots: {
-                let cache: crate::pilot::SharedPilots = std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::pilot::PilotCache::default(),
-                ));
-                crate::pilot::spawn_resolver(cache.clone(), cc.egui_ctx.clone());
-                cache
-            },
+            pilots,
             affiliations: {
                 let cache = std::sync::Arc::new(std::sync::Mutex::new(
                     crate::affiliation::AffilCache::default(),
@@ -1212,6 +1211,11 @@ impl SpaiApp {
             cfg.only_undocked = self.settings.alert_only_undocked;
             cfg.disabled = self.settings.intel_disabled_chars.clone();
             cfg.systems = self.systems.clone();
+            cfg.ship_index = self.ship_index.clone();
+            cfg.active_character = self.active_character.clone();
+            cfg.kill_intel = self.settings.kill_intel;
+            cfg.kill_intel_jumps = self.settings.kill_intel_jumps;
+            cfg.intel_max_jumps = self.intel_max_jumps;
         }
         let fired = std::mem::take(&mut self.alerts_engine.runtime.lock().unwrap().fired_ui);
         if fired.is_empty() {
@@ -2690,48 +2694,6 @@ impl SpaiApp {
 
     /// Turn buffered zkill killmails into intel cards when within range and worth showing
     /// (skips shuttles, rookie corvettes and empty pods).
-    fn ingest_killfeed(&mut self) {
-        let events: Vec<crate::zkill::KillEvent> =
-            std::mem::take(&mut *self.killfeed.lock().unwrap());
-        if !self.settings.kill_intel || events.is_empty() {
-            return;
-        }
-        let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
-            return;
-        };
-        self.ensure_ship_by_id();
-        // 0 = follow the regular intel feed's jump range; if that's "any" (0), cap so the
-        // global kill feed doesn't flood the cards.
-        let range = match (self.settings.kill_intel_jumps, self.intel_max_jumps) {
-            (0, 0) => 10,
-            (0, feed) => feed,
-            (k, _) => k,
-        };
-        let mut st = self.intel_state.lock().unwrap();
-        for ev in events {
-            if geo.jumps(me, ev.system_id, range).is_none() {
-                continue;
-            }
-            let Some(report) = self.kill_report(&ev, &geo) else { continue };
-            // The feed already carries the full killmail, so enrich the card immediately from it
-            // instead of re-fetching (zKill's per-kill API lags live kills and would otherwise
-            // leave fresh cards permanently un-enriched).
-            self.kill_cache.lock().unwrap().insert(ev.killmail_id, Some(ev.info.clone()));
-            // Persist so the card (and its enrichment) survive a restart (deduped by killmail id).
-            if let Some(store) = &self.store {
-                store.add_kill_intel(
-                    ev.killmail_id,
-                    ev.system_id,
-                    ev.ship_type_id,
-                    ev.time,
-                    ev.value,
-                );
-                store.save_kill_details(&ev.info);
-            }
-            st.push(report);
-        }
-    }
-
     /// Populate the ship-id → name map from the ship index, once it's available.
     fn ensure_ship_by_id(&mut self) {
         if self.ship_by_id.is_empty() {
@@ -2745,60 +2707,6 @@ impl SpaiApp {
 
     /// Build a kill-intel card from a zKill event (no range filter), or None for a ship
     /// type not worth showing (shuttle, rookie corvette, cheap empty pod).
-    fn kill_report(
-        &self,
-        ev: &crate::zkill::KillEvent,
-        geo: &crate::geo::Systems,
-    ) -> Option<crate::intel::IntelReport> {
-        let sys = geo.info_of(ev.system_id)?;
-        // Hull from the SDE, or an Upwell structure (not in the ship table) so structure kills show.
-        let ship = self
-            .ship_by_id
-            .get(&ev.ship_type_id)
-            .cloned()
-            .or_else(|| crate::intel::structure_name_by_type(ev.ship_type_id).map(str::to_owned))
-            .unwrap_or_default();
-        let lower = ship.to_lowercase();
-        // Skip noise: shuttles, rookie corvettes, cheap empty pods, and anchorable deployables.
-        // Every player-anchorable deployable is a "Mobile X" (tractor unit, depot, small/medium/
-        // large warp disruptor, micro jump unit, siphon unit, scan inhibitor, cyno beacon/
-        // inhibitor, vault, observatory) and no real hull has "Mobile" in its name, so the
-        // substring is the exact, complete catch.
-        if lower.contains("shuttle")
-            || lower.contains("mobile ")
-            || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
-            // Regular pod and the Genolution "Auroral" 197-variant capsule: skip unless valuable.
-            || (lower.starts_with("capsule") && ev.value < 10_000_000.0)
-        {
-            return None;
-        }
-        let mut report = crate::intel::IntelReport::default();
-        report.received = ev.time;
-        report.killmail = true;
-        report.channel = "zKill".to_owned();
-        report.reporter = "zKill".to_owned();
-        report.isk = Some(ev.value as u64);
-        report.systems.push(crate::intel::DetectedSystem {
-            id: sys.id,
-            name: sys.name.clone(),
-            security: sys.security,
-        });
-        if ship.is_empty() {
-            report.text = format!("Ship lost in {}", sys.name);
-        } else {
-            report.ships.push(crate::intel::DetectedShip { id: ev.ship_type_id, name: ship.clone() });
-            report.text = format!("{} lost in {}", ship, sys.name);
-        }
-        // The killmail link gives the card an "open on zKill" button + triggers enrichment
-        // (which resolves the victim who lost the ship).
-        report.links.push(crate::intel::IntelLink {
-            kind: crate::intel::LinkKind::Killmail,
-            url: format!("https://zkillboard.com/kill/{}/", ev.killmail_id),
-            kill_id: Some(ev.killmail_id),
-        });
-        Some(report)
-    }
-
     /// Reload persisted zKill kill-intel into the feed once on startup, so cards survive a
     /// restart. Kept within the same 1-hour window the intel feed prunes to; older rows are
     /// dropped. Bypasses the range filter (location may differ from when first seen). Waits
@@ -2844,7 +2752,7 @@ impl SpaiApp {
                 killmail_id,
                 info: Default::default(), // enrichment already preloaded into the cache above
             };
-            if let Some(report) = self.kill_report(&ev, &geo) {
+            if let Some(report) = kill_report(&ev, &geo, &self.ship_by_id) {
                 reports.push(report);
             }
         }
@@ -2866,163 +2774,6 @@ impl SpaiApp {
     /// A pilot candidate that ESI confirms is NOT a character falls back to being a
     /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
     /// it's not a real pilot). showinfo-confirmed characters are never demoted.
-    fn reconcile_unresolved_pilots(&mut self) -> bool {
-        let due = self.pilot_reconcile_checked.map(|t| t.elapsed().as_millis() > 700).unwrap_or(true);
-        if !due {
-            return false;
-        }
-        self.pilot_reconcile_checked = Some(std::time::Instant::now());
-        let Some(geo) = self.systems.clone() else { return false };
-        let ships = self.ship_index.clone();
-        let mut changed = false;
-        // Lock order MUST match the watcher (intel_state → pilots); the reverse order
-        // here deadlocked the UI thread against the watcher (ABBA).
-        let mut st = self.intel_state.lock().unwrap();
-        let mut cache = self.pilots.lock().unwrap();
-        for r in &mut st.reports {
-            let original: Vec<String> = std::mem::take(&mut r.pilots);
-            let mut new_pilots: Vec<String> = Vec::new();
-            for p in original.iter().cloned() {
-                if crate::intel::is_pilot_stopword(&p) {
-                    continue; // blacklist overrides any cached verdict
-                }
-                match cache.get(&p) {
-                    // Confirmed character — keep as-is.
-                    Some(Some(_)) => new_pilots.push(p),
-                    // Still pending — keep showing it, and (re)queue the full name + its
-                    // sub-spans so a lost queue entry (dropped at the cap, in flight when a
-                    // batch failed, or a never-queued 4+ word run) still resolves instead of
-                    // staying pending until a restart.
-                    None => {
-                        cache.queue(&p);
-                        for w in crate::pilot::name_windows(&p) {
-                            cache.queue(&w);
-                        }
-                        new_pilots.push(p);
-                    }
-                    // Not a character as a whole: cover it with confirmed sub-names
-                    // (the over-glued run "Wwallddo Lulu Uanid" -> Wwallddo + Lulu Uanid).
-                    Some(None) => {
-                        let cover: Vec<String> = cache
-                            .cover(&p)
-                            .into_iter()
-                            .filter(|n| !crate::intel::is_pilot_stopword(n))
-                            .collect();
-                        if !cover.is_empty() {
-                            new_pilots.extend(cover);
-                        } else if p.split_whitespace().count() == 2 && !cache.is_reverified(&p) {
-                            // A two-word block whose pair ESI rejected: re-verify the pair once
-                            // (in case the negative is stale) before deciding. Keep showing it as
-                            // pending; once the negative is re-confirmed, cover splits it.
-                            cache.force_requeue(&p);
-                            new_pilots.push(p);
-                        } else {
-                            for w in crate::pilot::name_windows(&p) {
-                                cache.queue(&w);
-                            }
-                            if let Some(info) = p.split_whitespace().find_map(|t| geo.lookup(t)) {
-                                if !r.systems.iter().any(|d| d.id == info.id) {
-                                    r.systems.push(crate::intel::DetectedSystem {
-                                        id: info.id,
-                                        name: info.name.clone(),
-                                        security: info.security,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            let mut seen = std::collections::HashSet::new();
-            new_pilots.retain(|p| seen.insert(p.to_lowercase()));
-            // A standalone word that is a known ship is the ship, not a pilot — even when
-            // a character shares the name ("Buzzard"). Move it to the ship list.
-            let mut final_pilots: Vec<String> = Vec::new();
-            for p in new_pilots {
-                if let Some(idx) = &ships {
-                    if !p.contains(' ') {
-                        if let Some((id, name)) = idx.get(&p.to_lowercase()) {
-                            if !r.ships.iter().any(|sh| sh.id == *id) {
-                                r.ships.push(crate::intel::DetectedShip {
-                                    id: *id,
-                                    name: name.clone(),
-                                });
-                            }
-                            continue;
-                        }
-                    }
-                }
-                final_pilots.push(p);
-            }
-            if final_pilots != original {
-                changed = true;
-            }
-            r.pilots = final_pilots;
-            // A name that only appears as the leading words of a longer detected name here
-            // ("Gallente Citizen" inside "Gallente Citizen 17120704") is the same span — drop
-            // it even when both are real characters.
-            let deduped = crate::intel::drop_covered_prefixes(&r.pilots, &r.text);
-            if deduped.len() != r.pilots.len() {
-                changed = true;
-                r.pilots = deduped;
-            }
-            // Held-location re-derivation: a report whose only system was a token inside a name
-            // blob shows no location at parse time (the held model — never a guessed location).
-            // Once ESI confirms the names and frees the remaining tokens, derive the location
-            // from them. Only fires while there's no location yet, so a context-resolved system
-            // from parse time is never clobbered.
-            if r.systems.is_empty() && r.gates.is_empty() && !r.pilots.is_empty() {
-                let reserved: std::collections::HashSet<String> = r
-                    .pilots
-                    .iter()
-                    .flat_map(|p| p.split_whitespace())
-                    .map(|w| w.to_lowercase())
-                    .collect();
-                let tokens = crate::intel::tokenize(&r.text);
-                let lower: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
-                let (detected, gates, _) =
-                    crate::intel::detect_location(&tokens, &lower, &reserved, &geo, None, &[]);
-                if !detected.is_empty() || !gates.is_empty() {
-                    r.systems = detected;
-                    r.gates = gates;
-                    changed = true;
-                }
-            }
-            // Count fallback: a bare number tentatively read as a name component ("Adama
-            // 80") is counted after all if ESI says the "{name} {n}" candidate isn't a
-            // real character ("Bob 80" -> 80 was a hostile count).
-            let mut add = 0u32;
-            let mut requeue: Vec<String> = Vec::new();
-            let pilots_lc: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
-            r.name_number_skips.retain(|(cand, num)| {
-                // The number belongs to an already-parsed pilot name (e.g. the tagged
-                // "Cyberdyne Systems 101") — it's part of the name, never a count.
-                if pilots_lc.iter().any(|p| p.contains(&cand.to_lowercase())) {
-                    return false;
-                }
-                match cache.get(cand) {
-                    Some(None) => {
-                        add += *num;
-                        false
-                    }
-                    Some(Some(_)) => false,
-                    None => {
-                        requeue.push(cand.clone());
-                        true
-                    }
-                }
-            });
-            for c in requeue {
-                cache.queue(&c);
-            }
-            if add > 0 {
-                r.count = Some(r.count.unwrap_or(0) + add);
-                changed = true;
-            }
-        }
-        changed
-    }
-
     /// Reload the wormhole cache from the store (throttled), dropping expired holes.
     fn reload_wormholes(&mut self) {
         let due = self.wh_reloaded.map(|t| t.elapsed().as_millis() > 2000).unwrap_or(true);
@@ -12564,6 +12315,11 @@ struct AlertConfig {
     only_undocked: bool,
     disabled: Vec<String>,
     systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
+    active_character: String,
+    kill_intel: bool,
+    kill_intel_jumps: u32,
+    intel_max_jumps: u32,
 }
 
 #[derive(Default)]
@@ -12754,19 +12510,320 @@ impl AlertEngine {
         }
         true
     }
+
+    /// Drain the zKill feed into intel_state (so killmail alerts fire), off the UI thread.
+    /// Mirrors the former `SpaiApp::ingest_killfeed`. `ship_by_id` + `store` are the daemon's own.
+    fn ingest_kills(
+        &self,
+        intel_state: &std::sync::Mutex<crate::intel::IntelState>,
+        kill_cache: &crate::kills::KillCache,
+        killfeed: &crate::zkill::SharedKillFeed,
+        player: &std::sync::Mutex<crate::esi::Player>,
+        ship_by_id: &std::collections::HashMap<i64, String>,
+        store: Option<&crate::store::Store>,
+    ) -> bool {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.kill_intel {
+            return false;
+        }
+        let events: Vec<crate::zkill::KillEvent> =
+            std::mem::take(&mut *killfeed.lock().unwrap());
+        if events.is_empty() {
+            return false;
+        }
+        let Some(geo) = cfg.systems.clone() else { return false };
+        let me = {
+            let p = player.lock().unwrap();
+            p.locations.get(&cfg.active_character).map(|(s, _)| *s).or(p.system_id)
+        };
+        let Some(me) = me else { return false };
+        // 0 = follow the regular intel feed's jump range; if that's "any" (0), cap the global feed.
+        let range = match (cfg.kill_intel_jumps, cfg.intel_max_jumps) {
+            (0, 0) => 10,
+            (0, feed) => feed,
+            (k, _) => k,
+        };
+        // Build cards + enrich/persist WITHOUT holding intel_state: poll_kill_fetches locks
+        // kill_cache → intel_state, so nesting intel_state → kill_cache here would ABBA-deadlock.
+        let mut reports = Vec::new();
+        for ev in events {
+            if geo.jumps(me, ev.system_id, range).is_none() {
+                continue;
+            }
+            let Some(report) = kill_report(&ev, &geo, ship_by_id) else { continue };
+            // The feed carries the full killmail, so enrich the card immediately from it.
+            kill_cache.lock().unwrap().insert(ev.killmail_id, Some(ev.info.clone()));
+            if let Some(store) = store {
+                store.add_kill_intel(ev.killmail_id, ev.system_id, ev.ship_type_id, ev.time, ev.value);
+                store.save_kill_details(&ev.info);
+            }
+            reports.push(report);
+        }
+        if reports.is_empty() {
+            return false;
+        }
+        let mut st = intel_state.lock().unwrap();
+        for report in reports {
+            st.push(report);
+        }
+        true
+    }
+
+    /// Resolve "parked" reports (a location held inside an unresolved name) and cover
+    /// over-glued runs, off the UI thread. Mirrors the former `SpaiApp::reconcile_unresolved_pilots`.
+    fn reconcile(
+        &self,
+        intel_state: &std::sync::Mutex<crate::intel::IntelState>,
+        pilots: &std::sync::Mutex<crate::pilot::PilotCache>,
+    ) -> bool {
+        let cfg = self.config.lock().unwrap().clone();
+        let Some(geo) = cfg.systems.clone() else { return false };
+        let ships = cfg.ship_index.clone();
+        let mut changed = false;
+        // Lock order MUST match the watcher (intel_state → pilots) to avoid an ABBA deadlock.
+        let mut st = intel_state.lock().unwrap();
+        let mut cache = pilots.lock().unwrap();
+        for r in &mut st.reports {
+            let original: Vec<String> = std::mem::take(&mut r.pilots);
+            let mut new_pilots: Vec<String> = Vec::new();
+            for p in original.iter().cloned() {
+                if crate::intel::is_pilot_stopword(&p) {
+                    continue; // blacklist overrides any cached verdict
+                }
+                match cache.get(&p) {
+                    // Confirmed character — keep as-is.
+                    Some(Some(_)) => new_pilots.push(p),
+                    // Still pending — keep showing it, and (re)queue the full name + its
+                    // sub-spans so a lost queue entry (dropped at the cap, in flight when a
+                    // batch failed, or a never-queued 4+ word run) still resolves instead of
+                    // staying pending until a restart.
+                    None => {
+                        cache.queue(&p);
+                        for w in crate::pilot::name_windows(&p) {
+                            cache.queue(&w);
+                        }
+                        new_pilots.push(p);
+                    }
+                    // Not a character as a whole: cover it with confirmed sub-names
+                    // (the over-glued run "Wwallddo Lulu Uanid" -> Wwallddo + Lulu Uanid).
+                    Some(None) => {
+                        let cover: Vec<String> = cache
+                            .cover(&p)
+                            .into_iter()
+                            .filter(|n| !crate::intel::is_pilot_stopword(n))
+                            .collect();
+                        if !cover.is_empty() {
+                            new_pilots.extend(cover);
+                        } else if p.split_whitespace().count() == 2 && !cache.is_reverified(&p) {
+                            // A two-word block whose pair ESI rejected: re-verify the pair once
+                            // (in case the negative is stale) before deciding. Keep showing it as
+                            // pending; once the negative is re-confirmed, cover splits it.
+                            cache.force_requeue(&p);
+                            new_pilots.push(p);
+                        } else {
+                            for w in crate::pilot::name_windows(&p) {
+                                cache.queue(&w);
+                            }
+                            if let Some(info) = p.split_whitespace().find_map(|t| geo.lookup(t)) {
+                                if !r.systems.iter().any(|d| d.id == info.id) {
+                                    r.systems.push(crate::intel::DetectedSystem {
+                                        id: info.id,
+                                        name: info.name.clone(),
+                                        security: info.security,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mut seen = std::collections::HashSet::new();
+            new_pilots.retain(|p| seen.insert(p.to_lowercase()));
+            // A standalone word that is a known ship is the ship, not a pilot — even when
+            // a character shares the name ("Buzzard"). Move it to the ship list.
+            let mut final_pilots: Vec<String> = Vec::new();
+            for p in new_pilots {
+                if let Some(idx) = &ships {
+                    if !p.contains(' ') {
+                        if let Some((id, name)) = idx.get(&p.to_lowercase()) {
+                            if !r.ships.iter().any(|sh| sh.id == *id) {
+                                r.ships.push(crate::intel::DetectedShip {
+                                    id: *id,
+                                    name: name.clone(),
+                                });
+                            }
+                            continue;
+                        }
+                    }
+                }
+                final_pilots.push(p);
+            }
+            if final_pilots != original {
+                changed = true;
+            }
+            r.pilots = final_pilots;
+            // A name that only appears as the leading words of a longer detected name here
+            // ("Gallente Citizen" inside "Gallente Citizen 17120704") is the same span — drop
+            // it even when both are real characters.
+            let deduped = crate::intel::drop_covered_prefixes(&r.pilots, &r.text);
+            if deduped.len() != r.pilots.len() {
+                changed = true;
+                r.pilots = deduped;
+            }
+            // Held-location re-derivation: a report whose only system was a token inside a name
+            // blob shows no location at parse time (the held model — never a guessed location).
+            // Once ESI confirms the names and frees the remaining tokens, derive the location
+            // from them. Only fires while there's no location yet, so a context-resolved system
+            // from parse time is never clobbered.
+            if r.systems.is_empty() && r.gates.is_empty() && !r.pilots.is_empty() {
+                let reserved: std::collections::HashSet<String> = r
+                    .pilots
+                    .iter()
+                    .flat_map(|p| p.split_whitespace())
+                    .map(|w| w.to_lowercase())
+                    .collect();
+                let tokens = crate::intel::tokenize(&r.text);
+                let lower: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+                let (detected, gates, _) =
+                    crate::intel::detect_location(&tokens, &lower, &reserved, &geo, None, &[]);
+                if !detected.is_empty() || !gates.is_empty() {
+                    r.systems = detected;
+                    r.gates = gates;
+                    changed = true;
+                }
+            }
+            // Count fallback: a bare number tentatively read as a name component ("Adama
+            // 80") is counted after all if ESI says the "{name} {n}" candidate isn't a
+            // real character ("Bob 80" -> 80 was a hostile count).
+            let mut add = 0u32;
+            let mut requeue: Vec<String> = Vec::new();
+            let pilots_lc: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
+            r.name_number_skips.retain(|(cand, num)| {
+                // The number belongs to an already-parsed pilot name (e.g. the tagged
+                // "Cyberdyne Systems 101") — it's part of the name, never a count.
+                if pilots_lc.iter().any(|p| p.contains(&cand.to_lowercase())) {
+                    return false;
+                }
+                match cache.get(cand) {
+                    Some(None) => {
+                        add += *num;
+                        false
+                    }
+                    Some(Some(_)) => false,
+                    None => {
+                        requeue.push(cand.clone());
+                        true
+                    }
+                }
+            });
+            for c in requeue {
+                cache.queue(&c);
+            }
+            if add > 0 {
+                r.count = Some(r.count.unwrap_or(0) + add);
+                changed = true;
+            }
+        }
+        changed
+    }
+
 }
 
 /// Background loop: evaluate alerts every 400 ms regardless of the window's visibility.
+/// Build an intel card from a zKill event. `ship_by_id` maps a hull type id to its name.
+fn kill_report(
+    ev: &crate::zkill::KillEvent,
+    geo: &crate::geo::Systems,
+    ship_by_id: &std::collections::HashMap<i64, String>,
+) -> Option<crate::intel::IntelReport> {
+        let sys = geo.info_of(ev.system_id)?;
+        // Hull from the SDE, or an Upwell structure (not in the ship table) so structure kills show.
+        let ship = ship_by_id
+            .get(&ev.ship_type_id)
+            .cloned()
+            .or_else(|| crate::intel::structure_name_by_type(ev.ship_type_id).map(str::to_owned))
+            .unwrap_or_default();
+        let lower = ship.to_lowercase();
+        // Skip noise: shuttles, rookie corvettes, cheap empty pods, and anchorable deployables.
+        // Every player-anchorable deployable is a "Mobile X" (tractor unit, depot, small/medium/
+        // large warp disruptor, micro jump unit, siphon unit, scan inhibitor, cyno beacon/
+        // inhibitor, vault, observatory) and no real hull has "Mobile" in its name, so the
+        // substring is the exact, complete catch.
+        if lower.contains("shuttle")
+            || lower.contains("mobile ")
+            || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
+            // Regular pod and the Genolution "Auroral" 197-variant capsule: skip unless valuable.
+            || (lower.starts_with("capsule") && ev.value < 10_000_000.0)
+        {
+            return None;
+        }
+        let mut report = crate::intel::IntelReport::default();
+        report.received = ev.time;
+        report.killmail = true;
+        report.channel = "zKill".to_owned();
+        report.reporter = "zKill".to_owned();
+        report.isk = Some(ev.value as u64);
+        report.systems.push(crate::intel::DetectedSystem {
+            id: sys.id,
+            name: sys.name.clone(),
+            security: sys.security,
+        });
+        if ship.is_empty() {
+            report.text = format!("Ship lost in {}", sys.name);
+        } else {
+            report.ships.push(crate::intel::DetectedShip { id: ev.ship_type_id, name: ship.clone() });
+            report.text = format!("{} lost in {}", ship, sys.name);
+        }
+        // The killmail link gives the card an "open on zKill" button + triggers enrichment
+        // (which resolves the victim who lost the ship).
+        report.links.push(crate::intel::IntelLink {
+            kind: crate::intel::LinkKind::Killmail,
+            url: format!("https://zkillboard.com/kill/{}/", ev.killmail_id),
+            kill_id: Some(ev.killmail_id),
+        });
+        Some(report)
+}
+
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_alert_daemon(
     engine: std::sync::Arc<AlertEngine>,
     intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
+    pilots: crate::pilot::SharedPilots,
     player: crate::esi::SharedPlayer,
+    killfeed: crate::zkill::SharedKillFeed,
+    kill_cache: crate::kills::KillCache,
     ctx: egui::Context,
 ) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        if engine.evaluate(&intel_state, &player) {
-            ctx.request_repaint(); // wake the UI to show the alert window / feed
+    std::thread::spawn(move || {
+        // The daemon's own DB connection (Store isn't Sync) — same pattern as the chat watcher.
+        let store = crate::store::Store::open().ok();
+        let mut ship_by_id: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            // Build the hull-id → name map once, when the SDE ship index is available.
+            if ship_by_id.is_empty() {
+                if let Some(idx) = engine.config.lock().unwrap().ship_index.clone() {
+                    for (id, name) in idx.values() {
+                        ship_by_id.insert(*id, name.clone());
+                    }
+                }
+            }
+            // Maintain intel_state off the UI thread — ingest kills, resolve parked reports — then
+            // evaluate alerts, so the whole pipeline keeps running while the window is minimized.
+            let mut dirty = engine.ingest_kills(
+                &intel_state,
+                &kill_cache,
+                &killfeed,
+                &player,
+                &ship_by_id,
+                store.as_ref(),
+            );
+            dirty |= engine.reconcile(&intel_state, &pilots);
+            dirty |= engine.evaluate(&intel_state, &player);
+            if dirty {
+                ctx.request_repaint(); // wake the UI to re-render / show the alert window
+            }
         }
     });
 }
@@ -12811,10 +12868,8 @@ impl eframe::App for SpaiApp {
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
         self.load_persisted_kills();
-        self.ingest_killfeed();
-        if self.reconcile_unresolved_pilots() {
-            ctx.request_repaint(); // a cover split the run -> re-render the card now
-        }
+        // Killfeed ingest + pilot reconcile + alert evaluation now run on the alert daemon
+        // (off the UI thread) so they keep working while the window is minimized.
         self.reload_wormholes();
         if !self.update_checked {
             self.update_checked = true;
