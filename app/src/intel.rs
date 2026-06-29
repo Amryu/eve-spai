@@ -2135,9 +2135,12 @@ pub fn analyze_ctx(
     let mut pilots = drop_covered_prefixes(&pilots, text);
     // A pilot name always contains a letter — a bare number ("warpin 100") is a count, not a name.
     pilots.retain(|p| p.chars().any(|c| c.is_alphabetic()));
-    // A single token with NO lower-case letter ("UALX", "DT", "F2A") is a system code/acronym, not
-    // a pilot — EVE names carry lower-case. (Multi-word candidates are exempt.)
-    pilots.retain(|p| p.contains(' ') || p.chars().any(|c| c.is_ascii_lowercase()));
+    // A SHORT single token with NO lower-case letter ("UALX", "DT", "F2A") is a system
+    // code/acronym, not a pilot. A longer all-caps token is a genuine name ("PORTOS11"), so only
+    // drop the short ones; ESI rejects any remaining non-character. (Multi-word candidates exempt.)
+    pilots.retain(|p| {
+        p.contains(' ') || p.chars().count() > 4 || p.chars().any(|c| c.is_ascii_lowercase())
+    });
     // A single token consumed as a system or gate — including a lower-case null-sec code
     // like "c-j" in "c-j gate" — is never also a pilot.
     pilots.retain(|p| p.contains(' ') || !consumed.contains(&p.to_lowercase()));
@@ -3188,6 +3191,17 @@ mod tests {
             "systems={:?}",
             r.systems
         );
+    }
+
+    #[test]
+    fn long_all_caps_name_is_a_pilot_short_acronym_is_not() {
+        let s = systems();
+        // A longer all-caps token is a real name and survives, even pasted after a system.
+        let r = analyze("C-J6MT  PORTOS11", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(esi_resolve(&r.pilots, &["PORTOS11"]), vec!["PORTOS11".to_string()]);
+        // A short all-caps acronym is still dropped (system code / ship acronym).
+        let r2 = analyze("DT in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.pilots.is_empty(), "pilots={:?}", r2.pilots);
     }
 
     #[test]
