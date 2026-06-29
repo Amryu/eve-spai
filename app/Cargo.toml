@@ -9,6 +9,12 @@ description = "EVE Spai — a lean EVE Online intel tool"
 name = "eve-spai"
 path = "src/main.rs"
 
+# Embed the Windows application icon into the .exe (build.rs). winresource is pure Rust and
+# compiles on every host; build.rs only invokes it for a Windows *target*, so non-Windows builds
+# are unaffected.
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 eframe = "0.34"
 egui = "0.34"
