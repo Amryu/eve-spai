@@ -1870,12 +1870,15 @@ pub fn analyze_ctx(
         let mut keep: Vec<bool> = vec![true; pilots.len()];
         for (i, p) in pilots.iter().enumerate() {
             let pl = p.to_lowercase();
-            if !p.contains(' ') || known_matched.contains(&pl) {
-                continue; // single token, or the whole run is itself a known name
+            // Never un-glue a 1-2 word candidate: it may be a single real name whose two words are
+            // separately cached players ("Ghost Magician"). Keep it whole so the normal windowing
+            // queries the full name and ESI confirms it — only split a longer (3+ word) run, which
+            // is far more likely a genuinely mis-joined list of handles.
+            if p.split_whitespace().count() <= 2 || known_matched.contains(&pl) {
+                continue;
             }
             // A double-space paste segment is one deliberate entity (a name never contains a double
-            // space), so never un-glue it even if its words are separately cached players
-            // ("5E-CMA  Ghost Magician" → the pilot is "Ghost Magician", not "Ghost" + "Magician").
+            // space), so never un-glue it even if its words are separately cached players.
             if text.contains("  ")
                 && text
                     .split("  ")
@@ -3229,10 +3232,20 @@ mod tests {
         let mut known = noknown();
         known.insert("ghost".into(), 1);
         known.insert("magician".into(), 2);
-        // A double-space paste segment is one entity, even though "Ghost" and "Magician" are
-        // separately cached players — it must not be un-glued into two pilots.
-        let r = analyze("C-J6MT  Ghost Magician", &s, &noships(), &known, 1, "ch", "x");
-        assert_eq!(r.pilots, vec!["Ghost Magician".to_string()], "pilots={:?}", r.pilots);
+        // A 1-2 word name is never un-glued, even when its two words are separately cached players
+        // — whether pasted (double space) or typed (single space). It stays one name for ESI to
+        // confirm. (A genuine mis-joined list is 3+ words; see below.)
+        let paste = analyze("C-J6MT  Ghost Magician", &s, &noships(), &known, 1, "ch", "x");
+        assert_eq!(paste.pilots, vec!["Ghost Magician".to_string()], "{:?}", paste.pilots);
+        let typed = analyze("Ghost Magician in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert_eq!(typed.pilots, vec!["Ghost Magician".to_string()], "{:?}", typed.pilots);
+        // A 3-word run of separately-cached handles IS un-glued (a mis-joined list).
+        let mut k3 = known.clone();
+        k3.insert("gliar".into(), 3);
+        k3.insert("mliarvis".into(), 4);
+        k3.insert("sliarhia".into(), 5);
+        let list = analyze("Gliar Mliarvis Sliarhia in Rancer", &s, &noships(), &k3, 1, "ch", "x");
+        assert_eq!(list.pilots.len(), 3, "should un-glue a 3-word list: {:?}", list.pilots);
     }
 
     #[test]
