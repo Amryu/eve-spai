@@ -384,6 +384,11 @@ pub struct SpaiApp {
     battle_edit_mode: bool,
     /// Editor: kill_ids selected in the per-kill list (the half to split off).
     battle_kill_sel: std::collections::HashSet<i64>,
+    /// Cached split preview (selection set → the two halves' battles), rebuilt only when the
+    /// selection changes — infer_sides is O(n²), so re-running it every frame for a big battle is
+    /// both slow and (pre-determinism-fix) the source of the side flicker.
+    battle_split_preview:
+        Option<(std::collections::HashSet<i64>, crate::battle::Battle, crate::battle::Battle)>,
     /// List merge mode: representative kill-ids of the battles ticked for merging.
     battle_merge_sel: std::collections::HashSet<i64>,
     /// "Add kill" panel open, and its zKill-link input.
@@ -1097,6 +1102,7 @@ impl SpaiApp {
             battle_scrub_count: 0,
             battle_edit_mode: false,
             battle_kill_sel: std::collections::HashSet::new(),
+            battle_split_preview: None,
             battle_merge_sel: std::collections::HashSet::new(),
             battle_add_open: false,
             battle_add_link: String::new(),
@@ -4429,21 +4435,50 @@ impl SpaiApp {
 
         // --- Suggested-splits strip ---
         if !splits.is_empty() {
+            // Distinct pilots ("ships") in the engagements matching `pred`, to size each half.
+            let ship_count = |pred: &dyn Fn(&crate::battle::Engagement) -> bool| -> usize {
+                let mut set: std::collections::HashSet<i64> = std::collections::HashSet::new();
+                for e in engs.iter().filter(|e| pred(e)) {
+                    if e.victim_char != 0 {
+                        set.insert(e.victim_char);
+                    }
+                    for a in &e.attackers {
+                        if a.char_id != 0 {
+                            set.insert(a.char_id);
+                        }
+                    }
+                }
+                set.len()
+            };
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Suggested splits:").strong());
-                for &boundary in &splits {
-                    let before = engs.iter().filter(|e| e.time < boundary).count();
-                    let after = engs.len() - before;
+                for sug in &splits {
+                    let boundary = sug.time;
+                    let before_ships = ship_count(&|e| e.time < boundary);
+                    let after_ships = ship_count(&|e| e.time >= boundary);
+                    // Peel off the SMALLER group (e.g. a 5-ship tail, not the 122-ship body); an
+                    // exact ship-count tie breaks toward the fewer-kills half.
+                    let before_kills = engs.iter().filter(|e| e.time < boundary).count();
+                    let after_kills = engs.len() - before_kills;
+                    let split_before = before_ships < after_ships
+                        || (before_ships == after_ships && before_kills < after_kills);
+                    let off = before_ships.min(after_ships);
                     let hhmm = chrono::DateTime::from_timestamp(boundary, 0)
                         .map(|t| t.format("%H:%M").to_string())
                         .unwrap_or_default();
+                    let reason = sug.reason.label();
                     if ui
-                        .button(format!("{} Split at {hhmm} ({before}k before / {after}k after)", icon::SCISSORS))
-                        .on_hover_text("Select every kill from this time onward")
+                        .button(format!("{} Split off {off} ships — {reason} ({hhmm})", icon::SCISSORS))
+                        .on_hover_text(format!(
+                            "Suggested because of a {reason} at {hhmm}; selects the smaller group ({off} ships) to split off."
+                        ))
                         .clicked()
                     {
-                        self.battle_kill_sel =
-                            engs.iter().filter(|e| e.time >= boundary).map(|e| e.kill_id).collect();
+                        self.battle_kill_sel = engs
+                            .iter()
+                            .filter(|e| if split_before { e.time < boundary } else { e.time >= boundary })
+                            .map(|e| e.kill_id)
+                            .collect();
                     }
                 }
             });
@@ -4452,23 +4487,40 @@ impl SpaiApp {
 
         // --- Split preview (when a selection exists) ---
         let sel_ids = self.battle_kill_sel.clone();
+        if sel_ids.is_empty() {
+            self.battle_split_preview = None;
+        }
         if !sel_ids.is_empty() {
-            let sel: Vec<crate::battle::Engagement> =
-                engs.iter().filter(|e| sel_ids.contains(&e.kill_id)).cloned().collect();
-            let rest: Vec<crate::battle::Engagement> =
-                engs.iter().filter(|e| !sel_ids.contains(&e.kill_id)).cloned().collect();
-            let rest_empty = rest.is_empty();
-            let pa = crate::battle::preview_battle(sel, break_gap);
-            let pb = crate::battle::preview_battle(rest, break_gap);
+            // Rebuild the two preview battles only when the selection changes (not every frame).
+            let stale = self
+                .battle_split_preview
+                .as_ref()
+                .map(|(s, _, _)| s != &sel_ids)
+                .unwrap_or(true);
+            if stale {
+                let sel: Vec<crate::battle::Engagement> =
+                    engs.iter().filter(|e| sel_ids.contains(&e.kill_id)).cloned().collect();
+                let rest: Vec<crate::battle::Engagement> =
+                    engs.iter().filter(|e| !sel_ids.contains(&e.kill_id)).cloned().collect();
+                let pa = crate::battle::preview_battle(sel, break_gap);
+                let pb = crate::battle::preview_battle(rest, break_gap);
+                self.battle_split_preview = Some((sel_ids.clone(), pa, pb));
+            }
+            let (pa, pb) = self
+                .battle_split_preview
+                .as_ref()
+                .map(|(_, a, b)| (a, b))
+                .unwrap();
+            let rest_empty = pb.engagements.is_empty();
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
                     egui::RichText::new(format!("Split preview — {} kills selected", sel_ids.len())).strong(),
                 );
                 ui.horizontal_wrapped(|ui| {
-                    battle_preview_summary(ui, "Split off", &pa);
+                    battle_preview_summary(ui, "Split off", pa);
                     ui.separator();
-                    battle_preview_summary(ui, "Remaining", &pb);
+                    battle_preview_summary(ui, "Remaining", pb);
                 });
                 ui.horizontal(|ui| {
                     if rest_empty {

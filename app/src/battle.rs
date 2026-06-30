@@ -176,8 +176,44 @@ pub struct Battle {
     /// lull or a single bridge kill joining two bursts); `suggested_splits` then holds candidate
     /// split times for a later phase to surface.
     pub ambiguous: bool,
-    /// Candidate split times (unix seconds), at most 3, sorted; empty when unambiguous.
-    pub suggested_splits: Vec<i64>,
+    /// Candidate splits, at most 3, sorted by time; empty when unambiguous.
+    pub suggested_splits: Vec<SplitSuggestion>,
+}
+
+/// Why the clustering thinks a battle might be two engagements at a given boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitReason {
+    /// A quiet gap just under the hard-split threshold.
+    Lull,
+    /// A single kill bridges two otherwise-disjoint bursts (no shared participant across it).
+    BridgeKill,
+    /// Re-segmenting at a finer threshold finds distinct dense sub-fights.
+    SubFights,
+}
+
+impl SplitReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            SplitReason::Lull => "quiet gap",
+            SplitReason::BridgeKill => "single bridging kill",
+            SplitReason::SubFights => "distinct sub-fights",
+        }
+    }
+    /// Higher = more specific/confident, kept when two signals land on the same time.
+    fn priority(self) -> u8 {
+        match self {
+            SplitReason::BridgeKill => 2,
+            SplitReason::SubFights => 1,
+            SplitReason::Lull => 0,
+        }
+    }
+}
+
+/// One suggested split: the boundary time and the main reason it was suggested.
+#[derive(Clone, Copy, Debug)]
+pub struct SplitSuggestion {
+    pub time: i64,
+    pub reason: SplitReason,
 }
 
 /// Extra info for a destroyed participant: its killmail and hull value, plus the value of a
@@ -832,9 +868,9 @@ fn chases(
 /// Detect whether a battle's boundaries are ambiguous, returning candidate split times (<= 3,
 /// sorted). `engs` must be time-sorted. Flags: (1) a near-threshold lull; (2) a single bridge kill
 /// joining two dense halves; (3) a finer re-segmentation that finds multiple dense sub-battles.
-fn battle_ambiguity(engs: &[Engagement], break_gap: i64) -> (bool, Vec<i64>) {
+fn battle_ambiguity(engs: &[Engagement], break_gap: i64) -> (bool, Vec<SplitSuggestion>) {
     let n = engs.len();
-    let mut splits: Vec<i64> = Vec::new();
+    let mut splits: Vec<SplitSuggestion> = Vec::new();
 
     // (1) Largest internal lull G with 0.6*break_gap <= G < break_gap — close to a hard split.
     if n >= 2 {
@@ -848,7 +884,7 @@ fn battle_ambiguity(engs: &[Engagement], break_gap: i64) -> (bool, Vec<i64>) {
             }
         }
         if 0.6 * (break_gap as f64) <= max_gap as f64 && max_gap < break_gap {
-            splits.push(engs[at].time);
+            splits.push(SplitSuggestion { time: engs[at].time, reason: SplitReason::Lull });
         }
     }
 
@@ -876,7 +912,7 @@ fn battle_ambiguity(engs: &[Engagement], break_gap: i64) -> (bool, Vec<i64>) {
                 .iter()
                 .any(|(id, &f)| f < k && last.get(id).copied().unwrap_or(0) > k);
             if !spans && k >= DENSE_MIN && n - 1 - k >= DENSE_MIN {
-                splits.push(engs[k].time);
+                splits.push(SplitSuggestion { time: engs[k].time, reason: SplitReason::BridgeKill });
             }
         }
     }
@@ -889,14 +925,20 @@ fn battle_ambiguity(engs: &[Engagement], break_gap: i64) -> (bool, Vec<i64>) {
             subs.sort_by_key(|s| time_bounds(engs, s).0);
             for w in subs.windows(2) {
                 if w[0].len() >= DENSE_MIN && w[1].len() >= DENSE_MIN {
-                    splits.push(time_bounds(engs, &w[1]).0);
+                    splits.push(SplitSuggestion {
+                        time: time_bounds(engs, &w[1]).0,
+                        reason: SplitReason::SubFights,
+                    });
                 }
             }
         }
     }
 
-    splits.sort_unstable();
-    splits.dedup();
+    // Dedup by time, keeping the highest-priority reason when two signals land on the same boundary.
+    splits.sort_by(|a, b| {
+        a.time.cmp(&b.time).then(b.reason.priority().cmp(&a.reason.priority()))
+    });
+    splits.dedup_by_key(|s| s.time);
     splits.truncate(3);
     (!splits.is_empty(), splits)
 }
@@ -915,7 +957,11 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
             party_by_key.entry(key(&a.party)).or_insert_with(|| a.party.clone());
         }
     }
-    let keys: Vec<String> = party_by_key.keys().cloned().collect();
+    // Sort the keys so party→index assignment is deterministic. HashMap key order is randomized
+    // per map instance, which made the agglomerative merge's net-score tie-breaks (lowest index
+    // wins) — and thus the side partition — differ on every call, so the split preview flickered.
+    let mut keys: Vec<String> = party_by_key.keys().cloned().collect();
+    keys.sort_unstable();
     let idx: HashMap<String, usize> =
         keys.iter().cloned().enumerate().map(|(i, k)| (k, i)).collect();
     let n = keys.len();
@@ -1169,6 +1215,32 @@ mod tests {
     // A kill with an explicit attacker list.
     fn eng_av(kill: i64, time: i64, sys: i64, victim: &str, attackers: Vec<Attacker>) -> Engagement {
         Engagement { attackers, ..eng(kill, time, sys, victim, victim) }
+    }
+
+    #[test]
+    fn infer_sides_is_deterministic() {
+        // Several parties in mixed engagements: with sorted party indices the inferred sides
+        // (party composition AND order) must be byte-identical across independent builds, or the
+        // split preview (which rebuilds every frame) flickers.
+        let engs = vec![
+            eng_multi(1, 0, 1, "Red", &["Blue", "Green"]),
+            eng_multi(2, 10, 1, "Blue", &["Red", "Yellow"]),
+            eng_multi(3, 20, 1, "Green", &["Blue", "Yellow"]),
+            eng_multi(4, 30, 1, "Yellow", &["Red", "Green"]),
+            eng_multi(5, 40, 1, "Red", &["Blue", "Green", "Yellow"]),
+            eng_multi(6, 50, 1, "Blue", &["Red"]),
+        ];
+        let fingerprint = |b: &Battle| -> Vec<Vec<i64>> {
+            b.sides.iter().map(|s| s.parties.iter().map(|p| p.id).collect()).collect()
+        };
+        let first = fingerprint(&preview_battle(engs.clone(), BATTLE_BREAK_SECS));
+        for _ in 0..16 {
+            assert_eq!(
+                fingerprint(&preview_battle(engs.clone(), BATTLE_BREAK_SECS)),
+                first,
+                "infer_sides is non-deterministic — sides would flicker"
+            );
+        }
     }
 
     // Distance over a line: 1 - 2 - 3 - 4 - 5, plus a bridge 1 <-> 5.
@@ -1644,7 +1716,7 @@ mod tests {
         ];
         let b = build_battle(engs, BATTLE_BREAK_SECS);
         assert!(b.ambiguous, "bridge kill should make the battle ambiguous");
-        assert!(b.suggested_splits.contains(&90), "splits {:?}", b.suggested_splits);
+        assert!(b.suggested_splits.iter().any(|s| s.time == 90), "splits {:?}", b.suggested_splits);
     }
 
     #[test]
@@ -1655,6 +1727,6 @@ mod tests {
         let battles = cluster_def(&engs);
         assert_eq!(battles.len(), 1);
         assert!(battles[0].ambiguous, "near-threshold lull should be ambiguous");
-        assert!(battles[0].suggested_splits.contains(&240));
+        assert!(battles[0].suggested_splits.iter().any(|s| s.time == 240));
     }
 }
