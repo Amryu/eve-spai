@@ -36,7 +36,23 @@ const CANDIDATE_JUMPS: u32 = ANCHOR_JUMPS + crate::battle::BATTLE_MAX_JUMPS;
 /// battle report keeps getting updated as stragglers arrive.
 const ENGAGEMENT_TTL: i64 = 86_400;
 
+/// zKillboard API base (recent-kills + per-kill hash lookups).
+const ZKILL_API: &str = "https://zkillboard.com/api";
+/// ESI base for killmail detail fetches.
+const ESI: &str = "https://esi.evetech.net/latest";
+/// How far back the per-system battle backfill reaches. A fight plus its stragglers spans
+/// well beyond a single clustering window, so pull two hours of recent kills.
+const BACKFILL_WINDOW_SECS: i64 = battle::BATTLE_WINDOW_SECS * 12;
+/// Cap a single backfill so one fetch can't hammer ESI (mirrors lookup's MAX_KILLS cap).
+const BACKFILL_MAX_KILLS: usize = 200;
+/// Don't re-backfill the same system within this window — avoids re-fetching the same fight
+/// on every fresh kill in it.
+const BACKFILL_DEBOUNCE_SECS: i64 = 1800;
+
 pub type SharedBattles = Arc<Mutex<Vec<Battle>>>;
+/// Engagements produced by background backfill threads, drained into the live buffer by the
+/// worker loop (keeps the buffer single-threaded, like `add_queue`).
+type SharedBackfill = Arc<Mutex<Vec<Engagement>>>;
 
 pub fn spawn(
     systems: Arc<Systems>,
@@ -75,6 +91,12 @@ pub fn spawn(
         // (the scan was O(n²) during catch-up). Kept in sync on every push/eviction.
         let mut buffer_ids: std::collections::HashSet<i64> =
             buffer.iter().map(|e| e.kill_id).collect();
+        // Per-system debounce + cross-thread inbox for "battle backfill on anchor": when a
+        // system first anchors a fight, a background thread pulls its recent kills and pushes
+        // the missing ones here for the loop to fold in (so a late-arriving user still gets the
+        // whole fight, including the opening capital kills dropped from the live stream).
+        let mut backfilled: HashMap<i64, i64> = HashMap::new();
+        let backfill_out: SharedBackfill = Arc::new(Mutex::new(Vec::new()));
         // Reuse unchanged battles across re-clusters: only battles whose kill set changed are
         // rebuilt (side inference is the expensive part), so a few new kills don't re-infer the
         // whole day's battles. Keyed by the battle's kill-id set hash.
@@ -127,12 +149,33 @@ pub fn spawn(
                         retries = 0;
                         seq = Some(s + 1);
                         if let Some(engagement) = eng {
+                            let anchored = engagement.anchored;
+                            let sys_id = engagement.system_id;
                             if buffer_ids.insert(engagement.kill_id) {
                                 if let Some(s) = &store {
                                     s.save_engagement(&engagement);
                                 }
                                 buffer.push(engagement);
                                 changed = true;
+                            }
+                            // When a system first anchors a fight, retroactively pull its recent
+                            // kills so the report is whole even if the user arrived after the
+                            // opening (often capital) kills.
+                            if anchored {
+                                let now = chrono::Utc::now().timestamp();
+                                if should_backfill(&mut backfilled, sys_id, now) {
+                                    spawn_backfill(
+                                        client.clone(),
+                                        sys_id,
+                                        now - BACKFILL_WINDOW_SECS,
+                                        i64::MAX,
+                                        systems.clone(),
+                                        ship_ids.clone(),
+                                        buffer_ids.clone(),
+                                        backfill_out.clone(),
+                                        ctx.clone(),
+                                    );
+                                }
                             }
                         }
                         // Pace feed catch-up so it can't peg the machine (user throttle).
@@ -219,6 +262,24 @@ pub fn spawn(
                     buffer_ids.insert(eng.kill_id);
                     buffer.push(eng);
                     changed = true;
+                }
+            }
+
+            // Fold in engagements produced by background backfill threads (deduped against the
+            // live buffer, persisted like live kills so they survive a restart).
+            let incoming: Vec<Engagement> = std::mem::take(&mut *backfill_out.lock().unwrap());
+            if !incoming.is_empty() {
+                let now = chrono::Utc::now().timestamp();
+                for eng in incoming {
+                    let fresh = now - eng.time <= ENGAGEMENT_TTL && !buffer_ids.contains(&eng.kill_id);
+                    if fresh {
+                        if let Some(s) = &store {
+                            s.save_engagement(&eng);
+                        }
+                    }
+                    if fold_engagement(eng, now, &mut buffer, &mut buffer_ids) {
+                        changed = true;
+                    }
                 }
             }
 
@@ -493,31 +554,62 @@ fn poll(
     if !candidate {
         return Poll::Got(None);
     }
-    let time = chrono::DateTime::parse_from_rfc3339(&pkg.killmail.killmail_time)
+    Poll::Got(build_engagement(
+        client,
+        &pkg.killmail,
+        pkg.kill_id,
+        pkg.zkb.total_value,
+        anchored,
+        systems,
+        ship_ids,
+        names,
+    ))
+}
+
+/// Assemble an `Engagement` from a parsed ESI killmail — the construction shared by the live
+/// feed, intel-posted links, and the battle backfill, so all three build engagements
+/// identically. Drops non-hull victims and NPC-only kills, resolves party names, and builds
+/// the roster. `anchored` is decided by the caller (the live feed's area test, or `true` for
+/// explicitly referenced / backfilled kills).
+#[allow(clippy::too_many_arguments)]
+fn build_engagement(
+    client: &reqwest::blocking::Client,
+    km: &Killmail,
+    kill_id: i64,
+    isk: f64,
+    anchored: bool,
+    systems: &Systems,
+    ship_ids: &std::collections::HashSet<i64>,
+    names: &mut HashMap<i64, String>,
+) -> Option<Engagement> {
+    // Battles are about ships and structures — drop deployable kills.
+    if !is_listed_hull(km.victim.ship_type_id.unwrap_or(0), ship_ids) {
+        return None;
+    }
+    let sys = systems.info_of(km.solar_system_id)?;
+    let time = chrono::DateTime::parse_from_rfc3339(&km.killmail_time)
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
-
-    resolve_names(client, &pkg.killmail, names);
-
+    resolve_names(client, km, names);
     // A kill scored 100% by NPCs (no capsuleer attacker) isn't part of a player battle.
-    let attackers = attackers_of(&pkg.killmail, names, ship_ids);
+    let attackers = attackers_of(km, names, ship_ids);
     if attackers.is_empty() {
-        return Poll::Got(None);
+        return None;
     }
-    Poll::Got(Some(Engagement {
-        kill_id: pkg.kill_id,
+    Some(Engagement {
+        kill_id,
         time,
         system_id: sys.id,
         system_name: sys.name.clone(),
         security: sys.security,
-        victim: party_of(&pkg.killmail.victim, names),
-        victim_char: pkg.killmail.victim.character_id.unwrap_or(0),
-        victim_pilot: pilot_of(&pkg.killmail.victim, names),
-        victim_ship: pkg.killmail.victim.ship_type_id.unwrap_or(0),
+        victim: party_of(&km.victim, names),
+        victim_char: km.victim.character_id.unwrap_or(0),
+        victim_pilot: pilot_of(&km.victim, names),
+        victim_ship: km.victim.ship_type_id.unwrap_or(0),
         attackers,
-        isk: pkg.zkb.total_value,
+        isk,
         anchored,
-    }))
+    })
 }
 
 /// Smallest jump distance from the kill system to any current intel-report system, capped at
@@ -684,8 +776,19 @@ fn fetch_posted_kill(
     ship_ids: &std::collections::HashSet<i64>,
     names: &mut HashMap<i64, String>,
 ) -> Option<Engagement> {
+    let (km, value) = fetch_kill_by_id(client, id)?;
+    // A kill posted as a link in intel is explicitly referenced, so it anchors a battle.
+    build_engagement(client, &km, id, value, true, systems, ship_ids, names)
+}
+
+/// Resolve a kill we only know by id (zKill killID -> hash, then ESI detail), returning the
+/// parsed killmail and its zKill total value.
+fn fetch_kill_by_id(
+    client: &reqwest::blocking::Client,
+    id: i64,
+) -> Option<(Killmail, f64)> {
     let zk: Vec<ZkApiEntry> = client
-        .get(format!("https://zkillboard.com/api/killID/{id}/"))
+        .get(format!("{ZKILL_API}/killID/{id}/"))
         .send()
         .ok()?
         .error_for_status()
@@ -693,41 +796,136 @@ fn fetch_posted_kill(
         .json()
         .ok()?;
     let entry = zk.into_iter().next()?;
-    let km: Killmail = client
-        .get(format!("https://esi.evetech.net/latest/killmails/{id}/{}/", entry.zkb.hash))
+    let km = fetch_killmail_detail(client, id, &entry.zkb.hash)?;
+    Some((km, entry.zkb.total_value))
+}
+
+/// Fetch a killmail's full ESI detail given its id + zKill hash.
+fn fetch_killmail_detail(
+    client: &reqwest::blocking::Client,
+    id: i64,
+    hash: &str,
+) -> Option<Killmail> {
+    client
+        .get(format!("{ESI}/killmails/{id}/{hash}/"))
         .send()
         .ok()?
         .error_for_status()
         .ok()?
         .json()
-        .ok()?;
-    if !is_listed_hull(km.victim.ship_type_id.unwrap_or(0), ship_ids) {
-        return None;
+        .ok()
+}
+
+/// Decide whether to (re)backfill `system` at `now`, recording the decision so the same system
+/// isn't re-fetched within BACKFILL_DEBOUNCE_SECS. Returns true if a backfill should run now.
+fn should_backfill(seen: &mut HashMap<i64, i64>, system: i64, now: i64) -> bool {
+    match seen.get(&system) {
+        Some(&last) if now - last < BACKFILL_DEBOUNCE_SECS => false,
+        _ => {
+            seen.insert(system, now);
+            true
+        }
     }
-    let sys = systems.info_of(km.solar_system_id)?;
-    let time = chrono::DateTime::parse_from_rfc3339(&km.killmail_time)
-        .map(|dt| dt.timestamp())
-        .unwrap_or_else(|_| chrono::Utc::now().timestamp());
-    resolve_names(client, &km, names);
-    let attackers = attackers_of(&km, names, ship_ids);
-    if attackers.is_empty() {
-        return None; // scored 100% by NPCs
+}
+
+/// Fold a backfilled engagement into the live buffer: skip kills already present or older than
+/// the retention window. Returns true if it was newly added.
+fn fold_engagement(
+    eng: Engagement,
+    now: i64,
+    buffer: &mut Vec<Engagement>,
+    buffer_ids: &mut std::collections::HashSet<i64>,
+) -> bool {
+    if now - eng.time > ENGAGEMENT_TTL {
+        return false;
     }
-    Some(Engagement {
-        kill_id: id,
-        time,
-        system_id: sys.id,
-        system_name: sys.name.clone(),
-        security: sys.security,
-        victim: party_of(&km.victim, names),
-        victim_char: km.victim.character_id.unwrap_or(0),
-        victim_pilot: pilot_of(&km.victim, names),
-        victim_ship: km.victim.ship_type_id.unwrap_or(0),
-        attackers,
-        isk: entry.zkb.total_value,
-        // A kill posted as a link in intel is explicitly referenced, so it anchors a battle.
-        anchored: true,
-    })
+    if !buffer_ids.insert(eng.kill_id) {
+        return false; // already buffered
+    }
+    buffer.push(eng);
+    true
+}
+
+/// Fetch a system's recent kills from zKill and build engagements for those within
+/// `[oldest, newest]` (unix seconds) not already in `have`, all marked anchored (they belong to
+/// a fight we've decided to surface). Results are pushed to `collect`. A network failure logs a
+/// line and skips — never panics.
+#[allow(clippy::too_many_arguments)]
+fn backfill_system(
+    client: &reqwest::blocking::Client,
+    system_id: i64,
+    oldest: i64,
+    newest: i64,
+    systems: &Systems,
+    ship_ids: &std::collections::HashSet<i64>,
+    have: &std::collections::HashSet<i64>,
+    collect: &mut dyn FnMut(Engagement),
+) {
+    let url = format!("{ZKILL_API}/solarSystemID/{system_id}/");
+    let zk: serde_json::Value =
+        match client.get(&url).send().and_then(|r| r.error_for_status()).and_then(|r| r.json()) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[zkill] backfill {system_id} failed: {e}");
+                return;
+            }
+        };
+    let mut names: HashMap<i64, String> = HashMap::new();
+    let mut fetched = 0usize;
+    for km in zk.as_array().cloned().unwrap_or_default().iter().take(BACKFILL_MAX_KILLS) {
+        let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
+        if have.contains(&id) {
+            continue; // already in the live buffer
+        }
+        let Some(hash) = km.get("zkb").and_then(|z| z.get("hash")).and_then(|h| h.as_str()) else {
+            continue;
+        };
+        let value =
+            km.get("zkb").and_then(|z| z.get("totalValue")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let Some(detail) = fetch_killmail_detail(client, id, hash) else { continue };
+        fetched += 1;
+        // Pace ESI detail fetches (a short pause every several requests, like lookup).
+        if fetched % 6 == 0 {
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+        let t = chrono::DateTime::parse_from_rfc3339(&detail.killmail_time)
+            .map(|d| d.timestamp())
+            .unwrap_or(0);
+        // The list is newest-first, so once we drop below the window the rest are older still.
+        if t != 0 && t < oldest {
+            break;
+        }
+        if t > newest {
+            continue;
+        }
+        if let Some(eng) =
+            build_engagement(client, &detail, id, value, true, systems, ship_ids, &mut names)
+        {
+            collect(eng);
+        }
+    }
+}
+
+/// Run a system backfill on a worker thread, pushing built engagements into the worker's inbox
+/// for the loop to fold into the live buffer. Keeps polling/UI responsive.
+#[allow(clippy::too_many_arguments)]
+fn spawn_backfill(
+    client: reqwest::blocking::Client,
+    system_id: i64,
+    oldest: i64,
+    newest: i64,
+    systems: Arc<Systems>,
+    ship_ids: Arc<std::collections::HashSet<i64>>,
+    have: std::collections::HashSet<i64>,
+    out: SharedBackfill,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        backfill_system(&client, system_id, oldest, newest, &systems, &ship_ids, &have, &mut |eng| {
+            out.lock().unwrap().push(eng);
+        });
+        ctx.request_repaint();
+    });
 }
 
 /// Resolve any not-yet-cached ids referenced by this kill via ESI /universe/names.
@@ -786,6 +984,105 @@ fn resolve_names_batch(
     }
 }
 
+/// Result of an on-demand "reconstruct the whole battle from one kill" request.
+#[derive(Clone, Default)]
+#[allow(dead_code)] // wired into the UI separately
+pub enum BuildFromKill {
+    #[default]
+    Idle,
+    Loading,
+    /// The reconstructed engagement set plus the seed kill id, so the UI can locate the battle
+    /// that contains it after clustering.
+    Done(Vec<Engagement>, i64),
+    Failed(String),
+}
+
+pub type SharedBuildFromKill = Arc<Mutex<BuildFromKill>>;
+
+/// Parse a zKill kill reference into a killmail id. Accepts a bare numeric id or a
+/// `https://zkillboard.com/kill/<id>/` URL (scheme and trailing slash optional).
+#[allow(dead_code)] // wired into the UI separately
+pub fn parse_kill_id(input: &str) -> Option<i64> {
+    let s = input.trim();
+    if let Ok(id) = s.parse::<i64>() {
+        return (id > 0).then_some(id);
+    }
+    let after = s.split("/kill/").nth(1)?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<i64>().ok().filter(|&id| id > 0)
+}
+
+/// Reconstruct the full battle around a single seed kill: fetch the seed (zKill -> ESI) to learn
+/// its system + time, then backfill that system's recent kills within +/- BACKFILL_WINDOW_SECS of
+/// the seed, building engagements via the shared builder (all anchored). Returns the engagement
+/// set plus the seed kill id. The caller clusters these (battle::cluster / preview_battle) and
+/// shows the battle containing the seed; these are NOT added to the live buffer.
+#[allow(dead_code)] // wired into the UI separately
+pub fn build_report_from_kill(
+    kill_id: i64,
+    systems: &Systems,
+    ship_ids: &std::collections::HashSet<i64>,
+) -> Result<(Vec<Engagement>, i64), String> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; battle import)"))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let (seed_km, seed_value) = fetch_kill_by_id(&client, kill_id)
+        .ok_or_else(|| format!("Could not fetch kill {kill_id} from zKillboard"))?;
+    let seed_time = chrono::DateTime::parse_from_rfc3339(&seed_km.killmail_time)
+        .map(|d| d.timestamp())
+        .map_err(|e| format!("Bad kill time: {e}"))?;
+    let system_id = seed_km.solar_system_id;
+    let mut names: HashMap<i64, String> = HashMap::new();
+    let mut engagements: Vec<Engagement> = Vec::new();
+    let mut have: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    // Seed the result with the kill itself, so a battle is returned even if the system fetch
+    // turns up nothing else (or the backfill list omits / dedups the seed).
+    if let Some(seed) =
+        build_engagement(&client, &seed_km, kill_id, seed_value, true, systems, ship_ids, &mut names)
+    {
+        have.insert(kill_id);
+        engagements.push(seed);
+    }
+    backfill_system(
+        &client,
+        system_id,
+        seed_time - BACKFILL_WINDOW_SECS,
+        seed_time + BACKFILL_WINDOW_SECS,
+        systems,
+        ship_ids,
+        &have,
+        &mut |eng| engagements.push(eng),
+    );
+    if engagements.is_empty() {
+        return Err(format!("No battle found around kill {kill_id}"));
+    }
+    Ok((engagements, kill_id))
+}
+
+/// Run `build_report_from_kill` on a worker thread, delivering the result via `result` + a
+/// repaint (mirrors lookup::spawn_system_kills / brshare::spawn_load_mine).
+#[allow(dead_code)] // wired into the UI separately
+pub fn spawn_build_from_kill(
+    kill_id: i64,
+    systems: Arc<Systems>,
+    ship_ids: Arc<std::collections::HashSet<i64>>,
+    result: SharedBuildFromKill,
+    ctx: egui::Context,
+) {
+    *result.lock().unwrap() = BuildFromKill::Loading;
+    ctx.request_repaint();
+    std::thread::spawn(move || {
+        let out = match build_report_from_kill(kill_id, &systems, &ship_ids) {
+            Ok((engs, seed)) => BuildFromKill::Done(engs, seed),
+            Err(e) => BuildFromKill::Failed(e),
+        };
+        *result.lock().unwrap() = out;
+        ctx.request_repaint();
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,5 +1132,134 @@ mod tests {
         assert_eq!(attacker_ship(&parse(r#"{"weapon_type_id":448}"#), &hulls), 0);
         // Nothing at all → 0.
         assert_eq!(attacker_ship(&parse(r#"{"character_id":3}"#), &hulls), 0);
+    }
+
+    #[test]
+    fn backfill_debounce() {
+        let mut seen: HashMap<i64, i64> = HashMap::new();
+        let now = 1_000_000i64;
+        // Never seen → backfill, and the decision is recorded.
+        assert!(should_backfill(&mut seen, 30000142, now));
+        // Same system again immediately → skip (debounced).
+        assert!(!should_backfill(&mut seen, 30000142, now + 60));
+        // Just inside the debounce window → still skip.
+        assert!(!should_backfill(&mut seen, 30000142, now + BACKFILL_DEBOUNCE_SECS - 1));
+        // Past the window → backfill again.
+        assert!(should_backfill(&mut seen, 30000142, now + BACKFILL_DEBOUNCE_SECS));
+        // A different system is independent.
+        assert!(should_backfill(&mut seen, 30002187, now + 60));
+    }
+
+    #[test]
+    fn fold_dedup_and_ttl() {
+        let now = 2_000_000i64;
+        let mk = |kill_id: i64, time: i64| Engagement {
+            kill_id,
+            time,
+            system_id: 30000142,
+            system_name: "Jita".into(),
+            security: 0.9,
+            victim: Party { id: 1, name: "V".into(), kind: PartyKind::Character },
+            victim_char: 1,
+            victim_pilot: "V".into(),
+            victim_ship: 587,
+            attackers: Vec::new(),
+            isk: 0.0,
+            anchored: true,
+        };
+        let mut buffer: Vec<Engagement> = Vec::new();
+        let mut ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        // Fresh kill → added.
+        assert!(fold_engagement(mk(100, now - 10), now, &mut buffer, &mut ids));
+        assert_eq!(buffer.len(), 1);
+        // Same kill_id already in the buffer → not re-added.
+        assert!(!fold_engagement(mk(100, now - 5), now, &mut buffer, &mut ids));
+        assert_eq!(buffer.len(), 1);
+        // Older than the retention window → dropped.
+        assert!(!fold_engagement(mk(101, now - ENGAGEMENT_TTL - 1), now, &mut buffer, &mut ids));
+        assert_eq!(buffer.len(), 1);
+        // A different recent kill → added.
+        assert!(fold_engagement(mk(102, now - 20), now, &mut buffer, &mut ids));
+        assert_eq!(buffer.len(), 2);
+    }
+
+    #[test]
+    fn build_engagement_golden() {
+        use crate::geo::SystemInfo;
+        // A Systems with just the kill's system, so info_of resolves without the SDE.
+        let info = SystemInfo {
+            id: 30000142,
+            name: "Jita".into(),
+            security: 0.9,
+            constellation: "Kimotoro".into(),
+            region: "The Forge".into(),
+            faction: String::new(),
+        };
+        let by_name: HashMap<String, SystemInfo> =
+            [("jita".to_string(), info)].into_iter().collect();
+        let systems = Systems::new(by_name, HashMap::new());
+        let ship_ids: std::collections::HashSet<i64> = [587, 670, 17738].into_iter().collect();
+        // Pre-fill every referenced id so resolve_names makes no network call.
+        let mut names: HashMap<i64, String> = HashMap::new();
+        for (id, name) in
+            [(99, "VAlli"), (98, "VCorp"), (97, "VPilot"), (1, "AAlli"), (2, "ACorp"), (3, "APilot")]
+        {
+            names.insert(id, name.to_string());
+        }
+        let km: Killmail = serde_json::from_str(
+            r#"{"killmail_id":12345,"killmail_time":"2026-06-22T18:30:45Z",
+                "solar_system_id":30000142,
+                "victim":{"alliance_id":99,"corporation_id":98,"character_id":97,"ship_type_id":587},
+                "attackers":[{"alliance_id":1,"corporation_id":2,"character_id":3,
+                    "ship_type_id":17738,"final_blow":true}]}"#,
+        )
+        .unwrap();
+        let client = reqwest::blocking::Client::new();
+        let eng =
+            build_engagement(&client, &km, 12345, 9_999.0, true, &systems, &ship_ids, &mut names)
+                .expect("listed-hull victim with a capsuleer attacker builds an engagement");
+        // The fields match the pre-refactor inline construction in `poll`.
+        assert_eq!(eng.kill_id, 12345);
+        assert_eq!(
+            eng.time,
+            chrono::DateTime::parse_from_rfc3339("2026-06-22T18:30:45Z").unwrap().timestamp()
+        );
+        assert_eq!(eng.system_id, 30000142);
+        assert_eq!(eng.system_name, "Jita");
+        assert_eq!(eng.security, 0.9);
+        assert_eq!(eng.victim.id, 99);
+        assert_eq!(eng.victim.name, "VAlli");
+        assert_eq!(eng.victim.kind, PartyKind::Alliance);
+        assert_eq!(eng.victim_char, 97);
+        assert_eq!(eng.victim_pilot, "VPilot");
+        assert_eq!(eng.victim_ship, 587);
+        assert_eq!(eng.attackers.len(), 1);
+        assert_eq!(eng.attackers[0].party.id, 1);
+        assert_eq!(eng.attackers[0].ship, 17738);
+        assert!(eng.attackers[0].final_blow);
+        assert_eq!(eng.isk, 9_999.0);
+        assert!(eng.anchored);
+        // A deployable victim (not a listed hull) is dropped.
+        let depot: Killmail = serde_json::from_str(
+            r#"{"killmail_id":1,"killmail_time":"2026-06-22T18:30:45Z","solar_system_id":30000142,
+                "victim":{"ship_type_id":33519},"attackers":[{"character_id":3}]}"#,
+        )
+        .unwrap();
+        assert!(build_engagement(&client, &depot, 1, 0.0, true, &systems, &ship_ids, &mut names)
+            .is_none());
+    }
+
+    #[test]
+    fn parse_kill_id_forms() {
+        assert_eq!(parse_kill_id("128431979"), Some(128431979));
+        assert_eq!(parse_kill_id("  128431979 "), Some(128431979));
+        assert_eq!(parse_kill_id("https://zkillboard.com/kill/128431979/"), Some(128431979));
+        assert_eq!(parse_kill_id("https://zkillboard.com/kill/128431979"), Some(128431979));
+        assert_eq!(parse_kill_id("zkillboard.com/kill/128431979/"), Some(128431979));
+        // Junk and non-positive ids are rejected.
+        assert_eq!(parse_kill_id("https://zkillboard.com/character/123/"), None);
+        assert_eq!(parse_kill_id("not a kill"), None);
+        assert_eq!(parse_kill_id("0"), None);
+        assert_eq!(parse_kill_id(""), None);
     }
 }
