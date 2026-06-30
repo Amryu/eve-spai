@@ -515,6 +515,9 @@ pub struct SpaiApp {
     /// System tray (Show / Exit) + whether a real quit was requested.
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
+    /// Overlay child process + IPC link (spawned/monitored from `update`). Linux-only.
+    #[cfg(target_os = "linux")]
+    overlay: Option<crate::ipc::OverlayLink>,
     /// D-scan clipboard sharing.
     dscan_clip: Option<arboard::Clipboard>,
     dscan_checked: Option<std::time::Instant>,
@@ -1420,6 +1423,14 @@ impl SpaiApp {
             wizard_checked: false,
             tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
+            #[cfg(target_os = "linux")]
+            overlay: match crate::ipc::OverlayLink::start() {
+                Ok(link) => Some(link),
+                Err(e) => {
+                    eprintln!("[main] overlay failed to start: {e}");
+                    None
+                }
+            },
             dscan_clip: None,
             dscan_checked: None,
             dscan_seen_hash: 0,
@@ -13855,6 +13866,12 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Respawn the overlay child if it died (cheap try_wait; debounced internally).
+        #[cfg(target_os = "linux")]
+        if let Some(link) = self.overlay.as_mut() {
+            link.poll();
+        }
+
         // Publish the active character's system for the worker's jumps-from-me rules.
         self.player_sys_shared
             .store(self.player_system().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
@@ -13975,6 +13992,10 @@ impl eframe::App for SpaiApp {
     }
 
     fn on_exit(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(link) = self.overlay.as_mut() {
+            link.shutdown();
+        }
         self.persist();
     }
 
