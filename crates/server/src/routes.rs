@@ -177,8 +177,8 @@ async fn upload(
         "INSERT INTO battle_reports
          (id, uploader_char_id, uploader_name, title, unlisted, format_version,
           content_sha256, doc, started_at, ended_at, systems, system_ids,
-          total_isk, kills, participants, side_names)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+          total_isk, kills, participants, side_names, search_names)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
     )
     .bind(&id)
     .bind(identity.char_id)
@@ -196,6 +196,7 @@ async fn upload(
     .bind(cols.kills)
     .bind(cols.participants)
     .bind(&cols.side_names)
+    .bind(&cols.search_names)
     .execute(&st.db)
     .await?;
 
@@ -278,9 +279,11 @@ async fn list(
         qb.push(" AND started_at <= ").push_bind(to);
     }
     if let Some(participant) = &p.participant {
-        qb.push(" AND EXISTS (SELECT 1 FROM unnest(side_names) s WHERE s ILIKE ")
-            .push_bind(participant.clone())
-            .push(")");
+        if !participant.is_empty() {
+            qb.push(" AND EXISTS (SELECT 1 FROM unnest(search_names) s WHERE s ILIKE ")
+                .push_bind(format!("%{participant}%"))
+                .push(")");
+        }
     }
     if let Some(min_isk) = p.min_isk {
         qb.push(" AND total_isk >= ").push_bind(min_isk);
@@ -314,7 +317,7 @@ fn push_filters(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, p: &ListParams) {
     }
     if let Some(participant) = &p.participant {
         if !participant.is_empty() {
-            qb.push(" AND EXISTS (SELECT 1 FROM unnest(side_names) s WHERE s ILIKE ")
+            qb.push(" AND EXISTS (SELECT 1 FROM unnest(search_names) s WHERE s ILIKE ")
                 .push_bind(format!("%{participant}%"))
                 .push(")");
         }

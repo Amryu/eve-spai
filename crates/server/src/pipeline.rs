@@ -79,6 +79,11 @@ pub struct Columns {
     pub kills: i32,
     pub participants: i32,
     pub side_names: Vec<String>,
+    /// Lower-cased, de-duplicated set of every party name (alliances/corps on the sides
+    /// and on every killmail) and every pilot name in the battle. Drives the `participant`
+    /// filter so any alliance/corp/pilot present in the fight is searchable - not just the
+    /// two side labels in `side_names`.
+    pub search_names: Vec<String>,
 }
 
 /// Derive the stored columns from a (server-computed) battle.
@@ -111,6 +116,34 @@ pub fn extract_columns(battle: &Battle) -> Columns {
         }
     }
 
+    // Comprehensive searchable names: every party (side members + per-killmail) and every
+    // pilot, lower-cased and de-duplicated case-insensitively, empties skipped.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut search_names: Vec<String> = Vec::new();
+    let mut add = |name: &str| {
+        let t = name.trim();
+        if t.is_empty() {
+            return;
+        }
+        let lc = t.to_lowercase();
+        if seen.insert(lc.clone()) {
+            search_names.push(lc);
+        }
+    };
+    for side in &battle.sides {
+        for p in &side.parties {
+            add(&p.name);
+        }
+    }
+    for e in &battle.engagements {
+        add(&e.victim.name);
+        add(&e.victim_pilot);
+        for a in &e.attackers {
+            add(&a.party.name);
+            add(&a.pilot);
+        }
+    }
+
     Columns {
         started_at: chrono::DateTime::from_timestamp(battle.start, 0),
         ended_at: chrono::DateTime::from_timestamp(battle.end, 0),
@@ -120,6 +153,7 @@ pub fn extract_columns(battle: &Battle) -> Columns {
         kills: battle.kills as i32,
         participants: pilots.len() as i32,
         side_names,
+        search_names,
     }
 }
 
@@ -256,6 +290,25 @@ mod tests {
         assert!((cols.total_isk - 3_000_000.0).abs() < 1e-6);
         assert!(cols.participants >= 2);
         assert_eq!(cols.side_names.len(), doc.battle.sides.len());
+    }
+
+    #[test]
+    fn search_names_cover_parties_and_pilots() {
+        let cols = extract_columns(&real_doc().battle);
+        // Every entry is lower-cased and de-duplicated.
+        assert!(cols.search_names.iter().all(|n| n == &n.to_lowercase()));
+        let mut sorted = cols.search_names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), cols.search_names.len(), "no duplicates");
+        // Alliance/corp names from the battle are searchable (not just side labels).
+        assert!(cols.search_names.contains(&"red alliance".to_string()));
+        assert!(cols.search_names.contains(&"blue alliance".to_string()));
+        // Pilot names are searchable too - this is what side_names could never match.
+        assert!(cols.search_names.iter().any(|n| n.starts_with("victim ")));
+        assert!(cols.search_names.iter().any(|n| n.starts_with("killer ")));
+        // Empty names are never stored.
+        assert!(cols.search_names.iter().all(|n| !n.is_empty()));
     }
 
     #[test]

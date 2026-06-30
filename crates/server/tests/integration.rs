@@ -260,6 +260,73 @@ async fn unlisted_hidden_from_public_but_in_mine() {
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn participant_filter_matches_pilots_and_any_alliance() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool, base_config(url));
+    let tok = mint(&app, 90000010, "Filterer").await;
+
+    // sample_doc: sides "Red Alliance"/"Blue Alliance"; pilots "Victim N"/"Killer N".
+    let (status, body) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("Filterable")))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body:?}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let listed = |page: &Value| -> bool {
+        page["reports"].as_array().unwrap().iter().any(|r| r["id"].as_str() == Some(id.as_str()))
+    };
+
+    // A PILOT name now matches - side_names (the two side labels) never contained pilots.
+    let (_, page) = send(&app, "GET", "/api/br?participant=Killer", None, None).await;
+    assert!(listed(&page), "pilot-name filter should match the report");
+
+    // Any alliance present in the fight matches via case-insensitive substring.
+    let (_, page) = send(&app, "GET", "/api/br?participant=blue", None, None).await;
+    assert!(listed(&page), "alliance substring filter should match");
+
+    // An empty term returns everything.
+    let (_, page) = send(&app, "GET", "/api/br?participant=", None, None).await;
+    assert!(listed(&page), "empty participant term returns all reports");
+
+    // A term present in nothing excludes the report.
+    let (_, page) = send(&app, "GET", "/api/br?participant=NobodyHere", None, None).await;
+    assert!(!listed(&page), "non-matching term must exclude the report");
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
+async fn backfill_populates_legacy_search_names() {
+    let _g = LOCK.lock().await;
+    let Some(pool) = pool().await else { return };
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let app = app(pool.clone(), base_config(url.clone()));
+    let tok = mint(&app, 90000011, "Legacy").await;
+
+    let (status, body) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("Legacy Fight")))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body:?}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Simulate a pre-migration row: blank its search_names, so the pilot filter misses it.
+    sqlx::query("UPDATE battle_reports SET search_names = '{}' WHERE id = $1")
+        .bind(&id).execute(&pool).await.unwrap();
+    let (_, page) = send(&app, "GET", "/api/br?participant=Killer", None, None).await;
+    assert!(
+        !page["reports"].as_array().unwrap().iter().any(|r| r["id"].as_str() == Some(id.as_str())),
+        "with blank search_names the pilot filter should miss"
+    );
+
+    // Re-run the startup pool() path (migrate is idempotent) and the backfill: the row
+    // becomes filterable again without a re-upload.
+    eve_spai_br::backfill_search_names(&pool).await.unwrap();
+    let (_, page) = send(&app, "GET", "/api/br?participant=Killer", None, None).await;
+    assert!(
+        page["reports"].as_array().unwrap().iter().any(|r| r["id"].as_str() == Some(id.as_str())),
+        "backfill should repopulate search_names so the pilot filter matches"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (run with --ignored)"]
 async fn owner_only_delete() {
     let _g = LOCK.lock().await;
     let Some(pool) = pool().await else { return };
