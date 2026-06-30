@@ -71,6 +71,27 @@ impl ActivityCache {
     }
 }
 
+/// Phase 2 demotion decision for one confirmed pilot. Returns `true` = DEMOTE for inactivity.
+///
+/// Order of precedence (each rule KEEPs, i.e. returns `false`):
+/// 1. Young-account exemption: a known birthday younger than 14 days → KEEP (a fresh alt has
+///    no zKill history yet, so absence of kills doesn't mean it's stale).
+/// 2. Recent zKill activity (`active_recent`) → KEEP.
+/// 3. Multi-system revival (`revived`, from the sightings index) supersedes inactivity → KEEP.
+/// 4. Otherwise → DEMOTE.
+pub fn demote_decision(active_recent: bool, birthday: Option<i64>, now: i64, revived: bool) -> bool {
+    if birthday.is_some_and(|b| now - b < 14 * 86400) {
+        return false; // young-account exemption
+    }
+    if active_recent {
+        return false; // recent kills/losses
+    }
+    if revived {
+        return false; // roaming widely right now — revival supersedes inactivity
+    }
+    true
+}
+
 /// `active_recent` from a zKill stats `months` object: true iff ANY month key within the
 /// last three calendar months (current month + the two prior, computed from `now`) has
 /// `shipsDestroyed + shipsLost > 0`. Tolerant of a missing/garbage `months` value.
@@ -226,6 +247,26 @@ mod tests {
         // Empty / missing months → not active.
         assert!(!months_active_recent(&serde_json::json!({}), now));
         assert!(!months_active_recent(&serde_json::Value::Null, now));
+    }
+
+    #[test]
+    fn demote_decision_matrix() {
+        let now = 1_700_000_000; // arbitrary "now"
+        let old = Some(now - 30 * 86400); // 30-day-old account (past the young exemption)
+        let young = Some(now - 3 * 86400); // 3-day-old account
+
+        // Inactive + not revived + old account → DEMOTE.
+        assert!(demote_decision(false, old, now, false));
+        // Young account is exempt even when inactive + not revived → KEEP.
+        assert!(!demote_decision(false, young, now, false));
+        // Recent zKill activity → KEEP (even an old account).
+        assert!(!demote_decision(true, old, now, false));
+        // Inactive but revived by multi-system roaming → KEEP.
+        assert!(!demote_decision(false, old, now, true));
+        // Unknown birthday, inactive, not revived → DEMOTE (no exemption to apply).
+        assert!(demote_decision(false, None, now, false));
+        // A young account that is ALSO active stays kept (exemption hit first; same result).
+        assert!(!demote_decision(true, young, now, false));
     }
 
     #[test]

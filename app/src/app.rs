@@ -3271,6 +3271,7 @@ impl SpaiApp {
                 self.pilots.clone(),
                 self.intel_state.clone(),
                 self.sightings.clone(),
+                self.activity.clone(),
                 ctx.clone(),
             );
         }

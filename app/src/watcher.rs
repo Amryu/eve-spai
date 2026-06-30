@@ -29,6 +29,7 @@ pub fn spawn(
     pilots: crate::pilot::SharedPilots,
     state: Arc<Mutex<IntelState>>,
     sightings: crate::intel::SharedSightings,
+    activity: crate::activity::SharedActivity,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -52,6 +53,7 @@ pub fn spawn(
                 &pilots,
                 &state,
                 &sightings,
+                &activity,
                 &ctx,
                 &mut processed,
                 &mut file_sigs,
@@ -74,6 +76,7 @@ fn scan(
     pilots: &crate::pilot::SharedPilots,
     state: &Mutex<IntelState>,
     sightings: &crate::intel::SharedSightings,
+    activity: &crate::activity::SharedActivity,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
@@ -137,7 +140,12 @@ fn scan(
             .unwrap_or_else(|| messages.len().saturating_sub(FIRST_SIGHT_BACKLOG));
         if messages.len() > start {
             let now = chrono::Utc::now().timestamp();
-            let known = pilots.lock().unwrap().confirmed();
+            // Snapshot the parser's pilot inputs together: `known` excludes demoted-for-inactivity
+            // names (Phase 2), and `denied` is exactly that demoted set so their tokens stay free.
+            let (known, denied) = {
+                let c = pilots.lock().unwrap();
+                (c.confirmed(), c.denied())
+            };
             let mut st = state.lock().unwrap();
             for m in &messages[start..] {
                 // Never parse the channel MOTD / system notices (posted by EVE System).
@@ -149,7 +157,7 @@ fn scan(
                 let context = last_system.get(&meta.channel).map(|(id, _, _)| *id);
                 let mut report = intel::analyze_ctx(
                     &m.text, systems, ships, &known, received, &meta.channel, &m.author, context,
-                    &regions,
+                    &regions, &denied,
                 );
 
                 // Queue every candidate name for the ESI resolver. A name already CONFIRMED in
@@ -272,7 +280,110 @@ fn scan(
         processed.insert(path, messages.len());
     }
 
+    // Phase 2: demote confirmed pilots whose character has no recent zKill activity (with a
+    // young-account exemption + multi-system revival). Runs every poll so the set re-derives and
+    // names auto-revive; only an actual flip re-parses the affected reports.
+    demote_pass(pilots, activity, sightings, state, systems, ships, last_system, channel_regions, ctx);
+
     if any_new {
+        ctx.request_repaint();
+    }
+}
+
+/// Re-derive the demoted-for-inactivity pilot set and, on a flip, re-parse the reports that
+/// mention a flipped name so a newly-demoted name frees its tokens (keywords/ships/other pilots)
+/// and a revived name is re-anchored.
+///
+/// Lock discipline (no ABBA with the fetcher/watcher/reconcile threads): `pilots`, `activity`,
+/// and `sightings` are taken only as brief LEAF locks (lock → read/clone → drop) and never held
+/// while another is acquired. The re-parse holds ONLY `intel_state` (the parser inputs are
+/// snapshotted from `pilots` first), so it never nests `pilots` under `intel_state`.
+#[allow(clippy::too_many_arguments)]
+fn demote_pass(
+    pilots: &crate::pilot::SharedPilots,
+    activity: &crate::activity::SharedActivity,
+    sightings: &crate::intel::SharedSightings,
+    state: &Mutex<IntelState>,
+    systems: &Systems,
+    ships: &HashMap<String, (i64, String)>,
+    last_system: &HashMap<String, (i64, String, Vec<String>)>,
+    channel_regions: &HashMap<String, Vec<String>>,
+    ctx: &egui::Context,
+) {
+    let now = chrono::Utc::now().timestamp();
+    // 1. Snapshot every confirmed character (incl. currently demoted) + the old demoted set.
+    let (candidates, old_demoted) = {
+        let c = pilots.lock().unwrap();
+        (c.all_confirmed(), c.denied())
+    };
+    if candidates.is_empty() {
+        return;
+    }
+    // 2. Queue/refresh + read each character's activity (leaf lock, dropped before step 3).
+    let acts: HashMap<i64, Option<crate::activity::Activity>> = {
+        let mut a = activity.lock().unwrap();
+        candidates
+            .values()
+            .map(|&id| {
+                a.want(id);
+                (id, a.get(id))
+            })
+            .collect()
+    };
+    // 3. Derive the demoted set. `None` activity (not fetched yet) KEEPs. The revival check is a
+    //    brief sightings leaf lock.
+    let new_demoted: std::collections::HashSet<String> = {
+        let s = sightings.lock().unwrap();
+        candidates
+            .iter()
+            .filter_map(|(name, id)| {
+                let a = acts.get(id).copied().flatten()?; // not fetched yet → KEEP
+                let revived = s.revived(name, now);
+                crate::activity::demote_decision(a.active_recent, a.birthday, now, revived)
+                    .then(|| name.clone())
+            })
+            .collect()
+    };
+    // 4. Replace the demotion set (pilots leaf lock) and detect the flip vs. the previous set.
+    let flipped: std::collections::HashSet<String> =
+        old_demoted.symmetric_difference(&new_demoted).cloned().collect();
+    pilots.lock().unwrap().set_demoted(new_demoted);
+    if flipped.is_empty() {
+        return; // re-deriving the same set is cheap; only a flip re-parses
+    }
+    // 5. A flip: snapshot the parser inputs (known excludes demoted; denied = demoted) under a
+    //    brief pilots leaf lock, then hold ONLY intel_state while re-parsing.
+    let (known, denied) = {
+        let c = pilots.lock().unwrap();
+        (c.confirmed(), c.denied())
+    };
+    let mut st = state.lock().unwrap();
+    let mut changed = false;
+    for r in &mut st.reports {
+        // A report is affected if its text mentions a name that just flipped (in either
+        // direction): a demoted name still in `pilots`, or a revived name whose tokens were free.
+        let toks: Vec<String> =
+            intel::tokenize(&r.text).iter().map(|t| t.to_lowercase()).collect();
+        let mentions = flipped.iter().any(|f| {
+            let fw: Vec<&str> = f.split_whitespace().collect();
+            !fw.is_empty() && toks.windows(fw.len()).any(|w| w.iter().zip(&fw).all(|(a, b)| a == b))
+        });
+        if !mentions {
+            continue;
+        }
+        let context = last_system.get(&r.channel).map(|(id, _, _)| *id);
+        let regions = channel_regions.get(&r.channel).cloned().unwrap_or_default();
+        let mut fresh = intel::analyze_ctx(
+            &r.text, systems, ships, &known, r.received, &r.channel, &r.reporter, context,
+            &regions, &denied,
+        );
+        fresh.id = r.id; // preserve the stable report id across the in-place replace
+        fresh.movement = r.movement.take(); // movement is set by the watcher, not the parser
+        *r = fresh;
+        changed = true;
+    }
+    drop(st);
+    if changed {
         ctx.request_repaint();
     }
 }

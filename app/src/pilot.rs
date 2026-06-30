@@ -28,6 +28,10 @@ pub struct PilotCache {
     reverified: std::collections::HashSet<String>,
     queued: std::collections::HashSet<String>,
     queue: VecDeque<String>,
+    /// Confirmed characters currently DEMOTED for inactivity (name-lower) — Phase 2. The
+    /// demotion pass re-derives this set every cycle; a demoted name is excluded from
+    /// [`confirmed`] so the parser no longer anchors on it (its tokens are freed).
+    demoted: std::collections::HashSet<String>,
 }
 
 impl PilotCache {
@@ -101,9 +105,37 @@ impl PilotCache {
         }
     }
 
-    /// Snapshot of confirmed names (lower-cased) → character id, for the parser.
+    /// Snapshot of confirmed names (lower-cased) → character id, for the parser. EXCLUDES
+    /// currently-demoted names (Phase 2) so the parser stops anchoring on an inactive pilot.
     pub fn confirmed(&self) -> HashMap<String, i64> {
+        self.resolved
+            .iter()
+            .filter_map(|(n, v)| v.map(|id| (n.clone(), id)))
+            .filter(|(n, _)| !self.demoted.contains(n))
+            .collect()
+    }
+
+    /// Every ESI-confirmed name → id, INCLUDING currently-demoted ones. The Phase 2 demotion
+    /// pass re-evaluates the full confirmed set each cycle (so a demoted name can auto-revive).
+    pub fn all_confirmed(&self) -> HashMap<String, i64> {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
+    }
+
+    /// Replace the demoted-for-inactivity set (Phase 2). Re-derived every evaluation cycle.
+    pub fn set_demoted(&mut self, names: std::collections::HashSet<String>) {
+        self.demoted = names;
+    }
+
+    /// Whether a confirmed character is currently demoted for inactivity (Phase 2).
+    #[allow(dead_code)] // part of the Phase 2 demotion API; not all callers use it
+    pub fn is_demoted(&self, name: &str) -> bool {
+        self.demoted.contains(&name.to_lowercase())
+    }
+
+    /// The currently-demoted names (lower-cased) — fed to the parser as `denied` so a demoted
+    /// name frees its tokens for keyword/ship/other-pilot detection (Phase 2).
+    pub fn denied(&self) -> std::collections::HashSet<String> {
+        self.demoted.clone()
     }
 
     /// Cover a multi-word candidate with confirmed character sub-names, longest match

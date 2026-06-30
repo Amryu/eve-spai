@@ -1445,7 +1445,18 @@ pub fn analyze(
     channel: &str,
     reporter: &str,
 ) -> IntelReport {
-    analyze_ctx(text, systems, ship_index, known_pilots, received, channel, reporter, None, &[])
+    analyze_ctx(
+        text,
+        systems,
+        ship_index,
+        known_pilots,
+        received,
+        channel,
+        reporter,
+        None,
+        &[],
+        &std::collections::HashSet::new(),
+    )
 }
 
 /// Localised "Kill:" prefixes from the in-game killReport link text. EVE doesn't write
@@ -1749,6 +1760,7 @@ pub fn analyze_ctx(
     reporter: &str,
     context_system: Option<i64>,
     channel_regions: &[String],
+    denied: &std::collections::HashSet<String>,
 ) -> IntelReport {
     let cleaned = preprocess_intel(text);
     let text = cleaned.as_str();
@@ -1830,6 +1842,11 @@ pub fn analyze_ctx(
     }
     // Known (ESI-confirmed) names from the local cache — exact, case-insensitive.
     for k in match_known_pilots(&masked, known_pilots) {
+        // A demoted-for-inactivity name (Phase 2) is treated exactly like a stop word: don't
+        // anchor on it — leave its tokens free for keyword/ship/system detection.
+        if denied.contains(&k.to_lowercase()) {
+            continue;
+        }
         // A standalone word that's a known ship is the ship ("Buzzard"); a null-sec
         // code is the system, not a player who happens to be named like it ("C-J").
         if (!k.contains(' ') && ship_index.contains_key(&k.to_lowercase()))
@@ -1927,6 +1944,10 @@ pub fn analyze_ctx(
         if pilots.iter().any(|p| p.eq_ignore_ascii_case(&r)) {
             continue;
         }
+        // Demoted-for-inactivity (Phase 2): skip like a stop word so the run's tokens stay free.
+        if denied.contains(&r.to_lowercase()) {
+            continue;
+        }
         // A loose blob that is just a CONFIRMED pilot name extended by a system/code token
         // ("Ruston Shackleford B-3QPD") is "name + location", not one held name. Don't add the
         // over-glued blob — it would only hold the system inside the name and (being longer)
@@ -1953,6 +1974,9 @@ pub fn analyze_ctx(
             && t.chars().any(|c| c.is_ascii_alphabetic());
         if name_word
             && !is_pilot_stopword(t)
+            // A demoted-for-inactivity name (Phase 2) must not be re-proposed as a candidate
+            // here either, or its token would never be freed for keyword/ship/system parsing.
+            && !denied.contains(&lc)
             && !is_cap_word(&lc)
             && !is_tackle_word(&lc)
             && !is_time_token(t)
@@ -3212,6 +3236,41 @@ mod tests {
         Systems::new(by_name, HashMap::new())
     }
 
+    #[test]
+    fn denied_name_frees_its_tokens() {
+        let s = systems();
+        let known: std::collections::HashMap<String, i64> =
+            [("comet".to_string(), 1i64)].into_iter().collect();
+        let empty = std::collections::HashSet::new();
+        // Baseline: with no denial, the confirmed "Comet" is anchored as a pilot.
+        let base = analyze_ctx(
+            "Comet tackled in Rancer", &s, &noships(), &known, 1, "ch", "x", None, &[], &empty,
+        );
+        assert!(
+            base.pilots.iter().any(|p| p.eq_ignore_ascii_case("comet")),
+            "baseline anchors Comet: {:?}",
+            base.pilots
+        );
+        // Demoted (denied): "Comet" is NOT a pilot, and its freed token leaves the tackle
+        // keyword and the system intact.
+        let denied: std::collections::HashSet<String> =
+            ["comet".to_string()].into_iter().collect();
+        let r = analyze_ctx(
+            "Comet tackled in Rancer", &s, &noships(), &known, 1, "ch", "x", None, &[], &denied,
+        );
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("comet")),
+            "denied name Comet must be freed, not a pilot: {:?}",
+            r.pilots
+        );
+        assert!(r.tackled, "the tackle keyword still parses with Comet freed");
+        assert!(
+            r.systems.iter().any(|d| d.name == "Rancer"),
+            "the system still parses with Comet freed: {:?}",
+            r.systems
+        );
+    }
+
     // Rancer (1) gate-adjacent to F2A-3X (100); used for neighbour-abbreviation tests.
     fn systems_with_neighbor() -> Systems {
         let by_name = [("rancer", "Rancer", 1i64, 0.4), ("f2a-3x", "F2A-3X", 100, -0.4), ("jita", "Jita", 2, 0.9)]
@@ -3232,14 +3291,14 @@ mod tests {
         // Bare "F2A"/"f2a" (new block) plus a hyphenated prefix "f2a-3" (the existing null-sec
         // code path) — null-sec coded systems carry exactly one hyphen, so a prefix may include it.
         for msg in ["Bob f2a", "hostiles F2A", "hostiles f2a-3"] {
-            let r = analyze_ctx(msg, &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
+            let r = analyze_ctx(msg, &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[], &std::collections::HashSet::new());
             let on_f2a = r.gates.iter().any(|g| g.eq_ignore_ascii_case("F2A-3X"))
                 || r.systems.iter().any(|d| d.name == "F2A-3X");
             assert!(on_f2a, "{msg}: F2A not resolved — gates={:?} systems={:?}", r.gates, r.systems.iter().map(|d| &d.name).collect::<Vec<_>>());
             assert!(!r.pilots.iter().any(|p| p.to_lowercase().contains("f2a")), "{msg}: F2A as pilot {:?}", r.pilots);
         }
         // The flanking name word survives — only the code is carved out of the blob.
-        let r = analyze_ctx("Bob f2a", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
+        let r = analyze_ctx("Bob f2a", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[], &std::collections::HashSet::new());
         assert!(r.pilots.iter().any(|p| p == "Bob"), "Bob lost: {:?}", r.pilots);
     }
 
@@ -3658,11 +3717,14 @@ mod tests {
         .collect();
         let sys = Systems::new(by_name, std::collections::HashMap::new());
         // No hint: ambiguous "C-J" stays unresolved.
-        let r0 = analyze_ctx("hostiles in C-J", &sys, &noships(), &noknown(), 1, "ch", "x", None, &[]);
+        let r0 = analyze_ctx("hostiles in C-J", &sys, &noships(), &noknown(), 1, "ch", "x", None, &[], &std::collections::HashSet::new());
         assert!(r0.systems.is_empty(), "should stay ambiguous: {:?}", r0.systems);
         // Channel covers Tenerifis -> resolves to C-J6MT, not the Vale C-J7CR.
         let regions = vec!["Tenerifis".to_string()];
-        let r = analyze_ctx("hostiles in C-J", &sys, &noships(), &noknown(), 1, "ch", "x", None, &regions);
+        let r = analyze_ctx(
+            "hostiles in C-J", &sys, &noships(), &noknown(), 1, "ch", "x", None, &regions,
+            &std::collections::HashSet::new(),
+        );
         assert!(r.systems.iter().any(|s| s.name == "C-J6MT"), "systems={:?}", r.systems);
         assert!(!r.systems.iter().any(|s| s.name == "C-J7CR"), "systems={:?}", r.systems);
     }
@@ -5109,7 +5171,7 @@ mod tests {
         let r = analyze("D-PNSN C-J gate", &s, &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(r.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
         // No system in the message: the channel's last system (context) disambiguates.
-        let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[]);
+        let r2 = analyze_ctx("C-J gate", &s, &noships(), &noknown(), 1, "ch", "x", Some(1), &[], &std::collections::HashSet::new());
         assert_eq!(r2.gates.first().map(|s| s.as_str()), Some("C-J6MT"));
     }
 
