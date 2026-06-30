@@ -147,6 +147,17 @@ pub fn match_ping_rule<'a>(
     })
 }
 
+/// Whether this ping should raise the fleet-ping window + alert sound. When ping rules are
+/// configured, ONLY a matching, non-suppressed rule alerts (so non-matching pings still land in
+/// the feed silently). With no rules at all, fall back to the fleet-call heuristic so a fresh
+/// install still alerts on real fleet pings.
+pub fn ping_alerts(rules: &[crate::settings::PingRule], p: &Ping) -> bool {
+    match match_ping_rule(rules, p) {
+        Some(r) => !r.suppress && r.notify,
+        None => rules.is_empty() && p.is_fleet_call(),
+    }
+}
+
 /// Parse a directorbot message into zero or more pings. `resolve` maps a formup
 /// token to a solar-system id (None ⇒ keep as text).
 pub fn parse_ping(timestamp: i64, text: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Vec<Ping> {
@@ -470,5 +481,25 @@ mod tests {
         assert_eq!(comms, &Some(Comms::Text("General".to_owned())));
         assert_eq!(source, &None); // "a broadcast" -> empty source
         assert_eq!(target.as_deref(), Some("gooniversity"));
+    }
+
+    #[test]
+    fn ping_alerts_gated_by_rules() {
+        use crate::settings::PingRule;
+        let text = "Bring tackle.\n\nFC Name: Havish Montak\nFormup Location: 1DQ1-A\nPAP Type: Strategic\n\n~~~ This was a broadcast from dakota to all at 2024-01-22 18:43:14 EVE ~~~";
+        let fleet = parse_ping(5, text, &resolve).remove(0);
+        let rule = |fc: &str| PingRule { fc: fc.into(), ..Default::default() };
+
+        // No rules configured → fall back to the fleet-call heuristic (a real fleet ping alerts).
+        assert!(ping_alerts(&[], &fleet));
+        // Rules defined but none match → silent (no window, no sound).
+        assert!(!ping_alerts(&[rule("someone else")], &fleet));
+        // A matching rule → alerts.
+        assert!(ping_alerts(&[rule("havish")], &fleet));
+        // A matching but suppressed rule → silent.
+        assert!(!ping_alerts(
+            &[PingRule { fc: "havish".into(), suppress: true, ..Default::default() }],
+            &fleet
+        ));
     }
 }

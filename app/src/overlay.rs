@@ -192,12 +192,23 @@ impl Overlay {
                     Ok(crate::ipc::MainToOverlay::Ping(m)) => {
                         {
                             let mut st = ping_shared.lock().unwrap();
+                            // Preserve `shown_at` for pings we're already showing — only genuinely
+                            // new pings start their "blink"/freshness clock. Otherwise a plain resend
+                            // (e.g. the main re-sending because an unrelated alert-window setting
+                            // changed) would reset every ping to "just now" and the window would
+                            // blink hours-old pings and re-raise.
+                            let now = std::time::Instant::now();
+                            let prev = std::mem::take(&mut st.windows);
                             st.windows = m
                                 .pings
                                 .into_iter()
-                                .map(|ping| crate::app::PingShown {
-                                    ping,
-                                    shown_at: std::time::Instant::now(),
+                                .map(|ping| {
+                                    let shown_at = prev
+                                        .iter()
+                                        .find(|s| s.ping == ping)
+                                        .map(|s| s.shown_at)
+                                        .unwrap_or(now);
+                                    crate::app::PingShown { ping, shown_at }
                                 })
                                 .collect();
                             if m.raise {

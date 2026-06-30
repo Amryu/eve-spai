@@ -172,7 +172,10 @@ fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Pin
                 if r.sound.is_empty() { cfg.ping_sound.clone() } else { r.sound.clone() },
                 1u8,
             ),
-            None => (false, true, cfg.ping_sound.clone(), 1u8),
+            // No rule matched: alert only when the user has NO rules configured (out-of-box: every
+            // fleet ping sounds). With rules defined, a non-matching ping stays silent.
+            None if cfg.ping_rules.is_empty() => (false, true, cfg.ping_sound.clone(), 1u8),
+            None => return,
         },
         None => (false, true, cfg.msg_sound.clone(), 0u8),
     };
@@ -336,21 +339,25 @@ async fn run(
     // disables Jabber. An *empty* event batch is normal (a stanza that produced no
     // high-level event, e.g. the roster reply) — it does NOT mean the stream ended,
     // so we must not tear the connection down on it.
-    let mut rejoined = false;
+    let mut was_connected = false;
     loop {
         if !state.lock().unwrap().enabled {
             let _ = agent.disconnect().await;
             break;
         }
-        // Once connected, (re)join the persisted rooms exactly once.
-        if !rejoined && state.lock().unwrap().connected {
+        // (Re)join the persisted rooms on every fresh connection — the initial connect AND after a
+        // transparent reconnect (e.g. the XMPP server restarting). Resetting on the disconnect→connect
+        // edge is what makes the client actually recover: an `Online` without a rejoin leaves us
+        // connected but in no rooms, so no intel/pings arrive.
+        let connected = state.lock().unwrap().connected;
+        if connected && !was_connected {
             for r in &initial_rooms {
                 if let Ok(room) = r.parse::<BareJid>() {
                     agent.join_room(JoinRoomSettings::new(room)).await;
                 }
             }
-            rejoined = true;
         }
+        was_connected = connected;
         tokio::select! {
             events = agent.wait_for_events() => {
                 let mut urgent = false;
@@ -556,7 +563,9 @@ fn handle_event(
                     // push fleet calls into the deferred ping window (also off the UI thread).
                     if let Some((cfg, ping)) = fire {
                         fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping));
-                        if ping.is_fleet_call() {
+                        // Raise the popup only for an alerting ping (matching, non-suppressed rule;
+                        // or any fleet call when no rules are configured) — same gate as the sound.
+                        if crate::pings::ping_alerts(&cfg.ping_rules, &ping) {
                             push_ping_window(ping_shared, ctx, &ping);
                         }
                     }

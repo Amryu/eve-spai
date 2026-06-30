@@ -353,6 +353,9 @@ pub struct SpaiApp {
     br_mine_open: bool,
     /// Share the report unlisted (kept out of the public directory). Default public.
     br_unlisted: bool,
+    /// The character chosen to upload/manage battle reports under (the user may have many alts; BRs
+    /// are owned per character). `None` falls back to the active/first authenticated character.
+    br_character: Option<i64>,
     /// Battles view: free-text filter (system, alliance/coalition, pilot, ship).
     battle_search: String,
     /// Battle detail: the participant currently hovered (for the involvement highlight).
@@ -535,6 +538,10 @@ pub struct SpaiApp {
     /// Hash of the last Config+Ping snapshot pushed to the overlay, so the main only resends on
     /// change (reset to `None` on overlay reconnect to force a full resend).
     ping_sent_hash: Option<u64>,
+    /// Hash of the last overlay *config* (ping + alert behaviour/geometry) pushed to the overlay,
+    /// tracked separately from the ping content so an alert-window move/resize never resends the
+    /// ping list (which would otherwise re-blink old pings). Reset on overlay reconnect.
+    config_sent_hash: Option<u64>,
     /// Hash of the last alert snapshot pushed to the overlay (content only; the countdown reset +
     /// focus bypass it). Reset to `None` on overlay reconnect for a forced resend.
     alert_sent_hash: Option<u64>,
@@ -1054,6 +1061,7 @@ impl SpaiApp {
             br_mine: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::MineState::default())),
             br_mine_open: false,
             br_unlisted: false,
+            br_character: None,
             battle_condensed: false,
             battle_roster_sort: RosterSort::default(),
             battle_search: String::new(),
@@ -1154,6 +1162,7 @@ impl SpaiApp {
                 }
             },
             ping_sent_hash: None,
+            config_sent_hash: None,
             alert_sent_hash: None,
             dscan_clip: None,
             dscan_checked: None,
@@ -4880,19 +4889,33 @@ impl SpaiApp {
 
     /// The character to share as (its id + the DB path): the active character when it has a
     /// stored token, else any character with a stored refresh token. `None` → no login yet.
+    /// Characters that can actually manage battle reports — those with a stored refresh token. The
+    /// user picks one of these (they may have many alts); BRs are owned per character server-side.
+    fn br_authed_chars(&self) -> Vec<(i64, String)> {
+        self.characters
+            .iter()
+            .filter(|c| crate::tokens::load_refresh(c.id).is_some())
+            .map(|c| (c.id, c.name.clone()))
+            .collect()
+    }
+
+    /// The character to upload/manage BRs under: the explicitly chosen `br_character` if it's still
+    /// authenticated, else the active character (if authenticated), else any authenticated character.
+    /// Only ever returns a character with a usable token, so a logged-out alt can't trigger a
+    /// spurious re-auth.
     fn share_identity(&self) -> Option<(i64, std::path::PathBuf)> {
         let path = self.store.as_ref()?.path().to_path_buf();
+        let authed = |id: i64| crate::tokens::load_refresh(id).is_some();
         let id = self
-            .characters
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(&self.active_character))
-            .map(|c| c.id)
+            .br_character
+            .filter(|id| authed(*id))
             .or_else(|| {
                 self.characters
                     .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(&self.active_character) && authed(c.id))
                     .map(|c| c.id)
-                    .find(|id| crate::tokens::load_refresh(*id).is_some())
-            })?;
+            })
+            .or_else(|| self.characters.iter().map(|c| c.id).find(|id| authed(*id)))?;
         Some((id, path))
     }
 
@@ -4986,7 +5009,7 @@ impl SpaiApp {
                         if ui.button(format!("{} Delete", icon::TRASH)).clicked() {
                             action = Action::Delete(id.clone());
                         }
-                        if ui.button("\u{2715}").on_hover_text("Dismiss").clicked() {
+                        if ui.button(icon::X).on_hover_text("Dismiss").clicked() {
                             action = Action::Dismiss;
                         }
                     });
@@ -4995,7 +5018,7 @@ impl SpaiApp {
                     ui.add_space(2.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.colored_label(crate::theme::standing::WARNING, e);
-                        if ui.button("\u{2715}").on_hover_text("Dismiss").clicked() {
+                        if ui.button(icon::X).on_hover_text("Dismiss").clicked() {
                             action = Action::Dismiss;
                         }
                     });
@@ -5375,6 +5398,33 @@ impl SpaiApp {
                                 save_clicked = true;
                             }
                             ui.separator();
+                            // Which character owns/manages the shared reports (the user may have
+                            // many alts; BRs are owned per character server-side).
+                            let authed = self.br_authed_chars();
+                            if authed.len() > 1 {
+                                let current = self.share_identity().map(|(id, _)| id);
+                                let sel_name = current
+                                    .and_then(|id| {
+                                        authed.iter().find(|(a, _)| *a == id).map(|(_, n)| n.clone())
+                                    })
+                                    .unwrap_or_else(|| "Select character".to_owned());
+                                ui.label("Manage as:");
+                                egui::ComboBox::from_id_salt("br_manage_as")
+                                    .selected_text(sel_name)
+                                    .show_ui(ui, |ui| {
+                                        for (id, name) in &authed {
+                                            if ui
+                                                .selectable_label(self.br_character == Some(*id), name)
+                                                .clicked()
+                                            {
+                                                self.br_character = Some(*id);
+                                            }
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
+                                ui.separator();
+                            }
                             let sharing = matches!(
                                 *self.br_share.lock().unwrap(),
                                 crate::brshare::ShareStatus::Uploading
@@ -5608,7 +5658,7 @@ impl SpaiApp {
         if let Some(msg) = self.report_msg.clone() {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(msg).weak());
-                if ui.small_button("\u{2715}").clicked() {
+                if ui.small_button(egui_phosphor::regular::X).clicked() {
                     self.report_msg = None;
                 }
             });
@@ -6435,6 +6485,7 @@ impl SpaiApp {
         // and alert change-detection so the respawned overlay is fully repopulated.
         if link.take_reconnected() {
             self.ping_sent_hash = None;
+            self.config_sent_hash = None;
             self.alert_sent_hash = None;
         }
 
@@ -6453,31 +6504,42 @@ impl SpaiApp {
         };
         let cfg = self.overlay_config();
 
-        // Hash the content (excluding the one-shot `raise`) with a stable op-links ordering so a
-        // re-cloned HashMap doesn't trigger spurious resends. Includes the alert config fields so an
-        // alert setting change (on-top / timeout / geometry / feature) also resends.
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&msg.pings).unwrap_or_default().hash(&mut hasher);
-        msg.doctrine_url.hash(&mut hasher);
-        let mut ops: Vec<(&String, &String)> = msg.op_links.iter().collect();
-        ops.sort();
-        ops.hash(&mut hasher);
-        cfg.ping_enabled.hash(&mut hasher);
-        (cfg.ping_on_top as u8).hash(&mut hasher);
-        cfg.alert_enabled.hash(&mut hasher);
-        (cfg.alert_on_top as u8).hash(&mut hasher);
-        cfg.window_timeout.to_bits().hash(&mut hasher);
-        cfg.win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut hasher);
-        cfg.win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut hasher);
-        let hash = hasher.finish();
+        // Hash the PING content and the overlay CONFIG SEPARATELY so the two messages resend
+        // independently. Critically, an alert-window move/resize (cfg.win_pos / win_size) must NOT
+        // resend the ping list — otherwise the overlay would treat the unchanged pings as fresh and
+        // re-blink hours-old pings whenever the alert window is dragged.
+        let ping_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            serde_json::to_string(&msg.pings).unwrap_or_default().hash(&mut h);
+            msg.doctrine_url.hash(&mut h);
+            let mut ops: Vec<(&String, &String)> = msg.op_links.iter().collect();
+            ops.sort();
+            ops.hash(&mut h);
+            h.finish()
+        };
+        let config_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            cfg.ping_enabled.hash(&mut h);
+            (cfg.ping_on_top as u8).hash(&mut h);
+            cfg.alert_enabled.hash(&mut h);
+            (cfg.alert_on_top as u8).hash(&mut h);
+            cfg.window_timeout.to_bits().hash(&mut h);
+            cfg.win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
+            cfg.win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
+            h.finish()
+        };
 
-        // Resend on content change, on a pending raise, or after a forced reset (reconnect).
-        if Some(hash) == self.ping_sent_hash && !msg.raise {
-            return;
+        // Config: resend only when it actually changed (or after a reconnect reset).
+        if Some(config_hash) != self.config_sent_hash {
+            link.send(&crate::ipc::MainToOverlay::Config(cfg));
+            self.config_sent_hash = Some(config_hash);
         }
-        link.send(&crate::ipc::MainToOverlay::Config(cfg));
-        link.send(&crate::ipc::MainToOverlay::Ping(msg));
-        self.ping_sent_hash = Some(hash);
+        // Ping: resend on a content change or a pending raise (a fresh ping), never on a config-only
+        // change.
+        if Some(ping_hash) != self.ping_sent_hash || msg.raise {
+            link.send(&crate::ipc::MainToOverlay::Ping(msg));
+            self.ping_sent_hash = Some(ping_hash);
+        }
     }
 
     fn start_sde(&self, ctx: &egui::Context) {
