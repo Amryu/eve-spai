@@ -401,11 +401,29 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     groups
 }
 
-/// One participant row for the Details layout: hull, pilot, party (with logo), and - for a
-/// destroyed ship - a red marker, ISK value, and zKill link. `data-*` attributes drive the
-/// hover-highlight and hull-filter JS (`data-char`, `data-ship`, and `data-kill` on losses).
-fn detail_cell(p: &br_core::battle::Participant) -> Markup {
+/// Map each podded pilot's character id to the kill id of their capsule killmail, scanning
+/// the raw engagements once. A folded pod loss (`Lost::pod_value`) carries no kill id of its
+/// own, so this recovers it for the pod sub-row's zKill link.
+fn pod_kill_ids(battle: &Battle) -> std::collections::HashMap<i64, i64> {
+    use br_core::battle::POD_TYPES;
+    let mut m = std::collections::HashMap::new();
+    for e in &battle.engagements {
+        if e.victim_char != 0 && POD_TYPES.contains(&e.victim_ship) {
+            m.insert(e.victim_char, e.kill_id);
+        }
+    }
+    m
+}
+
+/// One participant in the Details layout: the ship row (hull, pilot, party, loss + zKill),
+/// plus - when a capsule was killed alongside (`pod_value > POD_VALUE_MIN`) - a secondary,
+/// indented pod sub-row carrying the pod hull icon, its ISK value, and a zKill link to the
+/// pod killmail (recovered from `pod_kills`; omitted gracefully if unknown). The pod row
+/// shares the ship's `data-ship` so the hull filter keeps the two rows together.
+fn detail_cell(p: &br_core::battle::Participant, pod_kills: &std::collections::HashMap<i64, i64>) -> Markup {
     let lost = p.lost.as_ref();
+    let pod = lost.filter(|l| l.pod_value > POD_VALUE_MIN);
+    let pod_kill = pod.and_then(|_| (p.char_id != 0).then(|| pod_kills.get(&p.char_id).copied()).flatten());
     html! {
         div .dcell .lost[lost.is_some()]
             data-char=(p.char_id)
@@ -425,12 +443,21 @@ fn detail_cell(p: &br_core::battle::Participant) -> Markup {
                     span .destroyed { "destroyed" }
                     span .dval { (fmt_isk(l.value)) }
                     a .zk href=(zkill_url(l.kill_id)) target="_blank" rel="noopener" { "zKill" }
-                    // The pod was killed alongside the ship (default/empty value is 10000).
-                    @if l.pod_value > POD_VALUE_MIN {
-                        span .dpod title="pod destroyed" {
-                            img .dpod-icon src=(icon_url(l.pod_ship)) width="20" height="20" loading="lazy" alt="pod";
-                            span .dpod-val { (fmt_isk(l.pod_value)) }
-                        }
+                }
+            }
+        }
+        @if let Some(l) = pod {
+            div .dcell .lost .dpod-row data-ship=(p.ship) {
+                img .dhull .dpod-hull src=(icon_url(l.pod_ship)) width="32" height="32" loading="lazy" alt="pod";
+                div .dinfo {
+                    span .dpilot title=(p.pilot) { (p.pilot) }
+                    span .dparty { span .dparty-name { "Capsule" } }
+                }
+                div .dloss {
+                    span .destroyed { "pod" }
+                    span .dval { (fmt_isk(l.pod_value)) }
+                    @if let Some(k) = pod_kill {
+                        a .zk href=(zkill_url(k)) target="_blank" rel="noopener" { "zKill" }
                     }
                 }
             }
@@ -445,6 +472,7 @@ fn side_panel(
     battle: &Battle,
     side_idx: usize,
     ship_names: &std::collections::BTreeMap<i64, String>,
+    pod_kills: &std::collections::HashMap<i64, i64>,
 ) -> Markup {
     let side = &battle.sides[side_idx];
     let groups = roster_groups(battle, side_idx);
@@ -509,7 +537,7 @@ fn side_panel(
             }
             div .details {
                 @for p in &roster {
-                    (detail_cell(p))
+                    (detail_cell(p, pod_kills))
                 }
             }
         }
@@ -597,6 +625,7 @@ pub fn viewer_page(data: &CardData) -> Markup {
     let b = &data.doc.battle;
     let json_href = format!("/api/br/{}.json", data.id);
     let inv = involvement_json(b);
+    let pod_kills = pod_kill_ids(b);
     let body = html! {
         section .viewer {
             div .v-head {
@@ -637,7 +666,7 @@ pub fn viewer_page(data: &CardData) -> Markup {
                 }
                 div .panels {
                     @for i in 0..b.sides.len() {
-                        (side_panel(b, i, &data.doc.ship_names))
+                        (side_panel(b, i, &data.doc.ship_names, &pod_kills))
                     }
                 }
             }
@@ -983,9 +1012,10 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .destroyed{color:var(--red); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;}
 .dval{font-family:var(--mono); color:var(--red);}
 .zk{font-weight:600;}
-.dpod{display:inline-flex; align-items:center; gap:4px; flex:0 0 auto;}
-.dpod-icon{flex:0 0 auto; border-radius:4px; border:1px solid var(--line); background:var(--panel);}
-.dpod-val{font-family:var(--mono); color:var(--red); font-size:12px;}
+/* Pod kill rendered as a secondary, indented sub-row beneath its ship row. */
+.dpod-row{margin-left:24px; padding:4px 8px; background:transparent; border-style:dashed; opacity:0.85;}
+.dpod-hull{width:32px; height:32px;}
+.dpod-row .dpilot{font-size:13px; color:var(--muted);}
 .dcell.hi-killer{outline:2px solid var(--blue); background:rgba(79,195,247,0.12);}
 .dcell.hi-victim{outline:2px solid var(--red); background:rgba(224,76,76,0.12);}
 
@@ -1318,8 +1348,8 @@ mod tests {
         assert!(html.contains("isk-lost"));
         assert!(CSS.contains(".stat-num.isk-destroyed{color:var(--green);}"));
         assert!(CSS.contains(".stat-num.isk-lost{color:var(--red);}"));
-        // No pod-related markup when no pod was killed.
-        assert!(!html.contains("class=\"dpod\""));
+        // No pod sub-row when no pod was killed.
+        assert!(!html.contains("dcell lost dpod-row"));
     }
 
     // Build an arbitrary engagement (used to fold a pod into a pilot's ship loss).
@@ -1357,8 +1387,8 @@ mod tests {
     #[test]
     fn pods_excluded_from_tiles_but_pod_kill_shown_in_details() {
         use br_core::battle::POD_TYPES;
-        // Same pilot (char 5000) loses a ship (587) and then a pod (670, worth 50M): the pod
-        // folds into the ship row. A reciprocal kill forms the second side.
+        // Same pilot (char 5000) loses a ship (587, kill 1) and then a pod (670, kill 2, worth
+        // 50M): the pod folds into the ship row. A reciprocal kill forms the second side.
         let engs = vec![
             eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
             eng_full(2, (100, "Red"), 5000, "RedVictim", 670, (200, "Blue"), 50_000_000.0),
@@ -1373,9 +1403,34 @@ mod tests {
         for pod in POD_TYPES {
             assert!(!html.contains(&format!("data-ship=\"{pod}\"")), "pod {pod} must not be a tile");
         }
-        // The folded pod kill (value > 10000) shows on the ship row: pod icon + pod block.
-        assert!(html.contains("class=\"dpod\""));
+        // The folded pod kill (value > 10000) renders as its own indented sub-row with the
+        // pod hull icon.
+        assert!(html.contains("dcell lost dpod-row"));
         assert!(html.contains(&icon_url(670)));
+        // The pod sub-row links to the POD killmail (kill 2), distinct from the ship's kill 1.
+        assert!(html.contains("https://zkillboard.com/kill/1/")); // ship loss
+        assert!(html.contains("https://zkillboard.com/kill/2/")); // pod loss, separate link
+    }
+
+    #[test]
+    fn pod_row_without_known_kill_id_omits_zkill_link() {
+        // The pod killmail has victim_char 0 (so `pod_kill_ids`, keyed by char, can't find it),
+        // but folds into the ship loss by matching pilot name -> pod_value is set. The pod row
+        // must still render, just without a zKill link (graceful fallback).
+        let engs = vec![
+            eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
+            eng_full(2, (100, "Red"), 0, "RedVictim", 670, (200, "Blue"), 50_000_000.0),
+            eng_full(3, (200, "Blue"), 6000, "BlueVictim", 588, (100, "Red"), 80_000_000.0),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let data = CardData { id: "Rr77777777".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        // Pod sub-row renders (folded pod value > 10000)...
+        assert!(html.contains("dcell lost dpod-row"));
+        assert!(html.contains(&icon_url(670)));
+        // ...but the pod's kill id was unrecoverable, so no /kill/2/ link is emitted.
+        assert!(!html.contains("https://zkillboard.com/kill/2/"));
     }
 
     #[test]
@@ -1390,7 +1445,7 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
         let data = CardData { id: "Qq66666666".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        assert!(!html.contains("class=\"dpod\""));
+        assert!(!html.contains("dcell lost dpod-row"));
     }
 
     #[test]
