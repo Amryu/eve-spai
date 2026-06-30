@@ -11,6 +11,7 @@ pub mod models;
 pub mod pipeline;
 pub mod routes;
 pub mod state;
+pub mod views;
 
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;

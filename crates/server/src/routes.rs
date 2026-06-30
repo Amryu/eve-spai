@@ -15,6 +15,8 @@ use crate::error::AppError;
 use crate::models::{CreateResponse, ReportPage, ReportRow};
 use crate::pipeline;
 use crate::state::AppState;
+use crate::views::{self, CardData, DirQuery};
+use br_core::battle::BattleReportDoc;
 
 const PER_PAGE: i64 = 20;
 
@@ -25,6 +27,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/br", get(list).post(upload))
         .route("/api/br/mine", get(mine))
         .route("/api/br/{id}", get(fetch_json).delete(delete_report))
+        // Server-rendered HTML directory + viewer (mobile-first, no client framework).
+        .route("/br", get(directory))
+        .route("/br/{id}", get(viewer))
         // Hard ceiling on any request body (also rejects an oversize Content-Length
         // before the body is read), independent of the per-handler checks.
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_compressed))
@@ -242,6 +247,121 @@ async fn list(
     let rows = qb.build().fetch_all(&st.db).await?;
     let reports = rows.iter().map(|r| row_to_report(r, false)).collect();
     Ok(Json(ReportPage { page, per_page: PER_PAGE, reports }))
+}
+
+/// Apply the shared public-list filters (same semantics as `list`) to a query builder
+/// already started with a `... WHERE unlisted = false` clause.
+fn push_filters(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, p: &ListParams) {
+    if let Some(system) = &p.system {
+        if !system.is_empty() {
+            qb.push(" AND ").push_bind(system.clone()).push(" = ANY(systems)");
+        }
+    }
+    if let Some(from) = p.from.as_deref().and_then(parse_ts) {
+        qb.push(" AND started_at >= ").push_bind(from);
+    }
+    if let Some(to) = p.to.as_deref().and_then(parse_ts) {
+        qb.push(" AND started_at <= ").push_bind(to);
+    }
+    if let Some(participant) = &p.participant {
+        if !participant.is_empty() {
+            qb.push(" AND EXISTS (SELECT 1 FROM unnest(side_names) s WHERE s ILIKE ")
+                .push_bind(format!("%{participant}%"))
+                .push(")");
+        }
+    }
+    if let Some(min_isk) = p.min_isk {
+        qb.push(" AND total_isk >= ").push_bind(min_isk);
+    }
+    qb.push(match p.sort.as_deref() {
+        Some("isk") => " ORDER BY total_isk DESC",
+        Some("kills") => " ORDER BY kills DESC",
+        Some("oldest") => " ORDER BY created_at ASC",
+        _ => " ORDER BY created_at DESC",
+    });
+}
+
+/// `GET /br` — server-rendered public directory (HTML). Same filters/sort as the JSON
+/// list; renders cards from the stored doc and reflects every filter in the URL.
+async fn directory(
+    State(st): State<AppState>,
+    Query(p): Query<ListParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let page = p.page.unwrap_or(1).max(1);
+    let offset = (page - 1) * PER_PAGE;
+
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT id, doc, uploader_name, views FROM battle_reports WHERE unlisted = false",
+    );
+    push_filters(&mut qb, &p);
+    // Fetch one extra row to know whether a next page exists.
+    qb.push(" LIMIT ").push_bind(PER_PAGE + 1).push(" OFFSET ").push_bind(offset);
+
+    let rows = qb.build().fetch_all(&st.db).await?;
+    let has_next = rows.len() as i64 > PER_PAGE;
+
+    let mut cards: Vec<CardData> = Vec::new();
+    for r in rows.iter().take(PER_PAGE as usize) {
+        let value: serde_json::Value = r.get("doc");
+        // A stored doc that no longer deserializes (e.g. a future format) is skipped
+        // rather than failing the whole page.
+        if let Ok(doc) = serde_json::from_value::<BattleReportDoc>(value) {
+            cards.push(CardData {
+                id: r.get("id"),
+                doc,
+                uploader: r.get("uploader_name"),
+                views: r.get("views"),
+            });
+        }
+    }
+
+    let q = DirQuery {
+        system: p.system.unwrap_or_default(),
+        from: p.from.unwrap_or_default(),
+        to: p.to.unwrap_or_default(),
+        participant: p.participant.unwrap_or_default(),
+        min_isk: p.min_isk.map(|v| v.to_string()).unwrap_or_default(),
+        sort: p.sort.unwrap_or_default(),
+    };
+    Ok(views::directory_page(&cards, &q, page, has_next))
+}
+
+/// `GET /br/{id}` — server-rendered single-report viewer (HTML). Unlisted reports are
+/// reachable by direct id; a missing id renders the themed 404. This human page view is
+/// the real view, so it bumps `views` (IP-throttled, reusing the M3 throttle).
+async fn viewer(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    let row = sqlx::query("SELECT doc, uploader_name, views FROM battle_reports WHERE id = $1")
+        .bind(&id)
+        .fetch_optional(&st.db)
+        .await?;
+    let Some(row) = row else {
+        return Ok((StatusCode::NOT_FOUND, views::not_found_page()).into_response());
+    };
+    let value: serde_json::Value = row.get("doc");
+    let Ok(doc) = serde_json::from_value::<BattleReportDoc>(value) else {
+        return Ok((StatusCode::NOT_FOUND, views::not_found_page()).into_response());
+    };
+
+    if st.should_count_view(&id, &client_ip(&headers)) {
+        let _ = sqlx::query(
+            "UPDATE battle_reports SET views = views + 1, last_viewed_at = now() WHERE id = $1",
+        )
+        .bind(&id)
+        .execute(&st.db)
+        .await;
+    }
+
+    let data = CardData {
+        id,
+        doc,
+        uploader: row.get("uploader_name"),
+        views: row.get("views"),
+    };
+    Ok(views::viewer_page(&data).into_response())
 }
 
 /// `GET /api/br/mine` — the caller's reports, including unlisted.
