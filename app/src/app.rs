@@ -799,14 +799,13 @@ pub struct SpaiApp {
 
 impl SpaiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Load the Phosphor icon font into the proportional family so icons render
-        // inline with text everywhere (nav rail, buttons).
-        let mut fonts = egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-        cc.egui_ctx.set_fonts(fonts);
+        // Phosphor icons + a CJK fallback so icons render inline and Chinese names show
+        // instead of tofu (shared with the overlay so both windows look identical).
+        crate::theme::install_fonts(&cc.egui_ctx);
 
-        // Image loaders so we can show ship icons from EVE's image server.
-        egui_extras::install_image_loaders(&cc.egui_ctx);
+        // Image loaders (ship icons / portraits from EVE's image server), fronted by our
+        // 30-day on-disk cache so they aren't re-fetched every run.
+        crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
 
         let store = Store::open().map_err(|e| eprintln!("store: {e:#}")).ok();
         let mut settings = store
@@ -3842,11 +3841,8 @@ impl SpaiApp {
         use egui_phosphor::regular as icon;
         ui.horizontal(|ui| {
             ui.add(
-                egui::Image::new(format!(
-                    "https://images.evetech.net/characters/{}/portrait?size=128",
-                    info.char_id
-                ))
-                .fit_to_exact_size(egui::Vec2::splat(72.0)),
+                egui::Image::new(eve_portrait_url(info.char_id, 72.0))
+                    .fit_to_exact_size(egui::Vec2::splat(72.0)),
             );
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new(&info.name).strong().size(18.0));
@@ -3854,10 +3850,8 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     if let Some(aid) = info.alliance_id {
                         ui.add(
-                            egui::Image::new(format!(
-                                "https://images.evetech.net/alliances/{aid}/logo?size=64"
-                            ))
-                            .fit_to_exact_size(egui::Vec2::splat(40.0)),
+                            egui::Image::new(eve_alliance_logo_url(aid, 40.0))
+                                .fit_to_exact_size(egui::Vec2::splat(40.0)),
                         )
                         .on_hover_text(if info.alliance.is_empty() {
                             "Alliance"
@@ -3867,10 +3861,8 @@ impl SpaiApp {
                     }
                     if let Some(cid) = info.corp_id {
                         ui.add(
-                            egui::Image::new(format!(
-                                "https://images.evetech.net/corporations/{cid}/logo?size=64"
-                            ))
-                            .fit_to_exact_size(egui::Vec2::splat(40.0)),
+                            egui::Image::new(eve_corp_logo_url(cid, 40.0))
+                                .fit_to_exact_size(egui::Vec2::splat(40.0)),
                         )
                         .on_hover_text(if info.corp.is_empty() {
                             "Corporation"
@@ -3905,10 +3897,8 @@ impl SpaiApp {
             ui.horizontal_wrapped(|ui| {
                 for (id, name, kills) in &info.top_ships {
                     ui.add(
-                        egui::Image::new(format!(
-                            "https://images.evetech.net/types/{id}/icon?size=32"
-                        ))
-                        .fit_to_exact_size(egui::Vec2::splat(28.0)),
+                        egui::Image::new(eve_type_icon_url(id, 28.0))
+                            .fit_to_exact_size(egui::Vec2::splat(28.0)),
                     )
                     .on_hover_text(format!("{name}: {kills} kills"));
                 }
@@ -5550,7 +5540,7 @@ impl SpaiApp {
                     continue;
                 }
                 ui.horizontal(|ui| {
-                    let url = format!("https://images.evetech.net/types/{}/icon?size=32", l.ship_type_id);
+                    let url = eve_type_icon_url(l.ship_type_id, 26.0);
                     let img = ui.add(
                         egui::Image::new(url)
                             .fit_to_exact_size(egui::Vec2::splat(26.0))
@@ -5655,7 +5645,7 @@ impl SpaiApp {
                     .map(|d| d.name)
                     .unwrap_or_else(|| "Other".to_owned());
                 ui.horizontal(|ui| {
-                    let url = format!("https://images.evetech.net/types/{ship_id}/icon?size=32");
+                    let url = eve_type_icon_url(ship_id, 24.0);
                     ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0)));
                     if ui
                         .add(egui::Button::new(format!("{name}  ×{count}")).frame(false))
@@ -5725,7 +5715,7 @@ impl SpaiApp {
 
         let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai — Fit", [460.0, 620.0], |ui| {
             ui.horizontal(|ui| {
-                let url = format!("https://images.evetech.net/types/{ship_id}/icon?size=32");
+                let url = eve_type_icon_url(ship_id, 28.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
                 ui.heading(&ship_name);
             });
@@ -7080,8 +7070,7 @@ impl SpaiApp {
                                         egui::pos2(ip.x, ip.y - sz),
                                         egui::Vec2::splat(sz),
                                     );
-                                    let url =
-                                        format!("https://images.evetech.net/types/{tid}/icon?size=64");
+                                    let url = eve_type_icon_url(tid, sz);
                                     ui.put(rect, egui::Image::new(url)).on_hover_text(*up);
                                     // Level indicator dot (top-right corner).
                                     painter.circle_filled(rect.right_top(), 3.0, lcol);
@@ -7916,7 +7905,7 @@ impl SpaiApp {
                 // Sov alliance logo, top-right (instead of a "Sov:" text chip).
                 if let Some(aid) = flags.sov_alliance {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=64");
+                        let url = eve_alliance_logo_url(aid, 26.0);
                         let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(26.0)));
                         if let Some(sov) = &flags.sov {
                             r.on_hover_text(sov);
@@ -10620,7 +10609,7 @@ impl SpaiApp {
                             .on_hover_text("Activity Defense Multiplier");
                         }
                         if let Some(aid) = flags.sov_alliance {
-                            let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=64");
+                            let url = eve_alliance_logo_url(aid, 28.0);
                             let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
                             if let Some(sov) = &flags.sov {
                                 r.on_hover_text(sov);
@@ -10637,9 +10626,7 @@ impl SpaiApp {
                     .show(ui.ctx(), |ui| {
                         ui.vertical_centered(|ui| {
                             if let Some(aid) = flags.sov_alliance {
-                                let url = format!(
-                                    "https://images.evetech.net/alliances/{aid}/logo?size=128"
-                                );
+                                let url = eve_alliance_logo_url(aid, 64.0);
                                 let r = ui.add(
                                     egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(64.0)),
                                 );
@@ -10753,7 +10740,7 @@ impl SpaiApp {
                             ui.label(egui::RichText::new(g).color(lcol).size(16.0));
                         }
                         UpgradeIcon::Mineral(tid) => {
-                            let url = format!("https://images.evetech.net/types/{tid}/icon?size=64");
+                            let url = eve_type_icon_url(tid, 18.0);
                             ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(18.0, 18.0)));
                         }
                     }
@@ -11043,7 +11030,7 @@ impl SpaiApp {
                 ui.vertical_centered(|ui| {
                     for (i, (aid, name, count)) in dom.iter().enumerate() {
                         let sz = if i == 0 { 56.0 } else { 34.0 };
-                        let url = format!("https://images.evetech.net/alliances/{aid}/logo?size=128");
+                        let url = eve_alliance_logo_url(aid, sz);
                         let r = ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(sz)));
                         let label = name.clone().unwrap_or_else(|| "Alliance".to_owned());
                         r.on_hover_text(format!("{label} — {count} systems"));
@@ -11236,7 +11223,7 @@ impl SpaiApp {
         let names = self.type_names.lock().unwrap().clone();
         let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai — Ship", [380.0, 600.0], |ui| {
             ui.horizontal(|ui| {
-                let url = format!("https://images.evetech.net/types/{id}/render?size=128");
+                let url = eve_type_render_url(id, 96.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(96.0)));
                 ui.vertical(|ui| {
                     match &details {
@@ -13075,10 +13062,8 @@ impl SpaiApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.add(
-                            egui::Image::new(
-                                "https://images.evetech.net/characters/2119400938/portrait?size=64",
-                            )
-                            .fit_to_exact_size(egui::Vec2::splat(48.0)),
+                            egui::Image::new(eve_portrait_url(2119400938_i64, 48.0))
+                                .fit_to_exact_size(egui::Vec2::splat(48.0)),
                         );
                         ui.vertical(|ui| {
                             ui.label("Built by Amryu.");
@@ -14696,21 +14681,54 @@ fn side_color(i: usize) -> egui::Color32 {
     }
 }
 
+/// EVE's image server (`images.evetech.net`) only serves a fixed set of sizes. Pick the
+/// smallest that still covers `px` on-screen, so we never over-fetch (e.g. a 512px logo
+/// for a 24px badge) — that saves bandwidth and, with the disk cache, disk space.
+fn eve_img_size(px: f32) -> u32 {
+    let want = px.ceil().max(1.0) as u32;
+    [32u32, 64, 128, 256, 512].into_iter().find(|&s| s >= want).unwrap_or(512)
+}
+
+/// A character portrait URL sized for a `px` on-screen display.
+fn eve_portrait_url(id: impl std::fmt::Display, px: f32) -> String {
+    format!("https://images.evetech.net/characters/{id}/portrait?size={}", eve_img_size(px))
+}
+
+/// A corporation logo URL sized for a `px` on-screen display.
+fn eve_corp_logo_url(id: impl std::fmt::Display, px: f32) -> String {
+    format!("https://images.evetech.net/corporations/{id}/logo?size={}", eve_img_size(px))
+}
+
+/// An alliance logo URL sized for a `px` on-screen display.
+fn eve_alliance_logo_url(id: impl std::fmt::Display, px: f32) -> String {
+    format!("https://images.evetech.net/alliances/{id}/logo?size={}", eve_img_size(px))
+}
+
+/// A ship/type inventory-icon URL sized for a `px` on-screen display.
+fn eve_type_icon_url(id: impl std::fmt::Display, px: f32) -> String {
+    format!("https://images.evetech.net/types/{id}/icon?size={}", eve_img_size(px))
+}
+
+/// A ship/type render (3D image) URL sized for a `px` on-screen display.
+fn eve_type_render_url(id: impl std::fmt::Display, px: f32) -> String {
+    format!("https://images.evetech.net/types/{id}/render?size={}", eve_img_size(px))
+}
+
 /// A battle party badge: its alliance/corp/character logo, hovered for the name. When
 /// `clickable`, opens that entity's zKill page.
 fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable: bool) {
     use crate::battle::PartyKind;
     let urls = match p.kind {
         PartyKind::Alliance => Some((
-            format!("https://images.evetech.net/alliances/{}/logo?size=32", p.id),
+            eve_alliance_logo_url(p.id, size),
             format!("https://zkillboard.com/alliance/{}/", p.id),
         )),
         PartyKind::Corporation => Some((
-            format!("https://images.evetech.net/corporations/{}/logo?size=32", p.id),
+            eve_corp_logo_url(p.id, size),
             format!("https://zkillboard.com/corporation/{}/", p.id),
         )),
         PartyKind::Character => Some((
-            format!("https://images.evetech.net/characters/{}/portrait?size=32", p.id),
+            eve_portrait_url(p.id, size),
             format!("https://zkillboard.com/character/{}/", p.id),
         )),
         _ => None,
@@ -14735,9 +14753,9 @@ fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
         return;
     }
     let url = if crate::intel::structure_name_by_type(type_id).is_some() {
-        format!("https://images.evetech.net/types/{type_id}/render?size=64")
+        eve_type_render_url(type_id, size)
     } else {
-        format!("https://images.evetech.net/types/{type_id}/icon?size=32")
+        eve_type_icon_url(type_id, size)
     };
     ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(size)));
 }
@@ -16534,7 +16552,7 @@ fn intel_row(
                     };
                     let col = egui::Color32::from_rgb(0xc4, 0xb5, 0xfd);
                     if let Some(tid) = crate::intel::structure_type_id(name) {
-                        let url = format!("https://images.evetech.net/types/{tid}/render?size=64");
+                        let url = eve_type_render_url(tid, 24.0);
                         let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0));
                         ui.add(egui::Button::image_and_text(img, egui::RichText::new(text).color(col).strong()))
                             .on_hover_text("Structure");
@@ -16661,9 +16679,9 @@ fn intel_row(
                 // click -> ship window. Returns a click for the caller to record.
                 let ship_panel = |ui: &mut egui::Ui, sh: &crate::intel::DetectedShip| -> Option<IntelClick> {
                     let url = if crate::intel::structure_name_by_type(sh.id).is_some() {
-                        format!("https://images.evetech.net/types/{}/render?size=64", sh.id)
+                        eve_type_render_url(sh.id, 24.0)
                     } else {
-                        format!("https://images.evetech.net/types/{}/icon?size=32", sh.id)
+                        eve_type_icon_url(sh.id, 24.0)
                     };
                     let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0));
                     let mut panel =
@@ -16732,18 +16750,12 @@ fn intel_row(
                     let sz = egui::Vec2::splat(20.0);
                     let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);
                     let resp = if let Some(cid) = char_id {
-                        let mut atoms = egui::Atoms::new(img(format!(
-                            "https://images.evetech.net/characters/{cid}/portrait?size=32"
-                        )));
+                        let mut atoms = egui::Atoms::new(img(eve_portrait_url(cid, 20.0)));
                         if let Some(co) = aff.as_ref().and_then(|a| a.corp) {
-                            atoms.push_left(img(format!(
-                                "https://images.evetech.net/corporations/{co}/logo?size=32"
-                            )));
+                            atoms.push_left(img(eve_corp_logo_url(co, 20.0)));
                         }
                         if let Some(al) = aff.as_ref().and_then(|a| a.alliance) {
-                            atoms.push_left(img(format!(
-                                "https://images.evetech.net/alliances/{al}/logo?size=32"
-                            )));
+                            atoms.push_left(img(eve_alliance_logo_url(al, 20.0)));
                         }
                         atoms.push_right(egui::RichText::new(name));
                         ui.add(egui::Button::new(atoms))
@@ -16818,7 +16830,7 @@ fn intel_row(
                                 .wrap_mode(egui::TextWrapMode::Extend),
                         );
                         for (id, ship) in seen {
-                            let url = format!("https://images.evetech.net/types/{id}/icon?size=32");
+                            let url = eve_type_icon_url(id, 24.0);
                             let img = egui::Image::new(url)
                                 .fit_to_exact_size(egui::Vec2::splat(24.0));
                             let mut panel = ui.add(egui::Button::image_and_text(
@@ -16846,7 +16858,7 @@ fn intel_row(
 
                 // Alliance logos for shorthand mentions (frat, init, …).
                 for (name, id) in &r.alliances {
-                    let url = format!("https://images.evetech.net/alliances/{id}/logo?size=32");
+                    let url = eve_alliance_logo_url(id, 20.0);
                     ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(20.0, 20.0)))
                         .on_hover_text(name);
                 }
@@ -16880,9 +16892,9 @@ fn intel_row(
                                                  character: Option<i64>,
                                                  title: &str| {
                                         let parts: Vec<String> = [
-                                            alliance.map(|a| format!("https://images.evetech.net/alliances/{a}/logo?size=32")),
-                                            corp.map(|c| format!("https://images.evetech.net/corporations/{c}/logo?size=32")),
-                                            character.map(|c| format!("https://images.evetech.net/characters/{c}/portrait?size=32")),
+                                            alliance.map(|a| eve_alliance_logo_url(a, 20.0)),
+                                            corp.map(|c| eve_corp_logo_url(c, 20.0)),
+                                            character.map(|c| eve_portrait_url(c, 20.0)),
                                         ]
                                         .into_iter()
                                         .flatten()
@@ -17124,13 +17136,13 @@ fn tooltip_identity(
         });
     };
     if let Some(a) = alliance {
-        logo_row(ui, format!("https://images.evetech.net/alliances/{a}/logo?size=32"), alliance_name);
+        logo_row(ui, eve_alliance_logo_url(a, 22.0), alliance_name);
     }
     if let Some(c) = corp {
-        logo_row(ui, format!("https://images.evetech.net/corporations/{c}/logo?size=32"), corp_name);
+        logo_row(ui, eve_corp_logo_url(c, 22.0), corp_name);
     }
     if let Some(ch) = char_id {
-        logo_row(ui, format!("https://images.evetech.net/characters/{ch}/portrait?size=32"), char_name);
+        logo_row(ui, eve_portrait_url(ch, 22.0), char_name);
     } else if let Some(n) = char_name {
         ui.horizontal(|ui| {
             ui.label(egui_phosphor::regular::USER);

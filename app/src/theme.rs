@@ -199,6 +199,73 @@ pub mod standing {
     pub const WARNING: Color32 = Color32::from_rgb(0xE0, 0xA4, 0x3A);
 }
 
+/// Build and install the shared font set: egui's defaults + Phosphor icons + a CJK
+/// fallback so Chinese pilot/corp names render instead of tofu squares. Used by both
+/// `SpaiApp::new` and the overlay's `Overlay::new` so the two windows look identical.
+///
+/// The CJK face is loaded from a system font file (not embedded — that would bloat the
+/// binary by ~15 MB) and appended LAST in both the Proportional and Monospace families,
+/// so Latin/icon glyphs keep their existing fonts and metrics; the CJK font is only
+/// consulted for code points the earlier fonts lack. If no CJK font is found we log once
+/// and carry on (CJK stays tofu, never a crash).
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    if let Some(data) = load_cjk_font() {
+        const NAME: &str = "cjk-fallback";
+        fonts.font_data.insert(NAME.to_owned(), std::sync::Arc::new(data));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(NAME.to_owned());
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
+/// Load the first available system CJK font as egui font data, or `None` (logged once).
+fn load_cjk_font() -> Option<egui::FontData> {
+    for path in cjk_font_candidates() {
+        if let Ok(bytes) = std::fs::read(path) {
+            // `.ttc` collections load at face index 0 (the full CJK face) via ab_glyph.
+            return Some(egui::FontData::from_owned(bytes));
+        }
+    }
+    eprintln!("fonts: no system CJK font found; Chinese/Japanese text will render as boxes");
+    None
+}
+
+/// Common per-OS CJK font file locations, in preference order (cfg-free path lists).
+fn cjk_font_candidates() -> &'static [&'static str] {
+    if cfg!(target_os = "windows") {
+        &[
+            r"C:\Windows\Fonts\msyh.ttc",   // Microsoft YaHei
+            r"C:\Windows\Fonts\msyh.ttf",
+            r"C:\Windows\Fonts\simsun.ttc", // SimSun
+            r"C:\Windows\Fonts\simhei.ttf", // SimHei
+        ]
+    } else if cfg!(target_os = "macos") {
+        &[
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+        ]
+    } else {
+        &[
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansSC-Regular.otf",
+            "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
+            "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy-microhei/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        ]
+    }
+}
+
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
@@ -207,4 +274,20 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 
 fn luminance(c: Color32) -> f32 {
     (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
+}
+
+#[cfg(test)]
+mod tests {
+    /// `install_fonts` must build a valid font atlas and lay out CJK text without panicking.
+    /// epaint panics (rather than erroring) if a `FontData` fails to parse, so this exercises
+    /// the whole path — defaults + Phosphor + the system CJK fallback found on the host —
+    /// by laying out a Chinese string in a headless context. Guards against a bad CJK file.
+    #[test]
+    fn install_fonts_lays_out_cjk_without_panicking() {
+        let ctx = egui::Context::default();
+        super::install_fonts(&ctx);
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("中文测试 — CJK 字体 ABC");
+        });
+    }
 }

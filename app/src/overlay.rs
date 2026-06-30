@@ -79,10 +79,8 @@ impl Overlay {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // The overlay renders the same cards as the main, so its egui context needs the same
         // setup — otherwise icons render as tofu squares and ship images as red error triangles.
-        let mut fonts = egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-        cc.egui_ctx.set_fonts(fonts);
-        egui_extras::install_image_loaders(&cc.egui_ctx);
+        crate::theme::install_fonts(&cc.egui_ctx);
+        crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
         // Match the user's theme (best-effort; default if settings can't be read).
         let theme = crate::store::Store::open()
             .ok()

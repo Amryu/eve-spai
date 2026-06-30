@@ -25,6 +25,7 @@ mod factions;
 mod gamelog;
 mod gamewatcher;
 mod geo;
+mod image_cache;
 mod jabber;
 mod jumproute;
 mod intel;
