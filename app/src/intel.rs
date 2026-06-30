@@ -1166,19 +1166,31 @@ fn loose_pilot_runs(
 fn multiword_ships(
     text: &str,
     ship_index: &HashMap<String, (i64, String)>,
+    known_pilots: &HashMap<String, i64>,
 ) -> Vec<(usize, usize, i64, String)> {
     let punct = |c: char| ",.;:!?\"()".contains(c);
     let words: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+    // Multi-word hull names (2..=4 words), pre-split lower-case, for the conservative typo
+    // fallback below.
+    let multi: Vec<(i64, &str, Vec<&str>)> = ship_index
+        .iter()
+        .filter_map(|(k, (id, name))| {
+            let w: Vec<&str> = k.split_whitespace().collect();
+            (2..=4).contains(&w.len()).then_some((*id, name.as_str(), w))
+        })
+        .collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < words.len() {
         let mut adv = 1;
         let max = 4.min(words.len() - i);
+        let mut matched = false;
         for len in (2..=max).rev() {
             let phrase = words[i..i + len].join(" ").to_lowercase();
             if let Some((id, name)) = ship_index.get(&phrase) {
                 out.push((i, len, *id, name.clone()));
                 adv = len;
+                matched = true;
                 break;
             }
             // The trailing "Issue" is routinely dropped ("Brutix Navy" -> Brutix Navy
@@ -1196,6 +1208,63 @@ fn multiword_ships(
             if let Some(full) = full {
                 if let Some((id, name)) = ship_index.get(&full) {
                     out.push((i, len, *id, name.clone()));
+                    adv = len;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        // Typo tolerance (LAST RESORT — only when no exact hull matched at this position): a
+        // window matches a multi-word hull when every word but one is EXACT and the single odd
+        // word is edit-distance <= 1 from the hull's word (both reasonably long), the hull is
+        // unambiguous, and the window isn't itself a confirmed pilot. "cythe fleet issue" ->
+        // Scythe Fleet Issue (only "cythe"->"scythe" differs; "fleet"+"issue" match exactly).
+        if !matched {
+            for len in (2..=max).rev() {
+                let win: Vec<String> =
+                    words[i..i + len].iter().map(|w| w.to_lowercase()).collect();
+                // A confirmed real pilot whose name is one edit from a hull stays a pilot.
+                if known_pilots.contains_key(&win.join(" ")) {
+                    continue;
+                }
+                let mut hit: Option<(i64, String)> = None;
+                let mut ambiguous = false;
+                for (id, name, hw) in &multi {
+                    if hw.len() != win.len() {
+                        continue;
+                    }
+                    let mut diffs = 0u32;
+                    let mut ok = true;
+                    for (a, b) in win.iter().zip(hw.iter()) {
+                        if a == *b {
+                            continue;
+                        }
+                        diffs += 1;
+                        let (la, lb) = (a.chars().count(), b.chars().count());
+                        // Exactly one typo'd word; it must be long enough that a single edit is
+                        // distinctive (>= 5 chars, never shrinking below 4) — short common words
+                        // ("navy", "the") are NEVER fuzzed into a hull word.
+                        if diffs > 1
+                            || la.min(lb) < 4
+                            || la.max(lb) < 5
+                            || crate::shipnames::edit_distance(a, b) > 1
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok && diffs == 1 {
+                        match &hit {
+                            Some((hid, _)) if *hid != *id => {
+                                ambiguous = true;
+                                break;
+                            }
+                            _ => hit = Some((*id, (*name).to_string())),
+                        }
+                    }
+                }
+                if let (Some((id, name)), false) = (hit, ambiguous) {
+                    out.push((i, len, id, name));
                     adv = len;
                     break;
                 }
@@ -1795,7 +1864,7 @@ pub fn analyze_ctx(
     // "Jita Trader"). Quoted spans are forced to be names.
     // Multi-word hull names are ships, not 3-word pilot names — find and mask them
     // before pilot detection.
-    let mw_ships = multiword_ships(text, ship_index);
+    let mw_ships = multiword_ships(text, ship_index, known_pilots);
     // Structure spans ("Cyno Beacon", "Keepstar") are masked too, so a structure word
     // is never also read as a pilot ("Beacon"). Asteroid/ice belt spans are masked the same way
     // so "Belt"/"Ice Belt" is a location badge, never a pilot.
@@ -2129,12 +2198,23 @@ pub fn analyze_ctx(
     };
     // Words that belong to a detected multi-word hull ("Catalyst" in "Catalyst Navy
     // Issue") must not also be read as a standalone ship (double-counting the hull).
-    let mw_words: std::collections::HashSet<String> = mw_ships
-        .iter()
-        .flat_map(|(_, _, _, name)| {
-            name.to_lowercase().split_whitespace().map(str::to_owned).collect::<Vec<_>>()
-        })
-        .collect();
+    let mw_words: std::collections::HashSet<String> = {
+        let punct = |c: char| ",.;:!?\"()".contains(c);
+        let tw: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+        let mut s = std::collections::HashSet::new();
+        for (start, len, _, name) in &mw_ships {
+            // The hull's canonical words ("Catalyst" in "Catalyst Navy Issue") AND the original
+            // source tokens (which for a fuzzy match include the typo, "cythe") — so neither the
+            // canonical word nor the typo is re-read as a standalone ship/pilot.
+            for w in name.to_lowercase().split_whitespace() {
+                s.insert(w.to_owned());
+            }
+            for w in tw.iter().skip(*start).take(*len) {
+                s.insert(w.to_lowercase());
+            }
+        }
+        s
+    };
     for tok in &tokens {
         let lower = tok.to_lowercase();
         if pilot_tokens.contains(&lower) || mw_words.contains(&lower) {
@@ -3986,6 +4066,58 @@ mod tests {
         assert!(r2.ships.iter().any(|sh| sh.name == "Stabber"), "ships={:?}", r2.ships);
         assert!(r2.ships.iter().any(|sh| sh.name == "Deimos"), "ships={:?}", r2.ships);
         assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Stabber") || p.eq_ignore_ascii_case("Deimos")), "pilots={:?}", r2.pilots);
+    }
+
+    #[test]
+    fn fuzzy_typo_multiword_hull_is_a_ship_not_pilots() {
+        let s = systems();
+        let ships = ships_with(&[
+            ("Scythe Fleet Issue", 17812),
+            ("Scythe", 631),
+            ("Cyclone Fleet Issue", 17634),
+            ("Drake", 24698),
+        ]);
+        // "cythe" = "Scythe" missing the leading S; "fleet"+"issue" match the hull exactly, so
+        // the window resolves to the hull instead of two pilot names.
+        let r = analyze("cythe fleet issue tackled in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Scythe Fleet Issue"), "ships={:?}", r.ships);
+        // Neither the typo, the suffix words, nor the canonical hull leak into pilots.
+        for w in ["cythe", "fleet issue", "fleet", "issue", "scythe", "cythe fleet issue"] {
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)), "{w}: {:?}", r.pilots);
+        }
+        // The masked typo token must not also surface as a standalone Scythe.
+        assert!(!r.ships.iter().any(|sh| sh.name == "Scythe"), "ships={:?}", r.ships);
+        // Location + tackle keyword still parse around the hull.
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"), "systems={:?}", r.systems);
+        assert!(r.tackled, "tackled keyword should fire");
+
+        // The correctly spelled hull still matches via the exact path (fuzzy is last resort).
+        let r2 = analyze("Scythe Fleet Issue in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r2.ships.iter().any(|sh| sh.name == "Scythe Fleet Issue"), "ships={:?}", r2.ships);
+
+        // Single-word fuzzy documents the >= 5-char threshold: "draek" (5, a transposition of
+        // "drake") matches; "drak" (4) is too short to fuzz and does NOT.
+        let r3 = analyze("draek in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r3.ships.iter().any(|sh| sh.name == "Drake"), "ships={:?}", r3.ships);
+        let r4 = analyze("drak in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(!r4.ships.iter().any(|sh| sh.name == "Drake"), "ships={:?}", r4.ships);
+    }
+
+    #[test]
+    fn confirmed_pilot_near_a_hull_stays_a_pilot() {
+        let s = systems();
+        let ships = ships_with(&[("Cyclone Fleet Issue", 17634)]);
+        // A confirmed character whose name is one edit from a multi-word hull ("Cyclon" vs
+        // "Cyclone") must stay a pilot — the known-pilot guard suppresses the fuzzy ship match.
+        let known: std::collections::HashMap<String, i64> =
+            [("cyclon fleet issue".to_string(), 4242i64)].into_iter().collect();
+        let r = analyze("Cyclon Fleet Issue in Rancer", &s, &ships, &known, 1, "ch", "x");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Cyclon Fleet Issue")),
+            "pilots={:?}",
+            r.pilots
+        );
+        assert!(!r.ships.iter().any(|sh| sh.name == "Cyclone Fleet Issue"), "ships={:?}", r.ships);
     }
 
     #[test]

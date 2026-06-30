@@ -22,6 +22,9 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("orthus", "Orthrus"),
     ("retri", "Retribution"),
     ("sythe", "Scythe"),
+    // Dropped-leading-S typo ("cythe" = "Scythe"); the multi-word "Scythe Fleet Issue"
+    // case is handled by the fuzzy window logic in `multiword_ships`.
+    ("cythe", "Scythe"),
     ("trasher", "Thrasher"),
     ("auguror", "Augoror"),
     ("porp", "Porpoise"),
