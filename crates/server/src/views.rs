@@ -42,6 +42,19 @@ fn party_logo_url(p: &Party) -> Option<String> {
     }
 }
 
+/// zKillboard entity page for a party: alliance or corporation. `None` for characters,
+/// factions, unknowns, or a 0 id.
+fn party_zkill_url(p: &Party) -> Option<String> {
+    if p.id == 0 {
+        return None;
+    }
+    match p.kind {
+        PartyKind::Alliance => Some(format!("https://zkillboard.com/alliance/{}/", p.id)),
+        PartyKind::Corporation => Some(format!("https://zkillboard.com/corporation/{}/", p.id)),
+        _ => None,
+    }
+}
+
 /// Inline party logo (alliance/corp) with the party name as accessible label. Empty for
 /// parties with no logo.
 fn party_logo(p: &Party) -> Markup {
@@ -427,6 +440,7 @@ fn detail_cell(p: &br_core::battle::Participant, pod_kills: &std::collections::H
     html! {
         div .dcell .lost[lost.is_some()]
             data-char=(p.char_id)
+            data-party=(p.party.id)
             data-ship=(p.ship)
             data-kill=[lost.map(|l| l.kill_id)]
         {
@@ -447,7 +461,7 @@ fn detail_cell(p: &br_core::battle::Participant, pod_kills: &std::collections::H
             }
         }
         @if let Some(l) = pod {
-            div .dcell .lost .dpod-row data-ship=(p.ship) {
+            div .dcell .lost .dpod-row data-party=(p.party.id) data-ship=(p.ship) {
                 img .dhull .dpod-hull src=(icon_url(l.pod_ship)) width="32" height="32" loading="lazy" alt="pod";
                 div .dinfo {
                     span .dpilot title=(p.pilot) { (p.pilot) }
@@ -483,17 +497,19 @@ fn side_panel(
     let overflow = breakdown.len().saturating_sub(doms.len());
     let roster = battle.roster(side_idx);
     html! {
-        div .side-panel {
+        div .side-panel data-side=(side_idx) {
             div .side-head {
                 div .side-title {
                     h3 title=(side_label(side)) { (side_label(side)) }
                     @if !doms.is_empty() {
                         span .dom-logos {
                             @for (p, r) in &doms {
-                                @if let Some(url) = party_logo_url(p) {
+                                @if let (Some(url), Some(zk)) = (party_logo_url(p), party_zkill_url(p)) {
                                     @let label = format!("{} - {:.0}%", p.name, r * 100.0);
-                                    img .dom-logo src=(url) width="26" height="26" loading="lazy"
-                                        alt=(label) title=(label);
+                                    a .dom-logo-link href=(zk) target="_blank" rel="noopener"
+                                        title=(label) data-party=(p.id) {
+                                        img .dom-logo src=(url) width="26" height="26" loading="lazy" alt=(label);
+                                    }
                                 }
                             }
                             @if overflow > 0 {
@@ -557,11 +573,22 @@ fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
             } @else {
                 ul .bd-list {
                     @for (p, count, r) in &entries {
-                        li .bd-row {
-                            (party_logo(p))
-                            span .bd-name title=(p.name) { (p.name) }
+                        li .bd-row data-party=(p.id) {
+                            @if let Some(zk) = party_zkill_url(p) {
+                                a .bd-entity href=(zk) target="_blank" rel="noopener" {
+                                    (party_logo(p))
+                                    span .bd-name title=(p.name) { (p.name) }
+                                }
+                            } @else {
+                                span .bd-entity {
+                                    (party_logo(p))
+                                    span .bd-name title=(p.name) { (p.name) }
+                                }
+                            }
                             span .bd-count { (count) }
                             span .bd-pct { (format!("{:.0}%", r * 100.0)) }
+                            // Populated + wired by the side editor JS; hidden without it.
+                            select .bd-move data-party=(p.id) aria-label="Move party to side" {}
                         }
                     }
                 }
@@ -579,14 +606,21 @@ fn versus_strip(battle: &Battle) -> Markup {
         .collect();
     html! {
         @if !emblems.is_empty() {
-            div .versus {
+            div .versus #versus {
                 @for (n, (side_idx, p)) in emblems.iter().enumerate() {
                     @if n > 0 { span .vs-sep { "vs" } }
-                    button type="button" .vs-emblem data-side=(side_idx) title=(p.name) {
-                        @if let Some(url) = party_logo_url(p) {
-                            img src=(url) width="40" height="40" loading="lazy" alt=(p.name);
+                    @if let Some(zk) = party_zkill_url(p) {
+                        a .vs-emblem href=(zk) target="_blank" rel="noopener"
+                            data-side=(side_idx) title=(p.name) {
+                            @if let Some(url) = party_logo_url(p) {
+                                img src=(url) width="40" height="40" loading="lazy" alt=(p.name);
+                            }
+                            span .vs-name { (side_label(&battle.sides[*side_idx])) }
                         }
-                        span .vs-name { (side_label(&battle.sides[*side_idx])) }
+                    } @else {
+                        span .vs-emblem data-side=(side_idx) title=(p.name) {
+                            span .vs-name { (side_label(&battle.sides[*side_idx])) }
+                        }
                     }
                 }
             }
@@ -618,6 +652,76 @@ fn involvement_json(battle: &Battle) -> String {
         ka.insert(e.kill_id, atk);
     }
     serde_json::json!({ "ka": ka, "ck": ck }).to_string()
+}
+
+/// Escape a JSON string for safe embedding inside an HTML `<script>` element: `<`, `>`, and
+/// `&` become `\uXXXX` escapes. This keeps any `</script>` or HTML entity in EVE-supplied
+/// names from breaking out of the script context, while remaining valid JSON.
+fn js_safe_json(s: &str) -> String {
+    s.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
+}
+
+/// All the inputs the client-side side editor needs to recompute the report under a custom
+/// party->side grouping, with no server round-trip. Integers and short kind strings only,
+/// except party/ship names, which are escaped by [`js_safe_json`]. Schema:
+/// `{ sides_count, parties:[{id,name,kind,side}], participants:[{char,party_id,party_name,
+/// party_kind,ship,lost_value,is_lost,side}], engagements:[{kill_id,victim_char,victim_value,
+/// attacker_party_ids:[..],fb:[{p,s}]}], ship_names:{id:name} }`.
+fn sides_data_json(doc: &BattleReportDoc) -> String {
+    use serde_json::json;
+    let b = &doc.battle;
+    let kind_str = |k: PartyKind| match k {
+        PartyKind::Alliance => "alliance",
+        PartyKind::Corporation => "corp",
+        _ => "other",
+    };
+
+    let mut parties = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut participants = Vec::new();
+    for i in 0..b.sides.len() {
+        for p in b.roster(i) {
+            let kind = kind_str(p.party.kind);
+            if p.party.id != 0 && seen.insert(p.party.id) {
+                parties.push(json!({"id": p.party.id, "name": p.party.name, "kind": kind, "side": i}));
+            }
+            let lost_value = p.lost.as_ref().map(|l| l.value + l.pod_value).unwrap_or(0.0);
+            participants.push(json!({
+                "char": p.char_id, "party_id": p.party.id, "party_name": p.party.name,
+                "party_kind": kind, "ship": p.ship, "lost_value": lost_value,
+                "is_lost": p.lost.is_some(), "side": i
+            }));
+        }
+    }
+
+    let mut engagements = Vec::new();
+    for e in &b.engagements {
+        let mut apids: Vec<i64> = Vec::new();
+        let mut fb = Vec::new();
+        for a in &e.attackers {
+            if a.party.id != 0 && !apids.contains(&a.party.id) {
+                apids.push(a.party.id);
+            }
+            if a.final_blow && a.party.id != 0 {
+                fb.push(json!({"p": a.party.id, "s": a.ship}));
+            }
+        }
+        engagements.push(json!({
+            "kill_id": e.kill_id, "victim_char": e.victim_char, "victim_value": e.isk,
+            "attacker_party_ids": apids, "fb": fb
+        }));
+    }
+
+    let ship_names: std::collections::BTreeMap<String, &String> =
+        doc.ship_names.iter().map(|(k, v)| (k.to_string(), v)).collect();
+    let v = json!({
+        "sides_count": b.sides.len(),
+        "parties": parties,
+        "participants": participants,
+        "engagements": engagements,
+        "ship_names": ship_names,
+    });
+    js_safe_json(&v.to_string())
 }
 
 /// The single-report viewer page.
@@ -654,9 +758,12 @@ pub fn viewer_page(data: &CardData) -> Markup {
                     span .meta-by { "uploaded by " (data.uploader) " · " (data.views) " views" }
                 }
             }
-            div .view-toggle role="group" aria-label="Layout" {
-                button type="button" .seg data-mode="tiles" aria-pressed="true" { "Tiles" }
-                button type="button" .seg data-mode="details" aria-pressed="false" { "Details" }
+            div .report-tools {
+                div .view-toggle role="group" aria-label="Layout" {
+                    button type="button" .seg data-mode="tiles" aria-pressed="true" { "Tiles" }
+                    button type="button" .seg data-mode="details" aria-pressed="false" { "Details" }
+                }
+                button type="button" .btn #edit-sides { "Edit sides" }
             }
             div .report .view-tiles {
                 div .filter-chip hidden {
@@ -672,16 +779,26 @@ pub fn viewer_page(data: &CardData) -> Markup {
             }
             // Hover-highlight maps (integer ids only - safe to emit verbatim).
             script type="application/json" #inv-data { (PreEscaped(inv)) }
-            // Per-side alliance/corp breakdown, hidden until opened from a "+N" chip or emblem.
+            // Side-editor inputs (names escaped for safe in-script embedding).
+            script type="application/json" #sides-data { (PreEscaped(sides_data_json(&data.doc))) }
+            // Per-side composition + the client-side side editor, hidden until opened.
             div .modal #breakdown-modal hidden {
                 div .modal-overlay {}
-                div .modal-panel role="dialog" aria-modal="true" aria-label="Side breakdown" {
+                div .modal-panel role="dialog" aria-modal="true" aria-label="Edit sides" {
                     button type="button" .modal-close aria-label="Close" { "×" }
-                    h3 { "Composition" }
+                    h3 { "Sides" }
+                    p .modal-hint .editor-only {
+                        "Move an alliance or corp to another side, or to a new side, then Apply. "
+                        "This only changes your view - nothing is saved or uploaded."
+                    }
                     div .bd-sides {
                         @for i in 0..b.sides.len() {
                             (breakdown_section(b, i))
                         }
+                    }
+                    div .modal-actions .editor-only {
+                        button type="button" .btn .primary #sides-apply { "Apply" }
+                        button type="button" .btn #sides-reset { "Reset" }
                     }
                 }
             }
@@ -821,35 +938,245 @@ const VIEWER_JS: &str = r#"
     c.addEventListener('mouseleave',clearHi);
   });
 
-  // --- Hull filter: click a tile -> Details, only that hull ---
-  Array.prototype.slice.call(document.querySelectorAll('.ship[data-ship]')).forEach(function(tile){
-    tile.addEventListener('click',function(){
-      var ship=tile.getAttribute('data-ship');
-      setMode('details');
-      cells.forEach(function(c){
-        c.classList.toggle('filtered-out', c.getAttribute('data-ship')!==ship);
-      });
-      if(chip){
-        chip.hidden=false;
-        var img=chip.querySelector('img');
-        if(img){ img.src='https://images.evetech.net/types/'+ship+'/icon?size=64'; }
-      }
+  // --- Hull filter: click a tile -> Details, only that hull. Delegated, so tiles the side
+  // editor rebuilds keep working. `cells` is refreshed live so moved nodes are included. ---
+  report.addEventListener('click',function(e){
+    var tile=e.target.closest ? e.target.closest('.ship[data-ship]') : null;
+    if(!tile || !report.contains(tile)) return;
+    var ship=tile.getAttribute('data-ship');
+    setMode('details');
+    Array.prototype.slice.call(report.querySelectorAll('.dcell')).forEach(function(c){
+      c.classList.toggle('filtered-out', c.getAttribute('data-ship')!==ship);
     });
+    if(chip){
+      chip.hidden=false;
+      var img=chip.querySelector('img');
+      if(img){ img.src='https://images.evetech.net/types/'+ship+'/icon?size=64'; }
+    }
   });
   if(chip){ var cb=chip.querySelector('.fc-clear'); if(cb){ cb.addEventListener('click',clearFilter); } }
 
-  // --- Breakdown modal ---
+  // --- Breakdown / side-editor modal open/close ---
   var modal=document.getElementById('breakdown-modal');
   function openModal(){ if(modal){ modal.hidden=false; } }
   function closeModal(){ if(modal){ modal.hidden=true; } }
-  Array.prototype.slice.call(document.querySelectorAll('.more-chip,.vs-emblem')).forEach(function(b){
-    b.addEventListener('click',openModal);
-  });
+  var openers=[].slice.call(document.querySelectorAll('.more-chip'));
+  var es=document.getElementById('edit-sides'); if(es){ openers.push(es); }
+  openers.forEach(function(b){ b.addEventListener('click',openModal); });
   if(modal){
     var ov=modal.querySelector('.modal-overlay'); if(ov){ ov.addEventListener('click',closeModal); }
     var x=modal.querySelector('.modal-close'); if(x){ x.addEventListener('click',closeModal); }
     document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeModal(); } });
   }
+})();
+
+// --- Side editor: ephemeral, client-only regrouping of parties into sides. Reads #sides-data
+// (integer/short-string inputs). If absent/unparseable, the controls stay hidden and the
+// static report still works. Re-bins the server-rendered Details cells by party between side
+// containers, rebuilds Tiles/stats/headers/emblems, and supports new sides. Never persisted. ---
+(function(){
+  var dataEl=document.getElementById('sides-data');
+  var report=document.querySelector('.report');
+  var modal=document.getElementById('breakdown-modal');
+  if(!dataEl || !report || !modal) return;
+  var SD; try{ SD=JSON.parse(dataEl.textContent); }catch(e){ return; }
+  if(!SD || !SD.participants || !SD.parties) return;
+
+  var panels=report.querySelector('.panels');
+  if(!panels) return;
+  modal.classList.add('editor-ready'); // reveals the move selects + Apply/Reset
+
+  var POD=[670,33328];
+  var participants=SD.participants, engagements=SD.engagements||[], shipNames=SD.ship_names||{};
+  var partyById={}; SD.parties.forEach(function(p){ partyById[p.id]=p; });
+  var charParty={}; participants.forEach(function(p){ charParty[p.char]=p.party_id; });
+
+  // party_id (string) -> side index. Start from the server grouping.
+  function origMap(){ var m={}; participants.forEach(function(p){ m[''+p.party_id]=p.side; }); return m; }
+  var curMap=origMap();
+
+  // Cache the server-rendered Details cells (refs survive being moved/detached).
+  var allCells=[].slice.call(panels.querySelectorAll('.dcell'));
+
+  function fmtIsk(v){
+    var a=Math.abs(v);
+    if(a>=1e12) return (v/1e12).toFixed(2)+'T';
+    if(a>=1e9) return (v/1e9).toFixed(2)+'B';
+    if(a>=1e6) return (v/1e6).toFixed(1)+'M';
+    if(a>=1e3) return (v/1e3).toFixed(0)+'k';
+    return v.toFixed(0);
+  }
+  function logoUrl(p){
+    if(!p||!p.id) return null;
+    if(p.kind==='alliance') return 'https://images.evetech.net/alliances/'+p.id+'/logo?size=32';
+    if(p.kind==='corp') return 'https://images.evetech.net/corporations/'+p.id+'/logo?size=32';
+    return null;
+  }
+  function zkUrl(p){
+    if(!p||!p.id) return null;
+    if(p.kind==='alliance') return 'https://zkillboard.com/alliance/'+p.id+'/';
+    if(p.kind==='corp') return 'https://zkillboard.com/corporation/'+p.id+'/';
+    return null;
+  }
+  function sideCount(){ return panels.querySelectorAll('.side-panel').length; }
+
+  function makeTile(ship,lost,survived,kb,name){
+    var d=document.createElement('div'); d.className='ship'; d.setAttribute('data-ship',ship);
+    d.title='Show these pilots';
+    var img=document.createElement('img'); img.className='ship-icon';
+    img.width=48; img.height=48; img.loading='lazy'; img.alt='ship';
+    img.src='https://images.evetech.net/types/'+ship+'/icon?size=64'; d.appendChild(img);
+    if(name){ var ns=document.createElement('span'); ns.className='ship-name'; ns.title=name; ns.textContent=name; d.appendChild(ns); }
+    var c=document.createElement('div'); c.className='ship-counts';
+    if(lost>0){ var s1=document.createElement('span'); s1.className='lost'; s1.textContent=lost+' lost'; c.appendChild(s1); }
+    if(survived>0){ var s2=document.createElement('span'); s2.className='survived'; s2.textContent=survived+' survived'; c.appendChild(s2); }
+    if(kb>0){ var s3=document.createElement('span'); s3.className='fb'; s3.title='killing blows'; s3.textContent='KB '+kb; c.appendChild(s3); }
+    d.appendChild(c); return d;
+  }
+
+  function computeSide(i){
+    var parts=participants.filter(function(p){ return curMap[''+p.party_id]===i; });
+    var pilots=parts.length, losses=0, iskLost=0;
+    parts.forEach(function(p){ if(p.is_lost){ losses++; iskLost+=p.lost_value||0; } });
+    var kills=0, destroyed=0;
+    engagements.forEach(function(e){
+      var vside=charParty[e.victim_char]!=null ? curMap[''+charParty[e.victim_char]] : null;
+      var onThis=(e.attacker_party_ids||[]).some(function(pid){ return curMap[''+pid]===i; });
+      if(onThis && vside!==i){ kills++; destroyed+=e.victim_value||0; }
+    });
+    var eff=(destroyed+iskLost)>0 ? destroyed/(destroyed+iskLost)*100 : null;
+    return {parts:parts,pilots:pilots,losses:losses,iskLost:iskLost,kills:kills,destroyed:destroyed,eff:eff};
+  }
+
+  function rebuildHeader(sp,i,parts){
+    var total=parts.length, counts={};
+    parts.forEach(function(p){
+      if((p.party_kind==='alliance'||p.party_kind==='corp') && p.party_id){
+        var e=counts[p.party_id]||(counts[p.party_id]={id:p.party_id,name:p.party_name,kind:p.party_kind,c:0});
+        e.c++;
+      }
+    });
+    var arr=Object.keys(counts).map(function(k){ return counts[k]; });
+    arr.sort(function(a,b){ return b.c-a.c || a.id-b.id; });
+    var doms=arr.filter(function(e){ return total>0 && e.c/total>0.10; }).slice(0,3);
+    var h3=sp.querySelector('.side-title h3');
+    if(h3){ var lbl=doms.length?doms[0].name:('Side '+(i+1)); h3.textContent=lbl; h3.title=lbl; }
+    var cm=sp.querySelector('.coalition-members'); if(cm && cm.remove){ cm.remove(); } // stale after regroup
+    var logos=sp.querySelector('.dom-logos');
+    if(!logos){ logos=document.createElement('span'); logos.className='dom-logos'; sp.querySelector('.side-title').appendChild(logos); }
+    logos.innerHTML='';
+    doms.forEach(function(e){
+      var url=logoUrl(e), zk=zkUrl(e); if(!url||!zk) return;
+      var pct=Math.round(e.c/total*100), label=e.name+' - '+pct+'%';
+      var a=document.createElement('a'); a.className='dom-logo-link'; a.href=zk; a.target='_blank'; a.rel='noopener';
+      a.title=label; a.setAttribute('data-party',e.id);
+      var img=document.createElement('img'); img.className='dom-logo'; img.width=26; img.height=26;
+      img.loading='lazy'; img.alt=label; img.src=url; a.appendChild(img); logos.appendChild(a);
+    });
+    var overflow=arr.length-doms.length;
+    if(overflow>0){ var b=document.createElement('button'); b.type='button'; b.className='more-chip';
+      b.setAttribute('data-side',i); b.title='Show full breakdown'; b.textContent='+'+overflow;
+      b.addEventListener('click',function(){ modal.hidden=false; }); logos.appendChild(b); }
+  }
+
+  function setStats(sp,c){
+    var nums=sp.querySelectorAll('.side-stats .stat .stat-num');
+    if(nums.length<6) return;
+    nums[0].textContent=c.pilots;
+    nums[1].textContent=c.kills;
+    nums[2].textContent=c.losses;
+    nums[3].textContent=fmtIsk(c.destroyed);
+    nums[4].textContent=fmtIsk(c.iskLost);
+    nums[5].textContent=(c.eff==null?'-':Math.round(c.eff)+'%');
+    var bar=sp.querySelector('.bar .bar-fill'); if(bar){ bar.style.width=(c.eff==null?0:Math.round(c.eff))+'%'; }
+  }
+
+  function rebuildTiles(sp,i,parts){
+    var roster=sp.querySelector('.roster'); if(!roster) return; roster.innerHTML='';
+    var g={};
+    parts.forEach(function(p){ if(POD.indexOf(p.ship)>=0) return;
+      var e=g[p.ship]||(g[p.ship]={lost:0,survived:0}); if(p.is_lost) e.lost++; else e.survived++; });
+    var kb={};
+    engagements.forEach(function(e){ (e.fb||[]).forEach(function(f){
+      if(curMap[''+f.p]===i && POD.indexOf(f.s)<0){ kb[f.s]=(kb[f.s]||0)+1; } }); });
+    var ships=Object.keys(g).map(Number);
+    ships.sort(function(a,b){ return g[b].lost-g[a].lost || (g[b].lost+g[b].survived)-(g[a].lost+g[a].survived) || a-b; });
+    ships.forEach(function(s){ roster.appendChild(makeTile(s,g[s].lost,g[s].survived,kb[s]||0,shipNames[''+s])); });
+  }
+
+  function rebuildVersus(n){
+    var v=document.getElementById('versus'); if(!v) return; v.innerHTML='';
+    for(var i=0;i<n;i++){
+      var c=computeSide(i);
+      // top alliance/corp on this side
+      var counts={};
+      c.parts.forEach(function(p){ if((p.party_kind==='alliance'||p.party_kind==='corp')&&p.party_id){
+        var e=counts[p.party_id]||(counts[p.party_id]={id:p.party_id,name:p.party_name,kind:p.party_kind,c:0}); e.c++; } });
+      var arr=Object.keys(counts).map(function(k){return counts[k];});
+      arr.sort(function(a,b){ return b.c-a.c || a.id-b.id; });
+      if(!arr.length) continue;
+      var top=arr[0], url=logoUrl(top), zk=zkUrl(top);
+      if(i>0 && v.children.length){ var sep=document.createElement('span'); sep.className='vs-sep'; sep.textContent='vs'; v.appendChild(sep); }
+      var sp=panels.querySelectorAll('.side-panel')[i];
+      var label=sp?sp.querySelector('.side-title h3').textContent:top.name;
+      var node; if(zk){ node=document.createElement('a'); node.href=zk; node.target='_blank'; node.rel='noopener'; }
+      else { node=document.createElement('span'); }
+      node.className='vs-emblem'; node.setAttribute('data-side',i); node.title=top.name;
+      if(url){ var img=document.createElement('img'); img.width=40; img.height=40; img.loading='lazy'; img.alt=top.name; img.src=url; node.appendChild(img); }
+      var ns=document.createElement('span'); ns.className='vs-name'; ns.textContent=label; node.appendChild(ns);
+      v.appendChild(node);
+    }
+  }
+
+  function ensurePanels(n){
+    var sps=[].slice.call(panels.querySelectorAll('.side-panel'));
+    var tmpl=sps[0];
+    while(sps.length<n){ var c=tmpl.cloneNode(true); panels.appendChild(c); sps.push(c); }
+    while(sps.length>n){ panels.removeChild(sps.pop()); }
+    sps=[].slice.call(panels.querySelectorAll('.side-panel'));
+    sps.forEach(function(sp,i){ sp.setAttribute('data-side',i); });
+    return sps;
+  }
+
+  function renderControls(n){
+    [].slice.call(document.querySelectorAll('.bd-move')).forEach(function(sel){
+      var pid=sel.getAttribute('data-party'); var cur=curMap[pid];
+      sel.innerHTML='';
+      for(var i=0;i<n;i++){ var o=document.createElement('option'); o.value=i; o.textContent='Side '+(i+1); sel.appendChild(o); }
+      var on=document.createElement('option'); on.value='new'; on.textContent='New side'; sel.appendChild(on);
+      sel.value=(cur==null?0:cur);
+    });
+  }
+
+  function applyMap(){
+    var n=0; Object.keys(curMap).forEach(function(k){ if(curMap[k]!=null) n=Math.max(n,curMap[k]+1); });
+    n=Math.max(n,1);
+    var sps=ensurePanels(n);
+    var dconts=sps.map(function(sp){ var d=sp.querySelector('.details'); d.innerHTML=''; return d; });
+    allCells.forEach(function(cell){
+      var s=curMap[cell.getAttribute('data-party')]; if(s==null||s>=n) s=0;
+      dconts[s].appendChild(cell);
+    });
+    for(var i=0;i<n;i++){ var c=computeSide(i); rebuildTiles(sps[i],i,c.parts); setStats(sps[i],c); rebuildHeader(sps[i],i,c.parts); }
+    rebuildVersus(n);
+    renderControls(n);
+  }
+
+  // Read the selects into curMap; "new" collapses to a single fresh side index.
+  function readControls(){
+    var newIdx=sideCount();
+    [].slice.call(document.querySelectorAll('.bd-move')).forEach(function(sel){
+      var pid=sel.getAttribute('data-party');
+      curMap[pid]=(sel.value==='new')?newIdx:parseInt(sel.value,10);
+    });
+  }
+
+  var applyBtn=document.getElementById('sides-apply');
+  var resetBtn=document.getElementById('sides-reset');
+  if(applyBtn){ applyBtn.addEventListener('click',function(){ readControls(); applyMap(); }); }
+  if(resetBtn){ resetBtn.addEventListener('click',function(){ curMap=origMap(); applyMap(); }); }
+
+  renderControls(SD.sides_count||sideCount());
 })();
 "#;
 
@@ -967,7 +1294,9 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .ship-counts .fb{color:var(--blue);}
 
 /* Tiles / Details toggle and layout switching */
-.view-toggle{display:inline-flex; margin-bottom:14px; border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+.report-tools{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:14px;}
+#edit-sides{padding:8px 14px; font-size:14px;}
+.view-toggle{display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden;}
 .view-toggle .seg{padding:8px 18px; font-size:14px; font-weight:600; background:var(--panel); color:var(--muted); border:none; border-right:1px solid var(--line); cursor:pointer; font-family:inherit;}
 .view-toggle .seg:last-child{border-right:none;}
 .view-toggle .seg[aria-pressed="true"]{background:var(--blue-dim); color:var(--text);}
@@ -977,7 +1306,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 /* Versus strip - each side's top emblem */
 .versus{display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:12px 0 4px;}
 .vs-emblem{display:inline-flex; align-items:center; gap:8px; min-width:0; max-width:100%; padding:6px 10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; font-size:14px; font-weight:600;}
-.vs-emblem:hover{border-color:var(--blue-dim);}
+.vs-emblem:hover{border-color:var(--blue-dim); text-decoration:none;}
 .vs-emblem img{flex:0 0 auto; border-radius:6px;}
 .vs-name{min-width:0; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .vs-sep{color:var(--muted); font-style:italic; font-size:13px;}
@@ -985,6 +1314,8 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 /* Dominant-party logos + overflow chip in side headers */
 .side-title{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
 .dom-logos{display:inline-flex; align-items:center; gap:5px;}
+.dom-logo-link{display:inline-flex; line-height:0;}
+.dom-logo-link:hover{text-decoration:none;}
 .dom-logo{border-radius:5px; border:1px solid var(--line); background:var(--panel-2);}
 .more-chip{padding:3px 8px; font-size:12px; font-weight:600; color:var(--muted); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; cursor:pointer; font-family:inherit;}
 .more-chip:hover{border-color:var(--blue-dim); color:var(--text);}
@@ -1031,12 +1362,21 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 /* min-width:0 so a long alliance name can't widen its column past the panel. */
 .bd-side{min-width:0;}
 .bd-side h4{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; margin:0 0 8px;}
-.bd-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px;}
+.bd-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px;}
 .bd-row{display:flex; align-items:center; gap:8px; min-width:0; font-size:13px;}
+.bd-entity{display:flex; align-items:center; gap:6px; flex:1; min-width:0; color:var(--text);}
+.bd-entity:hover{text-decoration:none; color:var(--blue);}
 .bd-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.bd-count{font-family:var(--mono);}
-.bd-pct{font-family:var(--mono); color:var(--muted); min-width:38px; text-align:right;}
+.bd-count{font-family:var(--mono); flex:0 0 auto;}
+.bd-pct{font-family:var(--mono); color:var(--muted); min-width:38px; text-align:right; flex:0 0 auto;}
 .bd-empty{color:var(--muted); font-size:13px;}
+/* Side-editor controls: hidden until the JS confirms the data parsed (editor-ready). */
+.editor-only{display:none;}
+.modal.editor-ready .editor-only{display:block;}
+.modal.editor-ready .modal-actions{display:flex; gap:10px; margin-top:16px;}
+.bd-move{display:none;}
+.modal.editor-ready .bd-move{display:inline-block; flex:0 0 auto; max-width:120px; background:var(--panel-2); border:1px solid var(--line); border-radius:7px; color:var(--text); padding:3px 6px; font-size:12px; font-family:inherit;}
+.modal-hint{color:var(--muted); font-size:12.5px; margin:0 0 12px;}
 .notfound{text-align:center; padding:60px 20px;}
 .notfound p{color:var(--muted); max-width:480px; margin:10px auto 24px;}
 
@@ -1457,5 +1797,90 @@ mod tests {
         for html in [&view, &card_html, &dir, &nf] {
             assert!(!html.contains('\u{2014}'), "no em dash in rendered output");
         }
+    }
+
+    #[test]
+    fn sides_data_json_is_present_and_well_formed() {
+        let html = viewer_page(&card_data(None, "u")).into_string();
+        assert!(html.contains("id=\"sides-data\""));
+        // The embedded blob (no special chars in these names) parses as JSON.
+        let j = sides_data_json(&doc(None));
+        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert!(v["sides_count"].as_u64().unwrap() >= 2);
+        // A known party id (Red Alliance = 100) appears with its kind and original side.
+        let parties = v["parties"].as_array().unwrap();
+        let red = parties.iter().find(|p| p["id"] == 100).expect("party 100 present");
+        assert_eq!(red["kind"], "alliance");
+        assert!(red["side"].as_u64().is_some());
+        // Participants carry char + party_id; at least one references party 100.
+        let parts = v["participants"].as_array().unwrap();
+        assert!(parts.iter().all(|p| p["char"].as_i64().is_some()));
+        assert!(parts.iter().any(|p| p["party_id"] == 100));
+        // Engagements expose kill_id, victim, value, and attacker party ids.
+        let engs = v["engagements"].as_array().unwrap();
+        assert!(engs.iter().all(|e| e["kill_id"].as_i64().is_some()
+            && e["attacker_party_ids"].is_array()));
+    }
+
+    #[test]
+    fn sides_data_escapes_markup_in_names() {
+        // A party name containing </script> must not break out of the embedding script tag.
+        let engs = vec![
+            eng(1, 0, (100, "</script><b>x", "V", 587), (200, "Blue", "K", 588), true),
+            eng(2, 20, (200, "Blue", "V2", 588), (100, "</script><b>x", "K2", 587), true),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let data = CardData { id: "Ss88888888".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        // No raw </script> escaped into the page from the JSON blob.
+        let blob = sides_data_json(&data.doc);
+        assert!(!blob.contains("</script>"));
+        assert!(blob.contains("\\u003c")); // < was escaped
+        // And the page as a whole carries no stray closing-script breakout from the name.
+        assert!(!html.contains("</script><b>x"));
+    }
+
+    #[test]
+    fn party_logos_and_names_link_to_zkill() {
+        // Alliance entities (Red = 100) link to the alliance zKill page in header + breakdown.
+        let html = viewer_page(&card_data(Some("Z"), "u")).into_string();
+        assert!(html.contains("https://zkillboard.com/alliance/100/"));
+        assert!(html.contains("class=\"dom-logo-link\"")); // header logo is a link
+        assert!(html.contains("class=\"bd-entity\"")); // breakdown row entity is a link
+        assert!(html.contains("class=\"vs-emblem\"")); // emblem present
+
+        // A corporation party links to the corporation zKill page (chosen by Party.kind).
+        let corp = Party { id: 300, name: "Corp X".to_string(), kind: PartyKind::Corporation };
+        let ally = party(100, "Red Alliance");
+        let mk = |kill_id: i64, victim: &Party, vchar: i64, vship: i64, killer: &Party| Engagement {
+            kill_id,
+            time: kill_id * 10,
+            system_id: 30000142,
+            system_name: "Jita".to_string(),
+            security: 0.9,
+            victim: victim.clone(),
+            victim_char: vchar,
+            victim_pilot: "P".to_string(),
+            victim_ship: vship,
+            attackers: vec![Attacker {
+                party: killer.clone(),
+                char_id: 9000 + kill_id,
+                ship: 588,
+                pilot: "K".to_string(),
+                final_blow: true,
+            }],
+            isk: 100_000_000.0,
+            anchored: true,
+        };
+        let engs = vec![mk(1, &ally, 1001, 587, &corp), mk(2, &corp, 1002, 588, &ally)];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let data = CardData { id: "Cc99999999".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        assert!(html.contains("https://zkillboard.com/corporation/300/"));
+        // The sides-data marks party 300 as a corp.
+        let v: serde_json::Value = serde_json::from_str(&sides_data_json(&data.doc)).unwrap();
+        assert!(v["parties"].as_array().unwrap().iter().any(|p| p["id"] == 300 && p["kind"] == "corp"));
     }
 }
