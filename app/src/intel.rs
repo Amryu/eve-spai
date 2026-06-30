@@ -315,8 +315,11 @@ impl IntelState {
                 }
             }
             // Sub-phrase dedup over the merged pilot list (no protected set: all names are
-            // ESI-confirmed candidates, none authoritative).
-            drop_subphrase_pilots(&mut prev.pilots, &std::collections::HashSet::new());
+            // ESI-confirmed candidates, none authoritative). Both reports' raw text is the
+            // occurrence source, so a name repeated as a standalone AND inside a longer name across
+            // the two messages ("Tiffanbrill" + "Tiffanbrill Dragon") survives the dedup.
+            let merge_src = format!("{} {}", prev.text, new.text);
+            drop_subphrase_pilots(&mut prev.pilots, &std::collections::HashSet::new(), &merge_src);
             for a in &new.alliances {
                 if !prev.alliances.iter().any(|(n, _)| n.eq_ignore_ascii_case(&a.0)) {
                     prev.alliances.push(a.clone());
@@ -1481,16 +1484,64 @@ fn lowercase_lead_system_names(
 /// is also present) — used after a merge, since each message is filtered individually.
 /// A `protect`ed name (one with an authoritative showinfo char-id) is never dropped: a
 /// glued mis-parse from a plain-text relay must not evict the real, char-linked name.
-fn drop_subphrase_pilots(pilots: &mut Vec<String>, protect: &std::collections::HashSet<String>) {
+fn drop_subphrase_pilots(
+    pilots: &mut Vec<String>,
+    protect: &std::collections::HashSet<String>,
+    source: &str,
+) {
     let lc: Vec<String> = pilots.iter().map(|p| p.to_lowercase()).collect();
+    // Each pilot as its lower-cased token sequence (so occurrence counting matches the way the
+    // source text is tokenised: hyphen/apostrophe kept, punctuation split).
+    let toks: Vec<Vec<String>> =
+        pilots.iter().map(|p| tokenize(p).iter().map(|t| t.to_lowercase()).collect()).collect();
+    let src: Vec<String> = tokenize(source).iter().map(|t| t.to_lowercase()).collect();
+    // Non-overlapping count of `needle` as a contiguous run inside `hay`.
+    fn count_seq(hay: &[String], needle: &[String]) -> usize {
+        if needle.is_empty() || needle.len() > hay.len() {
+            return 0;
+        }
+        let mut n = 0;
+        let mut i = 0;
+        while i + needle.len() <= hay.len() {
+            if hay[i..i + needle.len()] == *needle {
+                n += 1;
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        n
+    }
     let keep: Vec<bool> = (0..pilots.len())
         .map(|i| {
-            protect.contains(&lc[i])
-                || !lc.iter().enumerate().any(|(j, o)| {
+            if protect.contains(&lc[i]) {
+                return true;
+            }
+            // Longer candidates that contain this one as a contiguous sub-phrase.
+            let longer: Vec<usize> = (0..pilots.len())
+                .filter(|&j| {
                     j != i
-                        && o.len() > lc[i].len()
-                        && format!(" {o} ").contains(&format!(" {} ", lc[i]))
+                        && lc[j].len() > lc[i].len()
+                        && format!(" {} ", lc[j]).contains(&format!(" {} ", lc[i]))
                 })
+                .collect();
+            if longer.is_empty() {
+                return true; // not a sub-phrase of anything → always kept
+            }
+            // Occurrence-aware: keep the shorter name only when the source text has at least one
+            // separate token occurrence of it BEYOND the ones already consumed by the longer names
+            // that contain it. "Tiffanbrill Tiffanbrill Dragon" has two "Tiffanbrill" tokens and one
+            // "Tiffanbrill Dragon", so the standalone pilot and the two-word pilot both stand. A
+            // genuine over-glue — one "Ruston Shackleford" inside a single "Ruston Shackleford
+            // B-3QPD" — has no spare occurrence, so it still collapses. With no source occurrences
+            // (e.g. a cross-report merge whose texts don't share the name) total is 0, matching the
+            // old unconditional drop.
+            let total = count_seq(&src, &toks[i]);
+            let consumed: usize = longer
+                .iter()
+                .map(|&j| count_seq(&src, &toks[j]) * count_seq(&toks[j], &toks[i]))
+                .sum();
+            total > consumed
         })
         .collect();
     let mut it = keep.into_iter();
@@ -2196,7 +2247,7 @@ pub fn analyze_ctx(
     // The loose-run and single-token sources are added after the earlier sub-phrase filter,
     // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
     // produced because the loose run breaks on the 2-char "Dr") can slip through.
-    drop_subphrase_pilots(&mut pilots, &std::collections::HashSet::new());
+    drop_subphrase_pilots(&mut pilots, &std::collections::HashSet::new(), text);
 
     // A keyword inside a name suppresses the matching status flag ("The Bubble Boy" is not a
     // bubble), but a noise blob full of prose/keywords must NOT — else a real "camped"/"bubble"
@@ -4342,13 +4393,31 @@ mod tests {
     #[test]
     fn drops_subphrase_pilots_works() {
         let mut p = vec!["Nine".to_string(), "Nine -3".to_string()];
-        drop_subphrase_pilots(&mut p, &std::collections::HashSet::new());
+        // Source has one "Nine" token, entirely inside "Nine -3": the standalone collapses.
+        drop_subphrase_pilots(&mut p, &std::collections::HashSet::new(), "Nine -3");
         assert_eq!(p, vec!["Nine -3".to_string()]);
         // A char-linked name is protected even when a longer glued run contains it.
         let mut q = vec!["Callas Plaude".to_string(), "Callas Plaude Wolf".to_string()];
         let protect: std::collections::HashSet<String> = ["callas plaude".to_string()].into();
-        drop_subphrase_pilots(&mut q, &protect);
+        drop_subphrase_pilots(&mut q, &protect, "Callas Plaude Wolf");
         assert!(q.contains(&"Callas Plaude".to_string()), "q={q:?}");
+        // Occurrence-aware: two "Tiffanbrill" tokens (one standalone, one inside "Tiffanbrill
+        // Dragon") keep BOTH the one-word and the two-word pilot.
+        let mut t = vec!["Tiffanbrill".to_string(), "Tiffanbrill Dragon".to_string()];
+        drop_subphrase_pilots(
+            &mut t,
+            &std::collections::HashSet::new(),
+            "Tiffanbrill Tiffanbrill Dragon",
+        );
+        assert_eq!(t, vec!["Tiffanbrill".to_string(), "Tiffanbrill Dragon".to_string()], "t={t:?}");
+        // But a single occurrence wholly inside the longer name still collapses (no spare token).
+        let mut u = vec!["Ruston Shackleford".to_string(), "Ruston Shackleford B-3QPD".to_string()];
+        drop_subphrase_pilots(
+            &mut u,
+            &std::collections::HashSet::new(),
+            "Ruston Shackleford B-3QPD",
+        );
+        assert_eq!(u, vec!["Ruston Shackleford B-3QPD".to_string()], "u={u:?}");
     }
 
     #[test]
@@ -5747,5 +5816,86 @@ mod tests {
             "unresolved system code became a pilot: {resolved:?}",
         );
         assert!(r.camp, "camped should set the camp keyword: {:?}", r.text);
+    }
+
+    /// Verbatim regressions for every intel line reported this session. Each test pins one exact
+    /// line so a future refactor can't silently break it. Lines that already had dedicated coverage
+    /// are noted (with the owning test) rather than duplicated; only the gaps are re-asserted here.
+    mod session_regressions {
+        use super::*;
+
+        // Line 1 `v Ruston Shackleford B-3QPD` — covered by `stray_letter_before_name_with_code_system`
+        //   (known-cache path: pilot "Ruston Shackleford", system B-3QPD, no gate). Not duplicated.
+        // Line 2 `they are` / `back to` / `I'm tackled in Rancer` — covered by
+        //   `common_phrases_not_parsed_as_pilots` (none become pilots; Rancer + tackle still parse).
+        // Line 3 `cythe fleet issue tackled in Rancer` — covered by
+        //   `fuzzy_typo_multiword_hull_is_a_ship_not_pilots` (ship "Scythe Fleet Issue"; no
+        //   cythe/fleet/issue pilots).
+        // Line 4 `willlin qiuxiaoye Micahel wu v Htguuu Htg-0 灵感级* 金鹏级*` — covered by
+        //   `stray_letter_midrun_splits_pilot_list`.
+        // Line 5 `MSKR-1 Htg-0 +5 gnosis 3x, Slasher, ESS 346mio` — covered by
+        //   `htg0_is_a_pilot_mskr1_stays_a_system`.
+        // Line 6 `bovine worm` — covered by `pilot_word_that_is_a_hull_is_not_also_a_ship`.
+        // Line 9 punctuation guard — covered by `noise_punctuation_between_tokens_does_not_break_detection`
+        //   (comma/asterisk split; apostrophe O'Brien + hyphen Htg-0 preserved).
+
+        /// Line 7 (Task 1): a sub-phrase pilot repeated as its own token survives. "Tiffanbrill"
+        /// appears once standalone and once inside the distinct "Tiffanbrill Dragon", so BOTH must
+        /// show — alongside "Furry For Life", the three hulls, and the HL-VZX system.
+        #[test]
+        fn line7_repeated_subphrase_pilot_survives() {
+            let s = systems_with(&[("hl-vzx", "HL-VZX", 30002, -0.4)]);
+            let ships = ships_with(&[("Stabber", 622), ("Orthrus", 33470), ("Stiletto", 11198)]);
+            // ESI/known names the cover confirms out of the over-glued blob.
+            let known: std::collections::HashMap<String, i64> = [
+                ("furry for life".to_string(), 1i64),
+                ("tiffanbrill".to_string(), 2i64),
+                ("tiffanbrill dragon".to_string(), 3i64),
+            ]
+            .into_iter()
+            .collect();
+            let line =
+                "HL-VZX Furry For Life Tiffanbrill Tiffanbrill Dragon stabber orthrus stiletto";
+            let r = analyze(line, &s, &ships, &known, 1, "ch", "Shadow McLane");
+            // Ships are detected directly.
+            for hull in ["Stabber", "Orthrus", "Stiletto"] {
+                assert!(r.ships.iter().any(|sh| sh.name == hull), "missing {hull}: {:?}", r.ships);
+            }
+            // The held name blob is split by the ESI cover (deterministic mirror), which frees the
+            // HL-VZX system and surfaces all three distinct pilots.
+            let reals = ["Furry For Life", "Tiffanbrill", "Tiffanbrill Dragon"];
+            let (pilots, sysd, _gates) = resolve_report(&r, &reals, &s);
+            for name in reals {
+                assert!(
+                    pilots.iter().any(|p| p.eq_ignore_ascii_case(name)),
+                    "pilot {name:?} missing: {pilots:?}",
+                );
+            }
+            assert_eq!(sysd, vec!["HL-VZX".to_string()], "system: {sysd:?}");
+
+            // Direct proof of the Task-1 fix: the merge dedup (which calls drop_subphrase_pilots)
+            // keeps both Tiffanbrill names when the report text carries two "Tiffanbrill" tokens.
+            let mut prev = analyze(line, &s, &ships, &known, 1, "ch", "Shadow McLane");
+            prev.pilots = reals.iter().map(|n| (*n).to_string()).collect();
+            let merge_src = format!("{} {}", prev.text, prev.text);
+            drop_subphrase_pilots(
+                &mut prev.pilots,
+                &std::collections::HashSet::new(),
+                &merge_src,
+            );
+            assert!(prev.pilots.iter().any(|p| p == "Tiffanbrill"), "standalone dropped: {:?}", prev.pilots);
+            assert!(prev.pilots.iter().any(|p| p == "Tiffanbrill Dragon"), "two-word dropped: {:?}", prev.pilots);
+        }
+
+        /// Line 8 (parse_isk): the exact ESS-context amounts reported this session. "ess 346mio" /
+        /// "ess 300kk 5 min" also appear in `parse_isk_*` tests; "ess robbed 30m"=None likewise.
+        /// Pinned verbatim here as one table so the ESS gating can't silently regress.
+        #[test]
+        fn line8_parse_isk_ess_amounts() {
+            assert_eq!(parse_isk("ess robbed 30m", true), None, "'robbed' is not an amount");
+            assert_eq!(parse_isk("ess 346mio", true), Some(346_000_000));
+            assert_eq!(parse_isk("ess 77m", true), Some(77_000_000));
+            assert_eq!(parse_isk("ess 300kk 5 min", true), Some(300_000_000));
+        }
     }
 }
