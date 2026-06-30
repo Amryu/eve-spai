@@ -19,7 +19,7 @@ const KILLS_URL: &str = "https://esi.evetech.net/latest/universe/system_kills/";
 const JUMPS_URL: &str = "https://esi.evetech.net/latest/universe/system_jumps/";
 const POLL: Duration = Duration::from_secs(300);
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SysFlags {
     pub incursion: bool,
     /// Faction-warfare contest, e.g. "vulnerable (Minmatar)"; None when uncontested.

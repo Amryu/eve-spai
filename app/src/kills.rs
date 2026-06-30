@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Enriched killmail details for the KILL badge + window.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)] // some fields are kept for the window / future use
 pub struct KillInfo {
     pub kill_id: i64,

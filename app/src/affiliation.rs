@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Affil {
     pub corp: Option<i64>,
     pub alliance: Option<i64>,
@@ -36,6 +36,13 @@ impl AffilCache {
     /// Known corp/alliance for a character, if resolved.
     pub fn get(&self, id: i64) -> Option<Affil> {
         self.map.get(&id).cloned()
+    }
+
+    /// Insert an externally-resolved affiliation (the overlay child has no resolver of its own; the
+    /// main process pushes pre-resolved entries to it). Marks it fresh so `want` won't re-queue it.
+    pub fn insert_resolved(&mut self, id: i64, affil: Affil) {
+        self.fetched_at.insert(id, chrono::Utc::now().timestamp());
+        self.map.insert(id, affil);
     }
 
     /// Ensure `id` gets resolved (queues it if unknown or its cached value is stale).

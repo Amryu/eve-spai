@@ -9,26 +9,56 @@ use std::collections::HashMap;
 
 use crate::geo::Systems;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DetectedSystem {
     pub id: i64,
     pub name: String,
     pub security: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DetectedShip {
     pub id: i64,
     pub name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Movement {
     pub from: String,
     pub jumps: Option<u32>,
 }
 
-#[derive(Clone, Debug, Default)]
+/// Scanning-probe badge kind. A small enum (rather than the `&'static str` it used to be) so the
+/// report can derive serde for the overlay IPC without dragging a `'de: 'static` bound onto every
+/// containing type; [`Probes::label`] / its `Display` give the badge text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Probes {
+    /// Core Scanner Probes (cosmic signatures).
+    Core,
+    /// Combat Scanner Probes (ships / structures).
+    Combat,
+    /// Unspecified scanner probes.
+    Any,
+}
+
+impl Probes {
+    /// The badge label shown in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Probes::Core => "Core Probes",
+            Probes::Combat => "Combat Probes",
+            Probes::Any => "Probes",
+        }
+    }
+}
+
+impl std::fmt::Display for Probes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct IntelReport {
     /// Stable per-report id (assigned on push, preserved across amendments) so the alert
     /// window can re-find a report after its content — and thus report_key — changes.
@@ -57,7 +87,7 @@ pub struct IntelReport {
     pub celestials: Vec<String>,
     /// Scanning probes mentioned (Core/Combat Scanner Probe items + slang) — distinct from
     /// the Probe frigate. The badge label ("Core Probes"/"Combat Probes"/"Probes"), or None.
-    pub probes: Option<&'static str>,
+    pub probes: Option<Probes>,
     pub clear: bool,
     /// Someone explicitly asking for intel ("status?") — informational, not a threat.
     pub status: bool,
@@ -108,14 +138,14 @@ pub struct IntelReport {
     pub links: Vec<IntelLink>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LinkKind {
     Killmail,
     BattleReport,
     Dscan,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IntelLink {
     pub kind: LinkKind,
     pub url: String,
@@ -2609,22 +2639,22 @@ fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
 /// Scanning probes — Core/Combat Scanner Probe items (incl. Sisters/RSS/Satori-Horigu) and
 /// the "core/combat probes" slang — as a badge label, distinct from the Probe frigate. A
 /// lone "probe" (no Core/Combat/scanner qualifier) is the ship, so returns None.
-fn detect_probes(text: &str) -> Option<&'static str> {
+fn detect_probes(text: &str) -> Option<Probes> {
     let lower = text.to_lowercase();
     // Match the "prob" stem so abbreviations like "combat prob" count too.
     let core = lower.contains("core scanner") || lower.contains("core prob");
     let combat = lower.contains("combat scanner") || lower.contains("combat prob");
     match (core, combat) {
-        (true, false) => Some("Core Probes"),
-        (false, true) => Some("Combat Probes"),
-        (true, true) => Some("Probes"),
+        (true, false) => Some(Probes::Core),
+        (false, true) => Some(Probes::Combat),
+        (true, true) => Some(Probes::Any),
         (false, false) => {
             // A bare "prob" is shorthand for "probably", not scanning probes — only the
             // unambiguous "probes" (or a qualified "scanner/core/combat prob") counts.
             let bare = lower
                 .split(|c: char| !c.is_alphanumeric())
                 .any(|w| matches!(w, "probes" | "probs"));
-            (lower.contains("scanner prob") || bare).then_some("Probes")
+            (lower.contains("scanner prob") || bare).then_some(Probes::Any)
         }
     }
 }
@@ -3642,7 +3672,7 @@ mod tests {
     fn combat_prob_is_probes_not_pilots() {
         let s = systems();
         let r = analyze("combat prob in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert_eq!(r.probes, Some("Combat Probes"), "probes={:?}", r.probes);
+        assert_eq!(r.probes, Some(Probes::Combat), "probes={:?}", r.probes);
         assert!(
             !r.pilots.iter().any(|p| {
                 p.eq_ignore_ascii_case("combat") || p.eq_ignore_ascii_case("prob")
@@ -3664,7 +3694,7 @@ mod tests {
     fn sisters_combat_scanner_is_probes_not_pilots() {
         let s = systems();
         let r = analyze("Sisters Combat Scanner in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert_eq!(r.probes, Some("Combat Probes"), "probes={:?}", r.probes);
+        assert_eq!(r.probes, Some(Probes::Combat), "probes={:?}", r.probes);
         // "Sisters Combat Scanner" is a probe item, not a character — ESI resolves it to nothing.
         assert!(esi_resolve(&r.pilots, &[]).is_empty(), "pilots={:?}", r.pilots);
     }
@@ -3912,11 +3942,11 @@ mod tests {
 
     #[test]
     fn scanner_probes_badge_not_ship_or_pilot() {
-        assert_eq!(detect_probes("Sisters Core Scanner Probe on dscan"), Some("Core Probes"));
-        assert_eq!(detect_probes("Combat Scanner Probe I"), Some("Combat Probes"));
-        assert_eq!(detect_probes("Core Probes"), Some("Core Probes"));
-        assert_eq!(detect_probes("combat probes out"), Some("Combat Probes"));
-        assert_eq!(detect_probes("probes on dscan"), Some("Probes"));
+        assert_eq!(detect_probes("Sisters Core Scanner Probe on dscan"), Some(Probes::Core));
+        assert_eq!(detect_probes("Combat Scanner Probe I"), Some(Probes::Combat));
+        assert_eq!(detect_probes("Core Probes"), Some(Probes::Core));
+        assert_eq!(detect_probes("combat probes out"), Some(Probes::Combat));
+        assert_eq!(detect_probes("probes on dscan"), Some(Probes::Any));
         assert_eq!(detect_probes("Probe tackled"), None); // the frigate
         assert_eq!(detect_probes("hostiles in Rancer"), None);
 
@@ -3925,7 +3955,7 @@ mod tests {
             std::collections::HashMap::from([("probe".to_string(), (587i64, "Probe".to_string()))]);
         let s = systems();
         let r = analyze("Sisters Core Scanner Probe on dscan", &s, &si, &noknown(), 1, "ch", "x");
-        assert_eq!(r.probes, Some("Core Probes"));
+        assert_eq!(r.probes, Some(Probes::Core));
         assert!(r.ships.iter().all(|sh| !sh.name.eq_ignore_ascii_case("probe")), "{:?}", r.ships);
         assert!(
             !r.pilots.iter().any(|p| p.to_lowercase().contains("probe")),
@@ -3937,7 +3967,7 @@ mod tests {
         assert!(r2.ships.iter().any(|sh| sh.name.eq_ignore_ascii_case("probe")));
         // "prob" is shorthand for "probably", not scanning probes.
         assert!(analyze("prob cyno in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").probes.is_none());
-        assert_eq!(analyze("combat probes on dscan", &s, &noships(), &noknown(), 1, "ch", "x").probes, Some("Combat Probes"));
+        assert_eq!(analyze("combat probes on dscan", &s, &noships(), &noknown(), 1, "ch", "x").probes, Some(Probes::Combat));
         // The PILOT "RSS Scanner Probe" (case-sensitive) must be a pilot, not a probe alert.
         let rp = analyze("RSS Scanner Probe tackled in Rancer", &s, &si, &noknown(), 1, "ch", "x");
         assert_eq!(rp.probes, None, "pilot name triggered a probe badge: {:?}", rp.probes);
@@ -3949,7 +3979,7 @@ mod tests {
         // A genuine probe call in the same message still fires (different, real wording).
         assert_eq!(
             analyze("RSS Scanner Probe and Sisters Combat Scanner Probe on dscan", &s, &si, &noknown(), 1, "ch", "x").probes,
-            Some("Combat Probes"),
+            Some(Probes::Combat),
             "real probes after the pilot name should still fire"
         );
     }

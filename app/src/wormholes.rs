@@ -7,7 +7,7 @@ const DAY: i64 = 86_400;
 
 /// Where a wormhole leads. Either a space *class* (we don't know the exact system),
 /// the special hubs Thera/Turnur, or a specific scouted system.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DestClass {
     Highsec,
     Lowsec,
