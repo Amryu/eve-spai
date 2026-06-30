@@ -14532,6 +14532,12 @@ pub(crate) fn dialog_viewport_ext(
         .with_always_on_top();
     if taskbar_off {
         builder = builder.with_taskbar(false);
+        // winit skip-taskbar is Windows-only; on X11 the Utility type keeps the overlay's d-scan
+        // dialog off the taskbar (matches the alert/ping windows).
+        #[cfg(target_os = "linux")]
+        {
+            builder = builder.with_window_type(egui::X11WindowType::Utility);
+        }
     }
     parent.show_viewport_immediate(
         egui::ViewportId::from_hash_of(id),
@@ -14912,19 +14918,27 @@ pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowSta
 /// the overlay child declare the window identically. `on_top` only seeds the initial level; the
 /// render closure re-asserts it live via `ViewportCommand::WindowLevel`.
 pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
-    egui::ViewportBuilder::default()
+    #[allow(unused_mut)]
+    let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
         .with_title("EVE Spai \u{2014} Fleet ping")
         .with_inner_size([520.0, 320.0])
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
-        .with_taskbar(false) // keep the floating ping window off the taskbar (matches the alert window)
+        .with_taskbar(false) // Windows-only in winit 0.30; X11 needs the Utility type below.
         .with_visible(false) // the closure shows it when there are pings
         .with_window_level(if on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {
             egui::WindowLevel::Normal
-        })
+        });
+    // winit's skip-taskbar is Windows-only, so on X11 tag it Utility — KWin keeps Utility windows
+    // off the taskbar (otherwise the overlay process shows a stray taskbar entry).
+    #[cfg(target_os = "linux")]
+    {
+        b = b.with_window_type(egui::X11WindowType::Utility);
+    }
+    b
 }
 
 /// `AlertMsg::secs` sentinels (overlay IPC). A non-negative value resets the overlay's
@@ -14957,7 +14971,8 @@ where
 /// idle visibility; the render closure re-asserts visibility / passthrough / level live via
 /// `ViewportCommand`.
 pub(crate) fn alert_viewport_builder(on_top: bool, active: bool) -> egui::ViewportBuilder {
-    egui::ViewportBuilder::default()
+    #[allow(unused_mut)]
+    let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
         .with_title("EVE Spai \u{2014} alerts")
         .with_window_level(if on_top {
@@ -14982,7 +14997,13 @@ pub(crate) fn alert_viewport_builder(on_top: bool, active: bool) -> egui::Viewpo
         // Fixed initial geometry only. The *saved* position/size are applied via ViewportCommand
         // on open (just_opened) inside the closure.
         .with_position([80.0, 80.0])
-        .with_inner_size([360.0, 240.0])
+        .with_inner_size([360.0, 240.0]);
+    // winit skip-taskbar is Windows-only; on X11 tag it Utility so KWin keeps it off the taskbar.
+    #[cfg(target_os = "linux")]
+    {
+        b = b.with_window_type(egui::X11WindowType::Utility);
+    }
+    b
 }
 
 /// Build the deferred alert viewport's render closure from its shared state. Used by BOTH the main
