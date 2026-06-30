@@ -172,7 +172,14 @@ mod tests {
             eng(3, 60, red, blue),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        BattleReportDoc::new(battle, engs, Overrides::default(), Some("Test".into()), 1_700_000_000)
+        BattleReportDoc::new(
+            battle,
+            engs,
+            Overrides::default(),
+            Some("Test".into()),
+            1_700_000_000,
+            Default::default(),
+        )
     }
 
     #[test]
@@ -227,6 +234,16 @@ mod tests {
         assert_eq!(doc.battle.kills, 3);
         assert!((doc.battle.isk - 3_000_000.0).abs() < 1e-6);
         assert_eq!(doc.battle.systems, vec![(30000142, "Jita".to_string(), 0.9)]);
+    }
+
+    #[test]
+    fn rederivation_preserves_ship_names() {
+        let mut doc = real_doc();
+        // An uploaded doc carries hull names; re-deriving the battle must not drop them.
+        doc.ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
+        let before = doc.ship_names.clone();
+        rederive(&mut doc);
+        assert_eq!(doc.ship_names, before);
     }
 
     #[test]

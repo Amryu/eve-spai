@@ -1,7 +1,7 @@
 //! Server-rendered, mobile-first HTML: the public report directory (`GET /br`) and
 //! the single-report viewer (`GET /br/{id}`).
 //!
-//! Built with [`maud`] — compile-time templates that auto-escape every interpolation.
+//! Built with [`maud`] - compile-time templates that auto-escape every interpolation.
 //! Every user- or EVE-supplied string (titles, uploader names, side/alliance/pilot
 //! names) is rendered through a normal `(value)` interpolation, never via
 //! [`PreEscaped`], so none of them can inject markup. `PreEscaped` is used *only* for
@@ -9,6 +9,11 @@
 
 use br_core::battle::{Battle, BattleReportDoc, Party, PartyKind, Side};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
+
+/// A folded-in pod loss is only shown when its value exceeds this floor; `br_core` stores
+/// `10000` as the default/empty pod value (no real capsule kill), so anything at or below
+/// it is not a pod worth surfacing.
+const POD_VALUE_MIN: f64 = 10_000.0;
 
 /// EVE ship/structure icon for a type id (64 px). Empty markup for type id 0.
 fn icon_url(type_id: i64) -> String {
@@ -21,7 +26,7 @@ fn zkill_url(kill_id: i64) -> String {
 }
 
 /// Alliance/corporation logo URL for a party (32 px). `None` for characters, factions,
-/// unknowns, or a 0 id — those have no entity logo.
+/// unknowns, or a 0 id - those have no entity logo.
 fn party_logo_url(p: &Party) -> Option<String> {
     if p.id == 0 {
         return None;
@@ -73,7 +78,7 @@ fn side_breakdown(battle: &Battle, side_idx: usize) -> (usize, Vec<(Party, usize
 }
 
 /// Parties that make up more than 10% of a side's roster, as `(party, ratio)`, biggest
-/// first, at most three — the logos shown inline in the side header.
+/// first, at most three - the logos shown inline in the side header.
 fn dominant_parties(battle: &Battle, side_idx: usize) -> Vec<(Party, f64)> {
     let (_, entries) = side_breakdown(battle, side_idx);
     entries.into_iter().filter(|(_, _, r)| *r > 0.10).map(|(p, _, r)| (p, r)).take(3).collect()
@@ -156,7 +161,7 @@ fn sec_color(sec: f64) -> &'static str {
     }
 }
 
-/// `1.23B`, `345.0M`, `12k`, `900` — compact ISK with a unit suffix.
+/// `1.23B`, `345.0M`, `12k`, `900` - compact ISK with a unit suffix.
 fn fmt_isk(v: f64) -> String {
     let a = v.abs();
     if a >= 1e12 {
@@ -185,16 +190,16 @@ fn fmt_duration(secs: i64) -> String {
     }
 }
 
-/// `2024-01-02 14:05 UTC`, or `—` for an out-of-range timestamp.
+/// `2024-01-02 14:05 UTC`, or `-` for an out-of-range timestamp.
 fn fmt_time(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0)
         .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-        .unwrap_or_else(|| "—".to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
-/// ISK-efficiency percentage as `73%`, or `—` when no ISK was exchanged.
+/// ISK-efficiency percentage as `73%`, or `-` when no ISK was exchanged.
 fn fmt_eff(side: &Side) -> String {
-    side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "—".to_string())
+    side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "-".to_string())
 }
 
 /// A side's display name: its coalition, else its most-involved party, else `Unknown`.
@@ -207,7 +212,7 @@ fn side_label(side: &Side) -> String {
 }
 
 /// Title to show for a battle: the human title if present, else a derived
-/// `System — date` (first system + start date).
+/// `System - date` (first system + start date).
 fn display_title(doc: &BattleReportDoc) -> String {
     if let Some(t) = doc.title.as_deref().filter(|t| !t.trim().is_empty()) {
         return t.to_string();
@@ -219,7 +224,7 @@ fn display_title(doc: &BattleReportDoc) -> String {
     if date.is_empty() {
         system.to_string()
     } else {
-        format!("{system} — {date}")
+        format!("{system} - {date}")
     }
 }
 
@@ -332,7 +337,7 @@ pub fn directory_page(cards: &[CardData], q: &DirQuery, page: i64, has_next: boo
             }
         }
     };
-    layout("Battle reports — EVE Spai", body, Some(DIRECTORY_JS))
+    layout("Battle reports - EVE Spai", body, Some(DIRECTORY_JS))
 }
 
 /// Per-ship-type aggregation of a side's roster.
@@ -345,16 +350,21 @@ struct ShipGroup {
 
 /// Group a side's roster by hull type (mirrors `Battle::roster(i)`, which already folds
 /// pods and dedups survivors): lost vs survived counts, plus final-blow tallies derived
-/// from the battle's engagements for that side. Heaviest-hit hulls first.
+/// from the battle's engagements for that side. Heaviest-hit hulls first. Capsules
+/// (`POD_TYPES`) are excluded so pods never appear as their own tile.
 fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
+    use br_core::battle::POD_TYPES;
     use std::collections::HashMap;
     let roster = battle.roster(side_idx);
 
-    // Final blows landed by this side, counted per attacker ship type.
+    // Final blows landed by this side, counted per attacker ship type (pods excluded).
     let mut fb_by_ship: HashMap<i64, usize> = HashMap::new();
     for e in &battle.engagements {
         for a in &e.attackers {
-            if a.final_blow && battle.side_of(&a.party) == Some(side_idx) {
+            if a.final_blow
+                && !POD_TYPES.contains(&a.ship)
+                && battle.side_of(&a.party) == Some(side_idx)
+            {
                 *fb_by_ship.entry(a.ship).or_default() += 1;
             }
         }
@@ -362,6 +372,9 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
 
     let mut by_ship: HashMap<i64, (usize, usize)> = HashMap::new();
     for p in &roster {
+        if POD_TYPES.contains(&p.ship) {
+            continue; // capsules are not shown as tiles
+        }
         let entry = by_ship.entry(p.ship).or_insert((0, 0));
         if p.lost.is_some() {
             entry.0 += 1;
@@ -388,8 +401,8 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     groups
 }
 
-/// One participant row for the Details layout: hull, pilot, party (with logo), and — for a
-/// destroyed ship — a red marker, ISK value, and zKill link. `data-*` attributes drive the
+/// One participant row for the Details layout: hull, pilot, party (with logo), and - for a
+/// destroyed ship - a red marker, ISK value, and zKill link. `data-*` attributes drive the
 /// hover-highlight and hull-filter JS (`data-char`, `data-ship`, and `data-kill` on losses).
 fn detail_cell(p: &br_core::battle::Participant) -> Markup {
     let lost = p.lost.as_ref();
@@ -410,8 +423,15 @@ fn detail_cell(p: &br_core::battle::Participant) -> Markup {
             @if let Some(l) = lost {
                 div .dloss {
                     span .destroyed { "destroyed" }
-                    span .dval { (fmt_isk(l.value + l.pod_value)) }
+                    span .dval { (fmt_isk(l.value)) }
                     a .zk href=(zkill_url(l.kill_id)) target="_blank" rel="noopener" { "zKill" }
+                    // The pod was killed alongside the ship (default/empty value is 10000).
+                    @if l.pod_value > POD_VALUE_MIN {
+                        span .dpod title="pod destroyed" {
+                            img .dpod-icon src=(icon_url(l.pod_ship)) width="20" height="20" loading="lazy" alt="pod";
+                            span .dpod-val { (fmt_isk(l.pod_value)) }
+                        }
+                    }
                 }
             }
         }
@@ -421,7 +441,11 @@ fn detail_cell(p: &br_core::battle::Participant) -> Markup {
 /// One side's full panel: header (name + dominant logos + overflow chip), stats, and both
 /// the Tiles (grouped hulls) and Details (per-pilot) layouts. Only one layout is visible at
 /// a time, switched by the report-level `view-tiles`/`view-details` class.
-fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
+fn side_panel(
+    battle: &Battle,
+    side_idx: usize,
+    ship_names: &std::collections::BTreeMap<i64, String>,
+) -> Markup {
     let side = &battle.sides[side_idx];
     let groups = roster_groups(battle, side_idx);
     let pilots: usize = groups.iter().map(|g| g.lost + g.survived).sum();
@@ -439,7 +463,7 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
                         span .dom-logos {
                             @for (p, r) in &doms {
                                 @if let Some(url) = party_logo_url(p) {
-                                    @let label = format!("{} — {:.0}%", p.name, r * 100.0);
+                                    @let label = format!("{} - {:.0}%", p.name, r * 100.0);
                                     img .dom-logo src=(url) width="26" height="26" loading="lazy"
                                         alt=(label) title=(label);
                                 }
@@ -453,7 +477,7 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
                 }
                 @if let Some(coalition) = &side.coalition {
                     @if !side.parties.is_empty() {
-                        @let cm = format!("{} — {} parties", coalition, side.parties.len());
+                        @let cm = format!("{} - {} parties", coalition, side.parties.len());
                         div .coalition-members title=(cm) { (cm) }
                     }
                 }
@@ -462,19 +486,23 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
                 div .stat { span .stat-num { (pilots) } span .stat-label { "pilots" } }
                 div .stat { span .stat-num { (side.kills) } span .stat-label { "kills" } }
                 div .stat { span .stat-num { (side.losses) } span .stat-label { "losses" } }
-                div .stat { span .stat-num { (fmt_isk(side.isk_destroyed)) } span .stat-label { "ISK destroyed" } }
-                div .stat { span .stat-num { (fmt_isk(side.isk_lost)) } span .stat-label { "ISK lost" } }
+                div .stat { span .stat-num .isk-destroyed { (fmt_isk(side.isk_destroyed)) } span .stat-label .isk-destroyed { "ISK destroyed" } }
+                div .stat { span .stat-num .isk-lost { (fmt_isk(side.isk_lost)) } span .stat-label .isk-lost { "ISK lost" } }
                 div .stat { span .stat-num { (fmt_eff(side)) } span .stat-label { "efficiency" } }
             }
             div .bar { div .bar-fill style=(format!("width:{:.0}%", side.isk_efficiency().unwrap_or(0.0))) {} }
             div .roster {
                 @for g in &groups {
+                    @let name = ship_names.get(&g.ship);
                     div .ship data-ship=(g.ship) title="Show these pilots" {
                         img .ship-icon src=(icon_url(g.ship)) width="48" height="48" loading="lazy" alt="ship";
+                        @if let Some(n) = name {
+                            span .ship-name title=(n) { (n) }
+                        }
                         div .ship-counts {
                             @if g.lost > 0 { span .lost { (g.lost) " lost" } }
                             @if g.survived > 0 { span .survived { (g.survived) " survived" } }
-                            @if g.final_blows > 0 { span .fb title="final blows" { "★ " (g.final_blows) } }
+                            @if g.final_blows > 0 { span .fb title="killing blows" { "KB " (g.final_blows) } }
                         }
                     }
                 }
@@ -609,11 +637,11 @@ pub fn viewer_page(data: &CardData) -> Markup {
                 }
                 div .panels {
                     @for i in 0..b.sides.len() {
-                        (side_panel(b, i))
+                        (side_panel(b, i, &data.doc.ship_names))
                     }
                 }
             }
-            // Hover-highlight maps (integer ids only — safe to emit verbatim).
+            // Hover-highlight maps (integer ids only - safe to emit verbatim).
             script type="application/json" #inv-data { (PreEscaped(inv)) }
             // Per-side alliance/corp breakdown, hidden until opened from a "+N" chip or emblem.
             div .modal #breakdown-modal hidden {
@@ -630,7 +658,7 @@ pub fn viewer_page(data: &CardData) -> Markup {
             }
         }
     };
-    layout(&format!("{} — EVE Spai", display_title(&data.doc)), body, Some(VIEWER_JS))
+    layout(&format!("{} - EVE Spai", display_title(&data.doc)), body, Some(VIEWER_JS))
 }
 
 /// Themed 404, used when a report is missing or an unlisted one is requested without it.
@@ -642,7 +670,7 @@ pub fn not_found_page() -> Markup {
             a .btn .primary href="/br" { "Browse battle reports" }
         }
     };
-    layout("Not found — EVE Spai", body, None)
+    layout("Not found - EVE Spai", body, None)
 }
 
 /// Shared base template: viewport, inlined theme CSS, branded header, centred column.
@@ -665,7 +693,7 @@ fn layout(title: &str, body: Markup, script: Option<&str>) -> Markup {
                 main .wrap {
                     (body)
                 }
-                footer { p { "EVE Spai — battle reports. EVE Online and all related assets are property of Fenris Creations." } }
+                footer { p { "EVE Spai - battle reports. EVE Online and all related assets are property of Fenris Creations." } }
                 @if let Some(js) = script {
                     script { (PreEscaped(js)) }
                 }
@@ -801,7 +829,7 @@ const VIEWER_JS: &str = r#"
 const CSS: &str = r#"
 :root{
   --bg:#0c1117; --panel:#141a22; --panel-2:#171f29; --line:#243040;
-  --blue:#4fc3f7; --blue-dim:#2b6c8c; --red:#e04c4c; --text:#e7eef5; --muted:#8ea0b2;
+  --blue:#4fc3f7; --blue-dim:#2b6c8c; --red:#e04c4c; --green:#5ac86a; --text:#e7eef5; --muted:#8ea0b2;
   --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box;}
@@ -893,10 +921,17 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .stat{display:flex; flex-direction:column;}
 .stat-num{font-size:16px; font-weight:600; font-family:var(--mono);}
 .stat-label{color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:0.4px;}
+/* ISK destroyed reads green, ISK lost reads red (number + label). */
+.stat-num.isk-destroyed{color:var(--green);}
+.stat-label.isk-destroyed{color:var(--green);}
+.stat-num.isk-lost{color:var(--red);}
+.stat-label.isk-lost{color:var(--red);}
 .roster{display:grid; grid-template-columns:repeat(auto-fit,minmax(78px,1fr)); gap:10px; margin-top:14px;}
-.ship{display:flex; flex-direction:column; align-items:center; gap:4px; padding:4px; border-radius:8px; cursor:pointer;}
+.ship{display:flex; flex-direction:column; align-items:center; gap:4px; min-width:0; padding:4px; border-radius:8px; cursor:pointer;}
 .ship:hover{background:var(--panel-2);}
 .ship-icon{width:48px; height:48px; border-radius:8px; border:1px solid var(--line); background:var(--panel-2);}
+/* Hull name under the tile; clipped with ellipsis so a long name can't widen the grid cell. */
+.ship-name{max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--text); text-align:center;}
 .ship-counts{display:flex; flex-direction:column; align-items:center; font-size:11px; line-height:1.3;}
 .ship-counts .lost{color:var(--red);}
 .ship-counts .survived{color:var(--muted);}
@@ -910,7 +945,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .report.view-tiles .details{display:none;}
 .report.view-details .roster{display:none;}
 
-/* Versus strip — each side's top emblem */
+/* Versus strip - each side's top emblem */
 .versus{display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:12px 0 4px;}
 .vs-emblem{display:inline-flex; align-items:center; gap:8px; min-width:0; max-width:100%; padding:6px 10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; font-size:14px; font-weight:600;}
 .vs-emblem:hover{border-color:var(--blue-dim);}
@@ -925,7 +960,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .more-chip{padding:3px 8px; font-size:12px; font-weight:600; color:var(--muted); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; cursor:pointer; font-family:inherit;}
 .more-chip:hover{border-color:var(--blue-dim); color:var(--text);}
 
-/* Hull filter chip. The explicit [hidden] rule beats the author `display:flex` above —
+/* Hull filter chip. The explicit [hidden] rule beats the author `display:flex` above -
    without it the boolean `hidden` attribute would not hide the chip. */
 .filter-chip{display:flex; align-items:center; gap:10px; margin-bottom:14px; padding:8px 12px; background:var(--panel); border:1px solid var(--blue-dim); border-radius:10px; font-size:13px;}
 .filter-chip[hidden]{display:none;}
@@ -933,7 +968,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .filter-chip .fc-label{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted);}
 .filter-chip .btn{flex:0 0 auto; padding:5px 11px; font-size:13px;}
 
-/* Details layout — per-pilot cells */
+/* Details layout - per-pilot cells */
 .details{display:flex; flex-direction:column; gap:6px; margin-top:14px;}
 .dcell{display:flex; align-items:center; gap:10px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2);}
 .dcell.filtered-out{display:none;}
@@ -948,6 +983,9 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .destroyed{color:var(--red); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;}
 .dval{font-family:var(--mono); color:var(--red);}
 .zk{font-weight:600;}
+.dpod{display:inline-flex; align-items:center; gap:4px; flex:0 0 auto;}
+.dpod-icon{flex:0 0 auto; border-radius:4px; border:1px solid var(--line); background:var(--panel);}
+.dpod-val{font-family:var(--mono); color:var(--red); font-size:12px;}
 .dcell.hi-killer{outline:2px solid var(--blue); background:rgba(79,195,247,0.12);}
 .dcell.hi-victim{outline:2px solid var(--red); background:rgba(224,76,76,0.12);}
 
@@ -1028,7 +1066,15 @@ mod tests {
             eng(3, 90, (red.0, red.1, "RedTwo", 587), (blue.0, blue.1, "BlueTwo", 588), false),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        BattleReportDoc::new(battle, engs, Overrides::default(), title.map(|t| t.into()), 1_700_000_000)
+        let ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
+        BattleReportDoc::new(
+            battle,
+            engs,
+            Overrides::default(),
+            title.map(|t| t.into()),
+            1_700_000_000,
+            ship_names,
+        )
     }
 
     fn card_data(title: Option<&str>, uploader: &str) -> CardData {
@@ -1091,7 +1137,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, "<img src=x onerror=alert(1)>", "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
         let data = CardData { id: "Yy11111111".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         assert!(!html.contains("<img src=x onerror=alert(1)>"));
@@ -1101,8 +1147,8 @@ mod tests {
     #[test]
     fn derived_title_when_absent() {
         let html = card(&card_data(None, "u")).into_string();
-        // Derives "System — date" from the battle.
-        assert!(html.contains("Jita — "));
+        // Derives "System - date" from the battle.
+        assert!(html.contains("Jita - "));
     }
 
     #[test]
@@ -1172,7 +1218,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, "Red", "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
         let data = CardData { id: "Zz22222222".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // The malicious pilot name (shown in the Details cell) is escaped.
@@ -1210,7 +1256,7 @@ mod tests {
             assert!(html.matches(&cell).count() >= 2, "a detail cell also has data-ship={id}");
         }
         // The filter hides via a class (so author `.dcell` display can't override `[hidden]`),
-        // and the chip's [hidden] is force-hidden — both required for apply/clear to work.
+        // and the chip's [hidden] is force-hidden - both required for apply/clear to work.
         assert!(CSS.contains(".dcell.filtered-out{display:none;}"));
         assert!(CSS.contains(".filter-chip[hidden]{display:none;}"));
     }
@@ -1224,7 +1270,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, long, "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
         let data = CardData { id: "Ll44444444".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // The long party name is truncated with an ellipsis class and shown in full via title.
@@ -1245,7 +1291,7 @@ mod tests {
             eng(3, 40, (200, "Blue", "BlueC", 588), (100, evil, "RedC", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
         let data = CardData { id: "Mm33333333".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // The breakdown modal is rendered (hidden) with per-side composition lists.
@@ -1255,5 +1301,106 @@ mod tests {
         // The malicious party name is escaped in the breakdown.
         assert!(!html.contains("<b>Sneaky</b> Alliance"));
         assert!(html.contains("&lt;b&gt;Sneaky&lt;/b&gt; Alliance"));
+    }
+
+    #[test]
+    fn tiles_show_ship_names_kb_marker_and_isk_colors() {
+        let html = viewer_page(&card_data(Some("Hulls"), "u")).into_string();
+        // Hull names from `ship_names` are labelled under the tiles, with an ellipsis class.
+        assert!(html.contains("class=\"ship-name\""));
+        assert!(html.contains("Rifter") && html.contains("Rupture"));
+        // Final blows use a "KB N" marker titled "killing blows", not a star.
+        assert!(html.contains("KB "));
+        assert!(!html.contains('★'));
+        assert!(html.contains("title=\"killing blows\""));
+        // ISK destroyed / lost stats carry their colour classes (number and label).
+        assert!(html.contains("isk-destroyed"));
+        assert!(html.contains("isk-lost"));
+        assert!(CSS.contains(".stat-num.isk-destroyed{color:var(--green);}"));
+        assert!(CSS.contains(".stat-num.isk-lost{color:var(--red);}"));
+        // No pod-related markup when no pod was killed.
+        assert!(!html.contains("class=\"dpod\""));
+    }
+
+    // Build an arbitrary engagement (used to fold a pod into a pilot's ship loss).
+    fn eng_full(
+        kill_id: i64,
+        victim_party: (i64, &str),
+        vchar: i64,
+        vpilot: &str,
+        vship: i64,
+        killer_party: (i64, &str),
+        isk: f64,
+    ) -> Engagement {
+        Engagement {
+            kill_id,
+            time: kill_id * 10,
+            system_id: 30000142,
+            system_name: "Jita".to_string(),
+            security: 0.9,
+            victim: party(victim_party.0, victim_party.1),
+            victim_char: vchar,
+            victim_pilot: vpilot.to_string(),
+            victim_ship: vship,
+            attackers: vec![Attacker {
+                party: party(killer_party.0, killer_party.1),
+                char_id: 9000 + kill_id,
+                ship: 588,
+                pilot: "K".to_string(),
+                final_blow: true,
+            }],
+            isk,
+            anchored: true,
+        }
+    }
+
+    #[test]
+    fn pods_excluded_from_tiles_but_pod_kill_shown_in_details() {
+        use br_core::battle::POD_TYPES;
+        // Same pilot (char 5000) loses a ship (587) and then a pod (670, worth 50M): the pod
+        // folds into the ship row. A reciprocal kill forms the second side.
+        let engs = vec![
+            eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
+            eng_full(2, (100, "Red"), 5000, "RedVictim", 670, (200, "Blue"), 50_000_000.0),
+            eng_full(3, (200, "Blue"), 6000, "BlueVictim", 588, (100, "Red"), 80_000_000.0),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, ship_names);
+        let data = CardData { id: "Pp55555555".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        // No capsule tile in the grouped Tiles view.
+        for pod in POD_TYPES {
+            assert!(!html.contains(&format!("data-ship=\"{pod}\"")), "pod {pod} must not be a tile");
+        }
+        // The folded pod kill (value > 10000) shows on the ship row: pod icon + pod block.
+        assert!(html.contains("class=\"dpod\""));
+        assert!(html.contains(&icon_url(670)));
+    }
+
+    #[test]
+    fn small_pod_value_shows_nothing_pod_related() {
+        // pod_value at/below 10000 (the default/empty value) must not render a pod block.
+        let engs = vec![
+            eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
+            eng_full(2, (100, "Red"), 5000, "RedVictim", 670, (200, "Blue"), 10_000.0),
+            eng_full(3, (200, "Blue"), 6000, "BlueVictim", 588, (100, "Red"), 80_000_000.0),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let data = CardData { id: "Qq66666666".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        assert!(!html.contains("class=\"dpod\""));
+    }
+
+    #[test]
+    fn no_em_dashes_in_rendered_output() {
+        let view = viewer_page(&card_data(None, "u")).into_string();
+        let card_html = card(&card_data(Some("T"), "u")).into_string();
+        let dir = directory_page(&[card_data(None, "u")], &DirQuery::default(), 1, false).into_string();
+        let nf = not_found_page().into_string();
+        for html in [&view, &card_html, &dir, &nf] {
+            assert!(!html.contains('\u{2014}'), "no em dash in rendered output");
+        }
     }
 }

@@ -134,7 +134,14 @@ fn sample_doc(title: &str) -> BattleReportDoc {
     let blue = (200, "Blue Alliance");
     let engs = vec![eng(1, 0, red, blue), eng(2, 30, blue, red), eng(3, 60, red, blue)];
     let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-    BattleReportDoc::new(battle, engs, Overrides::default(), Some(title.into()), 1_700_000_000)
+    BattleReportDoc::new(
+        battle,
+        engs,
+        Overrides::default(),
+        Some(title.into()),
+        1_700_000_000,
+        Default::default(),
+    )
 }
 
 fn gzip_doc(doc: &BattleReportDoc) -> Vec<u8> {
