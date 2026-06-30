@@ -501,6 +501,13 @@ const PILOT_STOP: &[&str] = &[
     "lmao", "rofl", "omg", "omw", "wtf", "wth", "ffs", "gg", "wp", "ez", "gj", "gz", "grats",
     "imo", "tbh", "idk", "ikr", "btw", "fyi", "pls", "plz", "plox", "brb", "gtg", "glhf",
     "gl", "hf", "cya", "ttyl", "sup", "yo", "o7", "07", "rip",
+    // Common English contractions — never pilot names ("I'm tackled", "they're warping in").
+    // BOTH the apostrophe and apostrophe-stripped forms are listed (the tokenizer keeps an
+    // internal apostrophe, e.g. "I'm", but a stray one may be trimmed); `is_pilot_stopword`
+    // lowercases. Kept to safe contractions whose stripped form is not a plausible single name.
+    "im", "i'm", "youre", "you're", "theyre", "they're", "we're",
+    "its", "it's", "dont", "don't", "cant", "can't", "wont", "won't",
+    "thats", "that's", "whats", "what's", "lets", "let's", "gonna", "wanna",
 ];
 
 /// Intel keywords that name a ship *class* (not a specific hull) -> canonical class.
@@ -577,6 +584,13 @@ fn detect_classes(lower_tokens: &[String]) -> Vec<String> {
 /// sub-span covers). Conservative so real names aren't dropped.
 pub fn is_pilot_stopword(w: &str) -> bool {
     let lw = w.to_lowercase();
+    // A MULTI-WORD candidate made up ENTIRELY of stop words ("they are", "back to", "still here")
+    // is English prose, never a pilot — reject it as a whole. A single non-stop word anywhere
+    // ("Navy Pilot Bob") keeps the candidate. Single-word callers fall through unchanged (each
+    // recursion below hits the single-word path).
+    if lw.split_whitespace().nth(1).is_some() {
+        return lw.split_whitespace().all(is_pilot_stopword);
+    }
     PILOT_STOP.contains(&lw.as_str())
         // Any ship-class keyword ("cruisers", "logi", "dic", …) is a ship type, not a pilot.
         || SHIP_CLASSES.iter().any(|(k, _)| *k == lw.as_str())
@@ -1944,6 +1958,12 @@ pub fn analyze_ctx(
         if pilots.iter().any(|p| p.eq_ignore_ascii_case(&r)) {
             continue;
         }
+        // An all-stop-word run ("they are", "back to", "still here") is sentence-capitalised
+        // prose, never a pilot — drop it before it reaches ESI (loose_pilot_runs keeps a
+        // capitalised all-stop run for the cover to judge; here we know it's not a name).
+        if is_pilot_stopword(&r) {
+            continue;
+        }
         // Demoted-for-inactivity (Phase 2): skip like a stop word so the run's tokens stay free.
         if denied.contains(&r.to_lowercase()) {
             continue;
@@ -3268,6 +3288,95 @@ mod tests {
             r.systems.iter().any(|d| d.name == "Rancer"),
             "the system still parses with Comet freed: {:?}",
             r.systems
+        );
+    }
+
+    #[test]
+    fn all_stop_word_runs_are_never_pilots() {
+        // Unit behaviour: a multi-word string made up ENTIRELY of stop words is rejected as a
+        // whole, while a single non-stop word anywhere keeps the candidate. Single-word behaviour
+        // is unchanged (a lone stop word is still true; a lone real name is still false).
+        assert!(is_pilot_stopword("they are"));
+        assert!(is_pilot_stopword("back to"));
+        assert!(is_pilot_stopword("still here"));
+        assert!(is_pilot_stopword("they")); // single stop word unchanged
+        assert!(!is_pilot_stopword("bob")); // single non-stop word unchanged
+        assert!(!is_pilot_stopword("Navy Bob")); // one non-stop word keeps the run
+        // Contractions (apostrophe and case insensitive).
+        assert!(is_pilot_stopword("I'm"));
+        assert!(is_pilot_stopword("im"));
+        assert!(is_pilot_stopword("they're"));
+        assert!(is_pilot_stopword("don't"));
+        // A real name with an apostrophe is NOT a stop word.
+        assert!(!is_pilot_stopword("O'Brien"));
+    }
+
+    #[test]
+    fn common_phrases_not_parsed_as_pilots() {
+        let s = systems();
+        let known = std::collections::HashMap::new();
+        let empty = std::collections::HashSet::new();
+        let a = |t: &str| analyze_ctx(t, &s, &noships(), &known, 1, "ch", "x", None, &[], &empty);
+
+        for (text, banned) in [
+            ("They are roaming in Rancer", &["they are", "they", "are"][..]),
+            ("Back to gate in Rancer", &["back to", "back", "to"][..]),
+            ("Still here in Rancer", &["still here", "still", "here"][..]),
+        ] {
+            let r = a(text);
+            for b in banned {
+                assert!(
+                    !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(b)),
+                    "{text:?}: {b:?} must not be a pilot: {:?}",
+                    r.pilots
+                );
+            }
+            assert!(
+                r.systems.iter().any(|d| d.name == "Rancer"),
+                "{text:?}: the system still parses with the prose freed: {:?}",
+                r.systems
+            );
+        }
+
+        // "I'm" is a contraction, never a pilot; the tackle keyword + system still parse.
+        let r = a("I'm tackled in Rancer");
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("i'm") || p.eq_ignore_ascii_case("im")),
+            "I'm must not be a pilot: {:?}",
+            r.pilots
+        );
+        assert!(r.tackled, "tackle keyword still parses with I'm freed");
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"));
+    }
+
+    #[test]
+    fn legit_names_with_a_non_stop_word_survive() {
+        let s = systems();
+        let known = std::collections::HashMap::new();
+        let empty = std::collections::HashSet::new();
+        let a = |t: &str| analyze_ctx(t, &s, &noships(), &known, 1, "ch", "x", None, &[], &empty);
+
+        // A multi-word name (no stop words) survives.
+        let r = a("Bob Hope tackled in Rancer");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Bob Hope")),
+            "multi-word name survives: {:?}",
+            r.pilots
+        );
+        // A distinctive single-word name survives.
+        let r = a("I-Pustelga tackled in Rancer");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("I-Pustelga")),
+            "distinctive single-word name survives: {:?}",
+            r.pilots
+        );
+
+        // An all-stop run is dropped but a run with ONE non-stop word ("Navy Bob") survives.
+        let r = a("Navy Bob tackled in Rancer");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Navy Bob")),
+            "one non-stop word keeps the run: {:?}",
+            r.pilots
         );
     }
 
