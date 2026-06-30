@@ -62,6 +62,12 @@ struct Overlay {
     /// Last probed EVE-focus state (Smart on-top), refreshed on a throttle.
     eve_focused: bool,
     eve_focus_checked: Option<std::time::Instant>,
+    /// A d-scan link clicked in an alert card, hosted HERE in the overlay (its own X11 client, on
+    /// top of the game) instead of the main — set by the click drain, rendered each frame.
+    dscan_view: Option<crate::app::DscanView>,
+    /// The overlay's own SDE hull-name index (lower-cased name → (type id, name)), used to resolve
+    /// a fetched d-scan's hulls. Loaded on a thread (mirrors the main's `self.ship_index`).
+    ship_index: Arc<Mutex<Option<Arc<HashMap<String, (i64, String)>>>>>,
 }
 
 impl Overlay {
@@ -94,7 +100,10 @@ impl Overlay {
             Arc::new(Mutex::new(crate::affiliation::AffilCache::default()));
 
         let ctx = cc.egui_ctx.clone();
+        let ship_index: Arc<Mutex<Option<Arc<HashMap<String, (i64, String)>>>>> =
+            Arc::new(Mutex::new(None));
         Self::load_systems(ping_shared.clone(), alert_shared.clone(), ctx.clone());
+        Self::load_ship_index(ship_index.clone());
         Self::spawn_ipc(IpcArgs {
             ping_shared: ping_shared.clone(),
             alert_shared: alert_shared.clone(),
@@ -113,7 +122,19 @@ impl Overlay {
             alert_size_sent: None,
             eve_focused: true,
             eve_focus_checked: None,
+            dscan_view: None,
+            ship_index,
         }
+    }
+
+    /// Open our OWN read-only Store and build the SDE hull-name index, so a d-scan clicked in an
+    /// alert card can be fetched + tallied here in the overlay. Done on a thread (the SDE is static,
+    /// so a second connection is safe); only read on a click, so no repaint wake is needed.
+    fn load_ship_index(slot: Arc<Mutex<Option<Arc<HashMap<String, (i64, String)>>>>>) {
+        std::thread::spawn(move || match crate::store::Store::open() {
+            Ok(store) => *slot.lock().unwrap() = Some(Arc::new(store.ship_index())),
+            Err(e) => eprintln!("[overlay] ship index load failed: {e}"),
+        });
     }
 
     /// Open our OWN read-only Store and load the system graph (for ping/alert system-name + jumps
@@ -308,9 +329,26 @@ impl eframe::App for Overlay {
             let size = moved_size.filter(|s| {
                 self.alert_size_sent.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0)
             });
-            if !clicks.is_empty() || pos.is_some() || size.is_some() {
+            // Split the alert-card clicks: a `Dscan` link is handled LOCALLY (the d-scan dialog lives
+            // in the overlay, on top of the game); System/Ship/Pilot still go to the main, whose
+            // windows live there. Each click points the user at exactly one dialog, so a later Dscan
+            // wins the slot.
+            let mut to_main: Vec<crate::app::IntelClick> = Vec::new();
+            for c in clicks {
+                match c {
+                    crate::app::IntelClick::Dscan(url) => {
+                        let idx = self.ship_index.lock().unwrap().clone();
+                        if let Some(view) = crate::app::open_dscan_view(url, idx, ctx) {
+                            self.dscan_view = Some(view);
+                            ctx.request_repaint();
+                        }
+                    }
+                    other => to_main.push(other),
+                }
+            }
+            if !to_main.is_empty() || pos.is_some() || size.is_some() {
                 let mut out = std::io::stdout().lock();
-                for c in clicks {
+                for c in to_main {
                     let _ = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Click(c));
                 }
                 if pos.is_some() || size.is_some() {
@@ -363,6 +401,22 @@ impl eframe::App for Overlay {
                 move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
             },
         );
+
+        // D-scan dialog (only while a scan is being viewed). Hosted here as its own immediate
+        // viewport, on top of the game (taskbar-off). A hull click hops to the main's ship window
+        // via `OverlayToMain::Click(Ship)` — the ship card lives in the main.
+        if self.dscan_view.is_some() {
+            let mut open_ship: Option<i64> = None;
+            crate::app::dscan_view_dialog_ui(ctx, &mut self.dscan_view, true, &mut open_ship);
+            if let Some(id) = open_ship {
+                let mut out = std::io::stdout().lock();
+                let _ = crate::ipc::send(
+                    &mut out,
+                    &crate::ipc::OverlayToMain::Click(crate::app::IntelClick::Ship(id)),
+                );
+            }
+        }
+
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 

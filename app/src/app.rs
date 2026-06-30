@@ -4203,83 +4203,22 @@ impl SpaiApp {
     }
 
     /// Open a clicked d-scan link: fetch + show it inline when it's a public dscan.info share,
-    /// otherwise (auth-gated or unknown host) open it in the browser as before.
+    /// otherwise (auth-gated or unknown host) open it in the browser as before. Delegates the actual
+    /// fetch+host logic to the shared [`open_dscan_view`] so the overlay can reuse it.
     fn open_dscan(&mut self, url: String, ctx: &egui::Context) {
-        if !url.contains("dscan.info") {
-            let _ = open::that(&url);
-            return;
+        if let Some(view) = open_dscan_view(url, self.ship_index.clone(), ctx) {
+            self.dscan_view = Some(view);
         }
-        let fetch = std::sync::Arc::new(std::sync::Mutex::new(DscanFetch::Loading));
-        self.dscan_view = Some(DscanView { url: url.clone(), fetch: fetch.clone() });
-        let ships = self.ship_index.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let result = fetch_dscan_ships(&url, ships.as_deref());
-            *fetch.lock().unwrap() = match result {
-                Some(v) if !v.is_empty() => DscanFetch::Ready(v),
-                _ => DscanFetch::Failed,
-            };
-            ctx.request_repaint();
-        });
     }
 
     /// The d-scan viewer dialog: hull counts from a fetched scan; click a hull for ship info.
+    /// The body lives in the shared [`dscan_view_dialog_ui`] so the overlay can render the same
+    /// dialog; the main keeps `taskbar_off=false` (matching the other in-app dialogs).
     fn dscan_view_dialog(&mut self, ctx: &egui::Context) {
-        use egui_phosphor::regular as icon;
-        let Some(view) = &self.dscan_view else { return };
-        let url = view.url.clone();
-        let state = view.fetch.lock().unwrap().snapshot();
         let mut open_ship: Option<i64> = None;
-        let keep = Self::dialog_viewport(ctx, "dscan_view", "EVE Spai — D-scan", [340.0, 520.0], |ui| {
-            ui.horizontal(|ui| {
-                if ui.button(format!("{}  Open on dscan.info", icon::ARROW_SQUARE_OUT)).clicked() {
-                    let _ = open::that(&url);
-                }
-            });
-            ui.separator();
-            match &state {
-                DscanFetch::Loading => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Fetching scan…");
-                    });
-                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
-                }
-                DscanFetch::Failed => {
-                    ui.label(egui::RichText::new("Couldn't read this scan — open it on the site.").weak());
-                }
-                DscanFetch::Ready(ships) => {
-                    let total: u32 = ships.iter().map(|(_, _, n)| n).sum();
-                    ui.label(egui::RichText::new(format!("{} ships · {} types", total, ships.len())).weak());
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        for (id, name, n) in ships {
-                            ui.horizontal(|ui| {
-                                hull_badge(ui, *id, 24.0);
-                                if ui
-                                    .add(egui::Label::new(
-                                        egui::RichText::new(name).color(ui.visuals().hyperlink_color),
-                                    )
-                                    .sense(egui::Sense::click()))
-                                    .on_hover_text("Ship info")
-                                    .clicked()
-                                {
-                                    open_ship = Some(*id);
-                                }
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(egui::RichText::new(format!("×{n}")).strong());
-                                });
-                            });
-                        }
-                    });
-                }
-            }
-        });
+        dscan_view_dialog_ui(ctx, &mut self.dscan_view, false, &mut open_ship);
         if let Some(id) = open_ship {
             self.open_ship(id);
-        }
-        if !keep {
-            self.dscan_view = None;
         }
     }
 
@@ -10416,28 +10355,7 @@ impl SpaiApp {
         size: [f32; 2],
         content: impl FnOnce(&mut egui::Ui),
     ) -> bool {
-        let mut keep = true;
-        let mut content = Some(content);
-        parent.show_viewport_immediate(
-            egui::ViewportId::from_hash_of(id),
-            egui::ViewportBuilder::default().with_icon(app_icon())
-                .with_title(title)
-                .with_inner_size(size)
-                .with_min_inner_size([size[0].min(380.0), size[1].min(320.0)])
-                .with_always_on_top(),
-            |ctx, _class| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    if let Some(c) = content.take() {
-                        c(ui);
-                    }
-                });
-                ontop_pin(ctx, id);
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    keep = false;
-                }
-            },
-        );
-        keep
+        dialog_viewport_ext(parent, id, title, size, false, content)
     }
 
     fn persist(&mut self) {
@@ -14417,13 +14335,15 @@ struct DscanShare {
     error: Option<String>,
 }
 
-/// A d-scan link being viewed inline (fetched on click).
-struct DscanView {
+/// A d-scan link being viewed inline (fetched on click). Hosted by the main (from intel-feed
+/// cards) or by the overlay (from an alert-window card click); both render it via
+/// [`dscan_view_dialog_ui`].
+pub(crate) struct DscanView {
     url: String,
     fetch: std::sync::Arc<std::sync::Mutex<DscanFetch>>,
 }
 
-enum DscanFetch {
+pub(crate) enum DscanFetch {
     Loading,
     /// (ship type id, name, count) — most numerous first.
     Ready(Vec<(i64, String, u32)>),
@@ -14443,7 +14363,7 @@ impl DscanFetch {
 /// Fetch a public dscan.info share and tally its hulls. Format-agnostic: each line is split on
 /// tabs and any column that resolves to a known hull is counted (handles the in-game and stored
 /// column orders). Returns None when nothing parseable came back (caller opens the site instead).
-fn fetch_dscan_ships(
+pub(crate) fn fetch_dscan_ships(
     url: &str,
     ship_index: Option<&std::collections::HashMap<String, (i64, String)>>,
 ) -> Option<Vec<(i64, String, u32)>> {
@@ -14485,6 +14405,150 @@ fn fetch_dscan_ships(
         }
     }
     None
+}
+
+/// Start viewing a clicked d-scan link. For a public dscan.info share, spawn the fetch+parse
+/// thread (resolving hull names via the caller's own SDE `ship_index`) and return the `DscanView`
+/// to host; for any other URL open it in the browser and return `None`. Shared by the main intel
+/// feed and the overlay's alert-window clicks.
+pub(crate) fn open_dscan_view(
+    url: String,
+    ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
+    ctx: &egui::Context,
+) -> Option<DscanView> {
+    if !url.contains("dscan.info") {
+        let _ = open::that(&url);
+        return None;
+    }
+    let fetch = std::sync::Arc::new(std::sync::Mutex::new(DscanFetch::Loading));
+    let view = DscanView { url: url.clone(), fetch: fetch.clone() };
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let result = fetch_dscan_ships(&url, ship_index.as_deref());
+        *fetch.lock().unwrap() = match result {
+            Some(v) if !v.is_empty() => DscanFetch::Ready(v),
+            _ => DscanFetch::Failed,
+        };
+        ctx.request_repaint();
+    });
+    Some(view)
+}
+
+/// Render the d-scan viewer dialog body (hull counts; click a hull for ship info). Shared by the
+/// main (`SpaiApp::dscan_view_dialog`) and the overlay. `taskbar_off` keeps the dialog off the
+/// taskbar (the overlay floats it over the game like the alert window); the main passes `false`.
+/// A hull click sets `*on_open_ship`; closing the window clears `*dscan_view`.
+pub(crate) fn dscan_view_dialog_ui(
+    ctx: &egui::Context,
+    dscan_view: &mut Option<DscanView>,
+    taskbar_off: bool,
+    on_open_ship: &mut Option<i64>,
+) {
+    use egui_phosphor::regular as icon;
+    let Some(view) = dscan_view.as_ref() else { return };
+    let url = view.url.clone();
+    let state = view.fetch.lock().unwrap().snapshot();
+    let mut open_ship: Option<i64> = None;
+    let keep = dialog_viewport_ext(
+        ctx,
+        "dscan_view",
+        "EVE Spai — D-scan",
+        [340.0, 520.0],
+        taskbar_off,
+        |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(format!("{}  Open on dscan.info", icon::ARROW_SQUARE_OUT)).clicked() {
+                    let _ = open::that(&url);
+                }
+            });
+            ui.separator();
+            match &state {
+                DscanFetch::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Fetching scan…");
+                    });
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+                }
+                DscanFetch::Failed => {
+                    ui.label(egui::RichText::new("Couldn't read this scan — open it on the site.").weak());
+                }
+                DscanFetch::Ready(ships) => {
+                    let total: u32 = ships.iter().map(|(_, _, n)| n).sum();
+                    ui.label(egui::RichText::new(format!("{} ships · {} types", total, ships.len())).weak());
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for (id, name, n) in ships {
+                            ui.horizontal(|ui| {
+                                hull_badge(ui, *id, 24.0);
+                                if ui
+                                    .add(egui::Label::new(
+                                        egui::RichText::new(name).color(ui.visuals().hyperlink_color),
+                                    )
+                                    .sense(egui::Sense::click()))
+                                    .on_hover_text("Ship info")
+                                    .clicked()
+                                {
+                                    open_ship = Some(*id);
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(egui::RichText::new(format!("×{n}")).strong());
+                                });
+                            });
+                        }
+                    });
+                }
+            }
+        },
+    );
+    if let Some(id) = open_ship {
+        *on_open_ship = Some(id);
+    }
+    if !keep {
+        *dscan_view = None;
+    }
+}
+
+/// Immediate dialog viewport (used by every in-app pop-out window). `taskbar_off` adds
+/// `with_taskbar(false)` so the overlay's d-scan dialog stays off the taskbar and floats over the
+/// game; the main's in-app dialogs pass `false` (unchanged behaviour). Always-on-top is on by
+/// default for every caller (the pin toggle in [`ontop_pin`] can turn it off).
+#[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+pub(crate) fn dialog_viewport_ext(
+    parent: &egui::Context,
+    id: &str,
+    title: &str,
+    size: [f32; 2],
+    taskbar_off: bool,
+    content: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let mut keep = true;
+    let mut content = Some(content);
+    let mut builder = egui::ViewportBuilder::default()
+        .with_icon(app_icon())
+        .with_title(title)
+        .with_inner_size(size)
+        .with_min_inner_size([size[0].min(380.0), size[1].min(320.0)])
+        .with_always_on_top();
+    if taskbar_off {
+        builder = builder.with_taskbar(false);
+    }
+    parent.show_viewport_immediate(
+        egui::ViewportId::from_hash_of(id),
+        builder,
+        |ctx, _class| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                if let Some(c) = content.take() {
+                    c(ui);
+                }
+            });
+            ontop_pin(ctx, id);
+            if ctx.input(|i| i.viewport().close_requested()) {
+                keep = false;
+            }
+        },
+    );
+    keep
 }
 
 /// Stable hash of a string (to detect clipboard changes).
