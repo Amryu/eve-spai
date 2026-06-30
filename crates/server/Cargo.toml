@@ -1,0 +1,62 @@
+# Isolated workspace root: the empty [workspace] table makes this crate its OWN
+# cargo workspace, so the repo-root workspace (app + br-core) never sees it and the
+# desktop CI (`cargo check --workspace`, `cargo build --release`) never tries to
+# cross-compile this Linux-only, tokio/axum/sqlx server. br-core is pulled in by
+# path, which works across workspace boundaries.
+[workspace]
+
+[package]
+name = "eve-spai-br"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "EVE Spai battle-report sharing API server (Linux-only)"
+
+[lib]
+name = "eve_spai_br"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eve-spai-br"
+path = "src/main.rs"
+
+[dependencies]
+br-core = { path = "../br-core" }
+
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["limit", "trace"] }
+
+# Runtime-checked sqlx only (no query!/query_as! macros), so the build needs no
+# DATABASE_URL and no offline cache.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "migrate",
+    "chrono",
+    "json",
+    "macros",
+] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+
+flate2 = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+rand = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tower = { version = "0.5", features = ["util"] }

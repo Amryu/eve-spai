@@ -1,0 +1,26 @@
+# Local Postgres for development and the gated DB integration tests.
+#
+#   docker compose up -d
+#   export DATABASE_URL=postgres://evespai:evespai@localhost:5433/evespai
+#   cargo test -- --ignored        # runs the DB-gated integration tests
+#   cargo run                      # runs the server (migrations apply on startup)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: evespai
+      POSTGRES_PASSWORD: evespai
+      POSTGRES_DB: evespai
+    ports:
+      - "5433:5432"
+    volumes:
+      - br_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evespai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  br_pgdata:
