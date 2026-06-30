@@ -31,12 +31,12 @@ impl View {
         &[
             View::Dashboard,
             View::Map,
-            View::Intel,
-            View::Battles,
             View::Wormholes,
+            View::Intel,
+            View::Alerts,
+            View::Battles,
             View::Lookup,
             View::Characters,
-            View::Alerts,
             View::Jabber,
         ]
     }
