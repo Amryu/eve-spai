@@ -965,11 +965,6 @@ impl SpaiApp {
                     return;
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                // Minimizing the main window can iconify this viewport with it; while a ping is
-                // showing it must stay up, so never let it stay minimized.
-                if ctx.input(|i| i.viewport().minimized) == Some(true) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                }
                 // The window close button dismisses the whole window; the parent re-declares the
                 // (now empty) viewport next frame, which stays hidden.
                 if ctx.input(|i| i.viewport().close_requested()) {
@@ -1104,11 +1099,6 @@ impl SpaiApp {
                 }
                 drop(st);
 
-                // Minimizing the MAIN window can iconify this (owned) viewport with it; while an
-                // alert is showing it must stay up and keep working.
-                if ctx.input(|i| i.viewport().minimized) == Some(true) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                }
                 // A new alert: bring the window forward once — Windows only (a focus request on
                 // Linux/X11 steals focus from the game, winit#1160, which the user doesn't want).
                 if focus && cfg!(target_os = "windows") {
@@ -1289,7 +1279,8 @@ impl SpaiApp {
             let alert_shared = alert_shared.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                if !ping_shared.lock().unwrap().windows.is_empty() {
+                let ping_active = !ping_shared.lock().unwrap().windows.is_empty();
+                if ping_active {
                     ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
                 }
                 let alert_active = {
@@ -1660,6 +1651,36 @@ impl SpaiApp {
                 crate::theme::standing::WARNING,
                 "No alert rule is enabled — nothing will fire. Enable or add a rule below.",
             );
+        }
+        // On KDE/KWin the compositor groups an app's windows, so minimizing the main window also
+        // hides the floating alert/ping windows. A one-time KWin rule keeps them over the game.
+        if std::env::var("XDG_CURRENT_DESKTOP")
+            .map(|d| d.to_ascii_uppercase().contains("KDE"))
+            .unwrap_or(false)
+        {
+            ui.add_space(4.0);
+            egui::CollapsingHeader::new(format!(
+                "{} Show alerts over the game while EVE Spai is minimized (KDE)",
+                egui_phosphor::regular::INFO
+            ))
+            .show(ui, |ui| {
+                ui.label(
+                    "KWin hides the floating alert window when you minimize EVE Spai (it groups an \
+                     app's windows). Add a one-time KWin Window Rule so the alert stays on top of the \
+                     game while minimized:",
+                );
+                ui.add_space(4.0);
+                ui.label("System Settings → Window Management → Window Rules → Add New");
+                ui.label("•  Match — Window class (Substring):  eve-spai");
+                ui.label("•  Match — Window title (Substring):  alerts");
+                ui.label("•  Force — Minimized:  No");
+                ui.label("•  Force — Keep above:  Yes");
+                ui.add_space(2.0);
+                ui.label(
+                    "Add a second rule with Window title \"Fleet ping\" to do the same for the \
+                     fleet-ping window.",
+                );
+            });
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -6383,10 +6404,19 @@ impl SpaiApp {
                 // transparent + click-through to dodge winit#1160's map-steals-focus) is applied by
                 // the closure's Visible/MousePassthrough commands.
                 .with_active(false)
-                .with_visible(false) // the closure shows it when an alert is active
+                // On Linux/X11 the window must be MAPPED from creation (a hidden window never
+                // paints, so the closure that would later show it would never run). Stay mapped and
+                // transparent+click-through when idle, like the old immediate window; on Windows
+                // start hidden (the closure maps it on an alert).
+                .with_visible(if cfg!(target_os = "windows") { active } else { true })
                 .with_decorations(false)
                 .with_resizable(true)
                 .with_taskbar(false)
+                // A normal managed top-level (kept above, off the taskbar). On KWin/Wayland (this
+                // app runs via XWayland) the compositor ties same-client windows' minimized state
+                // together; neither a Notification window-type nor override-redirect decouples it
+                // (override-redirect is treated as a dismissable child popup). The reliable lever is
+                // a KWin window rule forcing this window (title "EVE Spai — alerts") to Minimized=No.
                 .with_transparent(true)
                 .with_mouse_passthrough(true)
                 // Fixed initial geometry only. The *saved* position/size are applied via
