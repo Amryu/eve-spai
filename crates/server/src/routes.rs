@@ -228,14 +228,31 @@ async fn fetch_json(
     Ok(Json(doc))
 }
 
+/// Deserialize an optional value, treating an empty/blank string (e.g. a cleared HTML
+/// form field that still submits `min_isk=`) as `None` instead of a parse error.
+fn empty_as_none<'de, D, T>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let opt = <Option<String> as serde::Deserialize>::deserialize(de)?;
+    match opt.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(s) => s.parse::<T>().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct ListParams {
     pub system: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub participant: Option<String>,
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub min_isk: Option<f64>,
     pub sort: Option<String>,
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub page: Option<i64>,
 }
 
@@ -489,5 +506,22 @@ mod tests {
         assert!(parse_ts("2024-01-01T00:00:00Z").is_some());
         assert!(parse_ts("1700000000").is_some());
         assert!(parse_ts("not-a-time").is_none());
+    }
+
+    #[test]
+    fn list_params_tolerate_empty_numeric_fields() {
+        // A cleared form still submits `min_isk=`/`page=`; these must parse as None,
+        // not 400 ("cannot parse float from empty string").
+        let p: ListParams =
+            serde_urlencoded::from_str("system=&participant=&min_isk=&page=&sort=newest").unwrap();
+        assert_eq!(p.min_isk, None);
+        assert_eq!(p.page, None);
+        // Real values still parse.
+        let p2: ListParams = serde_urlencoded::from_str("min_isk=1500000&page=2").unwrap();
+        assert_eq!(p2.min_isk, Some(1_500_000.0));
+        assert_eq!(p2.page, Some(2));
+        // Whitespace-only is also treated as empty.
+        let p3: ListParams = serde_urlencoded::from_str("min_isk=%20").unwrap();
+        assert_eq!(p3.min_isk, None);
     }
 }

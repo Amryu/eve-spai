@@ -445,10 +445,22 @@ fn layout(title: &str, body: Markup, script: Option<&str>) -> Markup {
 const DIRECTORY_JS: &str = r#"
 (function(){
   var f=document.querySelector('form.filters'); if(!f) return;
+  var KEY='br-filter-focus';
+  // Restore focus + caret after the debounced reload so the user can keep typing.
+  try{
+    var s=JSON.parse(sessionStorage.getItem(KEY)||'null');
+    if(s){ sessionStorage.removeItem(KEY);
+      var el=f.querySelector('[name="'+s.name+'"]');
+      if(el){ el.focus();
+        if(s.pos!=null){ try{ el.setSelectionRange(s.pos,s.pos); }catch(e){} } }
+    }
+  }catch(e){}
+  function save(el){ var pos=null; try{ pos=el.selectionStart; }catch(e){}
+    try{ sessionStorage.setItem(KEY,JSON.stringify({name:el.name,pos:pos})); }catch(e){} }
   var t;
-  f.querySelector('[name=sort]').addEventListener('change',function(){f.submit();});
-  f.querySelectorAll('input[type=text],input[type=number]').forEach(function(el){
-    el.addEventListener('input',function(){clearTimeout(t);t=setTimeout(function(){f.submit();},600);});
+  f.querySelector('[name=sort]').addEventListener('change',function(){ f.submit(); });
+  f.querySelectorAll('input[type=text],input[type=number],input[type=date]').forEach(function(el){
+    el.addEventListener('input',function(){ clearTimeout(t); save(el); t=setTimeout(function(){ f.submit(); },350); });
   });
 })();
 "#;

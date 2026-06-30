@@ -52,7 +52,7 @@ pub const PACKS: &[ConfigPack] = &[
         member_alliance_ids: &[1900696668],
     },
     ConfigPack {
-        name: "Phoenix Coalition",
+        name: "Winter Coalition",
         channels: &["wc.Venal+Br+Te"],
         member_alliance_ids: &[
             99002685, 741557221, 99001317, 99010281, 99012770, 99005274, 99012040,
