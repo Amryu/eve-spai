@@ -115,8 +115,10 @@ impl PilotCache {
             .collect()
     }
 
-    /// Every ESI-confirmed name → id, INCLUDING currently-demoted ones. The Phase 2 demotion
-    /// pass re-evaluates the full confirmed set each cycle (so a demoted name can auto-revive).
+    /// Every ESI-confirmed name → id, INCLUDING currently-demoted ones. Retained as part of the
+    /// pilot-cache API; the Phase 2 demotion pass now evaluates only the feed-present pilots
+    /// (see `watcher::demote_pass`) rather than the whole confirmed set.
+    #[allow(dead_code)]
     pub fn all_confirmed(&self) -> HashMap<String, i64> {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
     }

@@ -290,14 +290,25 @@ fn scan(
     }
 }
 
-/// Re-derive the demoted-for-inactivity pilot set and, on a flip, re-parse the reports that
-/// mention a flipped name so a newly-demoted name frees its tokens (keywords/ships/other pilots)
-/// and a revived name is re-anchored.
+/// The deduped, lower-cased pilot names that appear in the CURRENT intel feed. Phase 2 only
+/// (re-)checks zKill activity for pilots actually in the feed (pruned to ~1h) — never the whole
+/// ~25k known-pilot backlog — so this is the working set the demotion pass evaluates.
+fn feed_pilot_names(reports: &[intel::IntelReport]) -> std::collections::HashSet<String> {
+    reports.iter().flat_map(|r| r.pilots.iter()).map(|n| n.to_lowercase()).collect()
+}
+
+/// Re-derive the demoted-for-inactivity pilot set for the pilots CURRENTLY IN THE INTEL FEED and,
+/// on a flip, re-parse the reports that mention a flipped name so a newly-demoted name frees its
+/// tokens (keywords/ships/other pilots) and a revived name is re-anchored.
 ///
-/// Lock discipline (no ABBA with the fetcher/watcher/reconcile threads): `pilots`, `activity`,
-/// and `sightings` are taken only as brief LEAF locks (lock → read/clone → drop) and never held
-/// while another is acquired. The re-parse holds ONLY `intel_state` (the parser inputs are
-/// snapshotted from `pilots` first), so it never nests `pilots` under `intel_state`.
+/// Only feed-present confirmed characters get an `activity.want()` (which re-queues on the 4h TTL),
+/// so a pilot is checked when it appears and re-checked the next time it reappears — we never grind
+/// the entire known-pilot history through zKill.
+///
+/// Lock discipline (no ABBA with the fetcher/watcher/reconcile threads): `intel_state`, `pilots`,
+/// `activity`, and `sightings` are taken only as brief LEAF locks (lock → read/clone → drop) and
+/// never held while another is acquired. The final re-parse holds ONLY `intel_state` (the parser
+/// inputs are snapshotted from `pilots` first), so it never nests `pilots` under `intel_state`.
 #[allow(clippy::too_many_arguments)]
 fn demote_pass(
     pilots: &crate::pilot::SharedPilots,
@@ -311,47 +322,70 @@ fn demote_pass(
     ctx: &egui::Context,
 ) {
     let now = chrono::Utc::now().timestamp();
-    // 1. Snapshot every confirmed character (incl. currently demoted) + the old demoted set.
-    let (candidates, old_demoted) = {
+    // 1. The working set is ONLY the pilots in the current feed (brief intel_state leaf lock),
+    //    NOT every confirmed character — so the zKill backlog stays bounded by what's on screen.
+    let feed_names = {
+        let st = state.lock().unwrap();
+        feed_pilot_names(&st.reports)
+    };
+    // 2. Resolve feed names to confirmed char ids + snapshot the old demoted set (pilots leaf lock).
+    let (candidates, old_demoted): (Vec<(String, i64)>, std::collections::HashSet<String>) = {
         let c = pilots.lock().unwrap();
-        (c.all_confirmed(), c.denied())
+        let candidates = feed_names
+            .iter()
+            .filter_map(|n| match c.get(n) {
+                Some(Some(id)) => Some((n.clone(), id)), // n is already lower-cased
+                _ => None,
+            })
+            .collect();
+        (candidates, c.denied())
     };
     if candidates.is_empty() {
-        return;
+        return; // nothing in the feed to (re-)evaluate; leave the demoted set untouched
     }
-    // 2. Queue/refresh + read each character's activity (leaf lock, dropped before step 3).
+    // 3. Queue/refresh + read activity ONLY for feed-present confirmed ids (leaf lock, dropped
+    //    before step 4). `want` re-queues if its 4h TTL is stale, so reappearing pilots re-check.
     let acts: HashMap<i64, Option<crate::activity::Activity>> = {
         let mut a = activity.lock().unwrap();
         candidates
-            .values()
-            .map(|&id| {
+            .iter()
+            .map(|&(_, id)| {
                 a.want(id);
                 (id, a.get(id))
             })
             .collect()
     };
-    // 3. Derive the demoted set. `None` activity (not fetched yet) KEEPs. The revival check is a
-    //    brief sightings leaf lock.
+    // 4. Derive the new demoted set. To avoid flapping for names that scroll out of the 1h feed:
+    //    carry the OLD demoted set forward and only mutate the feed-present names — a feed
+    //    evaluation that says DEMOTE adds the name, one that says KEEP (active/young/revived) drops
+    //    it. A demoted name absent from the feed is left demoted until it reappears and is
+    //    re-evaluated, so it never silently revives just by aging out of the feed. `None` activity
+    //    (not fetched yet) leaves the name's current state unchanged. The revival check is a brief
+    //    sightings leaf lock.
     let new_demoted: std::collections::HashSet<String> = {
         let s = sightings.lock().unwrap();
-        candidates
-            .iter()
-            .filter_map(|(name, id)| {
-                let a = acts.get(id).copied().flatten()?; // not fetched yet → KEEP
-                let revived = s.revived(name, now);
-                crate::activity::demote_decision(a.active_recent, a.birthday, now, revived)
-                    .then(|| name.clone())
-            })
-            .collect()
+        let mut demoted = old_demoted.clone();
+        for (name, id) in &candidates {
+            let Some(a) = acts.get(id).copied().flatten() else {
+                continue; // not fetched yet → leave as-is (carry current state forward)
+            };
+            let revived = s.revived(name, now);
+            if crate::activity::demote_decision(a.active_recent, a.birthday, now, revived) {
+                demoted.insert(name.clone());
+            } else {
+                demoted.remove(name);
+            }
+        }
+        demoted
     };
-    // 4. Replace the demotion set (pilots leaf lock) and detect the flip vs. the previous set.
+    // 5. Replace the demotion set (pilots leaf lock) and detect the flip vs. the previous set.
     let flipped: std::collections::HashSet<String> =
         old_demoted.symmetric_difference(&new_demoted).cloned().collect();
     pilots.lock().unwrap().set_demoted(new_demoted);
     if flipped.is_empty() {
         return; // re-deriving the same set is cheap; only a flip re-parses
     }
-    // 5. A flip: snapshot the parser inputs (known excludes demoted; denied = demoted) under a
+    // 6. A flip: snapshot the parser inputs (known excludes demoted; denied = demoted) under a
     //    brief pilots leaf lock, then hold ONLY intel_state while re-parsing.
     let (known, denied) = {
         let c = pilots.lock().unwrap();
@@ -385,5 +419,39 @@ fn demote_pass(
     drop(st);
     if changed {
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intel::IntelReport;
+
+    fn report_with(pilots: &[&str]) -> IntelReport {
+        IntelReport { pilots: pilots.iter().map(|s| s.to_string()).collect(), ..Default::default() }
+    }
+
+    #[test]
+    fn feed_pilot_names_dedups_lowercased() {
+        let reports = vec![
+            report_with(&["Amryu", "Bob Smith"]),
+            report_with(&["amryu", "Carol"]), // duplicate of "Amryu" in different case
+        ];
+        let names = feed_pilot_names(&reports);
+        assert_eq!(names.len(), 3);
+        assert!(names.contains("amryu"));
+        assert!(names.contains("bob smith"));
+        assert!(names.contains("carol"));
+    }
+
+    #[test]
+    fn feed_pilot_names_only_evaluates_feed_present() {
+        // The demotion pass derives its working set SOLELY from the pilots named in the current
+        // feed: a confirmed pilot that appears in no report is never in the set, so it is never
+        // want()ed nor demoted; one that appears in a report is.
+        let reports = vec![report_with(&["Amryu"])];
+        let names = feed_pilot_names(&reports);
+        assert!(names.contains("amryu"));
+        assert!(!names.contains("ghost pilot")); // confirmed elsewhere, absent from the feed
     }
 }
