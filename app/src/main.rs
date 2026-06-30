@@ -12,6 +12,7 @@ mod activity;
 mod app;
 mod auth;
 mod battle;
+mod breport;
 mod affiliation;
 mod alliances;
 mod camp;

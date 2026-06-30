@@ -31,7 +31,7 @@ const DENSE_MIN: usize = 3;
 /// Manual clustering overrides applied before automatic grouping. Plumbed through the pipeline so
 /// later phases can let the user correct a battle's boundaries; Phase 1 always passes the default
 /// (empty) set, so the behaviour is fully automatic.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Overrides {
     /// kill_id -> group tag: kills sharing a tag are forced into one battle and never split or
     /// merged across tags.
@@ -40,6 +40,72 @@ pub struct Overrides {
     pub excluded: HashSet<i64>,
     /// (kill_id, char_id) attacker entries to scrub from a kill before clustering.
     pub scrubs: HashSet<(i64, i64)>,
+}
+
+/// A self-contained, versioned battle-report document: the clustered [`Battle`] snapshot, the raw
+/// [`Engagement`]s that compose it (so the report can be re-clustered on import), and the manual
+/// [`Overrides`] in force, plus a little metadata. Lives here in `app` for Milestone 1; Milestone 2
+/// will move it to a shared crate behind the server.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BattleReportDoc {
+    /// Bumped when the on-disk format changes incompatibly. `from_json` rejects any value it does
+    /// not recognise.
+    pub format_version: u32,
+    /// Who wrote the file, e.g. `"eve-spai/0.4.2"`.
+    pub generator: String,
+    /// Unix seconds at export.
+    pub exported_at: i64,
+    /// Optional human title (a sensible default is derived from system + date when absent).
+    pub title: Option<String>,
+    /// The clustered battle snapshot (sides, tallies, and its engagements).
+    pub battle: Battle,
+    /// The raw engagements that compose the battle, so an importer can re-cluster them faithfully.
+    pub engagements: Vec<Engagement>,
+    /// The manual clustering overrides in force when the report was exported.
+    pub overrides: Overrides,
+}
+
+impl BattleReportDoc {
+    /// The only format version this build writes and accepts.
+    pub const FORMAT_VERSION: u32 = 1;
+
+    /// Build a document at format [`FORMAT_VERSION`](Self::FORMAT_VERSION), stamped with this
+    /// build's generator string and `exported_at` (unix seconds).
+    pub fn new(
+        battle: Battle,
+        engagements: Vec<Engagement>,
+        overrides: Overrides,
+        title: Option<String>,
+        exported_at: i64,
+    ) -> Self {
+        Self {
+            format_version: Self::FORMAT_VERSION,
+            generator: concat!("eve-spai/", env!("CARGO_PKG_VERSION")).to_string(),
+            exported_at,
+            title,
+            battle,
+            engagements,
+            overrides,
+        }
+    }
+
+    /// Pretty (human-inspectable) JSON, for saving to disk.
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Parse a document, rejecting an unknown `format_version` with a clear error.
+    pub fn from_json(s: &str) -> anyhow::Result<Self> {
+        let doc: BattleReportDoc = serde_json::from_str(s)?;
+        if doc.format_version != Self::FORMAT_VERSION {
+            anyhow::bail!(
+                "unsupported battle-report format v{} (this build understands v{}) — update EVE Spai",
+                doc.format_version,
+                Self::FORMAT_VERSION
+            );
+        }
+        Ok(doc)
+    }
 }
 
 #[allow(dead_code)] // Faction is for future faction-warfare kills
@@ -52,7 +118,7 @@ pub enum PartyKind {
     Unknown,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Party {
     /// Entity id — for future zKill/Dotlan links.
     #[allow(dead_code)]
@@ -65,7 +131,7 @@ pub struct Party {
 
 /// One attacker on a killmail: their side-identity party, the ship they flew, and whether
 /// they landed the final blow.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Attacker {
     /// Side-inference identity (alliance/corp/character collapsed, like a victim's party).
     pub party: Party,
@@ -83,7 +149,7 @@ pub struct Attacker {
 pub const POD_TYPES: [i64; 2] = [670, 33328];
 
 /// One killmail: a victim destroyed by attackers, in a system, at a time.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Engagement {
     pub kill_id: i64,
     pub time: i64,
@@ -136,7 +202,7 @@ impl Engagement {
 
 /// One side of a battle: allied parties (fought together / not significantly hostile to each
 /// other), optionally a recognised coalition.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Side {
     /// Member parties, most-involved first.
     pub parties: Vec<Party>,
@@ -161,7 +227,7 @@ impl Side {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Battle {
     pub engagements: Vec<Engagement>,
     pub start: i64,
@@ -181,7 +247,7 @@ pub struct Battle {
 }
 
 /// Why the clustering thinks a battle might be two engagements at a given boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitReason {
     /// A quiet gap just under the hard-split threshold.
     Lull,
@@ -210,7 +276,7 @@ impl SplitReason {
 }
 
 /// One suggested split: the boundary time and the main reason it was suggested.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SplitSuggestion {
     pub time: i64,
     pub reason: SplitReason,
@@ -218,7 +284,7 @@ pub struct SplitSuggestion {
 
 /// Extra info for a destroyed participant: its killmail and hull value, plus the value of a
 /// pod that was killed with it (folded in), if any.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Lost {
     pub kill_id: i64,
     pub value: f64,
@@ -229,7 +295,7 @@ pub struct Lost {
 }
 
 /// One ship that took part on a side: a pilot in a hull, either destroyed (`lost`) or survived.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Participant {
     /// Pilot character id (0 if none), to cross-reference involvement on hover.
     pub char_id: i64,
@@ -1728,5 +1794,57 @@ mod tests {
         assert_eq!(battles.len(), 1);
         assert!(battles[0].ambiguous, "near-threshold lull should be ambiguous");
         assert!(battles[0].suggested_splits.iter().any(|s| s.time == 240));
+    }
+
+    #[test]
+    fn battle_report_doc_round_trips_through_json() {
+        // A small two-sided fight plus some manual overrides; everything must survive a
+        // to_json -> from_json round-trip byte-for-byte (the snapshot types derive PartialEq).
+        let engs = vec![
+            eng(1, 0, 1, "Red", "Blue"),
+            eng(2, 60, 1, "Blue", "Red"),
+            eng_multi(3, 120, 1, "Red", &["Blue", "Green"]),
+        ];
+        let battle = preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        assert!(battle.is_two_sided());
+
+        let mut overrides = Overrides::default();
+        overrides.tag.insert(1, 7);
+        overrides.excluded.insert(42);
+        overrides.scrubs.insert((3, pid("Green")));
+
+        let doc = BattleReportDoc::new(
+            battle.clone(),
+            engs.clone(),
+            overrides.clone(),
+            Some("S1 brawl".to_owned()),
+            1_700_000_000,
+        );
+        let json = doc.to_json().expect("serialize");
+        let back = BattleReportDoc::from_json(&json).expect("deserialize");
+
+        assert_eq!(back.format_version, BattleReportDoc::FORMAT_VERSION);
+        assert_eq!(back.generator, concat!("eve-spai/", env!("CARGO_PKG_VERSION")));
+        assert_eq!(back.exported_at, 1_700_000_000);
+        assert_eq!(back.title.as_deref(), Some("S1 brawl"));
+        // The Battle / engagements / overrides survive equal.
+        assert_eq!(back.battle, battle);
+        assert_eq!(back.engagements, engs);
+        assert_eq!(back.overrides, overrides);
+        // And the round-tripped battle still renders a roster without any static data.
+        assert_eq!(back.battle.sides.len(), battle.sides.len());
+    }
+
+    #[test]
+    fn battle_report_doc_rejects_unknown_format_version() {
+        let battle = preview_battle(vec![eng(1, 0, 1, "Red", "Blue")], BATTLE_BREAK_SECS);
+        let mut doc =
+            BattleReportDoc::new(battle, Vec::new(), Overrides::default(), None, 0);
+        doc.format_version = 999;
+        let json = doc.to_json().unwrap();
+        assert!(
+            BattleReportDoc::from_json(&json).is_err(),
+            "an unknown format_version must be rejected"
+        );
     }
 }

@@ -341,6 +341,10 @@ pub struct SpaiApp {
     /// rebuilt only when the underlying battle changes — the detail repaints every frame for the
     /// "Live" badge and hover, and recomputing this for a big fight each frame is the slow path.
     battle_detail_cache: Option<BattleDetailCache>,
+    /// A battle report opened from a saved JSON file (standalone viewer, not the live cluster).
+    loaded_report: Option<LoadedReport>,
+    /// Transient feedback for the save/open-report actions (saved path, or a load error).
+    report_msg: Option<String>,
     /// Battles view: free-text filter (system, alliance/coalition, pilot, ship).
     battle_search: String,
     /// Battle detail: the participant currently hovered (for the involvement highlight).
@@ -1036,6 +1040,8 @@ impl SpaiApp {
             show_history: false,
             battle_selected: None,
             battle_detail_cache: None,
+            loaded_report: None,
+            report_msg: None,
             battle_condensed: false,
             battle_roster_sort: RosterSort::default(),
             battle_search: String::new(),
@@ -4832,8 +4838,131 @@ impl SpaiApp {
         }
     }
 
-    /// The Battle Report view: clusters of killmails near the tracked area.
+    /// Save `battle` as a self-contained report JSON via a native save dialog. The document embeds
+    /// the Battle snapshot, the engagements that compose it (so it can be re-clustered on import),
+    /// and the manual overrides in force. Writes only to the path the user picks — no config
+    /// mutation. Returns the chosen path, or `None` if the dialog was cancelled.
+    fn save_battle_report(
+        &self,
+        battle: &crate::battle::Battle,
+    ) -> anyhow::Result<Option<std::path::PathBuf>> {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(crate::breport::default_file_name(battle))
+            .add_filter("EVE Spai battle report", &["json"])
+            .save_file()
+        else {
+            return Ok(None); // cancelled
+        };
+        let overrides = self.battle_overrides.lock().unwrap().clone();
+        let now = chrono::Utc::now().timestamp();
+        let doc = crate::breport::BattleReportDoc::new(
+            battle.clone(),
+            battle.engagements.clone(),
+            overrides,
+            None,
+            now,
+        );
+        std::fs::write(&path, doc.to_json()?)?;
+        Ok(Some(path))
+    }
+
+    /// Load a saved report file into the standalone viewer (`self.loaded_report`). When the document
+    /// carries raw engagements they are re-clustered through `preview_battle` so the report renders
+    /// exactly like a live battle; otherwise the embedded Battle snapshot is shown directly.
+    fn load_battle_report(&mut self, path: &std::path::Path, ctx: &egui::Context) {
+        let parsed = std::fs::read_to_string(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|s| crate::breport::BattleReportDoc::from_json(&s));
+        match parsed {
+            Ok(doc) => {
+                let b = if doc.engagements.is_empty() {
+                    doc.battle
+                } else {
+                    crate::battle::preview_battle(doc.engagements, self.settings.battle_break_secs)
+                };
+                let ids: Vec<i64> = b
+                    .engagements
+                    .iter()
+                    .flat_map(|e| {
+                        let mut v = vec![e.victim_ship];
+                        v.extend(e.attackers.iter().map(|a| a.ship));
+                        v
+                    })
+                    .filter(|&id| id != 0)
+                    .collect();
+                self.ensure_type_names(&ids, ctx);
+                let inv = b.involvement();
+                let rosters: Vec<Vec<crate::battle::Participant>> =
+                    (0..b.sides.len()).map(|i| b.roster(i)).collect();
+                let title = doc.title.unwrap_or_else(|| {
+                    b.systems.first().map(|(_, n, _)| n.clone()).unwrap_or_else(|| "Battle report".into())
+                });
+                self.loaded_report = Some(LoadedReport { title, battle: b, inv, rosters, hover: None });
+                self.report_msg = None;
+            }
+            Err(e) => self.report_msg = Some(format!("Could not open report: {e}")),
+        }
+    }
+
+    /// Standalone viewer for a report opened from disk. Reuses [`battle_detail`].
+    fn loaded_report_view(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        let Some(lr) = self.loaded_report.as_ref() else { return };
+        let mut go_back = false;
+        ui.horizontal(|ui| {
+            if ui.button(format!("{}  Back to battles", icon::ARROW_LEFT)).clicked() {
+                go_back = true;
+            }
+            ui.separator();
+            ui.label(egui::RichText::new(&lr.title).strong());
+            ui.label(
+                egui::RichText::new(format!("{}  Imported", icon::DOWNLOAD_SIMPLE))
+                    .color(crate::theme::standing::WARNING),
+            );
+            ui.separator();
+            ui.checkbox(&mut self.battle_condensed, "Condensed");
+        });
+        if go_back {
+            self.loaded_report = None;
+            return;
+        }
+        ui.add_space(6.0);
+        let condensed = self.battle_condensed;
+        let sort = self.battle_roster_sort;
+        let ship_sizes = self.ship_sizes.clone();
+        let prev_hover = self.loaded_report.as_ref().and_then(|lr| lr.hover);
+        let (clicked_system, hover) = {
+            let lr = self.loaded_report.as_ref().unwrap();
+            let type_names = self.type_names.lock().unwrap();
+            battle_detail(
+                ui,
+                &lr.battle,
+                &type_names,
+                &lr.inv,
+                &lr.rosters,
+                condensed,
+                sort,
+                &ship_sizes,
+                prev_hover,
+            )
+        };
+        if hover != prev_hover {
+            if let Some(lr) = self.loaded_report.as_mut() {
+                lr.hover = hover;
+            }
+            ui.ctx().request_repaint();
+        }
+        if let Some(sid) = clicked_system {
+            self.open_system(sid);
+        }
+    }
+
     fn battles_view(&mut self, ui: &mut egui::Ui) {
+        // A report opened from disk takes over the view until dismissed.
+        if self.loaded_report.is_some() {
+            self.loaded_report_view(ui);
+            return;
+        }
         ui.add_space(10.0);
         let now = chrono::Utc::now().timestamp();
         let player_sys = self.player_system();
@@ -4898,6 +5027,7 @@ impl SpaiApp {
                         let excl_n = self.battle_excluded_count;
                         let scrub_n = self.battle_scrub_count;
                         let mut go_back = false;
+                        let mut save_clicked = false;
                         ui.horizontal(|ui| {
                             if ui
                                 .button(format!("{}  Back to battles", icon::ARROW_LEFT))
@@ -4940,7 +5070,28 @@ impl SpaiApp {
                             if ui.button(format!("{} Scrubbed ({scrub_n})", icon::BROOM)).clicked() {
                                 self.battle_scrubs_open = true;
                             }
+                            ui.separator();
+                            if ui
+                                .button(format!("{}  Save JSON", icon::FLOPPY_DISK))
+                                .on_hover_text("Save this battle report as a JSON file you can re-open or share")
+                                .clicked()
+                            {
+                                save_clicked = true;
+                            }
                         });
+                        if save_clicked {
+                            if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
+                                self.report_msg = match self.save_battle_report(&b) {
+                                    Ok(Some(path)) => Some(format!("Saved report to {}", path.display())),
+                                    Ok(None) => None, // dialog cancelled
+                                    Err(e) => Some(format!("Could not save report: {e}")),
+                                };
+                            }
+                        }
+                        if let Some(msg) = self.report_msg.clone() {
+                            ui.add_space(2.0);
+                            ui.label(egui::RichText::new(msg).weak());
+                        }
                         if go_back {
                             self.battle_selected = None;
                             self.battle_hover = None;
@@ -5024,6 +5175,7 @@ impl SpaiApp {
         }
 
         // Filter + scope toggle.
+        let mut to_load: Option<std::path::PathBuf> = None;
         ui.horizontal(|ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add(
@@ -5075,6 +5227,20 @@ impl SpaiApp {
             if ui.button(format!("{}  Rules…", egui_phosphor::regular::FUNNEL)).clicked() {
                 self.battle_filter_open = true;
             }
+            ui.separator();
+            // Open a battle-report JSON the user picks (native dialog) — no config dir is scanned.
+            if ui
+                .button(format!("{}  Open JSON", egui_phosphor::regular::FOLDER_OPEN))
+                .on_hover_text("Open a saved battle-report JSON file")
+                .clicked()
+            {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("EVE Spai battle report", &["json"])
+                    .pick_file()
+                {
+                    to_load = Some(path);
+                }
+            }
             // Work throttle — caps how hard the feed + clustering run.
             let mut th = self.settings.work_throttle;
             egui::ComboBox::from_id_salt("work_throttle")
@@ -5092,6 +5258,18 @@ impl SpaiApp {
                 self.needs_save = true;
             }
         });
+        if let Some(path) = to_load {
+            self.load_battle_report(&path, ui.ctx());
+            return;
+        }
+        if let Some(msg) = self.report_msg.clone() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(msg).weak());
+                if ui.small_button("\u{2715}").clicked() {
+                    self.report_msg = None;
+                }
+            });
+        }
         ui.add_space(4.0);
         let query = self.battle_search.trim().to_lowercase();
         let loading = self.battle_history_loading.load(std::sync::atomic::Ordering::Relaxed);
@@ -15484,6 +15662,17 @@ struct BattleDetailCache {
     battle: crate::battle::Battle,
     inv: crate::battle::Involvement,
     rosters: Vec<Vec<crate::battle::Participant>>,
+}
+
+/// A battle report loaded from a saved JSON file, shown in a standalone viewer (separate from
+/// the live cluster). Holds the same render-ready data as [`BattleDetailCache`]; the JSON is
+/// self-contained, so no re-clustering or EVE static data is needed to display it.
+struct LoadedReport {
+    title: String,
+    battle: crate::battle::Battle,
+    inv: crate::battle::Involvement,
+    rosters: Vec<Vec<crate::battle::Participant>>,
+    hover: Option<BattleHover>,
 }
 
 /// The detailed view of one battle: a header, then each side as its own column (horizontal

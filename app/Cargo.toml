@@ -43,6 +43,10 @@ keyring = "4"
 notify-rust = "4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 arboard = { version = "3", default-features = false }
+# Native open/save file dialogs for the battle-report JSON import/export. xdg-portal backend
+# (pure Rust, via the XDG desktop portal) so Linux needs no GTK system libs; matches the tree's
+# async-io/zbus ecosystem.
+rfd = "0.15"
 # Cross-platform advisory file locks for the single-instance guard (main.rs). Default
 # `sync` feature only — operates on std::fs::File, no extra runtime deps.
 fs4 = "1.1.0"
