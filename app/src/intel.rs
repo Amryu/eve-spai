@@ -903,6 +903,51 @@ fn match_known_pilots(text: &str, known: &std::collections::HashMap<String, i64>
     out
 }
 
+/// A deterministic mirror of [`crate::pilot::PilotCache::cover`] for the KNOWN (already
+/// ESI-confirmed) cache: if an over-glued loose run is just a confirmed pilot name extended by
+/// system/code tokens — a held "name + location" blob like "Ruston Shackleford B-3QPD" — return
+/// that known sub-name. The blob must NOT survive (it would hold the location inside the name),
+/// so the caller surfaces the known name and frees the system token for the location pass. Only a
+/// null-sec code / system can be the leftover (those never belong inside a character name); a
+/// non-system extra word means we can't be sure, so the held model still waits on ESI.
+fn known_name_in_system_run(
+    run: &str,
+    known: &std::collections::HashMap<String, i64>,
+    systems: &Systems,
+) -> Option<String> {
+    if known.is_empty() {
+        return None;
+    }
+    let words: Vec<&str> = run.split_whitespace().collect();
+    let n = words.len();
+    // Longest confirmed sub-span first, so the fullest known name wins ("Ruston Shackleford"
+    // over a coincidental single "Ruston").
+    for len in (1..=n).rev() {
+        for start in 0..=n - len {
+            // There must be a leftover token to free — otherwise the run IS the name, not a
+            // held "name + location" blob.
+            if len == n {
+                continue;
+            }
+            let span = words[start..start + len].join(" ");
+            if !known.contains_key(&span.to_lowercase())
+                || span.split_whitespace().all(is_pilot_stopword)
+            {
+                continue;
+            }
+            let rest_all_systems = words
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i < start || *i >= start + len)
+                .all(|(_, w)| is_system_token(w, systems));
+            if rest_all_systems {
+                return Some(span);
+            }
+        }
+    }
+    None
+}
+
 /// Stop words that still appear inside real multi-word names ("The Meek", "Lord of War")
 /// and so are allowed mid-name — unlike intel descriptors ("cloaked", "jumped", "camped"),
 /// which are stop words that never belong in a name.
@@ -1821,9 +1866,22 @@ pub fn analyze_ctx(
     // filter so they don't swallow the strict shorter names; the ESI cover confirms or
     // splits each later (non-names are dropped).
     for r in loose_pilot_runs(&masked, ship_index, systems) {
-        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&r)) {
-            pilots.push(r);
+        if pilots.iter().any(|p| p.eq_ignore_ascii_case(&r)) {
+            continue;
         }
+        // A loose blob that is just a CONFIRMED pilot name extended by a system/code token
+        // ("Ruston Shackleford B-3QPD") is "name + location", not one held name. Don't add the
+        // over-glued blob — it would only hold the system inside the name and (being longer)
+        // evict the clean known name via the final sub-phrase drop. Instead surface the known
+        // name; the freed code is then picked up by the location pass. This is the deterministic
+        // equivalent of the ESI cover splitting the run (here the cache already knows the name).
+        if let Some(known_name) = known_name_in_system_run(&r, known_pilots, systems) {
+            if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&known_name)) {
+                pilots.push(known_name);
+            }
+            continue;
+        }
+        pilots.push(r);
     }
     // Single-word names queued for ESI. Case-INSENSITIVE: pilots are usually proper-case but
     // are sometimes typed all lower-case ("bigfoott"), and those must not be dropped — only a
@@ -3027,6 +3085,7 @@ mod tests {
             ("n3-jbx", "N3-JBX", 30000669, -0.3),
             ("384-in", "384-IN", 30000535, -0.5),
             ("e-jcus", "E-JCUS", 30000531, -0.5),
+            ("b-3qpd", "B-3QPD", 30001156, -0.4),
         ]
         .into_iter()
         .map(|(key, name, id, sec)| {
@@ -3099,6 +3158,38 @@ mod tests {
         assert!(pilots.is_empty(), "pilots={pilots:?}");
         assert_eq!(sysd, vec!["N3-JBX".to_string()]);
         assert!(gates.iter().any(|g| g == "Uitra"), "gates={gates:?}");
+    }
+
+    #[test]
+    fn stray_letter_before_name_with_code_system() {
+        let s = systems();
+        // Body of a relayed report: a stray single letter "v" the reporter typed, a 2-word pilot,
+        // and a null-sec CODE system. "Ruston Shackleford" must be the pilot, B-3QPD the location.
+        //
+        // Known-cache path (deterministic): "Ruston Shackleford" was confirmed on a prior
+        // sighting, so the watcher feeds it in `known`. The over-glued held blob
+        // "Ruston Shackleford B-3QPD" must NOT win — the known name stands and the code frees as
+        // the system, with no ESI round-trip needed.
+        let known: std::collections::HashMap<String, i64> =
+            [("ruston shackleford".to_string(), 95786689i64)].into_iter().collect();
+        let rk =
+            analyze("v Ruston Shackleford B-3QPD", &s, &noships(), &known, 1, "ch", "Ixen Orlenard");
+        assert_eq!(rk.pilots, vec!["Ruston Shackleford".to_string()], "known pilots={:?}", rk.pilots);
+        assert_eq!(
+            rk.systems.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+            vec!["B-3QPD".to_string()],
+            "known systems"
+        );
+        assert!(rk.gates.is_empty(), "gates={:?}", rk.gates);
+
+        // First-sighting path (ESI-dependent held model): with no cache the report is parked with
+        // the system held inside the name blob; once ESI confirms the name the reconcile splits it
+        // and re-derives the location. Mirrors the live reconcile via `resolve_report`.
+        let r = analyze("v Ruston Shackleford B-3QPD", &s, &noships(), &noknown(), 1, "ch", "Ixen Orlenard");
+        let (pilots, sysd, gates) = resolve_report(&r, &["Ruston Shackleford"], &s);
+        assert_eq!(pilots, vec!["Ruston Shackleford".to_string()], "raw pilots={:?}", r.pilots);
+        assert_eq!(sysd, vec!["B-3QPD".to_string()]);
+        assert!(gates.is_empty(), "gates={gates:?}");
     }
 
     #[test]
