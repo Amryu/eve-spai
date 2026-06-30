@@ -63,6 +63,9 @@ pub struct Settings {
     /// notification.
     #[serde(default)]
     pub fleet_ping_window: bool,
+    /// On-top behaviour for the fleet ping window (mirrors the alert window's setting).
+    #[serde(default)]
+    pub fleet_ping_on_top: OnTop,
     /// One-time migration marker: the fleet ping window was force-enabled once for existing
     /// users (it's now on by default). After that the user's own choice is respected.
     #[serde(default)]
@@ -357,11 +360,12 @@ impl Default for AlertRule {
 }
 
 /// Custom alert window "always on top" behaviour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OnTop {
     /// Always above other windows.
     Always,
     /// Above only while the EVE client is the focused window.
+    #[default]
     Smart,
     /// Never forced on top.
     Never,
@@ -672,6 +676,7 @@ impl Default for Settings {
             fit_site: String::new(),
             doctrine_url: String::new(),
             fleet_ping_window: true,
+            fleet_ping_on_top: OnTop::Smart,
             fleet_window_forced: false,
             travel_auto_dest: true,
             op_channel_links: std::collections::HashMap::new(),

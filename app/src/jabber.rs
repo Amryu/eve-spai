@@ -206,6 +206,7 @@ pub fn spawn(
     rooms: Vec<String>,
     resolve: Resolver,
     state: SharedJabber,
+    ping_shared: crate::app::SharedPingWindow,
     ctx: egui::Context,
 ) -> CmdSender {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -214,9 +215,31 @@ pub fn spawn(
             state.lock().unwrap().status = "Failed to start runtime".to_owned();
             return;
         };
-        rt.block_on(run(jid, password, server, rooms, resolve, state, rx, ctx));
+        rt.block_on(run(jid, password, server, rooms, resolve, state, ping_shared, rx, ctx));
     });
     tx
+}
+
+/// Push a freshly-arrived fleet ping into the deferred fleet-ping viewport's shared state and wake
+/// the child window — done off the UI thread so the window keeps appearing while the main window is
+/// minimized. No-op when the feature is disabled; dedups a re-detection of the same ping.
+fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Context, ping: &Ping) {
+    {
+        let mut st = ping_shared.lock().unwrap();
+        if !st.enabled {
+            return;
+        }
+        // Newest first; skip a duplicate re-detection of the same ping.
+        if st.windows.first().map(|s| &s.ping) == Some(ping) {
+            return;
+        }
+        st.windows.insert(
+            0,
+            crate::app::PingShown { ping: ping.clone(), shown_at: std::time::Instant::now() },
+        );
+        st.raise = true;
+    }
+    ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
 }
 
 fn push_msg(
@@ -262,6 +285,7 @@ async fn run(
     initial_rooms: Vec<String>,
     resolve: Resolver,
     state: SharedJabber,
+    ping_shared: crate::app::SharedPingWindow,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
     ctx: egui::Context,
 ) {
@@ -328,7 +352,7 @@ async fn run(
                 let mut urgent = false;
                 let mut background = false;
                 for event in events {
-                    if handle_event(event, &state, resolve.as_ref(), &ctx, store.as_ref()) {
+                    if handle_event(event, &state, resolve.as_ref(), &ping_shared, &ctx, store.as_ref()) {
                         urgent = true;
                     } else {
                         background = true;
@@ -416,7 +440,8 @@ fn handle_event(
     event: xmpp::Event,
     state: &SharedJabber,
     resolve: &(dyn Fn(&str) -> Option<i64> + Send + Sync),
-    _ctx: &egui::Context,
+    ping_shared: &crate::app::SharedPingWindow,
+    ctx: &egui::Context,
     store: Option<&crate::store::Store>,
 ) -> bool {
     use xmpp::Event;
@@ -523,9 +548,13 @@ fn handle_event(
                             None
                         }
                     };
-                    // Fire the sound + desktop notification off-thread (works while minimized).
+                    // Fire the sound + desktop notification off-thread (works while minimized), and
+                    // push fleet calls into the deferred ping window (also off the UI thread).
                     if let Some((cfg, ping)) = fire {
                         fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping));
+                        if ping.is_fleet_call() {
+                            push_ping_window(ping_shared, ctx, &ping);
+                        }
                     }
                 }
             }

@@ -482,8 +482,9 @@ pub struct SpaiApp {
     ping_rules_open: bool,
     /// App-start time, to mark the historic/new boundary in conversations.
     session_start: i64,
-    /// Whether the EVE client is the focused window (for "smart" always-on-top).
-    eve_focused: bool,
+    /// Whether the EVE client is the focused window (for "smart" always-on-top). Shared so the
+    /// deferred ping viewport's render closure can read it off the UI thread.
+    eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Throttle for the EVE-focus check.
     eve_focus_checked: Option<std::time::Instant>,
     /// Ship name -> (id, name), for reclassifying ship-words wrongly read as pilots.
@@ -761,11 +762,11 @@ pub struct SpaiApp {
     fit_view: Option<(i64, FitMode)>,
     /// A specific clicked killmail to show in the fit window (takes precedence over fit_view).
     fit_loss: Option<crate::lookup::Loss>,
-    /// Fleet pings shown in the foreground window, newest first (empty = closed). Each carries
-    /// when it was added so a freshly-arrived ping can blink faintly for its first few seconds.
-    ping_window: Vec<PingShown>,
-    /// Set when a ping is added so the window foregrounds itself once (on open or a new ping).
-    ping_window_raise: bool,
+    /// Shared state for the deferred fleet-ping viewport (pings, on-top, render context). Produced
+    /// off the UI thread by the Jabber thread; consumed by `ping_viewport_cb`.
+    ping_shared: SharedPingWindow,
+    /// The deferred fleet-ping viewport's render closure, built once in `new()`.
+    ping_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
     /// Character → corp/alliance cache for pilot badges + the lookup window.
@@ -932,6 +933,120 @@ impl SpaiApp {
             cc.egui_ctx.clone(),
         );
 
+        // Shared state for the deferred fleet-ping viewport + the EVE-focus flag the viewport's
+        // render closure reads. Both are produced/consumed off the UI thread so the window works
+        // while the main window is minimized.
+        let eve_focused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let ping_shared: SharedPingWindow = std::sync::Arc::new(std::sync::Mutex::new(
+            PingWindowState { enabled: settings.fleet_ping_window, ..Default::default() },
+        ));
+
+        // The deferred viewport's render closure. Built once; declared every frame (see
+        // `fleet_ping_window_ui`). Captures only Send+Sync shared state (no `&self`), so it can
+        // paint the child window independently of the root `update()`.
+        #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+        let ping_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync> = {
+            let ping_shared = ping_shared.clone();
+            let eve_focused = eve_focused.clone();
+            std::sync::Arc::new(move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
+                use std::sync::atomic::Ordering;
+                let ctx = ui.ctx().clone();
+                let mut st = ping_shared.lock().unwrap();
+                // Hidden whenever the feature is off or there's nothing to show.
+                if !st.enabled || st.windows.is_empty() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    st.level_applied = None;
+                    return;
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                // Minimizing the main window can iconify this viewport with it; while a ping is
+                // showing it must stay up, so never let it stay minimized.
+                if ctx.input(|i| i.viewport().minimized) == Some(true) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                }
+                // The window close button dismisses the whole window; the parent re-declares the
+                // (now empty) viewport next frame, which stays hidden.
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    st.windows.clear();
+                    st.level_applied = None;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    return;
+                }
+                // On-top per setting + EVE focus (Smart = on top only while EVE is focused).
+                // Re-assert only on change or throttled (every 800 ms) so it doesn't pin repaints.
+                let eve_foc = eve_focused.load(Ordering::Relaxed);
+                let on_top = st.on_top != crate::settings::OnTop::Never
+                    && (st.on_top == crate::settings::OnTop::Always || eve_foc);
+                let due = st
+                    .level_at
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
+                if st.level_applied != Some(on_top) || (on_top && due) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
+                        egui::WindowLevel::AlwaysOnTop
+                    } else {
+                        egui::WindowLevel::Normal
+                    }));
+                    st.level_applied = Some(on_top);
+                    st.level_at = Some(std::time::Instant::now());
+                }
+                // Raise/focus once when the window opens or a new ping arrives.
+                if std::mem::take(&mut st.raise) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                let pings = st.windows.clone();
+                let systems = st.systems.clone();
+                let doctrine_url = st.doctrine_url.clone();
+                let op_links = st.op_links.clone();
+                drop(st); // release before rendering
+                // Any ping still in its first 3 s blinks faintly; keep repainting while it does.
+                let blinking = pings.iter().any(|s| s.shown_at.elapsed().as_secs_f32() < 3.0);
+                egui::CentralPanel::default().show(&ctx, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for (i, s) in pings.iter().enumerate() {
+                            if i > 0 {
+                                ui.separator();
+                            }
+                            let resp = ui
+                                .scope(|ui| {
+                                    render_ping(ui, &s.ping, &systems, true, &doctrine_url, &op_links);
+                                })
+                                .response;
+                            // Faint blink for the first 3 s after a ping is shown.
+                            let t = s.shown_at.elapsed().as_secs_f32();
+                            if t < 3.0 {
+                                let pulse = (t * std::f32::consts::PI * 3.0).sin() * 0.5 + 0.5;
+                                let alpha = (pulse * 26.0) as u8; // faint (max ~10%)
+                                let tint =
+                                    egui::Color32::from_rgba_unmultiplied(0xff, 0xd1, 0x66, alpha);
+                                ui.painter().rect_filled(resp.rect, 4.0, tint);
+                            }
+                        }
+                    });
+                });
+                if blinking {
+                    ctx.request_repaint();
+                }
+                if on_top {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(800));
+                }
+            })
+        };
+
+        // Background ticker: while pings are showing, wake the child viewport ~4x/s so its
+        // countdown/blink keep advancing even when the root is minimized and idle.
+        {
+            let ctx = cc.egui_ctx.clone();
+            let ping_shared = ping_shared.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let active = !ping_shared.lock().unwrap().windows.is_empty();
+                if active {
+                    ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
+                }
+            });
+        }
+
         Self {
             store,
             settings,
@@ -1036,7 +1151,7 @@ impl SpaiApp {
             ping_draft: PingDraft::default(),
             ping_rules_open: false,
             session_start: chrono::Utc::now().timestamp(),
-            eve_focused: true,
+            eve_focused,
             eve_focus_checked: None,
             ship_index: None,
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
@@ -1201,8 +1316,8 @@ impl SpaiApp {
             pilot_tab: PilotTab::default(),
             fit_view: None,
             fit_loss: None,
-            ping_window: Vec::new(),
-            ping_window_raise: false,
+            ping_shared,
+            ping_viewport_cb,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -1421,6 +1536,7 @@ impl SpaiApp {
             rooms,
             resolve,
             self.jabber.clone(),
+            self.ping_shared.clone(),
             ctx.clone(),
         ));
     }
@@ -1507,34 +1623,22 @@ impl SpaiApp {
             // The sound + desktop notification are fired by the Jabber thread (off the UI thread);
             // here we only do the UI-side bits — raise the fleet-ping window and the unread
             // attention — so still resolve whether the ping is suppressed.
-            let (suppress, notify) = if is_ping {
+            let suppress = if is_ping {
                 let latest = self.jabber.lock().unwrap().pings.last().cloned();
                 match latest.as_ref().and_then(|p| self.matching_ping_rule(p)) {
-                    Some(r) => (r.suppress, r.notify),
-                    None => (false, true),
+                    Some(r) => r.suppress,
+                    None => false,
                 }
             } else {
-                (false, true)
+                false
             };
             if suppress {
                 continue; // no badge or attention for suppressed pings
             }
             any = true;
-            if is_ping && notify {
-                let latest = self.jabber.lock().unwrap().pings.last().cloned();
-                // Surface structured fleet pings AND malformed-but-urgent broadcasts (cap saves,
-                // form-ups) in the popup, not just FC-keyed Fleet pings.
-                if let Some(ping) = latest.filter(|p| p.is_fleet_call()) {
-                    if self.settings.fleet_ping_window {
-                        // Newest first; skip a duplicate re-detection of the same ping.
-                        if self.ping_window.first().map(|s| &s.ping) != Some(&ping) {
-                            self.ping_window
-                                .insert(0, PingShown { ping, shown_at: std::time::Instant::now() });
-                            self.ping_window_raise = true;
-                        }
-                    }
-                }
-            }
+            // The fleet-ping window data is produced by the Jabber thread (into `ping_shared`) so
+            // it keeps appearing while the main window is minimized; here we only do the UI-side
+            // attention badge below.
         }
         if any && !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -1711,6 +1815,20 @@ impl SpaiApp {
                             "Pop a focused window on fleet pings",
                         )
                         .changed();
+                    ui.end_row();
+                    ui.label("Keep on top");
+                    ui.horizontal(|ui| {
+                        use crate::settings::OnTop;
+                        changed |= ui
+                            .selectable_value(&mut self.settings.fleet_ping_on_top, OnTop::Always, "Always")
+                            .changed();
+                        changed |= ui
+                            .selectable_value(&mut self.settings.fleet_ping_on_top, OnTop::Smart, "When EVE focused")
+                            .changed();
+                        changed |= ui
+                            .selectable_value(&mut self.settings.fleet_ping_on_top, OnTop::Never, "Never")
+                            .changed();
+                    });
                     ui.end_row();
                     ui.label("Ping bot JID");
                     changed |= ui
@@ -5746,70 +5864,53 @@ impl SpaiApp {
         }
     }
 
-    /// A foreground window (grabs focus on open) showing a fleet ping with its links.
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    /// Declare the fleet-ping window as a DEFERRED viewport, EVERY frame regardless of whether
+    /// any ping is showing. Declaring it unconditionally means the child window object exists
+    /// before the main window is ever minimized and survives the minimize (a deferred viewport
+    /// paints standalone, woken by `request_repaint_of`), so fleet pings still appear while the
+    /// root is minimized. Visibility/contents are managed entirely by `ping_viewport_cb` (it
+    /// starts hidden and shows itself when there are pings). Data is produced off the UI thread by
+    /// the Jabber thread; here we only publish the current settings + render context.
     fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
-        if self.ping_window.is_empty() {
-            return;
+        // Publish the on-top/enabled flags + render context into the shared state each frame.
+        {
+            let mut st = self.ping_shared.lock().unwrap();
+            st.on_top = self.settings.fleet_ping_on_top;
+            st.enabled = self.settings.fleet_ping_window;
+            st.systems = self.systems.clone();
+            st.doctrine_url = self.settings.doctrine_url.clone();
+            st.op_links = self.settings.op_channel_links.clone();
         }
-        let systems = self.systems.clone();
-        let doctrine_url = self.settings.doctrine_url.clone();
-        let op_links = self.settings.op_channel_links.clone();
-        let pings = self.ping_window.clone();
-        // Raise/focus once when the window opens or a new ping arrives (instead of always-on-top).
-        let raise = std::mem::take(&mut self.ping_window_raise);
-        // Any ping still in its first 3 s blinks faintly; keep repainting while it does.
-        let blinking = pings.iter().any(|s| s.shown_at.elapsed().as_secs_f32() < 3.0);
-        let mut keep = true;
-        const WIDTH: f32 = 520.0;
-        ctx.show_viewport_immediate(
+        // For "smart" on-top, refresh whether EVE is focused (throttled), like the alert window.
+        if self.settings.fleet_ping_on_top == crate::settings::OnTop::Smart {
+            let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
+            if due {
+                self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
+                self.eve_focus_checked = Some(std::time::Instant::now());
+            }
+        }
+        let on_top = self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
+            && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
+                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
+        ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("fleet_ping_window"),
             egui::ViewportBuilder::default()
                 .with_icon(app_icon())
                 .with_title("EVE Spai \u{2014} Fleet ping")
-                .with_inner_size([WIDTH, 320.0])
+                .with_inner_size([520.0, 320.0])
                 .with_min_inner_size([260.0, 100.0])
-                .with_resizable(true),
-            |vctx, _class| {
-                if raise {
-                    vctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
-                egui::CentralPanel::default().show(vctx, |ui| {
-                    // Multiple pings: newest first, scrollable. The window close button dismisses
-                    // the whole window (no Dismiss button).
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        for (i, s) in pings.iter().enumerate() {
-                            if i > 0 {
-                                ui.separator();
-                            }
-                            let resp = ui
-                                .scope(|ui| {
-                                    render_ping(ui, &s.ping, &systems, true, &doctrine_url, &op_links);
-                                })
-                                .response;
-                            // Faint blink for the first 3 s after a ping is shown.
-                            let t = s.shown_at.elapsed().as_secs_f32();
-                            if t < 3.0 {
-                                let pulse = (t * std::f32::consts::PI * 3.0).sin() * 0.5 + 0.5;
-                                let alpha = (pulse * 26.0) as u8; // faint (max ~10%)
-                                let tint =
-                                    egui::Color32::from_rgba_unmultiplied(0xff, 0xd1, 0x66, alpha);
-                                ui.painter().rect_filled(resp.rect, 4.0, tint);
-                            }
-                        }
-                    });
-                });
-                if blinking {
-                    vctx.request_repaint();
-                }
-                if vctx.input(|i| i.viewport().close_requested()) {
-                    keep = false;
-                }
+                .with_resizable(true)
+                .with_visible(false) // the closure shows it when there are pings
+                .with_window_level(if on_top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                }),
+            {
+                let cb = self.ping_viewport_cb.clone();
+                move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
             },
         );
-        if !keep {
-            self.ping_window.clear();
-        }
     }
 
     fn start_sde(&self, ctx: &egui::Context) {
@@ -5847,7 +5948,7 @@ impl SpaiApp {
                 .map(|t| t.elapsed().as_millis() > 800)
                 .unwrap_or(true);
             if due {
-                self.eve_focused = eve_is_focused();
+                self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
@@ -5905,7 +6006,8 @@ impl SpaiApp {
         let now_ts = chrono::Utc::now().timestamp();
 
         let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
-            && (self.settings.alerts.on_top == crate::settings::OnTop::Always || self.eve_focused);
+            && (self.settings.alerts.on_top == crate::settings::OnTop::Always
+                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
 
         let mut hovered = false;
         let mut dismiss = false;
@@ -10112,12 +10214,13 @@ impl SpaiApp {
         if overlay && self.settings.map_overlay_smart {
             let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
             if due {
-                self.eve_focused = eve_is_focused();
+                self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
         let on_top = if overlay {
-            !self.settings.map_overlay_smart || self.eve_focused
+            !self.settings.map_overlay_smart
+                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed)
         } else {
             self.map_window_on_top
         };
@@ -14596,10 +14699,36 @@ fn ship_row(
 
 /// A fleet ping shown in the foreground window, with when it was added (for the new-ping blink).
 #[derive(Clone)]
-struct PingShown {
-    ping: crate::pings::Ping,
-    shown_at: std::time::Instant,
+pub(crate) struct PingShown {
+    pub(crate) ping: crate::pings::Ping,
+    pub(crate) shown_at: std::time::Instant,
 }
+
+/// Shared state for the deferred fleet-ping viewport. Produced off the UI thread (the Jabber
+/// thread pushes new pings) and consumed by the viewport's render closure, so the window shows
+/// and updates independently of the main window's minimized state. Render context
+/// (`systems`/`doctrine_url`/`op_links`) and the on-top/enabled flags are published each frame by
+/// the UI; `level_applied`/`level_at` are render-only throttle state.
+#[derive(Default)]
+pub(crate) struct PingWindowState {
+    /// Pings shown, newest first (empty = window hidden).
+    pub(crate) windows: Vec<PingShown>,
+    /// Set when a ping is added so the window foregrounds itself once.
+    pub(crate) raise: bool,
+    /// On-top behaviour (published from settings each frame).
+    pub(crate) on_top: crate::settings::OnTop,
+    /// Feature enabled (published from settings each frame).
+    pub(crate) enabled: bool,
+    /// Render context, published each frame by the UI.
+    pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    pub(crate) doctrine_url: String,
+    pub(crate) op_links: std::collections::HashMap<String, String>,
+    /// Last window-level applied + when (throttles the on-top re-assert; render-only).
+    pub(crate) level_applied: Option<bool>,
+    pub(crate) level_at: Option<std::time::Instant>,
+}
+
+pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowState>>;
 
 /// How the battle-detail roster is ordered (user-selectable).
 #[derive(Clone, Copy, PartialEq, Default)]
