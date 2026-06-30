@@ -63,6 +63,11 @@ pub struct BattleReportDoc {
     pub engagements: Vec<Engagement>,
     /// The manual clustering overrides in force when the report was exported.
     pub overrides: Overrides,
+    /// EVE type id -> ship/hull name, for every ship referenced by the battle (participants,
+    /// victims, attackers, pods). Lets the web viewer label hulls without an SDE. Optional:
+    /// older docs deserialize to an empty map and the viewer falls back to the type id.
+    #[serde(default)]
+    pub ship_names: std::collections::BTreeMap<i64, String>,
 }
 
 impl BattleReportDoc {
@@ -70,13 +75,16 @@ impl BattleReportDoc {
     pub const FORMAT_VERSION: u32 = 1;
 
     /// Build a document at format [`FORMAT_VERSION`](Self::FORMAT_VERSION), stamped with this
-    /// build's generator string and `exported_at` (unix seconds).
+    /// build's generator string and `exported_at` (unix seconds). `ship_names` maps every ship
+    /// type id referenced by the battle to its hull name so a web viewer can label hulls without
+    /// an SDE; pass an empty map when no resolver is available.
     pub fn new(
         battle: Battle,
         engagements: Vec<Engagement>,
         overrides: Overrides,
         title: Option<String>,
         exported_at: i64,
+        ship_names: std::collections::BTreeMap<i64, String>,
     ) -> Self {
         Self {
             format_version: Self::FORMAT_VERSION,
@@ -86,6 +94,7 @@ impl BattleReportDoc {
             battle,
             engagements,
             overrides,
+            ship_names,
         }
     }
 
@@ -1813,12 +1822,16 @@ mod tests {
         overrides.excluded.insert(42);
         overrides.scrubs.insert((3, pid("Green")));
 
+        let ship_names: std::collections::BTreeMap<i64, String> =
+            [(587, "Rifter".to_owned()), (670, "Capsule".to_owned())].into_iter().collect();
+
         let doc = BattleReportDoc::new(
             battle.clone(),
             engs.clone(),
             overrides.clone(),
             Some("S1 brawl".to_owned()),
             1_700_000_000,
+            ship_names.clone(),
         );
         let json = doc.to_json().expect("serialize");
         let back = BattleReportDoc::from_json(&json).expect("deserialize");
@@ -1827,10 +1840,11 @@ mod tests {
         assert_eq!(back.generator, concat!("eve-spai/", env!("CARGO_PKG_VERSION")));
         assert_eq!(back.exported_at, 1_700_000_000);
         assert_eq!(back.title.as_deref(), Some("S1 brawl"));
-        // The Battle / engagements / overrides survive equal.
+        // The Battle / engagements / overrides / ship names survive equal.
         assert_eq!(back.battle, battle);
         assert_eq!(back.engagements, engs);
         assert_eq!(back.overrides, overrides);
+        assert_eq!(back.ship_names, ship_names);
         // And the round-tripped battle still renders a roster without any static data.
         assert_eq!(back.battle.sides.len(), battle.sides.len());
     }
@@ -1839,7 +1853,7 @@ mod tests {
     fn battle_report_doc_rejects_unknown_format_version() {
         let battle = preview_battle(vec![eng(1, 0, 1, "Red", "Blue")], BATTLE_BREAK_SECS);
         let mut doc =
-            BattleReportDoc::new(battle, Vec::new(), Overrides::default(), None, 0);
+            BattleReportDoc::new(battle, Vec::new(), Overrides::default(), None, 0, Default::default());
         doc.format_version = 999;
         let json = doc.to_json().unwrap();
         assert!(

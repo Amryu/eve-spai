@@ -562,7 +562,7 @@ mod tests {
             ambiguous: false,
             suggested_splits: Vec::new(),
         };
-        BattleReportDoc::new(battle, Vec::new(), Default::default(), Some("Test".into()), 1700)
+        BattleReportDoc::new(battle, Vec::new(), Default::default(), Some("Test".into()), 1700, Default::default())
     }
 
     #[test]

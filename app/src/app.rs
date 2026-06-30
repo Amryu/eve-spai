@@ -4876,12 +4876,14 @@ impl SpaiApp {
         };
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
+        let ship_names = self.battle_ship_names(battle);
         let doc = crate::breport::BattleReportDoc::new(
             battle.clone(),
             battle.engagements.clone(),
             overrides,
             None,
             now,
+            ship_names,
         );
         std::fs::write(&path, doc.to_json()?)?;
         Ok(Some(path))
@@ -4919,17 +4921,50 @@ impl SpaiApp {
         Some((id, path))
     }
 
+    /// Resolve every ship type id referenced by `battle` (victims, attackers, pods, and roster
+    /// participants) to its hull name, so the exported document is self-contained and a web viewer
+    /// can label hulls without an SDE. Reuses the app's already-resolved `type_names` cache (the
+    /// roster UI populates it for the open battle); ids whose name is not resolved are omitted, and
+    /// the viewer falls back to the id. Id 0 (unknown ship) is skipped.
+    fn battle_ship_names(
+        &self,
+        battle: &crate::battle::Battle,
+    ) -> std::collections::BTreeMap<i64, String> {
+        let mut ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        for e in &battle.engagements {
+            ids.insert(e.victim_ship);
+            for a in &e.attackers {
+                ids.insert(a.ship);
+            }
+        }
+        for i in 0..battle.sides.len() {
+            for p in battle.roster(i) {
+                ids.insert(p.ship);
+                if let Some(l) = &p.lost {
+                    ids.insert(l.pod_ship);
+                }
+            }
+        }
+        ids.remove(&0);
+        let type_names = self.type_names.lock().unwrap();
+        ids.into_iter()
+            .filter_map(|id| type_names.get(&id).map(|n| (id, n.clone())))
+            .collect()
+    }
+
     /// Build the `BattleReportDoc` for the open battle (same content as Save JSON), ready to
     /// gzip + upload.
     fn build_share_doc(&self, battle: &crate::battle::Battle) -> crate::breport::BattleReportDoc {
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
+        let ship_names = self.battle_ship_names(battle);
         crate::breport::BattleReportDoc::new(
             battle.clone(),
             battle.engagements.clone(),
             overrides,
             None,
             now,
+            ship_names,
         )
     }
 
