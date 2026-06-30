@@ -18,8 +18,14 @@ use serde::Deserialize;
 /// a refresh regardless of age (key rotation).
 const JWKS_TTL: Duration = Duration::from_secs(3600);
 
-/// The accepted issuer values. EVE stamps the bare host; we also accept the URL form.
-const ISSUERS: [&str; 2] = ["login.eveonline.com", "https://login.eveonline.com/"];
+/// The accepted issuer values. EVE's current tokens stamp the URI form
+/// `https://login.eveonline.com` (no trailing slash); older tokens used the bare host. Accept all
+/// three forms (bare host, URI, URI+slash) — per EVE's guidance to match either the host or the URI.
+const ISSUERS: [&str; 3] = [
+    "login.eveonline.com",
+    "https://login.eveonline.com",
+    "https://login.eveonline.com/",
+];
 
 /// A verified identity, extracted from a valid token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,7 +242,8 @@ QxUVZGDK2388KblxKYy3YTE=\n\
         json!({
             "sub": "CHARACTER:EVE:2112000001",
             "name": "Spai Pilot",
-            "iss": "login.eveonline.com",
+            // EVE's current tokens use the URI form (no trailing slash) — the server must accept it.
+            "iss": "https://login.eveonline.com",
             "aud": [AUD, "EVE Online"],
             "exp": future(),
         })
