@@ -153,6 +153,14 @@ CREATE TABLE IF NOT EXISTS kill_details (
     attacker_count      INTEGER NOT NULL,
     attacker_alliances  TEXT
 );
+-- Per-character zKill-activity + account-age cache (4h TTL on active_recent; birthday
+-- is fetched once). Persisted so a restart doesn't re-storm zKill. Consumed in Phase 2.
+CREATE TABLE IF NOT EXISTS pilot_activity (
+    char_id       INTEGER PRIMARY KEY,
+    active_recent INTEGER NOT NULL,
+    birthday      INTEGER,
+    fetched_at    INTEGER NOT NULL
+);
 ";
 
 /// A ship type with computed resist/tank/fitting stats.
@@ -957,6 +965,44 @@ impl Store {
         });
         if let Ok(rows) = rows {
             out.extend(rows.flatten());
+        }
+        out
+    }
+
+    // --- Per-character zKill-activity + account-age cache (Phase 1) ---------
+
+    /// Persist (or refresh) one character's activity entry.
+    pub fn save_pilot_activity(
+        &self,
+        char_id: i64,
+        active_recent: bool,
+        birthday: Option<i64>,
+        fetched_at: i64,
+    ) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO pilot_activity(char_id, active_recent, birthday, fetched_at)
+             VALUES(?1, ?2, ?3, ?4)",
+            params![char_id, active_recent as i64, birthday, fetched_at],
+        );
+    }
+
+    /// Load all persisted activity rows: (char_id, active_recent, birthday, fetched_at).
+    pub fn pilot_activity(&self) -> Vec<(i64, bool, Option<i64>, i64)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT char_id, active_recent, birthday, fetched_at FROM pilot_activity")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            }) {
+                out.extend(rows.flatten());
+            }
         }
         out
     }

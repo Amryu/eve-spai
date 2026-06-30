@@ -783,6 +783,11 @@ pub struct SpaiApp {
     pilots: crate::pilot::SharedPilots,
     /// Character → corp/alliance cache for pilot badges + the lookup window.
     affiliations: crate::affiliation::SharedAffil,
+    /// Per-character zKill-activity + account-age cache (Phase 1 data layer; consumed in Phase 2).
+    #[allow(dead_code)] // read in Phase 2 (reconcile/demotion); Phase 1 only fills + persists it
+    activity: crate::activity::SharedActivity,
+    /// Pilot → recent (system, time) sightings index (Phase 1 data layer; consumed in Phase 2).
+    sightings: crate::intel::SharedSightings,
     /// Static ship-detail cache (avoids per-frame DB queries).
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     /// Cached role badges per ship id.
@@ -917,6 +922,19 @@ impl SpaiApp {
         let lookup_cache: crate::charlookup::LookupCache = Default::default();
         let lookup_tx =
             Some(crate::charlookup::spawn_fetcher(lookup_cache.clone(), cc.egui_ctx.clone()));
+
+        // Per-character zKill-activity + account-age cache (Phase 1). Preload persisted rows so a
+        // restart doesn't re-storm zKill, then start the background fetcher.
+        let activity: crate::activity::SharedActivity = {
+            let mut c = crate::activity::ActivityCache::default();
+            if let Some(s) = &store {
+                c.preload(s.pilot_activity());
+            }
+            std::sync::Arc::new(std::sync::Mutex::new(c))
+        };
+        crate::activity::spawn(activity.clone(), cc.egui_ctx.clone());
+        // Pilot → recent (system, time) sightings index (Phase 1), populated by the chat watcher.
+        let sightings: crate::intel::SharedSightings = Default::default();
         let jump_favourites: std::collections::HashSet<i64> =
             settings.jump_favourites.iter().copied().collect();
 
@@ -1278,6 +1296,8 @@ impl SpaiApp {
                 crate::affiliation::spawn(cache.clone(), cc.egui_ctx.clone());
                 cache
             },
+            activity,
+            sightings,
         }
     }
 
@@ -3250,6 +3270,7 @@ impl SpaiApp {
                 ships,
                 self.pilots.clone(),
                 self.intel_state.clone(),
+                self.sightings.clone(),
                 ctx.clone(),
             );
         }

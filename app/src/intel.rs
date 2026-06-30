@@ -1376,6 +1376,64 @@ fn preprocess_intel(text: &str) -> String {
     t.replace('*', "")
 }
 
+/// Pilot → recent (system, time) sightings index (Phase 1 data layer).
+///
+/// Records where a named pilot was seen and when, so Phase 2 can tell whether a pilot
+/// that some heuristic would demote has actually been "revived" — i.e. is roaming
+/// across several systems right now. Keyed by lower-cased pilot name; entries older
+/// than the 4h window are pruned.
+#[derive(Default)]
+pub struct Sightings {
+    map: HashMap<String, Vec<(i64, i64)>>,
+}
+
+/// Retention window for sightings (4h), in seconds.
+const SIGHTINGS_WINDOW: i64 = 14400;
+
+pub type SharedSightings = std::sync::Arc<std::sync::Mutex<Sightings>>;
+
+impl Sightings {
+    /// Record that `name` was sighted in `system_id` at `ts` (unix seconds).
+    pub fn record(&mut self, name: &str, system_id: i64, ts: i64) {
+        if system_id <= 0 {
+            return;
+        }
+        self.map.entry(name.to_lowercase()).or_default().push((system_id, ts));
+    }
+
+    /// Drop sightings older than the 4h window; drop names left empty.
+    pub fn prune(&mut self, now: i64) {
+        let cutoff = now - SIGHTINGS_WINDOW;
+        self.map.retain(|_, v| {
+            v.retain(|&(_, ts)| ts >= cutoff);
+            !v.is_empty()
+        });
+    }
+
+    /// Distinct systems a pilot was sighted in with `ts >= now - window`.
+    /// (Used in Phase 2.)
+    #[allow(dead_code)] // used in Phase 2
+    pub fn distinct_systems_since(&self, name: &str, window_secs: i64, now: i64) -> usize {
+        let cutoff = now - window_secs;
+        let Some(v) = self.map.get(&name.to_lowercase()) else {
+            return 0;
+        };
+        v.iter()
+            .filter(|&&(_, ts)| ts >= cutoff)
+            .map(|&(sys, _)| sys)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
+    /// Whether a pilot is roaming widely enough to be considered "revived":
+    /// 3+ distinct systems in the last hour, or 5+ in the last 4h. (Used in Phase 2.)
+    #[allow(dead_code)] // used in Phase 2
+    pub fn revived(&self, name: &str, now: i64) -> bool {
+        self.distinct_systems_since(name, 3600, now) >= 3
+            || self.distinct_systems_since(name, SIGHTINGS_WINDOW, now) >= 5
+    }
+}
+
 /// Analyse one message into a structured report (movement is added later).
 #[allow(dead_code)] // thin no-context wrapper, kept for the public API + tests
 pub fn analyze(
@@ -2996,6 +3054,49 @@ pub fn parse_eve_time(s: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::geo::{SystemInfo, Systems};
+
+    #[test]
+    fn sightings_counting_and_revival() {
+        let now = 1_000_000;
+        let mut s = Sightings::default();
+        // Same pilot in 3 distinct systems within the last hour (case-insensitive name).
+        s.record("Bob", 30000001, now - 100);
+        s.record("bob", 30000002, now - 200);
+        s.record("BOB", 30000003, now - 300);
+        // A repeat of a system shouldn't inflate the distinct count.
+        s.record("bob", 30000001, now - 50);
+        // An old sighting well outside the 4h window.
+        s.record("bob", 30000099, now - 20000);
+
+        assert_eq!(s.distinct_systems_since("bob", 3600, now), 3);
+        assert!(s.revived("bob", now)); // 3+ in the last hour
+
+        // The 4h window already excludes the old (now-20000) sighting.
+        assert_eq!(s.distinct_systems_since("bob", SIGHTINGS_WINDOW, now), 3);
+        // A window wider than the retention still sees the old sighting — until prune drops it.
+        assert_eq!(s.distinct_systems_since("bob", 999_999, now), 4);
+        s.prune(now);
+        assert_eq!(s.distinct_systems_since("bob", 999_999, now), 3);
+
+        // An unknown pilot → zero, not revived.
+        assert_eq!(s.distinct_systems_since("nobody", 3600, now), 0);
+        assert!(!s.revived("nobody", now));
+
+        // Only 2 distinct in the last hour but 5 across 4h → revived via the wider window.
+        let mut w = Sightings::default();
+        for (i, dt) in [(1, 100), (2, 200), (3, 5000), (4, 6000), (5, 7000)] {
+            w.record("roamer", 30000000 + i, now - dt);
+        }
+        assert_eq!(w.distinct_systems_since("roamer", 3600, now), 2);
+        assert_eq!(w.distinct_systems_since("roamer", SIGHTINGS_WINDOW, now), 5);
+        assert!(w.revived("roamer", now));
+
+        // system_id <= 0 is ignored.
+        let mut z = Sightings::default();
+        z.record("x", 0, now);
+        z.record("x", -5, now);
+        assert_eq!(z.distinct_systems_since("x", 3600, now), 0);
+    }
 
     fn noships() -> std::collections::HashMap<String, (i64, String)> {
         std::collections::HashMap::new()

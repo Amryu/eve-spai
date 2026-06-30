@@ -28,6 +28,7 @@ pub fn spawn(
     ships: Arc<HashMap<String, (i64, String)>>,
     pilots: crate::pilot::SharedPilots,
     state: Arc<Mutex<IntelState>>,
+    sightings: crate::intel::SharedSightings,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -50,6 +51,7 @@ pub fn spawn(
                 &ships,
                 &pilots,
                 &state,
+                &sightings,
                 &ctx,
                 &mut processed,
                 &mut file_sigs,
@@ -71,6 +73,7 @@ fn scan(
     ships: &HashMap<String, (i64, String)>,
     pilots: &crate::pilot::SharedPilots,
     state: &Mutex<IntelState>,
+    sightings: &crate::intel::SharedSightings,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
@@ -170,6 +173,17 @@ fn scan(
                     }
                 }
 
+                // Record pilot→system sightings (Phase 1 data layer; consumed in Phase 2).
+                // Each named pilot × each detected system at the report's time.
+                if !report.pilots.is_empty() && !report.systems.is_empty() {
+                    let mut sight = sightings.lock().unwrap();
+                    for name in &report.pilots {
+                        for sys in &report.systems {
+                            sight.record(name, sys.id, report.received);
+                        }
+                    }
+                }
+
                 // Successive messages from the same reporter (same/no system, ≤1 min)
                 // amend their previous report rather than adding a new one.
                 if st.try_amend(&report, AMEND_GRACE, systems) {
@@ -247,6 +261,9 @@ fn scan(
             // Keep reports up to an hour so outdated ones still show (greyed) past
             // the user-configurable outdated threshold; the UI marks staleness.
             st.prune(3600, now);
+            drop(st);
+            // Drop sightings outside the 4h window so the index doesn't grow unbounded.
+            sightings.lock().unwrap().prune(now);
             any_new = true;
         }
         if let Some(sig) = sig {
