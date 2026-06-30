@@ -162,7 +162,7 @@ pub fn is_wh_code(token: &str) -> bool {
     lookup_type(token).is_some()
 }
 
-/// Every CCP wormhole signature code. `K162` is the generic exit (real type known
+/// Every Fenris Creations wormhole signature code. `K162` is the generic exit (real type known
 /// only from the far side).
 #[rustfmt::skip]
 pub static WH_TYPES: &[Wh] = &[

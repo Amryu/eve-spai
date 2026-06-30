@@ -271,6 +271,6 @@ system-info window. Add a **right-click context menu** with **"Show Info"** (and
 - **Mid-route fatigue start**: plan from zero fatigue, or let the user enter current fatigue?
 
 Sources: [EVE-U Jump drives](https://wiki.eveuniversity.org/Jump_drives),
-[Jump Activation Cooldown & Fatigue (CCP)](https://support.eveonline.com/hc/en-us/articles/212726865-Jump-Activation-Cooldown-and-Jump-Fatigue),
-[Upwell Structures (CCP)](https://support.eveonline.com/hc/en-us/articles/213021829-Upwell-Structures),
+[Jump Activation Cooldown & Fatigue (Fenris Creations)](https://support.eveonline.com/hc/en-us/articles/212726865-Jump-Activation-Cooldown-and-Jump-Fatigue),
+[Upwell Structures (Fenris Creations)](https://support.eveonline.com/hc/en-us/articles/213021829-Upwell-Structures),
 [Capital ships (EVE-U)](https://wiki.eveuniversity.org/Capital_ships).

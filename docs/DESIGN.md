@@ -352,7 +352,7 @@ Deliberately not built — each works against the resource and simplicity goals:
   `alerts`, `map_notes` (adv).
 - **SDE store**: read-only data (systems, regions, gates graph, type names, map
   coordinates) **downloaded on first run** and baked into a local DB. Versioned; a
-  background check refreshes it when CCP publishes a newer SDE. App degrades
+  background check refreshes it when Fenris Creations publishes a newer SDE. App degrades
   gracefully (log parsing still works) if the SDE isn't downloaded yet.
 - **Image disk cache**: small files keyed by `entity:size`; in addition to the
   in-memory byte-capped texture cache.
@@ -437,7 +437,7 @@ warning)*. Every integration is lazy and failure-tolerant; none block the UI.
   region map; revisit a `wgpu` canvas only if the full 3D cluster (A1) needs it.
 - **D3 — SDE pipeline. ✅ RESOLVED: download on first run + version-checked refresh**
   (not bundled), baked into a local DB. Open sub-question: which SDE source/format
-  (CCP fuzzwork CSV, the official SDE archive, or a community JSON mirror).
+  (Fenris Creations fuzzwork CSV, the official SDE archive, or a community JSON mirror).
 - **D4 — DB layer.** `rusqlite` (sync, simplest) vs. `sqlx` (async). Leaning rusqlite
   on a blocking task.
 - **D5 — Token encryption at rest.** OS keychain vs. app-encrypted DB field.

@@ -432,7 +432,7 @@ fn layout(title: &str, body: Markup, script: Option<&str>) -> Markup {
                 main .wrap {
                     (body)
                 }
-                footer { p { "EVE Spai — battle reports. EVE Online and all related assets are property of CCP hf." } }
+                footer { p { "EVE Spai — battle reports. EVE Online and all related assets are property of Fenris Creations." } }
                 @if let Some(js) = script {
                     script { (PreEscaped(js)) }
                 }
