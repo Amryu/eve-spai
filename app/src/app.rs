@@ -16651,10 +16651,26 @@ fn open_mumble(link: String) {
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .ok()
-            .and_then(|c| c.get(&link).send().ok())
-            .and_then(|r| r.error_for_status().ok())
-            .and_then(|r| r.text().ok())
-            .and_then(|body| crate::pings::extract_mumble_url(&body));
+            .and_then(|client| {
+                // gnf.lt is occasionally flaky (intermittent errors / empty bodies), so retry the
+                // fetch up to 5 times before giving up and bouncing through the browser.
+                for attempt in 1..=5 {
+                    let got = client
+                        .get(&link)
+                        .send()
+                        .and_then(|r| r.error_for_status())
+                        .and_then(|r| r.text())
+                        .ok()
+                        .and_then(|body| crate::pings::extract_mumble_url(&body));
+                    if got.is_some() {
+                        return got;
+                    }
+                    if attempt < 5 {
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                    }
+                }
+                None
+            });
         match &resolved {
             Some(url) => match open::that(url) {
                 Ok(_) => return,
@@ -16662,8 +16678,8 @@ fn open_mumble(link: String) {
                 // environment) — fall back to the browser, which has its own protocol prompt.
                 Err(e) => eprintln!("[mumble] opening {url} failed ({e}); falling back to browser"),
             },
-            // Couldn't resolve the gnf.lt page to a mumble:// target (offline / page format) — browser.
-            None => eprintln!("[mumble] could not resolve {link} to a mumble:// url; opening in browser"),
+            // Couldn't resolve the gnf.lt page to a mumble:// target after retries — browser.
+            None => eprintln!("[mumble] could not resolve {link} after 5 tries; opening in browser"),
         }
         let _ = open::that(&link);
     });
