@@ -16,6 +16,7 @@ path = "src/main.rs"
 winresource = "0.1"
 
 [dependencies]
+br-core = { path = "../crates/br-core" }
 eframe = "0.34"
 egui = "0.34"
 egui_extras = { version = "0.34", default-features = false, features = ["http", "image"] }

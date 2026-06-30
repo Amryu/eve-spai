@@ -1,0 +1,15 @@
+[package]
+name = "br-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "EVE Spai battle-report model and clustering (shared core)"
+
+[lib]
+name = "br_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"

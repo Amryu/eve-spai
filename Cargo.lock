@@ -662,6 +662,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "br-core"
+version = "0.4.2"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1553,6 +1562,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "base64",
+ "br-core",
  "chrono",
  "csv",
  "directories",
