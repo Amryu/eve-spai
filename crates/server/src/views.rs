@@ -519,11 +519,18 @@ fn side_panel(
                         }
                     }
                 }
-                @if let Some(coalition) = &side.coalition {
-                    @if !side.parties.is_empty() {
-                        @let cm = format!("{} - {} parties", coalition, side.parties.len());
-                        div .coalition-members title=(cm) { (cm) }
-                    }
+                // Always render this subtitle row so every side header is the same height
+                // and the stats/rosters below line up; a side with no coalition gets a
+                // non-breaking placeholder of identical height.
+                @let coalition_line = side
+                    .coalition
+                    .as_ref()
+                    .filter(|_| !side.parties.is_empty())
+                    .map(|c| format!("{} - {} parties", c, side.parties.len()));
+                @if let Some(cm) = coalition_line {
+                    div .coalition-members title=(cm) { (cm) }
+                } @else {
+                    div .coalition-members aria-hidden="true" { (PreEscaped("&nbsp;")) }
                 }
             }
             div .side-stats {
@@ -1061,7 +1068,11 @@ const VIEWER_JS: &str = r#"
     var doms=arr.filter(function(e){ return total>0 && e.c/total>0.10; }).slice(0,3);
     var h3=sp.querySelector('.side-title h3');
     if(h3){ var lbl=doms.length?doms[0].name:('Side '+(i+1)); h3.textContent=lbl; h3.title=lbl; }
-    var cm=sp.querySelector('.coalition-members'); if(cm && cm.remove){ cm.remove(); } // stale after regroup
+    // A regrouped side has no coalition concept: keep the subtitle row (so headers stay the
+    // same height and panels align) but replace its text with a non-breaking placeholder.
+    var cm=sp.querySelector('.coalition-members');
+    if(!cm){ cm=document.createElement('div'); cm.className='coalition-members'; sp.querySelector('.side-head').appendChild(cm); }
+    cm.textContent=' '; cm.removeAttribute('title'); cm.setAttribute('aria-hidden','true');
     var logos=sp.querySelector('.dom-logos');
     if(!logos){ logos=document.createElement('span'); logos.className='dom-logos'; sp.querySelector('.side-title').appendChild(logos); }
     logos.innerHTML='';
@@ -1272,7 +1283,9 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .side-panel{min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;}
 .side-head h3{margin-bottom:2px;}
 .side-title h3{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.coalition-members{color:var(--muted); font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+/* Always occupies one line (an nbsp placeholder fills it when there is no coalition) so
+   both side headers are the same height and the stats/rosters below line up. */
+.coalition-members{color:var(--muted); font-size:12.5px; min-height:1.6em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .side-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0;}
 .stat{display:flex; flex-direction:column;}
 .stat-num{font-size:16px; font-weight:600; font-family:var(--mono);}
@@ -1797,6 +1810,19 @@ mod tests {
         for html in [&view, &card_html, &dir, &nf] {
             assert!(!html.contains('\u{2014}'), "no em dash in rendered output");
         }
+    }
+
+    #[test]
+    fn no_coalition_side_still_renders_subtitle_placeholder() {
+        // The test parties aren't a recognized coalition, so every side lacks one. The
+        // subtitle row must still render (nbsp placeholder + aria-hidden) so both headers
+        // are the same height and the panels below align.
+        let html = viewer_page(&card_data(Some("Align"), "u")).into_string();
+        assert!(html.contains("class=\"coalition-members\" aria-hidden=\"true\""));
+        // Both sides get the placeholder row (two-sided battle).
+        assert!(html.matches("class=\"coalition-members\"").count() >= 2);
+        // The min-height rule that reserves the row's space is present.
+        assert!(CSS.contains(".coalition-members{") && CSS.contains("min-height:1.6em"));
     }
 
     #[test]
