@@ -16,6 +16,8 @@ pub const DEFAULT_MAX_DECOMPRESSED: usize = 8 * 1024 * 1024;
 pub const DEFAULT_MAX_PER_CHAR: i64 = 1000;
 /// Per-character uploads allowed per rolling hour.
 pub const DEFAULT_UPLOADS_PER_HOUR: i64 = 60;
+/// Default lifetime of an issued session token (24h).
+pub const DEFAULT_SESSION_TTL_SECS: i64 = 86_400;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -28,13 +30,22 @@ pub struct Config {
     pub max_decompressed: usize,
     pub max_per_char: i64,
     pub uploads_per_hour: i64,
+    /// HS256 secret signing OUR session tokens. Required at startup.
+    pub session_secret: String,
+    /// Lifetime of an issued session token, in seconds.
+    pub session_ttl_secs: i64,
 }
 
 impl Config {
-    /// Build from the environment. Errors only if `DATABASE_URL` is missing.
+    /// Build from the environment. Errors if `DATABASE_URL` or `BR_SESSION_SECRET`
+    /// is missing (both are required at startup; the build and unit tests need none).
     pub fn from_env() -> anyhow::Result<Self> {
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
+        let session_secret = std::env::var("BR_SESSION_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("BR_SESSION_SECRET must be set"))?;
         Ok(Self {
             database_url,
             bind_addr: env_or("BIND_ADDR", "0.0.0.0:8080"),
@@ -47,6 +58,8 @@ impl Config {
             max_decompressed: env_usize("BR_MAX_DECOMPRESSED", DEFAULT_MAX_DECOMPRESSED),
             max_per_char: env_i64("BR_MAX_PER_CHAR", DEFAULT_MAX_PER_CHAR),
             uploads_per_hour: env_i64("BR_UPLOADS_PER_HOUR", DEFAULT_UPLOADS_PER_HOUR),
+            session_secret,
+            session_ttl_secs: env_i64("BR_SESSION_TTL_SECS", DEFAULT_SESSION_TTL_SECS),
         })
     }
 

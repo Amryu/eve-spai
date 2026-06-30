@@ -1,17 +1,20 @@
-//! Shared application state and the authenticated-identity extractor.
+//! Shared application state.
+//!
+//! Two token layers live here, deliberately distinct: the EVE [`Verifier`] (used ONLY
+//! by the `/api/session` mint endpoint) and OUR [`SessionIssuer`]/[`SessionVerifier`]
+//! (used by every protected battle-report route via the [`SessionIdentity`] extractor).
+//!
+//! [`SessionIdentity`]: crate::session::SessionIdentity
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{FromRef, FromRequestParts};
-use axum::http::request::Parts;
-use axum::http::header::AUTHORIZATION;
 use sqlx::PgPool;
 
-use crate::auth::{Identity, Verifier};
+use crate::auth::Verifier;
 use crate::config::Config;
-use crate::error::AppError;
+use crate::session::{SessionIssuer, SessionVerifier};
 
 /// A view counts once per (report, client) within this window — a cheap in-memory
 /// throttle so a refresh loop can't inflate `views` (good enough for M3).
@@ -20,16 +23,26 @@ const VIEW_THROTTLE: Duration = Duration::from_secs(3600);
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// EVE SSO verifier — only the `/api/session` mint endpoint uses it.
     pub verifier: Arc<Verifier>,
+    /// Mints OUR session tokens at `/api/session`.
+    pub session_issuer: Arc<SessionIssuer>,
+    /// Validates OUR session tokens on every protected BR route.
+    pub session_verifier: Arc<SessionVerifier>,
     pub cfg: Arc<Config>,
     views: Arc<Mutex<HashMap<(String, String), Instant>>>,
 }
 
 impl AppState {
     pub fn new(db: PgPool, verifier: Verifier, cfg: Config) -> Self {
+        let secret = cfg.session_secret.as_bytes();
+        let session_issuer = SessionIssuer::new(secret, cfg.session_ttl_secs);
+        let session_verifier = SessionVerifier::new(secret);
         Self {
             db,
             verifier: Arc::new(verifier),
+            session_issuer: Arc::new(session_issuer),
+            session_verifier: Arc::new(session_verifier),
             cfg: Arc::new(cfg),
             views: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -47,29 +60,5 @@ impl AppState {
         }
         map.insert(key, now);
         true
-    }
-}
-
-/// Extractor that verifies the `Authorization: Bearer <jwt>` token and yields the
-/// caller's [`Identity`]. Any problem becomes a 401.
-impl<S> FromRequestParts<S> for Identity
-where
-    AppState: FromRef<S>,
-    S: Send + Sync,
-{
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app = AppState::from_ref(state);
-        let token = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "))
-            .ok_or_else(|| AppError::Unauthorized("missing bearer token".into()))?;
-        app.verifier
-            .verify(token.trim())
-            .await
-            .map_err(|e| AppError::Unauthorized(e.to_string()))
     }
 }

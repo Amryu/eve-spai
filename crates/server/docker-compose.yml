@@ -2,8 +2,12 @@
 #
 #   docker compose up -d
 #   export DATABASE_URL=postgres://evespai:evespai@localhost:5433/evespai
+#   export BR_SESSION_SECRET=dev-only-change-me   # required: signs our session tokens
 #   cargo test -- --ignored        # runs the DB-gated integration tests
 #   cargo run                      # runs the server (migrations apply on startup)
+#
+# BR_SESSION_SECRET is required at startup. BR_SESSION_TTL_SECS (default 86400) sets
+# how long an issued session token stays valid.
 
 services:
   postgres:

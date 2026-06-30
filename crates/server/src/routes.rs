@@ -6,14 +6,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use sqlx::Row;
 
-use crate::auth::Identity;
 use crate::error::AppError;
 use crate::models::{CreateResponse, ReportPage, ReportRow};
 use crate::pipeline;
+use crate::session::{self, SessionIdentity};
 use crate::state::AppState;
 use crate::views::{self, CardData, DirQuery};
 use br_core::battle::BattleReportDoc;
@@ -24,6 +24,7 @@ pub fn router(state: AppState) -> Router {
     let max_compressed = state.cfg.max_compressed;
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/session", post(create_session))
         .route("/api/br", get(list).post(upload))
         .route("/api/br/mine", get(mine))
         .route("/api/br/{id}", get(fetch_json).delete(delete_report))
@@ -39,6 +40,37 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The body of a successful `POST /api/session` (matches the locked app contract).
+#[derive(serde::Serialize)]
+struct SessionResponse {
+    token: String,
+    expires_at: i64,
+    character_id: i64,
+    character_name: String,
+}
+
+/// `POST /api/session` — the ONLY route that accepts an EVE SSO token. The EVE token is
+/// verified in memory (never logged, never persisted), then exchanged for one of OUR
+/// short-lived, correctly-audienced session tokens which all other routes require.
+async fn create_session(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<SessionResponse>, AppError> {
+    let eve_token = session::bearer(&headers)?;
+    let identity = st
+        .verifier
+        .verify(eve_token)
+        .await
+        .map_err(|e| AppError::Unauthorized(e.to_string()))?;
+    let (token, expires_at) = st.session_issuer.issue(&identity)?;
+    Ok(Json(SessionResponse {
+        token,
+        expires_at,
+        character_id: identity.char_id,
+        character_name: identity.name,
+    }))
 }
 
 /// True if a present Content-Length is within the compressed cap. A missing length
@@ -68,7 +100,7 @@ pub struct UploadParams {
 /// `POST /api/br` — create a report from a gzipped `BattleReportDoc`.
 async fn upload(
     State(st): State<AppState>,
-    identity: Identity,
+    SessionIdentity(identity): SessionIdentity,
     Query(params): Query<UploadParams>,
     headers: HeaderMap,
     body: Bytes,
@@ -367,7 +399,7 @@ async fn viewer(
 /// `GET /api/br/mine` — the caller's reports, including unlisted.
 async fn mine(
     State(st): State<AppState>,
-    identity: Identity,
+    SessionIdentity(identity): SessionIdentity,
 ) -> Result<Json<ReportPage>, AppError> {
     let rows = sqlx::query(
         "SELECT id, title, systems, started_at, ended_at, kills, total_isk, \
@@ -384,7 +416,7 @@ async fn mine(
 /// `DELETE /api/br/{id}` — owner-only.
 async fn delete_report(
     State(st): State<AppState>,
-    identity: Identity,
+    SessionIdentity(identity): SessionIdentity,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let id = id.strip_suffix(".json").unwrap_or(&id).to_string();

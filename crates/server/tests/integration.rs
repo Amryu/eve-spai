@@ -16,11 +16,12 @@ use axum::http::{Request, StatusCode};
 use br_core::battle::{
     Attacker, BattleReportDoc, Engagement, Overrides, Party, PartyKind, BATTLE_BREAK_SECS,
 };
-use eve_spai_br::auth::Verifier;
+use eve_spai_br::auth::{Identity, Verifier};
 use eve_spai_br::config::{Config, DEFAULT_CLIENT_ID};
+use eve_spai_br::session::{SessionClaims, SessionIssuer};
 use eve_spai_br::state::AppState;
 use jsonwebtoken::jwk::JwkSet;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -83,6 +84,8 @@ fn token(char_id: i64, name: &str) -> String {
     encode(&header, &claims, &key).unwrap()
 }
 
+const TEST_SESSION_SECRET: &[u8] = b"integration-test-session-secret";
+
 fn base_config(database_url: String) -> Config {
     Config {
         database_url,
@@ -94,6 +97,8 @@ fn base_config(database_url: String) -> Config {
         max_decompressed: 8 * 1024 * 1024,
         max_per_char: 1000,
         uploads_per_hour: 60,
+        session_secret: String::from_utf8(TEST_SESSION_SECRET.to_vec()).unwrap(),
+        session_ttl_secs: 3600,
     }
 }
 
@@ -153,6 +158,15 @@ fn app(pool: PgPool, cfg: Config) -> axum::Router {
     eve_spai_br::routes::router(AppState::new(pool, verifier, cfg))
 }
 
+/// A router backed by a *lazy* pool that never connects — enough for the auth-layer
+/// tests below (mint and the 401 rejection paths return before any query runs), so they
+/// need no Postgres and run under a plain `cargo test`.
+fn lazy_app() -> axum::Router {
+    let cfg = base_config("postgres://u:p@localhost/db".into());
+    let pool = PgPoolOptions::new().connect_lazy(&cfg.database_url).unwrap();
+    app(pool, cfg)
+}
+
 async fn send(
     app: &axum::Router,
     method: &str,
@@ -180,6 +194,14 @@ async fn send(
     (status, value)
 }
 
+/// Exchange an EVE token for OUR session token via `POST /api/session`, returning the
+/// session token the protected routes now require.
+async fn mint(app: &axum::Router, char_id: i64, name: &str) -> String {
+    let (status, body) = send(app, "POST", "/api/session", Some(&token(char_id, name)), None).await;
+    assert_eq!(status, StatusCode::OK, "mint failed: {body:?}");
+    body["token"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 #[ignore = "requires DATABASE_URL (run with --ignored)"]
 async fn upload_fetch_and_list() {
@@ -187,7 +209,7 @@ async fn upload_fetch_and_list() {
     let Some(pool) = pool().await else { return };
     let url = std::env::var("DATABASE_URL").unwrap();
     let app = app(pool, base_config(url));
-    let tok = token(90000001, "Uploader One");
+    let tok = mint(&app, 90000001, "Uploader One").await;
 
     let (status, body) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("Big Fight")))).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
@@ -213,7 +235,7 @@ async fn unlisted_hidden_from_public_but_in_mine() {
     let Some(pool) = pool().await else { return };
     let url = std::env::var("DATABASE_URL").unwrap();
     let app = app(pool, base_config(url));
-    let tok = token(90000002, "Sneaky");
+    let tok = mint(&app, 90000002, "Sneaky").await;
 
     let (status, body) = send(&app, "POST", "/api/br?unlisted=true", Some(&tok), Some(gzip_doc(&sample_doc("Hidden")))).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
@@ -236,8 +258,8 @@ async fn owner_only_delete() {
     let Some(pool) = pool().await else { return };
     let url = std::env::var("DATABASE_URL").unwrap();
     let app = app(pool, base_config(url));
-    let owner = token(90000003, "Owner");
-    let other = token(90000099, "Intruder");
+    let owner = mint(&app, 90000003, "Owner").await;
+    let other = mint(&app, 90000099, "Intruder").await;
 
     let (_, body) = send(&app, "POST", "/api/br", Some(&owner), Some(gzip_doc(&sample_doc("Mine")))).await;
     let id = body["id"].as_str().unwrap().to_string();
@@ -266,7 +288,7 @@ async fn dedupe_same_doc_same_id() {
     let Some(pool) = pool().await else { return };
     let url = std::env::var("DATABASE_URL").unwrap();
     let app = app(pool, base_config(url));
-    let tok = token(90000004, "Dedupe");
+    let tok = mint(&app, 90000004, "Dedupe").await;
     let doc = sample_doc("Dup");
 
     let (s1, b1) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&doc))).await;
@@ -285,7 +307,7 @@ async fn quota_over_cap_429() {
     let mut cfg = base_config(url);
     cfg.max_per_char = 2;
     let app = app(pool, cfg);
-    let tok = token(90000005, "Spammer");
+    let tok = mint(&app, 90000005, "Spammer").await;
 
     // Distinct docs so dedupe doesn't mask the quota.
     let (s1, _) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("A")))).await;
@@ -304,5 +326,83 @@ async fn unauthenticated_upload_401() {
     let url = std::env::var("DATABASE_URL").unwrap();
     let app = app(pool, base_config(url));
     let (status, _) = send(&app, "POST", "/api/br", None, Some(gzip_doc(&sample_doc("X")))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// --- Session-token layer (no DB; plain `cargo test`) ------------------------------
+
+/// A valid EVE token at `POST /api/session` mints a well-formed session token whose
+/// claims (`sub`/`name`/`aud`/`iss`/`exp`) match the contract and the response fields.
+#[tokio::test]
+async fn mint_returns_well_formed_session_token() {
+    let app = lazy_app();
+    let (status, body) =
+        send(&app, "POST", "/api/session", Some(&token(90000010, "Mint Pilot")), None).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["character_id"], 90000010);
+    assert_eq!(body["character_name"], "Mint Pilot");
+    let session_tok = body["token"].as_str().unwrap();
+    let expires_at = body["expires_at"].as_i64().unwrap();
+
+    let mut v = Validation::new(Algorithm::HS256);
+    v.set_issuer(&["eve-spai.com"]);
+    v.set_audience(&["eve-spai.com"]);
+    let data = decode::<SessionClaims>(
+        session_tok,
+        &DecodingKey::from_secret(TEST_SESSION_SECRET),
+        &v,
+    )
+    .expect("session token must verify with our secret + iss + aud");
+    assert_eq!(data.claims.sub, "90000010");
+    assert_eq!(data.claims.name, "Mint Pilot");
+    assert_eq!(data.claims.iss, "eve-spai.com");
+    assert_eq!(data.claims.aud, "eve-spai.com");
+    assert_eq!(data.claims.exp, expires_at);
+    assert!(data.claims.exp > chrono::Utc::now().timestamp());
+}
+
+/// `POST /api/session` with no bearer is a 401.
+#[tokio::test]
+async fn mint_without_token_401() {
+    let app = lazy_app();
+    let (status, _) = send(&app, "POST", "/api/session", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// A raw EVE token presented to a protected BR route is REJECTED — only `/api/session`
+/// accepts the EVE token. The session extractor rejects before any DB access.
+#[tokio::test]
+async fn raw_eve_token_rejected_on_protected_routes() {
+    let app = lazy_app();
+    let eve = token(90000011, "Raw EVE");
+    for (method, uri, body) in [
+        ("POST", "/api/br", Some(gzip_doc(&sample_doc("X")))),
+        ("GET", "/api/br/mine", None),
+        ("DELETE", "/api/br/whatever", None),
+    ] {
+        let (status, _) = send(&app, method, uri, Some(&eve), body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} must reject the raw EVE token");
+    }
+}
+
+/// A session token signed with the wrong secret is rejected on a protected route.
+#[tokio::test]
+async fn wrong_secret_session_rejected() {
+    let app = lazy_app();
+    let (forged, _) = SessionIssuer::new(b"not-the-real-secret", 3600)
+        .issue(&Identity { char_id: 90000012, name: "Forger".into() })
+        .unwrap();
+    let (status, _) = send(&app, "GET", "/api/br/mine", Some(&forged), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// An expired session token is rejected on a protected route.
+#[tokio::test]
+async fn expired_session_rejected() {
+    let app = lazy_app();
+    let (expired, _) = SessionIssuer::new(TEST_SESSION_SECRET, -3600)
+        .issue(&Identity { char_id: 90000013, name: "Late".into() })
+        .unwrap();
+    let (status, _) = send(&app, "GET", "/api/br/mine", Some(&expired), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

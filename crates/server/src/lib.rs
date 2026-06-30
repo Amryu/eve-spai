@@ -10,6 +10,7 @@ pub mod error;
 pub mod models;
 pub mod pipeline;
 pub mod routes;
+pub mod session;
 pub mod state;
 pub mod views;
 
