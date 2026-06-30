@@ -706,6 +706,12 @@ fn looks_like_system_code(t: &str) -> bool {
     if !t.chars().any(|c| c.is_ascii_lowercase()) {
         return true;
     }
+    // A mixed-case token — an upper-case letter alongside the lower-case — is Title-cased like a
+    // name ("Htg-0", "Jean-Luc"), never a code: real codes are typed all-caps ("MSKR-1", handled
+    // above) or all-lower ("1dq1-a"). So only an all-lower-case hyphenated token continues here.
+    if t.chars().any(|c| c.is_ascii_uppercase()) {
+        return false;
+    }
     let has_digit = t.chars().any(|c| c.is_ascii_digit());
     let longest_segment = t.split('-').map(|s| s.len()).max().unwrap_or(0);
     has_digit || longest_segment <= 3
@@ -747,6 +753,22 @@ fn is_time_token(t: &str) -> bool {
         &lower[de..],
         "min" | "mins" | "minute" | "minutes" | "m" | "s" | "sec" | "secs"
             | "second" | "seconds" | "h" | "hr" | "hrs" | "hour" | "hours" | "d"
+    )
+}
+
+/// A number glued to an ISK magnitude suffix ("346mio", "300kk", "1.5b", "750m") — an amount,
+/// never a name. Only leading digits (with an optional decimal) count, so a real digit-bearing
+/// handle like "01XcerberusX01" or "PORTOS11" is unaffected.
+fn is_amount_token(t: &str) -> bool {
+    let lower = t.to_lowercase();
+    let de = match lower.find(|c: char| !c.is_ascii_digit() && c != '.') {
+        Some(0) | None => return false, // no leading digits, or all digits (a bare count)
+        Some(de) => de,
+    };
+    matches!(
+        &lower[de..],
+        "k" | "kk" | "m" | "mil" | "mill" | "million" | "millions" | "mio" | "mio."
+            | "b" | "bil" | "bill" | "billion" | "billions" | "isk"
     )
 }
 
@@ -2099,6 +2121,7 @@ pub fn analyze_ctx(
             && !is_cap_word(&lc)
             && !is_tackle_word(&lc)
             && !is_time_token(t)
+            && !is_amount_token(t)
             && (!looks_like_system_code(t) || is_code_lookalike_name(t, systems))
             && !CLEAR_WORDS.contains(&lc.as_str())
             && ship_index.get(&lc).is_none()
@@ -2195,6 +2218,17 @@ pub fn analyze_ctx(
             pilot_tokens.extend(name.split_whitespace().map(|w| w.to_lowercase()));
         }
     }
+    // Tokens INSIDE a multi-word pilot span — including an all-lower-case confirmed name with no
+    // strong-name word ("bovine worm") that `pilot_tokens` (strong-name-filtered) misses. A hull
+    // word inside such a span is part of the player's name, never a separate ship, so it's masked
+    // from ship detection. A single-word pilot never masks a hull ("Bob in a Worm" keeps the Worm),
+    // and an all-ship blob ("Sabre Orthrus") is still recovered as ships by the reclassify pass.
+    let pilot_span_tokens: std::collections::HashSet<String> = pilots
+        .iter()
+        .filter(|n| n.split_whitespace().count() > 1)
+        .flat_map(|n| n.split_whitespace())
+        .map(|w| w.to_lowercase())
+        .collect();
 
     // Wormhole signature code (e.g. "K162") named anywhere in the message.
     let wh_code =
@@ -2247,7 +2281,10 @@ pub fn analyze_ctx(
     };
     for tok in &tokens {
         let lower = tok.to_lowercase();
-        if pilot_tokens.contains(&lower) || mw_words.contains(&lower) {
+        if pilot_tokens.contains(&lower)
+            || mw_words.contains(&lower)
+            || pilot_span_tokens.contains(&lower)
+        {
             continue;
         }
         // "shuttle(s)" with no specific hull → default to the Caldari Shuttle (672).
@@ -3007,7 +3044,9 @@ fn parse_isk(text: &str, ess: bool) -> Option<u64> {
     let mult = |s: &str| -> Option<f64> {
         match s {
             "k" => Some(1e3),
-            "kk" | "mil" | "mill" | "million" | "millions" => Some(1e6),
+            // "mio"/"mio." is an unambiguous "million" abbreviation (no system-code collision
+            // like bare "m"), so it counts as 1e6 regardless of ESS context.
+            "kk" | "mil" | "mill" | "million" | "millions" | "mio" | "mio." => Some(1e6),
             // Bare "m"/"M" collides with null-sec system shorthands ("4M-", "4M-HGW"), so
             // only read it as millions when an ESS amount is being discussed.
             "m" if ess => Some(1e6),
@@ -3079,7 +3118,7 @@ fn parse_count(
     // million"), not a hostile count.
     // Mirror parse_isk's suffixes so a spaced amount ("300 kk", "5 bill") isn't a count.
     const MAGNITUDE: &[&str] = &[
-        "m", "mil", "mill", "million", "millions", "kk", "b", "bil", "bill", "billion",
+        "m", "mil", "mill", "million", "millions", "mio", "kk", "b", "bil", "bill", "billion",
         "billions", "k", "isk",
     ];
     let mut best: Option<u32> = None;
@@ -5593,6 +5632,98 @@ mod tests {
         assert!(st.is_stale(&prior));
         assert!(!st.is_stale(&clear));
         assert!(!st.is_stale(&later));
+    }
+
+    /// `systems()` plus one extra null-sec code, for repro lines that name an unlisted system.
+    fn systems_with(extra: &[(&str, &str, i64, f64)]) -> Systems {
+        let mut by_name: std::collections::HashMap<String, SystemInfo> = std::collections::HashMap::new();
+        for (key, name, id, sec) in extra {
+            by_name.insert(
+                key.to_string(),
+                SystemInfo {
+                    id: *id,
+                    name: name.to_string(),
+                    security: *sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            );
+        }
+        Systems::new(by_name, HashMap::new())
+    }
+
+    #[test]
+    fn parse_isk_handles_mio_million_abbreviation() {
+        // "mio" (and a trailing-dot "mio.") is a common "million" abbreviation → 1e6, ungated by
+        // ESS context (unlike bare "m", which stays ESS-only).
+        assert_eq!(parse_isk("ess 346mio", true), Some(346_000_000));
+        assert_eq!(parse_isk("346mio", false), Some(346_000_000));
+        assert_eq!(parse_isk("worth 12 mio", false), Some(12_000_000));
+        assert_eq!(parse_isk("ess 50mio.", true), Some(50_000_000));
+        // Bare "m" is unchanged: ESS-only, so a null-sec shorthand isn't read as ISK.
+        assert_eq!(parse_isk("loot 750m", false), None);
+        assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
+    }
+
+    #[test]
+    fn htg0_is_a_pilot_mskr1_stays_a_system() {
+        // Repro line A: "MSKR-1 Htg-0 +5 gnosis 3x, Slasher, ESS 346mio" (reporter Duke Dekker).
+        // MSKR-1 (all-caps code) is the system; Htg-0 (Title-case + digit) is a pilot, not a code;
+        // both hulls are detected despite the "3x" count and the commas; ESS fires; 346mio = 346M.
+        let s = systems_with(&[("mskr-1", "MSKR-1", 99, -0.5)]);
+        let ships = ships_with(&[("Gnosis", 3756), ("Slasher", 585)]);
+        let r = analyze(
+            "MSKR-1 Htg-0 +5 gnosis 3x, Slasher, ESS 346mio",
+            &s, &ships, &noknown(), 1, "ch", "Duke Dekker",
+        );
+        // Both hulls (the comma after "3x"/"Slasher" and the "3x" count don't drop Gnosis).
+        assert!(r.ships.iter().any(|sh| sh.name == "Gnosis"), "ships={:?}", r.ships);
+        assert!(r.ships.iter().any(|sh| sh.name == "Slasher"), "ships={:?}", r.ships);
+        // ESS flag + the ISK amount via the "mio" suffix.
+        assert!(r.ess, "ESS flag should fire: {:?}", r.text);
+        assert_eq!(r.isk, Some(346_000_000), "isk={:?}", r.isk);
+        // "346mio" is an amount, never a pilot candidate.
+        assert!(!has_pilot_token(&r.pilots, "346mio"), "amount leaked as pilot: {:?}", r.pilots);
+        // Htg-0 is proposed as a pilot (held in the location blob); MSKR-1 frees as the system once
+        // ESI confirms the name (mirrors the live reconcile, like the other held-model tests).
+        assert!(proposed(&r.pilots, "Htg-0"), "Htg-0 not proposed: {:?}", r.pilots);
+        let (pilots, sysd, gates) = resolve_report(&r, &["Htg-0"], &s);
+        assert_eq!(pilots, vec!["Htg-0".to_string()], "resolved pilots={pilots:?}");
+        assert_eq!(sysd, vec!["MSKR-1".to_string()], "resolved systems={sysd:?}");
+        assert!(gates.is_empty(), "gates={gates:?}");
+    }
+
+    #[test]
+    fn pilot_word_that_is_a_hull_is_not_also_a_ship() {
+        // Repro line B: "bovine worm" is a (confirmed) PILOT whose second word is the Worm hull —
+        // it must be the pilot only, not also a ship.
+        let s = systems();
+        let ships = ships_with(&[("Worm", 17619)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("bovine worm".to_string(), 1i64)].into_iter().collect();
+        let r = analyze("bovine worm", &s, &ships, &known, 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p.eq_ignore_ascii_case("bovine worm")), "pilots={:?}", r.pilots);
+        assert!(!r.ships.iter().any(|sh| sh.name == "Worm"), "Worm inside pilot span leaked: {:?}", r.ships);
+        // Control: a hull that merely shares a word with a SEPARATE name (single-word pilot "Bob")
+        // is still a ship — only a hull INSIDE a multi-word pilot span is suppressed.
+        let ctrl = analyze("Bob in a Worm", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(ctrl.ships.iter().any(|sh| sh.name == "Worm"), "control Worm missing: {:?}", ctrl.ships);
+    }
+
+    #[test]
+    fn noise_punctuation_between_tokens_does_not_break_detection() {
+        // Commas/asterisks separating tokens are stripped by the tokenizer, but the apostrophe and
+        // hyphen (real name characters) are preserved within a token.
+        assert_eq!(tokenize("Slasher, ESS* 346mio"), vec!["Slasher", "ESS", "346mio"]);
+        assert_eq!(tokenize("O'Brien I-Pustelga Htg-0"), vec!["O'Brien", "I-Pustelga", "Htg-0"]);
+        // End-to-end: a comma + asterisk between a hull and "ESS" doesn't hide either.
+        let s = systems();
+        let ships = ships_with(&[("Slasher", 585)]);
+        let r = analyze("Slasher*, ESS 60mio", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Slasher"), "ships={:?}", r.ships);
+        assert!(r.ess, "ESS flag should fire through the punctuation: {:?}", r.text);
+        assert_eq!(r.isk, Some(60_000_000), "isk={:?}", r.isk);
     }
 
     fn ships_with(names: &[(&str, i64)]) -> std::collections::HashMap<String, (i64, String)> {
