@@ -30,11 +30,16 @@ pub fn run_overlay() -> eframe::Result<()> {
         .with_decorations(false)
         .with_transparent(true)
         .with_visible(true);
-    // On X11 also tag the root as a Utility window so window managers that ignore taskbar hints
-    // (some keep a 1×1 normal toplevel in the task switcher) still keep it out of the way.
+    // On X11 make the 1×1 context-host root OVERRIDE-REDIRECT: winit has no skip-taskbar on X11, and a
+    // Utility type still leaves it in KWin's task switcher as a stray empty entry. Override-redirect
+    // takes it out of the WM entirely (no taskbar / switcher / stack). The root has no content and
+    // never needs focus, and the alert/ping/dscan child viewports are separate managed windows, so
+    // this only hides the host. (Utility kept as a fallback hint.)
     #[cfg(target_os = "linux")]
     {
-        viewport = viewport.with_window_type(egui::X11WindowType::Utility);
+        viewport = viewport
+            .with_window_type(egui::X11WindowType::Utility)
+            .with_override_redirect(true);
     }
     let opts = crate::base_native_options(viewport);
     eframe::run_native(
