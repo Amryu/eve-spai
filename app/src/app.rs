@@ -5347,7 +5347,8 @@ impl SpaiApp {
                         let mut save_clicked = false;
                         let mut share_clicked = false;
                         let mut mine_clicked = false;
-                        ui.horizontal(|ui| {
+                        // Wrap to a second row on narrow/default windows instead of overflowing.
+                        ui.horizontal_wrapped(|ui| {
                             if ui
                                 .button(format!("{}  Back to battles", icon::ARROW_LEFT))
                                 .clicked()
