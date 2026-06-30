@@ -226,7 +226,7 @@ fn default_threat_jumps() -> u32 {
 
 /// A click on an intel card panel.
 #[derive(Clone)]
-enum IntelClick {
+pub(crate) enum IntelClick {
     System(i64),
     Ship(i64),
     Pilot(String),
@@ -436,18 +436,17 @@ pub struct SpaiApp {
     alerts_engine: std::sync::Arc<AlertEngine>,
     /// Recent fired alerts (unix, text) — shared with the game-log watcher and the alert engine.
     recent_alerts: crate::gamewatcher::AlertLog,
-    /// Reports shown in the custom notification window, with their severity.
+    /// Reports shown in the in-app "Recent alerts" history, with their severity (the alert
+    /// daemon feeds this via `fired_ui`/`drain_alerts`; the floating window uses `alert_shared`).
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
-    /// Seconds the custom notification window stays visible (counts down; 0 = hidden,
-    /// paused while hovered).
-    alert_window_secs: f32,
-    /// True while the alert window is currently shown (to detect re-opening so the
-    /// saved geometry is re-applied each time it appears).
-    alert_window_open: bool,
-    /// Pin: temporarily hold the alert window open (auto-cleared when it closes).
-    alert_window_pinned: bool,
-    /// Set when a new alert fires; the alert window requests foreground once, then clears it.
-    alert_focus_pending: bool,
+    /// Shared state for the DEFERRED alert viewport: the feed/countdown/pin/focus are produced
+    /// off the UI thread by the alert daemon; render context + on-top/enabled flags are published
+    /// here each frame; clicks/move/resize are drained back. Lets the window show + count down
+    /// independently of the main window's minimized state.
+    alert_shared: SharedAlertWindow,
+    /// The deferred alert viewport's render closure (built once in `new()`; declared every frame
+    /// in `alert_window`). Captures only Send+Sync shared state, so it paints standalone.
+    alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
     /// the combat-log watcher.
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -680,11 +679,6 @@ pub struct SpaiApp {
     /// Last (decorations, resizable) applied to the popped map window, so toggling
     /// overlay↔bordered re-applies them live (the builder only sets them on creation).
     map_vp_props: Option<(bool, bool)>,
-    /// Last on-top state applied to the alert window (re-applied when it changes, so
-    /// "smart" mode tracks EVE focus and the level is maintained while shown).
-    alert_level_applied: Option<bool>,
-    /// Last time the alert window re-asserted always-on-top (throttled re-raise).
-    alert_level_at: Option<std::time::Instant>,
     /// A window-move drag is in progress (so the map doesn't also pan).
     map_overlay_drag: bool,
     /// How systems are laid out (geographic / spaced / radial / tree).
@@ -924,9 +918,16 @@ impl SpaiApp {
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recent_alerts: crate::gamewatcher::AlertLog =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Shared state for the deferred alert viewport (produced by the alert daemon below,
+        // consumed by its render closure + the UI thread). Created before the engine so it can be
+        // threaded into both the engine (which pushes the feed) and the daemon.
+        let alert_shared: SharedAlertWindow =
+            std::sync::Arc::new(std::sync::Mutex::new(AlertWindowState::default()));
         let alerts_engine = std::sync::Arc::new(AlertEngine::new(
             recent_alerts.clone(),
             chrono::Utc::now().timestamp(),
+            alert_shared.clone(),
+            cc.egui_ctx.clone(),
         ));
         spawn_alert_daemon(
             alerts_engine.clone(),
@@ -1038,16 +1039,265 @@ impl SpaiApp {
             })
         };
 
-        // Background ticker: while pings are showing, wake the child viewport ~4x/s so its
-        // countdown/blink keep advancing even when the root is minimized and idle.
+        // The deferred alert viewport's render closure. Built once; declared every frame (see
+        // `alert_window`). Captures only Send+Sync shared state (no `&self`), so it can paint the
+        // child window independently of the root `update()`. Produces clicks/move/resize as outputs
+        // drained by the UI; counts the auto-hide timer down here so it advances while minimized.
+        #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+        let alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync> = {
+            let alert_shared = alert_shared.clone();
+            std::sync::Arc::new(move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
+                let ctx = ui.ctx().clone();
+                let mut st = alert_shared.lock().unwrap();
+                // Idle when the feature is off, or the countdown has expired and we're not pinned.
+                // Visibility tracks `secs`/`pinned` (the feed persists), like the old window.
+                let active = st.enabled && (st.secs > 0.0 || st.pinned);
+                // Drive Visible + click-through from the CLOSURE (not the builder) so they're right
+                // even while the root is minimized. Only send a command on change (each one pins
+                // egui at vsync). Per-OS behaviour mirrors the old immediate window:
+                // - Windows: hidden unless active (the re-map can't steal focus, WS_EX_NOACTIVATE).
+                // - Linux/X11: re-mapping always steals focus (winit#1160), so while the feature is
+                //   ON stay mapped and go transparent + click-through when idle instead of hiding;
+                //   only fully hide when the feature is OFF (no window at all, like before).
+                let want_visible = active || (st.enabled && !cfg!(target_os = "windows"));
+                let want_passthrough = !active;
+                if st.applied_visible != Some(want_visible) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
+                    st.applied_visible = Some(want_visible);
+                }
+                if st.applied_passthrough != Some(want_passthrough) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(want_passthrough));
+                    st.applied_passthrough = Some(want_passthrough);
+                }
+                if !active {
+                    st.open = false;
+                    st.pinned = false;
+                    st.level_applied = None;
+                    drop(st);
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(&ctx, |_ui| {});
+                    return;
+                }
+                let just_opened = !st.open;
+                st.open = true;
+                let on_top = st.on_top_level;
+                let focus = std::mem::take(&mut st.focus_pending);
+                // Clone the (small, ≤20-card) render data out, then release the lock before
+                // rendering — the daemon may push a new alert while we paint.
+                let feed = st.feed.clone();
+                let systems = st.systems.clone();
+                let status = st.status.clone();
+                let ship_details = st.ship_details.clone();
+                let ship_roles = st.ship_roles.clone();
+                let resolved_pilots = st.resolved_pilots.clone();
+                let last_ship = st.last_ship.clone();
+                let player_sys = st.player_sys;
+                let kills = st.kills.clone();
+                let affil = st.affil.clone();
+                let win_pos = st.win_pos;
+                let win_size = st.win_size;
+                let secs = st.secs;
+                let pinned_in = st.pinned;
+                let mut level_applied = st.level_applied;
+                let mut level_at = st.level_at;
+                if just_opened {
+                    level_applied = None; // force the level to be re-applied
+                }
+                drop(st);
+
+                // Minimizing the MAIN window can iconify this (owned) viewport with it; while an
+                // alert is showing it must stay up and keep working.
+                if ctx.input(|i| i.viewport().minimized) == Some(true) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                }
+                // A new alert: bring the window forward once — Windows only (a focus request on
+                // Linux/X11 steals focus from the game, winit#1160, which the user doesn't want).
+                if focus && cfg!(target_os = "windows") {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                // Re-apply the saved geometry when an alert appears (builder values aren't reliably
+                // re-applied after unmapping).
+                if just_opened {
+                    if let Some((w, h)) = win_size {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+                    }
+                    if let Some((x, y)) = win_pos {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+                    }
+                }
+                // Re-assert the level only on change or (re)open — NOT every frame (a viewport
+                // command each frame pins egui at vsync).
+                if just_opened || level_applied != Some(on_top) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
+                        egui::WindowLevel::AlwaysOnTop
+                    } else {
+                        egui::WindowLevel::Normal
+                    }));
+                    level_applied = Some(on_top);
+                    level_at = Some(std::time::Instant::now());
+                }
+                // A borderless/fullscreen game can rise above a topmost window, so periodically
+                // re-assert the level to re-claim the top. Throttled so it doesn't pin the app.
+                if on_top {
+                    let due = level_at
+                        .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
+                    if due {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                            egui::WindowLevel::AlwaysOnTop,
+                        ));
+                        level_at = Some(std::time::Instant::now());
+                    }
+                    ctx.request_repaint_after(std::time::Duration::from_millis(800));
+                }
+
+                let mut hovered = false;
+                let mut dismiss = false;
+                let mut pinned = pinned_in;
+                let mut moved: Option<(f32, f32)> = None;
+                let mut moved_size: Option<(f32, f32)> = None;
+                let mut clicks: Vec<IntelClick> = Vec::new();
+                let now_ts = chrono::Utc::now().timestamp();
+                egui::CentralPanel::default()
+                    .frame(
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(0x12, 0x14, 0x18))
+                            .inner_margin(8),
+                    )
+                    .show(&ctx, |ui| {
+                        // The top row is a drag handle, up to where the buttons begin.
+                        let mut buttons_left = f32::INFINITY;
+                        let row = ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}  Intel alerts",
+                                    egui_phosphor::regular::DOTS_SIX
+                                ))
+                                .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(if secs.is_finite() {
+                                    format!("{:.0}s", secs)
+                                } else {
+                                    "\u{221E}".to_owned() // ∞
+                                })
+                                .weak(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .button(egui_phosphor::regular::X)
+                                        .on_hover_text("Dismiss")
+                                        .clicked()
+                                    {
+                                        dismiss = true;
+                                    }
+                                    if ui
+                                        .add(
+                                            egui::Button::new(egui_phosphor::regular::PUSH_PIN)
+                                                .selected(pinned),
+                                        )
+                                        .on_hover_text("Pin open (hold until closed)")
+                                        .clicked()
+                                    {
+                                        pinned = !pinned;
+                                    }
+                                    buttons_left = ui.min_rect().left();
+                                },
+                            );
+                        });
+                        let row_rect = row.response.rect;
+                        let drag_rect = egui::Rect::from_min_max(
+                            row_rect.min,
+                            egui::pos2(buttons_left - 6.0, row_rect.max.y),
+                        );
+                        let drag =
+                            ui.interact(drag_rect, ui.id().with("titledrag"), egui::Sense::drag());
+                        if drag.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                            if let (Some(kills), Some(affil)) = (&kills, &affil) {
+                                for (r, sev) in feed.iter().rev() {
+                                    let from_you = jumps_from_you(
+                                        &systems,
+                                        player_sys,
+                                        r.primary_system().map(|s| s.id),
+                                    );
+                                    if let Some(c) = intel_row(
+                                        ui, r, now_ts, false, from_you, &systems, &status,
+                                        &ship_details, &ship_roles, &resolved_pilots, &last_ship,
+                                        kills, *sev, false, affil,
+                                    ) {
+                                        clicks.push(c);
+                                    }
+                                }
+                            }
+                        });
+                        hovered = ui.ui_contains_pointer();
+                        resize_grip(ui);
+                    });
+                if let Some(p) = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y))) {
+                    moved = Some(p);
+                }
+                let sz = ctx.screen_rect().size();
+                if sz.x > 0.0 && sz.y > 0.0 {
+                    moved_size = Some((sz.x, sz.y));
+                }
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    dismiss = true;
+                }
+
+                // Countdown (paused while hovered/pinned; floor 3 s while hovered). unstable_dt is
+                // the true frame time; cap a long idle gap at 2 s.
+                let dt = ctx.input(|i| i.unstable_dt).min(2.0);
+                let ms = if hovered { 100 } else { 1000 };
+                ctx.request_repaint_after(std::time::Duration::from_millis(ms));
+
+                // Write outputs + new countdown back. Apply the countdown to the LIVE `st.secs` (a
+                // fresh alert may have bumped it while we painted) rather than the stale copy.
+                let mut st = alert_shared.lock().unwrap();
+                if dismiss {
+                    st.secs = 0.0;
+                } else if hovered {
+                    st.secs = st.secs.max(3.0);
+                } else if !pinned && st.secs.is_finite() {
+                    st.secs = (st.secs - dt).max(0.0);
+                }
+                st.pinned = pinned;
+                st.level_applied = level_applied;
+                st.level_at = level_at;
+                st.clicks.extend(clicks);
+                // Don't capture geometry on the open frame (the window briefly reports its builder
+                // default before the saved geometry is re-applied).
+                if !just_opened {
+                    if let Some(p) = moved {
+                        st.moved = Some(p);
+                    }
+                    if let Some(s) = moved_size {
+                        st.moved_size = Some(s);
+                    }
+                }
+            })
+        };
+
+        // Background ticker: while pings or alerts are showing, wake the child viewport ~4x/s so
+        // its countdown/blink keep advancing even when the root is minimized and idle.
         {
             let ctx = cc.egui_ctx.clone();
             let ping_shared = ping_shared.clone();
+            let alert_shared = alert_shared.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(250));
-                let active = !ping_shared.lock().unwrap().windows.is_empty();
-                if active {
+                if !ping_shared.lock().unwrap().windows.is_empty() {
                     ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
+                }
+                let alert_active = {
+                    let st = alert_shared.lock().unwrap();
+                    !st.feed.is_empty() || st.secs > 0.0
+                };
+                if alert_active {
+                    ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                 }
             });
         }
@@ -1132,10 +1382,8 @@ impl SpaiApp {
             alerts_engine,
             recent_alerts,
             alert_feed: Vec::new(),
-            alert_window_secs: 0.0,
-            alert_window_open: false,
-            alert_window_pinned: false,
-            alert_focus_pending: false,
+            alert_shared,
+            alert_viewport_cb,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
             jabber,
@@ -1273,8 +1521,6 @@ impl SpaiApp {
             map_controls_hidden: false,
             map_overlay_mode: false,
             map_vp_props: None,
-            alert_level_applied: None,
-            alert_level_at: None,
             map_overlay_locked: false,
             map_overlay_drag: false,
             map_layout: pv.map_layout,
@@ -1384,16 +1630,10 @@ impl SpaiApp {
         if fired.is_empty() {
             return;
         }
-        for (report, sev, win) in fired {
+        for (report, sev, _win) in fired {
+            // The floating alert window's feed/countdown/focus are owned by the alert daemon via
+            // `alert_shared` now; here we only feed the in-app "Recent alerts" history.
             self.alert_feed.push((report, sev));
-            if win {
-                self.alert_window_secs = if self.settings.alerts.window_timeout <= 0.0 {
-                    f32::INFINITY // never auto-hide
-                } else {
-                    self.settings.alerts.window_timeout.max(3.0)
-                };
-                self.alert_focus_pending = true; // bring the window forward once
-            }
         }
         let n = self.alert_feed.len();
         if n > 100 {
@@ -5971,28 +6211,16 @@ impl SpaiApp {
         }
     }
 
-    /// Custom notification window: a floating, always-on-top feed of intel that
-    /// passed the alert filters. Auto-hides `window_timeout` s after the last alert;
-    /// hovering pauses the countdown (and bumps it to ≥3 s).
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    /// Declare the custom-notification (alert) window as a DEFERRED viewport, EVERY frame
+    /// regardless of whether an alert is showing. Declaring it unconditionally means the child
+    /// window exists before the main window is ever minimized and survives the minimize (a deferred
+    /// viewport paints standalone, woken by `request_repaint_of`), so alerts still appear + count
+    /// down while the root is minimized. The feed/countdown/pin are produced off the UI thread by
+    /// the alert daemon (`alert_shared`); here we only publish the current settings + render
+    /// context, drain the closure's outputs, and declare the viewport.
     fn alert_window(&mut self, ctx: &egui::Context) {
-        // The window stays alive whenever the feature is in use; we never destroy it
-        // (which is what made it steal focus on each alert). When idle it's fully
-        // transparent and click-through; an alert just makes it opaque + interactive.
         let feature = self.settings.alert_enabled
             && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window);
-        if !feature {
-            self.alert_window_secs = 0.0;
-            self.alert_window_open = false;
-            self.alert_window_pinned = false;
-            return;
-        }
-        let active = self.alert_window_secs > 0.0;
-        let just_opened = active && !self.alert_window_open;
-        self.alert_window_open = active;
-        if !active {
-            self.alert_window_pinned = false;
-        }
         // For "smart" on-top, refresh whether EVE is focused (throttled to ~1 s).
         if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
             let due = self
@@ -6004,39 +6232,42 @@ impl SpaiApp {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
-        // Card data for the feed (built only when there's something to show). Swap each
-        // snapshot taken when the alert fired for the LIVE reconciled report, so the alert
-        // window shows the same resolved pilots/ships as the main feed (the reconcile
-        // updates intel_state.reports, not the alert_feed snapshots).
-        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = if active {
-            let live = self.intel_state.lock().unwrap();
-            self.alert_feed
-                .iter()
-                .rev()
-                .take(20)
-                .filter_map(|(r, sev)| {
-                    // Show the LIVE report only — never the stale snapshot. Match by the
-                    // stable report id, not content: an amendment keeps the id but changes
-                    // the content (and thus report_key), which used to drop the card here
-                    // even though it was still live. Only a truly removed report falls out.
-                    let id = r.id;
-                    live.reports
-                        .iter()
-                        .find(|lr| lr.id == id)
-                        .cloned()
-                        .map(|lr| (lr, *sev))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
+            && (self.settings.alerts.on_top == crate::settings::OnTop::Always
+                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
+
+        // Build the window's feed from the authoritative in-app `alert_feed` (last 20), each entry
+        // swapped for its LIVE reconciled report so the window shows the same resolved pilots/ships
+        // as the main feed — exactly as the old immediate window did. This OVERWRITES whatever the
+        // daemon pushed into `alert_shared.feed` (which only serves the minimized case, when this
+        // publish doesn't run); the same alerts are already in `alert_feed` via `drain_alerts`.
+        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
+            if !feature || self.alert_feed.is_empty() {
+                Vec::new()
+            } else {
+                let live = self.intel_state.lock().unwrap();
+                // Last 20 in chronological order (oldest first) — the daemon's `push` also produces
+                // oldest-first, and the closure renders `.rev()` (newest first), like the old window.
+                let start = self.alert_feed.len().saturating_sub(20);
+                self.alert_feed[start..]
+                    .iter()
+                    .filter_map(|(r, sev)| {
+                        // Match by stable report id (an amendment keeps the id), swapping the stale
+                        // snapshot for the live report; a truly removed report drops out.
+                        let id = r.id;
+                        live.reports.iter().find(|lr| lr.id == id).cloned().map(|lr| (lr, *sev))
+                    })
+                    .collect()
+            };
         let ship_ids: std::collections::HashSet<i64> =
             feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
             ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
-        let resolved_pilots: std::collections::HashMap<String, i64> = {
+        let resolved_pilots: std::collections::HashMap<String, i64> = if feed.is_empty() {
+            Default::default()
+        } else {
             let cache = self.pilots.lock().unwrap();
             feed.iter()
                 .flat_map(|(r, _)| r.pilots.iter())
@@ -6046,211 +6277,75 @@ impl SpaiApp {
                 })
                 .collect()
         };
-        let status_snapshot = if active {
-            self.system_status.lock().unwrap().clone()
-        } else {
+        let status = if feed.is_empty() {
             Default::default()
+        } else {
+            self.system_status.lock().unwrap().clone()
         };
-        let last_ship =
-            if active { build_last_ship(&self.intel_state.lock().unwrap().reports) } else { Default::default() };
+        let last_ship = if feed.is_empty() {
+            Default::default()
+        } else {
+            build_last_ship(&self.intel_state.lock().unwrap().reports)
+        };
         let systems = self.systems.clone();
         let player_sys = self.player_system();
-        let now_ts = chrono::Utc::now().timestamp();
 
-        let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
-            && (self.settings.alerts.on_top == crate::settings::OnTop::Always
-                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
-
-        let mut hovered = false;
-        let mut dismiss = false;
-        let mut moved: Option<(f32, f32)> = None;
-        let mut moved_size: Option<(f32, f32)> = None;
-        let mut click: Option<IntelClick> = None;
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("alert_window"),
-            egui::ViewportBuilder::default().with_icon(app_icon())
-                .with_title("EVE Spai — alerts")
-                .with_window_level(if on_top {
-                    egui::WindowLevel::AlwaysOnTop
-                } else {
-                    egui::WindowLevel::Normal
-                })
-                .with_active(false)
-                // Per-OS idle behaviour:
-                // - Windows: close the window when idle (with_active(false) keeps the re-map
-                //   from stealing focus via WS_EX_NOACTIVATE).
-                // - Linux/X11: re-mapping a window ALWAYS steals focus there (winit maps with
-                //   XMapRaised — winit#1160, and egui exposes no _NET_WM_USER_TIME / notification
-                //   type to avoid it), so stay mapped and go transparent + click-through when
-                //   idle instead of closing.
-                .with_visible(if cfg!(target_os = "windows") { active } else { true })
-                .with_decorations(false)
-                .with_resizable(true)
-                .with_taskbar(false)
-                .with_transparent(true)
-                .with_mouse_passthrough(!active)
-                // Fixed initial geometry only. The *saved* position/size are applied via
-                // ViewportCommand on open (just_opened); re-applying them every frame here
-                // fought the user's drag/resize and made the window shake.
-                .with_position([80.0, 80.0])
-                .with_inner_size([360.0, 240.0]),
-            |ctx, _| {
-                if !active {
-                    // Closed (with_visible=false) when idle — draw nothing.
-                    egui::CentralPanel::default()
-                        .frame(egui::Frame::NONE)
-                        .show(ctx, |_ui| {});
-                    return;
-                }
-                // Minimizing the MAIN window can iconify this (owned) viewport with it; while an
-                // alert is showing it must stay up and keep working, so never let it stay minimized.
-                if ctx.input(|i| i.viewport().minimized) == Some(true) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                }
-                // A new alert: bring the window forward once — Windows only. On Linux/X11 a
-                // focus request steals focus from the game (winit#1160), which the user doesn't
-                // want; there the window is already mapped + visible, so seeing it is enough.
-                if std::mem::take(&mut self.alert_focus_pending) && cfg!(target_os = "windows") {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
-                // Re-apply the saved geometry when an alert appears (the builder values
-                // aren't reliably re-applied after unmapping).
-                if just_opened {
-                    if let Some((w, h)) = self.settings.alerts.window_size {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
-                    }
-                    if let Some((x, y)) = self.settings.alerts.window_pos {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
-                    }
-                    self.alert_level_applied = None; // force the level to be re-applied
-                }
-                // Re-assert the level only when it changes or the window (re)opens — NOT
-                // every frame. A viewport command each frame forces egui to repaint each
-                // frame to process it, which pinned the whole app at vsync (~58 fps) for the
-                // entire alert countdown. The window stays mapped now, so on-change is enough.
-                if just_opened || self.alert_level_applied != Some(on_top) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
-                        egui::WindowLevel::AlwaysOnTop
-                    } else {
-                        egui::WindowLevel::Normal
-                    }));
-                    self.alert_level_applied = Some(on_top);
-                    self.alert_level_at = Some(std::time::Instant::now());
-                }
-                // A borderless/fullscreen game can rise above an already-topmost window, so
-                // periodically re-assert the level to re-claim the top while alerts are showing.
-                // Throttled (not every frame) so it doesn't pin the app at vsync.
-                if on_top {
-                    let due =
-                        self.alert_level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
-                    if due {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                            egui::WindowLevel::AlwaysOnTop,
-                        ));
-                        self.alert_level_at = Some(std::time::Instant::now());
-                    }
-                    ctx.request_repaint_after(std::time::Duration::from_millis(800));
-                }
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(egui::Color32::from_rgb(0x12, 0x14, 0x18)).inner_margin(8))
-                    .show(ctx, |ui| {
-                        // The top row is a drag handle, up to where the buttons begin
-                        // (so it doesn't sit on top of the X / pin hitboxes).
-                        let mut buttons_left = f32::INFINITY;
-                        let row = ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(
-                                    format!("{}  Intel alerts", egui_phosphor::regular::DOTS_SIX),
-                                )
-                                .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new(if self.alert_window_secs.is_finite() {
-                                    format!("{:.0}s", self.alert_window_secs)
-                                } else {
-                                    "\u{221E}".to_owned() // ∞
-                                })
-                                .weak(),
-                            );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button(egui_phosphor::regular::X).on_hover_text("Dismiss").clicked() {
-                                    dismiss = true;
-                                }
-                                if ui
-                                    .add(
-                                        egui::Button::new(egui_phosphor::regular::PUSH_PIN)
-                                            .selected(self.alert_window_pinned),
-                                    )
-                                    .on_hover_text("Pin open (hold until closed)")
-                                    .clicked()
-                                {
-                                    self.alert_window_pinned = !self.alert_window_pinned;
-                                }
-                                buttons_left = ui.min_rect().left();
-                            });
-                        });
-                        let row_rect = row.response.rect;
-                        let drag_rect = egui::Rect::from_min_max(
-                            row_rect.min,
-                            egui::pos2(buttons_left - 6.0, row_rect.max.y),
-                        );
-                        let drag =
-                            ui.interact(drag_rect, ui.id().with("titledrag"), egui::Sense::drag());
-                        if drag.drag_started() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        }
-                        ui.separator();
-                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                            for (r, sev) in &feed {
-                                let from_you = jumps_from_you(
-                                    &systems,
-                                    player_sys,
-                                    r.primary_system().map(|s| s.id),
-                                );
-                                let kc = self.kill_cache.clone();
-                                let affil = self.affiliations.clone();
-                                if let Some(c) = intel_row(
-                                    ui, r, now_ts, false, from_you, &systems, &status_snapshot,
-                                    &ship_details, &ship_roles, &resolved_pilots, &last_ship, &kc, *sev,
-                                    false,
-                                &affil,
-                                ) {
-                                    click = Some(c);
-                                }
-                            }
-                        });
-                        hovered = ui.ui_contains_pointer();
-                        // Bottom-right resize grip (hover highlight + resize cursor).
-                        resize_grip(ui);
-                    });
-                if let Some(p) = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y))) {
-                    moved = Some(p);
-                }
-                let sz = ctx.screen_rect().size();
-                if sz.x > 0.0 && sz.y > 0.0 {
-                    moved_size = Some((sz.x, sz.y));
-                }
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    dismiss = true;
-                }
-            },
-        );
-        // A click in the feed opens the relevant window (in the main viewport).
-        match click {
-            Some(IntelClick::System(id)) => self.open_system(id),
-            Some(IntelClick::Ship(id)) => self.open_ship(id),
-            Some(IntelClick::Pilot(name)) => {
-                self.pilot_query = name;
-                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
-                self.pilot_window_open = true;
-                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
+        // Publish into the shared state + drain the closure's outputs.
+        let (active, just_opened, clicks, moved, moved_size) = {
+            let mut st = self.alert_shared.lock().unwrap();
+            st.enabled = feature;
+            st.on_top_level = on_top;
+            st.win_pos = self.settings.alerts.window_pos;
+            st.win_size = self.settings.alerts.window_size;
+            st.feed = feed;
+            st.status = status;
+            st.ship_details = ship_details;
+            st.ship_roles = ship_roles;
+            st.resolved_pilots = resolved_pilots;
+            st.last_ship = last_ship;
+            st.systems = systems;
+            st.player_sys = player_sys;
+            st.kills = Some(self.kill_cache.clone());
+            st.affil = Some(self.affiliations.clone());
+            if !feature {
+                // Feature off: reset the countdown/pin (the daemon won't, since no win-rule fires).
+                st.secs = 0.0;
+                st.pinned = false;
+                st.feed.clear();
             }
-            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
-            None => {}
+            // Visibility is driven by the countdown (and pin), like the old window — NOT by whether
+            // the feed has entries (the feed persists in `alert_feed`, so it's rarely empty).
+            let active = st.enabled && (st.secs > 0.0 || st.pinned);
+            // `open` is flipped true by the closure once it actually paints; on this frame the
+            // viewport hasn't rendered yet, so `!st.open` still detects the open transition for the
+            // geometry-save guard below.
+            let just_opened = active && !st.open;
+            let clicks = std::mem::take(&mut st.clicks);
+            let moved = st.moved.take();
+            let moved_size = st.moved_size.take();
+            (active, just_opened, clicks, moved, moved_size)
+        };
+
+        // A click in the feed opens the relevant window (in the main viewport).
+        for click in clicks {
+            match click {
+                IntelClick::System(id) => self.open_system(id),
+                IntelClick::Ship(id) => self.open_ship(id),
+                IntelClick::Pilot(name) => {
+                    self.pilot_query = name;
+                    crate::lookup::spawn_lookup(
+                        self.pilot_query.clone(),
+                        self.pilot_lookup.clone(),
+                        ctx.clone(),
+                    );
+                    self.pilot_window_open = true;
+                    self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
+                }
+                IntelClick::Dscan(url) => self.open_dscan(url, ctx),
+            }
         }
         // Save a moved position / resized size — but NOT on the open frame, where the window
-        // briefly reports its builder default before the saved geometry is re-applied (which
-        // would otherwise overwrite the saved position with the default on every open).
+        // briefly reports its builder default before the saved geometry is re-applied.
         if !just_opened {
             if let Some(p) = moved {
                 if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
@@ -6266,34 +6361,43 @@ impl SpaiApp {
                 }
             }
         }
-        if dismiss {
-            self.alert_window_secs = 0.0;
-            return;
-        }
-        if !active {
-            return; // idle: nothing to count down; the window is closed
-        }
-        // Countdown (paused while hovered; floor of 3 s when hovered). Use unstable_dt:
-        // it's the *true* time since the last frame. stable_dt is smoothed/clamped, so
-        // after a ~1 s idle it reports a tiny value and the countdown barely moves (this
-        // is why it ticked far too slowly). Cap a long idle gap at 2 s.
-        let dt = ctx.input(|i| i.unstable_dt).min(2.0);
-        if hovered {
-            self.alert_window_secs = self.alert_window_secs.max(3.0);
-        } else if !self.alert_window_pinned && self.alert_window_secs.is_finite() {
-            self.alert_window_secs = (self.alert_window_secs - dt).max(0.0);
-        }
-        // The countdown uses real elapsed time, so off-hover we only need ~1 fps to
-        // refresh the "Ns" label; full rate here would rebuild the main window's intel
-        // feed many times a second (this drove the high CPU).
-        let ms = if hovered { 100 } else { 1000 };
-        ctx.request_repaint_after(std::time::Duration::from_millis(ms));
-        // If the MAIN window is minimized, eframe may stop driving update(), freezing the alert
-        // viewport. While an alert is active keep the loop ticking so it stays live (and can
-        // un-minimize itself above) — this only runs during the brief alert window.
-        if active && ctx.input(|i| i.viewport().minimized) == Some(true) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(ms));
-        }
+
+        // Declare the deferred viewport UNCONDITIONALLY (not gated on an active alert). The builder
+        // carries only STATIC defaults — visibility, click-through and the on-top level are driven
+        // from the closure via ViewportCommand (so they stay correct even while the root is
+        // minimized and not re-declaring this builder), exactly like the fleet-ping window. The
+        // closure starts it hidden and shows itself when an alert is active.
+        let _ = active; // `active` only gates `just_opened` (used by the geometry-save guard above)
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("alert_window"),
+            egui::ViewportBuilder::default()
+                .with_icon(app_icon())
+                .with_title("EVE Spai — alerts")
+                .with_window_level(if on_top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                })
+                // with_active(false) keeps the re-map from stealing focus (WS_EX_NOACTIVATE on
+                // Windows). Per-OS idle behaviour (Windows hides, Linux/X11 stays mapped +
+                // transparent + click-through to dodge winit#1160's map-steals-focus) is applied by
+                // the closure's Visible/MousePassthrough commands.
+                .with_active(false)
+                .with_visible(false) // the closure shows it when an alert is active
+                .with_decorations(false)
+                .with_resizable(true)
+                .with_taskbar(false)
+                .with_transparent(true)
+                .with_mouse_passthrough(true)
+                // Fixed initial geometry only. The *saved* position/size are applied via
+                // ViewportCommand on open (just_opened) inside the closure.
+                .with_position([80.0, 80.0])
+                .with_inner_size([360.0, 240.0]),
+            {
+                let cb = self.alert_viewport_cb.clone();
+                move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
+            },
+        );
     }
 
     /// Persist map overlay + intel-filter options when they change.
@@ -13186,14 +13290,27 @@ struct AlertEngine {
     config: std::sync::Mutex<AlertConfig>,
     runtime: std::sync::Mutex<AlertRuntime>,
     recent: crate::gamewatcher::AlertLog,
+    /// Shared state for the deferred alert viewport — the daemon pushes the feed/countdown/focus
+    /// here so the floating window shows independently of the UI thread.
+    alert_shared: SharedAlertWindow,
+    /// To wake the alert viewport when a window-alert fires (it may be the only thing repainting
+    /// while the root is minimized).
+    ctx: egui::Context,
 }
 
 impl AlertEngine {
-    fn new(recent: crate::gamewatcher::AlertLog, last_alert_time: i64) -> Self {
+    fn new(
+        recent: crate::gamewatcher::AlertLog,
+        last_alert_time: i64,
+        alert_shared: SharedAlertWindow,
+        ctx: egui::Context,
+    ) -> Self {
         Self {
             config: std::sync::Mutex::new(AlertConfig::default()),
             runtime: std::sync::Mutex::new(AlertRuntime { last_alert_time, ..Default::default() }),
             recent,
+            alert_shared,
+            ctx,
         }
     }
 
@@ -13338,6 +13455,26 @@ impl AlertEngine {
             rt.fired_ui.push((f.report.clone(), f.sev, f.win));
         }
         drop(rt);
+        // Feed the floating alert window (deferred viewport) for any rule with `custom_window`.
+        // This is in ADDITION to `fired_ui` (which feeds the in-app "Recent alerts" history). Done
+        // off the UI thread so the window pops + counts down even while the root is minimized.
+        if fired.iter().any(|f| f.win) {
+            let timeout = acfg.window_timeout;
+            let mut st = self.alert_shared.lock().unwrap();
+            for f in &fired {
+                if f.win {
+                    st.feed.push((f.report.clone(), f.sev));
+                }
+            }
+            let n = st.feed.len();
+            if n > 100 {
+                st.feed.drain(0..n - 100);
+            }
+            st.secs = if timeout <= 0.0 { f32::INFINITY } else { timeout.max(3.0) };
+            st.focus_pending = true; // bring the window forward once
+            drop(st);
+            self.ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
+        }
         {
             let mut log = self.recent.lock().unwrap();
             for f in &fired {
@@ -14781,6 +14918,63 @@ pub(crate) struct PingWindowState {
 }
 
 pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowState>>;
+
+/// Shared state for the DEFERRED alert (custom-notification) viewport. Mirrors `PingWindowState`:
+/// the feed/countdown/pin/focus are PRODUCED off the UI thread by the alert daemon; render context
+/// and the on-top/enabled flags are PUBLISHED each frame by the UI; clicks/move/resize are the
+/// OUTPUTS drained by the UI. Decouples the window from the main window's minimized state.
+#[derive(Default)]
+pub(crate) struct AlertWindowState {
+    // -- produced by the alert daemon (off the UI thread) --
+    /// Reports shown in the window, oldest first (rendered newest-first by the closure).
+    pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
+    /// Seconds the window stays visible (counts down; 0 = hidden; ∞ = never auto-hide). The
+    /// daemon sets it when an alert fires; the render closure counts it down (paused while
+    /// hovered/pinned, floor 3 s while hovered).
+    pub(crate) secs: f32,
+    /// Pin: temporarily hold the window open (toggled by the closure's pin button).
+    pub(crate) pinned: bool,
+    /// Set when a new alert fires so the window foregrounds itself once (consumed by the closure).
+    pub(crate) focus_pending: bool,
+    // -- render-only state owned by the closure --
+    /// True while the window is currently shown (detects re-opening to re-apply saved geometry).
+    pub(crate) open: bool,
+    /// Last window-level applied + when (throttles the on-top re-assert; render-only).
+    pub(crate) level_applied: Option<bool>,
+    pub(crate) level_at: Option<std::time::Instant>,
+    /// Last Visible / MousePassthrough state applied by the CLOSURE (it drives them via
+    /// ViewportCommand, not the builder, so they're correct even while the root is minimized and
+    /// not re-declaring the builder). Tracked to only send a command on change (a viewport command
+    /// each frame pins egui at vsync).
+    pub(crate) applied_visible: Option<bool>,
+    pub(crate) applied_passthrough: Option<bool>,
+    // -- published by the UI thread each frame --
+    /// Feature enabled (alerts on AND a custom-window rule enabled).
+    pub(crate) enabled: bool,
+    /// Resolved on-top decision (Always/Smart+focus/Never already collapsed to a bool).
+    pub(crate) on_top_level: bool,
+    /// Saved geometry to re-apply when the window (re)opens.
+    pub(crate) win_pos: Option<(f32, f32)>,
+    pub(crate) win_size: Option<(f32, f32)>,
+    /// Render snapshots, built each frame from the current feed's reports.
+    pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    pub(crate) status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
+    pub(crate) ship_details: std::collections::HashMap<i64, crate::store::ShipDetails>,
+    pub(crate) ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
+    pub(crate) resolved_pilots: std::collections::HashMap<String, i64>,
+    pub(crate) last_ship: std::collections::HashMap<String, (i64, String, i64)>,
+    pub(crate) player_sys: Option<i64>,
+    pub(crate) kills: Option<crate::kills::KillCache>,
+    pub(crate) affil: Option<crate::affiliation::SharedAffil>,
+    // -- outputs drained by the UI thread --
+    /// Feed clicks to act on in the root viewport.
+    pub(crate) clicks: Vec<IntelClick>,
+    /// Latest window position / size, to persist.
+    pub(crate) moved: Option<(f32, f32)>,
+    pub(crate) moved_size: Option<(f32, f32)>,
+}
+
+pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowState>>;
 
 /// How the battle-detail roster is ordered (user-selectable).
 #[derive(Clone, Copy, PartialEq, Default)]
