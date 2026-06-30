@@ -16655,13 +16655,17 @@ fn open_mumble(link: String) {
             .and_then(|r| r.error_for_status().ok())
             .and_then(|r| r.text().ok())
             .and_then(|body| crate::pings::extract_mumble_url(&body));
-        match resolved.and_then(|url| open::that(&url).ok().map(|_| ())) {
-            Some(()) => {}
-            // Resolution or the mumble:// handler failed — open the original link instead.
-            None => {
-                let _ = open::that(&link);
-            }
+        match &resolved {
+            Some(url) => match open::that(url) {
+                Ok(_) => return,
+                // The mumble:// handler couldn't be launched (no registered scheme handler in this
+                // environment) — fall back to the browser, which has its own protocol prompt.
+                Err(e) => eprintln!("[mumble] opening {url} failed ({e}); falling back to browser"),
+            },
+            // Couldn't resolve the gnf.lt page to a mumble:// target (offline / page format) — browser.
+            None => eprintln!("[mumble] could not resolve {link} to a mumble:// url; opening in browser"),
         }
+        let _ = open::that(&link);
     });
 }
 
