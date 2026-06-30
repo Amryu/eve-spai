@@ -5656,7 +5656,9 @@ impl SpaiApp {
         let mut do_build = false;
         let building =
             matches!(*self.build_from_kill.lock().unwrap(), crate::zkill::BuildFromKill::Loading);
-        ui.horizontal(|ui| {
+        // Wrap to a second row on narrow/default windows instead of overflowing (this row carries
+        // search + several filters + Open JSON / My shared / Build-from-kill).
+        ui.horizontal_wrapped(|ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add(
                 egui::TextEdit::singleline(&mut self.battle_search)
