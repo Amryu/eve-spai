@@ -1136,16 +1136,46 @@ fn loose_pilot_runs(
         }
         run.clear();
     };
+    // A token strong enough to be a real name on its own: a mixed-case Title-Case word that
+    // isn't a stop word ("Micahel", "Htguuu" — but not "Dead" or a system code). Used to bound
+    // the conservative stray-WORD breaker below.
+    let is_strong_name = |w: &str| {
+        name_part(w) && w.chars().any(|c| c.is_ascii_lowercase()) && !is_pilot_stopword(w)
+    };
     let toks: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
     for (i, core) in toks.iter().enumerate() {
+        let prev = i.checked_sub(1).and_then(|j| toks.get(j));
+        let next = toks.get(i + 1);
         let breaks = if hard_name_breaker(core, ship_index) {
+            true
+        } else if core.chars().count() == 1
+            && core.chars().all(|c| c.is_ascii_alphabetic())
+            && !is_name_suffix(core)
+            && !is_system_token(core, systems)
+        {
+            // A lone single letter is never a name component on its own — a mistyped "v" the
+            // reporter dropped mid-list, or the pronoun "I". (A real one-letter initial like
+            // "Lopatich R" is a capital `is_name_suffix` and is kept.) Treat it as an internal
+            // boundary: split the run and drop the letter, so the names on EITHER side parse
+            // independently instead of gluing into one over-long blob.
+            true
+        } else if is_pilot_stopword(core)
+            && !is_name_connector(core)
+            && !is_name_capable_stopword(core)
+            && !name_part(core)
+            && prev.is_some_and(|w| is_strong_name(w))
+            && next.is_some_and(|w| is_strong_name(w))
+        {
+            // A stray chatter word ("lol", "pls") wedged BETWEEN two real names is junk the
+            // reporter typed mid-list, not part of either name — split here so both names parse.
+            // Conservative on purpose: only a stop word that can't anchor a name AND is flanked
+            // on BOTH sides by strong Title-Case names breaks, so an embedded connector ("Cult
+            // is Dead", "Lord of War") is left whole for the ESI cover to judge.
             true
         } else if is_system_token(core, systems) {
             // A system/code breaks UNLESS flanked by a real name word — then it may be part of a
             // name ("Bob Uitra", "G-EURJ Keeves") and is kept for ESI to confirm; "hostiles in
             // Jita" / "N3-JBX Uitra" have no adjacent name word, so the system stands alone.
-            let prev = i.checked_sub(1).and_then(|j| toks.get(j));
-            let next = toks.get(i + 1);
             ![prev, next].into_iter().flatten().any(|n| is_name_anchor(n, ship_index, systems))
         } else {
             false
@@ -3513,6 +3543,76 @@ mod tests {
         assert!(pilots.is_empty(), "pilots={pilots:?}");
         assert_eq!(sysd, vec!["N3-JBX".to_string()]);
         assert!(gates.iter().any(|g| g == "Uitra"), "gates={gates:?}");
+    }
+
+    /// True when some pilot candidate contains `name` as a contiguous, case-insensitive run of
+    /// whole words — i.e. the name was PROPOSED (possibly inside an over-glued blob the ESI cover
+    /// later splits), regardless of whether it stands as its own entry yet.
+    fn proposed(pilots: &[String], name: &str) -> bool {
+        let want: Vec<String> = name.split_whitespace().map(|w| w.to_lowercase()).collect();
+        pilots.iter().any(|p| {
+            let ws: Vec<String> = p.split_whitespace().map(|w| w.to_lowercase()).collect();
+            ws.windows(want.len()).any(|w| w == want.as_slice())
+        })
+    }
+
+    /// True when `tok` survives as a word in any pilot candidate (a junk token must NOT).
+    fn has_pilot_token(pilots: &[String], tok: &str) -> bool {
+        pilots.iter().any(|p| p.split_whitespace().any(|w| w.eq_ignore_ascii_case(tok)))
+    }
+
+    #[test]
+    fn stray_letter_midrun_splits_pilot_list() {
+        let s = systems();
+        // A relayed kill-list with a mistyped lone "v" wedged between names, and two Chinese ship
+        // names carrying a "*" marker. willlin/qiuxiaoye are lower-case, so only the CONFIRMED
+        // cache finds them; the capitalised names ride the loose runs. The lone "v" must NOT glue
+        // "Micahel wu" onto the tail and swallow "Htguuu"/"Htg-0".
+        let known: std::collections::HashMap<String, i64> =
+            [("willlin".to_string(), 1i64), ("qiuxiaoye".to_string(), 2i64)].into_iter().collect();
+        let r = analyze(
+            "willlin qiuxiaoye Micahel wu v Htguuu Htg-0 灵感级* 金鹏级*",
+            &s,
+            &noships(),
+            &known,
+            1,
+            "ch",
+            "Wujian",
+        );
+        for name in ["willlin", "qiuxiaoye", "Micahel wu", "Htguuu", "Htg-0"] {
+            assert!(proposed(&r.pilots, name), "{name:?} not proposed: {:?}", r.pilots);
+        }
+        // The lone letter is dropped, never a pilot or a token inside one.
+        assert!(!has_pilot_token(&r.pilots, "v"), "stray v leaked: {:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p == "v"));
+        // The hyphen-with-digit name stays intact.
+        assert!(proposed(&r.pilots, "Htg-0"), "Htg-0 mangled: {:?}", r.pilots);
+        // The Chinese ship tokens don't break the line and aren't read as pilots.
+        assert!(!has_pilot_token(&r.pilots, "灵感级"), "ship as pilot: {:?}", r.pilots);
+    }
+
+    #[test]
+    fn stray_word_midrun_splits_pilot_list() {
+        let s = systems();
+        // A single capitalised name on each side of a lone "v": split so BOTH are proposed
+        // independently (each surfaces as its own single-token candidate), and "v" is dropped.
+        let r = analyze("Alpha v Bravo", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p == "Alpha"), "Alpha lost: {:?}", r.pilots);
+        assert!(r.pilots.iter().any(|p| p == "Bravo"), "Bravo lost: {:?}", r.pilots);
+        assert!(!has_pilot_token(&r.pilots, "v"), "stray v leaked: {:?}", r.pilots);
+
+        // A stray chatter WORD ("lol") between real names is junk, not part of either name: it's
+        // dropped and the names on both sides are still proposed.
+        let r2 = analyze("Alpha Bravo lol Charlie", &s, &noships(), &noknown(), 1, "ch", "x");
+        for name in ["Alpha", "Bravo", "Charlie"] {
+            assert!(proposed(&r2.pilots, name), "{name:?} not proposed: {:?}", r2.pilots);
+        }
+        assert!(!has_pilot_token(&r2.pilots, "lol"), "stray lol leaked: {:?}", r2.pilots);
+
+        // Conservative: an embedded stop word flanked by a name and a non-strong word (a keyword
+        // that ends a real name) stays whole — "is" is NOT carved out of "Cult is Dead".
+        let r3 = loose_pilot_runs("Cult is Dead", &noships(), &s);
+        assert!(r3.iter().any(|p| p == "Cult is Dead"), "Cult is Dead split: {r3:?}");
     }
 
     #[test]
