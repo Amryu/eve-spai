@@ -48,6 +48,11 @@ pub struct PingMsg {
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
 pub struct AlertMsg {
     pub feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
+    /// Jumps from the player's current system to each feed report's primary system, parallel to
+    /// `feed` (same length + order). Computed by the MAIN (it holds the bridged `Systems` + the
+    /// player location); the overlay only renders these — it must not recompute (its own `Systems`
+    /// is loaded WITHOUT jump bridges). `None` = no player location / unreachable / no target.
+    pub from_you: Vec<Option<u32>>,
     pub status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub resolved_pilots: std::collections::HashMap<String, i64>,
     pub last_ship: std::collections::HashMap<String, (i64, String, i64)>,
@@ -359,6 +364,7 @@ mod tests {
         report.probes = Some(crate::intel::Probes::Combat);
         let msg = MainToOverlay::Alert(AlertMsg {
             feed: vec![(report, crate::settings::Severity::Danger)],
+            from_you: vec![Some(7)],
             status: std::collections::HashMap::new(),
             resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
             last_ship: std::collections::HashMap::new(),
@@ -374,6 +380,7 @@ mod tests {
         match got {
             MainToOverlay::Alert(m) => {
                 assert_eq!(m.feed.len(), 1);
+                assert_eq!(m.from_you, vec![Some(7)]);
                 assert_eq!(m.feed[0].0.probes, Some(crate::intel::Probes::Combat));
                 assert_eq!(m.feed[0].1, crate::settings::Severity::Danger);
                 assert_eq!(m.resolved_pilots.get("X"), Some(&42));

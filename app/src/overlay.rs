@@ -244,6 +244,7 @@ impl Overlay {
                         {
                             let mut st = alert_shared.lock().unwrap();
                             st.feed = m.feed;
+                            st.from_you = m.from_you;
                             st.status = m.status;
                             st.resolved_pilots = m.resolved_pilots;
                             st.last_ship = m.last_ship;

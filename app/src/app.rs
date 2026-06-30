@@ -6180,6 +6180,16 @@ impl SpaiApp {
         feature: bool,
     ) {
         use std::hash::{Hash, Hasher};
+
+        // Per-report jumps from the player's current system, computed HERE with the main's bridged
+        // `Systems` (the overlay's own `Systems` has no bridges, so it can't recompute correctly).
+        // Parallel to `feed`; the in-process render closure derives this identically.
+        let player_sys = self.player_system();
+        let from_you: Vec<Option<u32>> = feed
+            .iter()
+            .map(|(r, _)| jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id)))
+            .collect();
+
         let Some(link) = self.overlay.as_ref() else { return };
 
         // Gather the cached kill info for the feed's killmail links + the character ids each kill's
@@ -6231,6 +6241,7 @@ impl SpaiApp {
         // Content hash (order-independent for the maps); excludes the one-shot secs/focus.
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
+        from_you.hash(&mut hasher); // resend when the player moves (distances change, feed doesn't)
         hash_sorted_map(&mut hasher, &status);
         hash_sorted_map(&mut hasher, &resolved_pilots);
         hash_sorted_map(&mut hasher, &last_ship);
@@ -6243,6 +6254,7 @@ impl SpaiApp {
         }
         let msg = crate::ipc::AlertMsg {
             feed,
+            from_you,
             status,
             resolved_pilots,
             last_ship,
@@ -15075,6 +15087,7 @@ pub(crate) fn build_alert_viewport_cb(
         // Clone the (small, ≤20-card) render data out, then release the lock before
         // rendering — the daemon may push a new alert while we paint.
         let feed = st.feed.clone();
+        let from_you_pre = st.from_you.clone();
         let systems = st.systems.clone();
         let status = st.status.clone();
         let ship_details = st.ship_details.clone();
@@ -15209,12 +15222,18 @@ pub(crate) fn build_alert_viewport_cb(
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if let (Some(kills), Some(affil)) = (&kills, &affil) {
-                        for (r, sev) in feed.iter().rev() {
-                            let from_you = jumps_from_you(
-                                &systems,
-                                player_sys,
-                                r.primary_system().map(|s| s.id),
-                            );
+                        for (i, (r, sev)) in feed.iter().enumerate().rev() {
+                            // Prefer the MAIN-computed distance (overlay path: bridged, parallel to
+                            // `feed`); fall back to recomputing in-process when it wasn't supplied.
+                            let from_you = if i < from_you_pre.len() {
+                                from_you_pre[i]
+                            } else {
+                                jumps_from_you(
+                                    &systems,
+                                    player_sys,
+                                    r.primary_system().map(|s| s.id),
+                                )
+                            };
                             if let Some(c) = intel_row(
                                 ui, r, now_ts, false, from_you, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots, &last_ship,
@@ -15367,6 +15386,10 @@ pub(crate) struct AlertWindowState {
     // -- produced by the alert daemon (off the UI thread) --
     /// Reports shown in the window, oldest first (rendered newest-first by the closure).
     pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
+    /// Jumps from the player's system to each `feed` report's primary system, parallel to `feed`.
+    /// Populated by the overlay's IPC handler (the MAIN computes it with the bridged `Systems`).
+    /// Empty in the in-process path, where the closure recomputes from `systems` + `player_sys`.
+    pub(crate) from_you: Vec<Option<u32>>,
     /// Seconds the window stays visible (counts down; 0 = hidden; ∞ = never auto-hide). The
     /// daemon sets it when an alert fires; the render closure counts it down (paused while
     /// hovered/pinned, floor 3 s while hovered).
