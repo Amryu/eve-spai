@@ -1121,7 +1121,7 @@ impl SpaiApp {
             tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
             #[cfg(target_os = "linux")]
-            overlay: match crate::ipc::OverlayLink::start() {
+            overlay: match crate::ipc::OverlayLink::start(cc.egui_ctx.clone()) {
                 Ok(link) => Some(link),
                 Err(e) => {
                     eprintln!("[main] overlay failed to start: {e}");
