@@ -296,8 +296,11 @@ impl IntelState {
                 continue;
             }
             let prev_sys = prev.primary_system().map(|s| s.id);
-            if new_sys.is_some() && new_sys != prev_sys {
-                continue; // a different system is a new sighting / movement
+            // A different *named* system is a new sighting / movement. But a follow-up that adds
+            // a system the prior sighting lacked (prev had none) just backfills the location of
+            // the same pilot — allow it, mirroring the prev-has-system / new-has-none merge.
+            if new_sys.is_some() && prev_sys.is_some() && new_sys != prev_sys {
+                continue;
             }
             for sh in &new.ships {
                 if !prev.ships.iter().any(|s| s.id == sh.id) {
@@ -680,9 +683,12 @@ fn name_part(t: &str) -> bool {
         && (!t.contains('-') || t.chars().any(|c| c.is_ascii_lowercase()))
 }
 
-/// Nullsec system codes / abbreviations ("C-J", "88A-RA", "1DH-SX"): all-uppercase
-/// alphanumerics joined by a hyphen, never lower-case. Used to keep them out of pilot
-/// detection (player names carry lower-case letters).
+/// Nullsec system codes / abbreviations ("C-J", "88A-RA", "1DH-SX"): short alphanumerics
+/// joined by a hyphen. This is a CASE-INSENSITIVE *pattern hint* only — "Htg-0", "htg-0"
+/// and "HTG-0" all match the code shape — so it must never be the sole gate that keeps a
+/// token out of pilot detection. The authoritative "is this really a system" decision is a
+/// real systems lookup at the call sites (`is_system_token` / `is_code_lookalike_name`):
+/// a token that matches this shape but resolves to no real system is fair game for a pilot.
 fn looks_like_system_code(t: &str) -> bool {
     if t.len() < 2 || !t.contains('-') {
         return false;
@@ -702,19 +708,9 @@ fn looks_like_system_code(t: &str) -> bool {
     {
         return false;
     }
-    // Distinguish a null-sec code from a hyphenated name. An ALL-CAPS hyphenated token is
-    // always a code (names aren't typed in all-caps). Mixed/lower case is a code only if it
-    // has a digit or only short (<=3 char) segments — so "c-j", "4m-", "1dq1-a" qualify but
-    // a name like "Jean-Luc" does not.
-    if !t.chars().any(|c| c.is_ascii_lowercase()) {
-        return true;
-    }
-    // A mixed-case token — an upper-case letter alongside the lower-case — is Title-cased like a
-    // name ("Htg-0", "Jean-Luc"), never a code: real codes are typed all-caps ("MSKR-1", handled
-    // above) or all-lower ("1dq1-a"). So only an all-lower-case hyphenated token continues here.
-    if t.chars().any(|c| c.is_ascii_uppercase()) {
-        return false;
-    }
+    // Code shape (case-insensitive): a digit ("C-J6MT", "Htg-0", "1dq1-a") or only short
+    // (<=3 char) segments ("C-J"). A hyphenated all-letter token with a longer segment
+    // ("Jean-Luc", "Mary-Jo") is a name, never a code.
     let has_digit = t.chars().any(|c| c.is_ascii_digit());
     let longest_segment = t.split('-').map(|s| s.len()).max().unwrap_or(0);
     has_digit || longest_segment <= 3
@@ -2036,7 +2032,10 @@ pub fn analyze_ctx(
         // A standalone word that's a known ship is the ship ("Buzzard"); a null-sec
         // code is the system, not a player who happens to be named like it ("C-J").
         if (!k.contains(' ') && ship_index.contains_key(&k.to_lowercase()))
-            || looks_like_system_code(&k)
+            // Block only a token that is REALLY a system (an all-caps code, or a code shape
+            // confirmed by a systems lookup) — a code-shaped name with no real system
+            // ("Zzz-9", "Htg-0") is a legitimate player, even from the known cache.
+            || is_system_token(&k, systems)
             || is_time_token(&k)
             || is_structure_word(&k)
             // A code-shaped null-sec prefix ("88a" → 88A-RA) is the system, not a player
@@ -2205,7 +2204,9 @@ pub fn analyze_ctx(
                 let mut anchor = false; // a system/ship/structure confirming this is intel, not chat
                 for seg in &segments {
                     let lc = seg.to_lowercase();
-                    let is_system = looks_like_system_code(seg) || resolve(systems, seg).is_some();
+                    let is_system = (looks_like_system_code(seg)
+                        && !is_code_lookalike_name(seg, systems))
+                        || resolve(systems, seg).is_some();
                     let is_ship = ship_index.contains_key(&lc)
                         || is_structure_word(seg)
                         || crate::wormholes::is_wh_code(seg);
@@ -2513,7 +2514,7 @@ pub fn analyze_ctx(
         }
     }
     let (total_count, plus_count, name_number_skips) =
-        parse_count(text, &consumed, systems, ship_index);
+        parse_count(text, &consumed, systems, ship_index, &pilots, known_pilots);
     // "pilot1 pilot2 +20" = 22; a stated total ("7 reds") wins; otherwise a bare list of
     // 3+ named pilots reports its own count. Fewer than 3 named with no number = no badge.
     let named = pilots.len() as u32;
@@ -3163,6 +3164,8 @@ fn parse_count(
     consumed: &[String],
     systems: &Systems,
     ship_index: &HashMap<String, (i64, String)>,
+    pilots: &[String],
+    known_pilots: &HashMap<String, i64>,
 ) -> (Option<u32>, u32, Vec<(String, u32)>) {
     let mut name_skips: Vec<(String, u32)> = Vec::new();
     // A bare number directly before one of these is an ISK/quantity amount ("334
@@ -3194,6 +3197,24 @@ fn parse_count(
             t.starts_with('+') || t.starts_with('x') || t.ends_with('x') || t.ends_with('+');
         let bare_number = t.chars().all(|c| c.is_ascii_digit());
         if !(decorated || bare_number) {
+            continue;
+        }
+        // A bare number that LEADS a CONFIRMED (known-cache) pilot name ("1 Tap Machine") is
+        // part of that name, never a hostile count — the leading-digit mirror of the trailing-
+        // number guard below. Keyed on the known cache (which begins with the same digit), so a
+        // glued blob ("1 Tap Machine ENI") is handled like the clean mention. A genuine count
+        // ("3 Drake" — not a confirmed pilot) and a keyword blob ("7 red 1 neut") are untouched.
+        if bare_number
+            && pilots.iter().any(|p| {
+                let pl = p.to_lowercase();
+                pl.split_whitespace().next() == Some(digits)
+                    && known_pilots.keys().any(|k| {
+                        k.contains(' ')
+                            && k.split_whitespace().next() == Some(digits)
+                            && pl.starts_with(k.as_str())
+                    })
+            })
+        {
             continue;
         }
         // A *bare* number right after a pilot name is part of the name ("Adama 80",
@@ -4944,6 +4965,38 @@ mod tests {
     }
 
     #[test]
+    fn leading_digit_pilot_name_is_consistent_and_amends() {
+        // Two reporters mention the SAME leading-digit character "1 Tap Machine". The leading "1"
+        // is part of the NAME (a confirmed/known pilot), so it must NOT also be read as a hostile
+        // count of 1, and the two mentions must merge — not split into two cards.
+        let s = systems_with(&[("kzfv-4", "KZFV-4", 30100, -0.5)]);
+        let ships = ships_with(&[("Exequror Navy Issue", 29344)]);
+        // "1 Tap Machine" confirmed in the known cache (deterministic).
+        let known: std::collections::HashMap<String, i64> =
+            [("1 tap machine".to_string(), 1i64)].into_iter().collect();
+        let a = analyze("1 Tap Machine ENI", &s, &ships, &known, 100, "ch", "Corn SilkTea");
+        let b = analyze("KZFV-4* 1 Tap Machine", &s, &ships, &known, 130, "ch", "jhouzy");
+        // Both mentions name the pilot "1 Tap Machine"; the leading "1" is the name, not a count.
+        assert!(proposed(&a.pilots, "1 Tap Machine"), "A pilots={:?}", a.pilots);
+        assert!(proposed(&b.pilots, "1 Tap Machine"), "B pilots={:?}", b.pilots);
+        assert_eq!(a.count, None, "leading digit counted in A: {:?}", a.pilots);
+        assert_eq!(b.count, None, "leading digit counted in B: {:?}", b.pilots);
+        assert!(b.systems.iter().any(|d| d.name == "KZFV-4"), "B system={:?}", b.systems);
+        // The re-mention amends the first (same pilot) — one merged card, not a split.
+        let mut state = IntelState::default();
+        state.push(a);
+        assert!(state.try_amend(&b, 60, &s), "second mention should amend the first");
+        assert_eq!(state.reports.len(), 1, "split into separate cards: {:?}", state.reports);
+        assert!(state.reports[0].systems.iter().any(|d| d.name == "KZFV-4"), "system not merged");
+
+        // Control: a genuine "3 Drake" count (not a confirmed pilot) STILL counts as 3 Drakes.
+        let drake = ships_with(&[("Drake", 24698)]);
+        let c = analyze("3 Drake", &s, &drake, &noknown(), 1, "ch", "x");
+        assert_eq!(c.count, Some(3), "3 Drake should be a count: {:?}", c);
+        assert!(!proposed(&c.pilots, "3 Drake"), "3 Drake leaked as a pilot: {:?}", c.pilots);
+    }
+
+    #[test]
     fn amends_successive_reporter_messages() {
         let s = systems();
         let mut state = IntelState::default();
@@ -5761,6 +5814,27 @@ mod tests {
         assert_eq!(pilots, vec!["Htg-0".to_string()], "resolved pilots={pilots:?}");
         assert_eq!(sysd, vec!["MSKR-1".to_string()], "resolved systems={sysd:?}");
         assert!(gates.is_empty(), "gates={gates:?}");
+    }
+
+    #[test]
+    fn code_pattern_name_without_real_system_is_a_pilot() {
+        // `looks_like_system_code` is a CASE-INSENSITIVE pattern hint: every casing of a
+        // code shape matches the pattern (authoritative system-ness is a real lookup).
+        for t in ["Htg-0", "htg-0", "HTG-0", "MSKR-1", "Zzz-9", "zzz-9"] {
+            assert!(looks_like_system_code(t), "{t} should match the code pattern");
+        }
+        assert!(!looks_like_system_code("Jean-Luc"), "a long-segment name is not a code");
+        let s = systems_with(&[("mskr-1", "MSKR-1", 99, -0.5)]);
+        // Known cache (case-insensitive) carries BOTH a code-shaped name with no real system
+        // and a real system code. Only the former is a player.
+        let known: std::collections::HashMap<String, i64> =
+            [("zzz-9".to_string(), 42i64), ("mskr-1".to_string(), 7i64)].into_iter().collect();
+        let r = analyze("Zzz-9 MSKR-1 tackled", &s, &noships(), &known, 1, "ch", "x");
+        // No real "Zzz-9" system → fair game for a pilot, even from the known cache.
+        assert!(proposed(&r.pilots, "Zzz-9"), "code-shaped name not a pilot: {:?}", r.pilots);
+        // A real system code is the system, never a player who shares its name.
+        assert!(!has_pilot_token(&r.pilots, "MSKR-1"), "system code leaked as pilot: {:?}", r.pilots);
+        assert!(r.systems.iter().any(|d| d.name == "MSKR-1"), "MSKR-1 not the system: {:?}", r.systems);
     }
 
     #[test]

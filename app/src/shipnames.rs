@@ -25,6 +25,7 @@ const NICKNAMES: &[(&str, &str)] = &[
     // Dropped-leading-S typo ("cythe" = "Scythe"); the multi-word "Scythe Fleet Issue"
     // case is handled by the fuzzy window logic in `multiword_ships`.
     ("cythe", "Scythe"),
+    ("ved", "Vedmak"),
     ("trasher", "Thrasher"),
     ("auguror", "Augoror"),
     ("porp", "Porpoise"),
@@ -176,6 +177,16 @@ mod tests {
         assert_eq!(map.get("rni").map(|e| e.0), Some(4));
         // Spaced nickname: "fly catcher" is keyed as a two-word phrase for `multiword_ships`.
         assert_eq!(map.get("fly catcher").map(|e| e.0), Some(5));
+    }
+
+    #[test]
+    fn ved_resolves_to_vedmak() {
+        let by_name: HashMap<String, (i64, String)> = [(1i64, "Vedmak")]
+            .into_iter()
+            .map(|(id, n)| (n.to_lowercase(), (id, n.to_string())))
+            .collect();
+        let map: HashMap<String, (i64, String)> = aliases(&by_name).into_iter().collect();
+        assert_eq!(map.get("ved").map(|e| e.1.as_str()), Some("Vedmak"));
     }
 
     #[test]
