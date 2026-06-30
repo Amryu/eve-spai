@@ -240,6 +240,10 @@ fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Cont
         st.raise = true;
     }
     ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
+    // Linux: the ping window lives in the overlay child process, not this viewport. Wake the root
+    // so `fleet_ping_window_ui` runs and forwards the new ping to the overlay over IPC.
+    #[cfg(target_os = "linux")]
+    ctx.request_repaint();
 }
 
 fn push_msg(

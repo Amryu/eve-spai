@@ -31,14 +31,34 @@ pub enum OverlayToMain {
     // Click(...), AlertMoved { .. }, etc. added in later phases.
 }
 
+/// The current fleet-ping set + render context, pushed to the overlay so it can render the
+/// fleet-ping window in its own process. Mirrors the fields the main keeps in `PingWindowState`.
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct PingMsg {
+    /// Pings to show, newest first.
+    pub pings: Vec<crate::pings::Ping>,
+    /// Foreground the window once (a new ping just arrived).
+    pub raise: bool,
+    pub doctrine_url: String,
+    pub op_links: std::collections::HashMap<String, String>,
+}
+
+/// Overlay feature/behaviour config, pushed whenever the relevant settings change.
+/// Carries the ping fields now; alert fields (geometry, severity colours, …) land in P3.
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct OverlayConfig {
+    pub ping_enabled: bool,
+    pub ping_on_top: crate::settings::OnTop,
+}
+
 /// Messages the main process sends to the overlay child.
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
 pub enum MainToOverlay {
-    Ping(serde_json::Value),
-    Config(serde_json::Value),
+    Ping(PingMsg),
+    Config(OverlayConfig),
     /// Ask the overlay to exit its process cleanly.
     Shutdown,
-    // Real typed payloads (alerts, geometry, theme) added in later phases.
+    // Alert/geometry/theme payloads added in later phases.
 }
 
 /// Write a length-prefixed JSON frame: `u32` big-endian byte length + body, then flush.
@@ -97,6 +117,9 @@ pub struct OverlayLink {
     listener: UnixListener,
     /// The accepted overlay connection, populated by the accept-thread once the child connects.
     conn: std::sync::Arc<std::sync::Mutex<Option<UnixStream>>>,
+    /// Set by the accept-thread each time a (re)connection is accepted, so the main can force a
+    /// fresh full resend of Config+Ping to a freshly-spawned overlay. Consumed via `take_reconnected`.
+    reconnected: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_spawn: std::time::Instant,
     restarts: u32,
     gave_up: bool,
@@ -111,16 +134,24 @@ impl OverlayLink {
     pub fn start() -> io::Result<Self> {
         let listener = host()?;
         let conn = std::sync::Arc::new(std::sync::Mutex::new(None));
-        Self::spawn_accept(&listener, conn.clone());
+        let reconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Self::spawn_accept(&listener, conn.clone(), reconnected.clone());
         let child = Self::spawn_child()?;
         Ok(Self {
             child,
             listener,
             conn,
+            reconnected,
             last_spawn: std::time::Instant::now(),
             restarts: 0,
             gave_up: false,
         })
+    }
+
+    /// True (once) after the overlay connects or reconnects. The main resets its change-detection
+    /// version on a `true` so a respawned overlay is repopulated with the current Config+Ping.
+    pub fn take_reconnected(&self) -> bool {
+        self.reconnected.swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     fn spawn_child() -> io::Result<std::process::Child> {
@@ -134,6 +165,7 @@ impl OverlayLink {
     fn spawn_accept(
         listener: &UnixListener,
         conn: std::sync::Arc<std::sync::Mutex<Option<UnixStream>>>,
+        reconnected: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) {
         let listener = match listener.try_clone() {
             Ok(l) => l,
@@ -155,6 +187,8 @@ impl OverlayLink {
                     }
                     if let Ok(s) = stream.try_clone() {
                         *conn.lock().unwrap() = Some(s);
+                        // Signal the main to force-resend the current Config+Ping to this fresh child.
+                        reconnected.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
                 Err(e) => {
@@ -248,14 +282,42 @@ mod tests {
     }
 
     #[test]
-    fn frame_roundtrip_value_payload() {
-        let msg = MainToOverlay::Ping(serde_json::json!({"seq": 7}));
+    fn frame_roundtrip_ping_payload() {
+        let msg = MainToOverlay::Ping(PingMsg {
+            pings: Vec::new(),
+            raise: true,
+            doctrine_url: "https://example/doctrine".to_owned(),
+            op_links: std::collections::HashMap::from([("ops".to_owned(), "https://x".to_owned())]),
+        });
         let mut buf: Vec<u8> = Vec::new();
         send(&mut buf, &msg).unwrap();
         let mut cur = Cursor::new(buf);
         let got: MainToOverlay = recv(&mut cur).unwrap();
         match got {
-            MainToOverlay::Ping(v) => assert_eq!(v["seq"], 7),
+            MainToOverlay::Ping(m) => {
+                assert!(m.raise);
+                assert_eq!(m.doctrine_url, "https://example/doctrine");
+                assert_eq!(m.op_links.get("ops").map(String::as_str), Some("https://x"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_roundtrip_config_payload() {
+        let msg = MainToOverlay::Config(OverlayConfig {
+            ping_enabled: true,
+            ping_on_top: crate::settings::OnTop::Smart,
+        });
+        let mut buf: Vec<u8> = Vec::new();
+        send(&mut buf, &msg).unwrap();
+        let mut cur = Cursor::new(buf);
+        let got: MainToOverlay = recv(&mut cur).unwrap();
+        match got {
+            MainToOverlay::Config(c) => {
+                assert!(c.ping_enabled);
+                assert_eq!(c.ping_on_top, crate::settings::OnTop::Smart);
+            }
             other => panic!("wrong variant: {other:?}"),
         }
     }
