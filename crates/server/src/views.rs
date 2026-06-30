@@ -401,8 +401,11 @@ fn detail_cell(p: &br_core::battle::Participant) -> Markup {
         {
             img .dhull src=(icon_url(p.ship)) width="40" height="40" loading="lazy" alt="ship";
             div .dinfo {
-                span .dpilot { (p.pilot) }
-                span .dparty { (party_logo(&p.party)) (p.party.name) }
+                span .dpilot title=(p.pilot) { (p.pilot) }
+                span .dparty {
+                    (party_logo(&p.party))
+                    span .dparty-name title=(p.party.name) { (p.party.name) }
+                }
             }
             @if let Some(l) = lost {
                 div .dloss {
@@ -431,7 +434,7 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
         div .side-panel {
             div .side-head {
                 div .side-title {
-                    h3 { (side_label(side)) }
+                    h3 title=(side_label(side)) { (side_label(side)) }
                     @if !doms.is_empty() {
                         span .dom-logos {
                             @for (p, r) in &doms {
@@ -450,9 +453,8 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
                 }
                 @if let Some(coalition) = &side.coalition {
                     @if !side.parties.is_empty() {
-                        div .coalition-members {
-                            (format!("{} — {} parties", coalition, side.parties.len()))
-                        }
+                        @let cm = format!("{} — {} parties", coalition, side.parties.len());
+                        div .coalition-members title=(cm) { (cm) }
                     }
                 }
             }
@@ -493,7 +495,7 @@ fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
     let (_, entries) = side_breakdown(battle, side_idx);
     html! {
         div .bd-side {
-            h4 { (side_label(side)) }
+            h4 title=(side_label(side)) { (side_label(side)) }
             @if entries.is_empty() {
                 div .bd-empty { "No alliance/corp breakdown available." }
             } @else {
@@ -501,7 +503,7 @@ fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
                     @for (p, count, r) in &entries {
                         li .bd-row {
                             (party_logo(p))
-                            span .bd-name { (p.name) }
+                            span .bd-name title=(p.name) { (p.name) }
                             span .bd-count { (count) }
                             span .bd-pct { (format!("{:.0}%", r * 100.0)) }
                         }
@@ -718,21 +720,31 @@ const VIEWER_JS: &str = r#"
   var report=document.querySelector('.report');
   if(!report) return;
 
-  // --- Tiles / Details toggle ---
+  var cells=Array.prototype.slice.call(document.querySelectorAll('.dcell'));
+  var chip=document.querySelector('.filter-chip');
+
+  // Remove any hull filter: reveal every Details cell and hide the chip. The cells use a
+  // 'filtered-out' class (not the `hidden` attribute) because the author `.dcell` display
+  // rule would otherwise win over the UA `[hidden]` rule and the cell would stay visible.
+  function clearFilter(){
+    cells.forEach(function(c){ c.classList.remove('filtered-out'); });
+    if(chip){ chip.hidden=true; }
+  }
+
+  // --- Tiles / Details toggle (resets any active hull filter) ---
   var tabs=Array.prototype.slice.call(document.querySelectorAll('.view-toggle .seg'));
   function setMode(mode){
     report.classList.remove('view-tiles','view-details');
     report.classList.add('view-'+mode);
     tabs.forEach(function(t){ t.setAttribute('aria-pressed', t.dataset.mode===mode?'true':'false'); });
   }
-  tabs.forEach(function(t){ t.addEventListener('click',function(){ setMode(t.dataset.mode); }); });
+  tabs.forEach(function(t){ t.addEventListener('click',function(){ clearFilter(); setMode(t.dataset.mode); }); });
 
   // --- Involvement hover highlight ---
   var maps={ka:{},ck:{}};
   var el=document.getElementById('inv-data');
   if(el){ try{ maps=JSON.parse(el.textContent)||maps; }catch(e){} }
   var ka=maps.ka||{}, ck=maps.ck||{};
-  var cells=Array.prototype.slice.call(document.querySelectorAll('.dcell'));
   var byChar={}, byKill={};
   cells.forEach(function(c){
     var ch=c.getAttribute('data-char'); if(ch){ (byChar[ch]=byChar[ch]||[]).push(c); }
@@ -753,16 +765,13 @@ const VIEWER_JS: &str = r#"
   });
 
   // --- Hull filter: click a tile -> Details, only that hull ---
-  var chip=document.querySelector('.filter-chip');
-  function clearFilter(){
-    cells.forEach(function(c){ c.hidden=false; });
-    if(chip) chip.hidden=true;
-  }
   Array.prototype.slice.call(document.querySelectorAll('.ship[data-ship]')).forEach(function(tile){
     tile.addEventListener('click',function(){
       var ship=tile.getAttribute('data-ship');
       setMode('details');
-      cells.forEach(function(c){ c.hidden = c.getAttribute('data-ship')!==ship; });
+      cells.forEach(function(c){
+        c.classList.toggle('filtered-out', c.getAttribute('data-ship')!==ship);
+      });
       if(chip){
         chip.hidden=false;
         var img=chip.querySelector('img');
@@ -841,11 +850,11 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 
 .cards{display:grid; grid-template-columns:repeat(2,1fr); gap:14px;}
 .card{
-  display:block; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  display:block; min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:12px;
   padding:16px; color:var(--text);
 }
 .card:hover{text-decoration:none; border-color:var(--blue-dim);}
-.card-title{font-size:16px; font-weight:600;}
+.card-title{font-size:16px; font-weight:600; overflow-wrap:anywhere;}
 .systems{display:block; margin:6px 0; color:var(--muted); font-size:13px;}
 .systems .sec{font-family:var(--mono); font-weight:600;}
 .systems .sep{color:var(--line);}
@@ -865,7 +874,7 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .page-num{color:var(--muted); font-size:13px;}
 
 .viewer .v-head{position:relative; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:18px;}
-.viewer .v-head h2{padding-right:84px;}
+.viewer .v-head h2{padding-right:84px; overflow-wrap:anywhere;}
 .back-link{display:inline-block; margin-bottom:6px; color:var(--blue); font-size:13px; font-weight:600;}
 .v-tools{position:absolute; top:14px; right:16px; display:flex; gap:6px;}
 .icon-btn{display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:34px; padding:0 8px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--muted); cursor:pointer; font-size:13px; font-weight:600;}
@@ -874,9 +883,12 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .v-actions{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:12px;}
 .meta-by{color:var(--muted); font-size:13px;}
 .panels{display:grid; grid-template-columns:repeat(2,1fr); gap:16px;}
-.side-panel{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;}
+/* min-width:0 lets a grid item shrink below its content width, so a long unbreakable name
+   inside cannot widen the column and force horizontal scrolling. */
+.side-panel{min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;}
 .side-head h3{margin-bottom:2px;}
-.coalition-members{color:var(--muted); font-size:12.5px;}
+.side-title h3{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.coalition-members{color:var(--muted); font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .side-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0;}
 .stat{display:flex; flex-direction:column;}
 .stat-num{font-size:16px; font-weight:600; font-family:var(--mono);}
@@ -900,10 +912,10 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 
 /* Versus strip — each side's top emblem */
 .versus{display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:12px 0 4px;}
-.vs-emblem{display:inline-flex; align-items:center; gap:8px; padding:6px 10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; font-size:14px; font-weight:600;}
+.vs-emblem{display:inline-flex; align-items:center; gap:8px; min-width:0; max-width:100%; padding:6px 10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; font-size:14px; font-weight:600;}
 .vs-emblem:hover{border-color:var(--blue-dim);}
-.vs-emblem img{border-radius:6px;}
-.vs-name{max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.vs-emblem img{flex:0 0 auto; border-radius:6px;}
+.vs-name{min-width:0; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .vs-sep{color:var(--muted); font-style:italic; font-size:13px;}
 
 /* Dominant-party logos + overflow chip in side headers */
@@ -913,21 +925,24 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .more-chip{padding:3px 8px; font-size:12px; font-weight:600; color:var(--muted); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; cursor:pointer; font-family:inherit;}
 .more-chip:hover{border-color:var(--blue-dim); color:var(--text);}
 
-/* Hull filter chip */
+/* Hull filter chip. The explicit [hidden] rule beats the author `display:flex` above —
+   without it the boolean `hidden` attribute would not hide the chip. */
 .filter-chip{display:flex; align-items:center; gap:10px; margin-bottom:14px; padding:8px 12px; background:var(--panel); border:1px solid var(--blue-dim); border-radius:10px; font-size:13px;}
-.filter-chip img{border-radius:5px; border:1px solid var(--line);}
-.filter-chip .fc-label{flex:1; color:var(--muted);}
-.filter-chip .btn{padding:5px 11px; font-size:13px;}
+.filter-chip[hidden]{display:none;}
+.filter-chip img{flex:0 0 auto; border-radius:5px; border:1px solid var(--line);}
+.filter-chip .fc-label{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted);}
+.filter-chip .btn{flex:0 0 auto; padding:5px 11px; font-size:13px;}
 
 /* Details layout — per-pilot cells */
 .details{display:flex; flex-direction:column; gap:6px; margin-top:14px;}
 .dcell{display:flex; align-items:center; gap:10px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2);}
+.dcell.filtered-out{display:none;}
 .dcell.lost{border-color:#5a2a2a;}
 .dhull{flex:0 0 auto; border-radius:6px; border:1px solid var(--line); background:var(--panel);}
 .dinfo{display:flex; flex-direction:column; min-width:0; flex:1;}
-.dpilot{font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.dparty{display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12.5px; min-width:0;}
-.dparty span, .dparty{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.dpilot{min-width:0; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.dparty{display:flex; align-items:center; gap:5px; min-width:0; color:var(--muted); font-size:12.5px;}
+.dparty-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .party-logo{flex:0 0 auto; border-radius:4px;}
 .dloss{display:flex; align-items:center; gap:8px; flex:0 0 auto; font-size:12.5px;}
 .destroyed{color:var(--red); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;}
@@ -940,14 +955,16 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .modal[hidden]{display:none;}
 .modal{position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; padding:20px;}
 .modal-overlay{position:fixed; inset:0; background:rgba(4,8,12,0.72);}
-.modal-panel{position:relative; z-index:1; width:100%; max-width:560px; max-height:80vh; overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px;}
+.modal-panel{position:relative; z-index:1; width:100%; max-width:560px; max-height:80vh; overflow-x:hidden; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px;}
 .modal-close{position:absolute; top:10px; right:12px; background:none; border:none; color:var(--muted); font-size:24px; line-height:1; cursor:pointer;}
 .modal-close:hover{color:var(--text);}
-.modal-panel h3{margin-bottom:12px;}
+.modal-panel h3{margin-bottom:12px; padding-right:24px;}
 .bd-sides{display:grid; grid-template-columns:repeat(2,1fr); gap:16px;}
-.bd-side h4{font-size:14px; margin:0 0 8px;}
+/* min-width:0 so a long alliance name can't widen its column past the panel. */
+.bd-side{min-width:0;}
+.bd-side h4{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; margin:0 0 8px;}
 .bd-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px;}
-.bd-row{display:flex; align-items:center; gap:8px; font-size:13px;}
+.bd-row{display:flex; align-items:center; gap:8px; min-width:0; font-size:13px;}
 .bd-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .bd-count{font-family:var(--mono);}
 .bd-pct{font-family:var(--mono); color:var(--muted); min-width:38px; text-align:right;}
@@ -1177,6 +1194,46 @@ mod tests {
         let html = viewer_page(&card_data(Some("Dom"), "u")).into_string();
         assert!(html.contains("images.evetech.net/alliances/100/logo"));
         assert!(html.contains("class=\"dom-logo\""));
+    }
+
+    #[test]
+    fn hull_filter_ids_match_between_tiles_and_details() {
+        // The hull filter only works if the grouped-tile `data-ship` equals the per-
+        // participant `data-ship` it filters against. Both must carry the same hull type id.
+        let html = viewer_page(&card_data(Some("Filter"), "u")).into_string();
+        // The Tiles tile and the Details cells share hull id 587 (and 588).
+        for id in ["587", "588"] {
+            let tile = format!("class=\"ship\" data-ship=\"{id}\"");
+            let cell = format!("data-ship=\"{id}\"");
+            assert!(html.contains(&tile), "tile carries data-ship={id}");
+            // A Details cell carries the same id (appears beyond the single tile occurrence).
+            assert!(html.matches(&cell).count() >= 2, "a detail cell also has data-ship={id}");
+        }
+        // The filter hides via a class (so author `.dcell` display can't override `[hidden]`),
+        // and the chip's [hidden] is force-hidden — both required for apply/clear to work.
+        assert!(CSS.contains(".dcell.filtered-out{display:none;}"));
+        assert!(CSS.contains(".filter-chip[hidden]{display:none;}"));
+    }
+
+    #[test]
+    fn long_names_get_title_and_ellipsis() {
+        let long = "Extremely Long Alliance Name That Would Otherwise Stretch The Container Far Too Wide";
+        let engs = vec![
+            eng(1, 0, (100, long, "PilotWithAVeryLongPilotNameIndeedYesQuiteLong", 587),
+                (200, "Blue", "K", 588), true),
+            eng(2, 20, (200, "Blue", "V2", 588), (100, long, "K2", 587), true),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let data = CardData { id: "Ll44444444".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        // The long party name is truncated with an ellipsis class and shown in full via title.
+        assert!(html.contains("class=\"dparty-name\""));
+        assert!(html.contains(&format!("title=\"{long}\"")));
+        // The ellipsis CSS and the shrink-enabling min-width:0 are present.
+        assert!(CSS.contains(".dparty-name{min-width:0; overflow:hidden; text-overflow:ellipsis"));
+        assert!(CSS.contains(".side-panel{min-width:0;"));
+        assert!(CSS.contains(".bd-side{min-width:0;}"));
     }
 
     #[test]
