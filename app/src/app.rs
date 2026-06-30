@@ -345,6 +345,15 @@ pub struct SpaiApp {
     loaded_report: Option<LoadedReport>,
     /// Transient feedback for the save/open-report actions (saved path, or a load error).
     report_msg: Option<String>,
+    /// "Build a report from one zKill kill" worker state (shared with the off-thread builder).
+    build_from_kill: crate::zkill::SharedBuildFromKill,
+    /// Battles toolbar: the zKill kill link / id the user is typing for "Build from kill".
+    build_kill_input: String,
+    /// Inline error for the "Build from kill" action (bad input, or a worker failure).
+    build_kill_error: Option<String>,
+    /// Listed ship/structure type ids, retained so the "Build from kill" action can hand them to
+    /// the off-thread builder (the live feed worker owns its own clone).
+    battle_ship_ids: Option<std::sync::Arc<std::collections::HashSet<i64>>>,
     /// "Share to eve-spai.com" upload state (shared with the upload/delete worker).
     br_share: crate::brshare::SharedShare,
     /// "My shared BRs" panel state (shared with the list/delete worker).
@@ -1057,6 +1066,12 @@ impl SpaiApp {
             battle_detail_cache: None,
             loaded_report: None,
             report_msg: None,
+            build_from_kill: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::zkill::BuildFromKill::Idle,
+            )),
+            build_kill_input: String::new(),
+            build_kill_error: None,
+            battle_ship_ids: None,
             br_share: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::ShareStatus::Idle)),
             br_mine: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::MineState::default())),
             br_mine_open: false,
@@ -3257,6 +3272,8 @@ impl SpaiApp {
         let ship_ids = std::sync::Arc::new(
             store.ship_index().values().map(|(id, _)| *id).collect::<std::collections::HashSet<i64>>(),
         );
+        // Keep a handle so the Battles "Build from kill" action can reconstruct a fight off-thread.
+        self.battle_ship_ids = Some(ship_ids.clone());
         // Hull sizes for battle-filter rules, and the live filter config from settings.
         self.ship_sizes = std::sync::Arc::new(store.ship_sizes());
         *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
@@ -5230,27 +5247,66 @@ impl SpaiApp {
                 } else {
                     crate::battle::preview_battle(doc.engagements, self.settings.battle_break_secs)
                 };
-                let ids: Vec<i64> = b
-                    .engagements
-                    .iter()
-                    .flat_map(|e| {
-                        let mut v = vec![e.victim_ship];
-                        v.extend(e.attackers.iter().map(|a| a.ship));
-                        v
-                    })
-                    .filter(|&id| id != 0)
-                    .collect();
-                self.ensure_type_names(&ids, ctx);
-                let inv = b.involvement();
-                let rosters: Vec<Vec<crate::battle::Participant>> =
-                    (0..b.sides.len()).map(|i| b.roster(i)).collect();
-                let title = doc.title.unwrap_or_else(|| {
+                let title = doc.title.clone().unwrap_or_else(|| {
                     b.systems.first().map(|(_, n, _)| n.clone()).unwrap_or_else(|| "Battle report".into())
                 });
-                self.loaded_report = Some(LoadedReport { title, battle: b, inv, rosters, hover: None });
-                self.report_msg = None;
+                self.show_imported_report(b, title, ctx);
             }
             Err(e) => self.report_msg = Some(format!("Could not open report: {e}")),
+        }
+    }
+
+    /// Show a battle in the standalone "Imported" viewer (`self.loaded_report`): resolves the
+    /// hull names and builds the render-ready involvement + rosters, exactly as the Open-JSON path
+    /// does, so an opened report and a built-from-kill report display identically.
+    fn show_imported_report(&mut self, b: crate::battle::Battle, title: String, ctx: &egui::Context) {
+        let ids: Vec<i64> = b
+            .engagements
+            .iter()
+            .flat_map(|e| {
+                let mut v = vec![e.victim_ship];
+                v.extend(e.attackers.iter().map(|a| a.ship));
+                v
+            })
+            .filter(|&id| id != 0)
+            .collect();
+        self.ensure_type_names(&ids, ctx);
+        let inv = b.involvement();
+        let rosters: Vec<Vec<crate::battle::Participant>> =
+            (0..b.sides.len()).map(|i| b.roster(i)).collect();
+        self.loaded_report = Some(LoadedReport { title, battle: b, inv, rosters, hover: None });
+        self.report_msg = None;
+    }
+
+    /// Poll the "Build from kill" worker. When it finishes, show the reconstructed fight through
+    /// the same standalone viewer an opened JSON uses; surface a failure inline. Only consumes a
+    /// terminal state so an in-flight Loading is left untouched.
+    fn poll_build_from_kill(&mut self, ctx: &egui::Context) {
+        let done = {
+            let mut g = self.build_from_kill.lock().unwrap();
+            match &*g {
+                crate::zkill::BuildFromKill::Done(..) | crate::zkill::BuildFromKill::Failed(..) => {
+                    Some(std::mem::replace(&mut *g, crate::zkill::BuildFromKill::Idle))
+                }
+                _ => None,
+            }
+        };
+        match done {
+            Some(crate::zkill::BuildFromKill::Done(engs, _seed)) => {
+                // The worker centers the engagement set on the seed kill, so the single battle
+                // built here contains it (the same path Open JSON takes for a saved report).
+                let b = crate::battle::preview_battle(engs, self.settings.battle_break_secs);
+                let title = b
+                    .systems
+                    .first()
+                    .map(|(_, n, _)| n.clone())
+                    .unwrap_or_else(|| "Battle report".into());
+                self.show_imported_report(b, title, ctx);
+                self.build_kill_input.clear();
+                self.build_kill_error = None;
+            }
+            Some(crate::zkill::BuildFromKill::Failed(msg)) => self.build_kill_error = Some(msg),
+            _ => {}
         }
     }
 
@@ -5310,7 +5366,9 @@ impl SpaiApp {
     fn battles_view(&mut self, ui: &mut egui::Ui) {
         // The "My shared BRs" modal floats above any battles sub-view.
         self.my_shared_window(&ui.ctx().clone());
-        // A report opened from disk takes over the view until dismissed.
+        // Surface a finished "Build from kill" report (or its failure) as soon as it's ready.
+        self.poll_build_from_kill(&ui.ctx().clone());
+        // A report opened from disk (or built from a kill) takes over the view until dismissed.
         if self.loaded_report.is_some() {
             self.loaded_report_view(ui);
             return;
@@ -5595,6 +5653,9 @@ impl SpaiApp {
         // Filter + scope toggle.
         let mut to_load: Option<std::path::PathBuf> = None;
         let mut open_my_shared = false;
+        let mut do_build = false;
+        let building =
+            matches!(*self.build_from_kill.lock().unwrap(), crate::zkill::BuildFromKill::Loading);
         ui.horizontal(|ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add(
@@ -5667,6 +5728,33 @@ impl SpaiApp {
             {
                 open_my_shared = true;
             }
+            ui.separator();
+            // Reconstruct a whole fight from a single zKill kill link / id (off-thread).
+            let input = ui.add_enabled(
+                !building,
+                egui::TextEdit::singleline(&mut self.build_kill_input)
+                    .hint_text("Paste a zKill kill link or id")
+                    .desired_width(220.0),
+            );
+            let submit =
+                input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !building;
+            if ui
+                .add_enabled(
+                    !building,
+                    egui::Button::new(format!(
+                        "{}  Build from kill",
+                        egui_phosphor::regular::HAMMER
+                    )),
+                )
+                .on_hover_text("Build a battle report from one zKillboard kill link or id")
+                .clicked()
+                || submit
+            {
+                do_build = true;
+            }
+            if building {
+                ui.add(egui::Spinner::new());
+            }
             // Work throttle — caps how hard the feed + clustering run.
             let mut th = self.settings.work_throttle;
             egui::ComboBox::from_id_salt("work_throttle")
@@ -5686,6 +5774,38 @@ impl SpaiApp {
         });
         if open_my_shared {
             self.open_my_shared(&ui.ctx().clone());
+        }
+        if do_build {
+            match crate::zkill::parse_kill_id(&self.build_kill_input) {
+                None => {
+                    self.build_kill_error = Some("Not a valid zKill kill link or id".to_owned());
+                }
+                Some(id) => {
+                    self.build_kill_error = None;
+                    if let (Some(systems), Some(ship_ids)) =
+                        (self.systems.clone(), self.battle_ship_ids.clone())
+                    {
+                        crate::zkill::spawn_build_from_kill(
+                            id,
+                            systems,
+                            ship_ids,
+                            self.build_from_kill.clone(),
+                            ui.ctx().clone(),
+                        );
+                    } else {
+                        self.build_kill_error =
+                            Some("Ship data is still loading, try again in a moment".to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(err) = self.build_kill_error.clone() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(err).color(crate::theme::standing::WARNING));
+                if ui.small_button(egui_phosphor::regular::X).clicked() {
+                    self.build_kill_error = None;
+                }
+            });
         }
         if let Some(path) = to_load {
             self.load_battle_report(&path, ui.ctx());
