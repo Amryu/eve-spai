@@ -7,12 +7,76 @@
 //! [`PreEscaped`], so none of them can inject markup. `PreEscaped` is used *only* for
 //! the static, developer-authored CSS/JS blobs in [`layout`].
 
-use br_core::battle::{Battle, BattleReportDoc, Side};
+use br_core::battle::{Battle, BattleReportDoc, Party, PartyKind, Side};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 /// EVE ship/structure icon for a type id (64 px). Empty markup for type id 0.
 fn icon_url(type_id: i64) -> String {
     format!("https://images.evetech.net/types/{type_id}/icon?size=64")
+}
+
+/// zKillboard permalink for a killmail.
+fn zkill_url(kill_id: i64) -> String {
+    format!("https://zkillboard.com/kill/{kill_id}/")
+}
+
+/// Alliance/corporation logo URL for a party (32 px). `None` for characters, factions,
+/// unknowns, or a 0 id — those have no entity logo.
+fn party_logo_url(p: &Party) -> Option<String> {
+    if p.id == 0 {
+        return None;
+    }
+    match p.kind {
+        PartyKind::Alliance => {
+            Some(format!("https://images.evetech.net/alliances/{}/logo?size=32", p.id))
+        }
+        PartyKind::Corporation => {
+            Some(format!("https://images.evetech.net/corporations/{}/logo?size=32", p.id))
+        }
+        _ => None,
+    }
+}
+
+/// Inline party logo (alliance/corp) with the party name as accessible label. Empty for
+/// parties with no logo.
+fn party_logo(p: &Party) -> Markup {
+    html! {
+        @if let Some(url) = party_logo_url(p) {
+            img .party-logo src=(url) width="20" height="20" loading="lazy" alt=(p.name) title=(p.name);
+        }
+    }
+}
+
+/// A side's composition by entity: every participating Alliance/Corporation identity with
+/// its participant count and share of the side. Returns `(total_roster, entries)` where
+/// `entries` is `(party, count, ratio)` sorted by count desc (stable tie-break by id). The
+/// denominator is the *full* roster, so shares sum to ≤ 1 (characters/factions, which have
+/// no entity logo, are excluded from the entries but still counted in the total).
+fn side_breakdown(battle: &Battle, side_idx: usize) -> (usize, Vec<(Party, usize, f64)>) {
+    use std::collections::HashMap;
+    let roster = battle.roster(side_idx);
+    let total = roster.len();
+    if total == 0 {
+        return (0, Vec::new());
+    }
+    let mut counts: HashMap<i64, (Party, usize)> = HashMap::new();
+    for p in &roster {
+        if matches!(p.party.kind, PartyKind::Alliance | PartyKind::Corporation) && p.party.id != 0 {
+            let e = counts.entry(p.party.id).or_insert_with(|| (p.party.clone(), 0));
+            e.1 += 1;
+        }
+    }
+    let mut v: Vec<(Party, usize, f64)> =
+        counts.into_values().map(|(p, c)| (p, c, c as f64 / total as f64)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.id.cmp(&b.0.id)));
+    (total, v)
+}
+
+/// Parties that make up more than 10% of a side's roster, as `(party, ratio)`, biggest
+/// first, at most three — the logos shown inline in the side header.
+fn dominant_parties(battle: &Battle, side_idx: usize) -> Vec<(Party, f64)> {
+    let (_, entries) = side_breakdown(battle, side_idx);
+    entries.into_iter().filter(|(_, _, r)| *r > 0.10).map(|(p, _, r)| (p, r)).take(3).collect()
 }
 
 /// One report row's render inputs: its public id, the stored doc, uploader, view count.
@@ -324,15 +388,66 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     groups
 }
 
-/// One side's full panel: name, pilots, ISK lost/destroyed, efficiency, ship roster.
+/// One participant row for the Details layout: hull, pilot, party (with logo), and — for a
+/// destroyed ship — a red marker, ISK value, and zKill link. `data-*` attributes drive the
+/// hover-highlight and hull-filter JS (`data-char`, `data-ship`, and `data-kill` on losses).
+fn detail_cell(p: &br_core::battle::Participant) -> Markup {
+    let lost = p.lost.as_ref();
+    html! {
+        div .dcell .lost[lost.is_some()]
+            data-char=(p.char_id)
+            data-ship=(p.ship)
+            data-kill=[lost.map(|l| l.kill_id)]
+        {
+            img .dhull src=(icon_url(p.ship)) width="40" height="40" loading="lazy" alt="ship";
+            div .dinfo {
+                span .dpilot { (p.pilot) }
+                span .dparty { (party_logo(&p.party)) (p.party.name) }
+            }
+            @if let Some(l) = lost {
+                div .dloss {
+                    span .destroyed { "destroyed" }
+                    span .dval { (fmt_isk(l.value + l.pod_value)) }
+                    a .zk href=(zkill_url(l.kill_id)) target="_blank" rel="noopener" { "zKill" }
+                }
+            }
+        }
+    }
+}
+
+/// One side's full panel: header (name + dominant logos + overflow chip), stats, and both
+/// the Tiles (grouped hulls) and Details (per-pilot) layouts. Only one layout is visible at
+/// a time, switched by the report-level `view-tiles`/`view-details` class.
 fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
     let side = &battle.sides[side_idx];
     let groups = roster_groups(battle, side_idx);
     let pilots: usize = groups.iter().map(|g| g.lost + g.survived).sum();
+    let doms = dominant_parties(battle, side_idx);
+    let (_, breakdown) = side_breakdown(battle, side_idx);
+    // Distinct alliance/corp entities beyond the (≤3) shown inline.
+    let overflow = breakdown.len().saturating_sub(doms.len());
+    let roster = battle.roster(side_idx);
     html! {
         div .side-panel {
             div .side-head {
-                h3 { (side_label(side)) }
+                div .side-title {
+                    h3 { (side_label(side)) }
+                    @if !doms.is_empty() {
+                        span .dom-logos {
+                            @for (p, r) in &doms {
+                                @if let Some(url) = party_logo_url(p) {
+                                    @let label = format!("{} — {:.0}%", p.name, r * 100.0);
+                                    img .dom-logo src=(url) width="26" height="26" loading="lazy"
+                                        alt=(label) title=(label);
+                                }
+                            }
+                            @if overflow > 0 {
+                                button type="button" .more-chip data-side=(side_idx)
+                                    title="Show full breakdown" { "+" (overflow) }
+                            }
+                        }
+                    }
+                }
                 @if let Some(coalition) = &side.coalition {
                     @if !side.parties.is_empty() {
                         div .coalition-members {
@@ -352,7 +467,7 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
             div .bar { div .bar-fill style=(format!("width:{:.0}%", side.isk_efficiency().unwrap_or(0.0))) {} }
             div .roster {
                 @for g in &groups {
-                    div .ship {
+                    div .ship data-ship=(g.ship) title="Show these pilots" {
                         img .ship-icon src=(icon_url(g.ship)) width="48" height="48" loading="lazy" alt="ship";
                         div .ship-counts {
                             @if g.lost > 0 { span .lost { (g.lost) " lost" } }
@@ -362,17 +477,108 @@ fn side_panel(battle: &Battle, side_idx: usize) -> Markup {
                     }
                 }
             }
+            div .details {
+                @for p in &roster {
+                    (detail_cell(p))
+                }
+            }
         }
     }
+}
+
+/// One side's entry in the breakdown modal: heading + every alliance/corp with logo, name,
+/// participant count, and share, biggest first.
+fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
+    let side = &battle.sides[side_idx];
+    let (_, entries) = side_breakdown(battle, side_idx);
+    html! {
+        div .bd-side {
+            h4 { (side_label(side)) }
+            @if entries.is_empty() {
+                div .bd-empty { "No alliance/corp breakdown available." }
+            } @else {
+                ul .bd-list {
+                    @for (p, count, r) in &entries {
+                        li .bd-row {
+                            (party_logo(p))
+                            span .bd-name { (p.name) }
+                            span .bd-count { (count) }
+                            span .bd-pct { (format!("{:.0}%", r * 100.0)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The "emblem A vs B" strip at the top of a report: each side's single most-represented
+/// alliance/corp logo, clickable to open that side's breakdown. Skipped if no side has a
+/// logo-bearing entity.
+fn versus_strip(battle: &Battle) -> Markup {
+    let emblems: Vec<(usize, Party)> = (0..battle.sides.len())
+        .filter_map(|i| side_breakdown(battle, i).1.into_iter().next().map(|(p, _, _)| (i, p)))
+        .collect();
+    html! {
+        @if !emblems.is_empty() {
+            div .versus {
+                @for (n, (side_idx, p)) in emblems.iter().enumerate() {
+                    @if n > 0 { span .vs-sep { "vs" } }
+                    button type="button" .vs-emblem data-side=(side_idx) title=(p.name) {
+                        @if let Some(url) = party_logo_url(p) {
+                            img src=(url) width="40" height="40" loading="lazy" alt=(p.name);
+                        }
+                        span .vs-name { (side_label(&battle.sides[*side_idx])) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Hover-highlight lookup maps, embedded as JSON for the viewer JS. Both maps contain only
+/// integer ids, so the blob is safe to emit verbatim. `ka`: kill_id → attacker char_ids
+/// (who scored each loss). `ck`: char_id → kill_ids that pilot was an attacker on.
+fn involvement_json(battle: &Battle) -> String {
+    use std::collections::BTreeMap;
+    let mut ka: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    let mut ck: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    for e in &battle.engagements {
+        let mut atk: Vec<i64> = Vec::new();
+        for a in &e.attackers {
+            if a.char_id == 0 {
+                continue;
+            }
+            if !atk.contains(&a.char_id) {
+                atk.push(a.char_id);
+            }
+            let kills = ck.entry(a.char_id).or_default();
+            if !kills.contains(&e.kill_id) {
+                kills.push(e.kill_id);
+            }
+        }
+        ka.insert(e.kill_id, atk);
+    }
+    serde_json::json!({ "ka": ka, "ck": ck }).to_string()
 }
 
 /// The single-report viewer page.
 pub fn viewer_page(data: &CardData) -> Markup {
     let b = &data.doc.battle;
     let json_href = format!("/api/br/{}.json", data.id);
+    let inv = involvement_json(b);
     let body = html! {
         section .viewer {
             div .v-head {
+                div .v-tools {
+                    a .icon-btn href=(json_href) download title="Download JSON" aria-label="Download JSON" {
+                        (PreEscaped(ICON_DOWNLOAD))
+                    }
+                    button type="button" .icon-btn #copy-link title="Copy link" aria-label="Copy link" {
+                        (PreEscaped(ICON_LINK))
+                    }
+                }
+                a .back-link href="/br" { "← All battle reports" }
                 h2 { (display_title(&data.doc)) }
                 (systems_chips(b))
                 div .v-meta {
@@ -384,15 +590,40 @@ pub fn viewer_page(data: &CardData) -> Markup {
                     span .dot-sep { "·" }
                     span { (b.kills) " kills" }
                 }
+                (versus_strip(b))
                 div .v-actions {
-                    a .btn .primary href=(json_href) download { "Download JSON" }
-                    button type="button" .btn #copy-link data-url="" { "Copy link" }
                     span .meta-by { "uploaded by " (data.uploader) " · " (data.views) " views" }
                 }
             }
-            div .panels {
-                @for i in 0..b.sides.len() {
-                    (side_panel(b, i))
+            div .view-toggle role="group" aria-label="Layout" {
+                button type="button" .seg data-mode="tiles" aria-pressed="true" { "Tiles" }
+                button type="button" .seg data-mode="details" aria-pressed="false" { "Details" }
+            }
+            div .report .view-tiles {
+                div .filter-chip hidden {
+                    img width="24" height="24" alt="hull";
+                    span .fc-label { "Showing only this hull" }
+                    button type="button" .btn .fc-clear { "Clear filter" }
+                }
+                div .panels {
+                    @for i in 0..b.sides.len() {
+                        (side_panel(b, i))
+                    }
+                }
+            }
+            // Hover-highlight maps (integer ids only — safe to emit verbatim).
+            script type="application/json" #inv-data { (PreEscaped(inv)) }
+            // Per-side alliance/corp breakdown, hidden until opened from a "+N" chip or emblem.
+            div .modal #breakdown-modal hidden {
+                div .modal-overlay {}
+                div .modal-panel role="dialog" aria-modal="true" aria-label="Side breakdown" {
+                    button type="button" .modal-close aria-label="Close" { "×" }
+                    h3 { "Composition" }
+                    div .bd-sides {
+                        @for i in 0..b.sides.len() {
+                            (breakdown_section(b, i))
+                        }
+                    }
                 }
             }
         }
@@ -465,15 +696,94 @@ const DIRECTORY_JS: &str = r#"
 })();
 "#;
 
-/// Copy-link button: writes the current page URL to the clipboard. No interpolated data.
+/// Inline glyphs for the header icon buttons (developer-authored, so emitted via
+/// `PreEscaped`). `currentColor` lets them inherit the button's muted/hover colour.
+const ICON_DOWNLOAD: &str = r#"<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>"#;
+const ICON_LINK: &str = r#"<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>"#;
+
+/// Viewer interactions, all reading data already in the DOM (no API round-trips):
+/// copy-link, the Tiles/Details toggle, the hull-filter chip, the involvement hover
+/// highlight (driven by the embedded #inv-data integer maps), and the breakdown modal.
 const VIEWER_JS: &str = r#"
 (function(){
-  var b=document.getElementById('copy-link'); if(!b) return;
-  b.addEventListener('click',function(){
+  // Copy current URL to clipboard.
+  var cp=document.getElementById('copy-link');
+  if(cp){ cp.addEventListener('click',function(){
     navigator.clipboard.writeText(window.location.href).then(function(){
-      var o=b.textContent; b.textContent='Copied!'; setTimeout(function(){b.textContent=o;},1500);
+      var o=cp.innerHTML; cp.classList.add('copied'); cp.textContent='Copied!';
+      setTimeout(function(){ cp.innerHTML=o; cp.classList.remove('copied'); },1500);
+    });
+  }); }
+
+  var report=document.querySelector('.report');
+  if(!report) return;
+
+  // --- Tiles / Details toggle ---
+  var tabs=Array.prototype.slice.call(document.querySelectorAll('.view-toggle .seg'));
+  function setMode(mode){
+    report.classList.remove('view-tiles','view-details');
+    report.classList.add('view-'+mode);
+    tabs.forEach(function(t){ t.setAttribute('aria-pressed', t.dataset.mode===mode?'true':'false'); });
+  }
+  tabs.forEach(function(t){ t.addEventListener('click',function(){ setMode(t.dataset.mode); }); });
+
+  // --- Involvement hover highlight ---
+  var maps={ka:{},ck:{}};
+  var el=document.getElementById('inv-data');
+  if(el){ try{ maps=JSON.parse(el.textContent)||maps; }catch(e){} }
+  var ka=maps.ka||{}, ck=maps.ck||{};
+  var cells=Array.prototype.slice.call(document.querySelectorAll('.dcell'));
+  var byChar={}, byKill={};
+  cells.forEach(function(c){
+    var ch=c.getAttribute('data-char'); if(ch){ (byChar[ch]=byChar[ch]||[]).push(c); }
+    var k=c.getAttribute('data-kill'); if(k){ (byKill[k]=byKill[k]||[]).push(c); }
+  });
+  function clearHi(){ cells.forEach(function(c){ c.classList.remove('hi-killer','hi-victim'); }); }
+  cells.forEach(function(c){
+    c.addEventListener('mouseenter',function(){
+      clearHi();
+      var kill=c.getAttribute('data-kill');
+      if(kill && ka[kill]){ ka[kill].forEach(function(id){
+        (byChar[id]||[]).forEach(function(x){ x.classList.add('hi-killer'); }); }); }
+      var ch=c.getAttribute('data-char');
+      if(ch && ck[ch]){ ck[ch].forEach(function(k){
+        (byKill[k]||[]).forEach(function(x){ x.classList.add('hi-victim'); }); }); }
+    });
+    c.addEventListener('mouseleave',clearHi);
+  });
+
+  // --- Hull filter: click a tile -> Details, only that hull ---
+  var chip=document.querySelector('.filter-chip');
+  function clearFilter(){
+    cells.forEach(function(c){ c.hidden=false; });
+    if(chip) chip.hidden=true;
+  }
+  Array.prototype.slice.call(document.querySelectorAll('.ship[data-ship]')).forEach(function(tile){
+    tile.addEventListener('click',function(){
+      var ship=tile.getAttribute('data-ship');
+      setMode('details');
+      cells.forEach(function(c){ c.hidden = c.getAttribute('data-ship')!==ship; });
+      if(chip){
+        chip.hidden=false;
+        var img=chip.querySelector('img');
+        if(img){ img.src='https://images.evetech.net/types/'+ship+'/icon?size=64'; }
+      }
     });
   });
+  if(chip){ var cb=chip.querySelector('.fc-clear'); if(cb){ cb.addEventListener('click',clearFilter); } }
+
+  // --- Breakdown modal ---
+  var modal=document.getElementById('breakdown-modal');
+  function openModal(){ if(modal){ modal.hidden=false; } }
+  function closeModal(){ if(modal){ modal.hidden=true; } }
+  Array.prototype.slice.call(document.querySelectorAll('.more-chip,.vs-emblem')).forEach(function(b){
+    b.addEventListener('click',openModal);
+  });
+  if(modal){
+    var ov=modal.querySelector('.modal-overlay'); if(ov){ ov.addEventListener('click',closeModal); }
+    var x=modal.querySelector('.modal-close'); if(x){ x.addEventListener('click',closeModal); }
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ closeModal(); } });
+  }
 })();
 "#;
 
@@ -554,7 +864,13 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .pager{display:flex; align-items:center; justify-content:space-between; margin-top:22px;}
 .page-num{color:var(--muted); font-size:13px;}
 
-.viewer .v-head{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:18px;}
+.viewer .v-head{position:relative; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:18px;}
+.viewer .v-head h2{padding-right:84px;}
+.back-link{display:inline-block; margin-bottom:6px; color:var(--blue); font-size:13px; font-weight:600;}
+.v-tools{position:absolute; top:14px; right:16px; display:flex; gap:6px;}
+.icon-btn{display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:34px; padding:0 8px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--muted); cursor:pointer; font-size:13px; font-weight:600;}
+.icon-btn:hover{color:var(--blue); border-color:var(--blue-dim); text-decoration:none;}
+.icon-btn.copied{color:var(--blue);}
 .v-actions{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:12px;}
 .meta-by{color:var(--muted); font-size:13px;}
 .panels{display:grid; grid-template-columns:repeat(2,1fr); gap:16px;}
@@ -565,19 +881,84 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .stat{display:flex; flex-direction:column;}
 .stat-num{font-size:16px; font-weight:600; font-family:var(--mono);}
 .stat-label{color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:0.4px;}
-.roster{display:flex; flex-wrap:wrap; gap:10px; margin-top:14px;}
-.ship{display:flex; flex-direction:column; align-items:center; gap:4px; width:64px;}
-.ship-icon{border-radius:8px; border:1px solid var(--line); background:var(--panel-2);}
+.roster{display:grid; grid-template-columns:repeat(auto-fit,minmax(78px,1fr)); gap:10px; margin-top:14px;}
+.ship{display:flex; flex-direction:column; align-items:center; gap:4px; padding:4px; border-radius:8px; cursor:pointer;}
+.ship:hover{background:var(--panel-2);}
+.ship-icon{width:48px; height:48px; border-radius:8px; border:1px solid var(--line); background:var(--panel-2);}
 .ship-counts{display:flex; flex-direction:column; align-items:center; font-size:11px; line-height:1.3;}
 .ship-counts .lost{color:var(--red);}
 .ship-counts .survived{color:var(--muted);}
 .ship-counts .fb{color:var(--blue);}
+
+/* Tiles / Details toggle and layout switching */
+.view-toggle{display:inline-flex; margin-bottom:14px; border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+.view-toggle .seg{padding:8px 18px; font-size:14px; font-weight:600; background:var(--panel); color:var(--muted); border:none; border-right:1px solid var(--line); cursor:pointer; font-family:inherit;}
+.view-toggle .seg:last-child{border-right:none;}
+.view-toggle .seg[aria-pressed="true"]{background:var(--blue-dim); color:var(--text);}
+.report.view-tiles .details{display:none;}
+.report.view-details .roster{display:none;}
+
+/* Versus strip — each side's top emblem */
+.versus{display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin:12px 0 4px;}
+.vs-emblem{display:inline-flex; align-items:center; gap:8px; padding:6px 10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; color:var(--text); cursor:pointer; font-family:inherit; font-size:14px; font-weight:600;}
+.vs-emblem:hover{border-color:var(--blue-dim);}
+.vs-emblem img{border-radius:6px;}
+.vs-name{max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.vs-sep{color:var(--muted); font-style:italic; font-size:13px;}
+
+/* Dominant-party logos + overflow chip in side headers */
+.side-title{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.dom-logos{display:inline-flex; align-items:center; gap:5px;}
+.dom-logo{border-radius:5px; border:1px solid var(--line); background:var(--panel-2);}
+.more-chip{padding:3px 8px; font-size:12px; font-weight:600; color:var(--muted); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; cursor:pointer; font-family:inherit;}
+.more-chip:hover{border-color:var(--blue-dim); color:var(--text);}
+
+/* Hull filter chip */
+.filter-chip{display:flex; align-items:center; gap:10px; margin-bottom:14px; padding:8px 12px; background:var(--panel); border:1px solid var(--blue-dim); border-radius:10px; font-size:13px;}
+.filter-chip img{border-radius:5px; border:1px solid var(--line);}
+.filter-chip .fc-label{flex:1; color:var(--muted);}
+.filter-chip .btn{padding:5px 11px; font-size:13px;}
+
+/* Details layout — per-pilot cells */
+.details{display:flex; flex-direction:column; gap:6px; margin-top:14px;}
+.dcell{display:flex; align-items:center; gap:10px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2);}
+.dcell.lost{border-color:#5a2a2a;}
+.dhull{flex:0 0 auto; border-radius:6px; border:1px solid var(--line); background:var(--panel);}
+.dinfo{display:flex; flex-direction:column; min-width:0; flex:1;}
+.dpilot{font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.dparty{display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12.5px; min-width:0;}
+.dparty span, .dparty{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.party-logo{flex:0 0 auto; border-radius:4px;}
+.dloss{display:flex; align-items:center; gap:8px; flex:0 0 auto; font-size:12.5px;}
+.destroyed{color:var(--red); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;}
+.dval{font-family:var(--mono); color:var(--red);}
+.zk{font-weight:600;}
+.dcell.hi-killer{outline:2px solid var(--blue); background:rgba(79,195,247,0.12);}
+.dcell.hi-victim{outline:2px solid var(--red); background:rgba(224,76,76,0.12);}
+
+/* Breakdown modal */
+.modal[hidden]{display:none;}
+.modal{position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; padding:20px;}
+.modal-overlay{position:fixed; inset:0; background:rgba(4,8,12,0.72);}
+.modal-panel{position:relative; z-index:1; width:100%; max-width:560px; max-height:80vh; overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px;}
+.modal-close{position:absolute; top:10px; right:12px; background:none; border:none; color:var(--muted); font-size:24px; line-height:1; cursor:pointer;}
+.modal-close:hover{color:var(--text);}
+.modal-panel h3{margin-bottom:12px;}
+.bd-sides{display:grid; grid-template-columns:repeat(2,1fr); gap:16px;}
+.bd-side h4{font-size:14px; margin:0 0 8px;}
+.bd-list{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px;}
+.bd-row{display:flex; align-items:center; gap:8px; font-size:13px;}
+.bd-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.bd-count{font-family:var(--mono);}
+.bd-pct{font-family:var(--mono); color:var(--muted); min-width:38px; text-align:right;}
+.bd-empty{color:var(--muted); font-size:13px;}
 .notfound{text-align:center; padding:60px 20px;}
 .notfound p{color:var(--muted); max-width:480px; margin:10px auto 24px;}
 
 @media (max-width:700px){
   .cards{grid-template-columns:1fr;}
   .panels{grid-template-columns:1fr;}
+  .bd-sides{grid-template-columns:1fr;}
   .side-name{flex-basis:42%;}
   form.filters input, form.filters select{flex:1 1 100%;}
 }
@@ -733,5 +1114,89 @@ mod tests {
         assert!(html.contains("Report not found"));
         assert!(html.contains("EVE")); // branded layout
         assert!(html.contains("/br"));
+    }
+
+    #[test]
+    fn viewer_renders_both_layouts_and_toggle() {
+        let html = viewer_page(&card_data(Some("Layouts"), "u")).into_string();
+        // The Tiles/Details toggle, both layouts, and the report wrapper all render server-side.
+        assert!(html.contains("data-mode=\"tiles\""));
+        assert!(html.contains("data-mode=\"details\""));
+        assert!(html.contains("class=\"report view-tiles\"")); // default = Tiles
+        assert!(html.contains("class=\"roster\"")); // Tiles layout
+        assert!(html.contains("class=\"details\"")); // Details layout
+        // Tiles are clickable (carry their hull type id) and details cells carry hover ids.
+        assert!(html.contains("data-ship=\"587\""));
+        assert!(html.contains("data-char="));
+        // Back-to-directory affordance.
+        assert!(html.contains("All battle reports"));
+        assert!(html.contains("href=\"/br\""));
+    }
+
+    #[test]
+    fn details_view_has_zkill_links_and_involvement_maps() {
+        let html = viewer_page(&card_data(Some("Kills"), "u")).into_string();
+        // Each loss links to its zKill killmail (kill ids 1 and 3 are losses in `doc`).
+        assert!(html.contains("https://zkillboard.com/kill/1/"));
+        assert!(html.contains("rel=\"noopener\""));
+        assert!(html.contains("data-kill=\"1\""));
+        // The embedded involvement maps (integer-only) are present for the hover JS.
+        assert!(html.contains("id=\"inv-data\""));
+        assert!(html.contains("\"ka\"") && html.contains("\"ck\""));
+        // The JSON keeps its quotes (not HTML-escaped) so JSON.parse works.
+        assert!(!html.contains("&quot;ka&quot;"));
+    }
+
+    #[test]
+    fn malicious_pilot_and_party_escaped_in_details() {
+        let evil = "<script>alert(1)</script>";
+        let engs = vec![
+            eng(1, 0, (100, "Red", evil, 587), (200, "Blue", "K", 588), true),
+            eng(2, 20, (200, "Blue", "V2", 588), (100, "Red", "K2", 587), true),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let data = CardData { id: "Zz22222222".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        // The malicious pilot name (shown in the Details cell) is escaped.
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    }
+
+    #[test]
+    fn dominant_icons_capped_and_thresholded() {
+        let battle = &doc(Some("Dom")).battle;
+        for i in 0..battle.sides.len() {
+            let doms = dominant_parties(battle, i);
+            assert!(doms.len() <= 3, "at most three logos");
+            for (_, r) in &doms {
+                assert!(*r > 0.10, "only parties above 10%");
+            }
+        }
+        // The viewer renders the dominant logos (alliance logo URL) in side headers.
+        let html = viewer_page(&card_data(Some("Dom"), "u")).into_string();
+        assert!(html.contains("images.evetech.net/alliances/100/logo"));
+        assert!(html.contains("class=\"dom-logo\""));
+    }
+
+    #[test]
+    fn breakdown_modal_lists_parties_and_escapes_names() {
+        let evil = "<b>Sneaky</b> Alliance";
+        let engs = vec![
+            eng(1, 0, (100, evil, "RedA", 587), (200, "Blue", "BlueA", 588), true),
+            eng(2, 20, (100, evil, "RedB", 587), (200, "Blue", "BlueB", 588), true),
+            eng(3, 40, (200, "Blue", "BlueC", 588), (100, evil, "RedC", 587), true),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000);
+        let data = CardData { id: "Mm33333333".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+        // The breakdown modal is rendered (hidden) with per-side composition lists.
+        assert!(html.contains("id=\"breakdown-modal\""));
+        assert!(html.contains("class=\"bd-list\""));
+        assert!(html.contains("class=\"bd-count\""));
+        // The malicious party name is escaped in the breakdown.
+        assert!(!html.contains("<b>Sneaky</b> Alliance"));
+        assert!(html.contains("&lt;b&gt;Sneaky&lt;/b&gt; Alliance"));
     }
 }
