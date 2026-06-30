@@ -1125,19 +1125,24 @@ impl SpaiApp {
                     level_applied = Some(on_top);
                     level_at = Some(std::time::Instant::now());
                 }
-                // A borderless/fullscreen game can rise above a topmost window, so periodically
-                // re-assert the level to re-claim the top. Throttled so it doesn't pin the app.
-                if on_top {
-                    let due = level_at
-                        .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
-                    if due {
+                // While an alert is showing, periodically re-assert visibility + interactivity +
+                // (when wanted) the on-top level. A minimize/restore — e.g. KWin iconifying us with
+                // the main window, or a borderless game rising above a topmost window — resets these,
+                // and the change-tracking above won't re-send (it thinks they're already applied).
+                // Throttled to ~800ms so it doesn't pin egui at vsync.
+                let due =
+                    level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
+                if due {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
+                    if on_top {
                         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                             egui::WindowLevel::AlwaysOnTop,
                         ));
-                        level_at = Some(std::time::Instant::now());
                     }
-                    ctx.request_repaint_after(std::time::Duration::from_millis(800));
+                    level_at = Some(std::time::Instant::now());
                 }
+                ctx.request_repaint_after(std::time::Duration::from_millis(800));
 
                 let mut hovered = false;
                 let mut dismiss = false;
