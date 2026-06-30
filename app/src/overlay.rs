@@ -9,27 +9,33 @@
 //! overlay opens its own read-only Store to resolve system names + ship details, and holds its own
 //! kill/affiliation caches (it has no fetchers — the main pre-resolves and pushes those entries).
 
-use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::app::{SharedAlertWindow, SharedPingWindow};
 
-#[cfg(target_os = "linux")]
-use std::os::unix::net::UnixStream;
-
 /// Entry point for the `--overlay` child. Reuses the main binary's eframe setup so the
 /// renderer/backend choices stay identical to the parent.
 pub fn run_overlay() -> eframe::Result<()> {
-    let viewport = egui::ViewportBuilder::default()
+    #[allow(unused_mut)] // `viewport` is only reassigned in the Linux-only block below
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai overlay")
         .with_inner_size([1.0, 1.0])
+        // Keep the 1×1 root off the taskbar. It must stay mapped (a hidden window never paints, so
+        // its deferred ping/alert child viewports would never run), so we can't hide it — 1×1 +
+        // taskbar-off keeps it out of sight. NOTE: on macOS hiding the Dock tile would need an
+        // `LSUIElement`/`NSApplicationActivationPolicyAccessory` bundle flag — out of scope here.
         .with_taskbar(false)
         .with_decorations(false)
         .with_transparent(true)
         .with_visible(true);
+    // On X11 also tag the root as a Utility window so window managers that ignore taskbar hints
+    // (some keep a 1×1 normal toplevel in the task switcher) still keep it out of the way.
+    #[cfg(target_os = "linux")]
+    {
+        viewport = viewport.with_window_type(egui::X11WindowType::Utility);
+    }
     let opts = crate::base_native_options(viewport);
     eframe::run_native(
         "eve-spai-overlay",
@@ -48,14 +54,10 @@ struct Overlay {
     /// The alert window's raw on-top setting (resolved against live EVE focus each frame). Written
     /// by the IPC `Config` handler, read in `update`.
     alert_on_top: Arc<Mutex<crate::settings::OnTop>>,
-    /// Writable clone of the main connection, for sending alert clicks / geometry back.
-    #[cfg(target_os = "linux")]
-    to_main: Arc<Mutex<Option<UnixStream>>>,
     /// Last alert geometry forwarded to the main, so we only send `AlertMoved` on an actual change
-    /// (the render closure republishes the current position every frame).
-    #[cfg(target_os = "linux")]
+    /// (the render closure republishes the current position every frame). Clicks/geometry are
+    /// written straight to our stdout (the overlay→main IPC pipe).
     alert_pos_sent: Option<(f32, f32)>,
-    #[cfg(target_os = "linux")]
     alert_size_sent: Option<(f32, f32)>,
     /// Last probed EVE-focus state (Smart on-top), refreshed on a throttle.
     eve_focused: bool,
@@ -90,8 +92,6 @@ impl Overlay {
         let kills: crate::kills::KillCache = Arc::new(Mutex::new(HashMap::new()));
         let affil: crate::affiliation::SharedAffil =
             Arc::new(Mutex::new(crate::affiliation::AffilCache::default()));
-        #[cfg(target_os = "linux")]
-        let to_main: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
 
         let ctx = cc.egui_ctx.clone();
         Self::load_systems(ping_shared.clone(), alert_shared.clone(), ctx.clone());
@@ -101,8 +101,6 @@ impl Overlay {
             alert_on_top: alert_on_top.clone(),
             kills,
             affil,
-            #[cfg(target_os = "linux")]
-            to_main: to_main.clone(),
             ctx,
         });
         Self {
@@ -111,11 +109,7 @@ impl Overlay {
             alert_shared,
             alert_viewport_cb,
             alert_on_top,
-            #[cfg(target_os = "linux")]
-            to_main,
-            #[cfg(target_os = "linux")]
             alert_pos_sent: None,
-            #[cfg(target_os = "linux")]
             alert_size_sent: None,
             eve_focused: true,
             eve_focus_checked: None,
@@ -139,28 +133,23 @@ impl Overlay {
         });
     }
 
-    /// Connect back to the main process and pump messages on a background thread. On
-    /// `Ping`/`Alert`/`Config` it updates the shared state and wakes the relevant viewport. Linux-
-    /// only: the Unix-socket transport doesn't exist elsewhere, and the overlay is never spawned off
-    /// Linux.
-    #[cfg(target_os = "linux")]
+    /// Read main→overlay frames from our stdin and pump them on a background thread. On
+    /// `Ping`/`Alert`/`Config` it updates the shared state and wakes the relevant viewport. The
+    /// transport is the child's piped stdio (cross-platform): stdin carries main→overlay, stdout
+    /// carries overlay→main (see `update`). On stdin EOF / any read error the overlay exits — this
+    /// is the "die with the main" behaviour (the main's send pipe closes when it goes away).
     fn spawn_ipc(args: IpcArgs) {
-        let IpcArgs { ping_shared, alert_shared, alert_on_top, kills, affil, to_main, ctx } = args;
+        let IpcArgs { ping_shared, alert_shared, alert_on_top, kills, affil, ctx } = args;
         std::thread::spawn(move || {
-            let Some(mut stream) = crate::ipc::connect_retry() else {
-                eprintln!("[overlay] could not connect to main socket; giving up");
-                return;
-            };
-            eprintln!("[overlay] connected to main");
-            if let Err(e) = crate::ipc::send(&mut stream, &crate::ipc::OverlayToMain::Hello) {
-                eprintln!("[overlay] sending Hello failed: {e}");
-                return;
+            // Announce readiness on stdout so the main does its initial Config+Ping resend.
+            {
+                let mut out = std::io::stdout().lock();
+                if let Err(e) = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Hello) {
+                    eprintln!("[overlay] sending Hello failed: {e}");
+                    std::process::exit(0);
+                }
             }
-            // Keep a writable clone for the overlay→main channel (alert clicks / geometry).
-            match stream.try_clone() {
-                Ok(s) => *to_main.lock().unwrap() = Some(s),
-                Err(e) => eprintln!("[overlay] could not clone stream for sends: {e}"),
-            }
+            eprintln!("[overlay] connected to main (stdio)");
             // Our own SDE handle for ship details/roles (the main doesn't send those).
             let ship_lookup = match crate::store::Store::open() {
                 Ok(store) => Some(crate::app::ShipLookup::new(store)),
@@ -169,8 +158,9 @@ impl Overlay {
                     None
                 }
             };
+            let mut rd = std::io::BufReader::new(std::io::stdin().lock());
             loop {
-                match crate::ipc::recv::<crate::ipc::MainToOverlay, _>(&mut stream) {
+                match crate::ipc::recv::<crate::ipc::MainToOverlay, _>(&mut rd) {
                     Ok(crate::ipc::MainToOverlay::Shutdown) => {
                         eprintln!("[overlay] Shutdown received; exiting");
                         std::process::exit(0);
@@ -265,29 +255,23 @@ impl Overlay {
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                     }
                     Err(e) => {
-                        eprintln!("[overlay] connection closed: {e}");
-                        return;
+                        // stdin EOF (the main exited) or a malformed frame: die with the main.
+                        eprintln!("[overlay] stdin closed ({e}); exiting");
+                        std::process::exit(0);
                     }
                 }
             }
         });
     }
-
-    #[cfg(not(target_os = "linux"))]
-    fn spawn_ipc(_args: IpcArgs) {}
 }
 
 /// Bundled arguments for [`Overlay::spawn_ipc`] (keeps the call site readable as the set grew).
-/// Off Linux the overlay is never spawned, so `spawn_ipc` is a stub that reads none of these.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct IpcArgs {
     ping_shared: SharedPingWindow,
     alert_shared: SharedAlertWindow,
     alert_on_top: Arc<Mutex<crate::settings::OnTop>>,
     kills: crate::kills::KillCache,
     affil: crate::affiliation::SharedAffil,
-    #[cfg(target_os = "linux")]
-    to_main: Arc<Mutex<Option<UnixStream>>>,
     ctx: egui::Context,
 }
 
@@ -310,11 +294,11 @@ impl eframe::App for Overlay {
         // Publish focus into the ping shared state (its closure reads it for Smart on-top).
         self.ping_shared.lock().unwrap().eve_focused = self.eve_focused;
 
-        // Forward alert-window outputs (feed clicks + geometry) back to the main, which acts on them
-        // with `&mut self` in its root `update`. The closure republishes the current position every
-        // frame, so dedup geometry against the last forwarded value (pos exact, size >2px) to avoid
-        // flooding the socket — matching the main's own persist thresholds.
-        #[cfg(target_os = "linux")]
+        // Forward alert-window outputs (feed clicks + geometry) back to the main over our stdout
+        // (the overlay→main IPC pipe), which acts on them with `&mut self` in its root `update`. The
+        // closure republishes the current position every frame, so dedup geometry against the last
+        // forwarded value (pos exact, size >2px) to avoid flooding the pipe — matching the main's
+        // own persist thresholds. Lock stdout once so each frame is written atomically.
         {
             let (clicks, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
@@ -325,21 +309,20 @@ impl eframe::App for Overlay {
                 self.alert_size_sent.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0)
             });
             if !clicks.is_empty() || pos.is_some() || size.is_some() {
-                if let Some(stream) = self.to_main.lock().unwrap().as_mut() {
-                    for c in clicks {
-                        let _ = crate::ipc::send(stream, &crate::ipc::OverlayToMain::Click(c));
+                let mut out = std::io::stdout().lock();
+                for c in clicks {
+                    let _ = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Click(c));
+                }
+                if pos.is_some() || size.is_some() {
+                    let _ = crate::ipc::send(
+                        &mut out,
+                        &crate::ipc::OverlayToMain::AlertMoved { pos, size },
+                    );
+                    if pos.is_some() {
+                        self.alert_pos_sent = pos;
                     }
-                    if pos.is_some() || size.is_some() {
-                        let _ = crate::ipc::send(
-                            stream,
-                            &crate::ipc::OverlayToMain::AlertMoved { pos, size },
-                        );
-                        if pos.is_some() {
-                            self.alert_pos_sent = pos;
-                        }
-                        if size.is_some() {
-                            self.alert_size_sent = size;
-                        }
+                    if size.is_some() {
+                        self.alert_size_sent = size;
                     }
                 }
             }

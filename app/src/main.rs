@@ -99,11 +99,51 @@ pub fn base_native_options(mut viewport: egui::ViewportBuilder) -> eframe::Nativ
     native_options
 }
 
+/// Acquire a process-wide exclusive lock so a second user-launched main instance exits. Returns
+/// false if another instance already holds the lock. On success the lock `File` is leaked
+/// (`Box::leak`) so the OS lock is held for the whole process lifetime — dropping the `File` would
+/// release it. Cross-platform: `fs4` uses `flock(2)` on Unix and `LockFileEx` on Windows. The
+/// overlay child does NOT call this (it must always start as a child of the main).
+fn acquire_single_instance_lock() -> bool {
+    let path = match store::data_dir() {
+        Ok(dir) => {
+            let _ = std::fs::create_dir_all(&dir);
+            dir.join("eve-spai.lock")
+        }
+        // No data dir: don't block startup over a missing lock file location.
+        Err(_) => return true,
+    };
+    let file = match std::fs::OpenOptions::new().create(true).write(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[main] could not open lock file ({e}); continuing without single-instance guard");
+            return true;
+        }
+    };
+    // UFCS through the fs4 trait (avoids resolving to std's inherent File::try_lock, which has a
+    // different return type) — `Ok(())` = acquired, `Err(WouldBlock)` = another instance holds it.
+    match fs4::FileExt::try_lock(&file) {
+        Ok(()) => {
+            // Hold the lock for the whole process: leak the File so it's never dropped/unlocked.
+            Box::leak(Box::new(file));
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn main() -> eframe::Result<()> {
-    // Re-exec into the (Linux-only) overlay child when launched with the hidden flag,
-    // before any main-window setup runs.
+    // Re-exec into the overlay child when launched with the hidden flag, before any main-window
+    // setup runs. The child must ALWAYS start (it is spawned by the main), so the single-instance
+    // guard below is skipped for it.
     if std::env::args().any(|a| a == "--overlay") {
         return overlay::run_overlay();
+    }
+
+    // Single-instance guard for the main process: a second user-launched eve-spai exits quietly.
+    if !acquire_single_instance_lock() {
+        eprintln!("another instance is running");
+        return Ok(());
     }
 
     // rustls 0.23 needs a process-wide default crypto provider; with both reqwest

@@ -445,9 +445,9 @@ pub struct SpaiApp {
     /// independently of the main window's minimized state.
     alert_shared: SharedAlertWindow,
     /// The deferred alert viewport's render closure (built once in `new()`; declared every frame
-    /// in `alert_window`). Captures only Send+Sync shared state, so it paints standalone. Non-Linux
-    /// only: on Linux the overlay child process owns the alert window and builds its own closure.
-    #[cfg(not(target_os = "linux"))]
+    /// in `alert_window`). Captures only Send+Sync shared state, so it paints standalone. Used only
+    /// in the IN-PROCESS fallback path (when the overlay child failed to spawn); when the overlay is
+    /// running it owns the alert window and builds its own identical closure.
     alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
     /// the combat-log watcher.
@@ -517,16 +517,14 @@ pub struct SpaiApp {
     /// System tray (Show / Exit) + whether a real quit was requested.
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
-    /// Overlay child process + IPC link (spawned/monitored from `update`). Linux-only.
-    #[cfg(target_os = "linux")]
+    /// Overlay child process + IPC link (spawned in `new`, monitored from `update`). `None` if the
+    /// child failed to spawn — the windows then render in-process as a fallback. All platforms.
     overlay: Option<crate::ipc::OverlayLink>,
     /// Hash of the last Config+Ping snapshot pushed to the overlay, so the main only resends on
-    /// change (reset to `None` on overlay reconnect to force a full resend). Linux-only.
-    #[cfg(target_os = "linux")]
+    /// change (reset to `None` on overlay reconnect to force a full resend).
     ping_sent_hash: Option<u64>,
     /// Hash of the last alert snapshot pushed to the overlay (content only; the countdown reset +
-    /// focus bypass it). Reset to `None` on overlay reconnect for a forced resend. Linux-only.
-    #[cfg(target_os = "linux")]
+    /// focus bypass it). Reset to `None` on overlay reconnect for a forced resend.
     alert_sent_hash: Option<u64>,
     /// D-scan clipboard sharing.
     dscan_clip: Option<arboard::Clipboard>,
@@ -775,11 +773,11 @@ pub struct SpaiApp {
     /// A specific clicked killmail to show in the fit window (takes precedence over fit_view).
     fit_loss: Option<crate::lookup::Loss>,
     /// Shared state for the deferred fleet-ping viewport (pings, on-top, render context). Produced
-    /// off the UI thread by the Jabber thread; consumed by `ping_viewport_cb`.
+    /// off the UI thread by the Jabber thread; consumed by the in-process `ping_viewport_cb`.
     ping_shared: SharedPingWindow,
-    /// The deferred fleet-ping viewport's render closure, built once in `new()`. Non-Linux only: on
-    /// Linux the overlay child process owns the ping window and builds its own closure.
-    #[cfg(not(target_os = "linux"))]
+    /// The deferred fleet-ping viewport's render closure, built once in `new()`. Used only in the
+    /// IN-PROCESS fallback path (when the overlay child failed to spawn); when the overlay is
+    /// running it owns the ping window and builds its own identical closure.
     ping_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
@@ -962,17 +960,11 @@ impl SpaiApp {
             PingWindowState { enabled: settings.fleet_ping_window, ..Default::default() },
         ));
 
-        // The deferred viewport's render closure. Built once; declared every frame (see
-        // `fleet_ping_window_ui`). Factored into a free fn so the overlay child process builds the
-        // identical closure (it captures only Send+Sync shared state, no `&self`). Non-Linux only:
-        // on Linux the overlay child owns the ping window and builds its own closure.
-        #[cfg(not(target_os = "linux"))]
+        // The deferred viewport render closures, built once for the IN-PROCESS fallback (declared
+        // every frame in `fleet_ping_window_ui` / `alert_window` only when the overlay child failed
+        // to spawn). Factored into free fns so the overlay child process builds the identical
+        // closures (they capture only Send+Sync shared state, no `&self`).
         let ping_viewport_cb = build_ping_viewport_cb(ping_shared.clone());
-
-        // The deferred alert viewport's render closure. Factored into a free fn so the overlay
-        // child process builds the identical closure (captures only Send+Sync shared state, no
-        // `&self`). Non-Linux only: on Linux the overlay child owns the alert window.
-        #[cfg(not(target_os = "linux"))]
         let alert_viewport_cb = build_alert_viewport_cb(alert_shared.clone());
 
         // Background ticker: while pings or alerts are showing, wake the child viewport ~4x/s so
@@ -1078,7 +1070,6 @@ impl SpaiApp {
             recent_alerts,
             alert_feed: Vec::new(),
             alert_shared,
-            #[cfg(not(target_os = "linux"))]
             alert_viewport_cb,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
@@ -1120,17 +1111,14 @@ impl SpaiApp {
             wizard_checked: false,
             tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
-            #[cfg(target_os = "linux")]
             overlay: match crate::ipc::OverlayLink::start(cc.egui_ctx.clone()) {
                 Ok(link) => Some(link),
                 Err(e) => {
-                    eprintln!("[main] overlay failed to start: {e}");
+                    eprintln!("[main] overlay failed to start (in-process fallback): {e}");
                     None
                 }
             },
-            #[cfg(target_os = "linux")]
             ping_sent_hash: None,
-            #[cfg(target_os = "linux")]
             alert_sent_hash: None,
             dscan_clip: None,
             dscan_checked: None,
@@ -1277,7 +1265,6 @@ impl SpaiApp {
             fit_view: None,
             fit_loss: None,
             ping_shared,
-            #[cfg(not(target_os = "linux"))]
             ping_viewport_cb,
             ship_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             ship_roles_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -5917,31 +5904,27 @@ impl SpaiApp {
             st.eve_focused = self.eve_focused.load(std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Linux: the overlay child process owns the fleet-ping window (a separate X11 client KWin
-        // won't iconify with the main window). The main never declares the viewport here; instead it
-        // pushes the current ping set + config to the overlay over IPC (change-detected).
-        #[cfg(target_os = "linux")]
-        {
-            let _ = ctx; // the overlay declares/repaints the viewport, not us
+        // When the overlay child is running it owns the fleet-ping window (a separate X11 client KWin
+        // won't iconify with the main window, and on every OS it survives the main minimizing). The
+        // main never declares the viewport then; instead it pushes the current ping set + config to
+        // the overlay over IPC (change-detected).
+        if self.overlay.is_some() {
             self.send_ping_to_overlay();
             return;
         }
 
-        // Non-Linux: render the fleet-ping window in-process exactly as before.
-        #[cfg(not(target_os = "linux"))]
-        {
-            let on_top = self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
-                && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
-                    || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of("fleet_ping_window"),
-                ping_viewport_builder(on_top),
-                {
-                    let cb = self.ping_viewport_cb.clone();
-                    move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
-                },
-            );
-        }
+        // Fallback (overlay child failed to spawn): render the fleet-ping window in-process.
+        let on_top = self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
+            && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
+                || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("fleet_ping_window"),
+            ping_viewport_builder(on_top),
+            {
+                let cb = self.ping_viewport_cb.clone();
+                move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
+            },
+        );
     }
 
     /// True when the floating alert window feature is active (alerts on AND a custom-window rule
@@ -5953,8 +5936,7 @@ impl SpaiApp {
 
     /// Build the combined overlay config (ping + alert fields) from settings + the ping shared
     /// state. Sent by `send_ping_to_overlay` (which runs every frame) so a single Config carries
-    /// both windows' behaviour. Linux-only.
-    #[cfg(target_os = "linux")]
+    /// both windows' behaviour.
     fn overlay_config(&self) -> crate::ipc::OverlayConfig {
         let (ping_enabled, ping_on_top) = {
             let st = self.ping_shared.lock().unwrap();
@@ -5973,8 +5955,7 @@ impl SpaiApp {
 
     /// Push the current fleet-ping set + combined overlay config to the overlay child over IPC.
     /// Resends only when the snapshot changed, when a new ping needs raising, or after the overlay
-    /// reconnects (forced full resend so a respawned overlay repopulates). Linux-only.
-    #[cfg(target_os = "linux")]
+    /// reconnects (forced full resend so a respawned overlay repopulates).
     fn send_ping_to_overlay(&mut self) {
         use std::hash::{Hash, Hasher};
         let Some(link) = self.overlay.as_ref() else { return };
@@ -6100,19 +6081,17 @@ impl SpaiApp {
             build_last_ship(&self.intel_state.lock().unwrap().reports)
         };
 
-        // Linux: the overlay child process owns the alert window (a separate X11 client KWin won't
-        // iconify with the main window). The main never declares the viewport here; instead it
-        // pushes the feed + pre-resolved kill/affiliation subsets to the overlay over IPC. The
-        // overlay derives ship details/roles + system names from its own SDE, so those aren't sent.
-        #[cfg(target_os = "linux")]
-        {
-            let _ = ctx; // the overlay declares/repaints the viewport, not us
+        // When the overlay child is running it owns the alert window (a separate X11 client KWin won't
+        // iconify with the main window, and on every OS it survives the main minimizing). The main
+        // never declares the viewport then; instead it pushes the feed + pre-resolved kill/
+        // affiliation subsets to the overlay over IPC. The overlay derives ship details/roles +
+        // system names from its own SDE, so those aren't sent.
+        if self.overlay.is_some() {
             self.send_alert_to_overlay(feed, status, resolved_pilots, last_ship, feature);
             return;
         }
 
-        // Non-Linux: render the alert window in-process exactly as before.
-        #[cfg(not(target_os = "linux"))]
+        // Fallback (overlay child failed to spawn): render the alert window in-process.
         {
             let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
                 && (self.settings.alerts.on_top == crate::settings::OnTop::Always
@@ -6230,8 +6209,7 @@ impl SpaiApp {
     /// keyed by killmail id and the affiliations keyed by character id (feed pilots + each kill's
     /// victim/final-blow char) that `intel_row` will look up, and sends only those subsets. Resends
     /// only when the content changed; a fresh alert force-resends (to reset the countdown + refocus)
-    /// even if unchanged. Linux-only.
-    #[cfg(target_os = "linux")]
+    /// even if unchanged.
     fn send_alert_to_overlay(
         &mut self,
         feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
@@ -13390,9 +13368,9 @@ impl AlertEngine {
             st.focus_pending = true; // bring the window forward once
             drop(st);
             self.ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
-            // Linux: the alert window lives in the overlay child process, not this viewport. Wake
-            // the root so `alert_window` runs and forwards the fresh alert to the overlay over IPC.
-            #[cfg(target_os = "linux")]
+            // When the overlay child owns the alert window, it lives in the child process, not this
+            // viewport. Wake the root so `alert_window` runs and forwards the fresh alert over IPC.
+            // (Harmless when running the in-process fallback.)
             self.ctx.request_repaint();
         }
         {
@@ -13741,7 +13719,6 @@ impl eframe::App for SpaiApp {
         let ctx = ui.ctx().clone();
 
         // Respawn the overlay child if it died (cheap try_wait; debounced internally).
-        #[cfg(target_os = "linux")]
         if let Some(link) = self.overlay.as_mut() {
             link.poll();
         }
@@ -13749,7 +13726,6 @@ impl eframe::App for SpaiApp {
         // geometry changes (persist). Acting on them needs `&mut self` + ctx, so it's done here in
         // the root, not on the IPC reader thread. Drain into an owned Vec first so the immutable
         // borrow of `self.overlay` is released before the `&mut self` handlers run.
-        #[cfg(target_os = "linux")]
         {
             let msgs = self.overlay.as_ref().map(|l| l.drain_inbox()).unwrap_or_default();
             for m in msgs {
@@ -13883,7 +13859,6 @@ impl eframe::App for SpaiApp {
     }
 
     fn on_exit(&mut self) {
-        #[cfg(target_os = "linux")]
         if let Some(link) = self.overlay.as_mut() {
             link.shutdown();
         }
@@ -14879,6 +14854,7 @@ pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         .with_inner_size([520.0, 320.0])
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
+        .with_taskbar(false) // keep the floating ping window off the taskbar (matches the alert window)
         .with_visible(false) // the closure shows it when there are pings
         .with_window_level(if on_top {
             egui::WindowLevel::AlwaysOnTop
@@ -14887,18 +14863,15 @@ pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         })
 }
 
-/// `AlertMsg::secs` sentinels (Linux overlay IPC). A non-negative value resets the overlay's
+/// `AlertMsg::secs` sentinels (overlay IPC). A non-negative value resets the overlay's
 /// countdown to that number of seconds; these negative sentinels mean "leave the overlay's own
 /// countdown running" (content-only refresh) and "reset to an infinite (never auto-hide) timeout"
 /// respectively. Negatives avoid serializing a non-finite f32 (serde_json emits JSON `null`).
-#[cfg(target_os = "linux")]
 pub(crate) const ALERT_SECS_REFRESH: f32 = -1.0;
-#[cfg(target_os = "linux")]
 pub(crate) const ALERT_SECS_INFINITE: f32 = -2.0;
 
 /// Hash a `HashMap` into `h` in a key-sorted (order-independent) way, so a re-cloned map with the
 /// same contents but different iteration order doesn't trigger a spurious overlay resend.
-#[cfg(target_os = "linux")]
 fn hash_sorted_map<K, V, H>(h: &mut H, m: &std::collections::HashMap<K, V>)
 where
     K: Ord + std::hash::Hash,
