@@ -16828,6 +16828,15 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
     if r.filament {
         parts.push("FILAMENT".into());
     }
+    if r.diamond_rats {
+        parts.push("\u{25C6} Rats \u{25C6}".into());
+    }
+    for (kind, code) in &r.anom_sigs {
+        parts.push(match kind {
+            crate::intel::AnomKind::Anomaly => format!("Anom {code}"),
+            crate::intel::AnomKind::Signature => format!("Sig {code}"),
+        });
+    }
     if r.dropper {
         parts.push("DROPPER".into());
     }
@@ -17435,6 +17444,8 @@ fn intel_row(
                     && !r.ess
                     && !r.skyhook
                     && !r.status
+                    && !r.diamond_rats
+                    && r.anom_sigs.is_empty()
                     && r.movement.is_none();
                 if nothing_else && !r.systems.is_empty() {
                     // Only when there's text beyond the system name(s) itself.
@@ -17838,6 +17849,16 @@ fn intel_row(
                 }
                 if r.filament {
                     tag(ui, "FILAMENT", warn);
+                }
+                if r.diamond_rats {
+                    tag(ui, "\u{25C6} Rats \u{25C6}", red);
+                }
+                for (kind, code) in &r.anom_sigs {
+                    let label = match kind {
+                        crate::intel::AnomKind::Anomaly => format!("Anom {code}"),
+                        crate::intel::AnomKind::Signature => format!("Sig {code}"),
+                    };
+                    tag(ui, &label, warn);
                 }
 
                 if let Some(m) = &r.movement {

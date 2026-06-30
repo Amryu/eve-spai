@@ -58,6 +58,13 @@ impl std::fmt::Display for Probes {
     }
 }
 
+/// Whether an `anom`/`sig` callout named a combat anomaly or a cosmic signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AnomKind {
+    Anomaly,
+    Signature,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct IntelReport {
     /// Stable per-report id (assigned on push, preserved across amendments) so the alert
@@ -126,6 +133,11 @@ pub struct IntelReport {
     pub skyhook: bool,
     /// A filament / needlejack / trace was called out — a roaming gang jumping in.
     pub filament: bool,
+    /// "Diamond rats" (the dangerous NPC pirate variant) were called out — NPCs, not pilots.
+    pub diamond_rats: bool,
+    /// Anomaly/signature ids called out next to an "anom"/"sig" keyword (kind + code, e.g.
+    /// `(Anomaly, "ABC-123")`). Each renders a badge ("Anom ABC-123" / "Sig ABC-123").
+    pub anom_sigs: Vec<(AnomKind, String)>,
     /// Gate the hostiles are reported on, e.g. "78-" in "C-J +20 on 78- gate".
     /// Gates mentioned in the report (a card has one system but may name several
     /// gates — extra system mentions are demoted to gates).
@@ -373,6 +385,12 @@ impl IntelState {
             prev.bubble |= new.bubble;
             prev.cyno |= new.cyno;
             prev.filament |= new.filament;
+            prev.diamond_rats |= new.diamond_rats;
+            for asig in &new.anom_sigs {
+                if !prev.anom_sigs.iter().any(|(k, c)| *k == asig.0 && c.eq_ignore_ascii_case(&asig.1)) {
+                    prev.anom_sigs.push(asig.clone());
+                }
+            }
             prev.dropper |= new.dropper;
             prev.cap_tackled |= new.cap_tackled;
             prev.tackled |= new.tackled;
@@ -609,7 +627,11 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
                 | "small" | "large" | "big" | "huge"
-                | "sig" | "sigs" | "anyone"
+                | "sig" | "sigs" | "anyone" | "currently"
+                // Anomaly/signature keywords are a badge (with an adjacent code) or noise on
+                // their own — never a pilot. NPC "rats" (incl. the "diamond" variant) are NPCs.
+                | "anom" | "anomaly" | "anomalies" | "signature" | "signatures"
+                | "rat" | "rats" | "diamond" | "dia"
                 // Scanner probes are a badge, never a pilot ("Combat Probes", "Core Scanner
                 // Probe", "combat prob"). The Probe frigate is still detected via the ship index.
                 | "probe" | "probes" | "prob" | "probs" | "combat" | "core" | "scanner" | "sisters"
@@ -736,6 +758,78 @@ fn is_code_lookalike_name(t: &str, systems: &Systems) -> bool {
         && t.chars().any(|c| c.is_ascii_lowercase())
         && resolve(systems, t).is_none()
         && systems.lookup_prefix(t).is_none()
+}
+
+/// An anomaly / cosmic-signature id shape ("ABC-123", "ABCD-12", "ABC123"): at LEAST three
+/// leading letters, then only a hyphen and/or digits, and at least one digit (so a plain word
+/// like "cleared" is rejected). Deliberately stricter than [`looks_like_system_code`] — the
+/// >=3-letter minimum keeps short null-sec codes ("C-J", "5E") out — and it's only ever consulted
+/// next to an "anom"/"sig" keyword. A code that resolves to a real system is still a system: the
+/// callers gate this against the real-systems lookup.
+fn looks_like_anom_code(t: &str) -> bool {
+    let n = t.chars().count();
+    if !(3..=8).contains(&n) || !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return false;
+    }
+    let leading_letters = t.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    leading_letters >= 3
+        && t.chars().skip(leading_letters).all(|c| c == '-' || c.is_ascii_digit())
+        && t.chars().any(|c| c.is_ascii_digit())
+}
+
+/// "Diamond rats" / "dia rat" — the dangerous NPC pirate variant, NOT a pilot. True when
+/// "diamond"/"dia" is immediately followed by "rat"/"rats"; returns the words to consume so
+/// none become a pilot name.
+fn detect_diamond_rats(tokens: &[&str]) -> (bool, Vec<String>) {
+    let mut hit = false;
+    let mut consumed: Vec<String> = Vec::new();
+    for w in tokens.windows(2) {
+        let (a, b) = (w[0].to_lowercase(), w[1].to_lowercase());
+        if matches!(a.as_str(), "diamond" | "dia") && matches!(b.as_str(), "rat" | "rats") {
+            hit = true;
+            consumed.push(a);
+            consumed.push(b);
+        }
+    }
+    (hit, consumed)
+}
+
+/// Anomaly / signature callouts: an "anom"/"sig" keyword ADJACENT (either order) to an anomaly-id
+/// code ([`looks_like_anom_code`]) that does NOT resolve to a real (or neighbouring) system. Returns
+/// the (kind, CODE) pairs and the keyword+code words to consume (so the code is never a pilot or a
+/// standalone system, and the bare keyword is dropped).
+fn detect_anom_sigs(tokens: &[&str], systems: &Systems) -> (Vec<(AnomKind, String)>, Vec<String>) {
+    let kind_of = |w: &str| match w {
+        "anom" | "anomaly" | "anomalies" => Some(AnomKind::Anomaly),
+        "sig" | "sigs" | "signature" | "signatures" => Some(AnomKind::Signature),
+        _ => None,
+    };
+    let mut out: Vec<(AnomKind, String)> = Vec::new();
+    let mut consumed: Vec<String> = Vec::new();
+    for i in 0..tokens.len() {
+        let Some(kind) = kind_of(&tokens[i].to_lowercase()) else { continue };
+        for j in [i.checked_sub(1), Some(i + 1)].into_iter().flatten() {
+            let Some(code) = tokens.get(j) else { continue };
+            if !looks_like_anom_code(code) {
+                continue;
+            }
+            // A code that resolves to a real (or prefix/neighbour) system is a location, not an
+            // anom/sig — reuse the authoritative real-systems lookup, never the shape test alone.
+            if is_system_token(code, systems)
+                || resolve(systems, code).is_some()
+                || systems.lookup_prefix(code).is_some()
+            {
+                continue;
+            }
+            let upper = code.to_uppercase();
+            if !out.iter().any(|(_, c)| c.eq_ignore_ascii_case(&upper)) {
+                out.push((kind, upper));
+                consumed.push(tokens[i].to_lowercase());
+                consumed.push(tokens[j].to_lowercase());
+            }
+        }
+    }
+    (out, consumed)
 }
 
 /// A number glued to a time unit ("4min", "30s", "2h", "5m") — an ESS/timer duration,
@@ -2395,6 +2489,16 @@ pub fn analyze_ctx(
         &tokens, &lower_tokens, &name_tokens, systems, context_system, channel_regions,
     );
 
+    // NPC "diamond rats" and "anom/sig <code>" callouts: NPCs / anomaly ids, never pilots or
+    // systems. Their words are consumed below so a "Diamond Rats" / "ABC-123" run can't surface
+    // as a player name. The anom/sig code is gated against the real-systems lookup inside
+    // `detect_anom_sigs`, so a code that is a real (or neighbouring) system stays a system.
+    let (diamond_rats, dia_consumed) = detect_diamond_rats(&tokens);
+    let (anom_sigs, anom_consumed) = detect_anom_sigs(&tokens, systems);
+    let npc_consumed: std::collections::HashSet<String> =
+        dia_consumed.into_iter().chain(anom_consumed).collect();
+    consumed.extend(npc_consumed.iter().cloned());
+
     // Alliance shorthands ("frat", "init", …) → logos on the card.
     let mut alliances: Vec<(String, i64)> = Vec::new();
     for t in &lower_tokens {
@@ -2513,6 +2617,18 @@ pub fn analyze_ctx(
             pilots.push((*name).to_string());
         }
     }
+    // Strip NPC "rats"/anom-code words from any pilot blob they glued onto ("Diamond Rats",
+    // "Anom ABC-123") and drop a name left empty — they're NPCs / anomaly ids, not players.
+    if !npc_consumed.is_empty() {
+        pilots = pilots
+            .into_iter()
+            .filter_map(|p| {
+                let kept: Vec<&str> =
+                    p.split_whitespace().filter(|w| !npc_consumed.contains(&w.to_lowercase())).collect();
+                (!kept.is_empty()).then(|| kept.join(" "))
+            })
+            .collect();
+    }
     let (total_count, plus_count, name_number_skips) =
         parse_count(text, &consumed, systems, ship_index, &pilots, known_pilots);
     // "pilot1 pilot2 +20" = 22; a stated total ("7 reds") wins; otherwise a bare list of
@@ -2615,6 +2731,8 @@ pub fn analyze_ctx(
             &pilot_tokens,
             &["filament", "filaments", "needlejack", "needlejacks", "trace", "traces"],
         ),
+        diamond_rats,
+        anom_sigs,
         gates,
         alliances,
         movement: None,
@@ -4166,6 +4284,110 @@ mod tests {
         assert!(a("诱导信标").cyno, "诱导 = cyno");
         assert!(a("求救").help, "求救 = help");
         assert!(a("红名被抓了").tackled, "抓 = tackled");
+    }
+
+    #[test]
+    fn currently_is_never_a_pilot() {
+        let s = systems();
+        let r = analyze("currently in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(is_pilot_stopword("currently"));
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("currently")),
+            "currently parsed as pilot: {:?}",
+            r.pilots
+        );
+        // Capitalised mid-run it still can't anchor a name.
+        let r2 = analyze("Currently camped", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(esi_resolve(&r2.pilots, &[]).is_empty(), "pilots: {:?}", r2.pilots);
+    }
+
+    #[test]
+    fn anom_sig_keywords_alone_produce_nothing() {
+        let s = systems();
+        let a = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
+        for kw in ["anom", "sig", "anomaly", "signature"] {
+            let r = a(kw);
+            assert!(r.anom_sigs.is_empty(), "{kw}: anom_sigs={:?}", r.anom_sigs);
+            assert!(!r.diamond_rats, "{kw}: diamond_rats");
+            assert!(esi_resolve(&r.pilots, &[]).is_empty(), "{kw}: pilots={:?}", r.pilots);
+            assert!(r.systems.is_empty(), "{kw}: systems={:?}", r.systems);
+        }
+    }
+
+    #[test]
+    fn diamond_rats_badge_not_a_pilot() {
+        let s = systems();
+        for txt in ["diamond rats in Rancer", "dia rats", "Diamond Rats", "diamond rat"] {
+            let r = analyze(txt, &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(r.diamond_rats, "{txt}: diamond_rats not set");
+            // None of "diamond"/"dia"/"rat"/"rats" survive as a pilot name.
+            let pilots = esi_resolve(&r.pilots, &["Diamond", "Dia", "Rat", "Rats"]);
+            assert!(
+                !pilots.iter().any(|p| {
+                    matches!(p.to_lowercase().as_str(), "diamond" | "dia" | "rat" | "rats")
+                }),
+                "{txt}: rats word as pilot: {pilots:?}"
+            );
+        }
+        // Plain "rats" (no diamond) is still NPCs, never a pilot, and doesn't set the diamond flag.
+        let plain = analyze("rats on gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!plain.diamond_rats, "plain rats set diamond flag");
+        assert!(esi_resolve(&plain.pilots, &["Rats"]).is_empty(), "plain pilots: {:?}", plain.pilots);
+    }
+
+    #[test]
+    fn anom_sig_code_badge_both_orders() {
+        let s = systems();
+        // Keyword BEFORE the code.
+        let before = analyze("anom ABC-123", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(before.anom_sigs, vec![(AnomKind::Anomaly, "ABC-123".to_string())]);
+        // Keyword AFTER the code.
+        let after = analyze("ABC-123 sig", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(after.anom_sigs, vec![(AnomKind::Signature, "ABC-123".to_string())]);
+        for r in [&before, &after] {
+            assert!(esi_resolve(&r.pilots, &[]).is_empty(), "pilots: {:?}", r.pilots);
+            assert!(r.systems.is_empty(), "systems: {:?}", r.systems);
+        }
+        // Badge strings.
+        assert_eq!(alert_label(&before.anom_sigs[0]), "Anom ABC-123");
+        assert_eq!(alert_label(&after.anom_sigs[0]), "Sig ABC-123");
+    }
+
+    /// Mirror of the card/alert badge formatting for the test above.
+    fn alert_label((kind, code): &(AnomKind, String)) -> String {
+        match kind {
+            AnomKind::Anomaly => format!("Anom {code}"),
+            AnomKind::Signature => format!("Sig {code}"),
+        }
+    }
+
+    #[test]
+    fn anom_code_that_is_a_real_system_stays_a_system() {
+        // A real system whose name matches the anom-code shape ("ABC-123").
+        let by_name = [("abc-123", "ABC-123", 50001, -0.5)]
+            .into_iter()
+            .map(|(key, name, id, sec)| {
+                (
+                    key.to_string(),
+                    SystemInfo {
+                        id,
+                        name: name.to_string(),
+                        security: sec,
+                        constellation: String::new(),
+                        region: String::new(),
+                        faction: String::new(),
+                    },
+                )
+            })
+            .collect();
+        let s = Systems::new(by_name, HashMap::new());
+        let r = analyze("anom ABC-123", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.anom_sigs.is_empty(), "real system made an anom badge: {:?}", r.anom_sigs);
+        assert!(
+            r.systems.iter().any(|d| d.name == "ABC-123"),
+            "real system not detected: {:?}",
+            r.systems
+        );
     }
 
     #[test]
