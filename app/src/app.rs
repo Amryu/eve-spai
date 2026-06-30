@@ -345,6 +345,14 @@ pub struct SpaiApp {
     loaded_report: Option<LoadedReport>,
     /// Transient feedback for the save/open-report actions (saved path, or a load error).
     report_msg: Option<String>,
+    /// "Share to eve-spai.com" upload state (shared with the upload/delete worker).
+    br_share: crate::brshare::SharedShare,
+    /// "My shared BRs" panel state (shared with the list/delete worker).
+    br_mine: crate::brshare::SharedMine,
+    /// Whether the "My shared BRs" panel is open.
+    br_mine_open: bool,
+    /// Share the report unlisted (kept out of the public directory). Default public.
+    br_unlisted: bool,
     /// Battles view: free-text filter (system, alliance/coalition, pilot, ship).
     battle_search: String,
     /// Battle detail: the participant currently hovered (for the involvement highlight).
@@ -1042,6 +1050,10 @@ impl SpaiApp {
             battle_detail_cache: None,
             loaded_report: None,
             report_msg: None,
+            br_share: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::ShareStatus::Idle)),
+            br_mine: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::MineState::default())),
+            br_mine_open: false,
+            br_unlisted: false,
             battle_condensed: false,
             battle_roster_sort: RosterSort::default(),
             battle_search: String::new(),
@@ -4866,6 +4878,286 @@ impl SpaiApp {
         Ok(Some(path))
     }
 
+    /// The character to share as (its id + the DB path): the active character when it has a
+    /// stored token, else any character with a stored refresh token. `None` → no login yet.
+    fn share_identity(&self) -> Option<(i64, std::path::PathBuf)> {
+        let path = self.store.as_ref()?.path().to_path_buf();
+        let id = self
+            .characters
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&self.active_character))
+            .map(|c| c.id)
+            .or_else(|| {
+                self.characters
+                    .iter()
+                    .map(|c| c.id)
+                    .find(|id| crate::tokens::load_refresh(*id).is_some())
+            })?;
+        Some((id, path))
+    }
+
+    /// Build the `BattleReportDoc` for the open battle (same content as Save JSON), ready to
+    /// gzip + upload.
+    fn build_share_doc(&self, battle: &crate::battle::Battle) -> crate::breport::BattleReportDoc {
+        let overrides = self.battle_overrides.lock().unwrap().clone();
+        let now = chrono::Utc::now().timestamp();
+        crate::breport::BattleReportDoc::new(
+            battle.clone(),
+            battle.engagements.clone(),
+            overrides,
+            None,
+            now,
+        )
+    }
+
+    /// Kick off a "Share to eve-spai.com" upload for the open battle. Triggers a login when no
+    /// character is available.
+    fn start_share(&mut self, battle: &crate::battle::Battle, ctx: &egui::Context) {
+        match self.share_identity() {
+            Some((char_id, path)) => {
+                let doc = self.build_share_doc(battle);
+                crate::brshare::spawn_share(
+                    doc,
+                    path,
+                    char_id,
+                    self.br_unlisted,
+                    self.br_share.clone(),
+                    ctx.clone(),
+                );
+            }
+            None => {
+                // No character yet — start the SSO flow so the user can log in to share.
+                *self.br_share.lock().unwrap() =
+                    crate::brshare::ShareStatus::Error("Log in to share (opening EVE SSO…).".into());
+                self.start_login(ctx);
+            }
+        }
+    }
+
+    /// Open (and lazily load) the "My shared BRs" panel.
+    fn open_my_shared(&mut self, ctx: &egui::Context) {
+        self.br_mine_open = true;
+        match self.share_identity() {
+            Some((char_id, path)) => {
+                crate::brshare::spawn_load_mine(path, char_id, self.br_mine.clone(), ctx.clone());
+            }
+            None => {
+                self.br_mine.lock().unwrap().status =
+                    crate::brshare::MineStatus::Error("Log in to see your shared reports.".into());
+            }
+        }
+    }
+
+    /// Inline share status under the battle toolbar: progress, the resulting link (with Copy /
+    /// Open / Delete), or an error.
+    fn share_status_ui(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as icon;
+        enum Action {
+            None,
+            Dismiss,
+            Delete(String),
+        }
+        let mut action = Action::None;
+        {
+            let state = self.br_share.lock().unwrap();
+            match &*state {
+                crate::brshare::ShareStatus::Idle => return,
+                crate::brshare::ShareStatus::Uploading => {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Sharing to eve-spai.com…");
+                    });
+                }
+                crate::brshare::ShareStatus::Done { id, url } => {
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{}  Shared:", icon::SHARE_NETWORK))
+                                .color(egui::Color32::from_rgb(0x5A, 0xC8, 0x6A)),
+                        );
+                        ui.hyperlink(url);
+                        if ui.button(format!("{} Copy", icon::COPY)).clicked() {
+                            ui.ctx().copy_text(url.clone());
+                        }
+                        if ui.button(format!("{} Open", icon::GLOBE)).clicked() {
+                            let _ = open::that(url);
+                        }
+                        if ui.button(format!("{} Delete", icon::TRASH)).clicked() {
+                            action = Action::Delete(id.clone());
+                        }
+                        if ui.button("\u{2715}").on_hover_text("Dismiss").clicked() {
+                            action = Action::Dismiss;
+                        }
+                    });
+                }
+                crate::brshare::ShareStatus::Error(e) => {
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(crate::theme::standing::WARNING, e);
+                        if ui.button("\u{2715}").on_hover_text("Dismiss").clicked() {
+                            action = Action::Dismiss;
+                        }
+                    });
+                }
+            }
+        }
+        match action {
+            Action::None => {}
+            Action::Dismiss => {
+                *self.br_share.lock().unwrap() = crate::brshare::ShareStatus::Idle;
+            }
+            Action::Delete(id) => {
+                if let Some((char_id, path)) = self.share_identity() {
+                    crate::brshare::spawn_delete_share(
+                        path,
+                        char_id,
+                        id,
+                        self.br_share.clone(),
+                        ui.ctx().clone(),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The "My shared BRs" modal: the caller's reports with per-row open + delete.
+    fn my_shared_window(&mut self, ctx: &egui::Context) {
+        use egui_phosphor::regular as icon;
+        if !self.br_mine_open {
+            return;
+        }
+        let mut open = true;
+        let base = crate::brshare::api_base();
+        let mut reload = false;
+        let mut delete_id: Option<String> = None;
+        egui::Window::new(format!("{}  My shared BRs", icon::SHARE_NETWORK))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button(format!("{}  Refresh", icon::ARROWS_CLOCKWISE)).clicked() {
+                        reload = true;
+                    }
+                });
+                ui.add_space(4.0);
+                let state = self.br_mine.lock().unwrap();
+                if let Some(msg) = &state.msg {
+                    ui.colored_label(crate::theme::standing::WARNING, msg);
+                    ui.add_space(4.0);
+                }
+                match &state.status {
+                    crate::brshare::MineStatus::Idle => {}
+                    crate::brshare::MineStatus::Loading => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading your shared reports…");
+                        });
+                    }
+                    crate::brshare::MineStatus::Error(e) => {
+                        ui.colored_label(crate::theme::standing::WARNING, e);
+                    }
+                    crate::brshare::MineStatus::Loaded(rows) if rows.is_empty() => {
+                        ui.label(egui::RichText::new("You haven't shared any battle reports yet.").weak());
+                    }
+                    crate::brshare::MineStatus::Loaded(rows) => {
+                        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                            for r in rows {
+                                egui::Frame::new()
+                                    .fill(ui.visuals().faint_bg_color)
+                                    .inner_margin(egui::Margin::symmetric(8, 6))
+                                    .corner_radius(4.0)
+                                    .show(ui, |ui| {
+                                        let title = r.title.clone().unwrap_or_else(|| {
+                                            r.systems.first().cloned().unwrap_or_else(|| "Battle report".into())
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(title).strong());
+                                            if r.unlisted == Some(true) {
+                                                ui.label(
+                                                    egui::RichText::new("unlisted")
+                                                        .color(crate::theme::standing::WARNING),
+                                                );
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button(format!("{} Delete", icon::TRASH))
+                                                        .clicked()
+                                                    {
+                                                        delete_id = Some(r.id.clone());
+                                                    }
+                                                    if ui
+                                                        .button(format!("{} Open", icon::GLOBE))
+                                                        .clicked()
+                                                    {
+                                                        let _ = open::that(r.url(&base));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.horizontal_wrapped(|ui| {
+                                            if !r.systems.is_empty() {
+                                                ui.label(
+                                                    egui::RichText::new(r.systems.join(", ")).weak(),
+                                                );
+                                                ui.label(egui::RichText::new("·").weak());
+                                            }
+                                            if let Some(d) = r
+                                                .started_at
+                                                .as_deref()
+                                                .and_then(|s| {
+                                                    chrono::DateTime::parse_from_rfc3339(s).ok()
+                                                })
+                                            {
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        d.format("%Y-%m-%d %H:%M").to_string(),
+                                                    )
+                                                    .weak(),
+                                                );
+                                                ui.label(egui::RichText::new("·").weak());
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} kills · {:.1}B ISK · {} {} views",
+                                                    r.kills,
+                                                    r.total_isk / 1e9,
+                                                    icon::EYE,
+                                                    r.views
+                                                ))
+                                                .weak(),
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        });
+                    }
+                }
+            });
+        if let Some(id) = delete_id {
+            if let Some((char_id, path)) = self.share_identity() {
+                crate::brshare::spawn_delete_mine(
+                    path,
+                    char_id,
+                    id,
+                    self.br_mine.clone(),
+                    ctx.clone(),
+                );
+            }
+        }
+        if reload {
+            self.open_my_shared(ctx);
+        }
+        if !open {
+            self.br_mine_open = false;
+        }
+    }
+
     /// Load a saved report file into the standalone viewer (`self.loaded_report`). When the document
     /// carries raw engagements they are re-clustered through `preview_battle` so the report renders
     /// exactly like a live battle; otherwise the embedded Battle snapshot is shown directly.
@@ -4958,6 +5250,8 @@ impl SpaiApp {
     }
 
     fn battles_view(&mut self, ui: &mut egui::Ui) {
+        // The "My shared BRs" modal floats above any battles sub-view.
+        self.my_shared_window(&ui.ctx().clone());
         // A report opened from disk takes over the view until dismissed.
         if self.loaded_report.is_some() {
             self.loaded_report_view(ui);
@@ -5028,6 +5322,8 @@ impl SpaiApp {
                         let scrub_n = self.battle_scrub_count;
                         let mut go_back = false;
                         let mut save_clicked = false;
+                        let mut share_clicked = false;
+                        let mut mine_clicked = false;
                         ui.horizontal(|ui| {
                             if ui
                                 .button(format!("{}  Back to battles", icon::ARROW_LEFT))
@@ -5078,7 +5374,43 @@ impl SpaiApp {
                             {
                                 save_clicked = true;
                             }
+                            ui.separator();
+                            let sharing = matches!(
+                                *self.br_share.lock().unwrap(),
+                                crate::brshare::ShareStatus::Uploading
+                            );
+                            if ui
+                                .add_enabled(
+                                    !sharing,
+                                    egui::Button::new(format!("{}  Share to eve-spai.com", icon::SHARE_NETWORK)),
+                                )
+                                .on_hover_text("Upload this battle report to eve-spai.com and get a shareable link")
+                                .clicked()
+                            {
+                                share_clicked = true;
+                            }
+                            ui.checkbox(&mut self.br_unlisted, "Unlisted")
+                                .on_hover_text("Don't list it in the public directory (reachable only by link)");
+                            if ui
+                                .button(format!("{}  My shared BRs", icon::GLOBE))
+                                .on_hover_text("List and manage the reports you've shared")
+                                .clicked()
+                            {
+                                mine_clicked = true;
+                            }
                         });
+                        if share_clicked {
+                            if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
+                                let ctx = ui.ctx().clone();
+                                self.start_share(&b, &ctx);
+                            }
+                        }
+                        if mine_clicked {
+                            let ctx = ui.ctx().clone();
+                            self.open_my_shared(&ctx);
+                        }
+                        // Share status + result (link with Copy / Open / Delete).
+                        self.share_status_ui(ui);
                         if save_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 self.report_msg = match self.save_battle_report(&b) {
@@ -5176,6 +5508,7 @@ impl SpaiApp {
 
         // Filter + scope toggle.
         let mut to_load: Option<std::path::PathBuf> = None;
+        let mut open_my_shared = false;
         ui.horizontal(|ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add(
@@ -5241,6 +5574,13 @@ impl SpaiApp {
                     to_load = Some(path);
                 }
             }
+            if ui
+                .button(format!("{}  My shared BRs", egui_phosphor::regular::GLOBE))
+                .on_hover_text("List and manage the reports you've shared to eve-spai.com")
+                .clicked()
+            {
+                open_my_shared = true;
+            }
             // Work throttle — caps how hard the feed + clustering run.
             let mut th = self.settings.work_throttle;
             egui::ComboBox::from_id_salt("work_throttle")
@@ -5258,6 +5598,9 @@ impl SpaiApp {
                 self.needs_save = true;
             }
         });
+        if open_my_shared {
+            self.open_my_shared(&ui.ctx().clone());
+        }
         if let Some(path) = to_load {
             self.load_battle_report(&path, ui.ctx());
             return;

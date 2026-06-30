@@ -13,6 +13,7 @@ mod app;
 mod auth;
 mod battle;
 mod breport;
+mod brshare;
 mod affiliation;
 mod alliances;
 mod camp;

@@ -1570,6 +1570,7 @@ dependencies = [
  "egui",
  "egui-phosphor",
  "egui_extras",
+ "flate2",
  "fs4",
  "getrandom 0.2.17",
  "image",
