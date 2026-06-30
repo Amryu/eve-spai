@@ -2826,6 +2826,12 @@ fn parse_isk(text: &str, ess: bool) -> Option<u64> {
         };
         if let Some(m) = m {
             let isk = (n * m) as u64;
+            // In ESS context an amount below 50M is almost always a TIME, not ISK ("30m" = 30
+            // minutes, not 30M ISK) — real ESS banks worth calling out are >= 50M. Drop the small
+            // ones so they don't double-parse as an ISK amount alongside the hack timer.
+            if ess && isk < 50_000_000 {
+                continue;
+            }
             if best.map_or(true, |b| isk > b) {
                 best = Some(isk);
             }
@@ -4087,6 +4093,13 @@ mod tests {
         assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
         assert_eq!(parse_isk("5 min", false), None);
         assert_eq!(parse_isk("Rancer 3 Drake +2", false), None);
+        // ESS amounts below 50M are a time, not ISK ("30m" = 30 minutes), so they're ignored;
+        // a real bank >= 50M still parses, and the floor is ESS-only.
+        assert_eq!(parse_isk("ess robbed 30m", true), None);
+        assert_eq!(parse_isk("ess reserve 30m bank", true), None);
+        assert_eq!(parse_isk("ess 50m", true), Some(50_000_000));
+        assert_eq!(parse_isk("ess 77m bank", true), Some(77_000_000));
+        assert_eq!(parse_isk("30m loot", false), None); // non-ESS unaffected (bare m only ESS)
     }
 
     #[test]
