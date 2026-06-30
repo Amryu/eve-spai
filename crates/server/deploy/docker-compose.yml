@@ -3,9 +3,11 @@
 # Run from `crates/server` on the box:
 #   docker compose -f deploy/docker-compose.yml up -d --build
 #
-# The service joins two EXISTING (external) docker networks created by the host stack:
+# The service joins two EXISTING (external) docker networks created by the host stack.
+# `frontend` / `backend` are placeholders for whatever networks your nginx and Postgres
+# already live on — rename them below to match:
 #   - frontend: nginx proxies to this container by DNS name `eve-spai-br`
-#   - backend:  this container reaches Postgres `postgres-db-1` by DNS
+#   - backend:  this container reaches your Postgres container by DNS
 # It is NOT host-published (no `ports:`) — only nginx talks to it, over `frontend`.
 #
 # Secrets come from deploy/.env (see .env.example). Non-secret, deploy-specific
