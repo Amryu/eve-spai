@@ -356,18 +356,45 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
 /// Resolve a batch of exact names; returns the character names that matched
 /// (lower-cased) -> id.
 fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option<HashMap<String, i64>> {
-    let mut out = HashMap::new();
-    let resp: Option<serde_json::Value> = client
-        .post(ESI_IDS)
-        .json(names)
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json())
-        .ok();
-    let Some(v) = resp else {
-        eprintln!("[pilot] ESI /universe/ids request FAILED for {} names — left unresolved", names.len());
-        return None;
+    if names.is_empty() {
+        return Some(HashMap::new());
+    }
+    let resp = match client.post(ESI_IDS).json(names).send() {
+        Ok(r) => r,
+        Err(_) => return None, // network / timeout: transient, re-queue the whole batch
     };
+    // ESI returns 400 for the WHOLE batch if any single name is invalid (a parser fragment, a
+    // too-short/odd token) or the batch is too large. Split to isolate the offender so one bad
+    // token can't stall every other valid name in the batch forever (this is what left real
+    // players stuck on the "..." animation).
+    if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+        if names.len() > 1 {
+            let mid = names.len() / 2;
+            let a = resolve_batch(client, &names[..mid]);
+            let b = resolve_batch(client, &names[mid..]);
+            return match (a, b) {
+                (None, None) => None, // both halves hit a transient error: re-queue
+                (a, b) => {
+                    let mut out = a.unwrap_or_default();
+                    out.extend(b.unwrap_or_default());
+                    Some(out)
+                }
+            };
+        }
+        // A single name ESI rejects is not a resolvable character. Return resolved-but-empty so the
+        // caller records a negative verdict (Some(None)) instead of retrying it forever.
+        eprintln!("[pilot] ESI rejected name {:?} (400); marking unresolvable", names.first());
+        return Some(HashMap::new());
+    }
+    let Some(v) = resp
+        .error_for_status()
+        .ok()
+        .and_then(|r| r.json::<serde_json::Value>().ok())
+    else {
+        eprintln!("[pilot] ESI /universe/ids request failed for {} names; left unresolved", names.len());
+        return None; // other HTTP error (rate limit, 5xx): transient, re-queue
+    };
+    let mut out = HashMap::new();
     {
         if let Some(chars) = v.get("characters").and_then(|c| c.as_array()) {
             for c in chars {
