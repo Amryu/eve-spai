@@ -20,6 +20,24 @@ const FIRST_SIGHT_BACKLOG: usize = 20;
 const MAX_MOVE_JUMPS: u32 = 15;
 /// Grace window (seconds) for amending a reporter's previous intel post.
 const AMEND_GRACE: i64 = 60;
+/// How long a revived pilot stays kept (30 days). Refreshed on every fresh intel mention.
+const REVIVAL_TTL_SECS: i64 = 30 * 86400;
+
+/// Per-pilot revival expiry (name lower-cased → unix seconds the revival lasts until),
+/// loaded from the store at startup and refreshed on every feed mention. Shared into the
+/// demotion pass like `sightings`.
+pub type SharedRevivals = Arc<Mutex<HashMap<String, i64>>>;
+
+/// Decide a feed pilot's revival state and, when revived, the refreshed expiry.
+///
+/// A pilot is revived if it is still inside a previously-set 30-day window (`current_until`
+/// in the future) OR the wide-roaming trigger fires now; either way the window is reset to
+/// `now + REVIVAL_TTL_SECS`, so every fresh mention slides it forward. A pilot whose window
+/// has lapsed and that isn't roaming widely is not revived (returns `None`).
+fn revival_refresh(current_until: Option<i64>, triggered: bool, now: i64) -> Option<i64> {
+    let already = current_until.is_some_and(|u| u > now);
+    (already || triggered).then_some(now + REVIVAL_TTL_SECS)
+}
 
 pub fn spawn(
     chat_dir: PathBuf,
@@ -30,6 +48,7 @@ pub fn spawn(
     state: Arc<Mutex<IntelState>>,
     sightings: crate::intel::SharedSightings,
     activity: crate::activity::SharedActivity,
+    revivals: SharedRevivals,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -54,6 +73,7 @@ pub fn spawn(
                 &state,
                 &sightings,
                 &activity,
+                &revivals,
                 &ctx,
                 &mut processed,
                 &mut file_sigs,
@@ -77,6 +97,7 @@ fn scan(
     state: &Mutex<IntelState>,
     sightings: &crate::intel::SharedSightings,
     activity: &crate::activity::SharedActivity,
+    revivals: &SharedRevivals,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
@@ -283,7 +304,10 @@ fn scan(
     // Phase 2: demote confirmed pilots whose character has no recent zKill activity (with a
     // young-account exemption + multi-system revival). Runs every poll so the set re-derives and
     // names auto-revive; only an actual flip re-parses the affected reports.
-    demote_pass(pilots, activity, sightings, state, systems, ships, last_system, channel_regions, ctx);
+    demote_pass(
+        pilots, activity, sightings, revivals, state, systems, ships, last_system, channel_regions,
+        db, ctx,
+    );
 
     if any_new {
         ctx.request_repaint();
@@ -314,11 +338,13 @@ fn demote_pass(
     pilots: &crate::pilot::SharedPilots,
     activity: &crate::activity::SharedActivity,
     sightings: &crate::intel::SharedSightings,
+    revivals: &SharedRevivals,
     state: &Mutex<IntelState>,
     systems: &Systems,
     ships: &HashMap<String, (i64, String)>,
     last_system: &HashMap<String, (i64, String, Vec<String>)>,
     channel_regions: &HashMap<String, Vec<String>>,
+    db: Option<&crate::store::Store>,
     ctx: &egui::Context,
 ) {
     let now = chrono::Utc::now().timestamp();
@@ -362,14 +388,34 @@ fn demote_pass(
     //    re-evaluated, so it never silently revives just by aging out of the feed. `None` activity
     //    (not fetched yet) leaves the name's current state unchanged. The revival check is a brief
     //    sightings leaf lock.
-    let new_demoted: std::collections::HashSet<String> = {
+    // 4a. Snapshot the wide-roaming trigger per candidate (brief sightings leaf lock).
+    let triggered: HashMap<String, bool> = {
         let s = sightings.lock().unwrap();
+        candidates.iter().map(|(name, _)| (name.clone(), s.revived(name, now))).collect()
+    };
+    // 4b. Fold in the persisted 30-day revival window (brief revivals leaf lock): a pilot is
+    //     revived if still inside its window OR newly triggered, and either way the window is
+    //     REFRESHED to now + 30d — so every reappearance in the feed slides the keep forward.
+    //     Expired entries are pruned opportunistically. Persist updates are collected and
+    //     written to the store AFTER the lock is dropped (no store lock across the loop).
+    let mut revival_updates: Vec<(String, i64)> = Vec::new();
+    let new_demoted: std::collections::HashSet<String> = {
+        let mut rev = revivals.lock().unwrap();
+        rev.retain(|_, until| *until > now); // prune lapsed windows
         let mut demoted = old_demoted.clone();
         for (name, id) in &candidates {
             let Some(a) = acts.get(id).copied().flatten() else {
                 continue; // not fetched yet → leave as-is (carry current state forward)
             };
-            let revived = s.revived(name, now);
+            let hit = triggered.get(name).copied().unwrap_or(false);
+            let revived = match revival_refresh(rev.get(name).copied(), hit, now) {
+                Some(until) => {
+                    rev.insert(name.clone(), until);
+                    revival_updates.push((name.clone(), until));
+                    true
+                }
+                None => false,
+            };
             if crate::activity::demote_decision(
                 a.active_recent,
                 a.birthday,
@@ -384,6 +430,12 @@ fn demote_pass(
         }
         demoted
     };
+    // Persist the refreshed windows (small upserts) outside every leaf lock.
+    if let Some(store) = db {
+        for (name, until) in &revival_updates {
+            store.set_revival(name, *until);
+        }
+    }
     // 5. Replace the demotion set (pilots leaf lock) and detect the flip vs. the previous set.
     let flipped: std::collections::HashSet<String> =
         old_demoted.symmetric_difference(&new_demoted).cloned().collect();
@@ -459,5 +511,26 @@ mod tests {
         let names = feed_pilot_names(&reports);
         assert!(names.contains("amryu"));
         assert!(!names.contains("ghost pilot")); // confirmed elsewhere, absent from the feed
+    }
+
+    #[test]
+    fn revival_refresh_sets_and_slides_the_30d_window() {
+        let day = 86400;
+        let t0 = 1_000_000_000;
+
+        // First wide-roaming sighting (no prior window) → revived, expiry = now + 30d.
+        let until0 = revival_refresh(None, true, t0).expect("first roam revives");
+        assert_eq!(until0, t0 + REVIVAL_TTL_SECS);
+
+        // A later SINGLE mention (no fresh roam) 10 days on, still inside the window → revived,
+        // and the expiry slides forward to the NEW now + 30d.
+        let t1 = t0 + 10 * day;
+        let until1 = revival_refresh(Some(until0), false, t1).expect("mention within window revives");
+        assert_eq!(until1, t1 + REVIVAL_TTL_SECS);
+        assert!(until1 > until0); // window slid forward
+
+        // No mention for > 30 days: the window has lapsed and there's no fresh roam → not revived.
+        let t2 = until1 + day;
+        assert_eq!(revival_refresh(Some(until1), false, t2), None);
     }
 }

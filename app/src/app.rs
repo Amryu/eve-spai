@@ -819,6 +819,8 @@ pub struct SpaiApp {
     activity: crate::activity::SharedActivity,
     /// Pilot → recent (system, time) sightings index (Phase 1 data layer; consumed in Phase 2).
     sightings: crate::intel::SharedSightings,
+    /// Per-pilot 30-day revival window (Phase 2): kept alive + refreshed on every feed mention.
+    revivals: crate::watcher::SharedRevivals,
     /// Static ship-detail cache (avoids per-frame DB queries).
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     /// Cached role badges per ship id.
@@ -970,6 +972,20 @@ impl SpaiApp {
         crate::activity::spawn(activity.clone(), cc.egui_ctx.clone());
         // Pilot → recent (system, time) sightings index (Phase 1), populated by the chat watcher.
         let sightings: crate::intel::SharedSightings = Default::default();
+        // Per-pilot 30-day revival window (Phase 2). Preload persisted (unexpired) entries so a
+        // recently-mentioned real pilot stays kept across a restart; the watcher refreshes them.
+        let revivals: crate::watcher::SharedRevivals = {
+            let now = chrono::Utc::now().timestamp();
+            let mut map = std::collections::HashMap::new();
+            if let Some(s) = &store {
+                for (name, until) in s.load_revivals() {
+                    if until > now {
+                        map.insert(name, until);
+                    }
+                }
+            }
+            std::sync::Arc::new(std::sync::Mutex::new(map))
+        };
         let jump_favourites: std::collections::HashSet<i64> =
             settings.jump_favourites.iter().copied().collect();
 
@@ -1348,6 +1364,7 @@ impl SpaiApp {
             },
             activity,
             sightings,
+            revivals,
         }
     }
 
@@ -3318,6 +3335,7 @@ impl SpaiApp {
                 self.intel_state.clone(),
                 self.sightings.clone(),
                 self.activity.clone(),
+                self.revivals.clone(),
                 ctx.clone(),
             );
         }

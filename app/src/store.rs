@@ -162,6 +162,13 @@ CREATE TABLE IF NOT EXISTS pilot_activity (
     last_corp_change INTEGER,
     fetched_at       INTEGER NOT NULL
 );
+-- Per-pilot revival expiry (Phase 2): a pilot revived by wide roaming (or that is still
+-- being mentioned) stays kept until this instant, refreshed on every fresh intel mention.
+-- Name lower-cased.
+CREATE TABLE IF NOT EXISTS pilot_revival (
+    name          TEXT PRIMARY KEY,
+    revived_until INTEGER NOT NULL
+);
 ";
 
 /// A ship type with computed resist/tank/fitting stats.
@@ -1029,6 +1036,32 @@ impl Store {
         out
     }
 
+    // --- Per-pilot revival window (Phase 2) --------------------------------
+
+    /// Load all persisted revival entries: (name lower-cased, revived_until).
+    pub fn load_revivals(&self) -> Vec<(String, i64)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT name, revived_until FROM pilot_revival")
+        {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Upsert one pilot's revival expiry (name lower-cased).
+    pub fn set_revival(&self, name: &str, revived_until: i64) {
+        let _ = self.conn.execute(
+            "INSERT INTO pilot_revival(name, revived_until) VALUES(?1, ?2)
+             ON CONFLICT(name) DO UPDATE SET revived_until=?2",
+            params![name.to_lowercase(), revived_until],
+        );
+    }
+
     // --- Conversations (persisted, de-duplicated) --------------------------
 
     /// Delete all stored messages for a conversation (e.g. an invalid-JID DM).
@@ -1610,6 +1643,25 @@ mod tests {
         assert!(o.excluded.is_empty());
         assert!(o.scrubs.is_empty());
         assert!(s.list_scrubs().is_empty());
+    }
+
+    #[test]
+    fn revival_roundtrip() {
+        let s = mem_store();
+        assert!(s.load_revivals().is_empty());
+
+        // Insert two pilots (name lower-cased on write).
+        s.set_revival("Bovine Worm", 1_000);
+        s.set_revival("roamer", 2_000);
+        let mut got = s.load_revivals();
+        got.sort();
+        assert_eq!(got, vec![("bovine worm".to_string(), 1_000), ("roamer".to_string(), 2_000)]);
+
+        // Upsert refreshes the expiry in place (no duplicate row).
+        s.set_revival("bovine worm", 5_000);
+        let got = s.load_revivals();
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&("bovine worm".to_string(), 5_000)));
     }
 
     /// The exact upsert `add_known_pilot` runs, against an in-memory DB.
