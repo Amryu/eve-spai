@@ -15187,9 +15187,10 @@ impl DscanFetch {
     }
 }
 
-/// Fetch a public dscan.info share and tally its hulls. Format-agnostic: each line is split on
-/// tabs and any column that resolves to a known hull is counted (handles the in-game and stored
-/// column orders). Returns None when nothing parseable came back (caller opens the site instead).
+/// Fetch a public dscan.info share and tally its hulls. dscan.info serves shares as HTML (no data
+/// API), rendering the ships as a `<ul id="ships">` list; we parse that list and map each type name
+/// to its id via the ship index. Returns None when nothing parseable came back (caller opens the
+/// site instead).
 pub(crate) fn fetch_dscan_ships(
     url: &str,
     ship_index: Option<&std::collections::HashMap<String, (i64, String)>>,
@@ -15200,28 +15201,22 @@ pub(crate) fn fetch_dscan_ships(
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .ok()?;
+    // Prefer the canonical /v/<id> view (it carries the rendered ship list); if handed a bare-id
+    // link, also try the /v/ form.
     let mut candidates = vec![url.to_string()];
-    if url.contains("/v/") {
-        candidates.push(url.replace("/v/", "/")); // some shares serve raw without /v/
+    if !url.contains("/v/") {
+        if let Some(pos) = url.rfind('/') {
+            candidates.push(format!("{}/v/{}", &url[..pos], &url[pos + 1..]));
+        }
     }
     for u in candidates {
         let Ok(resp) = client.get(&u).send() else { continue };
         let Ok(body) = resp.error_for_status().and_then(|r| r.text()) else { continue };
         let mut counts: std::collections::HashMap<i64, (String, u32)> = std::collections::HashMap::new();
-        for line in body.lines() {
-            if !line.contains('\t') {
-                continue;
-            }
-            for col in line.split('\t') {
-                let col = col.trim();
-                if col.len() < 3 {
-                    continue;
-                }
-                if let Some((id, name)) = idx.get(&col.to_lowercase()) {
-                    let e = counts.entry(*id).or_insert_with(|| (name.clone(), 0));
-                    e.1 += 1;
-                    break;
-                }
+        for (name, n) in crate::dscan::parse_dscan_ships_html(&body) {
+            if let Some((id, canon)) = idx.get(&name.to_lowercase()) {
+                let e = counts.entry(*id).or_insert_with(|| (canon.clone(), 0));
+                e.1 += n;
             }
         }
         if !counts.is_empty() {

@@ -95,9 +95,69 @@ pub fn upload(text: &str) -> anyhow::Result<String> {
     }
 }
 
+/// Parse the ship breakdown out of a dscan.info share PAGE. dscan.info serves a share as HTML (there
+/// is no data/JSON API), rendering the ships as a `<ul id="ships">` list where each entry is
+/// `<li ...><span class="badge...">COUNT</span><b>TYPE NAME</b></li>`. Returns `(type name, count)`
+/// pairs in document order; the caller maps names to type ids via the ship index. Empty if the page
+/// has no ships block (e.g. a bad id, or a local/fleet scan rather than a d-scan).
+pub fn parse_dscan_ships_html(body: &str) -> Vec<(String, u32)> {
+    let Some(start) = body.find("id=\"ships\"") else {
+        return Vec::new();
+    };
+    let rest = &body[start..];
+    let block = &rest[..rest.find("</ul>").unwrap_or(rest.len())];
+    let mut out = Vec::new();
+    for li in block.split("<li").skip(1) {
+        // Count: the digits right after the badge span's opening tag (`...label-default">14</span>`).
+        let count = li
+            .find("badge")
+            .and_then(|b| li[b..].find('>').map(|g| b + g + 1))
+            .map(|s| li[s..].split('<').next().unwrap_or("").trim())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1);
+        // Type name: inside the `<b>...</b>`.
+        if let Some(b) = li.find("<b>") {
+            if let Some(e) = li[b + 3..].find("</b>") {
+                let name = li[b + 3..b + 3 + e].trim();
+                if !name.is_empty() {
+                    out.push((name.to_owned(), count));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_ships_from_real_dscan_info_page() {
+        // The exact structure dscan.info serves for a populated share (/v/<id>).
+        let html = r#"<ul class="list-group" id="ships">
+            <li class="list-group-item shipclass27" data-sclid="27">
+              <span class="badge label label-default">14</span>
+              <b>Raven</b>
+            </li>
+            <li class="list-group-item shipclass358" data-sclid="358">
+              <span class="badge label label-default">2</span>
+              <b>Ishtar</b>
+            </li>
+            <li class="list-group-item shipclass831" data-sclid="831">
+              <span class="badge label label-default">1</span>
+              <b>Crow</b>
+            </li>
+          </ul>
+          <ul class="list-group" id="shipclasses"><li><b>Battleship</b></li></ul>"#;
+        let ships = parse_dscan_ships_html(html);
+        assert_eq!(
+            ships,
+            vec![("Raven".to_owned(), 14), ("Ishtar".to_owned(), 2), ("Crow".to_owned(), 1)]
+        );
+        // No ships block (bad id / non-d-scan) yields nothing.
+        assert!(parse_dscan_ships_html("<html><body>nope</body></html>").is_empty());
+    }
 
     #[test]
     fn detects_dscan_and_rejects_other() {
