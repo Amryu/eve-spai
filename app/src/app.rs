@@ -4894,6 +4894,7 @@ impl SpaiApp {
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
         let ship_names = self.battle_ship_names(battle);
+        let affiliations = self.battle_affiliations(battle);
         let doc = crate::breport::BattleReportDoc::new(
             battle.clone(),
             battle.engagements.clone(),
@@ -4901,6 +4902,7 @@ impl SpaiApp {
             None,
             now,
             ship_names,
+            affiliations,
         );
         std::fs::write(&path, doc.to_json()?)?;
         Ok(Some(path))
@@ -4969,12 +4971,56 @@ impl SpaiApp {
             .collect()
     }
 
+    /// Resolve every pilot character id referenced by `battle` (victims, attackers, and roster
+    /// participants) to its corp/alliance [`Affil`](crate::battle::Affil)iation, so the exported
+    /// document is self-contained and a web viewer can show a corp icon and an alliance icon per
+    /// pilot without an SDE. Reuses the app's already-resolved `affiliations` cache (the pilot
+    /// badges populate it) — read-only, no blocking network on the UI thread, exactly like
+    /// [`battle_ship_names`](Self::battle_ship_names). A pilot with no cached corp is omitted; a
+    /// pilot in no alliance keeps the alliance fields 0 / empty. Char id 0 is skipped.
+    fn battle_affiliations(
+        &self,
+        battle: &crate::battle::Battle,
+    ) -> std::collections::BTreeMap<i64, crate::battle::Affil> {
+        let mut ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        for e in &battle.engagements {
+            ids.insert(e.victim_char);
+            for a in &e.attackers {
+                ids.insert(a.char_id);
+            }
+        }
+        for i in 0..battle.sides.len() {
+            for p in battle.roster(i) {
+                ids.insert(p.char_id);
+            }
+        }
+        ids.remove(&0);
+        let cache = self.affiliations.lock().unwrap();
+        ids.into_iter()
+            .filter_map(|id| {
+                let a = cache.get(id)?;
+                // Need at least a corp to place the pilot; drop anyone not yet resolved.
+                let corp_id = a.corp?;
+                Some((
+                    id,
+                    crate::battle::Affil {
+                        corp_id,
+                        corp_name: a.corp_name.unwrap_or_default(),
+                        alliance_id: a.alliance.unwrap_or(0),
+                        alliance_name: a.alliance_name.unwrap_or_default(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// Build the `BattleReportDoc` for the open battle (same content as Save JSON), ready to
     /// gzip + upload.
     fn build_share_doc(&self, battle: &crate::battle::Battle) -> crate::breport::BattleReportDoc {
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
         let ship_names = self.battle_ship_names(battle);
+        let affiliations = self.battle_affiliations(battle);
         crate::breport::BattleReportDoc::new(
             battle.clone(),
             battle.engagements.clone(),
@@ -4982,6 +5028,7 @@ impl SpaiApp {
             None,
             now,
             ship_names,
+            affiliations,
         )
     }
 

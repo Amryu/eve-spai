@@ -68,6 +68,22 @@ pub struct BattleReportDoc {
     /// older docs deserialize to an empty map and the viewer falls back to the type id.
     #[serde(default)]
     pub ship_names: std::collections::BTreeMap<i64, String>,
+    /// Character id -> its corp/alliance [`Affil`]iation, for every pilot referenced by the battle
+    /// (victims, attackers, roster participants). Lets the web viewer show a corp icon and an
+    /// alliance icon per pilot without an SDE. Optional: older docs deserialize to an empty map
+    /// and the viewer simply omits the badges.
+    #[serde(default)]
+    pub affiliations: std::collections::BTreeMap<i64, Affil>,
+}
+
+/// A pilot's corp + alliance identity, for the web viewer's per-pilot corp/alliance icons.
+/// `alliance_id == 0` (and an empty `alliance_name`) means the pilot is in no alliance.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Affil {
+    pub corp_id: i64,
+    pub corp_name: String,
+    pub alliance_id: i64,
+    pub alliance_name: String,
 }
 
 impl BattleReportDoc {
@@ -77,7 +93,9 @@ impl BattleReportDoc {
     /// Build a document at format [`FORMAT_VERSION`](Self::FORMAT_VERSION), stamped with this
     /// build's generator string and `exported_at` (unix seconds). `ship_names` maps every ship
     /// type id referenced by the battle to its hull name so a web viewer can label hulls without
-    /// an SDE; pass an empty map when no resolver is available.
+    /// an SDE; pass an empty map when no resolver is available. `affiliations` maps every pilot's
+    /// character id to its corp/alliance [`Affil`]iation so a web viewer can show per-pilot corp
+    /// and alliance icons; pass an empty map when no resolver is available.
     pub fn new(
         battle: Battle,
         engagements: Vec<Engagement>,
@@ -85,6 +103,7 @@ impl BattleReportDoc {
         title: Option<String>,
         exported_at: i64,
         ship_names: std::collections::BTreeMap<i64, String>,
+        affiliations: std::collections::BTreeMap<i64, Affil>,
     ) -> Self {
         Self {
             format_version: Self::FORMAT_VERSION,
@@ -95,6 +114,7 @@ impl BattleReportDoc {
             engagements,
             overrides,
             ship_names,
+            affiliations,
         }
     }
 
@@ -1825,6 +1845,25 @@ mod tests {
         let ship_names: std::collections::BTreeMap<i64, String> =
             [(587, "Rifter".to_owned()), (670, "Capsule".to_owned())].into_iter().collect();
 
+        let affiliations: std::collections::BTreeMap<i64, Affil> = [
+            (
+                100,
+                Affil {
+                    corp_id: 200,
+                    corp_name: "Red Corp".to_owned(),
+                    alliance_id: 300,
+                    alliance_name: "Red Alliance".to_owned(),
+                },
+            ),
+            // A pilot with no alliance: alliance fields stay 0 / empty.
+            (
+                101,
+                Affil { corp_id: 201, corp_name: "Blue Corp".to_owned(), ..Default::default() },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
         let doc = BattleReportDoc::new(
             battle.clone(),
             engs.clone(),
@@ -1832,6 +1871,7 @@ mod tests {
             Some("S1 brawl".to_owned()),
             1_700_000_000,
             ship_names.clone(),
+            affiliations.clone(),
         );
         let json = doc.to_json().expect("serialize");
         let back = BattleReportDoc::from_json(&json).expect("deserialize");
@@ -1845,6 +1885,7 @@ mod tests {
         assert_eq!(back.engagements, engs);
         assert_eq!(back.overrides, overrides);
         assert_eq!(back.ship_names, ship_names);
+        assert_eq!(back.affiliations, affiliations);
         // And the round-tripped battle still renders a roster without any static data.
         assert_eq!(back.battle.sides.len(), battle.sides.len());
     }
@@ -1852,8 +1893,15 @@ mod tests {
     #[test]
     fn battle_report_doc_rejects_unknown_format_version() {
         let battle = preview_battle(vec![eng(1, 0, 1, "Red", "Blue")], BATTLE_BREAK_SECS);
-        let mut doc =
-            BattleReportDoc::new(battle, Vec::new(), Overrides::default(), None, 0, Default::default());
+        let mut doc = BattleReportDoc::new(
+            battle,
+            Vec::new(),
+            Overrides::default(),
+            None,
+            0,
+            Default::default(),
+            Default::default(),
+        );
         doc.format_version = 999;
         let json = doc.to_json().unwrap();
         assert!(
