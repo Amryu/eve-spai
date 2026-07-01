@@ -28,6 +28,7 @@ mod gamelog;
 mod gamewatcher;
 mod geo;
 mod image_cache;
+mod instance;
 mod jabber;
 mod jumproute;
 mod intel;
@@ -144,9 +145,16 @@ fn main() -> eframe::Result<()> {
         return overlay::run_overlay();
     }
 
-    // Single-instance guard for the main process: a second user-launched eve-spai exits quietly.
+    // Single-instance guard for the main process: a second user-launched eve-spai does not open
+    // a second window. Instead it asks the already-running primary (over the loopback control
+    // port) to bring its window to the front, then exits quietly. If the primary is not yet
+    // listening / cannot be reached, fall back to the plain quiet exit.
     if !acquire_single_instance_lock() {
-        eprintln!("another instance is running");
+        if instance::signal_raise() {
+            eprintln!("another instance is running; asked it to raise its window");
+        } else {
+            eprintln!("another instance is running");
+        }
         return Ok(());
     }
 

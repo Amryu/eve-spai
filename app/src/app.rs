@@ -541,6 +541,9 @@ pub struct SpaiApp {
     /// System tray (Show / Exit) + whether a real quit was requested.
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
+    /// True for one frame after a second launch asked us to raise: the window was
+    /// pushed AlwaysOnTop to force it to the front, and the next frame resets it to Normal.
+    raise_reset_top: bool,
     /// Overlay child process + IPC link (spawned in `new`, monitored from `update`). `None` if the
     /// child failed to spawn — the windows then render in-process as a fallback. All platforms.
     overlay: Option<crate::ipc::OverlayLink>,
@@ -834,6 +837,11 @@ impl SpaiApp {
         // Image loaders (ship icons / portraits from EVE's image server), fronted by our
         // 30-day on-disk cache so they aren't re-fetched every run.
         crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
+
+        // Listen on the loopback control port so a second launch can raise this window
+        // instead of opening a duplicate. Best-effort: a bind failure just disables the
+        // feature (see instance.rs).
+        crate::instance::start_control_listener(cc.egui_ctx.clone());
 
         let store = Store::open().map_err(|e| eprintln!("store: {e:#}")).ok();
         let mut settings = store
@@ -1169,6 +1177,7 @@ impl SpaiApp {
             wizard_checked: false,
             tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
+            raise_reset_top: false,
             overlay: match crate::ipc::OverlayLink::start(cc.egui_ctx.clone()) {
                 Ok(link) => Some(link),
                 Err(e) => {
@@ -14442,6 +14451,25 @@ fn spawn_alert_daemon(
 impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // A second launch asked us (over the loopback control port) to come to the front.
+        // Viewport commands must be issued from the UI thread, so the listener thread only
+        // set a flag + requested a repaint; we consume it here. De-minimize, ensure visible,
+        // focus, and briefly force AlwaysOnTop so the window is actually raised; the level is
+        // reset to Normal next frame so it does not stay pinned above everything.
+        if crate::instance::take_raise_request() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+            self.raise_reset_top = true;
+            ctx.request_repaint();
+        } else if self.raise_reset_top {
+            self.raise_reset_top = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+        }
 
         // Respawn the overlay child if it died (cheap try_wait; debounced internally).
         if let Some(link) = self.overlay.as_mut() {
