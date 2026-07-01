@@ -5502,13 +5502,13 @@ impl SpaiApp {
                             {
                                 go_back = true;
                             }
-                            ui.separator();
+                            toolbar_sep(ui);
                             ui.toggle_value(&mut self.battle_edit_mode, format!("{}  Edit", icon::PENCIL))
                                 .on_hover_text("Split off kills, remove kills/pilots, add a kill");
-                            ui.separator();
+                            toolbar_sep(ui);
                             ui.checkbox(&mut self.battle_condensed, "Condensed")
                                 .on_hover_text("Stack each side's ships by hull (count + losses)");
-                            ui.separator();
+                            toolbar_sep(ui);
                             ui.label("Sort");
                             egui::ComboBox::from_id_salt("battle_roster_sort")
                                 .selected_text(match self.battle_roster_sort {
@@ -5527,7 +5527,7 @@ impl SpaiApp {
                                         "Hull size",
                                     );
                                 });
-                            ui.separator();
+                            toolbar_sep(ui);
                             if ui.button(format!("{}  Add kill", icon::PLUS)).clicked() {
                                 self.battle_add_open = true;
                             }
@@ -5537,7 +5537,7 @@ impl SpaiApp {
                             if ui.button(format!("{} Scrubbed ({scrub_n})", icon::BROOM)).clicked() {
                                 self.battle_scrubs_open = true;
                             }
-                            ui.separator();
+                            toolbar_sep(ui);
                             if ui
                                 .button(format!("{}  Save JSON", icon::FLOPPY_DISK))
                                 .on_hover_text("Save this battle report as a JSON file you can re-open or share")
@@ -5545,7 +5545,7 @@ impl SpaiApp {
                             {
                                 save_clicked = true;
                             }
-                            ui.separator();
+                            toolbar_sep(ui);
                             // Which character owns/manages the shared reports (the user may have
                             // many alts; BRs are owned per character server-side).
                             let authed = self.br_authed_chars();
@@ -5571,7 +5571,7 @@ impl SpaiApp {
                                     })
                                     .response
                                     .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
-                                ui.separator();
+                                toolbar_sep(ui);
                             }
                             let sharing = matches!(
                                 *self.br_share.lock().unwrap(),
@@ -5723,7 +5723,7 @@ impl SpaiApp {
                 self.battle_search.clear();
             }
             // Minimum cumulative ISK destroyed (in billions) — hides small skirmishes. Persisted.
-            ui.separator();
+            toolbar_sep(ui);
             ui.label("\u{2265} ISK").on_hover_text("Only list battles whose total ISK destroyed is at least this many billions");
             let mut bn = self.settings.min_battle_isk / 1e9;
             if ui
@@ -5739,7 +5739,7 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             // Activity-break gap: a lull longer than this auto-splits one battle into two.
-            ui.separator();
+            toolbar_sep(ui);
             ui.label("Split gap (min)")
                 .on_hover_text("Auto-split a battle when there's a lull longer than this.");
             let mut mins = (self.settings.battle_break_secs / 60).clamp(1, 30);
@@ -5763,7 +5763,7 @@ impl SpaiApp {
             if ui.button(format!("{}  Rules…", egui_phosphor::regular::FUNNEL)).clicked() {
                 self.battle_filter_open = true;
             }
-            ui.separator();
+            toolbar_sep(ui);
             // Open a battle-report JSON the user picks (native dialog) — no config dir is scanned.
             if ui
                 .button(format!("{}  Open JSON", egui_phosphor::regular::FOLDER_OPEN))
@@ -5784,7 +5784,7 @@ impl SpaiApp {
             {
                 open_my_shared = true;
             }
-            ui.separator();
+            toolbar_sep(ui);
             // Reconstruct a whole fight from a single zKill kill link / id (off-thread).
             let input = ui.add_enabled(
                 !building,
@@ -15569,6 +15569,20 @@ fn side_title(side: &crate::battle::Side) -> String {
         .clone()
         .or_else(|| side.parties.first().map(|p| p.name.clone()))
         .unwrap_or_else(|| "?".to_owned())
+}
+
+/// A short, fixed-height vertical divider for a WRAPPING toolbar. A plain `ui.separator()` in
+/// `horizontal_wrapped` sizes its length to the whole available panel height, drawing an over-tall
+/// bar that dangles at wrap points; this allocates a one-control-tall cell and paints a rule in it,
+/// so it groups controls cleanly and wraps like any other item.
+fn toolbar_sep(ui: &mut egui::Ui) {
+    let h = ui.spacing().interact_size.y;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, h), egui::Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
 }
 
 /// A compact one-line summary of a previewed battle half (kills, ISK, each side's lead + k/l),
