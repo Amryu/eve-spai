@@ -7,7 +7,7 @@
 //! [`PreEscaped`], so none of them can inject markup. `PreEscaped` is used *only* for
 //! the static, developer-authored CSS/JS blobs in [`layout`].
 
-use br_core::battle::{Battle, BattleReportDoc, Party, PartyKind, Side};
+use br_core::battle::{Affil, Battle, BattleReportDoc, Party, PartyKind, Side};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 /// A folded-in pod loss is only shown when its value exceeds this floor; `br_core` stores
@@ -52,6 +52,32 @@ fn party_zkill_url(p: &Party) -> Option<String> {
         PartyKind::Alliance => Some(format!("https://zkillboard.com/alliance/{}/", p.id)),
         PartyKind::Corporation => Some(format!("https://zkillboard.com/corporation/{}/", p.id)),
         _ => None,
+    }
+}
+
+/// A pilot's corp + alliance logos for the Details view: the corporation logo first, then
+/// the alliance logo, each linking to its zKillboard entity page (new tab). The alliance
+/// logo is omitted when the pilot has no alliance (`alliance_id == 0`). Empty markup when
+/// `affil` is `None` (an unresolved char), so the pilot renders exactly as before. Names go
+/// through normal interpolation, so they are auto-escaped.
+fn affil_icons(affil: Option<&Affil>) -> Markup {
+    html! {
+        @if let Some(a) = affil {
+            @if a.corp_id != 0 {
+                a .affil-logo href=(format!("https://zkillboard.com/corporation/{}/", a.corp_id))
+                    target="_blank" rel="noopener" title=(a.corp_name) {
+                    img src=(format!("https://images.evetech.net/corporations/{}/logo?size=32", a.corp_id))
+                        width="18" height="18" loading="lazy" alt=(a.corp_name);
+                }
+            }
+            @if a.alliance_id != 0 {
+                a .affil-logo href=(format!("https://zkillboard.com/alliance/{}/", a.alliance_id))
+                    target="_blank" rel="noopener" title=(a.alliance_name) {
+                    img src=(format!("https://images.evetech.net/alliances/{}/logo?size=32", a.alliance_id))
+                        width="18" height="18" loading="lazy" alt=(a.alliance_name);
+                }
+            }
+        }
     }
 }
 
@@ -433,10 +459,15 @@ fn pod_kill_ids(battle: &Battle) -> std::collections::HashMap<i64, i64> {
 /// indented pod sub-row carrying the pod hull icon, its ISK value, and a zKill link to the
 /// pod killmail (recovered from `pod_kills`; omitted gracefully if unknown). The pod row
 /// shares the ship's `data-ship` so the hull filter keeps the two rows together.
-fn detail_cell(p: &br_core::battle::Participant, pod_kills: &std::collections::HashMap<i64, i64>) -> Markup {
+fn detail_cell(
+    p: &br_core::battle::Participant,
+    pod_kills: &std::collections::HashMap<i64, i64>,
+    affiliations: &std::collections::BTreeMap<i64, Affil>,
+) -> Markup {
     let lost = p.lost.as_ref();
     let pod = lost.filter(|l| l.pod_value > POD_VALUE_MIN);
     let pod_kill = pod.and_then(|_| (p.char_id != 0).then(|| pod_kills.get(&p.char_id).copied()).flatten());
+    let affil = (p.char_id != 0).then(|| affiliations.get(&p.char_id)).flatten();
     html! {
         div .dcell .lost[lost.is_some()]
             data-char=(p.char_id)
@@ -446,7 +477,15 @@ fn detail_cell(p: &br_core::battle::Participant, pod_kills: &std::collections::H
         {
             img .dhull src=(icon_url(p.ship)) width="40" height="40" loading="lazy" alt="ship";
             div .dinfo {
-                span .dpilot title=(p.pilot) { (p.pilot) }
+                span .dpilot {
+                    (affil_icons(affil))
+                    @if p.char_id != 0 {
+                        a .dpilot-name href=(format!("https://zkillboard.com/character/{}/", p.char_id))
+                            target="_blank" rel="noopener" title=(p.pilot) { (p.pilot) }
+                    } @else {
+                        span .dpilot-name title=(p.pilot) { (p.pilot) }
+                    }
+                }
                 span .dparty {
                     (party_logo(&p.party))
                     span .dparty-name title=(p.party.name) { (p.party.name) }
@@ -487,6 +526,7 @@ fn side_panel(
     side_idx: usize,
     ship_names: &std::collections::BTreeMap<i64, String>,
     pod_kills: &std::collections::HashMap<i64, i64>,
+    affiliations: &std::collections::BTreeMap<i64, Affil>,
 ) -> Markup {
     let side = &battle.sides[side_idx];
     let groups = roster_groups(battle, side_idx);
@@ -560,7 +600,7 @@ fn side_panel(
             }
             div .details {
                 @for p in &roster {
-                    (detail_cell(p, pod_kills))
+                    (detail_cell(p, pod_kills, affiliations))
                 }
             }
         }
@@ -780,7 +820,7 @@ pub fn viewer_page(data: &CardData) -> Markup {
                 }
                 div .panels {
                     @for i in 0..b.sides.len() {
-                        (side_panel(b, i, &data.doc.ship_names, &pod_kills))
+                        (side_panel(b, i, &data.doc.ship_names, &pod_kills, &data.doc.affiliations))
                     }
                 }
             }
@@ -1348,7 +1388,12 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .dcell.lost{border-color:#5a2a2a;}
 .dhull{flex:0 0 auto; border-radius:6px; border:1px solid var(--line); background:var(--panel);}
 .dinfo{display:flex; flex-direction:column; min-width:0; flex:1;}
-.dpilot{min-width:0; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.dpilot{display:flex; align-items:center; gap:5px; min-width:0; font-size:14px;}
+.dpilot-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text);}
+.dpilot-name:hover{color:var(--blue);}
+.affil-logo{flex:0 0 auto; display:inline-flex; line-height:0;}
+.affil-logo:hover{text-decoration:none;}
+.affil-logo img{border-radius:3px; border:1px solid var(--line); background:var(--panel);}
 .dparty{display:flex; align-items:center; gap:5px; min-width:0; color:var(--muted); font-size:12.5px;}
 .dparty-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .party-logo{flex:0 0 auto; border-radius:4px;}
@@ -1405,7 +1450,9 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 #[cfg(test)]
 mod tests {
     use super::*;
-    use br_core::battle::{Attacker, Engagement, Overrides, Party, PartyKind, BATTLE_BREAK_SECS};
+    use br_core::battle::{
+        Affil, Attacker, Engagement, Overrides, Party, PartyKind, BATTLE_BREAK_SECS,
+    };
 
     fn party(id: i64, name: &str) -> Party {
         Party { id, name: name.to_string(), kind: PartyKind::Alliance }
@@ -1450,6 +1497,28 @@ mod tests {
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
+        // RedPilot (char 1001) has a corp + alliance; RedGuy (char 2002) a corp but no alliance.
+        let affiliations = [
+            (
+                1001i64,
+                Affil {
+                    corp_id: 5001,
+                    corp_name: "Red Corp".into(),
+                    alliance_id: 100,
+                    alliance_name: "Red Alliance".into(),
+                },
+            ),
+            (
+                2002i64,
+                Affil {
+                    corp_id: 5002,
+                    corp_name: "Blue Corp".into(),
+                    alliance_id: 0,
+                    alliance_name: String::new(),
+                },
+            ),
+        ]
+        .into();
         BattleReportDoc::new(
             battle,
             engs,
@@ -1457,6 +1526,7 @@ mod tests {
             title.map(|t| t.into()),
             1_700_000_000,
             ship_names,
+            affiliations,
         )
     }
 
@@ -1520,7 +1590,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, "<img src=x onerror=alert(1)>", "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Yy11111111".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         assert!(!html.contains("<img src=x onerror=alert(1)>"));
@@ -1601,7 +1671,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, "Red", "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Zz22222222".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // The malicious pilot name (shown in the Details cell) is escaped.
@@ -1653,7 +1723,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, long, "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Ll44444444".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // The long party name is truncated with an ellipsis class and shown in full via title.
@@ -1674,7 +1744,7 @@ mod tests {
             eng(3, 40, (200, "Blue", "BlueC", 588), (100, evil, "RedC", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Mm33333333".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // The breakdown modal is rendered (hidden) with per-side composition lists.
@@ -1749,7 +1819,7 @@ mod tests {
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, ship_names);
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, ship_names, Default::default());
         let data = CardData { id: "Pp55555555".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // No capsule tile in the grouped Tiles view.
@@ -1776,7 +1846,7 @@ mod tests {
             eng_full(3, (200, "Blue"), 6000, "BlueVictim", 588, (100, "Red"), 80_000_000.0),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Rr77777777".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // Pod sub-row renders (folded pod value > 10000)...
@@ -1795,7 +1865,7 @@ mod tests {
             eng_full(3, (200, "Blue"), 6000, "BlueVictim", 588, (100, "Red"), 80_000_000.0),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Qq66666666".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         assert!(!html.contains("dcell lost dpod-row"));
@@ -1856,7 +1926,7 @@ mod tests {
             eng(2, 20, (200, "Blue", "V2", 588), (100, "</script><b>x", "K2", 587), true),
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Ss88888888".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         // No raw </script> escaped into the page from the JSON blob.
@@ -1901,12 +1971,74 @@ mod tests {
         };
         let engs = vec![mk(1, &ally, 1001, 587, &corp), mk(2, &corp, 1002, 588, &ally)];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
-        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default());
+        let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Cc99999999".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         assert!(html.contains("https://zkillboard.com/corporation/300/"));
         // The sides-data marks party 300 as a corp.
         let v: serde_json::Value = serde_json::from_str(&sides_data_json(&data.doc)).unwrap();
         assert!(v["parties"].as_array().unwrap().iter().any(|p| p["id"] == 300 && p["kind"] == "corp"));
+    }
+
+    #[test]
+    fn details_render_pilot_corp_and_alliance_icons() {
+        // Two lost pilots (victim chars 1001, 1002): one with corp + alliance, one with a
+        // corp but no alliance. Ids chosen to not collide with the side party ids (100/200).
+        let engs = vec![
+            eng(1, 0, (100, "Red Alliance", "Pilot A", 587), (200, "Blue Alliance", "Killer A", 588), true),
+            eng(2, 30, (100, "Red Alliance", "Pilot B", 587), (200, "Blue Alliance", "Killer B", 588), true),
+            eng(3, 60, (200, "Blue Alliance", "BlueV", 588), (100, "Red Alliance", "RedK", 587), true),
+        ];
+        let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
+        let affiliations = [
+            (
+                1001i64,
+                Affil {
+                    corp_id: 98001,
+                    corp_name: "Alpha Corp".into(),
+                    alliance_id: 99001,
+                    alliance_name: "Alpha Alliance".into(),
+                },
+            ),
+            (
+                1002i64,
+                Affil {
+                    corp_id: 98002,
+                    corp_name: "Bravo Corp".into(),
+                    alliance_id: 0,
+                    alliance_name: String::new(),
+                },
+            ),
+        ]
+        .into();
+        let d = BattleReportDoc::new(
+            battle,
+            engs,
+            Overrides::default(),
+            None,
+            1_700_000_000,
+            Default::default(),
+            affiliations,
+        );
+        let data = CardData { id: "Aa10101010".into(), doc: d, uploader: "u".into(), views: 1 };
+        let html = viewer_page(&data).into_string();
+
+        // Pilot A (char 1001): corp logo + alliance logo, each linking to its zKill entity.
+        assert!(html.contains("https://images.evetech.net/corporations/98001/logo?size=32"));
+        assert!(html.contains("https://zkillboard.com/corporation/98001/"));
+        assert!(html.contains("https://images.evetech.net/alliances/99001/logo?size=32"));
+        assert!(html.contains("https://zkillboard.com/alliance/99001/"));
+        // The corp icon comes before the alliance icon (corp-first ordering).
+        let corp_at = html.find("corporations/98001").unwrap();
+        let ally_at = html.find("alliances/99001").unwrap();
+        assert!(corp_at < ally_at, "corp logo must precede alliance logo");
+        // The pilot name links to their character zKill page.
+        assert!(html.contains("https://zkillboard.com/character/1001/"));
+
+        // Pilot B (char 1002, alliance_id 0): corp logo present, NO alliance logo emitted.
+        assert!(html.contains("https://images.evetech.net/corporations/98002/logo?size=32"));
+        assert!(!html.contains("alliances/99002")); // no alliance for Bravo
+        assert!(!html.contains("alliances/0/")); // never emit a zero-id alliance logo
+        assert!(html.contains("class=\"affil-logo\""));
     }
 }

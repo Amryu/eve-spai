@@ -141,6 +141,7 @@ fn sample_doc(title: &str) -> BattleReportDoc {
         Some(title.into()),
         1_700_000_000,
         Default::default(),
+        Default::default(),
     )
 }
 
