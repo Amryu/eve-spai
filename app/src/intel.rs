@@ -1077,6 +1077,40 @@ fn known_name_in_system_run(
     None
 }
 
+/// Whether an over-glued loose run decomposes ENTIRELY into pilot candidates already
+/// surfaced (each a contiguous run of the blob) plus bare system tokens — a single-space
+/// kill-list ("A B C D System") whose individual names the known-cache / strict passes have
+/// already found. Such a blob adds nothing but a mega-candidate that the final sub-phrase
+/// drop would let EVICT those clean names (they're all its sub-phrases), so the caller skips
+/// it. Greedy longest-match, so a two-word name is preferred over its first word.
+fn run_covered_by_pilots(run: &str, pilots: &[String], systems: &Systems) -> bool {
+    let existing: Vec<Vec<String>> = pilots
+        .iter()
+        .map(|p| p.split_whitespace().map(|w| w.to_lowercase()).collect())
+        .collect();
+    let words: Vec<String> = run.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let mut i = 0;
+    let mut matched_any = false;
+    while i < words.len() {
+        if is_system_token(&words[i], systems) {
+            i += 1;
+            continue;
+        }
+        let adv = existing
+            .iter()
+            .filter(|c| !c.is_empty() && i + c.len() <= words.len() && words[i..i + c.len()] == c[..])
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
+        if adv == 0 {
+            return false;
+        }
+        matched_any = true;
+        i += adv;
+    }
+    matched_any
+}
+
 /// Stop words that still appear inside real multi-word names ("The Meek", "Lord of War")
 /// and so are allowed mid-name — unlike intel descriptors ("cloaked", "jumped", "camped"),
 /// which are stop words that never belong in a name.
@@ -1993,6 +2027,38 @@ pub(crate) fn detect_location(
         }
     }
 
+    // Wormhole-destination reference: a system named only as the far side of a wormhole
+    // ("... Thera hole", "wh to Thera") is NOT where the activity is, so it must not become
+    // the primary system or a gate. Drop it from `detected` when another system can be the
+    // location. Thera / Turnur (the wandering-hole hubs) are wh references by name; any other
+    // system counts when it is flanked by a wormhole connector word ("hole"/"wh"/"to <sys>").
+    // The wh destination itself is still surfaced by `parse_wh_dest` on the message.
+    if detected.len() > 1 {
+        let wh_word = |w: &str| {
+            matches!(w.to_lowercase().as_str(), "hole" | "holes" | "wh" | "wormhole")
+        };
+        let is_wh_ref = |sys: &DetectedSystem| -> bool {
+            let name_lc = sys.name.to_lowercase();
+            if name_lc == "thera" || name_lc == "turnur" {
+                return true;
+            }
+            tokens.iter().enumerate().any(|(i, t)| {
+                resolve(systems, t).map(|info| info.id) == Some(sys.id)
+                    // "Thera hole" / "Thera wh" — the connector FOLLOWS the destination — or
+                    // "wh to Thera" — the destination follows "to". A system that merely FOLLOWS
+                    // a "hole" word ("Thera hole Rancer") is the location, not a wh reference.
+                    && (tokens.get(i + 1).is_some_and(|n| wh_word(n))
+                        || i.checked_sub(1)
+                            .and_then(|j| tokens.get(j))
+                            .is_some_and(|p| p.eq_ignore_ascii_case("to")))
+            })
+        };
+        // Never empty the location: only demote wh references when a real location remains.
+        if detected.iter().any(|d| !is_wh_ref(d)) {
+            detected.retain(|d| !is_wh_ref(d));
+        }
+    }
+
     // One system per card: keep the first mentioned, and demote any further system
     // mentions to gates (a report can list several gates). Combined with any explicit
     // "<X> gate" already found above.
@@ -2233,6 +2299,13 @@ pub fn analyze_ctx(
         if denied.contains(&r.to_lowercase()) {
             continue;
         }
+        // An over-glued blob whose every word already belongs to a shorter candidate we've
+        // surfaced (a single-space kill-list "A B C D System", each name found by the known
+        // cache) plus system tokens adds nothing — and the final sub-phrase drop would let it
+        // EVICT those clean names. Skip it so the individual pilots survive.
+        if run_covered_by_pilots(&r, &pilots, systems) {
+            continue;
+        }
         // A loose blob that is just a CONFIRMED pilot name extended by a system/code token
         // ("Ruston Shackleford B-3QPD") is "name + location", not one held name. Don't add the
         // over-glued blob — it would only hold the system inside the name and (being longer)
@@ -2298,6 +2371,17 @@ pub fn analyze_ctx(
                 let mut anchor = false; // a system/ship/structure confirming this is intel, not chat
                 for seg in &segments {
                     let lc = seg.to_lowercase();
+                    // A clean paste segment is ONE entity. A segment carrying a decorated count
+                    // ("+12") or built entirely of ship hulls ("kikis flycatcher kirin") is
+                    // hand-typed intel, not a pasted name — bail to normal parsing so the count
+                    // and each hull are detected instead of being glued into a pilot blob.
+                    let seg_words: Vec<&str> = seg.split_whitespace().collect();
+                    if (seg_words.len() > 1 && seg_words.first().is_some_and(|w| is_decorated_count(w)))
+                        || (seg_words.len() > 1
+                            && seg_words.iter().all(|w| ship_of(&w.to_lowercase(), ship_index).is_some()))
+                    {
+                        return None;
+                    }
                     let is_system = (looks_like_system_code(seg)
                         && !is_code_lookalike_name(seg, systems))
                         || resolve(systems, seg).is_some();
@@ -6096,6 +6180,157 @@ mod tests {
             .iter()
             .map(|(n, id)| (n.to_lowercase(), (*id, n.to_string())))
             .collect()
+    }
+
+    /// Volltz's WYF8-8 line: five pilots followed by the system token. The single-space list
+    /// (a known-cache kill-list) must not collapse its five confirmed names into one unresolvable
+    /// mega-blob, and the double-space paste must surface each — both plus the WYF8-8 system.
+    #[test]
+    fn wyf8_kill_list_keeps_all_five_pilots() {
+        let s = systems_with(&[("wyf8-8", "WYF8-8", 30002126, -0.4)]);
+        let reals =
+            ["BoneChilling Chelien", "Gonzilla", "Krombopulous Jaynara", "Rollboy", "ShadowClown-Z"];
+        let known: std::collections::HashMap<String, i64> =
+            reals.iter().enumerate().map(|(i, r)| (r.to_lowercase(), i as i64 + 1)).collect();
+        // Both the in-game double-space paste and a single-space typed list.
+        for line in [
+            "BoneChilling Chelien  Gonzilla  Krombopulous Jaynara  Rollboy  ShadowClown-Z  WYF8-8",
+            "BoneChilling Chelien Gonzilla Krombopulous Jaynara Rollboy ShadowClown-Z WYF8-8",
+        ] {
+            let r = analyze(line, &s, &noships(), &known, 1, "ch", "Volltz");
+            let (pilots, sysd, _gates) = resolve_report(&r, &reals, &s);
+            for name in reals {
+                assert!(
+                    pilots.iter().any(|p| p.eq_ignore_ascii_case(name)),
+                    "{line:?}: pilot {name:?} dropped: {pilots:?}",
+                );
+            }
+            assert_eq!(pilots.len(), 5, "{line:?}: expected exactly five pilots: {pilots:?}");
+            assert_eq!(sysd, vec!["WYF8-8".to_string()], "{line:?}: system: {sysd:?}");
+        }
+    }
+
+    /// Amending a WYF8-8 sighting with a second message about the same system unions the pilot
+    /// sets — no name from either message is dropped.
+    #[test]
+    fn wyf8_amend_unions_pilots() {
+        let s = systems_with(&[("wyf8-8", "WYF8-8", 30002126, -0.4)]);
+        let sys = vec![DetectedSystem { id: 30002126, name: "WYF8-8".into(), security: -0.4 }];
+        let mut state = IntelState::default();
+        state.push(IntelReport {
+            pilots: vec!["Krombopulous Jaynara".into(), "Rollboy".into()],
+            systems: sys.clone(),
+            reporter: "Volltz".into(),
+            received: 1,
+            text: "Krombopulous Jaynara Rollboy WYF8-8".into(),
+            ..Default::default()
+        });
+        let second = IntelReport {
+            pilots: vec!["BoneChilling Chelien".into(), "Gonzilla".into(), "ShadowClown-Z".into()],
+            systems: sys,
+            reporter: "Volltz".into(),
+            received: 10,
+            text: "BoneChilling Chelien Gonzilla ShadowClown-Z WYF8-8".into(),
+            ..Default::default()
+        };
+        assert!(state.try_amend(&second, 60, &s), "second WYF8-8 message should amend the first");
+        for name in
+            ["Krombopulous Jaynara", "Rollboy", "BoneChilling Chelien", "Gonzilla", "ShadowClown-Z"]
+        {
+            assert!(
+                state.reports[0].pilots.iter().any(|p| p.eq_ignore_ascii_case(name)),
+                "amend dropped {name:?}: {:?}",
+                state.reports[0].pilots
+            );
+        }
+    }
+
+    /// A wormhole connection to Thera named AFTER a real system ("<Sys> Thera hole", "wh to
+    /// Thera") must keep the real system as the primary location — Thera is a wh destination
+    /// reference, not where the activity is — and must not become a bogus gate. Thera is still
+    /// the primary when it genuinely IS the sole location.
+    #[test]
+    fn thera_wormhole_ref_does_not_override_primary() {
+        // Rancer (1) adjacent to Jita (2); Thera not adjacent to anything.
+        let by_name = [
+            ("rancer", "Rancer", 1i64, 0.4),
+            ("jita", "Jita", 2, 0.9),
+            ("thera", "Thera", 31000005, -1.0),
+            ("c-j6mt", "C-J6MT", 5, -0.6),
+        ]
+        .into_iter()
+        .map(|(k, n, id, sec)| {
+            (k.to_string(), SystemInfo { id, name: n.to_string(), security: sec, constellation: String::new(), region: String::new(), faction: String::new() })
+        })
+        .collect();
+        let adjacency = [(1i64, vec![2i64]), (2, vec![1])].into_iter().collect();
+        let s = Systems::new(by_name, adjacency);
+        // The real system stays primary; Thera is neither primary nor a gate.
+        for (line, primary) in [
+            ("Rancer Thera hole", "Rancer"),
+            ("Jita Thera hole", "Jita"),
+            ("Rancer wh to Thera", "Rancer"),
+            ("3 reds Rancer Thera hole", "Rancer"),
+            ("C-J Thera hole", "C-J6MT"),
+            // "Thera hole" first, real system after: the real system is still the location.
+            ("Thera hole Rancer", "Rancer"),
+        ] {
+            let r = analyze(line, &s, &noships(), &noknown(), 1, "ch", "x");
+            let (_p, sysd, gates) = resolve_report(&r, &[], &s);
+            assert_eq!(sysd, vec![primary.to_string()], "{line:?}: primary system: {sysd:?}");
+            assert!(!gates.iter().any(|g| g.eq_ignore_ascii_case("Thera")), "{line:?}: Thera became a gate: {gates:?}");
+            assert!(matches!(r.wh_dest, Some(crate::wormholes::DestClass::Thera)), "{line:?}: wh_dest: {:?}", r.wh_dest);
+        }
+        // Thera as the genuine, sole location is still detected as the primary system.
+        let r = analyze("hostiles in Thera camped", &s, &noships(), &noknown(), 1, "ch", "x");
+        let (_p, sysd, _g) = resolve_report(&r, &[], &s);
+        assert_eq!(sysd, vec!["Thera".to_string()], "genuine Thera location: {sysd:?}");
+    }
+
+    /// A system/gate code that also matches an inactive character ("UALX", both a system and a
+    /// stale cached name) resolves to the SYSTEM, never a pilot — whether the character is active
+    /// or demoted for inactivity.
+    #[test]
+    fn system_code_matching_inactive_char_is_the_system() {
+        let s = systems_with(&[("ualx", "UALX", 30009003, -0.5), ("dt-", "DT-", 30009004, -0.5)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("ualx".to_string(), 9i64)].into_iter().collect();
+        for denied_ualx in [false, true] {
+            let denied: std::collections::HashSet<String> =
+                if denied_ualx { ["ualx".to_string()].into() } else { Default::default() };
+            let r = analyze_ctx(
+                "DT- gate to UALX camped", &s, &noships(), &known, 1, "ch", "x", None, &[], &denied,
+            );
+            assert!(!has_pilot_token(&r.pilots, "UALX"), "UALX leaked as a pilot: {:?}", r.pilots);
+            assert!(r.systems.iter().any(|d| d.name == "UALX"), "UALX not the system: {:?}", r.systems);
+            assert!(r.camp, "camp keyword should still fire: {:?}", r.text);
+        }
+    }
+
+    /// st0rkant's X5-0EM line: a pasted system + pasted pilot + a hand-typed "+count ships" tail.
+    /// The tail must NOT be glued into a pilot blob (which would drop the pilot AND mask the hulls)
+    /// — the pilot, the system, and every hull (incl. the "kikis" -> Kikimora nickname) resolve.
+    #[test]
+    fn x50em_count_and_ships_after_pilot_all_detected() {
+        let s = systems_with(&[("x5-0em", "X5-0EM", 30000777, -0.5)]);
+        let ships: std::collections::HashMap<String, (i64, String)> = [
+            ("kiki".to_string(), (49711i64, "Kikimora".to_string())),
+            ("flycatcher".to_string(), (22464i64, "Flycatcher".to_string())),
+            ("kirin".to_string(), (37460i64, "Kirin".to_string())),
+        ]
+        .into_iter()
+        .collect();
+        let r = analyze("X5-0EM  dix otto  +12 kikis flycatcher kirin", &s, &ships, &noknown(), 1, "ch", "st0rkant");
+        // Every hull is detected (the ship words are not masked inside a pilot blob).
+        for hull in ["Kikimora", "Flycatcher", "Kirin"] {
+            assert!(r.ships.iter().any(|sh| sh.name == hull), "hull {hull} missing: {:?}", r.ships);
+        }
+        // The named pilot plus the "+12" more (named + N convention).
+        assert_eq!(r.count, Some(13), "count: {:?}", r.count);
+        // The pilot resolves and the system is X5-0EM.
+        let (pilots, sysd, _g) = resolve_report(&r, &["dix otto"], &s);
+        assert_eq!(pilots, vec!["dix otto".to_string()], "pilots: {pilots:?}");
+        assert_eq!(sysd, vec!["X5-0EM".to_string()], "system: {sysd:?}");
     }
 
     #[test]
