@@ -41,6 +41,24 @@ impl PilotCache {
         self.resolved.get(&name.to_lowercase()).copied()
     }
 
+    /// Ids to show as resolved pilots on a card: ESI-confirmed AND not demoted-for-inactivity.
+    /// Also re-queues any still-pending name so a visible card keeps resolving (fixes stuck "...").
+    pub fn display_ids<'a>(&mut self, names: impl Iterator<Item = &'a str>) -> std::collections::HashMap<String, i64> {
+        let mut out = std::collections::HashMap::new();
+        for name in names {
+            let lw = name.to_lowercase();
+            match self.resolved.get(&lw).copied() {
+                Some(Some(id)) if !self.demoted.contains(&lw) => {
+                    out.insert(name.to_string(), id);
+                }
+                Some(Some(_)) => {}       // demoted: hide
+                Some(None) => {}          // ESI says not a character
+                None => self.queue(name), // pending: keep it resolving
+            }
+        }
+        out
+    }
+
     /// Queue a candidate name for resolution if we haven't seen it.
     pub fn queue(&mut self, name: &str) {
         let lw = name.to_lowercase();
@@ -266,7 +284,7 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
             // LIFO: resolve the most recently seen names first (current intel matters
             // more than a stale backlog). 200/batch stays under ESI's limit + timeout.
             let batch: Vec<String> = {
-                let mut c = cache.lock().unwrap();
+                let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
                 c.expire_negatives(); // re-query verdicts older than NEG_TTL
                 (0..200).map_while(|_| c.queue.pop_back()).collect()
             };
@@ -277,7 +295,7 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
             let result = resolve_batch(&client, &batch);
             let store = crate::store::Store::open().ok();
             {
-                let mut c = cache.lock().unwrap();
+                let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(chars) = &result {
                     let ok = batch.iter().filter(|n| chars.contains_key(&n.to_lowercase())).count();
                     eprintln!("[pilot] resolved {}/{} (queue ~{})", ok, batch.len(), c.queue.len());
@@ -387,6 +405,30 @@ mod tests {
         c.expire_negatives();
         assert_eq!(c.get("real keyword"), Some(None));
         assert_eq!(c.get("fixture"), Some(None));
+    }
+
+    #[test]
+    fn display_ids_filters_and_requeues() {
+        let mut c = PilotCache::default();
+        c.resolved.insert("real pilot".into(), Some(42));
+        c.resolved.insert("demoted pilot".into(), Some(7));
+        c.resolved.insert("not a char".into(), None);
+        c.set_demoted(std::collections::HashSet::from(["demoted pilot".to_string()]));
+
+        let names = ["Real Pilot", "Demoted Pilot", "Not A Char", "Pending Pilot"];
+        let out = c.display_ids(names.iter().copied());
+
+        // Confirmed, non-demoted name shows with its id.
+        assert_eq!(out.get("Real Pilot"), Some(&42));
+        // Demoted, not-a-character, and pending names are all omitted.
+        assert!(!out.contains_key("Demoted Pilot"));
+        assert!(!out.contains_key("Not A Char"));
+        assert!(!out.contains_key("Pending Pilot"));
+        assert_eq!(out.len(), 1);
+
+        // The pending name was re-queued so a visible card keeps resolving.
+        assert!(c.queued.contains("pending pilot"));
+        assert!(c.queue.iter().any(|n| n == "Pending Pilot"));
     }
 
     #[test]

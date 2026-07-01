@@ -1507,14 +1507,8 @@ impl SpaiApp {
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
         let resolved_pilots: std::collections::HashMap<String, i64> = {
-            let cache = self.pilots.lock().unwrap();
-            feed.iter()
-                .flat_map(|(r, _)| r.pilots.iter())
-                .filter_map(|n| match cache.get(n) {
-                    Some(Some(id)) => Some((n.clone(), id)),
-                    _ => None,
-                })
-                .collect()
+            let mut cache = self.pilots.lock().unwrap();
+            cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
         };
         let status = self.system_status.lock().unwrap().clone();
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
@@ -3495,15 +3489,8 @@ impl SpaiApp {
             .collect();
         // Pilot names confirmed as real characters (by the background resolver).
         let resolved_pilots: std::collections::HashMap<String, i64> = {
-            let cache = self.pilots.lock().unwrap();
-            matches
-                .iter()
-                .flat_map(|r| r.pilots.iter())
-                .filter_map(|name| match cache.get(name) {
-                    Some(Some(id)) => Some((name.clone(), id)),
-                    _ => None,
-                })
-                .collect()
+            let mut cache = self.pilots.lock().unwrap();
+            cache.display_ids(matches.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()))
         };
         let mut action: Option<IntelClick> = None;
         let ttl = self.settings.intel_ttl_secs;
@@ -3610,15 +3597,8 @@ impl SpaiApp {
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ids.iter().map(|id| (*id, self.ship_roles_cached(*id))).collect();
         let resolved_pilots: std::collections::HashMap<String, i64> = {
-            let cache = self.pilots.lock().unwrap();
-            reports
-                .iter()
-                .flat_map(|r| r.pilots.iter())
-                .filter_map(|name| match cache.get(name) {
-                    Some(Some(id)) => Some((name.clone(), id)),
-                    _ => None,
-                })
-                .collect()
+            let mut cache = self.pilots.lock().unwrap();
+            cache.display_ids(reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()))
         };
         let last_ship = build_last_ship(reports);
         let kc = self.kill_cache.clone();
@@ -6809,14 +6789,8 @@ impl SpaiApp {
         let resolved_pilots: std::collections::HashMap<String, i64> = if feed.is_empty() {
             Default::default()
         } else {
-            let cache = self.pilots.lock().unwrap();
-            feed.iter()
-                .flat_map(|(r, _)| r.pilots.iter())
-                .filter_map(|n| match cache.get(n) {
-                    Some(Some(id)) => Some((n.clone(), id)),
-                    _ => None,
-                })
-                .collect()
+            let mut cache = self.pilots.lock().unwrap();
+            cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
         };
         let status = if feed.is_empty() {
             Default::default()
@@ -11336,15 +11310,8 @@ impl SpaiApp {
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
         let resolved_pilots: std::collections::HashMap<String, i64> = {
-            let cache = self.pilots.lock().unwrap();
-            sys_reports
-                .iter()
-                .flat_map(|r| r.pilots.iter())
-                .filter_map(|name| match cache.get(name) {
-                    Some(Some(pid)) => Some((name.clone(), pid)),
-                    _ => None,
-                })
-                .collect()
+            let mut cache = self.pilots.lock().unwrap();
+            cache.display_ids(sys_reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()))
         };
         let status_snapshot = self.system_status.lock().unwrap().clone();
         let mut intel_click: Option<IntelClick> = None;
