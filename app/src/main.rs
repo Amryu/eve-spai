@@ -22,6 +22,7 @@ mod chatlog;
 mod doctrines;
 mod dscan;
 mod esi;
+mod esilog;
 mod kills;
 mod factions;
 mod gamelog;

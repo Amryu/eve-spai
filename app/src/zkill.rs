@@ -806,14 +806,17 @@ fn fetch_killmail_detail(
     id: i64,
     hash: &str,
 ) -> Option<Killmail> {
-    client
-        .get(format!("{ESI}/killmails/{id}/{hash}/"))
-        .send()
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .ok()
+    let resp = client.get(format!("{ESI}/killmails/{id}/{hash}/")).send().ok()?;
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        crate::esilog::record(
+            "killmails detail non-2xx",
+            &format!("status: {status}\nkill id: {id}\nhash: {hash}\nbody:\n{body}"),
+        );
+        return None;
+    }
+    serde_json::from_str(&body).ok()
 }
 
 /// Decide whether to (re)backfill `system` at `now`, recording the decision so the same system
@@ -979,6 +982,16 @@ fn resolve_names_batch(
             let mid = ids.len() / 2;
             resolve_names_batch(client, &ids[..mid], names);
             resolve_names_batch(client, &ids[mid..], names);
+        }
+        // Any other non-2xx (a lone 404, rate-limit, 5xx): the ids stay "Unknown". Log the raw
+        // status + body so an unexpected ESI failure on the name path is diagnosable.
+        Ok(resp) if !resp.status().is_success() => {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            crate::esilog::record(
+                "universe/names non-2xx",
+                &format!("status: {status}\nbatch size: {}\nbody:\n{body}", ids.len()),
+            );
         }
         _ => {}
     }

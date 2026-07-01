@@ -361,13 +361,32 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
     }
     let resp = match client.post(ESI_IDS).json(names).send() {
         Ok(r) => r,
-        Err(_) => return None, // network / timeout: transient, re-queue the whole batch
+        Err(e) => {
+            // network / timeout: transient, re-queue the whole batch
+            crate::esilog::record(
+                "universe/ids network error",
+                &format!("error: {e}\nbatch size: {}", names.len()),
+            );
+            return None;
+        }
     };
+    let status = resp.status();
+    // Read the raw body as text FIRST, so the EXACT bytes can be logged even on a 200 that yields
+    // zero matches (the "resolved 0/200" mystery); JSON is parsed from this text below.
+    let body = resp.text().unwrap_or_default();
     // ESI returns 400 for the WHOLE batch if any single name is invalid (a parser fragment, a
     // too-short/odd token) or the batch is too large. Split to isolate the offender so one bad
     // token can't stall every other valid name in the batch forever (this is what left real
     // players stuck on the "..." animation).
-    if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+    if status == reqwest::StatusCode::BAD_REQUEST {
+        crate::esilog::record(
+            "universe/ids 400",
+            &format!(
+                "status: {status}\nbatch size: {}\nnames (first 15): {:?}\nbody:\n{body}",
+                names.len(),
+                name_sample(names),
+            ),
+        );
         if names.len() > 1 {
             let mid = names.len() / 2;
             let a = resolve_batch(client, &names[..mid]);
@@ -386,13 +405,22 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
         eprintln!("[pilot] ESI rejected name {:?} (400); marking unresolvable", names.first());
         return Some(HashMap::new());
     }
-    let Some(v) = resp
-        .error_for_status()
-        .ok()
-        .and_then(|r| r.json::<serde_json::Value>().ok())
-    else {
+    if !status.is_success() {
+        // other HTTP error (rate limit 420, 5xx): transient, re-queue — log the raw body.
+        crate::esilog::record(
+            "universe/ids non-2xx",
+            &format!(
+                "status: {status}\nbatch size: {}\nnames (first 15): {:?}\nbody:\n{body}",
+                names.len(),
+                name_sample(names),
+            ),
+        );
         eprintln!("[pilot] ESI /universe/ids request failed for {} names; left unresolved", names.len());
-        return None; // other HTTP error (rate limit, 5xx): transient, re-queue
+        return None;
+    }
+    let Some(v) = serde_json::from_str::<serde_json::Value>(&body).ok() else {
+        eprintln!("[pilot] ESI /universe/ids request failed for {} names; left unresolved", names.len());
+        return None; // 200 with an unparseable body: transient, re-queue
     };
     let mut out = HashMap::new();
     {
@@ -406,7 +434,24 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
             }
         }
     }
+    // A 200 that matched ZERO characters for a non-trivial batch is the "resolved 0/200" mystery —
+    // log the raw body so the exact ESI response can be inspected.
+    if out.is_empty() && names.len() > 5 {
+        crate::esilog::record(
+            "universe/ids 200 zero matches",
+            &format!(
+                "batch size: {}\nnames (first 15): {:?}\nbody:\n{body}",
+                names.len(),
+                name_sample(names),
+            ),
+        );
+    }
     Some(out)
+}
+
+/// First ~15 names of a batch, for a readable log sample.
+fn name_sample(names: &[String]) -> Vec<&String> {
+    names.iter().take(15).collect()
 }
 
 #[cfg(test)]
