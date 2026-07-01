@@ -74,14 +74,20 @@ impl ActivityCache {
 /// Phase 2 demotion decision for one confirmed pilot. Returns `true` = DEMOTE for inactivity.
 ///
 /// Order of precedence (each rule KEEPs, i.e. returns `false`):
-/// 1. Young-account exemption: a known birthday younger than 14 days → KEEP (a fresh alt has
-///    no zKill history yet, so absence of kills doesn't mean it's stale).
+/// 1. Young-account exemption: a known birthday younger than the activity window (~3 months) → KEEP.
+///    Inactivity is judged over the last 3 calendar months, but a character can't have accrued 3
+///    months of kills/losses if it hasn't existed that long, so absence of recent activity doesn't
+///    mean it's stale. (A 14-day grace was too short: a real new pilot 15-90 days old that just
+///    hasn't fought yet was being falsely demoted.)
 /// 2. Recent zKill activity (`active_recent`) → KEEP.
 /// 3. Multi-system revival (`revived`, from the sightings index) supersedes inactivity → KEEP.
 /// 4. Otherwise → DEMOTE.
 pub fn demote_decision(active_recent: bool, birthday: Option<i64>, now: i64, revived: bool) -> bool {
-    if birthday.is_some_and(|b| now - b < 14 * 86400) {
-        return false; // young-account exemption
+    // Match the `active_recent` lookback (~3 calendar months): a character younger than this
+    // hasn't had a full window to be active, so it must not be demoted for inactivity.
+    const YOUNG_ACCOUNT_SECS: i64 = 90 * 86400;
+    if birthday.is_some_and(|b| now - b < YOUNG_ACCOUNT_SECS) {
+        return false; // too young to have a full activity window
     }
     if active_recent {
         return false; // recent kills/losses
@@ -252,13 +258,17 @@ mod tests {
     #[test]
     fn demote_decision_matrix() {
         let now = 1_700_000_000; // arbitrary "now"
-        let old = Some(now - 30 * 86400); // 30-day-old account (past the young exemption)
+        let old = Some(now - 120 * 86400); // 120-day-old account (past the 90-day grace)
         let young = Some(now - 3 * 86400); // 3-day-old account
+        let midage = Some(now - 30 * 86400); // 30 days: past 14d but within the 90d grace
 
         // Inactive + not revived + old account → DEMOTE.
         assert!(demote_decision(false, old, now, false));
         // Young account is exempt even when inactive + not revived → KEEP.
         assert!(!demote_decision(false, young, now, false));
+        // A 30-day account can't have 3 months of activity, so it is exempt → KEEP (this is the
+        // Agent-Benson case the 14-day grace was wrongly demoting).
+        assert!(!demote_decision(false, midage, now, false));
         // Recent zKill activity → KEEP (even an old account).
         assert!(!demote_decision(true, old, now, false));
         // Inactive but revived by multi-system roaming → KEEP.
