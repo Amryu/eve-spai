@@ -34,6 +34,18 @@ pub struct PilotCache {
     demoted: std::collections::HashSet<String>,
 }
 
+/// Whether a candidate could be a real EVE character name: 1 to 3 words and 3 to 37 chars.
+/// Over-glued parser runs (4+ words) and over-long blobs can never be a character, so they are
+/// never queried against ESI and never left pending on the "..." animation.
+fn plausible_character_name(name: &str) -> bool {
+    let t = name.trim();
+    let len = t.chars().count();
+    if !(3..=37).contains(&len) {
+        return false;
+    }
+    (1..=3).contains(&t.split_whitespace().count())
+}
+
 impl PilotCache {
     /// Verdict for a name: `Some(Some(id))` = character, `Some(None)` = not a
     /// character, `None` = not resolved yet.
@@ -65,6 +77,15 @@ impl PilotCache {
         if self.resolved.contains_key(&lw) || self.queued.contains(&lw) {
             return;
         }
+        // EVE character names are at most 3 words and 37 chars. An over-glued parser run
+        // ("Le Van Duc Nguyen Van Minh ...") can never be a character, so record it as a PERMANENT
+        // negative instead of hammering ESI and leaving it stuck on the "..." animation; the parser
+        // then covers/splits it into its plausible sub-names. This also stops the junk flood that
+        // was starving real short names of resolution.
+        if !plausible_character_name(name) {
+            self.resolved.insert(lw, None); // no neg_at entry => never expires (permanently not a name)
+            return;
+        }
         self.queued.insert(lw);
         self.queue.push_back(name.to_owned());
         // Bound the backlog (drop the oldest, least-relevant names) so a busy channel
@@ -93,9 +114,13 @@ impl PilotCache {
         self.queue.push_back(name.to_owned());
     }
 
-    /// Pre-load the known (persisted) pilot names so they're recognised at once.
+    /// Pre-load the known (persisted) pilot names so they're recognised at once. Skips any
+    /// poisoned over-length entry that a bad earlier resolution may have persisted.
     pub fn preload(&mut self, known: &HashMap<String, i64>) {
         for (lc, id) in known {
+            if !plausible_character_name(lc) {
+                continue;
+            }
             self.resolved.entry(lc.clone()).or_insert(Some(*id));
         }
     }
@@ -694,5 +719,25 @@ mod tests {
         // 1-2 char spans are filtered (EVE names are >= 3 chars).
         assert_eq!(name_windows("abc de"), vec!["abc", "abc de"]);
         assert!(name_windows("x").is_empty());
+    }
+
+    #[test]
+    fn implausible_names_become_permanent_negatives_never_queued() {
+        let mut c = PilotCache::default();
+        // A 4+ word over-glued run: never a character -> immediate negative, not queued, no "...".
+        let junk = "Le Van Duc Nguyen Van Minh Phan Van Long";
+        c.queue(junk);
+        assert_eq!(c.get(junk), Some(None));
+        assert!(c.queue.is_empty(), "must not be queued for ESI");
+        // A real 2-word name is queued and stays pending until the resolver answers.
+        c.queue("Agent Benson");
+        assert_eq!(c.get("Agent Benson"), None);
+        assert_eq!(c.queue.len(), 1);
+        // plausibility bounds.
+        assert!(plausible_character_name("Bob"));
+        assert!(plausible_character_name("Ingrid Dubois"));
+        assert!(plausible_character_name("Bob J Smith"));
+        assert!(!plausible_character_name("a")); // too short
+        assert!(!plausible_character_name("one two three four")); // 4 words
     }
 }
