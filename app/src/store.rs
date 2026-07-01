@@ -156,10 +156,11 @@ CREATE TABLE IF NOT EXISTS kill_details (
 -- Per-character zKill-activity + account-age cache (4h TTL on active_recent; birthday
 -- is fetched once). Persisted so a restart doesn't re-storm zKill. Consumed in Phase 2.
 CREATE TABLE IF NOT EXISTS pilot_activity (
-    char_id       INTEGER PRIMARY KEY,
-    active_recent INTEGER NOT NULL,
-    birthday      INTEGER,
-    fetched_at    INTEGER NOT NULL
+    char_id          INTEGER PRIMARY KEY,
+    active_recent    INTEGER NOT NULL,
+    birthday         INTEGER,
+    last_corp_change INTEGER,
+    fetched_at       INTEGER NOT NULL
 );
 ";
 
@@ -254,6 +255,8 @@ impl Store {
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN z2d REAL", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_signature TEXT", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
+        // Additive column on the pilot activity cache (NULL for rows written pre-upgrade).
+        let _ = conn.execute("ALTER TABLE pilot_activity ADD COLUMN last_corp_change INTEGER", []);
         migrate_plaintext_tokens(&conn);
         Ok(Self {
             conn,
@@ -977,28 +980,32 @@ impl Store {
         char_id: i64,
         active_recent: bool,
         birthday: Option<i64>,
+        last_corp_change: Option<i64>,
         fetched_at: i64,
     ) {
         let _ = self.conn.execute(
-            "INSERT OR REPLACE INTO pilot_activity(char_id, active_recent, birthday, fetched_at)
-             VALUES(?1, ?2, ?3, ?4)",
-            params![char_id, active_recent as i64, birthday, fetched_at],
+            "INSERT OR REPLACE INTO
+                pilot_activity(char_id, active_recent, birthday, last_corp_change, fetched_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![char_id, active_recent as i64, birthday, last_corp_change, fetched_at],
         );
     }
 
-    /// Load all persisted activity rows: (char_id, active_recent, birthday, fetched_at).
-    pub fn pilot_activity(&self) -> Vec<(i64, bool, Option<i64>, i64)> {
+    /// Load all persisted activity rows:
+    /// (char_id, active_recent, birthday, last_corp_change, fetched_at).
+    pub fn pilot_activity(&self) -> Vec<(i64, bool, Option<i64>, Option<i64>, i64)> {
         let mut out = Vec::new();
-        if let Ok(mut stmt) = self
-            .conn
-            .prepare("SELECT char_id, active_recent, birthday, fetched_at FROM pilot_activity")
-        {
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT char_id, active_recent, birthday, last_corp_change, fetched_at
+             FROM pilot_activity",
+        ) {
             if let Ok(rows) = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)? != 0,
                     r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, i64>(4)?,
                 ))
             }) {
                 out.extend(rows.flatten());

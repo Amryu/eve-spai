@@ -6,7 +6,8 @@
 //! restart doesn't re-storm zKill.
 //!
 //! Note: `active_recent` is re-fetched every `ACTIVITY_TTL` (4h); the birthday is
-//! immutable, so it is fetched ONCE and then kept across refreshes.
+//! immutable and the most-recent corporation change (`last_corp_change`) changes rarely,
+//! so both are fetched ONCE and then kept across refreshes.
 //!
 //! Phase 2 will consume this (e.g. to demote stale/young pilots); Phase 1 only
 //! gathers + persists it and changes no displayed intel.
@@ -29,6 +30,9 @@ pub struct Activity {
     pub active_recent: bool,
     /// Account creation time (unix seconds), once resolved. Immutable.
     pub birthday: Option<i64>,
+    /// Most recent corporation change (unix seconds), or None if unknown. A recent move
+    /// means the character is active, so it must not be demoted for lack of kills.
+    pub last_corp_change: Option<i64>,
 }
 
 #[derive(Default)]
@@ -62,10 +66,11 @@ impl ActivityCache {
         }
     }
 
-    /// Load persisted rows (char_id, active_recent, birthday, fetched_at) on startup.
-    pub fn preload(&mut self, rows: Vec<(i64, bool, Option<i64>, i64)>) {
-        for (id, active_recent, birthday, fetched_at) in rows {
-            self.map.insert(id, Activity { active_recent, birthday });
+    /// Load persisted rows (char_id, active_recent, birthday, last_corp_change, fetched_at)
+    /// on startup.
+    pub fn preload(&mut self, rows: Vec<(i64, bool, Option<i64>, Option<i64>, i64)>) {
+        for (id, active_recent, birthday, last_corp_change, fetched_at) in rows {
+            self.map.insert(id, Activity { active_recent, birthday, last_corp_change });
             self.fetched_at.insert(id, fetched_at);
         }
     }
@@ -80,9 +85,17 @@ impl ActivityCache {
 ///    mean it's stale. (A 14-day grace was too short: a real new pilot 15-90 days old that just
 ///    hasn't fought yet was being falsely demoted.)
 /// 2. Recent zKill activity (`active_recent`) → KEEP.
-/// 3. Multi-system revival (`revived`, from the sightings index) supersedes inactivity → KEEP.
-/// 4. Otherwise → DEMOTE.
-pub fn demote_decision(active_recent: bool, birthday: Option<i64>, now: i64, revived: bool) -> bool {
+/// 3. Recent corporation change (`last_corp_change` within the activity window) → KEEP: a
+///    character that just moved corp is active, even without recent kills.
+/// 4. Multi-system revival (`revived`, from the sightings index) supersedes inactivity → KEEP.
+/// 5. Otherwise → DEMOTE.
+pub fn demote_decision(
+    active_recent: bool,
+    birthday: Option<i64>,
+    now: i64,
+    revived: bool,
+    last_corp_change: Option<i64>,
+) -> bool {
     // Match the `active_recent` lookback (~3 calendar months): a character younger than this
     // hasn't had a full window to be active, so it must not be demoted for inactivity.
     const YOUNG_ACCOUNT_SECS: i64 = 90 * 86400;
@@ -91,6 +104,9 @@ pub fn demote_decision(active_recent: bool, birthday: Option<i64>, now: i64, rev
     }
     if active_recent {
         return false; // recent kills/losses
+    }
+    if last_corp_change.is_some_and(|c| now - c < YOUNG_ACCOUNT_SECS) {
+        return false; // moved corp recently — still active
     }
     if revived {
         return false; // roaming widely right now — revival supersedes inactivity
@@ -182,18 +198,25 @@ pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
                     }
                 };
 
-                // Birthday: fetch once (immutable). Keep any already-known value.
-                let known_birthday = cache.lock().unwrap().map.get(&id).and_then(|a| a.birthday);
+                // Birthday + last corp change: fetch once, reuse any already-known value.
+                // (Both change rarely; re-fetching on the normal TTL would also be fine.)
+                let (known_birthday, known_corp) = {
+                    let c = cache.lock().unwrap();
+                    let a = c.map.get(&id);
+                    (a.and_then(|a| a.birthday), a.and_then(|a| a.last_corp_change))
+                };
                 let birthday = known_birthday.or_else(|| fetch_birthday(&client, id));
+                let last_corp_change =
+                    known_corp.or_else(|| fetch_last_corp_change(&client, id));
 
                 let now = chrono::Utc::now().timestamp();
                 {
                     let mut c = cache.lock().unwrap();
-                    c.map.insert(id, Activity { active_recent, birthday });
+                    c.map.insert(id, Activity { active_recent, birthday, last_corp_change });
                     c.fetched_at.insert(id, now);
                 }
                 if let Some(s) = &store {
-                    s.save_pilot_activity(id, active_recent, birthday, now);
+                    s.save_pilot_activity(id, active_recent, birthday, last_corp_change, now);
                 }
                 got = true;
                 std::thread::sleep(Duration::from_millis(300)); // be gentle on zKill
@@ -220,6 +243,43 @@ fn fetch_birthday(client: &reqwest::blocking::Client, id: i64) -> Option<i64> {
         .json()
         .ok()?;
     chrono::DateTime::parse_from_rfc3339(&c.birthday).ok().map(|dt| dt.timestamp())
+}
+
+/// NPC corporations (racial starter/school corps and other NPC corps) live in the classic
+/// 1,000,000-1,999,999 range; player corps are >= 2,000,000 (incl. the modern 98,xxx,xxx
+/// ranges). A move back to an NPC corp can be an automatic kick (disbanded/inactivity
+/// boot), not a sign of activity, so those are ignored.
+fn is_npc_corp(id: i64) -> bool {
+    id < 2_000_000
+}
+
+/// ESI corporation history → unix seconds of the most recent change INTO a player corp, or
+/// None when the character has only ever been in NPC corps (or on any parse failure).
+fn fetch_last_corp_change(client: &reqwest::blocking::Client, id: i64) -> Option<i64> {
+    let body: serde_json::Value = client
+        .get(format!(
+            "https://esi.evetech.net/latest/characters/{id}/corporationhistory/?datasource=tranquility"
+        ))
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()?;
+    latest_player_corp_change(&body)
+}
+
+/// Pure helper: from a corporationhistory JSON array of `{corporation_id, start_date}`,
+/// return the LATEST `start_date` (unix seconds) among entries joining a PLAYER corp.
+/// NPC-corp entries are ignored. Tolerates a missing/garbage/empty body (=> None).
+fn latest_player_corp_change(body: &serde_json::Value) -> Option<i64> {
+    let entries = body.as_array()?;
+    entries
+        .iter()
+        .filter(|e| e.get("corporation_id").and_then(|v| v.as_i64()).is_some_and(|c| !is_npc_corp(c)))
+        .filter_map(|e| e.get("start_date").and_then(|v| v.as_str()))
+        .filter_map(|s| chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp()))
+        .max()
 }
 
 #[cfg(test)]
@@ -262,21 +322,67 @@ mod tests {
         let young = Some(now - 3 * 86400); // 3-day-old account
         let midage = Some(now - 30 * 86400); // 30 days: past 14d but within the 90d grace
 
-        // Inactive + not revived + old account → DEMOTE.
-        assert!(demote_decision(false, old, now, false));
+        // Inactive + not revived + old account, no corp move → DEMOTE.
+        assert!(demote_decision(false, old, now, false, None));
         // Young account is exempt even when inactive + not revived → KEEP.
-        assert!(!demote_decision(false, young, now, false));
+        assert!(!demote_decision(false, young, now, false, None));
         // A 30-day account can't have 3 months of activity, so it is exempt → KEEP (this is the
         // Agent-Benson case the 14-day grace was wrongly demoting).
-        assert!(!demote_decision(false, midage, now, false));
+        assert!(!demote_decision(false, midage, now, false, None));
         // Recent zKill activity → KEEP (even an old account).
-        assert!(!demote_decision(true, old, now, false));
+        assert!(!demote_decision(true, old, now, false, None));
         // Inactive but revived by multi-system roaming → KEEP.
-        assert!(!demote_decision(false, old, now, true));
+        assert!(!demote_decision(false, old, now, true, None));
         // Unknown birthday, inactive, not revived → DEMOTE (no exemption to apply).
-        assert!(demote_decision(false, None, now, false));
+        assert!(demote_decision(false, None, now, false, None));
         // A young account that is ALSO active stays kept (exemption hit first; same result).
-        assert!(!demote_decision(true, young, now, false));
+        assert!(!demote_decision(true, young, now, false, None));
+
+        // Old, inactive, not revived, but changed PLAYER corp within 90 days → KEEP.
+        let recent_corp = Some(now - 10 * 86400);
+        assert!(!demote_decision(false, old, now, false, recent_corp));
+        // Old, inactive, not revived, corp change older than 90 days → DEMOTE.
+        let old_corp = Some(now - 200 * 86400);
+        assert!(demote_decision(false, old, now, false, old_corp));
+    }
+
+    #[test]
+    fn npc_corp_classification() {
+        assert!(is_npc_corp(1_000_166)); // a racial starter corp
+        assert!(is_npc_corp(1_999_999)); // top of the NPC range
+        assert!(!is_npc_corp(2_000_000)); // first player-corp id
+        assert!(!is_npc_corp(98_000_001)); // a modern player corp
+    }
+
+    #[test]
+    fn latest_corp_change_ignores_npc_kick() {
+        // Joined a player corp 30d ago, then kicked to a starter NPC corp 5d ago. The most
+        // recent PLAYER-corp change is the 30-day-ago join, NOT the NPC kick.
+        let body = serde_json::json!([
+            { "record_id": 1, "corporation_id": 98_000_001, "start_date": "2024-05-16T12:00:00Z" },
+            { "record_id": 2, "corporation_id": 1_000_166,  "start_date": "2024-06-10T12:00:00Z" },
+        ]);
+        let joined = chrono::DateTime::parse_from_rfc3339("2024-05-16T12:00:00Z").unwrap().timestamp();
+        assert_eq!(latest_player_corp_change(&body), Some(joined));
+
+        // Latest among multiple player-corp entries wins.
+        let body = serde_json::json!([
+            { "corporation_id": 98_000_001, "start_date": "2023-01-01T00:00:00Z" },
+            { "corporation_id": 98_000_002, "start_date": "2024-03-03T00:00:00Z" },
+            { "corporation_id": 98_000_003, "start_date": "2024-02-02T00:00:00Z" },
+        ]);
+        let latest = chrono::DateTime::parse_from_rfc3339("2024-03-03T00:00:00Z").unwrap().timestamp();
+        assert_eq!(latest_player_corp_change(&body), Some(latest));
+
+        // Only ever in NPC corps → None.
+        let body = serde_json::json!([
+            { "corporation_id": 1_000_166, "start_date": "2024-01-01T00:00:00Z" },
+        ]);
+        assert_eq!(latest_player_corp_change(&body), None);
+
+        // Missing / garbage / empty → None.
+        assert_eq!(latest_player_corp_change(&serde_json::json!([])), None);
+        assert_eq!(latest_player_corp_change(&serde_json::Value::Null), None);
     }
 
     #[test]

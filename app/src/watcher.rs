@@ -370,7 +370,13 @@ fn demote_pass(
                 continue; // not fetched yet → leave as-is (carry current state forward)
             };
             let revived = s.revived(name, now);
-            if crate::activity::demote_decision(a.active_recent, a.birthday, now, revived) {
+            if crate::activity::demote_decision(
+                a.active_recent,
+                a.birthday,
+                now,
+                revived,
+                a.last_corp_change,
+            ) {
                 demoted.insert(name.clone());
             } else {
                 demoted.remove(name);
