@@ -14178,6 +14178,13 @@ impl AlertEngine {
                     continue; // blacklist overrides any cached verdict
                 }
                 match cache.get(&p) {
+                    // Confirmed character, but DEMOTED for zKill inactivity (Phase 2): drop it from
+                    // the pilot list entirely. It is hidden from `resolved_pilots`, so if we kept it
+                    // in `r.pilots` the card's "resolving" check would treat it as still-pending and
+                    // animate "..." forever (the stuck-"..." bug).
+                    Some(Some(_)) if cache.is_demoted(&p) => {
+                        changed = true;
+                    }
                     // Confirmed character — keep as-is.
                     Some(Some(_)) => new_pilots.push(p),
                     // Still pending — keep showing it, and (re)queue the full name + its
