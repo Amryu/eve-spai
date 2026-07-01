@@ -257,6 +257,21 @@ impl Store {
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
         // Additive column on the pilot activity cache (NULL for rows written pre-upgrade).
         let _ = conn.execute("ALTER TABLE pilot_activity ADD COLUMN last_corp_change INTEGER", []);
+        // One-time: after the demotion-logic overhaul (90-day young-account grace, player-corp-change
+        // signal, and a true-90-day activity window), wipe the persisted activity/demotion cache once
+        // so every pilot is re-fetched and re-judged under the new rules instead of keeping a stale
+        // "demoted" verdict (which was wrongly hiding real, recently-active pilots).
+        let cleared: Option<String> = conn
+            .query_row("SELECT value FROM kv WHERE key = 'activity_cache_reset_v2'", [], |r| r.get(0))
+            .ok();
+        if cleared.is_none() {
+            let _ = conn.execute("DELETE FROM pilot_activity", []);
+            let _ = conn.execute(
+                "INSERT INTO kv (key, value) VALUES ('activity_cache_reset_v2', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = '1'",
+                [],
+            );
+        }
         migrate_plaintext_tokens(&conn);
         Ok(Self {
             conn,
