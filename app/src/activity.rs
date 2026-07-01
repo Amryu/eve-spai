@@ -114,14 +114,18 @@ pub fn demote_decision(
     true
 }
 
-/// `active_recent` from a zKill stats `months` object: true iff ANY month key within the
-/// last three calendar months (current month + the two prior, computed from `now`) has
-/// `shipsDestroyed + shipsLost > 0`. Tolerant of a missing/garbage `months` value.
+/// `active_recent` from a zKill stats `months` object: true iff ANY calendar month overlapping the
+/// last 90 days has `shipsDestroyed + shipsLost > 0`. Uses month buckets (zKill's granularity) but
+/// spans the full 90-day window - i.e. every month from the month of `now-90d` up to `now` - so a
+/// pilot who last fought 61-90 days ago (in a 4th calendar month) is still counted active. Slightly
+/// lenient at the boundary (counts the whole cutoff month), which errs toward keeping a pilot rather
+/// than demoting them. Tolerant of a missing/garbage `months` value.
 fn months_active_recent(months: &serde_json::Value, now: chrono::DateTime<chrono::Utc>) -> bool {
-    // The three "YYYYMM" keys to inspect (current month and the two before it).
-    let base = now.year() * 12 + (now.month() as i32 - 1);
-    for back in 0..3 {
-        let total = base - back;
+    let now_base = now.year() * 12 + (now.month() as i32 - 1);
+    let cutoff = now - chrono::Duration::days(90);
+    let cutoff_base = cutoff.year() * 12 + (cutoff.month() as i32 - 1);
+    let mut total = now_base;
+    while total >= cutoff_base {
         let (yy, mm) = (total / 12, total % 12 + 1);
         let key = format!("{yy:04}{mm:02}");
         if let Some(entry) = months.get(&key) {
@@ -131,6 +135,7 @@ fn months_active_recent(months: &serde_json::Value, now: chrono::DateTime<chrono
                 return true;
             }
         }
+        total -= 1;
     }
     false
 }
@@ -387,13 +392,17 @@ mod tests {
 
     #[test]
     fn month_window_crosses_year_boundary() {
-        // February 2024 → window is 202312, 202401, 202402.
+        // 2024-02-10 minus 90 days is 2023-11-12, so the window spans 202311..=202402.
         let now = chrono::DateTime::parse_from_rfc3339("2024-02-10T00:00:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
         let m = serde_json::json!({ "202312": { "shipsDestroyed": 1 } });
         assert!(months_active_recent(&m, now));
+        // November 2023 is now inside the 90-day window (cutoff month).
         let m = serde_json::json!({ "202311": { "shipsDestroyed": 1 } });
+        assert!(months_active_recent(&m, now));
+        // October 2023 is before the cutoff month → out of window.
+        let m = serde_json::json!({ "202310": { "shipsDestroyed": 1 } });
         assert!(!months_active_recent(&m, now));
     }
 }
