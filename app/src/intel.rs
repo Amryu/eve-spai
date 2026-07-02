@@ -974,6 +974,23 @@ fn trim_paste_location_tail(seg: &str) -> String {
     while words.len() >= 2 && is_decorated_count(words[words.len() - 1]) {
         words.pop();
     }
+    // Drop trailing intel keyword/status tags ("Ben Walker NV" → "Ben Walker", "… clr"): a paste
+    // segment can carry the reporter's status note glued to the pasted name. A token that is a
+    // stop word on its own and never a name component is that note, not part of the name — strip
+    // it so the name resolves (and the freed tag is read as its own status flag, e.g. no-visual).
+    // Name-capable words ("Clear", "Blue"), connectors ("of"), and initial/number suffixes are
+    // kept so a real name ending in one survives. This mirrors `extract_pilots`, which already
+    // rejects a Title-case run containing such a hard stop word — which is why the single-space
+    // form of the same line already parses correctly.
+    while words.len() >= 2 && {
+        let last = words[words.len() - 1];
+        is_pilot_stopword(last)
+            && !is_name_connector(last)
+            && !is_name_capable_stopword(last)
+            && !is_name_suffix(last)
+    } {
+        words.pop();
+    }
     match words
         .iter()
         .enumerate()
@@ -1447,6 +1464,39 @@ fn multiword_ships(
                     adv = len;
                     break;
                 }
+            }
+        }
+        i += adv;
+    }
+    out
+}
+
+/// Known MULTI-WORD solar-system names ("Sanctified Vidette" and the other Drifter
+/// wormhole systems built on Barbican/Conflux/Redoubt/Sentinel/Vidette). Almost every EVE
+/// system is a single token, so the parser treats systems as single tokens — but the few
+/// multi-word names would otherwise be read as a 2-word pilot. This scans adjacent word
+/// windows (longest first, non-overlapping) and keeps a window that EXACTLY matches a known
+/// system name (case-insensitive — `Systems::lookup` lower-cases). The full system set the
+/// app already loaded is the source of truth (no hard-coded list); a window only matches when
+/// it is a real multi-word system, so an unrelated 2-word pilot ("John Smith") is untouched.
+/// Returns (start_word, len, id, name), mirroring [`multiword_ships`].
+fn multiword_systems(text: &str, systems: &Systems) -> Vec<(usize, usize, i64, String)> {
+    let punct = |c: char| ",.;:!?\"()".contains(c);
+    let words: Vec<&str> = text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+    let mut out: Vec<(usize, usize, i64, String)> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let mut adv = 1;
+        // Longest window first (up to 4 words) so an "adjective complex" name wins over any
+        // shorter accidental prefix. A single-word system name can never match a >=2-word
+        // window (it has no space), so only a genuine multi-word system is picked up here.
+        let maxlen = 4.min(words.len() - i);
+        for len in (2..=maxlen).rev() {
+            let phrase = words[i..i + len].join(" ");
+            if let Some(info) = systems.lookup(&phrase) {
+                out.push((i, len, info.id, info.name.clone()));
+                adv = len;
+                break;
             }
         }
         i += adv;
@@ -2124,6 +2174,10 @@ pub fn analyze_ctx(
     // Multi-word hull names are ships, not 3-word pilot names — find and mask them
     // before pilot detection.
     let mw_ships = multiword_ships(text, ship_index, known_pilots);
+    // Known MULTI-WORD system names ("Sanctified Vidette") are masked before pilot detection —
+    // like a single-token system, a multi-word system name must never surface as a pilot. They
+    // are added to the detected-systems list after `detect_location` below.
+    let mw_systems = multiword_systems(text, systems);
     // Structure spans ("Cyno Beacon", "Keepstar") are masked too, so a structure word
     // is never also read as a pilot ("Beacon"). Asteroid/ice belt spans are masked the same way
     // so "Belt"/"Ice Belt" is a location badge, never a pilot.
@@ -2151,7 +2205,7 @@ pub fn analyze_ctx(
             spans.push((s, text.len()));
         }
         let mut blank: Vec<(usize, usize)> = Vec::new();
-        for (w, len, _, _) in &mw_ships {
+        for (w, len, _, _) in mw_ships.iter().chain(mw_systems.iter()) {
             for k in *w..(*w + *len).min(spans.len()) {
                 blank.push(spans[k]);
             }
@@ -2569,9 +2623,27 @@ pub fn analyze_ctx(
     // keyword suppression) so a system inside a lower-case name blob ("bob uitra") is held too.
     let name_tokens: std::collections::HashSet<String> =
         pilots.iter().flat_map(|p| p.split_whitespace()).map(|w| w.to_lowercase()).collect();
-    let (detected, gates, mut consumed) = detect_location(
+    let (mut detected, gates, mut consumed) = detect_location(
         &tokens, &lower_tokens, &name_tokens, systems, context_system, channel_regions,
     );
+    // Known multi-word system names ("Sanctified Vidette") were masked out of pilot detection
+    // above; add them as detected systems (their single tokens don't resolve alone, so
+    // `detect_location` couldn't have). Their words are consumed so they aren't also read as a
+    // hostile count or pilot.
+    {
+        let punct = |c: char| ",.;:!?\"()".contains(c);
+        let sys_words: Vec<&str> =
+            text.split_whitespace().map(|w| w.trim_matches(punct)).collect();
+        for (start, len, id, name) in &mw_systems {
+            if !detected.iter().any(|d| d.id == *id) {
+                let security = systems.info_of(*id).map_or(0.0, |i| i.security);
+                detected.push(DetectedSystem { id: *id, name: name.clone(), security });
+            }
+            for w in sys_words.iter().skip(*start).take(*len) {
+                consumed.push(w.to_lowercase());
+            }
+        }
+    }
 
     // NPC "diamond rats" and "anom/sig <code>" callouts: NPCs / anomaly ids, never pilots or
     // systems. Their words are consumed below so a "Diamond Rats" / "ABC-123" run can't surface
@@ -2617,6 +2689,56 @@ pub fn analyze_ctx(
         })
         .collect();
     ships.extend(reclassified);
+
+    // RELIABILITY GUARANTEE: a full hull name that is NOT a confirmed pilot must never be
+    // swallowed by a pilot-run/paste/+count heuristic. The general loop above skips any token
+    // held inside a multi-word pilot candidate (`pilot_span_tokens`) — correct when the whole
+    // blob is one real name, but WRONG when the blob mixes a CONFIRMED pilot with a leftover
+    // hull ("Bob Rifter", Bob known → pilot Bob + ship Rifter): the hull would be lost. So for
+    // every multi-word candidate that contains a confirmed-pilot word AND a leftover word that
+    // EXACTLY matches a known hull (case-insensitive, via `ship_of`), surface that hull here.
+    // The blob itself is still split into the confirmed name by the ESI cover downstream.
+    // A hull that is genuinely PART of a confirmed name ("Wolf E Kristjansson", "bovine worm")
+    // stays masked (all its words are confirmed); a fully-unconfirmed 2-word blob ("Sabre
+    // Smith", neither word cached) is left to the cover unchanged — no forced ship there.
+    {
+        // Tokens that belong to a confirmed pilot: a candidate whose whole name is in the known
+        // cache (or was quoted), plus any single word that is itself a known character.
+        let mut confirmed_tokens: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for p in &pilots {
+            let lc = p.to_lowercase();
+            if known_pilots.contains_key(&lc) || quoted.contains(&lc) {
+                confirmed_tokens.extend(p.split_whitespace().map(|w| w.to_lowercase()));
+            }
+        }
+        for w in pilots.iter().flat_map(|p| p.split_whitespace()) {
+            let lw = w.to_lowercase();
+            if known_pilots.contains_key(&lw) {
+                confirmed_tokens.insert(lw);
+            }
+        }
+        for p in &pilots {
+            let words: Vec<&str> = p.split_whitespace().collect();
+            if words.len() < 2 {
+                continue;
+            }
+            // Only fire when a confirmed pilot is present in the blob — that's the signal the
+            // blob is "pilot + leftover ship", not one ambiguous 2-word name pending ESI.
+            if !words.iter().any(|w| confirmed_tokens.contains(&w.to_lowercase())) {
+                continue;
+            }
+            for w in &words {
+                let lw = w.to_lowercase();
+                if confirmed_tokens.contains(&lw) || mw_words.contains(&lw) {
+                    continue;
+                }
+                if let Some((id, name)) = ship_of(&lw, ship_index) {
+                    add_ship(*id, name, &mut ships);
+                }
+            }
+        }
+    }
 
     // Scanning probes (Core/Combat Scanner Probe items + slang) are reported as a badge,
     // never as the Probe frigate — drop the frigate so it isn't double-detected. First mask
@@ -6428,5 +6550,193 @@ mod tests {
             assert_eq!(parse_isk("ess 77m", true), Some(77_000_000));
             assert_eq!(parse_isk("ess 300kk 5 min", true), Some(300_000_000));
         }
+    }
+
+    /// A full hull name is detected in ANY case (upper, lower, mixed) — typing the ship name
+    /// always works, position/casing regardless.
+    #[test]
+    fn full_hull_name_detected_in_any_case() {
+        let s = systems();
+        let ships = ships_with(&[("Rifter", 587), ("Naga", 4306)]);
+        for variant in ["RIFTER", "rifter", "RiFtEr", "Rifter"] {
+            let r = analyze(variant, &s, &ships, &noknown(), 1, "ch", "x");
+            assert!(
+                r.ships.iter().any(|sh| sh.name == "Rifter"),
+                "{variant:?}: Rifter not detected: {:?}",
+                r.ships
+            );
+        }
+        // Case-insensitive inside a sentence, too.
+        let r = analyze("tackled a NAGA on the gate", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Naga"), "ships={:?}", r.ships);
+    }
+
+    /// Hulls typed after a decorated `+count` (hand-typed intel, single spaces) are all detected —
+    /// the count must not glue the hulls into a pilot blob that hides them.
+    #[test]
+    fn hulls_after_decorated_count_detected() {
+        let s = systems_with(&[("rancer", "Rancer", 1, 0.4)]);
+        let ships = ships_with(&[("Vagabond", 11999), ("Cerberus", 11993)]);
+        for line in [
+            "Rancer  +5 vagabond cerberus",
+            "Rancer +5 VAGABOND CERBERUS",
+            "Rancer +5 Vagabond Cerberus",
+        ] {
+            let r = analyze(line, &s, &ships, &noknown(), 1, "ch", "x");
+            assert!(r.ships.iter().any(|sh| sh.name == "Vagabond"), "{line:?}: {:?}", r.ships);
+            assert!(r.ships.iter().any(|sh| sh.name == "Cerberus"), "{line:?}: {:?}", r.ships);
+        }
+    }
+
+    /// A confirmed pilot glued to a leftover hull ("Bob Rifter", Bob known): the pilot wins AND the
+    /// hull is still surfaced — the hull is never swallowed just because it sits next to a name.
+    /// A hull that is genuinely part of the confirmed name stays masked; a fully-unconfirmed 2-word
+    /// blob ("Sabre Smith") is still deferred to the ESI cover (no forced ship).
+    #[test]
+    fn hull_next_to_confirmed_pilot_still_detected() {
+        let s = systems();
+        let ships = ships_with(&[("Rifter", 587), ("Sabre", 22456), ("Worm", 17619)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("bob".to_string(), 1i64), ("wolf e kristjansson".to_string(), 2i64)]
+                .into_iter()
+                .collect();
+        // Confirmed "Bob" + leftover hull Rifter (either order) → both.
+        for line in ["Bob Rifter", "Rifter Bob"] {
+            let r = analyze(line, &s, &ships, &known, 1, "ch", "x");
+            assert!(
+                r.ships.iter().any(|sh| sh.name == "Rifter"),
+                "{line:?}: hull next to confirmed pilot dropped: {:?}",
+                r.ships
+            );
+            let (pilots, _sys, _g) = resolve_report(&r, &["Bob"], &s);
+            assert_eq!(pilots, vec!["Bob".to_string()], "{line:?}: pilot: {pilots:?}");
+        }
+        // A hull that is PART of a confirmed multi-word name stays masked (not a ship).
+        let ships2 = ships_with(&[("Wolf", 11371)]);
+        let r = analyze("Wolf E Kristjansson nv", &s, &ships2, &known, 1, "ch", "x");
+        assert!(r.ships.is_empty(), "confirmed-name hull word leaked: {:?}", r.ships);
+        // Fully-unconfirmed 2-word blob is left alone (existing behaviour): no forced ship.
+        let r = analyze("Sabre Smith in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.is_empty(), "unconfirmed blob forced a ship: {:?}", r.ships);
+    }
+
+    /// Multi-word hull names are detected case-insensitively, including a single-word hull that is
+    /// itself multi-word-adjacent.
+    #[test]
+    fn multiword_hull_names_case_insensitive() {
+        let s = systems();
+        let ships =
+            ships_with(&[("Cyclone Fleet Issue", 17634), ("Naga", 4306), ("Vagabond", 11999)]);
+        for line in ["cyclone fleet issue", "CYCLONE FLEET ISSUE", "Cyclone Fleet Issue"] {
+            let r = analyze(line, &s, &ships, &noknown(), 1, "ch", "x");
+            assert!(
+                r.ships.iter().any(|sh| sh.name == "Cyclone Fleet Issue"),
+                "{line:?}: {:?}",
+                r.ships
+            );
+        }
+        // A single-word hull in mixed case alongside a multi-word hull.
+        let r = analyze("naga and a CYCLONE FLEET ISSUE", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Naga"), "ships={:?}", r.ships);
+        assert!(
+            r.ships.iter().any(|sh| sh.name == "Cyclone Fleet Issue"),
+            "ships={:?}",
+            r.ships
+        );
+    }
+
+    /// A known MULTI-WORD system name ("Sanctified Vidette", a Drifter wormhole system) is
+    /// classified as the SYSTEM, never a pilot — alone and surrounded by pilots/ships. Case
+    /// insensitive. A normal 2-word pilot that is NOT a system still parses as a pilot.
+    #[test]
+    fn multiword_system_is_the_system_not_a_pilot() {
+        let s = systems_with(&[
+            ("sanctified vidette", "Sanctified Vidette", 31000123, -1.0),
+            ("rancer", "Rancer", 1, 0.4),
+        ]);
+        let ships = ships_with(&[("Rifter", 587)]);
+        // Alone: it's the system, no pilot.
+        for line in ["Sanctified Vidette", "sanctified vidette", "SANCTIFIED VIDETTE"] {
+            let r = analyze(line, &s, &ships, &noknown(), 1, "ch", "x");
+            assert!(
+                r.systems.iter().any(|d| d.name == "Sanctified Vidette"),
+                "{line:?}: system missing: {:?}",
+                r.systems
+            );
+            assert!(
+                !r.pilots.iter().any(|p| p.to_lowercase().contains("vidette")
+                    || p.to_lowercase().contains("sanctified")),
+                "{line:?}: leaked as pilot: {:?}",
+                r.pilots
+            );
+        }
+        // Surrounded by a confirmed pilot and a ship: the system is still recognised, and neither
+        // of its words becomes a pilot.
+        let known: std::collections::HashMap<String, i64> =
+            [("bob".to_string(), 1i64)].into_iter().collect();
+        let r = analyze("Bob Rifter Sanctified Vidette", &s, &ships, &known, 1, "ch", "x");
+        assert!(
+            r.systems.iter().any(|d| d.name == "Sanctified Vidette"),
+            "system missing: {:?}",
+            r.systems
+        );
+        assert!(r.ships.iter().any(|sh| sh.name == "Rifter"), "ship missing: {:?}", r.ships);
+        let (pilots, _sys, _g) = resolve_report(&r, &["Bob"], &s);
+        assert_eq!(pilots, vec!["Bob".to_string()], "pilots: {pilots:?}");
+
+        // A normal 2-word pilot that is NOT a system still parses as a pilot.
+        let known2: std::collections::HashMap<String, i64> =
+            [("john smith".to_string(), 7i64)].into_iter().collect();
+        let r = analyze("John Smith in Rancer", &s, &noships(), &known2, 1, "ch", "x");
+        assert!(
+            r.pilots.iter().any(|p| p.eq_ignore_ascii_case("John Smith")),
+            "normal 2-word pilot dropped: {:?}",
+            r.pilots
+        );
+        assert!(r.systems.iter().any(|d| d.name == "Rancer"), "systems={:?}", r.systems);
+    }
+
+    /// Reporter's line "FN0-QS  Ben Walker NV": a double-space paste of the system + a pilot with a
+    /// trailing "NV" no-visual tag. The trailing intel tag must be stripped from the paste segment
+    /// so the pilot "Ben Walker" resolves (not "Ben Walker NV", which matches no character), the NV
+    /// tag still sets no_visual, and FN0-QS is the system. The single-space form parses the same.
+    #[test]
+    fn paste_segment_trailing_tag_stripped_ben_walker() {
+        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("ben walker".to_string(), 1i64)].into_iter().collect();
+        for line in ["FN0-QS  Ben Walker NV", "FN0-QS Ben Walker NV", "FN0-QS  Ben Walker  NV"] {
+            let r = analyze(line, &s, &noships(), &known, 1, "ch", "x");
+            // Pilot resolves to "Ben Walker" — the NV tag is not glued into the name.
+            assert!(
+                r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Ben Walker")),
+                "{line:?}: Ben Walker not recognized: {:?}",
+                r.pilots
+            );
+            assert!(
+                !r.pilots.iter().any(|p| p.to_lowercase().contains("nv")),
+                "{line:?}: NV glued into a pilot: {:?}",
+                r.pilots
+            );
+            // The freed NV tag is read as no-visual.
+            assert!(r.no_visual, "{line:?}: no_visual not set: {:?}", r.text);
+            // FN0-QS is the system.
+            assert!(
+                r.systems.iter().any(|d| d.name == "FN0-QS"),
+                "{line:?}: system missing: {:?}",
+                r.systems
+            );
+            // The ESI cover (unknown-pilot path) also lands on "Ben Walker".
+            let (pilots, _sys, _g) = resolve_report(&r, &["Ben Walker"], &s);
+            assert!(pilots.iter().any(|p| p == "Ben Walker"), "{line:?}: cover: {pilots:?}");
+        }
+        // trim helper directly: a trailing tag is stripped, a real name ending in a name-capable
+        // word or an initial/number is kept.
+        assert_eq!(trim_paste_location_tail("Ben Walker NV"), "Ben Walker");
+        assert_eq!(trim_paste_location_tail("Ben Walker nv"), "Ben Walker");
+        assert_eq!(trim_paste_location_tail("Clear Rain"), "Clear Rain");
+        assert_eq!(trim_paste_location_tail("Blue Skies"), "Blue Skies");
+        assert_eq!(trim_paste_location_tail("Lopatich R"), "Lopatich R");
+        assert_eq!(trim_paste_location_tail("Malcolm 41"), "Malcolm 41");
     }
 }
