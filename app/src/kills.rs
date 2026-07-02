@@ -28,6 +28,9 @@ pub struct KillInfo {
     /// Attacker alliance ids (most frequent first), for the "dominant side" display.
     pub attacker_alliances: Vec<i64>,
     pub attacker_count: usize,
+    /// Nearest celestial to the death (name, distance in metres) when the kill had a position.
+    #[serde(default)]
+    pub near_celestial: Option<(String, f64)>,
 }
 
 /// kill id → fetched info. A present `None` means pending or failed (don't refetch).
@@ -140,5 +143,6 @@ fn fetch_kill(client: &reqwest::blocking::Client, id: i64) -> Option<KillInfo> {
         final_blow_ship: fb.and_then(|a| a.ship_type_id),
         attacker_count: km.attackers.len(),
         attacker_alliances: alliances.into_iter().map(|(a, _)| a).collect(),
+        near_celestial: None,
     })
 }

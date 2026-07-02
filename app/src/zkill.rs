@@ -143,7 +143,7 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(5));
                     seq = fetch_sequence(&client);
                 }
-                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &mut names) {
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &mut names, store.as_ref()) {
                     Poll::Got(eng) => {
                         stuck = 0;
                         retries = 0;
@@ -448,6 +448,7 @@ fn kill_info(pkg: &Package) -> crate::kills::KillInfo {
         final_blow_ship: fb.and_then(|a| a.ship_type_id),
         attacker_count: pkg.killmail.attackers.len(),
         attacker_alliances: alliances.into_iter().map(|(a, _)| a).collect(),
+        near_celestial: None, // set by the ingest path when a position + store are available
     }
 }
 
@@ -464,6 +465,7 @@ fn poll(
     ship_sizes: &HashMap<i64, ShipSize>,
     player_sys: &AtomicI64,
     names: &mut HashMap<i64, String>,
+    store: Option<&crate::store::Store>,
 ) -> Poll {
     let resp = match client.get(format!("{R2Z2}/{seq}.json")).send() {
         Ok(r) => r,
@@ -499,7 +501,12 @@ fn poll(
             .is_some_and(|s| camp_types.bubble.contains(&s));
         camps.lock().unwrap().record(pkg.killmail.solar_system_id, t, on_gate, equip);
         if let Some(ship) = pkg.killmail.victim.ship_type_id {
-            let info = kill_info(&pkg);
+            let mut info = kill_info(&pkg);
+            // Nearest celestial to the death (for the "near <gate/planet> — <dist>" card line).
+            if let (Some(store), Some(p)) = (store, pkg.killmail.victim.position.as_ref()) {
+                info.near_celestial =
+                    store.nearest_celestial(pkg.killmail.solar_system_id, [p.x, p.y, p.z]);
+            }
             let mut kf = killfeed.lock().unwrap();
             kf.push(KillEvent {
                 system_id: pkg.killmail.solar_system_id,

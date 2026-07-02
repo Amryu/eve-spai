@@ -14526,6 +14526,7 @@ fn kill_report(
         let mut report = crate::intel::IntelReport::default();
         report.received = ev.time;
         report.killmail = true;
+        report.near_celestial = ev.info.near_celestial.clone();
         report.channel = "zKill".to_owned();
         report.reporter = "zKill".to_owned();
         report.isk = Some(ev.value as u64);
@@ -17644,6 +17645,41 @@ fn intel_row(
                         })
                         .response
                         .on_hover_text(format!("{cel} (celestial)"));
+                }
+
+                // zKill card: where the death happened — the nearest celestial + distance, when the
+                // kill carried a position and it's within ~15,000 km of that celestial.
+                if let Some((cname, dm)) = &r.near_celestial {
+                    if *dm <= 15_000_000.0 {
+                        let km = (dm / 1000.0).round() as i64;
+                        let dist = if km >= 1000 {
+                            format!("{},{:03} km", km / 1000, km % 1000)
+                        } else {
+                            format!("{km} km")
+                        };
+                        let cicon = if cname.contains("gate") {
+                            icon::SIGN_IN
+                        } else if cname.contains("Moon") {
+                            icon::MOON
+                        } else if cname.ends_with("station") {
+                            icon::MAP_PIN_LINE
+                        } else {
+                            icon::PLANET
+                        };
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
+                            .inner_margin(egui::Margin::symmetric(6, 1))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{cicon} {cname}  {dist}"))
+                                        .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                                        .strong(),
+                                );
+                            })
+                            .response
+                            .on_hover_text(format!("Death {dist} from {cname}"));
+                    }
                 }
 
                 // Scanning probes (Core/Combat Scanner Probes) — a badge, not the Probe frigate.

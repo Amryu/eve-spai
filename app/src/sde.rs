@@ -401,6 +401,114 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
             }
         }
 
+        // --- Named celestials (planets, moons, stations, gates) for the
+        // "kill happened near <celestial>" card. Populated from the same archive,
+        // inside this bake transaction. The 224MB moon file is streamed line-by-line
+        // (BufRead) — never read whole.
+        set(SdeStatus::Downloading("Indexing celestials…".to_owned()));
+        {
+            use std::io::{BufRead, BufReader};
+
+            tx.execute("DELETE FROM sde_celestials", [])?;
+
+            // system id -> name, for building the celestial display labels.
+            let sys_names: HashMap<i64, String> = {
+                let mut m = HashMap::new();
+                let mut q = tx.prepare("SELECT id, name FROM sde_systems")?;
+                for row in q
+                    .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                    .flatten()
+                {
+                    m.insert(row.0, row.1);
+                }
+                m
+            };
+
+            let mut ins = tx
+                .prepare("INSERT INTO sde_celestials(system_id, name, x, y, z) VALUES(?1,?2,?3,?4,?5)")?;
+
+            // Gates: name = "<destination system> gate" (fallback "gate"). Reuse the
+            // stargate JSONL already read above; it carries the destination field.
+            for line in gates_jsonl.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+                let Some(p) = v.get("position").and_then(json_pos) else { continue };
+                let dest = v
+                    .get("destination")
+                    .and_then(|d| d.get("solarSystemID"))
+                    .and_then(|s| s.as_i64());
+                let name = match dest.and_then(|d| sys_names.get(&d)) {
+                    Some(n) => format!("{n} gate"),
+                    None => "gate".to_owned(),
+                };
+                ins.execute(params![sys, name, p[0], p[1], p[2]])?;
+            }
+
+            // Planets (50MB): name = "<system> <roman(celestialIndex)>" e.g. "Jita IV".
+            if let Ok(entry) = archive.by_name("mapPlanets.jsonl") {
+                for line in BufReader::new(entry).lines().map_while(Result::ok) {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                    let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+                    let Some(sname) = sys_names.get(&sys) else { continue };
+                    let Some(p) = v.get("position").and_then(json_pos) else { continue };
+                    let idx = v.get("celestialIndex").and_then(|n| n.as_i64()).unwrap_or(0);
+                    let name = format!("{sname} {}", roman(idx));
+                    ins.execute(params![sys, name, p[0], p[1], p[2]])?;
+                }
+            }
+
+            // Moons (224MB — MUST stream): "<system> <roman(celestialIndex)> - Moon <orbitIndex>".
+            if let Ok(entry) = archive.by_name("mapMoons.jsonl") {
+                for line in BufReader::new(entry).lines().map_while(Result::ok) {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                    let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+                    let Some(sname) = sys_names.get(&sys) else { continue };
+                    let Some(p) = v.get("position").and_then(json_pos) else { continue };
+                    let idx = v.get("celestialIndex").and_then(|n| n.as_i64()).unwrap_or(0);
+                    let orbit = v.get("orbitIndex").and_then(|n| n.as_i64()).unwrap_or(0);
+                    let name = format!("{sname} {} - Moon {orbit}", roman(idx));
+                    ins.execute(params![sys, name, p[0], p[1], p[2]])?;
+                }
+            }
+
+            // Stations: build operationID -> English operation name first (140KB file),
+            // then name each NPC station by its operation, falling back to "<system> station".
+            let mut op_names: HashMap<i64, String> = HashMap::new();
+            {
+                let mut ops = String::new();
+                let _ = archive
+                    .by_name("stationOperations.jsonl")
+                    .map(|mut e| e.read_to_string(&mut ops));
+                for line in ops.lines() {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                    let Some(id) = v.get("_key").and_then(|k| k.as_i64()) else { continue };
+                    if let Some(n) = v
+                        .get("operationName")
+                        .and_then(|o| o.get("en"))
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        op_names.insert(id, n.to_owned());
+                    }
+                }
+            }
+            if let Ok(entry) = archive.by_name("npcStations.jsonl") {
+                for line in BufReader::new(entry).lines().map_while(Result::ok) {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                    let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+                    let Some(sname) = sys_names.get(&sys) else { continue };
+                    let Some(p) = v.get("position").and_then(json_pos) else { continue };
+                    let name = v
+                        .get("operationID")
+                        .and_then(|o| o.as_i64())
+                        .and_then(|o| op_names.get(&o))
+                        .cloned()
+                        .unwrap_or_else(|| format!("{sname} station"));
+                    ins.execute(params![sys, name, p[0], p[1], p[2]])?;
+                }
+            }
+        }
+
         // Localized ship names (so intel from non-English clients resolves, e.g. a
         // Chinese hull name). Stream types.jsonl (large) and keep only ship types.
         set(SdeStatus::Downloading("Indexing ship translations…".to_owned()));
@@ -457,4 +565,40 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         anyhow::bail!("no systems parsed from SDE");
     }
     Ok(())
+}
+
+/// Extract an `{x, y, z}` position object into `[x, y, z]`, or `None` if any is missing.
+fn json_pos(p: &serde_json::Value) -> Option<[f64; 3]> {
+    Some([p.get("x")?.as_f64()?, p.get("y")?.as_f64()?, p.get("z")?.as_f64()?])
+}
+
+/// Roman numeral for a celestial index (1 -> "I"). Planets reach ~13; handles any
+/// positive value. Non-positive input falls back to the decimal string.
+fn roman(n: i64) -> String {
+    if n <= 0 {
+        return n.to_string();
+    }
+    let table = [(10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")];
+    let mut n = n;
+    let mut out = String::new();
+    for (v, s) in table {
+        while n >= v {
+            out.push_str(s);
+            n -= v;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::roman;
+
+    #[test]
+    fn roman_numerals() {
+        assert_eq!(roman(1), "I");
+        assert_eq!(roman(4), "IV");
+        assert_eq!(roman(9), "IX");
+        assert_eq!(roman(13), "XIII");
+    }
 }

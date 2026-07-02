@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::settings::Settings;
 
 /// Bump when the SDE schema/content changes, to force a re-download + re-bake.
-pub const SDE_SCHEMA_VERSION: &str = "8";
+pub const SDE_SCHEMA_VERSION: &str = "9";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -32,6 +32,10 @@ CREATE INDEX IF NOT EXISTS idx_sde_jumps_from ON sde_jumps(from_id);
 -- Stargate positions per system (for on-gate kill detection).
 CREATE TABLE IF NOT EXISTS sde_stargates (system_id INTEGER, x REAL, y REAL, z REAL);
 CREATE INDEX IF NOT EXISTS idx_sde_stargates_sys ON sde_stargates(system_id);
+-- Named celestials (planets, moons, stations, gates) per system, for the
+-- \"kill happened near <celestial>\" card. name is the display label.
+CREATE TABLE IF NOT EXISTS sde_celestials (system_id INTEGER, name TEXT, x REAL, y REAL, z REAL);
+CREATE INDEX IF NOT EXISTS idx_sde_celestials_sys ON sde_celestials(system_id);
 -- Camp-relevant type ids by kind ('dic'|'hic'|'smartbomb'|'bubble'), for camp signals.
 CREATE TABLE IF NOT EXISTS sde_camp_types (id INTEGER PRIMARY KEY, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sde_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -1042,6 +1046,7 @@ impl Store {
                 final_blow_ship: r.get(12)?,
                 attacker_count: r.get::<_, i64>(13)? as usize,
                 attacker_alliances,
+                near_celestial: None,
             })
         });
         if let Ok(rows) = rows {
@@ -1439,6 +1444,35 @@ impl Store {
         systems
     }
 
+    /// Nearest named celestial (planet/moon/station/gate) to a point in a system.
+    /// Returns `(name, distance_in_metres)` for the closest one, or `None` when the
+    /// system has no baked celestials.
+    #[allow(dead_code)] // wired into the kill-intel card display separately
+    pub fn nearest_celestial(&self, system_id: i64, pos: [f64; 3]) -> Option<(String, f64)> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, x, y, z FROM sde_celestials WHERE system_id = ?1")
+            .ok()?;
+        let rows = stmt
+            .query_map(params![system_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, f64>(2)?,
+                    r.get::<_, f64>(3)?,
+                ))
+            })
+            .ok()?;
+        let mut best: Option<(String, f64)> = None;
+        for (name, x, y, z) in rows.flatten() {
+            let d2 = (x - pos[0]).powi(2) + (y - pos[1]).powi(2) + (z - pos[2]).powi(2);
+            if best.as_ref().is_none_or(|(_, b)| d2 < *b) {
+                best = Some((name, d2));
+            }
+        }
+        best.map(|(name, d2)| (name, d2.sqrt()))
+    }
+
     /// Camp-relevant type-id sets (dics+HICs, smartbombs, anchorable bubbles).
     pub fn load_camp_types(&self) -> crate::camp::CampTypes {
         let mut t = crate::camp::CampTypes::default();
@@ -1699,6 +1733,40 @@ mod tests {
         assert!(o.excluded.is_empty());
         assert!(o.scrubs.is_empty());
         assert!(s.list_scrubs().is_empty());
+    }
+
+    #[test]
+    fn nearest_celestial_picks_closest() {
+        let s = mem_store();
+
+        // No celestials for the system yet.
+        assert!(s.nearest_celestial(30_000_142, [0.0, 0.0, 0.0]).is_none());
+
+        // Three celestials in system 30000142, one in a different system.
+        let ins = |sys: i64, name: &str, x: f64, y: f64, z: f64| {
+            s.conn
+                .execute(
+                    "INSERT INTO sde_celestials(system_id, name, x, y, z) VALUES(?1,?2,?3,?4,?5)",
+                    params![sys, name, x, y, z],
+                )
+                .unwrap();
+        };
+        ins(30_000_142, "Jita IV", 100.0, 0.0, 0.0);
+        ins(30_000_142, "Jita IV - Moon 4", 0.0, 10.0, 0.0);
+        ins(30_000_142, "Perimeter gate", -50.0, 0.0, 0.0);
+        ins(30_000_144, "Perimeter I", 1.0, 1.0, 1.0);
+
+        // A point near the moon (0,10,0) -> that moon, distance ~2m.
+        let (name, dist) = s.nearest_celestial(30_000_142, [0.0, 12.0, 0.0]).unwrap();
+        assert_eq!(name, "Jita IV - Moon 4");
+        assert!((dist - 2.0).abs() < 1e-6, "distance was {dist}");
+
+        // A point near the planet -> that planet.
+        let (name, _) = s.nearest_celestial(30_000_142, [95.0, 0.0, 0.0]).unwrap();
+        assert_eq!(name, "Jita IV");
+
+        // A system with no celestials still returns None.
+        assert!(s.nearest_celestial(31_000_000, [0.0, 0.0, 0.0]).is_none());
     }
 
     #[test]
