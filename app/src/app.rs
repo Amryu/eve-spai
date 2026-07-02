@@ -14504,6 +14504,44 @@ impl AlertEngine {
 
 }
 
+/// Compact label for a nearest-celestial badge. Moons become "Moon <planet>-<moon>" (how pilots
+/// reference a moon, e.g. "Moon 5-3" — the planet number matters); everything else keeps its name.
+fn celestial_badge_label(name: &str) -> String {
+    if let Some((planet_part, moon_n)) = name.split_once(" - Moon ") {
+        if let Some(roman) = planet_part.rsplit(' ').next() {
+            if let Some(p) = roman_to_int(roman) {
+                return format!("Moon {p}-{moon_n}");
+            }
+        }
+    }
+    name.to_owned()
+}
+
+/// Roman numeral → integer (planet indices in celestial names). None if not a valid roman numeral.
+fn roman_to_int(s: &str) -> Option<i64> {
+    let mut total = 0;
+    let mut prev = 0;
+    for c in s.chars().rev() {
+        let v = match c {
+            'I' => 1,
+            'V' => 5,
+            'X' => 10,
+            'L' => 50,
+            'C' => 100,
+            'D' => 500,
+            'M' => 1000,
+            _ => return None,
+        };
+        if v < prev {
+            total -= v;
+        } else {
+            total += v;
+            prev = v;
+        }
+    }
+    (total > 0).then_some(total)
+}
+
 /// Background loop: evaluate alerts every 400 ms regardless of the window's visibility.
 /// Build an intel card from a zKill event. `ship_by_id` maps a hull type id to its name.
 fn kill_report(
@@ -17656,41 +17694,6 @@ fn intel_row(
                         .on_hover_text(format!("{cel} (celestial)"));
                 }
 
-                // zKill card: where the death happened — the nearest celestial + distance, when the
-                // kill carried a position and it's within ~15,000 km of that celestial.
-                if let Some((cname, dm)) = &r.near_celestial {
-                    if *dm <= 15_000_000.0 {
-                        let km = (dm / 1000.0).round() as i64;
-                        let dist = if km >= 1000 {
-                            format!("{},{:03} km", km / 1000, km % 1000)
-                        } else {
-                            format!("{km} km")
-                        };
-                        let cicon = if cname.contains("gate") {
-                            icon::SIGN_IN
-                        } else if cname.contains("Moon") {
-                            icon::MOON
-                        } else if cname.ends_with("station") {
-                            icon::MAP_PIN_LINE
-                        } else {
-                            icon::PLANET
-                        };
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
-                            .inner_margin(egui::Margin::symmetric(6, 1))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{cicon} {cname}  {dist}"))
-                                        .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
-                                        .strong(),
-                                );
-                            })
-                            .response
-                            .on_hover_text(format!("Death {dist} from {cname}"));
-                    }
-                }
-
                 // Scanning probes (Core/Combat Scanner Probes) — a badge, not the Probe frigate.
                 if let Some(probes) = r.probes {
                     egui::Frame::new()
@@ -17718,6 +17721,43 @@ fn intel_row(
                         .on_hover_ui(|ui| system_hover(ui, systems, status, s));
                     if panel.clicked() {
                         clicked = Some(IntelClick::System(s.id));
+                    }
+                }
+
+                // zKill card: where the death happened — the nearest celestial + distance (shown
+                // AFTER the system card), when the kill had a position within ~15,000 km of it.
+                if let Some((cname, dm)) = &r.near_celestial {
+                    if *dm <= 15_000_000.0 {
+                        let km = (dm / 1000.0).round() as i64;
+                        let dist = if km >= 1000 {
+                            format!("{},{:03} km", km / 1000, km % 1000)
+                        } else {
+                            format!("{km} km")
+                        };
+                        let label = celestial_badge_label(cname);
+                        let cicon = if cname.contains("gate") {
+                            icon::SIGN_IN
+                        } else if cname.contains("Moon") {
+                            icon::MOON
+                        } else if cname.ends_with("station") {
+                            icon::MAP_PIN_LINE
+                        } else {
+                            icon::PLANET
+                        };
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2f, 0x6d, 0x7d)))
+                            .inner_margin(egui::Margin::symmetric(7, 3))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{cicon} {label}  {dist}"))
+                                        .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                                        .strong(),
+                                );
+                            })
+                            .response
+                            .on_hover_text(format!("Death {dist} from {cname}"));
                     }
                 }
 

@@ -3481,7 +3481,12 @@ fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
                 .get(i + 1)
                 .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
                 .unwrap_or("");
-            if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
+            // A plain number ("moon 3") or the planet-moon form ("moon 5-3", where the planet
+            // number matters) — accept digits with an interior hyphen.
+            if !n.is_empty()
+                && n.starts_with(|c: char| c.is_ascii_digit())
+                && n.chars().all(|c| c.is_ascii_digit() || c == '-')
+            {
                 push(format!("{k} {n}"), &mut labels);
                 consumed.push(w);
                 consumed.push(n.to_lowercase());
@@ -5293,6 +5298,10 @@ mod tests {
         assert!(p1.count.is_none(), "count={:?}", p1.count);
         let m = analyze("moon IV in Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(m.celestials, vec!["Moon IV".to_string()]);
+        // Planet-moon form: the planet number matters, so "moon 5-3" is kept whole.
+        let m53 = analyze("moon 5-3 Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(m53.celestials, vec!["Moon 5-3".to_string()]);
+        assert!(m53.count.is_none(), "count={:?}", m53.count);
         // A lone "I" after "moon" is the pronoun, not roman 1 — no phantom "Moon I".
         let mi = analyze("moon I think it's clear Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
         assert!(mi.celestials.is_empty(), "phantom celestial: {:?}", mi.celestials);
