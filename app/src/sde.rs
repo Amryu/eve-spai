@@ -340,16 +340,18 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     // --- EVE's flattened 2D map positions (position2D) from the modern JSONL SDE ---
     // (Fuzzwork's CSV only has 3D x/y/z.) Used for the in-game-style map layout.
     set(SdeStatus::Downloading("Downloading 2D map layout…".to_owned()));
+    // Kept alive past the main commit so the celestial phase can re-open the archive
+    // without re-downloading the ~99MB zip (Bytes clone is a cheap refcount bump).
+    let zip_bytes = client
+        .get("https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip")
+        .send()?
+        .error_for_status()
+        .context("fetching JSONL SDE")?
+        .bytes()
+        .context("reading JSONL SDE")?;
     {
         use std::io::Read as _;
-        let zip_bytes = client
-            .get("https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip")
-            .send()?
-            .error_for_status()
-            .context("fetching JSONL SDE")?
-            .bytes()
-            .context("reading JSONL SDE")?;
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.clone()))
             .map_err(|e| anyhow::anyhow!("opening JSONL SDE: {e}"))?;
         let mut jsonl = String::new();
         archive
@@ -397,114 +399,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
                     p.get("z").and_then(|n| n.as_f64()),
                 ) {
                     ins.execute(params![sys, x, y, z])?;
-                }
-            }
-        }
-
-        // --- Named celestials (planets, moons, stations, gates) for the
-        // "kill happened near <celestial>" card. Populated from the same archive,
-        // inside this bake transaction. The 224MB moon file is streamed line-by-line
-        // (BufRead) — never read whole.
-        set(SdeStatus::Downloading("Indexing celestials…".to_owned()));
-        {
-            use std::io::{BufRead, BufReader};
-
-            tx.execute("DELETE FROM sde_celestials", [])?;
-
-            // system id -> name, for building the celestial display labels.
-            let sys_names: HashMap<i64, String> = {
-                let mut m = HashMap::new();
-                let mut q = tx.prepare("SELECT id, name FROM sde_systems")?;
-                for row in q
-                    .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-                    .flatten()
-                {
-                    m.insert(row.0, row.1);
-                }
-                m
-            };
-
-            let mut ins = tx
-                .prepare("INSERT INTO sde_celestials(system_id, name, x, y, z) VALUES(?1,?2,?3,?4,?5)")?;
-
-            // Gates: name = "<destination system> gate" (fallback "gate"). Reuse the
-            // stargate JSONL already read above; it carries the destination field.
-            for line in gates_jsonl.lines() {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
-                let Some(p) = v.get("position").and_then(json_pos) else { continue };
-                let dest = v
-                    .get("destination")
-                    .and_then(|d| d.get("solarSystemID"))
-                    .and_then(|s| s.as_i64());
-                let name = match dest.and_then(|d| sys_names.get(&d)) {
-                    Some(n) => format!("{n} gate"),
-                    None => "gate".to_owned(),
-                };
-                ins.execute(params![sys, name, p[0], p[1], p[2]])?;
-            }
-
-            // Planets (50MB): name = "<system> <roman(celestialIndex)>" e.g. "Jita IV".
-            if let Ok(entry) = archive.by_name("mapPlanets.jsonl") {
-                for line in BufReader::new(entry).lines().map_while(Result::ok) {
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-                    let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
-                    let Some(sname) = sys_names.get(&sys) else { continue };
-                    let Some(p) = v.get("position").and_then(json_pos) else { continue };
-                    let idx = v.get("celestialIndex").and_then(|n| n.as_i64()).unwrap_or(0);
-                    let name = format!("{sname} {}", roman(idx));
-                    ins.execute(params![sys, name, p[0], p[1], p[2]])?;
-                }
-            }
-
-            // Moons (224MB — MUST stream): "<system> <roman(celestialIndex)> - Moon <orbitIndex>".
-            if let Ok(entry) = archive.by_name("mapMoons.jsonl") {
-                for line in BufReader::new(entry).lines().map_while(Result::ok) {
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-                    let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
-                    let Some(sname) = sys_names.get(&sys) else { continue };
-                    let Some(p) = v.get("position").and_then(json_pos) else { continue };
-                    let idx = v.get("celestialIndex").and_then(|n| n.as_i64()).unwrap_or(0);
-                    let orbit = v.get("orbitIndex").and_then(|n| n.as_i64()).unwrap_or(0);
-                    let name = format!("{sname} {} - Moon {orbit}", roman(idx));
-                    ins.execute(params![sys, name, p[0], p[1], p[2]])?;
-                }
-            }
-
-            // Stations: build operationID -> English operation name first (140KB file),
-            // then name each NPC station by its operation, falling back to "<system> station".
-            let mut op_names: HashMap<i64, String> = HashMap::new();
-            {
-                let mut ops = String::new();
-                let _ = archive
-                    .by_name("stationOperations.jsonl")
-                    .map(|mut e| e.read_to_string(&mut ops));
-                for line in ops.lines() {
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                    let Some(id) = v.get("_key").and_then(|k| k.as_i64()) else { continue };
-                    if let Some(n) = v
-                        .get("operationName")
-                        .and_then(|o| o.get("en"))
-                        .and_then(|s| s.as_str())
-                        .filter(|s| !s.is_empty())
-                    {
-                        op_names.insert(id, n.to_owned());
-                    }
-                }
-            }
-            if let Ok(entry) = archive.by_name("npcStations.jsonl") {
-                for line in BufReader::new(entry).lines().map_while(Result::ok) {
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-                    let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
-                    let Some(sname) = sys_names.get(&sys) else { continue };
-                    let Some(p) = v.get("position").and_then(json_pos) else { continue };
-                    let name = v
-                        .get("operationID")
-                        .and_then(|o| o.as_i64())
-                        .and_then(|o| op_names.get(&o))
-                        .cloned()
-                        .unwrap_or_else(|| format!("{sname} station"));
-                    ins.execute(params![sys, name, p[0], p[1], p[2]])?;
                 }
             }
         }
@@ -564,6 +458,173 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     if systems == 0 {
         anyhow::bail!("no systems parsed from SDE");
     }
+
+    // Celestials are populated AFTER the main commit, in their own chunked transactions
+    // (see `bake_celestials`). Holding the single main write-transaction across the 224MB
+    // moon parse kept the WAL write-lock for the whole bake, so every UI-thread write
+    // blocked on busy_timeout and the app appeared frozen. The core SDE is committed by
+    // now, so the UI is usable while celestials trickle in.
+    bake_celestials(&mut conn, zip_bytes.as_ref(), set)?;
+
+    Ok(())
+}
+
+/// Populate `sde_celestials` (~432k rows) in ~30k-row chunked transactions, streaming the
+/// large celestial files (the 224MB moon file line-by-line — never read whole). Runs AFTER
+/// the main SDE commit, so it is the only writer and each chunk releases the WAL write-lock
+/// so concurrent UI-thread writes interleave and the app stays responsive.
+fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeStatus)) -> Result<()> {
+    use std::io::{BufRead, BufReader, Read as _};
+
+    const CHUNK: usize = 30_000;
+
+    set(SdeStatus::Downloading("Indexing celestials…".to_owned()));
+
+    // system id -> name (sde_systems is committed by now), for the display labels.
+    let sys_names: HashMap<i64, String> = {
+        let mut m = HashMap::new();
+        let mut q = conn.prepare("SELECT id, name FROM sde_systems")?;
+        for row in q
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .flatten()
+        {
+            m.insert(row.0, row.1);
+        }
+        m
+    };
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|e| anyhow::anyhow!("re-opening JSONL SDE for celestials: {e}"))?;
+
+    // Operation id -> English operation name (small 140KB file, read whole).
+    let mut op_names: HashMap<i64, String> = HashMap::new();
+    {
+        let mut ops = String::new();
+        let _ = archive.by_name("stationOperations.jsonl").map(|mut e| e.read_to_string(&mut ops));
+        for line in ops.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let Some(id) = v.get("_key").and_then(|k| k.as_i64()) else { continue };
+            if let Some(n) = v
+                .get("operationName")
+                .and_then(|o| o.get("en"))
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                op_names.insert(id, n.to_owned());
+            }
+        }
+    }
+
+    // Clear once, in its own tiny transaction.
+    conn.execute("DELETE FROM sde_celestials", [])?;
+
+    // Rows buffer -> flushed to a fresh transaction every CHUNK; `total` drives the status.
+    let mut buf: Vec<(i64, String, [f64; 3])> = Vec::with_capacity(CHUNK);
+    let mut total = 0usize;
+
+    // Gates (3MB): name = "<destination system> gate" (fallback "gate").
+    if let Ok(entry) = archive.by_name("mapStargates.jsonl") {
+        for line in BufReader::new(entry).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+            let Some(p) = v.get("position").and_then(json_pos) else { continue };
+            let dest = v
+                .get("destination")
+                .and_then(|d| d.get("solarSystemID"))
+                .and_then(|s| s.as_i64());
+            let name = match dest.and_then(|d| sys_names.get(&d)) {
+                Some(n) => format!("{n} gate"),
+                None => "gate".to_owned(),
+            };
+            buf.push((sys, name, p));
+            flush_if_full(conn, &mut buf, &mut total, CHUNK, set)?;
+        }
+    }
+
+    // Planets (50MB): name = "<system> <roman(celestialIndex)>" e.g. "Jita IV".
+    if let Ok(entry) = archive.by_name("mapPlanets.jsonl") {
+        for line in BufReader::new(entry).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+            let Some(sname) = sys_names.get(&sys) else { continue };
+            let Some(p) = v.get("position").and_then(json_pos) else { continue };
+            let idx = v.get("celestialIndex").and_then(|n| n.as_i64()).unwrap_or(0);
+            buf.push((sys, format!("{sname} {}", roman(idx)), p));
+            flush_if_full(conn, &mut buf, &mut total, CHUNK, set)?;
+        }
+    }
+
+    // Moons (224MB — MUST stream): "<system> <roman(celestialIndex)> - Moon <orbitIndex>".
+    if let Ok(entry) = archive.by_name("mapMoons.jsonl") {
+        for line in BufReader::new(entry).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+            let Some(sname) = sys_names.get(&sys) else { continue };
+            let Some(p) = v.get("position").and_then(json_pos) else { continue };
+            let idx = v.get("celestialIndex").and_then(|n| n.as_i64()).unwrap_or(0);
+            let orbit = v.get("orbitIndex").and_then(|n| n.as_i64()).unwrap_or(0);
+            buf.push((sys, format!("{sname} {} - Moon {orbit}", roman(idx)), p));
+            flush_if_full(conn, &mut buf, &mut total, CHUNK, set)?;
+        }
+    }
+
+    // Stations (2MB): the operation name when known, else "<system> station".
+    if let Ok(entry) = archive.by_name("npcStations.jsonl") {
+        for line in BufReader::new(entry).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Some(sys) = v.get("solarSystemID").and_then(|s| s.as_i64()) else { continue };
+            let Some(sname) = sys_names.get(&sys) else { continue };
+            let Some(p) = v.get("position").and_then(json_pos) else { continue };
+            let name = v
+                .get("operationID")
+                .and_then(|o| o.as_i64())
+                .and_then(|o| op_names.get(&o))
+                .cloned()
+                .unwrap_or_else(|| format!("{sname} station"));
+            buf.push((sys, name, p));
+            flush_if_full(conn, &mut buf, &mut total, CHUNK, set)?;
+        }
+    }
+
+    // Final partial chunk.
+    total += buf.len();
+    commit_chunk(conn, &mut buf)?;
+    set(SdeStatus::Downloading(format!("Indexing celestials… {total}")));
+    Ok(())
+}
+
+/// Flush the buffer to a fresh transaction once it reaches `chunk`, updating the status.
+fn flush_if_full(
+    conn: &mut Connection,
+    buf: &mut Vec<(i64, String, [f64; 3])>,
+    total: &mut usize,
+    chunk: usize,
+    set: &impl Fn(SdeStatus),
+) -> Result<()> {
+    if buf.len() >= chunk {
+        *total += buf.len();
+        commit_chunk(conn, buf)?;
+        set(SdeStatus::Downloading(format!("Indexing celestials… {total}")));
+    }
+    Ok(())
+}
+
+/// Insert one buffered batch of celestials in a single transaction, then clear the buffer.
+/// The short-lived transaction releases the WAL write-lock between chunks.
+fn commit_chunk(conn: &mut Connection, buf: &mut Vec<(i64, String, [f64; 3])>) -> Result<()> {
+    if buf.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut ins =
+            tx.prepare("INSERT INTO sde_celestials(system_id, name, x, y, z) VALUES(?1,?2,?3,?4,?5)")?;
+        for (sys, name, p) in buf.iter() {
+            ins.execute(params![sys, name, p[0], p[1], p[2]])?;
+        }
+    }
+    tx.commit()?;
+    buf.clear();
     Ok(())
 }
 
