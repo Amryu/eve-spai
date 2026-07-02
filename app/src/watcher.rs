@@ -226,7 +226,20 @@ fn scan(
                     && report.gates.is_empty()
                     && !intel::has_held_system(&report, systems)
                 {
+                    // Content-bearing but system-less: buffer it (reverse amend) so a later
+                    // system message from the SAME reporter can revive and locate it
+                    // ("Rifter Punisher +5" now, "FN0-QS" a few seconds later). Pure chatter
+                    // (no pilots, no ships) is discarded outright.
+                    if !report.pilots.is_empty() || !report.ships.is_empty() {
+                        st.stash_orphan(report, AMEND_GRACE, now);
+                    }
                     continue;
+                }
+
+                // This report carries a system: absorb any recent system-less content this
+                // reporter posted just before it, so the split intel lands on one located card.
+                if !report.systems.is_empty() {
+                    st.reverse_amend(&mut report, AMEND_GRACE);
                 }
 
                 // Movement: only inferred when the new sighting shares a named pilot

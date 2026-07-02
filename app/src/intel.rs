@@ -229,6 +229,11 @@ pub struct IntelState {
     pub reports: Vec<IntelReport>,
     /// Most recent "clear" time per system (lower-cased name -> unix seconds).
     cleared: HashMap<String, i64>,
+    /// Content-bearing reports (pilots/ships) that were discarded for lacking a system,
+    /// buffered so a later system message from the same reporter can revive them
+    /// ("reverse amend" — see [`stash_orphan`](IntelState::stash_orphan) /
+    /// [`reverse_amend`](IntelState::reverse_amend)). Bounded by the amend grace window.
+    orphans: Vec<IntelReport>,
 }
 
 static NEXT_REPORT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -428,6 +433,53 @@ impl IntelState {
         false
     }
 
+    /// Buffer a content-bearing report that was discarded for lacking a system, so a later
+    /// system message from the SAME reporter can revive it ([`reverse_amend`](Self::reverse_amend)).
+    /// Prunes orphans older than `grace` first (so the buffer stays bounded by recent message
+    /// flow), then stashes `report`. The caller only stashes reports that actually carry
+    /// content (pilots or ships) — pure chatter is dropped, not buffered.
+    pub fn stash_orphan(&mut self, report: IntelReport, grace: i64, now: i64) {
+        self.orphans.retain(|o| now - o.received <= grace);
+        self.orphans.push(report);
+    }
+
+    /// Reverse amend: fold this reporter's very recent system-less reports (buffered by
+    /// [`stash_orphan`](Self::stash_orphan)) INTO `new`, a fresh report that carries a system.
+    /// This recovers intel that was split "content first, system second" ("Rifter Punisher +5"
+    /// then "FN0-QS") — the forward [`try_amend`](Self::try_amend) can't, since the system-less
+    /// message was never pushed.
+    ///
+    /// Only orphans from the same reporter AND channel, no older than `grace` seconds, are
+    /// merged (unioning pilots/ships/classes and every other content field, OR-ing status
+    /// flags — mirroring `try_amend`'s field list). Consumed orphans are removed; still-fresh
+    /// non-matching orphans are kept for a later system; stale ones are dropped. A `clear` or
+    /// system-less `new` merges nothing (but still prunes stale orphans). Returns how many
+    /// orphans were merged.
+    pub fn reverse_amend(&mut self, new: &mut IntelReport, grace: i64) -> usize {
+        // A clear stands alone (it must not absorb prior threats), and a report with no system
+        // has nothing to give the orphans — nothing to merge. Still prune stale orphans so the
+        // buffer can't grow unbounded.
+        if new.clear || new.systems.is_empty() {
+            self.orphans.retain(|o| new.received < o.received || new.received - o.received <= grace);
+            return 0;
+        }
+        let mut merged = 0usize;
+        let mut kept: Vec<IntelReport> = Vec::with_capacity(self.orphans.len());
+        for o in std::mem::take(&mut self.orphans) {
+            let stale = new.received < o.received || new.received - o.received > grace;
+            if o.reporter == new.reporter && o.channel == new.channel && !stale {
+                merge_report_into(new, &o);
+                merged += 1;
+            } else if !stale {
+                // A still-fresh orphan from another reporter/channel waits for its own system.
+                kept.push(o);
+            }
+            // A stale orphan (from anyone) is dropped.
+        }
+        self.orphans = kept;
+        merged
+    }
+
     /// A non-clear sighting is stale if a clear for one of its systems arrived at
     /// or after it — the hostiles have since left.
     pub fn is_stale(&self, report: &IntelReport) -> bool {
@@ -445,6 +497,111 @@ impl IntelState {
         self.reports.retain(|r| now - r.received <= ttl);
         self.cleared.retain(|_, t| now - *t <= ttl);
     }
+}
+
+/// Fold every content field of `src` into `dst`: union collections (dedup as `try_amend` does),
+/// OR each status/threat flag, and fill an empty option (max when both are set). Used by
+/// [`IntelState::reverse_amend`], with `dst` (the report carrying the system) as the survivor.
+/// `clear` and `systems` are intentionally NOT touched — the survivor keeps its own location and
+/// a reverse amend never happens on a clear.
+fn merge_report_into(dst: &mut IntelReport, src: &IntelReport) {
+    for sh in &src.ships {
+        if !dst.ships.iter().any(|s| s.id == sh.id) {
+            dst.ships.push(sh.clone());
+        }
+    }
+    for c in &src.classes {
+        if !dst.classes.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+            dst.classes.push(c.clone());
+        }
+    }
+    for p in &src.pilots {
+        if !dst.pilots.iter().any(|x| x.eq_ignore_ascii_case(p)) {
+            dst.pilots.push(p.clone());
+        }
+    }
+    // Sub-phrase dedup over the merged pilot list, using both messages' raw text as the
+    // occurrence source (mirrors `try_amend`).
+    let merge_src = format!("{} {}", src.text, dst.text);
+    drop_subphrase_pilots(&mut dst.pilots, &std::collections::HashSet::new(), &merge_src);
+    for a in &src.alliances {
+        if !dst.alliances.iter().any(|(n, _)| n.eq_ignore_ascii_case(&a.0)) {
+            dst.alliances.push(a.clone());
+        }
+    }
+    for g in &src.gates {
+        if !dst.gates.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+            dst.gates.push(g.clone());
+        }
+    }
+    for c in &src.celestials {
+        if !dst.celestials.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+            dst.celestials.push(c.clone());
+        }
+    }
+    for sk in &src.name_number_skips {
+        if !dst.name_number_skips.iter().any(|(c, _)| c.eq_ignore_ascii_case(&sk.0)) {
+            dst.name_number_skips.push(sk.clone());
+        }
+    }
+    for tt in &src.tackled_targets {
+        if !dst.tackled_targets.iter().any(|x| x.eq_ignore_ascii_case(tt)) {
+            dst.tackled_targets.push(tt.clone());
+        }
+    }
+    for asig in &src.anom_sigs {
+        if !dst.anom_sigs.iter().any(|(k, c)| *k == asig.0 && c.eq_ignore_ascii_case(&asig.1)) {
+            dst.anom_sigs.push(asig.clone());
+        }
+    }
+    for (n, d) in &src.structures {
+        match dst.structures.iter_mut().find(|(pn, _)| pn == n) {
+            Some(e) => {
+                if e.1.is_none() {
+                    e.1 = d.clone();
+                }
+            }
+            None => dst.structures.push((n.clone(), d.clone())),
+        }
+    }
+    for l in &src.links {
+        if !dst.links.iter().any(|p| p.url == l.url) {
+            dst.links.push(l.clone());
+        }
+    }
+    dst.count = match (dst.count, src.count) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    dst.isk = match (dst.isk, src.isk) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    dst.probes = dst.probes.or(src.probes);
+    dst.status |= src.status;
+    dst.no_visual |= src.no_visual;
+    dst.spike |= src.spike;
+    dst.camp |= src.camp;
+    dst.help |= src.help;
+    dst.bubble |= src.bubble;
+    dst.cyno |= src.cyno;
+    dst.dropper |= src.dropper;
+    dst.cap_tackled |= src.cap_tackled;
+    dst.tackled |= src.tackled;
+    dst.killmail |= src.killmail;
+    dst.filament |= src.filament;
+    dst.diamond_rats |= src.diamond_rats;
+    dst.wormhole |= src.wormhole;
+    dst.wh_type = dst.wh_type.clone().or_else(|| src.wh_type.clone());
+    dst.wh_dest = dst.wh_dest.or(src.wh_dest);
+    dst.wh_eol |= src.wh_eol;
+    dst.wh_drifter |= src.wh_drifter;
+    dst.wh_sig = dst.wh_sig.clone().or_else(|| src.wh_sig.clone());
+    dst.ess |= src.ess;
+    dst.ess_time = dst.ess_time.clone().or_else(|| src.ess_time.clone());
+    dst.skyhook |= src.skyhook;
+    // Show the revived content on the card, oldest first (orphan, then the system message).
+    dst.text = format!("{}  ·  {}", src.text, dst.text);
 }
 
 const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+", "safe"];
@@ -6365,6 +6522,143 @@ mod tests {
                 state.reports[0].pilots
             );
         }
+    }
+
+    /// Reverse amend end-to-end via `analyze`: a reporter posts content with NO system
+    /// ("Rifter Punisher +5"), which is stashed, then posts just the system ("FN0-QS") within
+    /// the grace window. The system report absorbs the orphan's ships and count, and the orphan
+    /// buffer is emptied.
+    #[test]
+    fn reverse_amend_revives_systemless_content() {
+        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let ships = ships_with(&[("Rifter", 587), ("Punisher", 597)]);
+        let mut state = IntelState::default();
+
+        // First message: content, no system — discarded today, so we stash it (as the watcher will).
+        let orphan = analyze("Rifter Punisher +5", &s, &ships, &noknown(), 100, "intel", "Scout");
+        assert!(orphan.systems.is_empty(), "orphan should have no system: {:?}", orphan.systems);
+        assert!(!orphan.ships.is_empty(), "orphan should carry ships: {:?}", orphan.ships);
+        assert_eq!(orphan.count, Some(5), "orphan count: {:?}", orphan.count);
+        state.stash_orphan(orphan, 60, 100);
+
+        // Second message: the system, 5s later. It reverse-amends the orphan.
+        let mut sysmsg = analyze("FN0-QS", &s, &ships, &noknown(), 105, "intel", "Scout");
+        assert_eq!(state.reverse_amend(&mut sysmsg, 60), 1, "one orphan should merge");
+        assert!(sysmsg.systems.iter().any(|d| d.name == "FN0-QS"), "system lost: {:?}", sysmsg.systems);
+        for hull in ["Rifter", "Punisher"] {
+            assert!(sysmsg.ships.iter().any(|sh| sh.name == hull), "ship {hull} missing: {:?}", sysmsg.ships);
+        }
+        assert_eq!(sysmsg.count, Some(5), "count not carried: {:?}", sysmsg.count);
+        assert!(state.orphans.is_empty(), "orphan buffer not emptied: {:?}", state.orphans.len());
+    }
+
+    /// The status/threat flags of a revived orphan are OR-ed into the system report.
+    #[test]
+    fn reverse_amend_ors_status_flags() {
+        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let mut state = IntelState::default();
+        let orphan = IntelReport {
+            reporter: "Scout".into(),
+            channel: "intel".into(),
+            received: 100,
+            text: "Loki bubbled cyno nv".into(),
+            ships: vec![DetectedShip { id: 29990, name: "Loki".into() }],
+            bubble: true,
+            cyno: true,
+            no_visual: true,
+            tackled: true,
+            ..Default::default()
+        };
+        state.stash_orphan(orphan, 60, 100);
+        let mut sysmsg = IntelReport {
+            reporter: "Scout".into(),
+            channel: "intel".into(),
+            received: 130,
+            text: "FN0-QS".into(),
+            systems: vec![DetectedSystem { id: 30004111, name: "FN0-QS".into(), security: -0.4 }],
+            ..Default::default()
+        };
+        assert_eq!(state.reverse_amend(&mut sysmsg, 60), 1);
+        assert!(sysmsg.bubble && sysmsg.cyno && sysmsg.no_visual && sysmsg.tackled, "flags not OR-ed");
+        assert!(sysmsg.ships.iter().any(|sh| sh.name == "Loki"), "ship missing: {:?}", sysmsg.ships);
+    }
+
+    /// An orphan older than the grace window is NOT merged — and is dropped.
+    #[test]
+    fn reverse_amend_ignores_stale_orphan() {
+        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let ships = ships_with(&[("Rifter", 587)]);
+        let mut state = IntelState::default();
+        let orphan = analyze("Rifter +3", &s, &ships, &noknown(), 100, "intel", "Scout");
+        state.stash_orphan(orphan, 60, 100);
+        // 61s later — just outside the window.
+        let mut sysmsg = analyze("FN0-QS", &s, &ships, &noknown(), 161, "intel", "Scout");
+        assert_eq!(state.reverse_amend(&mut sysmsg, 60), 0, "stale orphan should not merge");
+        assert!(sysmsg.ships.is_empty(), "stale ship leaked: {:?}", sysmsg.ships);
+        assert!(state.orphans.is_empty(), "stale orphan should be dropped: {:?}", state.orphans.len());
+    }
+
+    /// A different reporter or a different channel does NOT merge; a fresh non-matching orphan is
+    /// kept for a later system of its own.
+    #[test]
+    fn reverse_amend_only_same_reporter_and_channel() {
+        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let ships = ships_with(&[("Rifter", 587)]);
+        let mut state = IntelState::default();
+        let orphan = analyze("Rifter +3", &s, &ships, &noknown(), 100, "intel", "Scout");
+        state.stash_orphan(orphan, 60, 100);
+
+        // Different reporter, same channel, within grace: no merge, orphan kept.
+        let mut other_rep = analyze("FN0-QS", &s, &ships, &noknown(), 110, "intel", "SomeoneElse");
+        assert_eq!(state.reverse_amend(&mut other_rep, 60), 0, "different reporter merged");
+        assert!(other_rep.ships.is_empty(), "leaked into other reporter: {:?}", other_rep.ships);
+        assert_eq!(state.orphans.len(), 1, "fresh non-matching orphan should be kept");
+
+        // Same reporter, different channel: no merge, orphan still kept.
+        let mut other_chan = analyze("FN0-QS", &s, &ships, &noknown(), 115, "other", "Scout");
+        assert_eq!(state.reverse_amend(&mut other_chan, 60), 0, "different channel merged");
+        assert_eq!(state.orphans.len(), 1, "orphan should still be kept");
+
+        // Same reporter, same channel: now it merges.
+        let mut mine = analyze("FN0-QS", &s, &ships, &noknown(), 120, "intel", "Scout");
+        assert_eq!(state.reverse_amend(&mut mine, 60), 1, "same reporter/channel should merge");
+        assert!(mine.ships.iter().any(|sh| sh.name == "Rifter"), "ship missing: {:?}", mine.ships);
+        assert!(state.orphans.is_empty(), "orphan should be consumed");
+    }
+
+    /// A `clear` system report does NOT reverse-amend (a clear must stand alone).
+    #[test]
+    fn reverse_amend_skips_clear_report() {
+        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let ships = ships_with(&[("Rifter", 587)]);
+        let mut state = IntelState::default();
+        let orphan = analyze("Rifter +3", &s, &ships, &noknown(), 100, "intel", "Scout");
+        state.stash_orphan(orphan, 60, 100);
+        let mut clr = analyze("FN0-QS clear", &s, &ships, &noknown(), 110, "intel", "Scout");
+        assert!(clr.clear, "should be a clear: {:?}", clr.text);
+        assert_eq!(state.reverse_amend(&mut clr, 60), 0, "clear must not reverse-amend");
+        assert!(clr.ships.is_empty(), "orphan leaked into clear: {:?}", clr.ships);
+        // The still-fresh orphan is retained for a later non-clear system message.
+        assert_eq!(state.orphans.len(), 1, "orphan should be kept after a clear: {:?}", state.orphans.len());
+    }
+
+    /// `stash_orphan` prunes orphans older than the grace window, keeping the buffer bounded.
+    #[test]
+    fn stash_orphan_prunes_stale() {
+        let mut state = IntelState::default();
+        let mk = |t: i64| IntelReport {
+            reporter: "Scout".into(),
+            channel: "intel".into(),
+            received: t,
+            ships: vec![DetectedShip { id: 587, name: "Rifter".into() }],
+            ..Default::default()
+        };
+        state.stash_orphan(mk(100), 60, 100);
+        state.stash_orphan(mk(120), 60, 120);
+        // At t=200 the first (age 100) is pruned, the second (age 80) too, then the new one added.
+        state.stash_orphan(mk(200), 60, 200);
+        assert_eq!(state.orphans.len(), 1, "only the fresh orphan should remain");
+        assert_eq!(state.orphans[0].received, 200);
     }
 
     /// A wormhole connection to Thera named AFTER a real system ("<Sys> Thera hole", "wh to
