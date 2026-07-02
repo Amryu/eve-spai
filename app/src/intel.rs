@@ -105,6 +105,10 @@ pub struct IntelReport {
     pub help: bool,
     pub bubble: bool,
     pub killmail: bool,
+    /// Killmail only: the nearest celestial to the death (name, distance in metres), when the kill
+    /// carried an in-space position. The card shows it when the distance is within ~15,000 km.
+    #[serde(default)]
+    pub near_celestial: Option<(String, f64)>,
     pub cyno: bool,
     /// A hot-drop / black-ops threat ("dropper", "hotdropper", "blops", …).
     pub dropper: bool,
@@ -783,7 +787,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "between"
                 | "total" | "anchored" | "anchor" | "anchoring"
                 | "bank" | "reserve" | "main"
-                | "small" | "large" | "big" | "huge"
+                | "small" | "large" | "big" | "huge" | "full"
                 | "sig" | "sigs" | "anyone" | "currently"
                 // Anomaly/signature keywords are a badge (with an adjacent code) or noise on
                 // their own — never a pilot. NPC "rats" (incl. the "diamond" variant) are NPCs.
@@ -2181,6 +2185,27 @@ pub(crate) fn detect_location(
         if cand.eq_ignore_ascii_case("on") || cand.eq_ignore_ascii_case("the") {
             continue;
         }
+        // A system-named word that belongs to a pilot NAME is that pilot's surname, not a gate —
+        // "alexpanda Uitra gate" / "Bob Uitra gate" is the pilot "… Uitra", never a Uitra gate.
+        // Recognised by a genuine name word immediately before it that is also reserved by the
+        // name (raw parse: still inside the candidate; reconcile: reserved once ESI confirms the
+        // name). A code-shaped gate ("78-", "C-J") or an abbreviation preceded by a system/stop
+        // word ("on 78- gate", "C-J6MT YPW gate", "N3-JBX Uitra gate") has no such name
+        // predecessor, so it still resolves as the gate.
+        let is_name_surname = pilot_tokens.contains(&cand.to_lowercase())
+            && resolve(systems, cand).is_some()
+            && i >= 2
+            && tokens.get(i - 2).is_some_and(|p| {
+                let pl = p.to_lowercase();
+                pilot_tokens.contains(&pl)
+                    && !is_system_token(p, systems)
+                    && !is_pilot_stopword(p)
+                    && !looks_like_system_code(p)
+                    && p.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 3
+            });
+        if is_name_surname {
+            continue;
+        }
         // An explicit "<x> gate" keyword is authoritative for a resolvable code, but
         // a bare number that doesn't resolve is never a gate name (a single digit
         // never is, and e.g. "5 gate" means five hostiles).
@@ -3053,6 +3078,7 @@ pub fn analyze_ctx(
             || lower.contains("气泡"),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
+        near_celestial: None, // filled by the zKill ingest path when a position is available
         cyno: flagged_exact(
             &lower_tokens,
             &pilot_tokens,
@@ -4011,6 +4037,9 @@ mod tests {
         assert!(is_pilot_stopword("don't"));
         // A real name with an apostrophe is NOT a stop word.
         assert!(!is_pilot_stopword("O'Brien"));
+        // "full" is intel prose ("full fleet", "bubble is full"), never a pilot — case-insensitive.
+        assert!(is_pilot_stopword("full"));
+        assert!(is_pilot_stopword("Full"));
     }
 
     #[test]
@@ -4135,6 +4164,36 @@ mod tests {
         assert!(pilots.is_empty(), "pilots={pilots:?}");
         assert_eq!(sysd, vec!["N3-JBX".to_string()]);
         assert!(gates.iter().any(|g| g == "Uitra"), "gates={gates:?}");
+    }
+
+    /// "alexpanda Uitra" is a confirmed character whose surname happens to be a real system
+    /// (Uitra). The system word inside the confirmed name must NOT be pulled out as a gate or a
+    /// standalone system — even standing alone (no corroborating second system) and even when
+    /// followed by the "gate" keyword. A genuine lone system ("Uitra") still parses as a system,
+    /// and a real "<system> gate" callout with no name word still yields the gate.
+    #[test]
+    fn confirmed_name_system_surname_not_pulled_as_gate() {
+        let s = systems(); // includes Uitra (a real system) + Rancer
+        // Alone: pilot only; Uitra is neither a system nor a gate once the name is confirmed.
+        for line in ["alexpanda Uitra", "alexpanda Uitra gate", "alexpanda Uitra tackled"] {
+            let r = analyze(line, &s, &noships(), &noknown(), 1, "ch", "x");
+            // Proposed whole at raw parse (so ESI can confirm the full span).
+            assert!(proposed(&r.pilots, "alexpanda Uitra"), "{line:?}: not proposed: {:?}", r.pilots);
+            let (pilots, sysd, gates) = resolve_report(&r, &["alexpanda Uitra"], &s);
+            assert_eq!(pilots, vec!["alexpanda Uitra".to_string()], "{line:?}: pilots={pilots:?}");
+            assert!(sysd.is_empty(), "{line:?}: Uitra leaked as a system: {sysd:?}");
+            assert!(!gates.iter().any(|g| g.eq_ignore_ascii_case("Uitra")), "{line:?}: Uitra leaked as a gate: {gates:?}");
+        }
+        // With a genuine location present, that system wins and Uitra (the surname) is still held.
+        let r = analyze("Rancer alexpanda Uitra gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        let (pilots, sysd, gates) = resolve_report(&r, &["alexpanda Uitra"], &s);
+        assert_eq!(pilots, vec!["alexpanda Uitra".to_string()], "pilots={pilots:?}");
+        assert!(sysd.iter().any(|n| n == "Rancer"), "Rancer missing: {sysd:?}");
+        assert!(!gates.iter().any(|g| g.eq_ignore_ascii_case("Uitra")), "Uitra leaked as a gate: {gates:?}");
+        // Control: a real "<system> gate" with no name word still detects the gate.
+        let r = analyze("N3-JBX Uitra gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        let (_p, _sysd, gates) = resolve_report(&r, &[], &s);
+        assert!(gates.iter().any(|g| g.eq_ignore_ascii_case("Uitra")), "genuine Uitra gate lost: {gates:?}");
     }
 
     /// True when some pilot candidate contains `name` as a contiguous, case-insensitive run of
