@@ -501,8 +501,11 @@ impl Store {
         out
     }
 
-    /// Every system as `(region name, constellation name, system name)`, ordered for tree building
-    /// (region → constellation → system). Powers the alert-rule systems + constellations pickers.
+    /// Every navigable k-space system as `(region name, constellation name, system name)`, ordered
+    /// for tree building (region → constellation → system). Powers the alert-rule systems picker.
+    /// Excludes the same space the map hides: wormholes + abyssal + the non-Pochven Triglavian
+    /// regions (Yasna Zakh/Zarzakh, Exordium) via `region_id <= 10000070`, and the digit-named Jove
+    /// regions via the name filter (mirrors `is_hidden_region`). Pochven (10000070) is kept.
     pub fn all_systems_geo(&self) -> Vec<(String, String, String)> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
@@ -510,6 +513,8 @@ impl Store {
              FROM sde_systems s
              JOIN sde_constellations c ON c.id = s.constellation_id
              JOIN sde_regions r ON r.id = s.region_id
+             WHERE s.region_id BETWEEN 10000001 AND 10000070
+               AND r.name NOT GLOB '*[0-9]*'
              ORDER BY r.name, c.name, s.name",
         ) {
             if let Ok(rows) = stmt.query_map([], |r| {

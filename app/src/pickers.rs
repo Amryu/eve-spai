@@ -62,13 +62,12 @@ fn index_flat(node: &Node, ancestors_lc: &str, out: &mut Vec<(String, String)>) 
     }
 }
 
-/// Which rule field a picker edits.
+/// Which rule field(s) a picker edits. `Systems` is a geo tree that edits regions + constellations +
+/// systems at once (tick any level), so there are no separate region/constellation pickers.
 #[derive(Clone, Copy, PartialEq)]
 pub enum PickerKind {
     Ships,
     Systems,
-    Constellations,
-    Regions,
     Channels,
     Characters,
 }
@@ -77,13 +76,19 @@ impl PickerKind {
     pub fn title(self) -> &'static str {
         match self {
             PickerKind::Ships => "Ships",
-            PickerKind::Systems => "Systems",
-            PickerKind::Constellations => "Constellations",
-            PickerKind::Regions => "Regions",
+            PickerKind::Systems => "Location",
             PickerKind::Channels => "Channels",
             PickerKind::Characters => "Characters",
         }
     }
+}
+
+/// The level a geo-tree row selects into (each maps to a different rule field).
+#[derive(Clone, Copy, PartialEq)]
+pub enum GeoLevel {
+    Region,
+    Constellation,
+    System,
 }
 
 /// The data backing a picker, built once when it opens.
@@ -99,11 +104,69 @@ pub struct FilterPicker {
     pub kind: PickerKind,
     pub rule_idx: usize,
     pub query: String,
+    /// Single-set pickers (Ships / Channels / Characters).
     pub selected: HashSet<String>,
     pub data: PickerData,
+    // Systems (geo) picker: three independent sets, one per rule field.
+    pub geo_roots: Vec<Node>,
+    pub geo_flat: Vec<(GeoLevel, String, String)>,
+    pub geo_regions: HashSet<String>,
+    pub geo_consts: HashSet<String>,
+    pub geo_systems: HashSet<String>,
     // Characters-only: "add by exact name" box + last resolve status.
     pub add_name: String,
     pub add_status: Option<String>,
+}
+
+impl FilterPicker {
+    /// A blank picker of `kind` for `rule_idx`; the caller fills the relevant selection/data.
+    pub fn new(kind: PickerKind, rule_idx: usize) -> Self {
+        Self {
+            kind,
+            rule_idx,
+            query: String::new(),
+            selected: HashSet::new(),
+            data: PickerData::List(Vec::new()),
+            geo_roots: Vec::new(),
+            geo_flat: Vec::new(),
+            geo_regions: HashSet::new(),
+            geo_consts: HashSet::new(),
+            geo_systems: HashSet::new(),
+            add_name: String::new(),
+            add_status: None,
+        }
+    }
+}
+
+/// Build the Systems geo picker: a region → constellation → system tree, plus a flat search index
+/// tagged by level. System search text carries its region + constellation so "delve" surfaces the
+/// region row and its systems together.
+pub fn build_geo_picker(rows: &[(String, String, String)]) -> (Vec<Node>, Vec<(GeoLevel, String, String)>) {
+    let tree = build_geo_tree(rows, true);
+    let mut flat: Vec<(GeoLevel, String, String)> = Vec::new();
+    for region in &tree.roots {
+        flat.push((GeoLevel::Region, region.name.clone(), region.name.to_lowercase()));
+        for cons in &region.children {
+            flat.push((
+                GeoLevel::Constellation,
+                cons.name.clone(),
+                format!("{} {}", region.name.to_lowercase(), cons.name.to_lowercase()),
+            ));
+            for sys in &cons.children {
+                flat.push((
+                    GeoLevel::System,
+                    sys.name.clone(),
+                    format!(
+                        "{} {} {}",
+                        region.name.to_lowercase(),
+                        cons.name.to_lowercase(),
+                        sys.name.to_lowercase()
+                    ),
+                ));
+            }
+        }
+    }
+    (tree.roots, flat)
 }
 
 impl PickerData {
@@ -223,6 +286,7 @@ pub fn build_geo_tree(rows: &[(String, String, String)], leaf_systems: bool) -> 
 /// Render the picker body (search box + counts + tree/list). Returns actions for the caller.
 pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
     let mut act = PickerActions::default();
+    let is_geo = picker.kind == PickerKind::Systems;
     // Header: search + selection count + clear.
     ui.horizontal(|ui| {
         ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
@@ -231,16 +295,33 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
                 .hint_text("Search")
                 .desired_width(220.0),
         );
-        ui.label(format!("{} selected", picker.selected.len()));
-        if !picker.selected.is_empty() && ui.button("Clear").clicked() {
+        let count = if is_geo {
+            picker.geo_regions.len() + picker.geo_consts.len() + picker.geo_systems.len()
+        } else {
+            picker.selected.len()
+        };
+        ui.label(format!("{count} selected"));
+        if count > 0 && ui.button("Clear").clicked() {
             picker.selected.clear();
+            picker.geo_regions.clear();
+            picker.geo_consts.clear();
+            picker.geo_systems.clear();
             act.changed = true;
         }
     });
+    if is_geo {
+        ui.label(
+            egui::RichText::new("Tick a region, constellation, or system — any level.").weak(),
+        );
+    }
     ui.separator();
 
     let q = picker.query.trim().to_lowercase();
     egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(460.0).show(ui, |ui| {
+        if is_geo {
+            geo_body(ui, picker, &q, &mut act.changed);
+            return;
+        }
         match &picker.data {
             PickerData::Tree(tree) => {
                 if q.is_empty() {
@@ -355,6 +436,84 @@ fn toggle_leaf(ui: &mut egui::Ui, name: &str, selected: &mut HashSet<String>, ch
     }
 }
 
+/// Systems (geo) body: browse a region → constellation → system tree ticking any level, or a flat
+/// capped search list tagged by level. Each level writes to its own set (rule field).
+fn geo_body(ui: &mut egui::Ui, picker: &mut FilterPicker, q: &str, changed: &mut bool) {
+    // Disjoint field borrows so the tree (read) and the three sets (write) coexist.
+    let FilterPicker { geo_roots, geo_flat, geo_regions, geo_consts, geo_systems, .. } = picker;
+    if q.is_empty() {
+        for region in geo_roots.iter() {
+            egui::CollapsingHeader::new(&region.name).id_salt(("gr", region.name.as_str())).show(
+                ui,
+                |ui| {
+                    geo_check(ui, "Match this whole region", &region.name, geo_regions, changed);
+                    for cons in &region.children {
+                        egui::CollapsingHeader::new(&cons.name)
+                            .id_salt(("gc", region.name.as_str(), cons.name.as_str()))
+                            .show(ui, |ui| {
+                                geo_check(
+                                    ui,
+                                    "Match this whole constellation",
+                                    &cons.name,
+                                    geo_consts,
+                                    changed,
+                                );
+                                for sys in &cons.children {
+                                    geo_check(ui, &sys.name, &sys.name, geo_systems, changed);
+                                }
+                            });
+                    }
+                },
+            );
+        }
+    } else {
+        let mut shown = 0usize;
+        let mut hidden = 0usize;
+        for (level, name, text) in geo_flat.iter() {
+            if !text.contains(q) {
+                continue;
+            }
+            if shown >= SEARCH_CAP {
+                hidden += 1;
+                continue;
+            }
+            let (set, tag): (&mut HashSet<String>, &str) = match level {
+                GeoLevel::Region => (geo_regions, "region"),
+                GeoLevel::Constellation => (geo_consts, "constellation"),
+                GeoLevel::System => (geo_systems, "system"),
+            };
+            let mut on = set.contains(name);
+            if ui.checkbox(&mut on, format!("{name}  ({tag})")).changed() {
+                if on {
+                    set.insert(name.clone());
+                } else {
+                    set.remove(name);
+                }
+                *changed = true;
+            }
+            shown += 1;
+        }
+        if shown == 0 {
+            ui.label(egui::RichText::new("No matches.").weak());
+        }
+        if hidden > 0 {
+            ui.label(egui::RichText::new(format!("+{hidden} more — refine your search")).weak());
+        }
+    }
+}
+
+fn geo_check(ui: &mut egui::Ui, label: &str, key: &str, set: &mut HashSet<String>, changed: &mut bool) {
+    let mut on = set.contains(key);
+    if ui.checkbox(&mut on, label).changed() {
+        if on {
+            set.insert(key.to_owned());
+        } else {
+            set.remove(key);
+        }
+        *changed = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +559,24 @@ mod tests {
         cl.sort();
         cl.dedup();
         assert_eq!(cl, vec!["O-EIMK", "OWXT-5"]);
+    }
+
+    #[test]
+    fn geo_picker_flat_tags_each_level() {
+        let rows = vec![
+            ("Delve".to_owned(), "O-EIMK".to_owned(), "1DQ1-A".to_owned()),
+            ("Delve".to_owned(), "O-EIMK".to_owned(), "319-3D".to_owned()),
+        ];
+        let (roots, flat) = build_geo_picker(&rows);
+        assert_eq!(roots.len(), 1); // one region
+        // 1 region + 1 constellation + 2 systems = 4 flat rows.
+        assert_eq!(flat.len(), 4);
+        assert!(flat.iter().any(|(l, n, _)| *l == GeoLevel::Region && n == "Delve"));
+        assert!(flat.iter().any(|(l, n, _)| *l == GeoLevel::Constellation && n == "O-EIMK"));
+        assert_eq!(flat.iter().filter(|(l, _, _)| *l == GeoLevel::System).count(), 2);
+        // A system's search text carries region + constellation, so "delve" surfaces it.
+        let sys = flat.iter().find(|(l, n, _)| *l == GeoLevel::System && n == "1DQ1-A").unwrap();
+        assert!(sys.2.contains("delve") && sys.2.contains("o-eimk"));
     }
 
     #[test]

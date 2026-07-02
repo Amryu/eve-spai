@@ -12756,34 +12756,35 @@ impl SpaiApp {
 
     /// Open a filter picker dialog for `kind`, seeded from rule `rule_idx`'s current selection.
     fn open_filter_picker(&mut self, kind: crate::pickers::PickerKind, rule_idx: usize) {
-        use crate::pickers::{build_geo_tree, build_ship_tree, seed_selection, PickerData, PickerKind};
+        use crate::pickers::{
+            build_geo_picker, build_ship_tree, seed_selection, FilterPicker, PickerData, PickerKind,
+        };
         let Some(store) = &self.store else { return };
         let Some(rule) = self.settings.alerts.rules.get(rule_idx) else { return };
-        let current: Vec<String> = match kind {
-            PickerKind::Ships => rule.ships.clone(),
-            PickerKind::Systems => rule.systems.clone(),
-            PickerKind::Constellations => rule.constellations.clone(),
-            PickerKind::Regions => rule.regions.clone(),
-            PickerKind::Channels => rule.channels.clone(),
-            PickerKind::Characters => rule.characters.clone(),
-        };
-        let data = match kind {
-            PickerKind::Ships => PickerData::Tree(build_ship_tree(&store.all_ships())),
-            PickerKind::Systems => PickerData::Tree(build_geo_tree(&store.all_systems_geo(), true)),
-            PickerKind::Constellations => {
-                PickerData::Tree(build_geo_tree(&store.all_systems_geo(), false))
+        let mut picker = FilterPicker::new(kind, rule_idx);
+        match kind {
+            PickerKind::Systems => {
+                // One geo tree edits regions + constellations + systems (tick any level).
+                let (roots, flat) = build_geo_picker(&store.all_systems_geo());
+                picker.geo_roots = roots;
+                picker.geo_flat = flat;
+                picker.geo_regions = rule.regions.iter().cloned().collect();
+                picker.geo_consts = rule.constellations.iter().cloned().collect();
+                picker.geo_systems = rule.systems.iter().cloned().collect();
             }
-            PickerKind::Regions => {
-                PickerData::List(store.regions().into_iter().map(|(_, n)| n).collect())
+            PickerKind::Ships => {
+                picker.data = PickerData::Tree(build_ship_tree(&store.all_ships()));
+                picker.selected = seed_selection(&rule.ships, &picker.data);
             }
             PickerKind::Channels => {
                 let mut opts = self.settings.intel_channels.clone();
-                for c in &current {
+                for c in &rule.channels {
                     if !opts.iter().any(|o| o.eq_ignore_ascii_case(c)) {
                         opts.push(c.clone());
                     }
                 }
-                PickerData::List(opts)
+                picker.data = PickerData::List(opts);
+                picker.selected = seed_selection(&rule.channels, &picker.data);
             }
             PickerKind::Characters => {
                 let mut chars = store.known_pilot_names();
@@ -12792,26 +12793,18 @@ impl SpaiApp {
                         chars.push((c.name.clone(), c.id));
                     }
                 }
-                for c in &current {
+                for c in &rule.characters {
                     if !chars.iter().any(|(n, _)| n.eq_ignore_ascii_case(c)) {
                         chars.push((c.clone(), 0));
                     }
                 }
                 chars.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-                PickerData::Chars(chars)
+                picker.data = PickerData::Chars(chars);
+                picker.selected = seed_selection(&rule.characters, &picker.data);
             }
-        };
-        let selected = seed_selection(&current, &data);
+        }
         *self.filter_add_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        self.filter_picker = Some(crate::pickers::FilterPicker {
-            kind,
-            rule_idx,
-            query: String::new(),
-            selected,
-            data,
-            add_name: String::new(),
-            add_status: None,
-        });
+        self.filter_picker = Some(picker);
     }
 
     /// Render the open filter picker (if any), write selection changes back to the rule, and handle
@@ -12858,21 +12851,31 @@ impl SpaiApp {
             }
         }
         if changed {
-            let (kind, idx, sel) = {
-                let p = self.filter_picker.as_ref().unwrap();
-                let mut v: Vec<String> = p.selected.iter().cloned().collect();
+            let sorted = |set: &std::collections::HashSet<String>| {
+                let mut v: Vec<String> = set.iter().cloned().collect();
                 v.sort_by_key(|s| s.to_lowercase());
-                (p.kind, p.rule_idx, v)
+                v
+            };
+            let (kind, idx, sel, geo) = {
+                let p = self.filter_picker.as_ref().unwrap();
+                (
+                    p.kind,
+                    p.rule_idx,
+                    sorted(&p.selected),
+                    (sorted(&p.geo_regions), sorted(&p.geo_consts), sorted(&p.geo_systems)),
+                )
             };
             if let Some(rule) = self.settings.alerts.rules.get_mut(idx) {
                 use crate::pickers::PickerKind::*;
                 match kind {
                     Ships => rule.ships = sel,
-                    Systems => rule.systems = sel,
-                    Constellations => rule.constellations = sel,
-                    Regions => rule.regions = sel,
                     Channels => rule.channels = sel,
                     Characters => rule.characters = sel,
+                    Systems => {
+                        rule.regions = geo.0;
+                        rule.constellations = geo.1;
+                        rule.systems = geo.2;
+                    }
                 }
                 self.needs_save = true;
             }
@@ -13045,15 +13048,16 @@ impl SpaiApp {
                         clicked
                     };
                     let mut want: Option<PickerKind> = None;
-                    if row(ui, "systems:", &ru.systems, "any") {
-                        want = Some(PickerKind::Systems);
-                    }
-                    if row(ui, "constellations:", &ru.constellations, "any") {
-                        want = Some(PickerKind::Constellations);
-                    }
-                    if row(ui, "regions:", &ru.regions, "any") {
-                        want = Some(PickerKind::Regions);
-                    }
+                    // One "location" picker covers regions + constellations + systems (tick any level).
+                    ui.horizontal(|ui| {
+                        ui.label("location:");
+                        if ui.small_button("Edit").clicked() {
+                            want = Some(PickerKind::Systems);
+                        }
+                        let total = ru.regions.len() + ru.constellations.len() + ru.systems.len();
+                        let s = if total == 0 { "any".to_owned() } else { format!("{total} selected") };
+                        ui.label(egui::RichText::new(s).weak());
+                    });
                     if row(ui, "channels:", &ru.channels, "any") {
                         want = Some(PickerKind::Channels);
                     }
