@@ -1515,8 +1515,31 @@ impl SpaiApp {
             ui.label(egui::RichText::new("None yet.").weak());
             return;
         }
-        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
+        let mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
             self.alert_feed.iter().rev().take(60).cloned().collect();
+        // These are STORED alert snapshots; unlike the live feed they never pass through reconcile,
+        // so a pilot that is demoted (zKill-inactive), a confirmed non-character, or a stop-word would
+        // sit in `r.pilots` yet never enter `resolved_pilots` - and the card's "resolving" check would
+        // animate "..." forever. Clean each snapshot the same way reconcile cleans the live feed:
+        // drop stop-words / demoted / negatives, keep confirmed, and re-queue genuinely-pending names.
+        {
+            let mut cache = self.pilots.lock().unwrap_or_else(|e| e.into_inner());
+            for (r, _) in feed.iter_mut() {
+                r.pilots.retain(|p| {
+                    if crate::intel::is_pilot_stopword(p) {
+                        return false;
+                    }
+                    match cache.get(p) {
+                        Some(Some(_)) => !cache.is_demoted(p), // confirmed, drop only if demoted
+                        Some(None) => false,                   // not a character
+                        None => {
+                            cache.queue(p); // still pending: keep, but (re)queue so it resolves
+                            true
+                        }
+                    }
+                });
+            }
+        }
         let ship_ids: std::collections::HashSet<i64> =
             feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
