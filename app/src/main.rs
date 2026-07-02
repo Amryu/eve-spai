@@ -37,6 +37,7 @@ mod ipc;
 mod logpaths;
 mod lookup;
 mod map;
+mod pickers;
 mod pilot;
 mod nav;
 mod overlay;

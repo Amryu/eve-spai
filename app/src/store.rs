@@ -501,6 +501,26 @@ impl Store {
         out
     }
 
+    /// Every system as `(region name, constellation name, system name)`, ordered for tree building
+    /// (region → constellation → system). Powers the alert-rule systems + constellations pickers.
+    pub fn all_systems_geo(&self) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT r.name, c.name, s.name
+             FROM sde_systems s
+             JOIN sde_constellations c ON c.id = s.constellation_id
+             JOIN sde_regions r ON r.id = s.region_id
+             ORDER BY r.name, c.name, s.name",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
     /// The region a system belongs to.
     pub fn region_of_system(&self, id: i64) -> Option<i64> {
         self.conn
@@ -658,6 +678,22 @@ impl Store {
         map
     }
 
+    /// Every ship hull as `(id, name, group_name)`, ordered by group then name. Used to build the
+    /// role/class ship-type tree in the alert-rule ship picker (tier → group → hull).
+    pub fn all_ships(&self) -> Vec<(i64, String, String)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT id, name, COALESCE(group_name, '') FROM sde_ships ORDER BY group_name, name",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
     /// Ship type id → hull size tier, for battle-filter hull conditions.
     pub fn ship_sizes(&self) -> std::collections::HashMap<i64, crate::settings::ShipSize> {
         let mut map = std::collections::HashMap::new();
@@ -676,6 +712,21 @@ impl Store {
         let mut out = std::collections::HashMap::new();
         if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc, char_id FROM known_pilots WHERE char_id != 0") {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Confirmed pilots as `(proper-case name, char_id)`, ordered by name — for the alert-rule
+    /// character picker's searchable list (proper case for display; matching is case-insensitive).
+    pub fn known_pilot_names(&self) -> Vec<(String, i64)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT name, char_id FROM known_pilots WHERE char_id != 0 ORDER BY name")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
                 out.extend(rows.flatten());
             }
         }

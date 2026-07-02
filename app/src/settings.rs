@@ -312,6 +312,9 @@ pub struct AlertRule {
     /// Only apply for these characters (by name); empty = any enabled character.
     #[serde(default)]
     pub characters: Vec<String>,
+    /// Hostile ship hulls (by name) — a report mentioning any of them matches; empty = any.
+    #[serde(default)]
+    pub ships: Vec<String>,
     // --- actions ---
     /// Suppress the alert entirely (takes precedence over the action toggles).
     pub suppress: bool,
@@ -347,6 +350,7 @@ impl Default for AlertRule {
             min_count: None,
             require: Vec::new(),
             characters: Vec::new(),
+            ships: Vec::new(),
             suppress: false,
             severity_override: None,
             system_notification: true,

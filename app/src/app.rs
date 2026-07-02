@@ -384,6 +384,10 @@ pub struct SpaiApp {
     work_throttle_shared: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Battle-filter dialog open.
     battle_filter_open: bool,
+    /// Open alert-rule filter picker dialog (ships / systems / … ), if any.
+    filter_picker: Option<crate::pickers::FilterPicker>,
+    /// Background ESI result for the character picker's "add by exact name" box.
+    filter_add_result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
     /// Awaiting confirmation to restore default battle rules.
     battle_filter_confirm_reset: bool,
     /// Bumped whenever the battle-filter rules are edited (invalidates the card cache).
@@ -1110,6 +1114,8 @@ impl SpaiApp {
             player_sys_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             work_throttle_shared: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             battle_filter_open: false,
+            filter_picker: None,
+            filter_add_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             battle_filter_confirm_reset: false,
             battle_filter_gen: 0,
             battle_overrides: std::sync::Arc::new(std::sync::Mutex::new(crate::battle::Overrides::default())),
@@ -1443,36 +1449,6 @@ impl SpaiApp {
                 crate::theme::standing::WARNING,
                 "No alert rule is enabled — nothing will fire. Enable or add a rule below.",
             );
-        }
-        // On KDE/KWin the compositor groups an app's windows, so minimizing the main window also
-        // hides the floating alert/ping windows. A one-time KWin rule keeps them over the game.
-        if std::env::var("XDG_CURRENT_DESKTOP")
-            .map(|d| d.to_ascii_uppercase().contains("KDE"))
-            .unwrap_or(false)
-        {
-            ui.add_space(4.0);
-            egui::CollapsingHeader::new(format!(
-                "{} Show alerts over the game while EVE Spai is minimized (KDE)",
-                egui_phosphor::regular::INFO
-            ))
-            .show(ui, |ui| {
-                ui.label(
-                    "KWin hides the floating alert window when you minimize EVE Spai (it groups an \
-                     app's windows). Add a one-time KWin Window Rule so the alert stays on top of the \
-                     game while minimized:",
-                );
-                ui.add_space(4.0);
-                ui.label("System Settings → Window Management → Window Rules → Add New");
-                ui.label("•  Match — Window class (Substring):  eve-spai");
-                ui.label("•  Match — Window title (Substring):  alerts");
-                ui.label("•  Force — Minimized:  No");
-                ui.label("•  Force — Keep above:  Yes");
-                ui.add_space(2.0);
-                ui.label(
-                    "Add a second rule with Window title \"Fleet ping\" to do the same for the \
-                     fleet-ping window.",
-                );
-            });
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -12778,12 +12754,159 @@ impl SpaiApp {
         }
     }
 
+    /// Open a filter picker dialog for `kind`, seeded from rule `rule_idx`'s current selection.
+    fn open_filter_picker(&mut self, kind: crate::pickers::PickerKind, rule_idx: usize) {
+        use crate::pickers::{build_geo_tree, build_ship_tree, seed_selection, PickerData, PickerKind};
+        let Some(store) = &self.store else { return };
+        let Some(rule) = self.settings.alerts.rules.get(rule_idx) else { return };
+        let current: Vec<String> = match kind {
+            PickerKind::Ships => rule.ships.clone(),
+            PickerKind::Systems => rule.systems.clone(),
+            PickerKind::Constellations => rule.constellations.clone(),
+            PickerKind::Regions => rule.regions.clone(),
+            PickerKind::Channels => rule.channels.clone(),
+            PickerKind::Characters => rule.characters.clone(),
+        };
+        let data = match kind {
+            PickerKind::Ships => PickerData::Tree(build_ship_tree(&store.all_ships())),
+            PickerKind::Systems => PickerData::Tree(build_geo_tree(&store.all_systems_geo(), true)),
+            PickerKind::Constellations => {
+                PickerData::Tree(build_geo_tree(&store.all_systems_geo(), false))
+            }
+            PickerKind::Regions => {
+                PickerData::List(store.regions().into_iter().map(|(_, n)| n).collect())
+            }
+            PickerKind::Channels => {
+                let mut opts = self.settings.intel_channels.clone();
+                for c in &current {
+                    if !opts.iter().any(|o| o.eq_ignore_ascii_case(c)) {
+                        opts.push(c.clone());
+                    }
+                }
+                PickerData::List(opts)
+            }
+            PickerKind::Characters => {
+                let mut chars = store.known_pilot_names();
+                for c in &self.characters {
+                    if !chars.iter().any(|(n, _)| n.eq_ignore_ascii_case(&c.name)) {
+                        chars.push((c.name.clone(), c.id));
+                    }
+                }
+                for c in &current {
+                    if !chars.iter().any(|(n, _)| n.eq_ignore_ascii_case(c)) {
+                        chars.push((c.clone(), 0));
+                    }
+                }
+                chars.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                PickerData::Chars(chars)
+            }
+        };
+        let selected = seed_selection(&current, &data);
+        *self.filter_add_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.filter_picker = Some(crate::pickers::FilterPicker {
+            kind,
+            rule_idx,
+            query: String::new(),
+            selected,
+            data,
+            add_name: String::new(),
+            add_status: None,
+        });
+    }
+
+    /// Render the open filter picker (if any), write selection changes back to the rule, and handle
+    /// the characters "add by exact name" ESI resolve.
+    fn filter_picker_dialog(&mut self, ctx: &egui::Context) {
+        if self.filter_picker.is_none() {
+            return;
+        }
+        let add_res = self.filter_add_result.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut open = true;
+        let mut changed = false;
+        let mut add_to_resolve: Option<String> = None;
+        {
+            let picker = self.filter_picker.as_mut().unwrap();
+            if let Some(res) = add_res {
+                match res {
+                    Ok(name) => {
+                        picker.selected.insert(name.clone());
+                        picker.add_status = Some(format!("Added {name}"));
+                        picker.add_name.clear();
+                        changed = true;
+                    }
+                    Err(e) => picker.add_status = Some(e),
+                }
+            }
+            let title = format!("{}  filter: {}", egui_phosphor::regular::FUNNEL, picker.kind.title());
+            let mut actions = crate::pickers::PickerActions::default();
+            egui::Window::new(title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(340.0)
+                .show(ctx, |ui| {
+                    actions = crate::pickers::body(ui, picker);
+                });
+            changed |= actions.changed;
+            if actions.add_clicked {
+                add_to_resolve = Some(picker.add_name.trim().to_owned());
+            }
+        }
+        if let Some(name) = add_to_resolve {
+            if !name.is_empty() {
+                self.spawn_char_resolve(name, ctx);
+            }
+        }
+        if changed {
+            let (kind, idx, sel) = {
+                let p = self.filter_picker.as_ref().unwrap();
+                let mut v: Vec<String> = p.selected.iter().cloned().collect();
+                v.sort_by_key(|s| s.to_lowercase());
+                (p.kind, p.rule_idx, v)
+            };
+            if let Some(rule) = self.settings.alerts.rules.get_mut(idx) {
+                use crate::pickers::PickerKind::*;
+                match kind {
+                    Ships => rule.ships = sel,
+                    Systems => rule.systems = sel,
+                    Constellations => rule.constellations = sel,
+                    Regions => rule.regions = sel,
+                    Channels => rule.channels = sel,
+                    Characters => rule.characters = sel,
+                }
+                self.needs_save = true;
+            }
+        }
+        if !open {
+            self.filter_picker = None;
+        }
+    }
+
+    /// Resolve a pilot name to its canonical form via ESI (off-thread); result lands in
+    /// `filter_add_result` for the characters picker to pick up.
+    fn spawn_char_resolve(&self, name: String, ctx: &egui::Context) {
+        let out = self.filter_add_result.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let res = reqwest::blocking::Client::builder()
+                .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| e.to_string())
+                .and_then(|c| resolve_char_name(&c, &name));
+            *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(res);
+            ctx.request_repaint();
+        });
+    }
+
     /// Alert-rules editor (inline). Rules are evaluated top-first; the first matching
     /// enabled rule decides the actions (or suppresses the alert).
     fn alert_rules_ui(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let mut remove: Option<usize> = None;
         let mut move_up: Option<usize> = None;
+        // A filter Edit-button click; opened after the rules loop (can't borrow self inside it).
+        let mut open_picker: Option<(crate::pickers::PickerKind, usize)> = None;
         ui.label(
             egui::RichText::new(
                 "Top rule wins. A matching rule's actions apply (or it suppresses the alert). \
@@ -12899,50 +13022,51 @@ impl SpaiApp {
                         }
                     }
                 });
-                // Location filter: systems / constellations / regions (any matches).
-                // Constellation/region names contain spaces, so they split on commas
-                // only; system codes split on spaces too.
-                let loc_field = |ui: &mut egui::Ui, label: &str, list: &mut Vec<String>, split_space: bool| -> bool {
-                    let mut ch = false;
-                    ui.horizontal(|ui| {
-                        ui.label(label);
-                        let mut s = list.join(", ");
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut s)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("any"),
-                            )
-                            .changed()
-                        {
-                            let sep: &[char] = if split_space { &[',', ' '] } else { &[','] };
-                            *list = s.split(sep).map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect();
-                            ch = true;
-                        }
-                    });
-                    ch
-                };
-                changed |= loc_field(ui, "systems:", &mut ru.systems, true);
-                changed |= loc_field(ui, "constellations:", &mut ru.constellations, false);
-                changed |= loc_field(ui, "regions:", &mut ru.regions, false);
-                changed |= loc_field(ui, "channels:", &mut ru.channels, false);
-                // Characters this rule applies to (empty = any enabled character).
-                ui.horizontal(|ui| {
-                    ui.label("characters:");
-                    let mut s = ru.characters.join(", ");
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut s)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("any enabled"),
-                        )
-                        .changed()
-                    {
-                        ru.characters =
-                            s.split(',').map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()).collect();
-                        changed = true;
+                // Filters: each opens a dedicated picker dialog (tree/list with search) instead of a
+                // comma-separated text field. A row shows a summary + an "Edit" button; empty = any.
+                {
+                    use crate::pickers::PickerKind;
+                    let row = |ui: &mut egui::Ui, label: &str, list: &[String], any_hint: &str| -> bool {
+                        let mut clicked = false;
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            if ui.small_button("Edit").clicked() {
+                                clicked = true;
+                            }
+                            let s = if list.is_empty() {
+                                any_hint.to_owned()
+                            } else if list.len() <= 3 {
+                                list.join(", ")
+                            } else {
+                                format!("{} selected", list.len())
+                            };
+                            ui.label(egui::RichText::new(s).weak());
+                        });
+                        clicked
+                    };
+                    let mut want: Option<PickerKind> = None;
+                    if row(ui, "systems:", &ru.systems, "any") {
+                        want = Some(PickerKind::Systems);
                     }
-                });
+                    if row(ui, "constellations:", &ru.constellations, "any") {
+                        want = Some(PickerKind::Constellations);
+                    }
+                    if row(ui, "regions:", &ru.regions, "any") {
+                        want = Some(PickerKind::Regions);
+                    }
+                    if row(ui, "channels:", &ru.channels, "any") {
+                        want = Some(PickerKind::Channels);
+                    }
+                    if row(ui, "ships:", &ru.ships, "any") {
+                        want = Some(PickerKind::Ships);
+                    }
+                    if row(ui, "characters:", &ru.characters, "any enabled") {
+                        want = Some(PickerKind::Characters);
+                    }
+                    if let Some(kind) = want {
+                        open_picker = Some((kind, i));
+                    }
+                }
                 // Actions.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("then:");
@@ -13002,6 +13126,9 @@ impl SpaiApp {
         }
         if changed {
             self.needs_save = true;
+        }
+        if let Some((kind, idx)) = open_picker {
+            self.open_filter_picker(kind, idx);
         }
     }
 
@@ -14604,6 +14731,7 @@ impl eframe::App for SpaiApp {
         self.pilot_window(&ctx);
         self.fit_window(&ctx);
         self.battle_filter_dialog(&ctx);
+        self.filter_picker_dialog(&ctx);
         self.dscan_view_dialog(&ctx);
         self.fleet_ping_window_ui(&ctx);
         self.routes_dialog(&ctx);
@@ -16629,6 +16757,27 @@ fn condensed_row(
     resp.interact(egui::Sense::hover())
 }
 
+/// Resolve a pilot name to its canonical spelling via ESI `/universe/ids/` (exact match). Returns
+/// the canonical name on success, or a short error for the picker to display.
+fn resolve_char_name(
+    client: &reqwest::blocking::Client,
+    name: &str,
+) -> Result<String, String> {
+    let name = name.trim();
+    let body: serde_json::Value = client
+        .post("https://esi.evetech.net/latest/universe/ids/?datasource=tranquility")
+        .json(&[name])
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .map_err(|e| format!("lookup failed: {e}"))?;
+    body.get("characters")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.iter().find_map(|c| c.get("name").and_then(|n| n.as_str())))
+        .map(|s| s.to_owned())
+        .ok_or_else(|| format!("No pilot named \"{name}\""))
+}
+
 /// Whether an alert rule's conditions all match a report.
 fn rule_matches(
     ru: &crate::settings::AlertRule,
@@ -16694,6 +16843,16 @@ fn rule_matches(
     }
     if let Some(mc) = ru.min_count {
         if !r.count.is_some_and(|c| c >= mc) {
+            return false;
+        }
+    }
+    // Ship filter: the report must mention at least one of the selected hulls (empty = any).
+    if !ru.ships.is_empty() {
+        let matched = r
+            .ships
+            .iter()
+            .any(|s| ru.ships.iter().any(|n| n.eq_ignore_ascii_case(&s.name)));
+        if !matched {
             return false;
         }
     }
