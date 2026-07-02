@@ -41,6 +41,7 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("cane", "Hurricane"),
     ("nado", "Tornado"),
     ("mach", "Machariel"),
+    ("male", "Malediction"),
     ("vindi", "Vindicator"),
     ("bhaal", "Bhaalgorn"),
     ("snake", "Rattlesnake"),
