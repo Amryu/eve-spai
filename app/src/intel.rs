@@ -6614,7 +6614,7 @@ mod tests {
     /// The status/threat flags of a revived orphan are OR-ed into the system report.
     #[test]
     fn reverse_amend_ors_status_flags() {
-        let s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
+        let _s = systems_with(&[("fn0-qs", "FN0-QS", 30004111, -0.4)]);
         let mut state = IntelState::default();
         let orphan = IntelReport {
             reporter: "Scout".into(),

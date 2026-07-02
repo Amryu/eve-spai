@@ -2956,13 +2956,22 @@ impl SpaiApp {
         }
         let mut reports = Vec::new();
         for (killmail_id, system_id, ship_type_id, time, value) in saved {
+            // Rich enrichment is looked up from the cache at render time; carry only the persisted
+            // nearest-celestial through `info` so a reloaded card still shows "near <celestial>".
+            let near_celestial = self
+                .kill_cache
+                .lock()
+                .unwrap()
+                .get(&killmail_id)
+                .and_then(|o| o.as_ref())
+                .and_then(|k| k.near_celestial.clone());
             let ev = crate::zkill::KillEvent {
                 system_id,
                 ship_type_id,
                 time,
                 value,
                 killmail_id,
-                info: Default::default(), // enrichment already preloaded into the cache above
+                info: crate::kills::KillInfo { near_celestial, ..Default::default() },
             };
             if let Some(report) = kill_report(&ev, &geo, &self.ship_by_id) {
                 reports.push(report);

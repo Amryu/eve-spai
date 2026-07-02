@@ -155,7 +155,9 @@ CREATE TABLE IF NOT EXISTS kill_details (
     final_blow_alliance INTEGER,
     final_blow_ship     INTEGER,
     attacker_count      INTEGER NOT NULL,
-    attacker_alliances  TEXT
+    attacker_alliances  TEXT,
+    near_name           TEXT,
+    near_dist           REAL
 );
 -- Per-character zKill-activity + account-age cache (4h TTL on active_recent; birthday
 -- is fetched once). Persisted so a restart doesn't re-storm zKill. Consumed in Phase 2.
@@ -268,6 +270,9 @@ impl Store {
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
         // Additive column on the pilot activity cache (NULL for rows written pre-upgrade).
         let _ = conn.execute("ALTER TABLE pilot_activity ADD COLUMN last_corp_change INTEGER", []);
+        // Nearest-celestial columns on saved kills (NULL for rows written pre-upgrade).
+        let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_dist REAL", []);
         // One-time: after the demotion-logic overhaul (90-day young-account grace, player-corp-change
         // signal, and a true-90-day activity window), wipe the persisted activity/demotion cache once
         // so every pilot is re-fetched and re-judged under the new rules instead of keeping a stale
@@ -998,16 +1003,21 @@ impl Store {
     pub fn save_kill_details(&self, k: &crate::kills::KillInfo) {
         let alliances: String =
             k.attacker_alliances.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(",");
+        let (near_name, near_dist) = match &k.near_celestial {
+            Some((n, d)) => (Some(n.clone()), Some(*d)),
+            None => (None, None),
+        };
         let _ = self.conn.execute(
             "INSERT OR REPLACE INTO kill_details
                 (kill_id, hash, victim_char, victim_ship, victim_corp, victim_alliance,
                  system_id, value, time, final_blow_char, final_blow_corp, final_blow_alliance,
-                 final_blow_ship, attacker_count, attacker_alliances)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                 final_blow_ship, attacker_count, attacker_alliances, near_name, near_dist)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             params![
                 k.kill_id, k.hash, k.victim_char, k.victim_ship, k.victim_corp, k.victim_alliance,
                 k.system_id, k.value, k.time, k.final_blow_char, k.final_blow_corp,
                 k.final_blow_alliance, k.final_blow_ship, k.attacker_count as i64, alliances,
+                near_name, near_dist,
             ],
         );
     }
@@ -1018,7 +1028,7 @@ impl Store {
         let Ok(mut stmt) = self.conn.prepare(
             "SELECT kill_id, hash, victim_char, victim_ship, victim_corp, victim_alliance,
                     system_id, value, time, final_blow_char, final_blow_corp, final_blow_alliance,
-                    final_blow_ship, attacker_count, attacker_alliances
+                    final_blow_ship, attacker_count, attacker_alliances, near_name, near_dist
              FROM kill_details",
         ) else {
             return out;
@@ -1030,6 +1040,10 @@ impl Store {
                 .split(',')
                 .filter_map(|s| s.parse::<i64>().ok())
                 .collect();
+            let near_celestial = match (r.get::<_, Option<String>>(15)?, r.get::<_, Option<f64>>(16)?) {
+                (Some(n), Some(d)) => Some((n, d)),
+                _ => None,
+            };
             Ok(crate::kills::KillInfo {
                 kill_id: r.get(0)?,
                 hash: r.get(1)?,
@@ -1046,7 +1060,7 @@ impl Store {
                 final_blow_ship: r.get(12)?,
                 attacker_count: r.get::<_, i64>(13)? as usize,
                 attacker_alliances,
-                near_celestial: None,
+                near_celestial,
             })
         });
         if let Ok(rows) = rows {
