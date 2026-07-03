@@ -18432,16 +18432,13 @@ fn intel_row(
                     }
                 }
 
-                // Status flags.
-                // A flag badge: a bordered pill in the flag's colour. Rendered as a (non-clickable)
-                // Button so it's an INLINE widget — it takes the row's uniform badge height
-                // (interact_size.y, same as the pilot/ship badges) and wraps correctly. A Frame
-                // sub-ui here would break wrapping and grow the card vertically.
+                // Status flags. A flag badge is a (non-clickable) Button with the DEFAULT frame —
+                // identical in shape + height to the pilot/ship/link buttons in this row (the row's
+                // uniform badge height), just with the flag's colour on the text. A custom fill/
+                // stroke or a Frame sub-ui made them read taller/heavier than the rest.
                 let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
                     ui.add(
                         egui::Button::new(egui::RichText::new(txt).color(col).strong())
-                            .fill(col.gamma_multiply(0.15))
-                            .stroke(egui::Stroke::new(1.0, col))
                             .sense(egui::Sense::hover()),
                     );
                 };
