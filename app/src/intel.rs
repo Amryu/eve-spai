@@ -1415,8 +1415,8 @@ fn extract_pilots(text: &str) -> Vec<String> {
 }
 
 /// A ship hull from a lower-cased token, also accepting a simple plural so intel like
-/// "tengus" / "lokis" / "drakes", or the "-ies" form "harpies" -> "harpy", resolves to the hull
-/// (and isn't read as a pilot name).
+/// "tengus" / "lokis" / "drakes", the "-ies" form "harpies" -> "harpy", or the "-es" form on a
+/// sibilant stem "areses" -> "ares", resolves to the hull (and isn't read as a pilot name).
 fn ship_of<'a>(
     lc: &str,
     ship_index: &'a HashMap<String, (i64, String)>,
@@ -1424,6 +1424,7 @@ fn ship_of<'a>(
     ship_index
         .get(lc)
         .or_else(|| lc.strip_suffix("ies").and_then(|base| ship_index.get(&format!("{base}y"))))
+        .or_else(|| lc.strip_suffix("es").filter(|s| s.len() >= 3).and_then(|s| ship_index.get(s)))
         .or_else(|| lc.strip_suffix('s').filter(|s| s.len() >= 3).and_then(|s| ship_index.get(s)))
 }
 
@@ -1611,18 +1612,21 @@ fn multiword_ships(
                 };
                 full.and_then(|f| ship_index.get(&f).map(|(id, name)| (*id, name.clone())))
             };
-            // The phrase, or a simple plural of its last word de-pluralised: "-ies" -> "-y"
-            // ("osprey navies" -> "osprey navy") or plain "-s" ("osprey navys" -> "osprey navy"),
-            // so a pluralised multi-word hull still resolves to Osprey Navy Issue. Kept only if the
-            // de-pluralised form actually matches a hull.
+            // The phrase, or a simple plural de-pluralised: "-ies" -> "-y" ("osprey navies" ->
+            // "osprey navy"), "-es" for a sibilant stem ("areses" -> "ares"), or plain "-s"
+            // ("osprey navys"). Try each in that order and keep the first that actually resolves to
+            // a hull (so "bellicoses" -> "bellicos" fails the "-es" try and falls through to "-s"
+            // -> "bellicose"). Case is not consulted.
             let hit = try_phrase(&phrase).or_else(|| {
-                let deplural = phrase
-                    .strip_suffix("ies")
-                    .map(|base| format!("{base}y"))
-                    .or_else(|| phrase.strip_suffix('s').map(str::to_owned));
-                deplural
-                    .filter(|s| s.split_whitespace().last().is_some_and(|w| w.len() >= 3))
-                    .and_then(|s| try_phrase(&s))
+                [
+                    phrase.strip_suffix("ies").map(|b| format!("{b}y")),
+                    phrase.strip_suffix("es").map(str::to_owned),
+                    phrase.strip_suffix('s').map(str::to_owned),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|s| s.split_whitespace().last().is_some_and(|w| w.len() >= 3))
+                .find_map(|s| try_phrase(&s))
             });
             if let Some((id, name)) = hit {
                 out.push((i, len, id, name));
@@ -6452,6 +6456,13 @@ mod tests {
         // Single-word "-ies": harpies -> Harpy.
         let r = analyze("harpies on grid", &s, &ships, &noknown(), 1, "ch", "x");
         assert!(r.ships.iter().any(|sh| sh.name == "Harpy"), "{:?}", r.ships);
+        // "-es" on a hull that already ends in s ("Ares" -> "Areses"), and a "-s" plural of an
+        // "-e"-ending hull that must NOT be mangled by the "-es" try ("Bellicose" -> "Bellicoses").
+        let ships2 = ships_with(&[("Ares", 11196), ("Bellicose", 29344)]);
+        let r = analyze("areses on grid", &s, &ships2, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Ares"), "areses: {:?}", r.ships);
+        let r = analyze("bellicoses on grid", &s, &ships2, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Bellicose"), "bellicoses: {:?}", r.ships);
     }
 
     #[test]
