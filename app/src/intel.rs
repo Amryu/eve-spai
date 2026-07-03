@@ -203,7 +203,11 @@ pub fn extract_links(text: &str) -> Vec<IntelLink> {
                 .and_then(|s| s.split('/').next())
                 .and_then(|s| s.parse::<i64>().ok());
             IntelLink { kind: LinkKind::Killmail, url: url.to_owned(), kill_id }
-        } else if lower.contains("br.evetools.org") || lower.contains("zkillboard.com/related/") {
+        } else if lower.contains("br.evetools.org")
+            || lower.contains("zkillboard.com/related/")
+            || lower.contains("eve-spai.com/br/")
+        {
+            // Battle reports: br.evetools.org, zKill "related", and OUR own site (eve-spai.com/br/<id>).
             IntelLink { kind: LinkKind::BattleReport, url: url.to_owned(), kill_id: None }
         } else if lower.contains("dscan.me")
             || lower.contains("dscan.org")
@@ -5976,6 +5980,21 @@ mod tests {
         }
         // lower-case common words that are system names are not matched
         assert!(analyze("clear in here", &s, &noships(), &noknown(), 1, "ch", "x").systems.is_empty());
+    }
+
+    #[test]
+    fn recognizes_battle_report_links_including_our_site() {
+        // Our own site (eve-spai.com/br/<id>) is recognized like the external BR hosts.
+        let ours = extract_links("gf all https://eve-spai.com/br/abc123def nice fight");
+        assert!(
+            ours.iter().any(|l| l.kind == LinkKind::BattleReport && l.url.contains("eve-spai.com/br/")),
+            "{ours:?}"
+        );
+        // Existing BR hosts still recognized; a plain link is not a BR.
+        assert!(extract_links("https://br.evetools.org/br/xyz")
+            .iter()
+            .any(|l| l.kind == LinkKind::BattleReport));
+        assert!(!extract_links("https://eve-spai.com/about").iter().any(|l| l.kind == LinkKind::BattleReport));
     }
 
     // "I" is the one English word that is always capitalized, so it looks like a name. These
