@@ -2702,7 +2702,6 @@ pub fn analyze_ctx(
                 let mut names = Vec::new();
                 let mut anchor = false; // a system/ship/structure confirming this is intel, not chat
                 for seg in &segments {
-                    let lc = seg.to_lowercase();
                     // A clean paste segment is ONE entity. A segment carrying a decorated count
                     // ("+12") or built entirely of ship hulls ("kikis flycatcher kirin") is
                     // hand-typed intel, not a pasted name — bail to normal parsing so the count
@@ -2714,25 +2713,32 @@ pub fn analyze_ctx(
                     {
                         return None;
                     }
-                    // A segment is an ANCHOR (a location/hull mention, not a pilot) if it is — or, for
-                    // a status note the reporter typed right after a linked system/hull, BEGINS with
-                    // — a system code or wormhole code, or is wholly a resolvable system / ship /
-                    // structure. Only an unambiguous CODE anchors from the first token; a leading
-                    // system-NAME word ("Moh" in "Moh Lut") does not, so a pilot named like a system
-                    // still reads as a name.
-                    let first = seg.split_whitespace().next().unwrap_or(seg);
-                    let is_anchor = (looks_like_system_code(first)
-                        && !is_code_lookalike_name(first, systems))
-                        || crate::wormholes::is_wh_code(first)
-                        || resolve(systems, seg).is_some()
-                        || ship_index.contains_key(&lc)
-                        || is_structure_word(seg);
-                    if is_anchor {
+                    // Classify by RESOLUTION, not code shape: a null-sec code ("4DS-OI") can be part
+                    // of a pilot name. A segment that WHOLLY resolves to a system (by name, or a code
+                    // that resolves / is a prefix of a real system) or a hull anchors the paste;
+                    // else a segment with a genuine name word is a pilot; else a NON-name segment
+                    // that still carries a resolved mention (a system + a typed status note, "4DS-OI
+                    // nv core probes out") anchors; anything else is prose.
+                    // Resolution first (a real system by name / prefix, a hull); the code SHAPE is
+                    // only a fallback, and guarded by `is_code_lookalike_name` so a code-shaped
+                    // pilot name is not mistaken for a system.
+                    let is_mention = |w: &str| {
+                        let wl = w.to_lowercase();
+                        resolve(systems, w).is_some()
+                            || systems.lookup_prefix(&wl).is_some()
+                            || ship_of(&wl, ship_index).is_some()
+                            || is_structure_word(w)
+                            || crate::wormholes::is_wh_code(w)
+                            || (looks_like_system_code(w) && !is_code_lookalike_name(w, systems))
+                    };
+                    if is_mention(seg) {
                         anchor = true;
                         continue;
                     }
                     if segment_is_name(seg, systems) {
                         names.push(*seg);
+                    } else if seg.split_whitespace().any(is_mention) {
+                        anchor = true;
                     } else {
                         return None; // a prose segment — not a paste
                     }
@@ -6471,6 +6477,10 @@ mod tests {
             })
             .collect();
         let s = Systems::new(by_name, HashMap::new());
+        // Both word orders of the paste, on first sight (empty cache), read "Moh Lut" as the pilot
+        // and 4DS-OI as its own system — a word that also matches a system does not bail the paste.
+        // (The single-space glue of the same line resolves via the ESI name-window cover; see the
+        // `cover_*` tests in pilot.rs.)
         for t in ["4DS-OI  Moh Lut nv", "Moh Lut  4DS-OI nv core probes out"] {
             let r = analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
             assert!(r.pilots.iter().any(|p| p == "Moh Lut"), "{t}: pilots={:?}", r.pilots);
@@ -6493,31 +6503,28 @@ mod tests {
         // single-space form. Case is not consulted.
         let s = systems();
         let ships = ships_with(&[("Prospect", 33468)]);
-        // The pasted (double-space) form is resolved at parse time by the segment split + tail trim.
-        // (The single-space form leaves an over-length blob that the ESI name-window cover claims
-        // the real name out of at run time, which a no-ESI unit test can't exercise.)
-        let r = analyze(
-            "DUO-51  Roadman HighSec CynoLighter likely prospect",
-            &s,
-            &ships,
-            &noknown(),
-            1,
-            "ch",
-            "Rage Starscythe",
-        );
-        assert!(
-            r.pilots.iter().any(|p| p == "Roadman HighSec CynoLighter"),
-            "pilots={:?}",
-            r.pilots
-        );
-        assert!(
-            !r.pilots
-                .iter()
-                .any(|p| { p.to_lowercase().contains("likely") || p.to_lowercase().contains("prospect") }),
-            "leaked prose/ship into a pilot: {:?}",
-            r.pilots
-        );
-        assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "ships={:?}", r.ships);
+        // The paste (double-space) form resolves at parse time via the segment split + tail trim.
+        // The single-space form leaves an over-length blob whose real name the ESI name-window cover
+        // claims at resolution time — see `cover_claims_name_from_single_space_glue` in pilot.rs, so
+        // both spacings resolve to the same pilot.
+        let known: std::collections::HashMap<String, i64> =
+            [("roadman highsec cynolighter".to_string(), 1i64)].into_iter().collect();
+        for t in ["DUO-51  Roadman HighSec CynoLighter likely prospect"] {
+            let r = analyze(t, &s, &ships, &known, 1, "ch", "Rage Starscythe");
+            assert!(
+                r.pilots.iter().any(|p| p == "Roadman HighSec CynoLighter"),
+                "{t}: pilots={:?}",
+                r.pilots
+            );
+            assert!(
+                !r.pilots.iter().any(|p| {
+                    p.to_lowercase().contains("likely") || p.to_lowercase().contains("prospect")
+                }),
+                "{t}: leaked prose/ship into a pilot: {:?}",
+                r.pilots
+            );
+            assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "{t}: ships={:?}", r.ships);
+        }
     }
 
     #[test]

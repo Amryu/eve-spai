@@ -644,6 +644,43 @@ mod tests {
     }
 
     #[test]
+    fn cover_claims_name_from_single_space_glue() {
+        // Single-space intel (double-space is only a HINT, so the same line typed with single
+        // spaces must resolve too). The over-length blob a hand-typed line leaves is split by the
+        // ESI name-window cover, which claims the real 1-3 word name and skips every other span
+        // that resolved as a NON-character (a leading/trailing system code, a trailing prose word).
+        // "DUO-51 Roadman HighSec CynoLighter likely" (ship "prospect" already masked):
+        let mut c = PilotCache::default();
+        c.resolved.insert("roadman highsec cynolighter".into(), Some(100));
+        for non in ["duo-51 roadman highsec", "duo-51 roadman", "duo-51", "likely"] {
+            c.resolved.insert(non.into(), None);
+        }
+        assert_eq!(
+            c.cover("DUO-51 Roadman HighSec CynoLighter likely"),
+            vec!["Roadman HighSec CynoLighter"]
+        );
+        // "Moh Lut 4DS-OI nv core probes": a pilot whose word "Moh" also names a system, glued to a
+        // trailing system code + status stop words, still yields just the pilot.
+        let mut c2 = PilotCache::default();
+        c2.resolved.insert("moh lut".into(), Some(200));
+        for non in [
+            "moh lut 4ds-oi",
+            "4ds-oi nv core",
+            "4ds-oi nv",
+            "4ds-oi",
+            "nv core probes",
+            "nv core",
+            "nv",
+            "core probes",
+            "core",
+            "probes",
+        ] {
+            c2.resolved.insert(non.into(), None);
+        }
+        assert_eq!(c2.cover("Moh Lut 4DS-OI nv core probes"), vec!["Moh Lut"]);
+    }
+
+    #[test]
     fn cover_skips_trailing_count_number() {
         let mut c = PilotCache::default();
         c.resolved.insert("ace hodgens".into(), Some(1));
