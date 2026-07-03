@@ -16050,11 +16050,11 @@ pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         })
         // with_active(false) keeps the re-map from stealing focus (WS_EX_NOACTIVATE on Windows).
         .with_active(false)
-        // Map from creation on ALL platforms: a hidden window never paints, so the closure that
-        // would later show it never runs (the catch-22 that left the alert hidden on Windows while
-        // the main was minimized). Stay mapped + transparent + click-through when idle instead;
-        // WS_EX_NOACTIVATE (with_active(false)) keeps it from stealing focus.
-        .with_visible(true)
+        // Linux/X11 maps from creation and stays mapped + transparent + click-through when idle
+        // (re-mapping steals focus, winit#1160). Windows starts HIDDEN and the render closure maps
+        // it on an alert: a transparent-when-idle window renders as an opaque BLACK SQUARE there
+        // (wgpu/DWM doesn't composite the alpha), so hiding when idle avoids it.
+        .with_visible(!cfg!(target_os = "windows"))
         .with_decorations(false)
         .with_resizable(true)
         .with_taskbar(false)
@@ -16093,12 +16093,11 @@ pub(crate) fn build_alert_viewport_cb(
         // Drive Visible + click-through from the CLOSURE (not the builder) so they're right
         // even while the root is minimized. Only send a command on change (each one pins
         // egui at vsync). Per-OS behaviour mirrors the old immediate window:
-        // All platforms: while the feature is ON stay MAPPED (transparent + click-through when
-        // idle) rather than hiding, so the closure keeps painting and can show the window on an
-        // alert even while the main window is minimized. Re-mapping steals focus on X11
-        // (winit#1160) and, on Windows, a hidden window never repaints to un-hide itself - staying
-        // mapped avoids both. Only fully hide when the feature is OFF (no window at all).
-        let want_visible = active || st.enabled;
+        // - Linux/X11: while the feature is ON stay MAPPED (transparent + click-through when idle)
+        //   rather than hiding — re-mapping steals focus (winit#1160).
+        // - Windows: visible ONLY while active; a transparent-when-idle window renders as an opaque
+        //   black square (wgpu/DWM doesn't composite the alpha), so hide it when idle.
+        let want_visible = active || (st.enabled && !cfg!(target_os = "windows"));
         let want_passthrough = !active;
         if st.applied_visible != Some(want_visible) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
