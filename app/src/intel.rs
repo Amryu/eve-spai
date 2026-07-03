@@ -2731,7 +2731,17 @@ pub fn analyze_ctx(
                             || crate::wormholes::is_wh_code(w)
                             || (looks_like_system_code(w) && !is_code_lookalike_name(w, systems))
                     };
-                    if is_mention(seg) {
+                    // "System detection wins if the code is a prefix for the current/neighbouring
+                    // system": a code-shaped token that RESOLVES to a real system is that system even
+                    // next to a typed word, so "FX4L-2 imucs" anchors on the location instead of
+                    // reading as a pilot. A plain word that merely matches a system name ("Moh") does
+                    // NOT force this, and a code that resolves to nothing ("Cobon-Han") stays a name.
+                    let confirmed_system = |w: &str| {
+                        looks_like_system_code(w)
+                            && (resolve(systems, w).is_some()
+                                || systems.lookup_prefix(&w.to_lowercase()).is_some())
+                    };
+                    if is_mention(seg) || seg.split_whitespace().any(confirmed_system) {
                         anchor = true;
                         continue;
                     }
@@ -6452,6 +6462,50 @@ mod tests {
         let (pilots, _, _) = resolve_report(&r3, &["Clear Rain"], &s);
         assert!(pilots.iter().any(|p| p == "Clear Rain"), "name split: {pilots:?}");
         assert!(!r3.clear, "name 'Clear Rain' spoofed clear");
+    }
+
+    #[test]
+    fn different_main_systems_do_not_amend_on_shared_pilot() {
+        // Two reporters see the same pilot "Cloister Cobon-Han" (whose "Cobon-Han" is code-SHAPED
+        // but resolves to no system, so it stays part of the name) in DIFFERENT systems: RZ-TI6 vs
+        // FX4L-2. Each system is detected (a code that resolves wins as the location, even glued to a
+        // typed word "FX4L-2 imucs"), so a shared pilot must NOT merge the two distinct sightings.
+        let by_name = [("rz-ti6", "RZ-TI6", 30000834i64, -0.4), ("fx4l-2", "FX4L-2", 30000835, -0.4)]
+            .into_iter()
+            .map(|(k, n, id, sec)| {
+                (
+                    k.to_string(),
+                    SystemInfo {
+                        id,
+                        name: n.to_string(),
+                        security: sec,
+                        constellation: String::new(),
+                        region: String::new(),
+                        faction: String::new(),
+                    },
+                )
+            })
+            .collect();
+        let s = Systems::new(by_name, HashMap::new());
+        let mut state = IntelState::default();
+        let mut a =
+            analyze("RZ-TI6  Cloister Cobon-Han", &s, &noships(), &noknown(), 100, "ch", "BiGsnorlax");
+        apply_resolution(&mut a, &["Cloister Cobon-Han"], &s);
+        assert_eq!(a.primary_system().map(|d| d.id), Some(30000834), "msg1 system");
+        state.push(a);
+        let mut b = analyze(
+            "Cloister Cobon-Han  FX4L-2 imucs",
+            &s,
+            &noships(),
+            &noknown(),
+            130,
+            "ch",
+            "utsumi ota",
+        );
+        apply_resolution(&mut b, &["Cloister Cobon-Han"], &s);
+        assert_eq!(b.primary_system().map(|d| d.id), Some(30000835), "msg2 system");
+        assert!(!state.try_amend(&b, 60, &s), "different main systems must not amend");
+        assert_eq!(state.reports.len(), 1, "the two sightings stay separate");
     }
 
     #[test]
