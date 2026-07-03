@@ -1174,7 +1174,7 @@ fn segment_is_name(seg: &str, systems: &Systems) -> bool {
 /// ("Garen Willow at taj" → "Garen Willow"). Only a locational preposition that FOLLOWS a >= 2-word
 /// name starts the prose, so a 1-word-prefix name that legitimately contains one ("Man in Black")
 /// is left intact.
-fn trim_paste_location_tail(seg: &str) -> String {
+fn trim_paste_location_tail(seg: &str, ship_index: &HashMap<String, (i64, String)>) -> String {
     const LOC_PREP: &[&str] = &["at", "in", "on", "near"];
     let mut words: Vec<&str> = seg.split_whitespace().collect();
     // Drop a trailing decorated count ("01XcerberusX01 +3" → "01XcerberusX01"): a "+N"/"xN"/"N+"
@@ -1182,20 +1182,21 @@ fn trim_paste_location_tail(seg: &str) -> String {
     while words.len() >= 2 && is_decorated_count(words[words.len() - 1]) {
         words.pop();
     }
-    // Drop trailing intel keyword/status tags ("Ben Walker NV" → "Ben Walker", "… clr"): a paste
-    // segment can carry the reporter's status note glued to the pasted name. A token that is a
-    // stop word on its own and never a name component is that note, not part of the name — strip
-    // it so the name resolves (and the freed tag is read as its own status flag, e.g. no-visual).
-    // Name-capable words ("Clear", "Blue"), connectors ("of"), and initial/number suffixes are
-    // kept so a real name ending in one survives. This mirrors `extract_pilots`, which already
-    // rejects a Title-case run containing such a hard stop word — which is why the single-space
-    // form of the same line already parses correctly.
+    // Drop trailing intel keyword/status tags AND a trailing hull note ("Ben Walker NV" → "Ben
+    // Walker", "Roadman HighSec CynoLighter likely prospect" → "Roadman HighSec CynoLighter"): a
+    // paste segment can carry the reporter's typed note (a status word or the pilot's ship) glued to
+    // the linked name. A bare stop word, or a hull, on its own is that note, not part of the name —
+    // strip it so the name resolves (and the freed word is read as its own flag/ship). Name-capable
+    // words ("Clear", "Blue"), connectors ("of"), and initial/number suffixes are kept so a real
+    // name ending in one survives; the single-space form already parses via the same trimming +
+    // ship masking.
     while words.len() >= 2 && {
         let last = words[words.len() - 1];
-        is_pilot_stopword(last)
+        (is_pilot_stopword(last)
             && !is_name_connector(last)
             && !is_name_capable_stopword(last)
-            && !is_name_suffix(last)
+            && !is_name_suffix(last))
+            || ship_of(&last.to_lowercase(), ship_index).is_some()
     } {
         words.pop();
     }
@@ -1498,6 +1499,19 @@ fn loose_pilot_runs(
         }
         while run.last().is_some_and(&trim) {
             run.pop();
+        }
+        // An OVER-LENGTH run (>3 words) can never be a name, so a boundary non-name-capable stop
+        // word ("Roadman HighSec CynoLighter likely") is prose that pushed a valid <=3-word name
+        // over the limit — trim it (any length) until the run is a plausible name length. A content
+        // keyword that legitimately ends a <=3-word name ("High Plains Drifter") is untouched, since
+        // this only fires while the run is still longer than 3 words.
+        let over_trim =
+            |w: &String| is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w);
+        while run.len() > 3 && run.last().is_some_and(&over_trim) {
+            run.pop();
+        }
+        while run.len() > 3 && run.first().is_some_and(&over_trim) {
+            run.remove(0);
         }
         // A whole name is at least 3 letters (not each word — "Bo Li" is fine), and is not
         // ENTIRELY lower-case stop words — a capital makes even an all-stop-word run
@@ -2743,7 +2757,7 @@ pub fn analyze_ctx(
             for seg in names {
                 // A paste segment may carry a typed location tail ("Garen Willow at taj"); surface
                 // just the pasted name.
-                let name = trim_paste_location_tail(seg);
+                let name = trim_paste_location_tail(seg, ship_index);
                 paste_origin.insert(name.to_lowercase());
                 if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
                     pilots.push(name);
@@ -4674,9 +4688,9 @@ mod tests {
         assert_eq!(r.pilots, vec!["Garen Willow".to_string()], "pilots={:?}", r.pilots);
         assert!(r.systems.iter().any(|d| d.name == "C-J6MT"));
         // A 1-word-prefix name that legitimately contains a preposition is NOT truncated.
-        assert_eq!(trim_paste_location_tail("Man in Black"), "Man in Black");
-        assert_eq!(trim_paste_location_tail("Lord of War"), "Lord of War");
-        assert_eq!(trim_paste_location_tail("Garen Willow at taj"), "Garen Willow");
+        assert_eq!(trim_paste_location_tail("Man in Black", &ships_with(&[])), "Man in Black");
+        assert_eq!(trim_paste_location_tail("Lord of War", &ships_with(&[])), "Lord of War");
+        assert_eq!(trim_paste_location_tail("Garen Willow at taj", &ships_with(&[])), "Garen Willow");
     }
 
     #[test]
@@ -4688,9 +4702,9 @@ mod tests {
         assert_eq!(r.pilots, vec!["01XcerberusX01".to_string()], "pilots={:?}", r.pilots);
         assert_eq!(r.count, Some(4), "count={:?}", r.count); // the named pilot + 3 more
         // A bare trailing number ("Malcolm 41") is ambiguous and is NOT trimmed.
-        assert_eq!(trim_paste_location_tail("Malcolm 41"), "Malcolm 41");
-        assert_eq!(trim_paste_location_tail("01XcerberusX01 +3"), "01XcerberusX01");
-        assert_eq!(trim_paste_location_tail("Drake x4"), "Drake");
+        assert_eq!(trim_paste_location_tail("Malcolm 41", &ships_with(&[])), "Malcolm 41");
+        assert_eq!(trim_paste_location_tail("01XcerberusX01 +3", &ships_with(&[])), "01XcerberusX01");
+        assert_eq!(trim_paste_location_tail("Drake x4", &ships_with(&[])), "Drake");
     }
 
     #[test]
@@ -6438,6 +6452,40 @@ mod tests {
     }
 
     #[test]
+    fn pilot_name_with_keyword_words_and_trailing_ship_note() {
+        // "Rage Starscythe > DUO-51  Roadman HighSec CynoLighter likely prospect" (url-stripped):
+        // the 3-word linked pilot name embeds keyword-ish words ("HighSec", "CynoLighter") and is
+        // followed by the reporter's typed note "likely prospect" (a stop word + the pilot's ship).
+        // The name must surface as its own 3-word candidate, not be glued into an unresolvable
+        // >3-word blob, and "Prospect" is read as a ship. Both the pasted (double-space) and the
+        // single-space form. Case is not consulted.
+        let s = systems();
+        let ships = ships_with(&[("Prospect", 33468)]);
+        // The reported pasted (double-space) form, and the same tail on a bare name. A system code
+        // glued in the single-space form ("DUO-51 Roadman ...") is left for the ESI cover to split
+        // and is not asserted here.
+        for t in [
+            "DUO-51  Roadman HighSec CynoLighter likely prospect",
+            "Roadman HighSec CynoLighter likely prospect",
+        ] {
+            let r = analyze(t, &s, &ships, &noknown(), 1, "ch", "Rage Starscythe");
+            assert!(
+                r.pilots.iter().any(|p| p == "Roadman HighSec CynoLighter"),
+                "{t}: {:?}",
+                r.pilots
+            );
+            assert!(
+                !r.pilots.iter().any(|p| {
+                    p.to_lowercase().contains("likely") || p.to_lowercase().contains("prospect")
+                }),
+                "{t} leaked prose/ship into a pilot: {:?}",
+                r.pilots
+            );
+            assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "{t}: {:?}", r.ships);
+        }
+    }
+
+    #[test]
     fn pluralised_multiword_and_ies_hulls() {
         let s = systems();
         let ships = ships_with(&[("Osprey Navy Issue", 29990), ("Osprey", 620), ("Harpy", 11381)]);
@@ -7544,11 +7592,11 @@ mod tests {
         }
         // trim helper directly: a trailing tag is stripped, a real name ending in a name-capable
         // word or an initial/number is kept.
-        assert_eq!(trim_paste_location_tail("Ben Walker NV"), "Ben Walker");
-        assert_eq!(trim_paste_location_tail("Ben Walker nv"), "Ben Walker");
-        assert_eq!(trim_paste_location_tail("Clear Rain"), "Clear Rain");
-        assert_eq!(trim_paste_location_tail("Blue Skies"), "Blue Skies");
-        assert_eq!(trim_paste_location_tail("Lopatich R"), "Lopatich R");
-        assert_eq!(trim_paste_location_tail("Malcolm 41"), "Malcolm 41");
+        assert_eq!(trim_paste_location_tail("Ben Walker NV", &ships_with(&[])), "Ben Walker");
+        assert_eq!(trim_paste_location_tail("Ben Walker nv", &ships_with(&[])), "Ben Walker");
+        assert_eq!(trim_paste_location_tail("Clear Rain", &ships_with(&[])), "Clear Rain");
+        assert_eq!(trim_paste_location_tail("Blue Skies", &ships_with(&[])), "Blue Skies");
+        assert_eq!(trim_paste_location_tail("Lopatich R", &ships_with(&[])), "Lopatich R");
+        assert_eq!(trim_paste_location_tail("Malcolm 41", &ships_with(&[])), "Malcolm 41");
     }
 }
