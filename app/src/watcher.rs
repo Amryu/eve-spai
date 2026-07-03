@@ -317,10 +317,7 @@ fn scan(
     // Phase 2: demote confirmed pilots whose character has no recent zKill activity (with a
     // young-account exemption + multi-system revival). Runs every poll so the set re-derives and
     // names auto-revive; only an actual flip re-parses the affected reports.
-    demote_pass(
-        pilots, activity, sightings, revivals, state, systems, ships, last_system, channel_regions,
-        db, ctx,
-    );
+    demote_pass(pilots, activity, sightings, revivals, state, db, ctx);
 
     if any_new {
         ctx.request_repaint();
@@ -335,17 +332,16 @@ fn feed_pilot_names(reports: &[intel::IntelReport]) -> std::collections::HashSet
 }
 
 /// Re-derive the demoted-for-inactivity pilot set for the pilots CURRENTLY IN THE INTEL FEED and,
-/// on a flip, re-parse the reports that mention a flipped name so a newly-demoted name frees its
-/// tokens (keywords/ships/other pilots) and a revived name is re-anchored.
+/// It FLAGS them (which drives the "?" uncertainty icon) instead of hiding — a flagged pilot is
+/// still shown and still parsed as a pilot. Only a USER verdict ("not a pilot") hides a name and
+/// frees its tokens, and that re-parse is triggered from the verdict UI, not here.
 ///
 /// Only feed-present confirmed characters get an `activity.want()` (which re-queues on the 4h TTL),
 /// so a pilot is checked when it appears and re-checked the next time it reappears — we never grind
 /// the entire known-pilot history through zKill.
 ///
-/// Lock discipline (no ABBA with the fetcher/watcher/reconcile threads): `intel_state`, `pilots`,
-/// `activity`, and `sightings` are taken only as brief LEAF locks (lock → read/clone → drop) and
-/// never held while another is acquired. The final re-parse holds ONLY `intel_state` (the parser
-/// inputs are snapshotted from `pilots` first), so it never nests `pilots` under `intel_state`.
+/// Lock discipline: `intel_state`, `pilots`, `activity`, `sightings`, and `revivals` are taken only
+/// as brief LEAF locks (lock → read/clone → drop) and never held while another is acquired.
 #[allow(clippy::too_many_arguments)]
 fn demote_pass(
     pilots: &crate::pilot::SharedPilots,
@@ -353,10 +349,6 @@ fn demote_pass(
     sightings: &crate::intel::SharedSightings,
     revivals: &SharedRevivals,
     state: &Mutex<IntelState>,
-    systems: &Systems,
-    ships: &HashMap<String, (i64, String)>,
-    last_system: &HashMap<String, (i64, String, Vec<String>)>,
-    channel_regions: &HashMap<String, Vec<String>>,
     db: Option<&crate::store::Store>,
     ctx: &egui::Context,
 ) {
@@ -367,8 +359,8 @@ fn demote_pass(
         let st = state.lock().unwrap();
         feed_pilot_names(&st.reports)
     };
-    // 2. Resolve feed names to confirmed char ids + snapshot the old demoted set (pilots leaf lock).
-    let (candidates, old_demoted): (Vec<(String, i64)>, std::collections::HashSet<String>) = {
+    // 2. Resolve feed names to confirmed char ids + snapshot the old flagged set (pilots leaf lock).
+    let (candidates, old_flagged): (Vec<(String, i64)>, std::collections::HashSet<String>) = {
         let c = pilots.lock().unwrap();
         let candidates = feed_names
             .iter()
@@ -377,7 +369,7 @@ fn demote_pass(
                 _ => None,
             })
             .collect();
-        (candidates, c.denied())
+        (candidates, c.flagged())
     };
     if candidates.is_empty() {
         return; // nothing in the feed to (re-)evaluate; leave the demoted set untouched
@@ -412,10 +404,10 @@ fn demote_pass(
     //     Expired entries are pruned opportunistically. Persist updates are collected and
     //     written to the store AFTER the lock is dropped (no store lock across the loop).
     let mut revival_updates: Vec<(String, i64)> = Vec::new();
-    let new_demoted: std::collections::HashSet<String> = {
+    let new_flagged: std::collections::HashSet<String> = {
         let mut rev = revivals.lock().unwrap();
         rev.retain(|_, until| *until > now); // prune lapsed windows
-        let mut demoted = old_demoted.clone();
+        let mut flagged = old_flagged.clone();
         for (name, id) in &candidates {
             let Some(a) = acts.get(id).copied().flatten() else {
                 continue; // not fetched yet → leave as-is (carry current state forward)
@@ -436,12 +428,12 @@ fn demote_pass(
                 revived,
                 a.last_corp_change,
             ) {
-                demoted.insert(name.clone());
+                flagged.insert(name.clone());
             } else {
-                demoted.remove(name);
+                flagged.remove(name);
             }
         }
-        demoted
+        flagged
     };
     // Persist the refreshed windows (small upserts) outside every leaf lock.
     if let Some(store) = db {
@@ -449,45 +441,11 @@ fn demote_pass(
             store.set_revival(name, *until);
         }
     }
-    // 5. Replace the demotion set (pilots leaf lock) and detect the flip vs. the previous set.
-    let flipped: std::collections::HashSet<String> =
-        old_demoted.symmetric_difference(&new_demoted).cloned().collect();
-    pilots.lock().unwrap().set_demoted(new_demoted);
-    if flipped.is_empty() {
-        return; // re-deriving the same set is cheap; only a flip re-parses
-    }
-    // 6. A flip: snapshot the parser inputs (known excludes demoted; denied = demoted) under a
-    //    brief pilots leaf lock, then hold ONLY intel_state while re-parsing.
-    let (known, denied) = {
-        let c = pilots.lock().unwrap();
-        (c.confirmed(), c.denied())
-    };
-    let mut st = state.lock().unwrap();
-    let mut changed = false;
-    for r in &mut st.reports {
-        // A report is affected if its text mentions a name that just flipped (in either
-        // direction): a demoted name still in `pilots`, or a revived name whose tokens were free.
-        let toks: Vec<String> =
-            intel::tokenize(&r.text).iter().map(|t| t.to_lowercase()).collect();
-        let mentions = flipped.iter().any(|f| {
-            let fw: Vec<&str> = f.split_whitespace().collect();
-            !fw.is_empty() && toks.windows(fw.len()).any(|w| w.iter().zip(&fw).all(|(a, b)| a == b))
-        });
-        if !mentions {
-            continue;
-        }
-        let context = last_system.get(&r.channel).map(|(id, _, _)| *id);
-        let regions = channel_regions.get(&r.channel).cloned().unwrap_or_default();
-        let mut fresh = intel::analyze_ctx(
-            &r.text, systems, ships, &known, r.received, &r.channel, &r.reporter, context,
-            &regions, &denied,
-        );
-        fresh.id = r.id; // preserve the stable report id across the in-place replace
-        fresh.movement = r.movement.take(); // movement is set by the watcher, not the parser
-        *r = fresh;
-        changed = true;
-    }
-    drop(st);
+    // 5. Update the flagged set (drives the "?" icon). No re-parse: an activity flag doesn't change
+    //    parsing — a flagged pilot is still a pilot. Only a USER "not a pilot" verdict frees a name's
+    //    tokens, and that re-parse is triggered from the verdict UI. Repaint if a "?" appeared/cleared.
+    let changed = old_flagged != new_flagged;
+    pilots.lock().unwrap().set_activity_flagged(new_flagged);
     if changed {
         ctx.request_repaint();
     }

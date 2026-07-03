@@ -175,6 +175,12 @@ CREATE TABLE IF NOT EXISTS pilot_revival (
     name          TEXT PRIMARY KEY,
     revived_until INTEGER NOT NULL
 );
+-- The user's manual verdict on an activity-flagged pilot: hidden=1 means 'not a pilot' (hide +
+-- free its tokens), hidden=0 means 'real' (always show, clears the uncertainty).
+CREATE TABLE IF NOT EXISTS pilot_verdict (
+    name_lc TEXT PRIMARY KEY,
+    hidden  INTEGER NOT NULL
+);
 ";
 
 /// A ship type with computed resist/tank/fitting stats.
@@ -1134,6 +1140,28 @@ impl Store {
             "INSERT INTO pilot_revival(name, revived_until) VALUES(?1, ?2)
              ON CONFLICT(name) DO UPDATE SET revived_until=?2",
             params![name.to_lowercase(), revived_until],
+        );
+    }
+
+    /// Load the user's persisted pilot verdicts as `(name_lc, hidden)`.
+    pub fn load_pilot_verdicts(&self) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc, hidden FROM pilot_verdict") {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)))
+            {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    /// Persist a user verdict for a pilot (`hidden` = "not a pilot").
+    pub fn set_pilot_verdict(&self, name: &str, hidden: bool) {
+        let _ = self.conn.execute(
+            "INSERT INTO pilot_verdict(name_lc, hidden) VALUES(?1, ?2)
+             ON CONFLICT(name_lc) DO UPDATE SET hidden=?2",
+            params![name.to_lowercase(), hidden as i64],
         );
     }
 

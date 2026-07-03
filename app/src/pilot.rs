@@ -28,10 +28,13 @@ pub struct PilotCache {
     reverified: std::collections::HashSet<String>,
     queued: std::collections::HashSet<String>,
     queue: VecDeque<String>,
-    /// Confirmed characters currently DEMOTED for inactivity (name-lower) — Phase 2. The
-    /// demotion pass re-derives this set every cycle; a demoted name is excluded from
-    /// [`confirmed`] so the parser no longer anchors on it (its tokens are freed).
-    demoted: std::collections::HashSet<String>,
+    /// Confirmed characters that FAILED all activity checks (name-lower) — Phase 2. NOT hidden:
+    /// they are still shown, with an uncertainty "?" so the user can classify them. Re-derived
+    /// every demotion cycle.
+    activity_flagged: std::collections::HashSet<String>,
+    /// The user's manual verdicts (name-lower -> hidden): `true` = "not a pilot" (hide it and free
+    /// its tokens), `false` = "real" (always show, clears the uncertainty). Persisted.
+    user_verdicts: HashMap<String, bool>,
 }
 
 /// Whether a candidate could be a real EVE character name: 1 to 3 words and 3 to 37 chars.
@@ -53,17 +56,18 @@ impl PilotCache {
         self.resolved.get(&name.to_lowercase()).copied()
     }
 
-    /// Ids to show as resolved pilots on a card: ESI-confirmed AND not demoted-for-inactivity.
-    /// Also re-queues any still-pending name so a visible card keeps resolving (fixes stuck "...").
+    /// Ids to show as resolved pilots on a card: ESI-confirmed AND not user-hidden (activity-flagged
+    /// pilots are still shown — the UI marks them with a "?"). Also re-queues any still-pending name
+    /// so a visible card keeps resolving (fixes stuck "...").
     pub fn display_ids<'a>(&mut self, names: impl Iterator<Item = &'a str>) -> std::collections::HashMap<String, i64> {
         let mut out = std::collections::HashMap::new();
         for name in names {
             let lw = name.to_lowercase();
             match self.resolved.get(&lw).copied() {
-                Some(Some(id)) if !self.demoted.contains(&lw) => {
+                Some(Some(id)) if self.user_verdicts.get(&lw).copied() != Some(true) => {
                     out.insert(name.to_string(), id);
                 }
-                Some(Some(_)) => {}       // demoted: hide
+                Some(Some(_)) => {}       // user-hidden: hide
                 Some(None) => {}          // ESI says not a character
                 None => self.queue(name), // pending: keep it resolving
             }
@@ -148,13 +152,14 @@ impl PilotCache {
         }
     }
 
-    /// Snapshot of confirmed names (lower-cased) → character id, for the parser. EXCLUDES
-    /// currently-demoted names (Phase 2) so the parser stops anchoring on an inactive pilot.
+    /// Snapshot of confirmed names (lower-cased) → character id, for the parser. EXCLUDES only
+    /// USER-HIDDEN names (the user marked them "not a pilot") so the parser frees their tokens;
+    /// activity-flagged-but-undecided names are still real pilots to the parser.
     pub fn confirmed(&self) -> HashMap<String, i64> {
         self.resolved
             .iter()
             .filter_map(|(n, v)| v.map(|id| (n.clone(), id)))
-            .filter(|(n, _)| !self.demoted.contains(n))
+            .filter(|(n, _)| self.user_verdicts.get(n).copied() != Some(true))
             .collect()
     }
 
@@ -166,21 +171,45 @@ impl PilotCache {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
     }
 
-    /// Replace the demoted-for-inactivity set (Phase 2). Re-derived every evaluation cycle.
-    pub fn set_demoted(&mut self, names: std::collections::HashSet<String>) {
-        self.demoted = names;
+    /// Replace the activity-flagged set (Phase 2): confirmed pilots that failed all activity checks.
+    /// Re-derived every evaluation cycle. These are shown with a "?" — not hidden.
+    pub fn set_activity_flagged(&mut self, names: std::collections::HashSet<String>) {
+        self.activity_flagged = names;
     }
 
-    /// Whether a confirmed character is currently demoted for inactivity (Phase 2).
-    #[allow(dead_code)] // part of the Phase 2 demotion API; not all callers use it
-    pub fn is_demoted(&self, name: &str) -> bool {
-        self.demoted.contains(&name.to_lowercase())
+    /// The current activity-flagged set (for the demotion pass to carry forward between cycles).
+    pub fn flagged(&self) -> std::collections::HashSet<String> {
+        self.activity_flagged.clone()
     }
 
-    /// The currently-demoted names (lower-cased) — fed to the parser as `denied` so a demoted
-    /// name frees its tokens for keyword/ship/other-pilot detection (Phase 2).
+    /// Whether the user marked this name "not a pilot" (hide it + free its tokens).
+    pub fn is_hidden(&self, name: &str) -> bool {
+        self.user_verdicts.get(&name.to_lowercase()).copied() == Some(true)
+    }
+
+    /// Whether this confirmed pilot is UNCERTAIN: it failed the activity checks and the user hasn't
+    /// classified it yet → shown with a "?" so the user can decide.
+    pub fn is_uncertain(&self, name: &str) -> bool {
+        let lw = name.to_lowercase();
+        self.activity_flagged.contains(&lw) && !self.user_verdicts.contains_key(&lw)
+    }
+
+    /// Record a user verdict (`true` = not-a-pilot/hide, `false` = real). The caller persists it.
+    pub fn set_verdict(&mut self, name: &str, hidden: bool) {
+        self.user_verdicts.insert(name.to_lowercase(), hidden);
+    }
+
+    /// Preload persisted user verdicts at startup.
+    pub fn preload_verdicts(&mut self, verdicts: impl IntoIterator<Item = (String, bool)>) {
+        for (n, h) in verdicts {
+            self.user_verdicts.insert(n.to_lowercase(), h);
+        }
+    }
+
+    /// USER-HIDDEN names (lower-cased) — fed to the parser as `denied` so a name the user marked
+    /// "not a pilot" frees its tokens for keyword/ship/other-pilot detection.
     pub fn denied(&self) -> std::collections::HashSet<String> {
-        self.demoted.clone()
+        self.user_verdicts.iter().filter(|(_, &h)| h).map(|(n, _)| n.clone()).collect()
     }
 
     /// Cover a multi-word candidate with confirmed character sub-names, longest match
@@ -484,6 +513,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uncertainty_and_user_verdicts() {
+        let mut c = PilotCache::default();
+        c.resolved.insert("bob smith".into(), Some(123));
+        c.resolved.insert("ann lee".into(), Some(9));
+        c.set_activity_flagged(["bob smith".to_string(), "ann lee".to_string()].into_iter().collect());
+        // Flagged + undecided = uncertain, but still shown.
+        assert!(c.is_uncertain("Bob Smith") && c.is_uncertain("Ann Lee"));
+        assert_eq!(c.display_ids(["Bob Smith", "Ann Lee"].into_iter()).len(), 2);
+        // The user hides Bob, keeps Ann.
+        c.set_verdict("Bob Smith", true);
+        c.set_verdict("Ann Lee", false);
+        assert!(c.is_hidden("Bob Smith") && !c.is_uncertain("Bob Smith")); // decided -> not uncertain
+        assert!(!c.is_hidden("Ann Lee") && !c.is_uncertain("Ann Lee"));
+        let ids = c.display_ids(["Bob Smith", "Ann Lee"].into_iter());
+        assert!(!ids.contains_key("Bob Smith") && ids.contains_key("Ann Lee")); // hidden vs shown
+        assert!(c.denied().contains("bob smith") && !c.denied().contains("ann lee")); // hidden -> denied
+    }
+
+    #[test]
     fn negative_verdict_expires_after_ttl() {
         let mut c = PilotCache::default();
         // A timestamped negative older than the TTL is forgotten (re-queried as pending).
@@ -508,20 +556,24 @@ mod tests {
     fn display_ids_filters_and_requeues() {
         let mut c = PilotCache::default();
         c.resolved.insert("real pilot".into(), Some(42));
-        c.resolved.insert("demoted pilot".into(), Some(7));
+        c.resolved.insert("flagged pilot".into(), Some(7));
+        c.resolved.insert("hidden pilot".into(), Some(8));
         c.resolved.insert("not a char".into(), None);
-        c.set_demoted(std::collections::HashSet::from(["demoted pilot".to_string()]));
+        // Flagged = uncertain (still shown); only a user "not a pilot" verdict hides.
+        c.set_activity_flagged(std::collections::HashSet::from(["flagged pilot".to_string()]));
+        c.set_verdict("hidden pilot", true);
 
-        let names = ["Real Pilot", "Demoted Pilot", "Not A Char", "Pending Pilot"];
+        let names = ["Real Pilot", "Flagged Pilot", "Hidden Pilot", "Not A Char", "Pending Pilot"];
         let out = c.display_ids(names.iter().copied());
 
-        // Confirmed, non-demoted name shows with its id.
+        // Confirmed names (including the activity-flagged/uncertain one) show with their id.
         assert_eq!(out.get("Real Pilot"), Some(&42));
-        // Demoted, not-a-character, and pending names are all omitted.
-        assert!(!out.contains_key("Demoted Pilot"));
+        assert_eq!(out.get("Flagged Pilot"), Some(&7));
+        // User-hidden, not-a-character, and pending names are all omitted.
+        assert!(!out.contains_key("Hidden Pilot"));
         assert!(!out.contains_key("Not A Char"));
         assert!(!out.contains_key("Pending Pilot"));
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 2);
 
         // The pending name was re-queued so a visible card keeps resolving.
         assert!(c.queued.contains("pending pilot"));

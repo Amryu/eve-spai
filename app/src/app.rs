@@ -231,6 +231,8 @@ pub enum IntelClick {
     Ship(i64),
     Pilot(String),
     Dscan(String),
+    /// The user clicked the "?" on an activity-flagged (uncertain) pilot to classify it.
+    PilotVerdict(String),
 }
 
 /// Which tab the map's right dock is showing (the mode panel, or docked system info).
@@ -386,6 +388,10 @@ pub struct SpaiApp {
     battle_filter_open: bool,
     /// Open alert-rule filter picker dialog (ships / systems / … ), if any.
     filter_picker: Option<crate::pickers::FilterPicker>,
+    /// An uncertain pilot whose verdict popup ("real" / "not a pilot") is open, if any.
+    verdict_popup: Option<String>,
+    /// Whether the one-time uncertain-pilot explainer dialog is showing.
+    verdict_explainer_open: bool,
     /// Background ESI result for the character picker's "add by exact name" box.
     filter_add_result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
     /// Awaiting confirmation to restore default battle rules.
@@ -1115,6 +1121,8 @@ impl SpaiApp {
             work_throttle_shared: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             battle_filter_open: false,
             filter_picker: None,
+            verdict_popup: None,
+            verdict_explainer_open: false,
             filter_add_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             battle_filter_confirm_reset: false,
             battle_filter_gen: 0,
@@ -1506,8 +1514,8 @@ impl SpaiApp {
                         return false;
                     }
                     match cache.get(p) {
-                        Some(Some(_)) => !cache.is_demoted(p), // confirmed, drop only if demoted
-                        Some(None) => false,                   // not a character
+                        Some(Some(_)) => !cache.is_hidden(p), // confirmed; drop only if user-hidden
+                        Some(None) => false,                  // not a character
                         None => {
                             cache.queue(p); // still pending: keep, but (re)queue so it resolves
                             true
@@ -1522,9 +1530,12 @@ impl SpaiApp {
             ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
-        let resolved_pilots: std::collections::HashMap<String, i64> = {
+        let (resolved_pilots, uncertain) = {
             let mut cache = self.pilots.lock().unwrap();
-            cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
+            let rp = cache
+                .display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()));
+            let unc = uncertain_set(&cache, &rp);
+            (rp, unc)
         };
         let status = self.system_status.lock().unwrap().clone();
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
@@ -1538,7 +1549,7 @@ impl SpaiApp {
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
-                &resolved_pilots, &last_ship, &kc, *sev, true,
+                &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true,
             &affil,
             ) {
                 click = Some(c);
@@ -1558,6 +1569,7 @@ impl SpaiApp {
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             Some(IntelClick::Dscan(url)) => self.open_dscan(url, ui.ctx()),
+            Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
             None => {}
         }
     }
@@ -3291,6 +3303,7 @@ impl SpaiApp {
             {
                 let mut c = self.pilots.lock().unwrap();
                 c.preload(&store.known_pilots());
+                c.preload_verdicts(store.load_pilot_verdicts());
             }
         }
 
@@ -3514,9 +3527,12 @@ impl SpaiApp {
             .map(|id| (id, self.ship_roles_cached(id)))
             .collect();
         // Pilot names confirmed as real characters (by the background resolver).
-        let resolved_pilots: std::collections::HashMap<String, i64> = {
+        let (resolved_pilots, uncertain) = {
             let mut cache = self.pilots.lock().unwrap();
-            cache.display_ids(matches.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()))
+            let rp =
+                cache.display_ids(matches.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()));
+            let unc = uncertain_set(&cache, &rp);
+            (rp, unc)
         };
         let mut action: Option<IntelClick> = None;
         let ttl = self.settings.intel_ttl_secs;
@@ -3557,7 +3573,7 @@ impl SpaiApp {
                         let inner = ui.scope(|ui| {
                             intel_row(
                                 ui, r, now, stale, from_you, &systems, &status, &ship_details,
-                                &ship_roles, &resolved_pilots, &last_ship, &kc, sev, true,
+                                &ship_roles, &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
                             &affil,
                             )
                         });
@@ -3594,7 +3610,77 @@ impl SpaiApp {
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
+            Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
             None => {}
+        }
+    }
+
+    /// Open the verdict popup for an uncertain pilot (first time shows the explainer).
+    fn open_pilot_verdict(&mut self, name: String) {
+        if !self.settings.verdict_explained {
+            self.verdict_explainer_open = true;
+        }
+        self.verdict_popup = Some(name);
+    }
+
+    /// The one-time explainer + the "real / not a pilot" verdict popup for an uncertain pilot.
+    fn verdict_dialog(&mut self, ctx: &egui::Context) {
+        if self.verdict_explainer_open {
+            let mut open = true;
+            let mut ack = false;
+            egui::Window::new("Uncertain pilot  (?)").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+                ui.set_max_width(360.0);
+                ui.label(
+                    "A \"?\" means this name matched a real EVE character, but that character looks \
+                     inactive (no recent kills, corp move, or wide roaming). It may be a real but \
+                     rarely-used pilot, or a chat word that happens to match a character name.",
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    "Mark it \"Real pilot\" to keep it (the ? clears), or \"Not a pilot\" to hide it. \
+                     Your choice is remembered.",
+                );
+                ui.add_space(8.0);
+                if ui.button("Got it").clicked() {
+                    ack = true;
+                }
+            });
+            if ack || !open {
+                self.verdict_explainer_open = false;
+                self.settings.verdict_explained = true;
+                self.needs_save = true;
+            }
+            return; // don't stack the verdict popup under the explainer
+        }
+        let Some(name) = self.verdict_popup.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut verdict: Option<bool> = None; // Some(true) = hide, Some(false) = real
+        egui::Window::new(format!("Is \"{name}\" a pilot?")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(format!("\"{name}\" matched a character that looks inactive."))
+                    .weak(),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Real pilot").clicked() {
+                    verdict = Some(false);
+                }
+                if ui.button("Not a pilot (hide)").clicked() {
+                    verdict = Some(true);
+                }
+            });
+        });
+        if let Some(hidden) = verdict {
+            self.pilots.lock().unwrap_or_else(|e| e.into_inner()).set_verdict(&name, hidden);
+            if let Some(store) = &self.store {
+                store.set_pilot_verdict(&name, hidden);
+            }
+            self.verdict_popup = None;
+            ctx.request_repaint();
+        } else if !open {
+            self.verdict_popup = None;
         }
     }
 
@@ -3622,9 +3708,12 @@ impl SpaiApp {
             .collect();
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ids.iter().map(|id| (*id, self.ship_roles_cached(*id))).collect();
-        let resolved_pilots: std::collections::HashMap<String, i64> = {
+        let (resolved_pilots, uncertain) = {
             let mut cache = self.pilots.lock().unwrap();
-            cache.display_ids(reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()))
+            let rp =
+                cache.display_ids(reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()));
+            let unc = uncertain_set(&cache, &rp);
+            (rp, unc)
         };
         let last_ship = build_last_ship(reports);
         let kc = self.kill_cache.clone();
@@ -3639,7 +3728,7 @@ impl SpaiApp {
             let inner = ui.scope(|ui| {
                 intel_row(
                     ui, r, now, stale, from_you, &systems, &status, &ship_details, &ship_roles,
-                    &resolved_pilots, &last_ship, &kc, sev, true,
+                    &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
                 &affil,
                 )
             });
@@ -6931,6 +7020,7 @@ impl SpaiApp {
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             IntelClick::Dscan(url) => self.open_dscan(url, ctx),
+            IntelClick::PilotVerdict(name) => self.open_pilot_verdict(name),
         }
     }
 
@@ -11335,9 +11425,12 @@ impl SpaiApp {
             ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
         let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
             ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
-        let resolved_pilots: std::collections::HashMap<String, i64> = {
+        let (resolved_pilots, uncertain) = {
             let mut cache = self.pilots.lock().unwrap();
-            cache.display_ids(sys_reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()))
+            let rp = cache
+                .display_ids(sys_reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()));
+            let unc = uncertain_set(&cache, &rp);
+            (rp, unc)
         };
         let status_snapshot = self.system_status.lock().unwrap().clone();
         let mut intel_click: Option<IntelClick> = None;
@@ -11658,8 +11751,8 @@ impl SpaiApp {
                     let affil = self.affiliations.clone();
                     if let Some(c) = intel_row(
                         ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
-                        &ship_details, &ship_roles, &resolved_pilots, &sys_last_ship, &kc, sev,
-                        false,
+                        &ship_details, &ship_roles, &resolved_pilots, &uncertain, &sys_last_ship,
+                        &kc, sev, false,
                     &affil,
                     ) {
                         intel_click = Some(c);
@@ -11706,6 +11799,7 @@ impl SpaiApp {
                 self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
             }
             Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
+            Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
             None => {}
         }
         if out.show_on_map {
@@ -14359,11 +14453,10 @@ impl AlertEngine {
                     continue; // blacklist overrides any cached verdict
                 }
                 match cache.get(&p) {
-                    // Confirmed character, but DEMOTED for zKill inactivity (Phase 2): drop it from
-                    // the pilot list entirely. It is hidden from `resolved_pilots`, so if we kept it
-                    // in `r.pilots` the card's "resolving" check would treat it as still-pending and
-                    // animate "..." forever (the stuck-"..." bug).
-                    Some(Some(_)) if cache.is_demoted(&p) => {
+                    // Confirmed character the USER marked "not a pilot": drop it from the pilot list
+                    // entirely (hidden from resolved_pilots; keeping it would animate "..." forever).
+                    // An activity-flagged (uncertain) pilot is NOT dropped — it stays, with a "?".
+                    Some(Some(_)) if cache.is_hidden(&p) => {
                         changed = true;
                     }
                     // Confirmed character — keep as-is.
@@ -14784,6 +14877,7 @@ impl eframe::App for SpaiApp {
         self.fit_window(&ctx);
         self.battle_filter_dialog(&ctx);
         self.filter_picker_dialog(&ctx);
+        self.verdict_dialog(&ctx);
         self.dscan_view_dialog(&ctx);
         self.fleet_ping_window_ui(&ctx);
         self.routes_dialog(&ctx);
@@ -16274,7 +16368,8 @@ pub(crate) fn build_alert_viewport_cb(
                             };
                             if let Some(c) = intel_row(
                                 ui, r, now_ts, false, from_you, &systems, &status,
-                                &ship_details, &ship_roles, &resolved_pilots, &last_ship,
+                                &ship_details, &ship_roles, &resolved_pilots,
+                                &std::collections::HashSet::new(), &last_ship,
                                 kills, *sev, false, affil,
                             ) {
                                 clicks.push(c);
@@ -17466,6 +17561,15 @@ fn report_key(r: &crate::intel::IntelReport) -> u64 {
     h.finish()
 }
 
+/// The lower-cased names among `resolved` that are activity-flagged and not yet user-classified —
+/// these get a "?" on the card so the user can mark them real or hide them.
+fn uncertain_set(
+    cache: &crate::pilot::PilotCache,
+    resolved: &std::collections::HashMap<String, i64>,
+) -> std::collections::HashSet<String> {
+    resolved.keys().filter(|n| cache.is_uncertain(n)).map(|n| n.to_lowercase()).collect()
+}
+
 /// Render one intel report as typed, clickable panels (no raw message inline; the raw text
 /// is available on hover). `stale` means a later "clear" has outdated it; `from_you` is jumps
 /// from the active character. Returns a clicked system id to focus the map.
@@ -17480,6 +17584,7 @@ fn intel_row(
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
+    uncertain: &std::collections::HashSet<String>,
     last_ship: &std::collections::HashMap<String, (i64, String, i64)>,
     kills: &crate::kills::KillCache,
     sev: crate::settings::Severity,
@@ -17925,6 +18030,20 @@ fn intel_row(
                     });
                     if resp.clicked() {
                         clicked = Some(IntelClick::Pilot(name.clone()));
+                    }
+                    // Activity-flagged (uncertain) pilot: a small "?" the user clicks to classify it
+                    // as a real pilot or hide it. Only shown until the user decides.
+                    if uncertain.contains(&name.to_lowercase()) {
+                        let q = ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("?")
+                                    .color(egui::Color32::from_rgb(0xfb, 0xbf, 0x24))
+                                    .strong(),
+                            ))
+                            .on_hover_text("Looks inactive — click to mark real or hide");
+                        if q.clicked() {
+                            clicked = Some(IntelClick::PilotVerdict(name.clone()));
+                        }
                     }
                 }
 

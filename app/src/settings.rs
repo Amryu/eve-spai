@@ -52,6 +52,9 @@ pub struct Settings {
     /// Seconds until an intel report is considered outdated (and pruned).
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
+    /// Whether the one-time "uncertain pilot (?)" explainer has been shown.
+    #[serde(default)]
+    pub verdict_explained: bool,
     /// Preferred online fitting site for "open fit" ("" = ask on first use).
     #[serde(default)]
     pub fit_site: String,
@@ -677,6 +680,7 @@ impl Default for Settings {
             kill_intel: true,
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
+            verdict_explained: false,
             fit_site: String::new(),
             doctrine_url: String::new(),
             fleet_ping_window: true,
