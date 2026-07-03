@@ -70,6 +70,10 @@ It uses only EVE's public static data.
 
 ## Lessons learned
 
+- **Case is NOT a deciding factor in parsing.** Unless explicitly stated, do not branch pilot/
+  ship/system decisions on upper- vs lower-case (EVE names may be any case). You may *suggest* a
+  case-based heuristic, but do not implement one. Prefer ESI/local-cache resolution and structural
+  guards (e.g. a word already consumed by a longer name must not be double-consumed) instead.
 - Verify the install path end-to-end against a real release; a plausible script can still
   be wrong (the asset-id bug above).
 - The parser handles **plain-text chat-LOG lines only**. EVE chat logs carry NO

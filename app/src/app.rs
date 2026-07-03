@@ -6883,7 +6883,7 @@ impl SpaiApp {
             }
         }
 
-        // Build the window's feed from the authoritative in-app `alert_feed` (last 20), each entry
+        // Build the window's feed from the authoritative in-app `alert_feed` (last 50), each entry
         // swapped for its LIVE reconciled report so the window shows the same resolved pilots/ships
         // as the main feed — exactly as the old immediate window did. This OVERWRITES whatever the
         // daemon pushed into `alert_shared.feed` (which only serves the minimized case, when this
@@ -6893,9 +6893,9 @@ impl SpaiApp {
                 Vec::new()
             } else {
                 let live = self.intel_state.lock().unwrap();
-                // Last 20 in chronological order (oldest first) — the daemon's `push` also produces
+                // Last 50 in chronological order (oldest first) — the daemon's `push` also produces
                 // oldest-first, and the closure renders `.rev()` (newest first), like the old window.
-                let start = self.alert_feed.len().saturating_sub(20);
+                let start = self.alert_feed.len().saturating_sub(50);
                 self.alert_feed[start..]
                     .iter()
                     .filter_map(|(r, sev)| {

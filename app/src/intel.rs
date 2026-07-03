@@ -1125,14 +1125,15 @@ fn segment_is_name(seg: &str, systems: &Systems) -> bool {
     {
         return false;
     }
+    // A segment is a name if it carries a real name part, embeds no solar system, and holds at most
+    // ONE bare intel keyword. A single keyword inside a linked name ("fliet98 cyno") is kept whole
+    // for ESI to confirm; MULTIPLE keyword/descriptor words are prose ("is clear now lads") and bail
+    // the paste. Case is not consulted (per the parser rule); the keyword COUNT is.
+    let bad_keyword =
+        |w: &str| is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w);
     words.iter().any(|w| !is_pilot_stopword(w))
-        && !words.iter().any(|w| {
-            resolve(systems, w).is_some()
-                || (w.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                    && is_pilot_stopword(w)
-                    && !is_name_connector(w)
-                    && !is_name_capable_stopword(w))
-        })
+        && !words.iter().any(|w| resolve(systems, w).is_some())
+        && words.iter().filter(|w| bad_keyword(w)).count() <= 1
 }
 
 /// Trim a trailing location phrase typed after a pasted name in one double-space segment
@@ -2705,6 +2706,59 @@ pub fn analyze_ctx(
                     && covered_by_longer(rem.split_whitespace().count(), &rem_lc, i)
                 {
                     kill[i] = true;
+                }
+            }
+        }
+        let mut it = kill.iter();
+        pilots.retain(|_| !it.next().copied().unwrap_or(false));
+    }
+    // Double-consume guard: a source word claimed by one pilot must not be re-used by another. When
+    // two candidate spans PARTIALLY overlap (they share a word but neither contains the other —
+    // "Lord Road" vs "Road he's", both claiming "Road"), keep the stronger name (a known/confirmed
+    // one, else the longer, else the leftmost) and drop the other, so a tail a longer name already
+    // consumed can't seed a bogus second pilot. Positions decide this, never letter case.
+    {
+        let src: Vec<String> = tokenize(text).iter().map(|t| t.to_lowercase()).collect();
+        let span = |p: &str| -> Option<(usize, usize)> {
+            let cw: Vec<String> = tokenize(p).iter().map(|t| t.to_lowercase()).collect();
+            if cw.is_empty() || cw.len() > src.len() {
+                return None;
+            }
+            (0..=src.len() - cw.len()).find(|&i| src[i..i + cw.len()] == cw[..]).map(|i| (i, i + cw.len()))
+        };
+        let spans: Vec<Option<(usize, usize)>> = pilots.iter().map(|p| span(p)).collect();
+        // The stronger of two overlapping candidates: known-confirmed wins, then more words, then
+        // the leftmost start.
+        let stronger = |i: usize, j: usize| -> bool {
+            let ki = known_pilots.contains_key(&pilots[i].to_lowercase());
+            let kj = known_pilots.contains_key(&pilots[j].to_lowercase());
+            if ki != kj {
+                return ki;
+            }
+            let wi = spans[i].map(|(s, e)| e - s).unwrap_or(0);
+            let wj = spans[j].map(|(s, e)| e - s).unwrap_or(0);
+            if wi != wj {
+                return wi > wj;
+            }
+            spans[i].map(|(s, _)| s).unwrap_or(usize::MAX) < spans[j].map(|(s, _)| s).unwrap_or(usize::MAX)
+        };
+        let partial = |a: (usize, usize), b: (usize, usize)| -> bool {
+            let intersect = a.0.max(b.0) < a.1.min(b.1);
+            let a_in_b = b.0 <= a.0 && a.1 <= b.1;
+            let b_in_a = a.0 <= b.0 && b.1 <= a.1;
+            intersect && !a_in_b && !b_in_a
+        };
+        let mut kill = vec![false; pilots.len()];
+        for i in 0..pilots.len() {
+            for j in (i + 1)..pilots.len() {
+                if let (Some(a), Some(b)) = (spans[i], spans[j]) {
+                    if partial(a, b) {
+                        if stronger(i, j) {
+                            kill[j] = true;
+                        } else {
+                            kill[i] = true;
+                        }
+                    }
                 }
             }
         }
@@ -5787,6 +5841,60 @@ mod tests {
             !state.reports[0].pilots.iter().any(|p| p.eq_ignore_ascii_case("Wilen") || p.eq_ignore_ascii_case("Wilen Stabber")),
             "merged leaked bare 'Wilen': {:?}",
             state.reports[0].pilots
+        );
+    }
+
+    #[test]
+    #[test]
+    fn keyword_in_pasted_name_does_not_bail_paste() {
+        let s = systems();
+        // A double-space paste where one linked name contains a keyword ("fliet98 cyno") must not
+        // bail the whole paste to the glued-run fallback - each segment surfaces as its own pilot,
+        // never one >3-word blob (regression: a single "cyno" segment dropped every pilot).
+        let r = analyze(
+            "Bsjsisnjs  buzuo333  detective spider  feng fenghua  fliet98 cyno  Q-K2T7",
+            &s, &noships(), &noknown(), 1, "ch", "Muchchi",
+        );
+        for name in ["Bsjsisnjs", "buzuo333", "detective spider", "feng fenghua"] {
+            assert!(
+                r.pilots.iter().any(|p| p.eq_ignore_ascii_case(name)),
+                "missing {name}: {:?}",
+                r.pilots
+            );
+        }
+        assert!(
+            !r.pilots.iter().any(|p| p.split_whitespace().count() > 3),
+            "glued blob leaked: {:?}",
+            r.pilots
+        );
+    }
+
+    #[test]
+    fn subname_not_reused_when_full_name_resolved() {
+        let s = systems();
+        // Both "Lord Road" and a bare "Road" are real characters. A mention of "Lord Road" must
+        // surface only the full name, never the tail "Road" as a second pilot.
+        let known: std::collections::HashMap<String, i64> =
+            [("lord road".to_string(), 1i64), ("road".to_string(), 2i64), ("capitaine onaga".to_string(), 3i64)]
+                .into_iter()
+                .collect();
+        let r = analyze("Lord Road in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Lord Road")), "pilots={:?}", r.pilots);
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Road")),
+            "bare 'Road' leaked: {:?}",
+            r.pilots
+        );
+        // The real report (kill notification paste): the tail "Road" must not re-surface.
+        let ships = ships_with(&[("Nereus", 650)]);
+        let r2 = analyze(
+            "JV1V-O  Kill: Capitaine Onaga (Nereus)  Lord Road he's happy now",
+            &s, &ships, &known, 1, "ch", "Capitaine Onaga",
+        );
+        assert!(
+            !r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Road")),
+            "bare 'Road' leaked from kill paste: {:?}",
+            r2.pilots
         );
     }
 
