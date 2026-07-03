@@ -1500,18 +1500,37 @@ fn loose_pilot_runs(
         while run.last().is_some_and(&trim) {
             run.pop();
         }
-        // An OVER-LENGTH run (>3 words) can never be a name, so a boundary non-name-capable stop
-        // word ("Roadman HighSec CynoLighter likely") is prose that pushed a valid <=3-word name
-        // over the limit — trim it (any length) until the run is a plausible name length. A content
-        // keyword that legitimately ends a <=3-word name ("High Plains Drifter") is untouched, since
-        // this only fires while the run is still longer than 3 words.
-        let over_trim =
-            |w: &String| is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w);
+        // An OVER-LENGTH run (>3 words) can never be a name, so a boundary token that is not name
+        // material is prose/anchor that pushed a valid <=3-word name over the limit — trim it until
+        // the run is a plausible name length. This catches a non-name-capable stop word ("Roadman
+        // HighSec CynoLighter likely") and a leading/trailing system or wormhole code that glued in
+        // the single-space form ("DUO-51 Roadman HighSec CynoLighter"). A content keyword that
+        // legitimately ends a <=3-word name ("High Plains Drifter") is untouched — this only fires
+        // while the run is still longer than 3 words.
+        let over_trim = |w: &String| {
+            (is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w))
+                || crate::wormholes::is_wh_code(w)
+                || (looks_like_system_code(w) && !is_code_lookalike_name(w, systems))
+        };
         while run.len() > 3 && run.last().is_some_and(&over_trim) {
             run.pop();
         }
         while run.len() > 3 && run.first().is_some_and(&over_trim) {
             run.remove(0);
+        }
+        // An over-length run may still carry a typed location tail after the name ("Garen Willow at
+        // taj"); cut it at a locational preposition that FOLLOWS a >=2-word name, mirroring
+        // `trim_paste_location_tail` so the single-space form matches the pasted form.
+        if run.len() > 3 {
+            const LOC_PREP: &[&str] = &["at", "in", "on", "near"];
+            if let Some(cut) = run
+                .iter()
+                .enumerate()
+                .find(|(i, w)| *i >= 2 && LOC_PREP.contains(&w.to_lowercase().as_str()))
+                .map(|(i, _)| i)
+            {
+                run.truncate(cut);
+            }
         }
         // A whole name is at least 3 letters (not each word — "Bo Li" is fine), and is not
         // ENTIRELY lower-case stop words — a capital makes even an all-stop-word run
@@ -6461,11 +6480,11 @@ mod tests {
         // single-space form. Case is not consulted.
         let s = systems();
         let ships = ships_with(&[("Prospect", 33468)]);
-        // The reported pasted (double-space) form, and the same tail on a bare name. A system code
-        // glued in the single-space form ("DUO-51 Roadman ...") is left for the ESI cover to split
-        // and is not asserted here.
+        // The pasted (double-space) form, the single-space form (a leading system code is trimmed
+        // off the over-length run), and the same tail on a bare name.
         for t in [
             "DUO-51  Roadman HighSec CynoLighter likely prospect",
+            "DUO-51 Roadman HighSec CynoLighter likely prospect",
             "Roadman HighSec CynoLighter likely prospect",
         ] {
             let r = analyze(t, &s, &ships, &noknown(), 1, "ch", "Rage Starscythe");
