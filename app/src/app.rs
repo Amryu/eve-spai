@@ -798,6 +798,11 @@ pub struct SpaiApp {
     region_window: Option<i64>,
     /// A viewport to bring to the foreground this frame (a click updated its data).
     focus_window: Option<egui::ViewportId>,
+    /// Overlay→main clicks that OPEN a dialog window, deferred to the next frame. Opening an
+    /// immediate viewport in the same frame the IPC message was drained (the frame the overlay's
+    /// reader thread woke via `request_repaint`) panics egui with "the user callback was never
+    /// called"; processing them at the top of a normally-scheduled frame avoids that.
+    pending_overlay_clicks: Vec<IntelClick>,
     /// Ship-info window: the ship type currently shown (if any).
     ship_window: Option<i64>,
     /// Pilot lookup (zKill) input + shared result.
@@ -1359,6 +1364,7 @@ impl SpaiApp {
             region_window: None,
             focus_window: None,
             ship_window: None,
+            pending_overlay_clicks: Vec::new(),
             pilot_query: String::new(),
             pilot_lookup: std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle)),
             feed_cache: std::collections::HashMap::new(),
@@ -14651,6 +14657,12 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Act on overlay clicks deferred from the previous frame (see `pending_overlay_clicks`):
+        // this is a normally-scheduled frame, so opening a dialog's immediate viewport is safe here.
+        for c in std::mem::take(&mut self.pending_overlay_clicks) {
+            self.act_on_intel_click(c, &ctx);
+        }
+
         // A second launch asked us (over the loopback control port) to come to the front.
         // Viewport commands must be issued from the UI thread, so the listener thread only
         // set a flag + requested a repaint; we consume it here. De-minimize, ensure visible,
@@ -14682,7 +14694,12 @@ impl eframe::App for SpaiApp {
             let msgs = self.overlay.as_ref().map(|l| l.drain_inbox()).unwrap_or_default();
             for m in msgs {
                 match m {
-                    crate::ipc::OverlayToMain::Click(c) => self.act_on_intel_click(c, &ctx),
+                    crate::ipc::OverlayToMain::Click(c) => {
+                        // Defer to the next frame: a Ship/pilot click opens an immediate viewport,
+                        // which must not happen in this IPC-woken frame (see pending_overlay_clicks).
+                        self.pending_overlay_clicks.push(c);
+                        ctx.request_repaint();
+                    }
                     crate::ipc::OverlayToMain::Verdict { name, hidden } => {
                         self.apply_pilot_verdict(&name, hidden)
                     }
@@ -17209,10 +17226,11 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
         parts.push("\u{25C6} Rats \u{25C6}".into());
     }
     for (kind, code) in &r.anom_sigs {
-        parts.push(match kind {
-            crate::intel::AnomKind::Anomaly => format!("Anom {code}"),
-            crate::intel::AnomKind::Signature => format!("Sig {code}"),
-        });
+        let word = match kind {
+            crate::intel::AnomKind::Anomaly => "Anom",
+            crate::intel::AnomKind::Signature => "Sig",
+        };
+        parts.push(if code.is_empty() { word.to_string() } else { format!("{word} {code}") });
     }
     if r.dropper {
         parts.push("DROPPER".into());
@@ -17640,6 +17658,21 @@ fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
         icon.to_string()
     } else {
         format!("{icon} {}", parts.join(" "))
+    }
+}
+
+/// The anomaly/signature badge label: a crosshair icon + "Anom"/"Sig", plus the signature code when
+/// one was posted (a bare "anomaly"/"sig" callout shows just the icon + word).
+fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> String {
+    let word = match kind {
+        crate::intel::AnomKind::Anomaly => "Anom",
+        crate::intel::AnomKind::Signature => "Sig",
+    };
+    let icon = egui_phosphor::regular::CROSSHAIR;
+    if code.is_empty() {
+        format!("{icon} {word}")
+    } else {
+        format!("{icon} {word} {code}")
     }
 }
 
@@ -18432,11 +18465,7 @@ fn intel_row(
                     tag(ui, "\u{25C6} Rats \u{25C6}", red);
                 }
                 for (kind, code) in &r.anom_sigs {
-                    let label = match kind {
-                        crate::intel::AnomKind::Anomaly => format!("Anom {code}"),
-                        crate::intel::AnomKind::Signature => format!("Sig {code}"),
-                    };
-                    tag(ui, &label, warn);
+                    tag(ui, &anom_sig_badge_label(*kind, code), warn);
                 }
 
                 if let Some(m) = &r.movement {
@@ -19099,6 +19128,18 @@ mod wh_badge_tests {
         // Thera / Turnur render as keywords, not "-> class".
         assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Thera))).contains("(Thera)"));
         assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Turnur))).contains("(Turnur)"));
+    }
+
+    #[test]
+    fn anom_sig_badge_composition() {
+        use super::anom_sig_badge_label;
+        use crate::intel::AnomKind;
+        let icon = egui_phosphor::regular::CROSSHAIR;
+        // Bare keyword: icon + word, no code.
+        assert_eq!(anom_sig_badge_label(AnomKind::Anomaly, ""), format!("{icon} Anom"));
+        assert_eq!(anom_sig_badge_label(AnomKind::Signature, ""), format!("{icon} Sig"));
+        // With a code.
+        assert_eq!(anom_sig_badge_label(AnomKind::Signature, "ABC-123"), format!("{icon} Sig ABC-123"));
     }
 }
 

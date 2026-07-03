@@ -949,9 +949,10 @@ fn looks_like_anom_code(t: &str) -> bool {
         return false;
     }
     let leading_letters = t.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    // The hyphen+digits tail is OPTIONAL, so a bare "ABC" (partial id) matches as well as
+    // "ABC-123"; `detect_anom_sigs` guards a digit-less candidate against the dictionary/stop-list.
     leading_letters >= 3
         && t.chars().skip(leading_letters).all(|c| c == '-' || c.is_ascii_digit())
-        && t.chars().any(|c| c.is_ascii_digit())
 }
 
 /// "Diamond rats" / "dia rat" — the dangerous NPC pirate variant, NOT a pilot. True when
@@ -985,27 +986,43 @@ fn detect_anom_sigs(tokens: &[&str], systems: &Systems) -> (Vec<(AnomKind, Strin
     let mut consumed: Vec<String> = Vec::new();
     for i in 0..tokens.len() {
         let Some(kind) = kind_of(&tokens[i].to_lowercase()) else { continue };
+        // The keyword itself is a callout word, never a pilot/system — always consumed, and it
+        // raises a badge even with no code posted (an empty code below).
+        consumed.push(tokens[i].to_lowercase());
+        let mut code = String::new();
         for j in [i.checked_sub(1), Some(i + 1)].into_iter().flatten() {
-            let Some(code) = tokens.get(j) else { continue };
-            if !looks_like_anom_code(code) {
+            let Some(tok) = tokens.get(j) else { continue };
+            if !looks_like_anom_code(tok) {
+                continue;
+            }
+            let lc = tok.to_lowercase();
+            // A digit-less candidate ("ABC") must not be prose — reject a dictionary or stop word
+            // ("the anomaly"). A candidate carrying a digit ("ABC-123") is unambiguous.
+            if !tok.chars().any(|c| c.is_ascii_digit())
+                && (crate::dict::is_word(&lc) || is_pilot_stopword(&lc))
+            {
                 continue;
             }
             // A code that resolves to a real (or prefix/neighbour) system is a location, not an
             // anom/sig — reuse the authoritative real-systems lookup, never the shape test alone.
-            if is_system_token(code, systems)
-                || resolve(systems, code).is_some()
-                || systems.lookup_prefix(code).is_some()
+            if is_system_token(tok, systems)
+                || resolve(systems, tok).is_some()
+                || systems.lookup_prefix(&lc).is_some()
             {
                 continue;
             }
-            let upper = code.to_uppercase();
-            if !out.iter().any(|(_, c)| c.eq_ignore_ascii_case(&upper)) {
-                out.push((kind, upper));
-                consumed.push(tokens[i].to_lowercase());
-                consumed.push(tokens[j].to_lowercase());
-            }
+            code = tok.to_uppercase();
+            consumed.push(lc);
+            break;
+        }
+        if !out.iter().any(|(k, c)| *k == kind && c.eq_ignore_ascii_case(&code)) {
+            out.push((kind, code));
         }
     }
+    // A coded callout supersedes a bare-keyword one of the same kind ("sig ABC-123 sig" -> just
+    // "Sig ABC-123").
+    let coded: Vec<AnomKind> = out.iter().filter(|(_, c)| !c.is_empty()).map(|(k, _)| *k).collect();
+    out.retain(|(k, c)| !c.is_empty() || !coded.contains(k));
     (out, consumed)
 }
 
@@ -1447,9 +1464,24 @@ fn hard_name_breaker(core: &str, ship_index: &HashMap<String, (i64, String)>) ->
         || is_cap_word(&lc)
         || is_tackle_word(&lc)
         || is_time_token(core)
+        || is_distance_token(core)
         || is_structure_word(core)
         || crate::wormholes::is_wh_code(core)
         || ship_of(&lc, ship_index).is_some()
+}
+
+/// A number glued to a distance unit ("100km", "5au", "1.5km") — a range off a target, not a name.
+/// Only leading digits count, so a handle like "0kmentor" is unaffected (it needs the WHOLE
+/// remainder to be the unit).
+fn is_distance_token(t: &str) -> bool {
+    let lower = t.to_lowercase();
+    let Some(de) = lower.find(|c: char| !(c.is_ascii_digit() || c == '.')) else {
+        return false; // all digits, no unit
+    };
+    if de == 0 {
+        return false; // no leading digits
+    }
+    matches!(&lower[de..], "km" | "au")
 }
 
 /// True if a candidate name blob still contains a system/code token — a location *held* inside a
@@ -2671,6 +2703,7 @@ pub fn analyze_ctx(
             && !is_cap_word(&lc)
             && !is_tackle_word(&lc)
             && !is_time_token(t)
+            && !is_distance_token(t)
             && !is_amount_token(t)
             && (!looks_like_system_code(t) || is_code_lookalike_name(t, systems))
             && !CLEAR_WORDS.contains(&lc.as_str())
@@ -5000,12 +5033,18 @@ mod tests {
     }
 
     #[test]
-    fn anom_sig_keywords_alone_produce_nothing() {
+    fn anom_sig_keyword_alone_raises_a_bare_badge() {
         let s = systems();
         let a = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
-        for kw in ["anom", "sig", "anomaly", "signature"] {
+        for (kw, kind) in [
+            ("anom", AnomKind::Anomaly),
+            ("sig", AnomKind::Signature),
+            ("anomaly", AnomKind::Anomaly),
+            ("signature", AnomKind::Signature),
+        ] {
             let r = a(kw);
-            assert!(r.anom_sigs.is_empty(), "{kw}: anom_sigs={:?}", r.anom_sigs);
+            // A bare keyword raises a code-less badge, and is never a pilot/system itself.
+            assert_eq!(r.anom_sigs, vec![(kind, String::new())], "{kw}: anom_sigs={:?}", r.anom_sigs);
             assert!(!r.diamond_rats, "{kw}: diamond_rats");
             assert!(esi_resolve(&r.pilots, &[]).is_empty(), "{kw}: pilots={:?}", r.pilots);
             assert!(r.systems.is_empty(), "{kw}: systems={:?}", r.systems);
@@ -5060,6 +5099,75 @@ mod tests {
     }
 
     #[test]
+    fn distance_token_not_a_pilot_and_anomaly_badge() {
+        // "27-HP0  tinde Erkkinen (Vagabond) 100km off Mordunium anomaly": the distance "100km" must
+        // not glue into the name, and "anomaly" raises a (bare) anomaly badge.
+        let by_name = [
+            ("27-hp0", "27-HP0", 30000832i64, -0.4),
+            ("mordunium", "Mordunium", 30000833, -0.4),
+        ]
+        .into_iter()
+        .map(|(k, n, id, sec)| {
+            (
+                k.to_string(),
+                SystemInfo {
+                    id,
+                    name: n.to_string(),
+                    security: sec,
+                    constellation: String::new(),
+                    region: String::new(),
+                    faction: String::new(),
+                },
+            )
+        })
+        .collect();
+        let s = Systems::new(by_name, HashMap::new());
+        let ships = ships_with(&[("Vagabond", 11999)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("tinde erkkinen".to_string(), 1i64)].into_iter().collect();
+        let r = analyze(
+            "27-HP0  tinde Erkkinen (Vagabond) 100km off Mordunium anomaly",
+            &s,
+            &ships,
+            &known,
+            1,
+            "ch",
+            "Lancer Maelstorm",
+        );
+        assert!(r.pilots.iter().any(|p| p == "tinde Erkkinen"), "pilots={:?}", r.pilots);
+        assert!(
+            !r.pilots.iter().any(|p| p.to_lowercase().contains("km")),
+            "distance leaked into a pilot: {:?}",
+            r.pilots
+        );
+        assert!(
+            r.anom_sigs.iter().any(|(k, _)| *k == AnomKind::Anomaly),
+            "no anomaly badge: {:?}",
+            r.anom_sigs
+        );
+        assert!(r.ships.iter().any(|sh| sh.name == "Vagabond"), "ships={:?}", r.ships);
+    }
+
+    #[test]
+    fn anom_sig_code_shape_letters_optional_digits() {
+        let s = systems();
+        let a = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
+        // A bare 3-letter code and a full "ABC-123" both attach to the keyword.
+        assert!(
+            a("anomaly ABX").anom_sigs.iter().any(|(k, c)| *k == AnomKind::Anomaly && c == "ABX"),
+            "ABX: {:?}",
+            a("anomaly ABX").anom_sigs
+        );
+        assert!(
+            a("ABC-123 sig").anom_sigs.iter().any(|(k, c)| *k == AnomKind::Signature && c == "ABC-123"),
+            "ABC-123: {:?}",
+            a("ABC-123 sig").anom_sigs
+        );
+        // Prose next to the keyword ("the") is a dictionary word, not a code — only the bare badge.
+        assert_eq!(a("the anomaly").anom_sigs, vec![(AnomKind::Anomaly, String::new())]);
+    }
+
+    #[test]
     fn anom_code_that_is_a_real_system_stays_a_system() {
         // A real system whose name matches the anom-code shape ("ABC-123").
         let by_name = [("abc-123", "ABC-123", 50001, -0.5)]
@@ -5080,7 +5188,13 @@ mod tests {
             .collect();
         let s = Systems::new(by_name, HashMap::new());
         let r = analyze("anom ABC-123", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r.anom_sigs.is_empty(), "real system made an anom badge: {:?}", r.anom_sigs);
+        // ABC-123 is a real system, so it is NOT captured as an anom CODE — but the "anom" keyword
+        // still raises a bare (code-less) anomaly badge, and the system is detected.
+        assert!(
+            !r.anom_sigs.iter().any(|(_, c)| !c.is_empty()),
+            "real system made an anom code: {:?}",
+            r.anom_sigs
+        );
         assert!(
             r.systems.iter().any(|d| d.name == "ABC-123"),
             "real system not detected: {:?}",
