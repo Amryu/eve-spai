@@ -18409,8 +18409,17 @@ fn intel_row(
                 }
 
                 // Status flags.
+                // A flag badge: a bordered pill in the flag's colour (border + faint fill + rounded
+                // corners), so wormhole / anomaly / status flags all read as proper badges.
                 let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
-                    ui.label(egui::RichText::new(txt).color(col).strong());
+                    egui::Frame::new()
+                        .stroke(egui::Stroke::new(1.0, col))
+                        .fill(col.gamma_multiply(0.15))
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(5, 1))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(txt).color(col).strong());
+                        });
                 };
                 // A "status?" request (no threat of its own) — a badge so the card isn't empty.
                 if r.status {
