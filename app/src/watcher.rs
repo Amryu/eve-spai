@@ -116,17 +116,24 @@ fn scan(
         if path.extension().and_then(|e| e.to_str()) != Some("txt") {
             continue;
         }
-        // Skip a log that hasn't changed (same size + mtime) since we last processed it —
-        // avoids re-reading and UTF-16-decoding every file every poll.
-        let sig = entry.metadata().ok().map(|md| {
-            let mtime = md
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            (md.len(), mtime)
-        });
+        // Detect new lines by the REAL size from an open handle, not DirEntry metadata. On Windows
+        // EVE holds the log open and the directory entry's size/mtime update lazily (stale for
+        // minutes), so a DirEntry-based check makes the watcher skip re-reading and fall far behind.
+        // The cheap DirEntry mtime is used only to skip clearly-inactive old logs without opening.
+        let mtime = entry
+            .metadata()
+            .ok()
+            .and_then(|md| md.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if !processed.contains_key(&path)
+            && mtime != 0
+            && chrono::Utc::now().timestamp() - mtime > 12 * 3600
+        {
+            continue; // an ancient, never-seen log — no need to open it
+        }
+        let sig = crate::logpaths::real_len(&path).map(|len| (len, mtime));
         if let Some(sig) = sig {
             if processed.contains_key(&path) && file_sigs.get(&path) == Some(&sig) {
                 continue;

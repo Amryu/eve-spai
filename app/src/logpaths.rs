@@ -90,3 +90,35 @@ pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
         .map(|d| d.join("Gamelogs"))
         .find(|d| d.is_dir())
 }
+
+/// The real current byte length of `path`, queried from an OPEN handle (its true end-of-file), not
+/// the directory entry. On Windows the directory entry's size is updated lazily while another
+/// process (EVE) holds the file open and appends, so `DirEntry::metadata().len()` stays stale for
+/// minutes; seeking a freshly-opened handle to the end always sees the real size, which is how the
+/// log watchers detect new lines without lagging behind on Windows.
+pub fn real_len(path: &std::path::Path) -> Option<u64> {
+    use std::io::Seek;
+    std::fs::File::open(path).ok()?.seek(std::io::SeekFrom::End(0)).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn real_len_reflects_appends() {
+        let dir = std::env::temp_dir().join(format!("evespai-reallen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chat.txt");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"hello").unwrap();
+        f.flush().unwrap();
+        assert_eq!(real_len(&path), Some(5));
+        // Append through the SAME open handle (as EVE does) and confirm the real size grows.
+        f.write_all(b" world").unwrap();
+        f.flush().unwrap();
+        assert_eq!(real_len(&path), Some(11));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
