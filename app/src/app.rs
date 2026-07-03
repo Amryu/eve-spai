@@ -17610,6 +17610,39 @@ fn sound_picker(
     changed
 }
 
+/// The wormhole badge label: a spiral icon plus, when known, the signature id, the type code
+/// (K162 is the generic exit, so it is skipped), a Drifter/Thera/Turnur marker, and the
+/// destination class. If only "WH" (no detail) was posted, just the icon shows.
+fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(sig) = &r.wh_sig {
+        parts.push(sig.clone());
+    }
+    if let Some(code) = &r.wh_type {
+        if !code.eq_ignore_ascii_case("K162") {
+            parts.push(format!("({code})"));
+        }
+    }
+    if r.wh_drifter {
+        parts.push("(Drifter)".into());
+    }
+    if let Some(dest) = r.wh_dest {
+        use crate::wormholes::DestClass;
+        match dest {
+            DestClass::Thera => parts.push("(Thera)".into()),
+            DestClass::Turnur => parts.push("(Turnur)".into()),
+            DestClass::Unknown => {}
+            other => parts.push(format!("(\u{2192} {})", other.label())),
+        }
+    }
+    let icon = egui_phosphor::regular::SPIRAL;
+    if parts.is_empty() {
+        icon.to_string()
+    } else {
+        format!("{icon} {}", parts.join(" "))
+    }
+}
+
 /// Render one intel report as typed, clickable panels (no raw message inline; the raw text
 /// is available on hover). `stale` means a later "clear" has outdated it; `from_you` is jumps
 /// from the active character. Returns a clicked system id to focus the map.
@@ -18384,7 +18417,7 @@ fn intel_row(
                     tag(ui, "CAP TACKLED", red);
                 }
                 if r.wormhole {
-                    tag(ui, "WH", crate::theme::standing::ALLIANCE);
+                    tag(ui, &wormhole_badge_label(r), crate::theme::standing::ALLIANCE);
                 }
                 if r.ess {
                     match &r.ess_time {
@@ -19031,6 +19064,42 @@ fn color_row(ui: &mut egui::Ui, label: &str, rgb: &mut Rgb) -> bool {
         ui.label(label);
     });
     changed
+}
+
+#[cfg(test)]
+mod wh_badge_tests {
+    use super::wormhole_badge_label;
+    use crate::intel::IntelReport;
+    use crate::wormholes::DestClass;
+
+    fn wh(f: impl FnOnce(&mut IntelReport)) -> IntelReport {
+        let mut ir = IntelReport { wormhole: true, ..Default::default() };
+        f(&mut ir);
+        ir
+    }
+
+    #[test]
+    fn wormhole_badge_composition() {
+        let icon = egui_phosphor::regular::SPIRAL;
+        // Only "WH" was posted: just the icon.
+        assert_eq!(wormhole_badge_label(&wh(|_| {})), icon.to_string());
+        // Sig id + type code + Drifter + destination class, each shown when known.
+        let l = wormhole_badge_label(&wh(|ir| {
+            ir.wh_sig = Some("ABC-123".into());
+            ir.wh_type = Some("S899".into());
+            ir.wh_drifter = true;
+            ir.wh_dest = Some(DestClass::Highsec);
+        }));
+        assert!(l.starts_with(icon), "{l}");
+        for want in ["ABC-123", "(S899)", "(Drifter)", "Highsec"] {
+            assert!(l.contains(want), "missing {want} in {l:?}");
+        }
+        // K162 is the generic exit — never shown.
+        assert!(!wormhole_badge_label(&wh(|ir| ir.wh_type = Some("K162".into()))).contains("K162"));
+        // Thera / Turnur render as keywords, not "-> class".
+        assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Thera))).contains("(Thera)"));
+        assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Turnur))).contains("(Turnur)"));
+    }
 }
 
 #[cfg(test)]
