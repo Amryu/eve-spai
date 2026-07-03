@@ -27,6 +27,11 @@ const BLIP: &[f32] = &[1.0, 0.3];
 /// A brass-like voice (saw-ish harmonic stack) for the synth-horn fleet call.
 const BRASS: &[f32] = &[1.0, 0.8, 0.6, 0.45, 0.32, 0.22, 0.15, 0.1];
 
+/// The built-in preset names in menu order (excludes "off", the silent sentinel). Each is
+/// synthesized on demand by [`preset`] / played by [`play`].
+pub const PRESETS: &[&str] =
+    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn"];
+
 /// Built-in presets. Kept gentle ("not overly intrusive") with smooth sweeps + a soft
 /// harmonic for a spaceship-console feel — except the fleet "horn", a louder synth-brass stab.
 fn preset(name: &str) -> Option<Tone> {

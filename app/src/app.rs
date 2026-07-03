@@ -872,6 +872,13 @@ impl SpaiApp {
             settings.alerts.rules.insert(0, crate::settings::default_rule());
             settings.alerts.seeded = true;
         }
+        // Seed the default strategic/peacetime ping rules once (only if the user has none).
+        if !settings.jabber_ping_rules_seeded {
+            if settings.jabber_ping_rules.is_empty() {
+                settings.jabber_ping_rules = crate::settings::default_ping_rules();
+            }
+            settings.jabber_ping_rules_seeded = true;
+        }
         // One-time: force the fleet ping window on for existing users (it's now on by default).
         // Runs once — afterwards the user can turn it back off and it stays off. Persist the
         // marker immediately so the force can't repeat on the next launch.
@@ -1850,20 +1857,10 @@ impl SpaiApp {
                         .changed();
                     ui.end_row();
                     ui.label("Message sound");
-                    ui.horizontal(|ui| {
-                        changed |= ui.text_edit_singleline(&mut self.settings.jabber_msg_sound).changed();
-                        if ui.button(egui_phosphor::regular::PLAY).on_hover_text("Test").clicked() {
-                            crate::sound::play(&self.settings.jabber_msg_sound);
-                        }
-                    });
+                    changed |= sound_picker(ui, "jabber_msg", false, &mut self.settings.jabber_msg_sound);
                     ui.end_row();
                     ui.label("Default ping sound");
-                    ui.horizontal(|ui| {
-                        changed |= ui.text_edit_singleline(&mut self.settings.jabber_ping_sound).changed();
-                        if ui.button(egui_phosphor::regular::PLAY).on_hover_text("Test").clicked() {
-                            crate::sound::play(&self.settings.jabber_ping_sound);
-                        }
-                    });
+                    changed |= sound_picker(ui, "jabber_ping", false, &mut self.settings.jabber_ping_sound);
                     ui.end_row();
                     ui.label("");
                     ui.label(egui::RichText::new("presets: horn · chime · beep · sweep · info · warning · danger · critical · off, or a file path").weak().small());
@@ -1992,10 +1989,7 @@ impl SpaiApp {
                             ui.add_enabled_ui(!r.suppress && r.notify, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Sound");
-                                    changed |= ui.add(egui::TextEdit::singleline(&mut r.sound).desired_width(160.0)).changed();
-                                    if ui.button(ic::PLAY).on_hover_text("Test").clicked() {
-                                        crate::sound::play(&r.sound);
-                                    }
+                                    changed |= sound_picker(ui, ("ping_rule", i), true, &mut r.sound);
                                 });
                             });
                         });
@@ -13207,9 +13201,7 @@ impl SpaiApp {
                         changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
                         changed |= ui.checkbox(&mut ru.push, "push").changed();
                         ui.label("sound");
-                        changed |= ui
-                            .add(egui::TextEdit::singleline(&mut ru.sound).desired_width(90.0).hint_text("default"))
-                            .changed();
+                        changed |= sound_picker(ui, ("alert_rule", i), true, &mut ru.sound);
                         ui.label("severity");
                         egui::ComboBox::from_id_salt(("rsevover", i))
                             .selected_text(match ru.severity_override {
@@ -13997,12 +13989,7 @@ impl SpaiApp {
                                         ui.label(*lbl);
                                     },
                                 );
-                                changed |= ui
-                                    .add(egui::TextEdit::singleline(&mut a.sounds[i]).desired_width(180.0))
-                                    .changed();
-                                if ui.button(egui_phosphor::regular::PLAY).on_hover_text("Test").clicked() {
-                                    crate::sound::play(&a.sounds[i]);
-                                }
+                                changed |= sound_picker(ui, ("severity_sound", i), false, &mut a.sounds[i]);
                             });
                         }
                         // Pushover (mobile push).
@@ -14659,6 +14646,21 @@ fn roman_to_int(s: &str) -> Option<i64> {
     (total > 0).then_some(total)
 }
 
+/// Whether a zKill victim is intel noise (not worth a card): an UNRESOLVED hull (empty name - a
+/// category-22 deployable or any type not in our SDE, e.g. Mobile Warp Disruptor / Cyno Inhibitor /
+/// Tractor Unit / Depot / Encounter Surveillance System), a shuttle, a rookie corvette, an
+/// anchorable "Mobile X" deployable, or a cheap empty pod. A real ship or Upwell structure resolves
+/// to a non-empty name without these markers and is kept.
+fn kill_is_noise(ship_name: &str, value: f64) -> bool {
+    let lower = ship_name.to_lowercase();
+    lower.is_empty()
+        || lower.contains("shuttle")
+        || lower.contains("mobile ")
+        || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
+        // Regular pod and the Genolution "Auroral" 197-variant capsule: skip unless valuable.
+        || (lower.starts_with("capsule") && value < 10_000_000.0)
+}
+
 /// Background loop: evaluate alerts every 400 ms regardless of the window's visibility.
 /// Build an intel card from a zKill event. `ship_by_id` maps a hull type id to its name.
 fn kill_report(
@@ -14673,18 +14675,8 @@ fn kill_report(
             .cloned()
             .or_else(|| crate::intel::structure_name_by_type(ev.ship_type_id).map(str::to_owned))
             .unwrap_or_default();
-        let lower = ship.to_lowercase();
-        // Skip noise: shuttles, rookie corvettes, cheap empty pods, and anchorable deployables.
-        // Every player-anchorable deployable is a "Mobile X" (tractor unit, depot, small/medium/
-        // large warp disruptor, micro jump unit, siphon unit, scan inhibitor, cyno beacon/
-        // inhibitor, vault, observatory) and no real hull has "Mobile" in its name, so the
-        // substring is the exact, complete catch.
-        if lower.contains("shuttle")
-            || lower.contains("mobile ")
-            || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
-            // Regular pod and the Genolution "Auroral" 197-variant capsule: skip unless valuable.
-            || (lower.starts_with("capsule") && ev.value < 10_000_000.0)
-        {
+        // An unresolved (deployable/unknown) or otherwise-noise victim never becomes a card.
+        if kill_is_noise(&ship, ev.value) {
             return None;
         }
         let mut report = crate::intel::IntelReport::default();
@@ -14699,12 +14691,8 @@ fn kill_report(
             name: sys.name.clone(),
             security: sys.security,
         });
-        if ship.is_empty() {
-            report.text = format!("Ship lost in {}", sys.name);
-        } else {
-            report.ships.push(crate::intel::DetectedShip { id: ev.ship_type_id, name: ship.clone() });
-            report.text = format!("{} lost in {}", ship, sys.name);
-        }
+        report.ships.push(crate::intel::DetectedShip { id: ev.ship_type_id, name: ship.clone() });
+        report.text = format!("{} lost in {}", ship, sys.name);
         // The killmail link gives the card an "open on zKill" button + triggers enrichment
         // (which resolves the victim who lost the ship).
         report.links.push(crate::intel::IntelLink {
@@ -17699,6 +17687,74 @@ fn uncertain_set(
     resolved.keys().filter(|n| cache.is_uncertain(n)).map(|n| n.to_lowercase()).collect()
 }
 
+/// A reusable sound selector used by every sound-settings field: a dropdown of the built-in presets
+/// (each previewable) + "Off" + "Custom file..." (native file picker), and a Test button that plays
+/// the current choice. `value` holds a preset name, "off", or a file path. When `allow_default` is
+/// set, an empty value means "use the higher-level default" and a "Default" entry is offered (used
+/// by per-rule sounds); otherwise an empty value reads as "Off". `salt` disambiguates the widget id
+/// (pass the field key, plus a loop index where the field repeats). Returns whether it changed.
+fn sound_picker(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    allow_default: bool,
+    value: &mut String,
+) -> bool {
+    use egui_phosphor::regular as icon;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let is_default = allow_default && value.is_empty();
+        let is_off = value.eq_ignore_ascii_case("off") || (!allow_default && value.is_empty());
+        let is_file = std::path::Path::new(value.as_str()).is_file();
+        let label = if is_default {
+            "Default".to_owned()
+        } else if is_off {
+            "Off".to_owned()
+        } else if is_file {
+            let name = std::path::Path::new(value.as_str())
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| value.clone());
+            format!("{} {name}", icon::FILE_AUDIO)
+        } else {
+            value.clone()
+        };
+        egui::ComboBox::from_id_salt(("sound_picker", salt)).selected_text(label).show_ui(ui, |ui| {
+            if allow_default && ui.selectable_label(is_default, "Default").clicked() {
+                value.clear();
+                changed = true;
+            }
+            if ui.selectable_label(is_off, "Off").clicked() {
+                *value = "off".to_owned();
+                changed = true;
+            }
+            for &p in crate::sound::PRESETS {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(value.eq_ignore_ascii_case(p), p).clicked() {
+                        *value = p.to_owned();
+                        changed = true;
+                    }
+                    if ui.small_button(icon::PLAY).on_hover_text("Preview").clicked() {
+                        crate::sound::play(p);
+                    }
+                });
+            }
+            if ui.selectable_label(is_file, format!("{} Custom file...", icon::FOLDER_OPEN)).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("audio", &["wav", "mp3", "ogg", "flac"])
+                    .pick_file()
+                {
+                    *value = path.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+        });
+        if ui.button(icon::PLAY).on_hover_text("Test").clicked() {
+            crate::sound::play(value);
+        }
+    });
+    changed
+}
+
 /// Render one intel report as typed, clickable panels (no raw message inline; the raw text
 /// is available on hover). `stale` means a later "clear" has outdated it; `from_you` is jumps
 /// from the active character. Returns a clicked system id to focus the map.
@@ -19166,6 +19222,26 @@ mod wh_overlay_tests {
         assert!(o.jspace_holes.contains(&30_000_001));
         // A pure J-space system is never a chain endpoint.
         assert!(!o.direct.iter().any(|&(a, b)| is_jspace(a) || is_jspace(b)));
+    }
+}
+
+#[cfg(test)]
+mod kill_noise_tests {
+    use super::*;
+
+    #[test]
+    fn deployables_and_unknowns_are_noise() {
+        // Unresolved victim (deployable / type not in our SDE) -> noise.
+        assert!(kill_is_noise("", 5_000_000.0));
+        assert!(kill_is_noise("Mobile Tractor Unit", 1_000_000.0));
+        assert!(kill_is_noise("Mobile Depot", 500_000.0));
+        assert!(kill_is_noise("Shuttle", 10_000.0));
+        assert!(kill_is_noise("Reaper", 1000.0)); // rookie corvette
+        assert!(kill_is_noise("Capsule", 100_000.0)); // cheap empty pod
+        // Real ships, valuable pods, and Upwell structures are kept.
+        assert!(!kill_is_noise("Stabber", 20_000_000.0));
+        assert!(!kill_is_noise("Keepstar", 1e12));
+        assert!(!kill_is_noise("Capsule", 500_000_000.0)); // pod-goo
     }
 }
 

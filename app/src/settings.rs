@@ -184,6 +184,9 @@ pub struct Settings {
     /// Fleet-ping alert rules: a match plays a sound + highlights the ping.
     #[serde(default)]
     pub jabber_ping_rules: Vec<PingRule>,
+    /// Whether the default strategic/peacetime ping rules have been seeded (so we only do it once).
+    #[serde(default)]
+    pub jabber_ping_rules_seeded: bool,
     /// A version the user chose not to be reminded about ("No" on the update prompt).
     #[serde(default)]
     pub update_skip_version: String,
@@ -389,6 +392,27 @@ pub fn default_rule() -> AlertRule {
         custom_window: true,
         ..AlertRule::default()
     }
+}
+
+/// The seeded default jabber ping rules: strategic PAP fleets alert with the horn, peacetime with a
+/// softer chime. Other pings stay silent unless the user adds rules.
+pub fn default_ping_rules() -> Vec<PingRule> {
+    vec![
+        PingRule {
+            name: "Strategic fleet".to_owned(),
+            pap: "strategic".to_owned(),
+            sound: "horn".to_owned(),
+            expanded: false,
+            ..PingRule::default()
+        },
+        PingRule {
+            name: "Peacetime fleet".to_owned(),
+            pap: "peacetime".to_owned(),
+            sound: "chime".to_owned(),
+            expanded: false,
+            ..PingRule::default()
+        },
+    ]
 }
 
 /// Intel alerting configuration. Fully rule-based: a report alerts only if a rule
@@ -718,7 +742,8 @@ impl Default for Settings {
             jabber_closed_dms: Vec::new(),
             jabber_ping_bot: String::new(),
             jabber_ping_groups: Vec::new(),
-            jabber_ping_rules: Vec::new(),
+            jabber_ping_rules: default_ping_rules(),
+            jabber_ping_rules_seeded: true,
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,
@@ -1137,6 +1162,28 @@ impl BattleRule {
 /// First matching rule's action, or `None` if no rule matches (caller falls back to default).
 pub fn battle_decision(rules: &[BattleRule], d: &MatchData) -> Option<RuleAction> {
     rules.iter().find(|r| r.matches(d)).map(|r| r.action)
+}
+
+#[cfg(test)]
+mod ping_seed_tests {
+    use super::*;
+
+    #[test]
+    fn default_ping_rules_cover_strategic_and_peacetime() {
+        let rules = default_ping_rules();
+        assert_eq!(rules.len(), 2);
+        let strat = rules.iter().find(|r| r.pap == "strategic").expect("strategic rule");
+        assert!(strat.enabled && strat.notify && strat.sound == "horn");
+        let peace = rules.iter().find(|r| r.pap == "peacetime").expect("peacetime rule");
+        assert!(peace.enabled && peace.notify && peace.sound == "chime");
+    }
+
+    #[test]
+    fn fresh_settings_are_seeded_with_ping_rules() {
+        let s = Settings::default();
+        assert!(s.jabber_ping_rules_seeded);
+        assert_eq!(s.jabber_ping_rules.len(), 2);
+    }
 }
 
 #[cfg(test)]
