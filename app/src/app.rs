@@ -17605,8 +17605,16 @@ fn intel_row(
                     let scol = security_color(s.security);
                     let text =
                         egui::RichText::new(format!("{} {}", icon::PLANET, s.name)).color(scol).strong();
+                    // A more opaque tint over a dark base so bright card backgrounds don't bleed
+                    // through the badge (dim the security colour but keep the fill fairly solid).
+                    let dim = scol.gamma_multiply(0.5);
+                    let fill = egui::Color32::from_rgb(
+                        (dim.r() as u16 * 45 / 100 + 0x10) as u8,
+                        (dim.g() as u16 * 45 / 100 + 0x10) as u8,
+                        (dim.b() as u16 * 45 / 100 + 0x10) as u8,
+                    );
                     let panel = ui
-                        .add(egui::Button::new(text).fill(scol.gamma_multiply(0.12)))
+                        .add(egui::Button::new(text).fill(fill))
                         .on_hover_ui(|ui| system_hover(ui, systems, status, s));
                     if panel.clicked() {
                         clicked = Some(IntelClick::System(s.id));

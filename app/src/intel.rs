@@ -3453,6 +3453,27 @@ fn belt_locations(words: &[String]) -> Vec<(usize, usize, String)> {
 /// ("planet 1", "moon IV"), and a standalone "sun". Returns the display labels plus the
 /// tokens consumed (the celestial word + its number) so they aren't read as a hostile count
 /// or a pilot.
+/// Roman numeral (I/V/X only, as used for planet indices) -> integer. 0 on an unexpected char.
+fn roman_value(s: &str) -> i64 {
+    let mut total = 0;
+    let mut prev = 0;
+    for c in s.chars().rev() {
+        let v = match c.to_ascii_uppercase() {
+            'I' => 1,
+            'V' => 5,
+            'X' => 10,
+            _ => 0,
+        };
+        if v < prev {
+            total -= v;
+        } else {
+            total += v;
+            prev = v;
+        }
+    }
+    total
+}
+
 fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
     let is_roman = |t: &str| {
         // A lone "I" collides with the pronoun ("moon I think it's clear"), so require a
@@ -3487,7 +3508,25 @@ fn detect_celestials(tokens: &[&str]) -> (Vec<String>, Vec<String>) {
                 && n.starts_with(|c: char| c.is_ascii_digit())
                 && n.chars().all(|c| c.is_ascii_digit() || c == '-')
             {
-                push(format!("{k} {n}"), &mut labels);
+                let mut label = format!("{k} {n}");
+                // A pasted moon location ("S-E6ES VI - Moon 12") has the planet roman just before
+                // "Moon"; fold it in so the planet number isn't lost -> "Moon 6-12".
+                if k == "Moon" && !n.contains('-') {
+                    let mut j = i;
+                    while j > 0 {
+                        j -= 1;
+                        let t = tokens[j].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                        if t.is_empty() {
+                            continue; // a bare "-" separator
+                        }
+                        if is_roman(t) {
+                            label = format!("Moon {}-{n}", roman_value(t));
+                            consumed.push(t.to_lowercase());
+                        }
+                        break; // only the immediately-preceding non-separator token counts
+                    }
+                }
+                push(label, &mut labels);
                 consumed.push(w);
                 consumed.push(n.to_lowercase());
                 i += 2;
@@ -5302,6 +5341,9 @@ mod tests {
         let m53 = analyze("moon 5-3 Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
         assert_eq!(m53.celestials, vec!["Moon 5-3".to_string()]);
         assert!(m53.count.is_none(), "count={:?}", m53.count);
+        // A pasted moon location folds the preceding roman planet in -> "Moon 6-12".
+        let paste = analyze("Rancer VI - Moon 12", &systems(), &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(paste.celestials, vec!["Moon 6-12".to_string()], "cels={:?}", paste.celestials);
         // A lone "I" after "moon" is the pronoun, not roman 1 — no phantom "Moon I".
         let mi = analyze("moon I think it's clear Rancer", &systems(), &noships(), &noknown(), 1, "ch", "x");
         assert!(mi.celestials.is_empty(), "phantom celestial: {:?}", mi.celestials);
