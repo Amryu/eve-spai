@@ -18096,6 +18096,23 @@ fn intel_row(
                                             inf.final_blow_char,
                                             "Attacker (final blow) — click for zKill",
                                         );
+                                        // Gang size: "+X" others on the kill, or "S" for a solo kill.
+                                        if inf.attacker_count > 0 {
+                                            let (tag, hover) = if inf.attacker_count == 1 {
+                                                ("S".to_owned(), "Solo kill".to_owned())
+                                            } else {
+                                                (
+                                                    format!("+{}", inf.attacker_count - 1),
+                                                    format!("{} attackers", inf.attacker_count),
+                                                )
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(tag)
+                                                    .color(egui::Color32::from_rgb(0xfb, 0xbf, 0x24))
+                                                    .strong(),
+                                            )
+                                            .on_hover_text(hover);
+                                        }
                                         ui.label(
                                             egui::RichText::new(icon::CARET_RIGHT).color(red).strong(),
                                         );
