@@ -1414,14 +1414,16 @@ fn extract_pilots(text: &str) -> Vec<String> {
     out
 }
 
-/// A ship hull from a lower-cased token, also accepting a simple "-s" plural so intel like
-/// "tengus" / "lokis" / "drakes" resolves to the hull (and isn't read as a pilot name).
+/// A ship hull from a lower-cased token, also accepting a simple plural so intel like
+/// "tengus" / "lokis" / "drakes", or the "-ies" form "harpies" -> "harpy", resolves to the hull
+/// (and isn't read as a pilot name).
 fn ship_of<'a>(
     lc: &str,
     ship_index: &'a HashMap<String, (i64, String)>,
 ) -> Option<&'a (i64, String)> {
     ship_index
         .get(lc)
+        .or_else(|| lc.strip_suffix("ies").and_then(|base| ship_index.get(&format!("{base}y"))))
         .or_else(|| lc.strip_suffix('s').filter(|s| s.len() >= 3).and_then(|s| ship_index.get(s)))
 }
 
@@ -1591,31 +1593,42 @@ fn multiword_ships(
         let mut matched = false;
         for len in (2..=max).rev() {
             let phrase = words[i..i + len].join(" ").to_lowercase();
-            if let Some((id, name)) = ship_index.get(&phrase) {
-                out.push((i, len, *id, name.clone()));
+            // Exact hull, or one with the trailing "Issue" dropped ("Brutix Navy" -> Brutix Navy
+            // Issue, "Stabber Fleet" -> Stabber Fleet Issue), or the whole faction suffix
+            // abbreviated ("Vexor NI" -> Navy Issue, "Stabber FI" -> Fleet Issue).
+            let try_phrase = |p: &str| -> Option<(i64, String)> {
+                if let Some((id, name)) = ship_index.get(p) {
+                    return Some((*id, name.clone()));
+                }
+                let full = if p.ends_with(" navy") || p.ends_with(" fleet") {
+                    Some(format!("{p} issue"))
+                } else if let Some(base) = p.strip_suffix(" ni") {
+                    Some(format!("{base} navy issue"))
+                } else if let Some(base) = p.strip_suffix(" fi") {
+                    Some(format!("{base} fleet issue"))
+                } else {
+                    None
+                };
+                full.and_then(|f| ship_index.get(&f).map(|(id, name)| (*id, name.clone())))
+            };
+            // The phrase, or a simple plural of its last word de-pluralised: "-ies" -> "-y"
+            // ("osprey navies" -> "osprey navy") or plain "-s" ("osprey navys" -> "osprey navy"),
+            // so a pluralised multi-word hull still resolves to Osprey Navy Issue. Kept only if the
+            // de-pluralised form actually matches a hull.
+            let hit = try_phrase(&phrase).or_else(|| {
+                let deplural = phrase
+                    .strip_suffix("ies")
+                    .map(|base| format!("{base}y"))
+                    .or_else(|| phrase.strip_suffix('s').map(str::to_owned));
+                deplural
+                    .filter(|s| s.split_whitespace().last().is_some_and(|w| w.len() >= 3))
+                    .and_then(|s| try_phrase(&s))
+            });
+            if let Some((id, name)) = hit {
+                out.push((i, len, id, name));
                 adv = len;
                 matched = true;
                 break;
-            }
-            // The trailing "Issue" is routinely dropped ("Brutix Navy" -> Brutix Navy
-            // Issue, "Stabber Fleet" -> Stabber Fleet Issue), or the whole faction suffix
-            // is abbreviated ("Vexor NI" -> Navy Issue, "Stabber FI" -> Fleet Issue).
-            let full = if phrase.ends_with(" navy") || phrase.ends_with(" fleet") {
-                Some(format!("{phrase} issue"))
-            } else if let Some(base) = phrase.strip_suffix(" ni") {
-                Some(format!("{base} navy issue"))
-            } else if let Some(base) = phrase.strip_suffix(" fi") {
-                Some(format!("{base} fleet issue"))
-            } else {
-                None
-            };
-            if let Some(full) = full {
-                if let Some((id, name)) = ship_index.get(&full) {
-                    out.push((i, len, *id, name.clone()));
-                    adv = len;
-                    matched = true;
-                    break;
-                }
             }
         }
         // Typo tolerance (LAST RESORT — only when no exact hull matched at this position): a
@@ -6418,6 +6431,27 @@ mod tests {
         let (pilots, _, _) = resolve_report(&r3, &["Clear Rain"], &s);
         assert!(pilots.iter().any(|p| p == "Clear Rain"), "name split: {pilots:?}");
         assert!(!r3.clear, "name 'Clear Rain' spoofed clear");
+    }
+
+    #[test]
+    fn pluralised_multiword_and_ies_hulls() {
+        let s = systems();
+        let ships = ships_with(&[("Osprey Navy Issue", 29990), ("Osprey", 620), ("Harpy", 11381)]);
+        // Both the naive "-s" and the correct "-ies" plural of a multi-word hull resolve.
+        for t in ["osprey navys in Rancer", "osprey navies in Rancer"] {
+            let r = analyze(t, &s, &ships, &noknown(), 1, "ch", "x");
+            assert!(r.ships.iter().any(|sh| sh.name == "Osprey Navy Issue"), "{t}: {:?}", r.ships);
+            assert!(
+                !r.pilots.iter().any(|p| {
+                    p.eq_ignore_ascii_case("navys") || p.eq_ignore_ascii_case("navies")
+                }),
+                "{t} pilot: {:?}",
+                r.pilots
+            );
+        }
+        // Single-word "-ies": harpies -> Harpy.
+        let r = analyze("harpies on grid", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.ships.iter().any(|sh| sh.name == "Harpy"), "{:?}", r.ships);
     }
 
     #[test]

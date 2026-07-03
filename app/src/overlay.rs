@@ -415,14 +415,13 @@ impl eframe::App for Overlay {
             ot != crate::settings::OnTop::Never
                 && (ot == crate::settings::OnTop::Always || self.eve_focused)
         };
-        let alert_active = {
+        {
             let mut st = self.alert_shared.lock().unwrap();
             st.on_top_level = alert_on_top;
-            st.enabled && (st.secs > 0.0 || st.pinned)
-        };
+        }
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("alert_window"),
-            crate::app::alert_viewport_builder(alert_on_top, alert_active),
+            crate::app::alert_viewport_builder(alert_on_top),
             {
                 let cb = self.alert_viewport_cb.clone();
                 move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)

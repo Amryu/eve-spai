@@ -518,9 +518,6 @@ pub struct SpaiApp {
     /// Password field in the Jabber connect form (transient).
     jabber_pw_input: String,
     /// Quick-ping composer state.
-    ping_compose_open: bool,
-    ping_group_input: String,
-    ping_draft: PingDraft,
     /// Notifications/alert-rules dialog open.
     ping_rules_open: bool,
     /// App-start time, to mark the historic/new boundary in conversations.
@@ -1194,9 +1191,6 @@ impl SpaiApp {
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
             jabber_pw_input: String::new(),
-            ping_compose_open: false,
-            ping_group_input: String::new(),
-            ping_draft: PingDraft::default(),
             ping_rules_open: false,
             session_start: chrono::Utc::now().timestamp(),
             eve_focused,
@@ -1722,15 +1716,6 @@ impl SpaiApp {
         }
     }
 
-    /// The bot JID that broadcast pings are sent to.
-    fn ping_bot_jid(&self) -> String {
-        let b = self.settings.jabber_ping_bot.trim();
-        if !b.is_empty() {
-            return if b.contains('@') { b.to_owned() } else { self.full_user_jid(b) };
-        }
-        let domain = self.settings.jabber_jid.split('@').nth(1).unwrap_or("");
-        format!("directorbot@{domain}")
-    }
 
     /// The first enabled ping-alert rule a fleet ping matches (for the window/highlight).
     fn matching_ping_rule(&self, p: &crate::pings::Ping) -> Option<&crate::settings::PingRule> {
@@ -1750,94 +1735,6 @@ impl SpaiApp {
 
     /// The quick-ping composer: pick a group, optionally fill the fleet form, send a
     /// `!bping <group> …` command to the bot.
-    fn ping_compose_dialog(&mut self, ctx: &egui::Context) {
-        if !self.ping_compose_open {
-            return;
-        }
-        let mut open = true;
-        let mut send = false;
-        egui::Window::new("Send ping")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Group:");
-                    egui::ComboBox::from_id_salt("ping_group")
-                        .selected_text(if self.ping_draft.group.is_empty() {
-                            "—".to_owned()
-                        } else {
-                            self.ping_draft.group.clone()
-                        })
-                        .show_ui(ui, |ui| {
-                            for g in self.settings.jabber_ping_groups.clone() {
-                                ui.selectable_value(&mut self.ping_draft.group, g.clone(), g);
-                            }
-                        });
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.ping_group_input)
-                            .hint_text("add group")
-                            .desired_width(90.0),
-                    );
-                    if ui.button("+").clicked() && !self.ping_group_input.trim().is_empty() {
-                        let g = self.ping_group_input.trim().to_owned();
-                        if !self.settings.jabber_ping_groups.contains(&g) {
-                            self.settings.jabber_ping_groups.push(g.clone());
-                            self.needs_save = true;
-                        }
-                        self.ping_draft.group = g;
-                        self.ping_group_input.clear();
-                    }
-                });
-                ui.checkbox(&mut self.ping_draft.fleet, "Fleet ping (FC / doctrine / form-up / PAP)");
-                if self.ping_draft.fleet {
-                    egui::Grid::new("fleet_form").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                        ui.label("FC");
-                        ui.text_edit_singleline(&mut self.ping_draft.fc);
-                        ui.end_row();
-                        ui.label("Doctrine");
-                        ui.text_edit_singleline(&mut self.ping_draft.doctrine);
-                        ui.end_row();
-                        ui.label("Form-up");
-                        ui.text_edit_singleline(&mut self.ping_draft.formup);
-                        ui.end_row();
-                        ui.label("PAP");
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.ping_draft.pap, 0u8, "None");
-                            ui.selectable_value(&mut self.ping_draft.pap, 1u8, "Strategic");
-                            ui.selectable_value(&mut self.ping_draft.pap, 2u8, "Peacetime");
-                        });
-                        ui.end_row();
-                    });
-                }
-                ui.label("Message:");
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.ping_draft.msg)
-                        .desired_rows(2)
-                        .desired_width(380.0),
-                );
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Sends:").weak());
-                ui.label(egui::RichText::new(self.ping_draft.to_command()).monospace().weak());
-                ui.add_space(4.0);
-                let ok = !self.ping_draft.group.trim().is_empty()
-                    && !self.ping_draft.msg.trim().is_empty();
-                if ui.add_enabled(ok, egui::Button::new("Send ping")).clicked() {
-                    send = true;
-                }
-            });
-        if send {
-            let body = self.ping_draft.to_command();
-            let bot = self.ping_bot_jid();
-            if let Some(tx) = &self.jabber_tx {
-                let _ = tx.send(crate::jabber::Cmd::Send { to: bot, body });
-            }
-            self.ping_draft.msg.clear();
-            self.ping_compose_open = false;
-        } else {
-            self.ping_compose_open = open;
-        }
-    }
 
     /// Fleet-ping alert rules + notification sound settings.
     fn ping_rules_dialog(&mut self, ctx: &egui::Context) {
@@ -2647,15 +2544,6 @@ impl SpaiApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
                 match self.jabber_chat.clone() {
                     None => {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button(format!("{}  Send ping", egui_phosphor::regular::PAPER_PLANE_TILT))
-                                .clicked()
-                            {
-                                self.ping_compose_open = true;
-                            }
-                        });
-                        ui.separator();
                         // Pre-compute which pings match an alert rule (for highlight).
                         let hl: Vec<bool> =
                             pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
@@ -6953,7 +6841,7 @@ impl SpaiApp {
             let player_sys = self.player_system();
 
             // Publish into the shared state + drain the closure's outputs.
-            let (active, just_opened, clicks, verdicts, moved, moved_size) = {
+            let (_active, just_opened, clicks, verdicts, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
                 st.enabled = feature;
                 st.on_top_level = on_top;
@@ -7010,7 +6898,7 @@ impl SpaiApp {
             // itself when an alert is active.
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of("alert_window"),
-                alert_viewport_builder(on_top, active),
+                alert_viewport_builder(on_top),
                 {
                     let cb = self.alert_viewport_cb.clone();
                     move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
@@ -14861,7 +14749,6 @@ impl eframe::App for SpaiApp {
         self.poll_jabber_notify(&ctx);
         self.poll_kill_fetches();
         self.dscan_dialog(&ctx);
-        self.ping_compose_dialog(&ctx);
         self.ping_rules_dialog(&ctx);
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
@@ -15436,44 +15323,6 @@ fn fit_chars(width: f32) -> usize {
     (width / 7.5).floor().max(3.0) as usize
 }
 
-/// Draft for the quick-ping composer.
-#[derive(Default)]
-struct PingDraft {
-    group: String,
-    /// false = plain question, true = the fleet-ping form.
-    fleet: bool,
-    msg: String,
-    fc: String,
-    doctrine: String,
-    formup: String,
-    /// 0 = none, 1 = strategic, 2 = peacetime.
-    pap: u8,
-}
-
-impl PingDraft {
-    /// Build the `!bping <group> …` command body.
-    fn to_command(&self) -> String {
-        let group = self.group.trim();
-        let mut body = format!("!bping {group} {}", self.msg.trim());
-        if self.fleet {
-            if !self.fc.trim().is_empty() {
-                body.push_str(&format!("\nFC Name: {}", self.fc.trim()));
-            }
-            if !self.formup.trim().is_empty() {
-                body.push_str(&format!("\nFormup Location: {}", self.formup.trim()));
-            }
-            match self.pap {
-                1 => body.push_str("\nPAP Type: Strategic"),
-                2 => body.push_str("\nPAP Type: Peacetime"),
-                _ => {}
-            }
-            if !self.doctrine.trim().is_empty() {
-                body.push_str(&format!("\nDoctrine: {}", self.doctrine.trim()));
-            }
-        }
-        body
-    }
-}
 
 /// State of an in-flight / completed d-scan upload.
 #[derive(Default)]
@@ -16157,10 +16006,10 @@ where
 }
 
 /// The deferred alert viewport's builder. Factored so both the main process (non-Linux) and the
-/// overlay child declare the window identically. `on_top` only seeds the initial level + the
-/// idle visibility; the render closure re-asserts visibility / passthrough / level live via
-/// `ViewportCommand`.
-pub(crate) fn alert_viewport_builder(on_top: bool, active: bool) -> egui::ViewportBuilder {
+/// overlay child declare the window identically. `on_top` only seeds the initial level; the window
+/// is always mapped from creation and the render closure re-asserts visibility / passthrough /
+/// level live via `ViewportCommand`.
+pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
     #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
@@ -16172,10 +16021,11 @@ pub(crate) fn alert_viewport_builder(on_top: bool, active: bool) -> egui::Viewpo
         })
         // with_active(false) keeps the re-map from stealing focus (WS_EX_NOACTIVATE on Windows).
         .with_active(false)
-        // On Linux/X11 the window must be MAPPED from creation (a hidden window never paints, so
-        // the closure that would later show it would never run). Stay mapped + transparent +
-        // click-through when idle; on Windows start hidden (the closure maps it on an alert).
-        .with_visible(if cfg!(target_os = "windows") { active } else { true })
+        // Map from creation on ALL platforms: a hidden window never paints, so the closure that
+        // would later show it never runs (the catch-22 that left the alert hidden on Windows while
+        // the main was minimized). Stay mapped + transparent + click-through when idle instead;
+        // WS_EX_NOACTIVATE (with_active(false)) keeps it from stealing focus.
+        .with_visible(true)
         .with_decorations(false)
         .with_resizable(true)
         .with_taskbar(false)
@@ -16214,11 +16064,12 @@ pub(crate) fn build_alert_viewport_cb(
         // Drive Visible + click-through from the CLOSURE (not the builder) so they're right
         // even while the root is minimized. Only send a command on change (each one pins
         // egui at vsync). Per-OS behaviour mirrors the old immediate window:
-        // - Windows: hidden unless active (the re-map can't steal focus, WS_EX_NOACTIVATE).
-        // - Linux/X11: re-mapping always steals focus (winit#1160), so while the feature is
-        //   ON stay mapped and go transparent + click-through when idle instead of hiding;
-        //   only fully hide when the feature is OFF (no window at all, like before).
-        let want_visible = active || (st.enabled && !cfg!(target_os = "windows"));
+        // All platforms: while the feature is ON stay MAPPED (transparent + click-through when
+        // idle) rather than hiding, so the closure keeps painting and can show the window on an
+        // alert even while the main window is minimized. Re-mapping steals focus on X11
+        // (winit#1160) and, on Windows, a hidden window never repaints to un-hide itself - staying
+        // mapped avoids both. Only fully hide when the feature is OFF (no window at all).
+        let want_visible = active || st.enabled;
         let want_passthrough = !active;
         if st.applied_visible != Some(want_visible) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
