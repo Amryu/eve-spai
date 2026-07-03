@@ -18299,6 +18299,10 @@ fn intel_row(
                 let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
                     ui.label(egui::RichText::new(txt).color(col).strong());
                 };
+                // A "status?" request (no threat of its own) — a badge so the card isn't empty.
+                if r.status {
+                    tag(ui, "STATUS?", egui::Color32::from_rgb(0x7d, 0xd3, 0xde));
+                }
                 if r.clear {
                     tag(ui, "CLEAR", green);
                 }
@@ -18339,9 +18343,6 @@ fn intel_row(
                         Some(t) => tag(ui, &format!("ESS {t}"), warn),
                         None => tag(ui, "ESS", warn),
                     }
-                }
-                if r.skyhook {
-                    tag(ui, "SKYHOOK", warn);
                 }
                 if r.filament {
                     tag(ui, "FILAMENT", warn);
