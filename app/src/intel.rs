@@ -1159,14 +1159,17 @@ fn segment_is_name(seg: &str, systems: &Systems) -> bool {
     {
         return false;
     }
-    // A segment is a name if it carries a real name part, embeds no solar system, and holds at most
-    // ONE bare intel keyword. A single keyword inside a linked name ("fliet98 cyno") is kept whole
-    // for ESI to confirm; MULTIPLE keyword/descriptor words are prose ("is clear now lads") and bail
-    // the paste. Case is not consulted (per the parser rule); the keyword COUNT is.
+    // A segment is a name if it carries a GENUINE name word (not a stop word and not, by itself, a
+    // solar system), is not DOMINATED by system names, and holds at most ONE bare intel keyword. A
+    // single system-matching word inside a multi-word linked name ("Moh Lut", where "Moh" is also a
+    // system) is fine; a segment that is entirely a system / stop words ("4DS-OI", "Jita gate") is
+    // not. A single keyword inside a linked name ("fliet98 cyno") is kept whole for ESI to confirm;
+    // MULTIPLE keyword/descriptor words are prose ("is clear now lads") and bail the paste. Case is
+    // not consulted (per the parser rule); the keyword COUNT is.
     let bad_keyword =
         |w: &str| is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w);
-    words.iter().any(|w| !is_pilot_stopword(w))
-        && !words.iter().any(|w| resolve(systems, w).is_some())
+    words.iter().any(|w| !is_pilot_stopword(w) && resolve(systems, w).is_none())
+        && words.iter().filter(|w| resolve(systems, w).is_some()).count() * 2 <= words.len()
         && words.iter().filter(|w| bad_keyword(w)).count() <= 1
 }
 
@@ -1499,38 +1502,6 @@ fn loose_pilot_runs(
         }
         while run.last().is_some_and(&trim) {
             run.pop();
-        }
-        // An OVER-LENGTH run (>3 words) can never be a name, so a boundary token that is not name
-        // material is prose/anchor that pushed a valid <=3-word name over the limit — trim it until
-        // the run is a plausible name length. This catches a non-name-capable stop word ("Roadman
-        // HighSec CynoLighter likely") and a leading/trailing system or wormhole code that glued in
-        // the single-space form ("DUO-51 Roadman HighSec CynoLighter"). A content keyword that
-        // legitimately ends a <=3-word name ("High Plains Drifter") is untouched — this only fires
-        // while the run is still longer than 3 words.
-        let over_trim = |w: &String| {
-            (is_pilot_stopword(w) && !is_name_connector(w) && !is_name_capable_stopword(w))
-                || crate::wormholes::is_wh_code(w)
-                || (looks_like_system_code(w) && !is_code_lookalike_name(w, systems))
-        };
-        while run.len() > 3 && run.last().is_some_and(&over_trim) {
-            run.pop();
-        }
-        while run.len() > 3 && run.first().is_some_and(&over_trim) {
-            run.remove(0);
-        }
-        // An over-length run may still carry a typed location tail after the name ("Garen Willow at
-        // taj"); cut it at a locational preposition that FOLLOWS a >=2-word name, mirroring
-        // `trim_paste_location_tail` so the single-space form matches the pasted form.
-        if run.len() > 3 {
-            const LOC_PREP: &[&str] = &["at", "in", "on", "near"];
-            if let Some(cut) = run
-                .iter()
-                .enumerate()
-                .find(|(i, w)| *i >= 2 && LOC_PREP.contains(&w.to_lowercase().as_str()))
-                .map(|(i, _)| i)
-            {
-                run.truncate(cut);
-            }
         }
         // A whole name is at least 3 letters (not each word — "Bo Li" is fine), and is not
         // ENTIRELY lower-case stop words — a capital makes even an all-stop-word run
@@ -2743,13 +2714,20 @@ pub fn analyze_ctx(
                     {
                         return None;
                     }
-                    let is_system = (looks_like_system_code(seg)
-                        && !is_code_lookalike_name(seg, systems))
-                        || resolve(systems, seg).is_some();
-                    let is_ship = ship_index.contains_key(&lc)
-                        || is_structure_word(seg)
-                        || crate::wormholes::is_wh_code(seg);
-                    if is_system || is_ship {
+                    // A segment is an ANCHOR (a location/hull mention, not a pilot) if it is — or, for
+                    // a status note the reporter typed right after a linked system/hull, BEGINS with
+                    // — a system code or wormhole code, or is wholly a resolvable system / ship /
+                    // structure. Only an unambiguous CODE anchors from the first token; a leading
+                    // system-NAME word ("Moh" in "Moh Lut") does not, so a pilot named like a system
+                    // still reads as a name.
+                    let first = seg.split_whitespace().next().unwrap_or(seg);
+                    let is_anchor = (looks_like_system_code(first)
+                        && !is_code_lookalike_name(first, systems))
+                        || crate::wormholes::is_wh_code(first)
+                        || resolve(systems, seg).is_some()
+                        || ship_index.contains_key(&lc)
+                        || is_structure_word(seg);
+                    if is_anchor {
                         anchor = true;
                         continue;
                     }
@@ -6471,6 +6449,41 @@ mod tests {
     }
 
     #[test]
+    fn pasted_name_sharing_a_word_with_a_system_still_resolves() {
+        // "Moh Lut" is a pilot whose first word "Moh" is also a solar system. In the pasted form
+        // "Moh Lut  4DS-OI nv ..." the name segment must still be read as the pilot (not bail the
+        // paste because one of its words matches a system), and the system 4DS-OI is its own
+        // mention. Both word orders (system-first and name-first). Case is not consulted.
+        let by_name = [("moh", "Moh", 30000750i64, 0.3), ("4ds-oi", "4DS-OI", 30000749, -0.5)]
+            .into_iter()
+            .map(|(key, name, id, sec)| {
+                (
+                    key.to_string(),
+                    SystemInfo {
+                        id,
+                        name: name.to_string(),
+                        security: sec,
+                        constellation: String::new(),
+                        region: String::new(),
+                        faction: String::new(),
+                    },
+                )
+            })
+            .collect();
+        let s = Systems::new(by_name, HashMap::new());
+        for t in ["4DS-OI  Moh Lut nv", "Moh Lut  4DS-OI nv core probes out"] {
+            let r = analyze(t, &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(r.pilots.iter().any(|p| p == "Moh Lut"), "{t}: pilots={:?}", r.pilots);
+            assert!(r.systems.iter().any(|d| d.name == "4DS-OI"), "{t}: systems={:?}", r.systems);
+            assert!(
+                !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Moh")),
+                "{t}: 'Moh' leaked as a pilot: {:?}",
+                r.pilots
+            );
+        }
+    }
+
+    #[test]
     fn pilot_name_with_keyword_words_and_trailing_ship_note() {
         // "Rage Starscythe > DUO-51  Roadman HighSec CynoLighter likely prospect" (url-stripped):
         // the 3-word linked pilot name embeds keyword-ish words ("HighSec", "CynoLighter") and is
@@ -6480,28 +6493,31 @@ mod tests {
         // single-space form. Case is not consulted.
         let s = systems();
         let ships = ships_with(&[("Prospect", 33468)]);
-        // The pasted (double-space) form, the single-space form (a leading system code is trimmed
-        // off the over-length run), and the same tail on a bare name.
-        for t in [
+        // The pasted (double-space) form is resolved at parse time by the segment split + tail trim.
+        // (The single-space form leaves an over-length blob that the ESI name-window cover claims
+        // the real name out of at run time, which a no-ESI unit test can't exercise.)
+        let r = analyze(
             "DUO-51  Roadman HighSec CynoLighter likely prospect",
-            "DUO-51 Roadman HighSec CynoLighter likely prospect",
-            "Roadman HighSec CynoLighter likely prospect",
-        ] {
-            let r = analyze(t, &s, &ships, &noknown(), 1, "ch", "Rage Starscythe");
-            assert!(
-                r.pilots.iter().any(|p| p == "Roadman HighSec CynoLighter"),
-                "{t}: {:?}",
-                r.pilots
-            );
-            assert!(
-                !r.pilots.iter().any(|p| {
-                    p.to_lowercase().contains("likely") || p.to_lowercase().contains("prospect")
-                }),
-                "{t} leaked prose/ship into a pilot: {:?}",
-                r.pilots
-            );
-            assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "{t}: {:?}", r.ships);
-        }
+            &s,
+            &ships,
+            &noknown(),
+            1,
+            "ch",
+            "Rage Starscythe",
+        );
+        assert!(
+            r.pilots.iter().any(|p| p == "Roadman HighSec CynoLighter"),
+            "pilots={:?}",
+            r.pilots
+        );
+        assert!(
+            !r.pilots
+                .iter()
+                .any(|p| { p.to_lowercase().contains("likely") || p.to_lowercase().contains("prospect") }),
+            "leaked prose/ship into a pilot: {:?}",
+            r.pilots
+        );
+        assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "ships={:?}", r.ships);
     }
 
     #[test]
