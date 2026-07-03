@@ -17,6 +17,13 @@ pub struct SystemInfo {
     pub faction: String,
 }
 
+/// Whether a solar-system id is a J-space wormhole system. EVE assigns wormhole systems ids in the
+/// 31,000,000-31,999,999 range (k-space is 30,000,000-30,999,999). Wormhole systems have no
+/// stargates, so they never appear in the jump graph.
+pub fn is_wormhole_system(id: i64) -> bool {
+    (31_000_000..32_000_000).contains(&id)
+}
+
 pub struct Systems {
     by_name: HashMap<String, SystemInfo>,
     by_id: HashMap<i64, SystemInfo>,
@@ -259,6 +266,15 @@ impl Systems {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wormhole_system_ids() {
+        assert!(is_wormhole_system(31_000_005)); // J-space
+        assert!(is_wormhole_system(31_002_238));
+        assert!(!is_wormhole_system(30_000_142)); // Jita (k-space)
+        assert!(!is_wormhole_system(30_002_659)); // Tama (k-space)
+        assert!(!is_wormhole_system(0));
+    }
 
     fn line_graph() -> Systems {
         // A - B - C - D  (ids 1..4)

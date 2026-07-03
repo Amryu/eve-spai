@@ -382,6 +382,9 @@ pub struct SpaiApp {
     ship_sizes: crate::zkill::ShipSizes,
     /// Active character's current system, published to the worker for jumps-from-me rules.
     player_sys_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Wormhole systems the player has recently been in (id -> last-seen ts), so the zKill feed
+    /// keeps surfacing kills there for ~10 min even though wormholes aren't jump-reachable.
+    recent_wh: crate::zkill::RecentWh,
     /// Work throttle level (WorkThrottle as u8), shared live with the zKill worker.
     work_throttle_shared: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Battle-filter dialog open.
@@ -1118,6 +1121,7 @@ impl SpaiApp {
             battle_filter: std::sync::Arc::new(std::sync::Mutex::new(crate::settings::BattleFilter::default())),
             ship_sizes: std::sync::Arc::new(std::collections::HashMap::new()),
             player_sys_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            recent_wh: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             work_throttle_shared: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             battle_filter_open: false,
             filter_picker: None,
@@ -3336,6 +3340,7 @@ impl SpaiApp {
             self.battle_filter.clone(),
             self.ship_sizes.clone(),
             self.player_sys_shared.clone(),
+            self.recent_wh.clone(),
             self.work_throttle_shared.clone(),
             self.battle_break_shared.clone(),
             self.battle_overrides.clone(),
@@ -14802,8 +14807,17 @@ impl eframe::App for SpaiApp {
         }
 
         // Publish the active character's system for the worker's jumps-from-me rules.
-        self.player_sys_shared
-            .store(self.player_system().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+        let cur_sys = self.player_system().unwrap_or(0);
+        self.player_sys_shared.store(cur_sys, std::sync::atomic::Ordering::Relaxed);
+        // Track recent wormhole presence: while the player sits in a hole its timestamp is
+        // refreshed each frame; after leaving it lingers for RECENT_WH_SECS so the zKill feed keeps
+        // surfacing kills there. Prune lapsed entries opportunistically.
+        if crate::geo::is_wormhole_system(cur_sys) {
+            let now = chrono::Utc::now().timestamp();
+            let mut wh = self.recent_wh.lock().unwrap();
+            wh.insert(cur_sys, now);
+            wh.retain(|_, t| now - *t <= 600);
+        }
 
         // System tray: Show brings the window back; Exit quits for real. Closing the
         // window hides to the tray instead of quitting (when enabled).

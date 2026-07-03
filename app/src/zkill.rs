@@ -28,6 +28,13 @@ const R2Z2: &str = "https://r2z2.zkillboard.com/ephemeral";
 const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 /// A kill within this many jumps of an intel report (or the active character) anchors a battle.
 pub const ANCHOR_JUMPS: u32 = 6;
+/// How long a wormhole system the player recently sat in stays "anchored" for zKill intel, so kills
+/// there are surfaced despite wormholes not being jump-reachable (the player has left the hole but
+/// still cares about what's happening in it).
+const RECENT_WH_SECS: i64 = 600;
+/// Wormhole systems the player has recently been in: system_id -> last-seen unix timestamp. Written
+/// by the main from the player's location, read by the live kill feed.
+pub type RecentWh = Arc<Mutex<std::collections::HashMap<i64, i64>>>;
 /// Buffer kills this far out as battle *candidates* — far enough that anything able to cluster
 /// with an anchored kill (within BATTLE_MAX_JUMPS of it) is retained, so a fight that touches the
 /// watched area is recorded whole. Candidates that never join an anchored battle are dropped.
@@ -65,6 +72,7 @@ pub fn spawn(
     filter: SharedBattleFilter,
     ship_sizes: ShipSizes,
     player_sys: Arc<AtomicI64>,
+    recent_wh: RecentWh,
     throttle: Arc<std::sync::atomic::AtomicU8>,
     break_gap: Arc<AtomicI64>,
     overrides: SharedOverrides,
@@ -143,7 +151,7 @@ pub fn spawn(
                     std::thread::sleep(Duration::from_secs(5));
                     seq = fetch_sequence(&client);
                 }
-                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &mut names, store.as_ref()) {
+                Some(s) => match poll(&client, s, &systems, &intel, &camps, &killfeed, &camp_types, &ship_ids, &filter, &ship_sizes, &player_sys, &recent_wh, &mut names, store.as_ref()) {
                     Poll::Got(eng) => {
                         stuck = 0;
                         retries = 0;
@@ -464,6 +472,7 @@ fn poll(
     filter: &Mutex<BattleFilter>,
     ship_sizes: &HashMap<i64, ShipSize>,
     player_sys: &AtomicI64,
+    recent_wh: &RecentWh,
     names: &mut HashMap<i64, String>,
     store: Option<&crate::store::Store>,
 ) -> Poll {
@@ -554,10 +563,17 @@ fn poll(
         }
     };
     let intel_jumps = nearest_intel_jumps(systems, intel, kill_sys, CANDIDATE_JUMPS);
+    // A wormhole the player has recently been in (last RECENT_WH_SECS) anchors its own kills even
+    // though wormholes have no stargates, so `jumps` can never reach them.
+    let wh_recent = crate::geo::is_wormhole_system(kill_sys) && {
+        let now = chrono::Utc::now().timestamp();
+        recent_wh.lock().unwrap().get(&kill_sys).is_some_and(|&t| now - t <= RECENT_WH_SECS)
+    };
     let anchored = custom_match
+        || wh_recent
         || player_jumps.is_some_and(|d| d <= ANCHOR_JUMPS)
         || intel_jumps.is_some_and(|d| d <= ANCHOR_JUMPS);
-    let candidate = anchored || player_jumps.is_some() || intel_jumps.is_some();
+    let candidate = anchored || wh_recent || player_jumps.is_some() || intel_jumps.is_some();
     if !candidate {
         return Poll::Got(None);
     }
