@@ -2666,6 +2666,47 @@ pub fn analyze_ctx(
             }
         }
     }
+    // A candidate that glues a name-tail to a hull ("Wilen Stabber" = the tail of "Elizabeth van
+    // Wilen" + the ship "Stabber") is spurious when its non-ship remainder is ALREADY a sub-phrase
+    // of a longer candidate. Strip a leading/trailing ship token and drop the candidate if the
+    // remainder is so covered — the real name is the longer candidate and the hull is detected on
+    // its own. Only drop when covered, so a genuine "Sabre Pilot" (whose "Pilot" isn't covered by a
+    // longer name) is never touched, and no standalone name is lost.
+    {
+        let lc: Vec<String> = pilots.iter().map(|p| p.to_lowercase()).collect();
+        let covered_by_longer = |frag_words: usize, frag: &str, exclude: usize| -> bool {
+            let needle = format!(" {frag} ");
+            lc.iter().enumerate().any(|(j, other)| {
+                j != exclude
+                    && other.split_whitespace().count() > frag_words
+                    && format!(" {other} ").contains(&needle)
+            })
+        };
+        let mut kill = vec![false; pilots.len()];
+        for (i, p) in pilots.iter().enumerate() {
+            let words: Vec<&str> = p.split_whitespace().collect();
+            if words.len() < 2 {
+                continue;
+            }
+            let rem = if ship_index.contains_key(&words[words.len() - 1].to_lowercase()) {
+                Some(words[..words.len() - 1].join(" "))
+            } else if ship_index.contains_key(&words[0].to_lowercase()) {
+                Some(words[1..].join(" "))
+            } else {
+                None
+            };
+            if let Some(rem) = rem {
+                let rem_lc = rem.to_lowercase();
+                if !rem_lc.is_empty()
+                    && covered_by_longer(rem.split_whitespace().count(), &rem_lc, i)
+                {
+                    kill[i] = true;
+                }
+            }
+        }
+        let mut it = kill.iter();
+        pilots.retain(|_| !it.next().copied().unwrap_or(false));
+    }
     // Final pass: drop any pilot that is a contiguous sub-phrase of a longer detected one.
     // The loose-run and single-token sources are added after the earlier sub-phrase filter,
     // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
@@ -5710,6 +5751,39 @@ mod tests {
         let c = analyze("3 Drake", &s, &drake, &noknown(), 1, "ch", "x");
         assert_eq!(c.count, Some(3), "3 Drake should be a count: {:?}", c);
         assert!(!proposed(&c.pilots, "3 Drake"), "3 Drake leaked as a pilot: {:?}", c.pilots);
+    }
+
+    #[test]
+    fn wilen_amend_keeps_full_three_word_name() {
+        let s = systems();
+        let ships = ships_with(&[("Stabber", 622)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("elizabeth van wilen".to_string(), 1i64)].into_iter().collect();
+        let a =
+            analyze("Rancer Elizabeth van Wilen", &s, &noships(), &known, 100, "ch", "Savant Solette");
+        let b =
+            analyze("Elizabeth van Wilen Stabber", &s, &ships, &known, 130, "ch", "Jeff Kali");
+        assert!(proposed(&a.pilots, "Elizabeth van Wilen"), "A pilots={:?}", a.pilots);
+        assert!(proposed(&b.pilots, "Elizabeth van Wilen"), "B pilots={:?}", b.pilots);
+        assert!(
+            !b.pilots.iter().any(|p| p.eq_ignore_ascii_case("Wilen") || p.eq_ignore_ascii_case("Wilen Stabber")),
+            "B leaked bare 'Wilen': {:?}",
+            b.pilots
+        );
+        let mut state = IntelState::default();
+        state.push(a);
+        assert!(state.try_amend(&b, 60, &s), "second mention should amend the first");
+        assert_eq!(state.reports.len(), 1, "split into separate cards: {:?}", state.reports);
+        assert!(
+            proposed(&state.reports[0].pilots, "Elizabeth van Wilen"),
+            "merged pilots={:?}",
+            state.reports[0].pilots
+        );
+        assert!(
+            !state.reports[0].pilots.iter().any(|p| p.eq_ignore_ascii_case("Wilen") || p.eq_ignore_ascii_case("Wilen Stabber")),
+            "merged leaked bare 'Wilen': {:?}",
+            state.reports[0].pilots
+        );
     }
 
     #[test]
