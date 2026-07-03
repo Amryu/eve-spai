@@ -3521,11 +3521,14 @@ impl SpaiApp {
 
     /// The one-time explainer + the "real / not a pilot" verdict popup for an uncertain pilot.
     fn verdict_dialog(&mut self, ctx: &egui::Context) {
+        // Modal (not Window): the backdrop blocks input to the intel cards behind it, so a click on
+        // the dialog can't fall through to a card (which would reopen a verdict popup).
         if self.verdict_explainer_open {
-            let mut open = true;
             let mut ack = false;
-            egui::Window::new("Uncertain pilot  (?)").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            let resp = egui::Modal::new(egui::Id::new("verdict_explainer")).show(ctx, |ui| {
                 ui.set_max_width(360.0);
+                ui.heading("Uncertain pilot  (?)");
+                ui.add_space(4.0);
                 ui.label(
                     "A \"?\" means this name matched a real EVE character, but that character looks \
                      inactive (no recent kills, corp move, or wide roaming). It may be a real but \
@@ -3541,7 +3544,7 @@ impl SpaiApp {
                     ack = true;
                 }
             });
-            if ack || !open {
+            if ack || resp.should_close() {
                 self.verdict_explainer_open = false;
                 self.settings.verdict_explained = true;
                 self.needs_save = true;
@@ -3551,9 +3554,10 @@ impl SpaiApp {
         let Some(name) = self.verdict_popup.clone() else {
             return;
         };
-        let mut open = true;
         let mut verdict: Option<bool> = None; // Some(true) = hide, Some(false) = real
-        egui::Window::new(format!("Is \"{name}\" a pilot?")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+        let resp = egui::Modal::new(egui::Id::new("verdict_popup")).show(ctx, |ui| {
+            ui.heading(format!("Is \"{name}\" a pilot?"));
+            ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(format!("\"{name}\" matched a character that looks inactive."))
                     .weak(),
@@ -3572,7 +3576,7 @@ impl SpaiApp {
             self.apply_pilot_verdict(&name, hidden);
             self.verdict_popup = None;
             ctx.request_repaint();
-        } else if !open {
+        } else if resp.should_close() {
             self.verdict_popup = None;
         }
     }
@@ -6844,6 +6848,14 @@ impl SpaiApp {
             let (_active, just_opened, clicks, verdicts, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
                 st.enabled = feature;
+                // One-time explainer flag: sync with the overlay (monotonic false->true). An ack in
+                // EITHER window persists to settings, and the flag is pushed back so neither window
+                // shows the explainer twice or forgets it across a restart.
+                if st.verdict_explained && !self.settings.verdict_explained {
+                    self.settings.verdict_explained = true;
+                    self.needs_save = true;
+                }
+                st.verdict_explained = self.settings.verdict_explained;
                 st.on_top_level = on_top;
                 st.win_pos = self.settings.alerts.window_pos;
                 st.win_size = self.settings.alerts.window_size;
@@ -16269,69 +16281,61 @@ pub(crate) fn build_alert_viewport_cb(
         // was clicked. The explainer shows once per overlay session; the decision is drained by the
         // main to persist. A pointer over either dialog keeps the overlay awake.
         if let Some(name) = verdict_pending.clone() {
+            // Modal: the backdrop blocks input to the alert cards behind the dialog (a click on the
+            // dialog can't fall through to a card), and keeps the overlay awake while it is open.
             if !verdict_explained {
                 let mut ack = false;
-                let mut open = true;
-                let resp = egui::Window::new("Uncertain pilot  (?)")
-                    .collapsible(false)
-                    .resizable(false)
-                    .open(&mut open)
-                    .show(&ctx, |ui| {
-                        ui.set_max_width(320.0);
-                        ui.label(
-                            "A \"?\" means this name matched a real EVE character that looks \
-                             inactive. It may be a rarely-used pilot, or a chat word that matches a \
-                             character name.",
-                        );
-                        ui.add_space(6.0);
-                        ui.label(
-                            "Mark it \"Real pilot\" to keep it, or \"Not a pilot\" to hide it. Your \
-                             choice is remembered.",
-                        );
-                        ui.add_space(8.0);
-                        if ui.button("Got it").clicked() {
-                            ack = true;
-                        }
-                    });
-                if resp.map(|r| r.response.hovered()).unwrap_or(false) {
-                    hovered = true;
-                }
+                let resp = egui::Modal::new(egui::Id::new("overlay_verdict_explainer")).show(&ctx, |ui| {
+                    ui.set_max_width(320.0);
+                    ui.heading("Uncertain pilot  (?)");
+                    ui.add_space(4.0);
+                    ui.label(
+                        "A \"?\" means this name matched a real EVE character that looks \
+                         inactive. It may be a rarely-used pilot, or a chat word that matches a \
+                         character name.",
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        "Mark it \"Real pilot\" to keep it, or \"Not a pilot\" to hide it. Your \
+                         choice is remembered.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Got it").clicked() {
+                        ack = true;
+                    }
+                });
+                hovered = true; // dialog open — keep the overlay alive to decide
                 if ack {
                     verdict_explained = true;
-                } else if !open {
+                } else if resp.should_close() {
                     verdict_pending = None;
                 }
             } else {
                 let mut decision: Option<bool> = None;
-                let mut open = true;
-                let resp = egui::Window::new(format!("Is \"{name}\" a pilot?"))
-                    .collapsible(false)
-                    .resizable(false)
-                    .open(&mut open)
-                    .show(&ctx, |ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "\"{name}\" matched a character that looks inactive."
-                            ))
-                            .weak(),
-                        );
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Real pilot").clicked() {
-                                decision = Some(false);
-                            }
-                            if ui.button("Not a pilot (hide)").clicked() {
-                                decision = Some(true);
-                            }
-                        });
+                let resp = egui::Modal::new(egui::Id::new("overlay_verdict_popup")).show(&ctx, |ui| {
+                    ui.heading(format!("Is \"{name}\" a pilot?"));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "\"{name}\" matched a character that looks inactive."
+                        ))
+                        .weak(),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Real pilot").clicked() {
+                            decision = Some(false);
+                        }
+                        if ui.button("Not a pilot (hide)").clicked() {
+                            decision = Some(true);
+                        }
                     });
-                if resp.map(|r| r.response.hovered()).unwrap_or(false) {
-                    hovered = true;
-                }
+                });
+                hovered = true; // dialog open — keep the overlay alive to decide
                 if let Some(hidden) = decision {
                     verdict_out_new.push((name.clone(), hidden));
                     verdict_pending = None;
-                } else if !open {
+                } else if resp.should_close() {
                     verdict_pending = None;
                 }
             }
