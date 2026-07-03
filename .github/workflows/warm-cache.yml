@@ -16,7 +16,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  warm:
+  # The job id MUST be `build` to match release.yml's job: rust-cache bakes `github.job` into the
+  # cache key (`v0-rust-<target>-<job>-<os>-<hash>`), so a differently-named job would save an
+  # unreachable key. With the same id the key is identical and tag releases restore this cache.
+  build:
     name: Warm ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
