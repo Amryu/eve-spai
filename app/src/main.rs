@@ -19,6 +19,7 @@ mod alliances;
 mod camp;
 mod charlookup;
 mod chatlog;
+mod dict;
 mod doctrines;
 mod dscan;
 mod esi;
@@ -164,6 +165,10 @@ fn main() -> eframe::Result<()> {
     // and tokio-xmpp pulling rustls there's no unambiguous default, so install one
     // (otherwise the Jabber TLS handshake panics → "stuck at connecting").
     let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Warm the bundled English dictionary off-thread so the first intel parse doesn't pay the
+    // ~370k-word decompress on the hot path (see dict.rs).
+    std::thread::spawn(dict::preload);
 
     let viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai")

@@ -6907,6 +6907,11 @@ impl SpaiApp {
             let mut cache = self.pilots.lock().unwrap();
             cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
         };
+        let uncertain: std::collections::HashSet<String> = if feed.is_empty() {
+            Default::default()
+        } else {
+            uncertain_set(&self.pilots.lock().unwrap(), &resolved_pilots)
+        };
         let status = if feed.is_empty() {
             Default::default()
         } else {
@@ -6924,7 +6929,7 @@ impl SpaiApp {
         // affiliation subsets to the overlay over IPC. The overlay derives ship details/roles +
         // system names from its own SDE, so those aren't sent.
         if self.overlay.is_some() {
-            self.send_alert_to_overlay(feed, status, resolved_pilots, last_ship, feature);
+            self.send_alert_to_overlay(feed, status, resolved_pilots, uncertain, last_ship, feature);
             return;
         }
 
@@ -6954,6 +6959,7 @@ impl SpaiApp {
                 st.ship_details = ship_details;
                 st.ship_roles = ship_roles;
                 st.resolved_pilots = resolved_pilots;
+                st.uncertain = uncertain;
                 st.last_ship = last_ship;
                 st.systems = systems;
                 st.player_sys = player_sys;
@@ -7053,6 +7059,7 @@ impl SpaiApp {
         feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
         status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
         resolved_pilots: std::collections::HashMap<String, i64>,
+        uncertain: std::collections::HashSet<String>,
         last_ship: std::collections::HashMap<String, (i64, String, i64)>,
         feature: bool,
     ) {
@@ -7134,6 +7141,7 @@ impl SpaiApp {
             from_you,
             status,
             resolved_pilots,
+            uncertain,
             last_ship,
             kills: kills_send,
             affil: affil_send,
@@ -16225,6 +16233,7 @@ pub(crate) fn build_alert_viewport_cb(
         let ship_details = st.ship_details.clone();
         let ship_roles = st.ship_roles.clone();
         let resolved_pilots = st.resolved_pilots.clone();
+        let uncertain = st.uncertain.clone();
         let last_ship = st.last_ship.clone();
         let player_sys = st.player_sys;
         let kills = st.kills.clone();
@@ -16369,7 +16378,7 @@ pub(crate) fn build_alert_viewport_cb(
                             if let Some(c) = intel_row(
                                 ui, r, now_ts, false, from_you, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots,
-                                &std::collections::HashSet::new(), &last_ship,
+                                &uncertain, &last_ship,
                                 kills, *sev, false, affil,
                             ) {
                                 clicks.push(c);
@@ -16557,6 +16566,8 @@ pub(crate) struct AlertWindowState {
     pub(crate) ship_details: std::collections::HashMap<i64, crate::store::ShipDetails>,
     pub(crate) ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     pub(crate) resolved_pilots: std::collections::HashMap<String, i64>,
+    /// Lower-cased names among `resolved_pilots` that are activity-flagged (rendered with a "?").
+    pub(crate) uncertain: std::collections::HashSet<String>,
     pub(crate) last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     pub(crate) player_sys: Option<i64>,
     pub(crate) kills: Option<crate::kills::KillCache>,
@@ -17995,6 +18006,8 @@ fn intel_row(
                     });
                     // One badge: alliance + corp logos + avatar + name as atoms in a single button
                     // (grouped, shares the ship-badge background + height, wraps with the row).
+                    let is_uncertain = uncertain.contains(&name.to_lowercase());
+                    let amber = egui::Color32::from_rgb(0xfb, 0xbf, 0x24);
                     let sz = egui::Vec2::splat(20.0);
                     let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);
                     let resp = if let Some(cid) = char_id {
@@ -18006,7 +18019,16 @@ fn intel_row(
                             atoms.push_left(img(eve_alliance_logo_url(al, 20.0)));
                         }
                         atoms.push_right(egui::RichText::new(name));
-                        ui.add(egui::Button::new(atoms))
+                        // Uncertain (activity-flagged): a "?" INSIDE the badge + an amber-tinted fill
+                        // so it reads as flagged. Clicking the badge opens the verdict popup.
+                        if is_uncertain {
+                            atoms.push_right(egui::RichText::new("?").color(amber).strong());
+                        }
+                        let mut btn = egui::Button::new(atoms);
+                        if is_uncertain {
+                            btn = btn.fill(egui::Color32::from_rgb(0x3d, 0x30, 0x14));
+                        }
+                        ui.add(btn)
                     } else {
                         ui.add(egui::Button::new(egui::RichText::new(format!("{} {name}", icon::USER))))
                     };
@@ -18026,24 +18048,21 @@ fn intel_row(
                             char_id,
                             Some(name.to_string()),
                         );
-                        ui.label(egui::RichText::new("Click to look up").weak());
+                        ui.label(
+                            egui::RichText::new(if is_uncertain {
+                                "Looks inactive — click to mark real or hide"
+                            } else {
+                                "Click to look up"
+                            })
+                            .weak(),
+                        );
                     });
                     if resp.clicked() {
-                        clicked = Some(IntelClick::Pilot(name.clone()));
-                    }
-                    // Activity-flagged (uncertain) pilot: a small "?" the user clicks to classify it
-                    // as a real pilot or hide it. Only shown until the user decides.
-                    if uncertain.contains(&name.to_lowercase()) {
-                        let q = ui
-                            .add(egui::Button::new(
-                                egui::RichText::new("?")
-                                    .color(egui::Color32::from_rgb(0xfb, 0xbf, 0x24))
-                                    .strong(),
-                            ))
-                            .on_hover_text("Looks inactive — click to mark real or hide");
-                        if q.clicked() {
-                            clicked = Some(IntelClick::PilotVerdict(name.clone()));
-                        }
+                        clicked = Some(if is_uncertain {
+                            IntelClick::PilotVerdict(name.clone())
+                        } else {
+                            IntelClick::Pilot(name.clone())
+                        });
                     }
                 }
 

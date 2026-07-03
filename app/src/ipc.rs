@@ -55,6 +55,9 @@ pub struct AlertMsg {
     pub from_you: Vec<Option<u32>>,
     pub status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub resolved_pilots: std::collections::HashMap<String, i64>,
+    /// Lower-cased names among `resolved_pilots` that are activity-flagged (rendered with a "?").
+    #[serde(default)]
+    pub uncertain: std::collections::HashSet<String>,
     pub last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     /// kill id → enriched killmail info (only the feed's killmail links).
     pub kills: std::collections::HashMap<i64, crate::kills::KillInfo>,
@@ -367,6 +370,7 @@ mod tests {
             from_you: vec![Some(7)],
             status: std::collections::HashMap::new(),
             resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
+            uncertain: std::collections::HashSet::new(),
             last_ship: std::collections::HashMap::new(),
             kills: std::collections::HashMap::new(),
             affil: std::collections::HashMap::new(),

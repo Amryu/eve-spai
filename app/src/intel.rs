@@ -816,6 +816,14 @@ pub fn is_pilot_stopword(w: &str) -> bool {
         )
 }
 
+/// Whether a candidate word is "lowercase" for the single-word dictionary prose filter: it has NO
+/// ASCII uppercase letter, OR it is exactly the pronoun "I" (an upper-case single letter that is
+/// prose, not a name). A candidate with any OTHER uppercase letter is treated as a name and is never
+/// dropped by the dictionary — names win. Only used on single-word candidates.
+pub fn is_lowercaseish(w: &str) -> bool {
+    w == "I" || !w.chars().any(|c| c.is_ascii_uppercase())
+}
+
 /// Quoted spans (delimited by `"`, `'` or `` ` ``, openings/closings may be mixed)
 /// — forced to be treated as pilot names rather than keywords/systems. A quote only
 /// opens at a word boundary so apostrophes inside names (e.g. "O'Brien") are safe.
@@ -2663,6 +2671,19 @@ pub fn analyze_ctx(
     // so a short span the longer name already covers ("Chen Chen" inside "Dr Chen Chen",
     // produced because the loose run breaks on the 2-char "Dr") can slip through.
     drop_subphrase_pilots(&mut pilots, &std::collections::HashSet::new(), text);
+
+    // Prose filter: a single LOWERCASE English word ("time", "carpet", lone "I") is prose, never a
+    // roaming pilot — drop it even if a character shares the name or it was re-surfaced from a
+    // system-adjacent / known-name run. Single-word only (multi-word lowercase names still go to
+    // ESI), and any Capitalised token is a name (`is_lowercaseish` is false). Runs after every pilot
+    // source so a later known-name re-add can't reintroduce it. A quoted word ("'clear'") is an
+    // explicit pilot and is kept.
+    pilots.retain(|p| {
+        p.contains(' ')
+            || !is_lowercaseish(p)
+            || quoted.contains(&p.to_lowercase())
+            || !crate::dict::is_word(p)
+    });
 
     // A keyword inside a name suppresses the matching status flag ("The Bubble Boy" is not a
     // bubble), but a noise blob full of prose/keywords must NOT — else a real "camped"/"bubble"
@@ -6303,6 +6324,36 @@ mod tests {
         let q = analyze("status in Rancer?", &s, &noships(), &noknown(), 1, "ch", "x");
         assert!(q.status);
         assert!(!q.pilots.iter().any(|p| p.eq_ignore_ascii_case("status")));
+    }
+
+    #[test]
+    fn lowercase_english_word_dropped_but_names_and_multiword_kept() {
+        let s = systems();
+        // A character is named "Carpet" (a plain English word, not a stop-word or ship). A LOWERCASE
+        // mention is prose → dropped before ESI; a Capitalised mention is a name → kept; a multi-word
+        // lowercase run still goes to ESI (the dictionary drop is single-word only).
+        let known: std::collections::HashMap<String, i64> =
+            [("carpet".to_string(), 100i64), ("silent hunter".to_string(), 200i64)]
+                .into_iter()
+                .collect();
+        let low = analyze("carpet in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(
+            !low.pilots.iter().any(|p| p.eq_ignore_ascii_case("carpet")),
+            "lowercase word should be dropped, pilots={:?}",
+            low.pilots
+        );
+        let cap = analyze("Carpet in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(
+            cap.pilots.iter().any(|p| p.eq_ignore_ascii_case("carpet")),
+            "Capitalised name should be kept, pilots={:?}",
+            cap.pilots
+        );
+        let multi = analyze("silent hunter in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(
+            multi.pilots.iter().any(|p| p.eq_ignore_ascii_case("silent hunter")),
+            "multi-word lowercase run should still be tested, pilots={:?}",
+            multi.pilots
+        );
     }
 
     #[test]

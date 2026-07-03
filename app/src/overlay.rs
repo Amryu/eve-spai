@@ -256,6 +256,7 @@ impl Overlay {
                             st.from_you = m.from_you;
                             st.status = m.status;
                             st.resolved_pilots = m.resolved_pilots;
+                            st.uncertain = m.uncertain;
                             st.last_ship = m.last_ship;
                             st.ship_details = ship_details;
                             st.ship_roles = ship_roles;
