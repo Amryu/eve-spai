@@ -1110,6 +1110,40 @@ fn extract_dscan_drops(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Victim pilot + ship from a pasted killmail-link display string: `<killword><colon> <Victim>
+/// (<Ship>)` - "Kill: Lord Road (Loki)", Chinese "击杀：Lord Road (洛基级)". The chat log strips the
+/// `<url=killReport...>` tag, leaving only this text, and in some locales the killword+colon glues to
+/// the first name word with no space ("击杀：Lord Road" is one whitespace token), so the victim never
+/// forms via the normal paths. Read it directly: after the first `KILL_WORDS` match skip a colon
+/// (ASCII `:` or fullwidth `：`) + spaces, take the name up to the next `(` (capped to 3 words), then
+/// the parenthesised hull as the ship. Case is not consulted.
+fn extract_kill_drops(text: &str) -> Option<(String, Option<String>)> {
+    let lower = text.to_lowercase();
+    let (kw_start, kw) = KILL_WORDS
+        .iter()
+        .filter_map(|kw| lower.find(kw).map(|i| (i, *kw)))
+        .min_by_key(|&(i, _)| i)?;
+    // `.get` is a no-op if the lowercased byte offset isn't a char boundary in the original (rare
+    // length-changing lower-case before the killword) - then we simply bail.
+    let rest = text.get(kw_start + kw.len()..)?;
+    let name_start =
+        rest.char_indices().find(|&(_, c)| c != ':' && c != '\u{FF1A}' && !c.is_whitespace())?.0;
+    let rest = &rest[name_start..];
+    let end = rest.find('(').unwrap_or(rest.len());
+    let words: Vec<&str> = rest[..end].split_whitespace().take(3).collect();
+    if words.is_empty() {
+        return None;
+    }
+    let victim = words.join(" ");
+    let ship = rest
+        .get(end..)
+        .and_then(|s| s.strip_prefix('('))
+        .and_then(|s| s.split(')').next())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    Some((victim, ship))
+}
+
 /// Whether a double-space-delimited paste segment looks like a (single) pilot name. Names may be
 /// lowercase, so the disqualifiers are: nothing alphabetic, all words being stop words, an
 /// embedded solar system (a real name wouldn't carry one — that's prose), or a lowercase
@@ -2569,6 +2603,31 @@ pub fn analyze_ctx(
         }
         pilots.push(r);
     }
+    // A pasted killmail link ("Kill:/击杀： <Victim> (<Ship>)"): surface the victim whole + the hull.
+    // Runs AFTER loose_pilot_runs so a Latin killword that glued onto the name as a run ("Kill Lord
+    // Road") is present to drop; the clean victim then wins the sub-phrase pass, and the glued-tail
+    // mis-parse ("Road") is dropped as a sub-phrase of the victim. Case is not consulted.
+    if let Some((victim, ship_text)) = extract_kill_drops(text) {
+        let kill_prefixes: Vec<String> = KILL_WORDS
+            .iter()
+            .map(|k| k.trim_end_matches([':', '：']).to_lowercase())
+            .filter(|k| !k.is_empty())
+            .collect();
+        let victim_words: Vec<String> =
+            victim.split_whitespace().map(|w| w.to_lowercase()).collect();
+        pilots.retain(|p| {
+            let pw: Vec<String> = p.split_whitespace().map(|w| w.to_lowercase()).collect();
+            !(pw.len() == victim_words.len() + 1
+                && kill_prefixes.contains(&pw[0])
+                && pw[1..] == victim_words[..])
+        });
+        if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&victim)) {
+            pilots.push(victim);
+        }
+        if let Some((id, name)) = ship_text.and_then(|s| ship_index.get(&s.to_lowercase())) {
+            drop_ships.push((*id, name.clone()));
+        }
+    }
     // Single-word names queued for ESI. Case-INSENSITIVE: pilots are usually proper-case but
     // are sometimes typed all lower-case ("bigfoott"), and those must not be dropped — only a
     // stop-word or a recognised entity (ship/system/code/keyword) is excluded. Uses the
@@ -2608,6 +2667,9 @@ pub fn analyze_ctx(
     // that straddles a boundary (a mis-glue of separate links) and surface each name-shaped
     // segment as a pilot. A segment is a name unless it is a system, a ship, or made up entirely
     // of lowercase stop words (names may otherwise be lowercase, e.g. "wenmg").
+    // Names surfaced from a paste are confirmed linked entities, so they bypass the single-word
+    // dictionary prose filter below (a real linked pilot named "fibular" is not prose).
+    let mut paste_origin: std::collections::HashSet<String> = std::collections::HashSet::new();
     if text.contains("  ") {
         let segments: Vec<&str> =
             text.split("  ").map(str::trim).filter(|s| !s.is_empty()).collect();
@@ -2665,6 +2727,7 @@ pub fn analyze_ctx(
                 // A paste segment may carry a typed location tail ("Garen Willow at taj"); surface
                 // just the pasted name.
                 let name = trim_paste_location_tail(seg);
+                paste_origin.insert(name.to_lowercase());
                 if !pilots.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
                     pilots.push(name);
                 }
@@ -2781,6 +2844,7 @@ pub fn analyze_ctx(
         p.contains(' ')
             || !is_lowercaseish(p)
             || quoted.contains(&p.to_lowercase())
+            || paste_origin.contains(&p.to_lowercase())
             || !crate::dict::is_word(p)
     });
 
@@ -5845,6 +5909,53 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn kill_paste_extracts_victim_and_ship() {
+        let s = systems();
+        let ships = ships_with(&[("Loki", 29990)]);
+        let known: std::collections::HashMap<String, i64> =
+            [("lord road".to_string(), 1i64), ("road".to_string(), 2i64)].into_iter().collect();
+        // English "Kill: <victim> (<ship>)".
+        let r = analyze("Kill: Lord Road (Loki)", &s, &ships, &known, 1, "ch", "x");
+        assert!(r.killmail, "killmail flag");
+        assert!(r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Lord Road")), "victim: {:?}", r.pilots);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Road")), "bare Road: {:?}", r.pilots);
+        assert!(r.ships.iter().any(|sh| sh.name == "Loki"), "ship: {:?}", r.ships);
+        // Chinese, killword+colon glued to the name; hull absent from the (English) index.
+        let r2 = analyze("击杀：Lord Road (洛基级)", &s, &noships(), &known, 1, "ch", "x");
+        assert!(r2.killmail);
+        assert!(r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Lord Road")), "victim: {:?}", r2.pilots);
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("Road")), "bare Road: {:?}", r2.pilots);
+    }
+
+    #[test]
+    fn kill_paste_amend_no_double_consume() {
+        let s = systems();
+        let known: std::collections::HashMap<String, i64> =
+            [("lord road".to_string(), 1i64), ("road".to_string(), 2i64)].into_iter().collect();
+        let m1 = analyze("击杀：Lord Road (洛基级)  Rancer", &s, &noships(), &known, 100, "ch", "yuyexf");
+        let m2 = analyze("击杀：Lord Road (洛基级)", &s, &noships(), &known, 130, "ch", "Aurelius Caracalla");
+        let mut st = IntelState::default();
+        st.push(m1);
+        assert!(st.try_amend(&m2, 60, &s), "should amend on the shared victim");
+        let merged = &st.reports[0].pilots;
+        assert!(merged.iter().any(|p| p.eq_ignore_ascii_case("Lord Road")), "victim: {:?}", merged);
+        assert!(!merged.iter().any(|p| p.eq_ignore_ascii_case("Road")), "double-consumed Road: {:?}", merged);
+    }
+
+    #[test]
+    fn paste_linked_dictionary_name_survives() {
+        let s = systems();
+        // "fibular" is a dictionary word, but here a real LINKED pilot in a paste -> kept.
+        let r = analyze("fibular  detective spider  Q-K2T7", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.pilots.iter().any(|p| p.eq_ignore_ascii_case("fibular")), "dropped: {:?}", r.pilots);
+        // The same word as a lone non-paste mention is still dropped as prose.
+        let known: std::collections::HashMap<String, i64> =
+            [("fibular".to_string(), 5i64)].into_iter().collect();
+        let r2 = analyze("fibular in Rancer", &s, &noships(), &known, 1, "ch", "x");
+        assert!(!r2.pilots.iter().any(|p| p.eq_ignore_ascii_case("fibular")), "prose kept: {:?}", r2.pilots);
+    }
+
     #[test]
     fn keyword_in_pasted_name_does_not_bail_paste() {
         let s = systems();
