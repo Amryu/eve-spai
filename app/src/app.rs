@@ -17595,6 +17595,61 @@ fn intel_row(
                 };
                 ui.label(egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color));
 
+                // System badge(s) first — the location is the anchor for everything else. Dedup by
+                // id so a report that ended up with the same system twice shows only one badge.
+                let mut seen_sys = std::collections::HashSet::new();
+                for s in &r.systems {
+                    if !seen_sys.insert(s.id) {
+                        continue;
+                    }
+                    let scol = security_color(s.security);
+                    let text =
+                        egui::RichText::new(format!("{} {}", icon::PLANET, s.name)).color(scol).strong();
+                    let panel = ui
+                        .add(egui::Button::new(text).fill(scol.gamma_multiply(0.12)))
+                        .on_hover_ui(|ui| system_hover(ui, systems, status, s));
+                    if panel.clicked() {
+                        clicked = Some(IntelClick::System(s.id));
+                    }
+                }
+
+                // zKill card: where the death happened — the nearest celestial + distance (right
+                // after the system), when the kill had a position within ~15,000 km of it.
+                if let Some((cname, dm)) = &r.near_celestial {
+                    if *dm <= 15_000_000.0 {
+                        let km = (dm / 1000.0).round() as i64;
+                        let dist = if km >= 1000 {
+                            format!("{},{:03} km", km / 1000, km % 1000)
+                        } else {
+                            format!("{km} km")
+                        };
+                        let label = celestial_badge_label(cname);
+                        let cicon = if cname.contains("gate") {
+                            icon::SIGN_IN
+                        } else if cname.contains("Moon") {
+                            icon::MOON
+                        } else if cname.ends_with("station") {
+                            icon::MAP_PIN_LINE
+                        } else {
+                            icon::PLANET
+                        };
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2f, 0x6d, 0x7d)))
+                            .inner_margin(egui::Margin::symmetric(7, 3))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{cicon} {label}  {dist}"))
+                                        .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                                        .strong(),
+                                );
+                            })
+                            .response
+                            .on_hover_text(format!("Death {dist} from {cname}"));
+                    }
+                }
+
                 // Hostile-count badge — prominent; the number is what matters most.
                 if let Some(n) = r.count {
                     egui::Frame::new()
@@ -17709,56 +17764,6 @@ fn intel_row(
                         })
                         .response
                         .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
-                }
-
-                // Clickable system panels.
-                for s in &r.systems {
-                    let scol = security_color(s.security);
-                    let text =
-                        egui::RichText::new(format!("{} {}", icon::PLANET, s.name)).color(scol).strong();
-                    let panel = ui
-                        .add(egui::Button::new(text).fill(scol.gamma_multiply(0.12)))
-                        .on_hover_ui(|ui| system_hover(ui, systems, status, s));
-                    if panel.clicked() {
-                        clicked = Some(IntelClick::System(s.id));
-                    }
-                }
-
-                // zKill card: where the death happened — the nearest celestial + distance (shown
-                // AFTER the system card), when the kill had a position within ~15,000 km of it.
-                if let Some((cname, dm)) = &r.near_celestial {
-                    if *dm <= 15_000_000.0 {
-                        let km = (dm / 1000.0).round() as i64;
-                        let dist = if km >= 1000 {
-                            format!("{},{:03} km", km / 1000, km % 1000)
-                        } else {
-                            format!("{km} km")
-                        };
-                        let label = celestial_badge_label(cname);
-                        let cicon = if cname.contains("gate") {
-                            icon::SIGN_IN
-                        } else if cname.contains("Moon") {
-                            icon::MOON
-                        } else if cname.ends_with("station") {
-                            icon::MAP_PIN_LINE
-                        } else {
-                            icon::PLANET
-                        };
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2f, 0x6d, 0x7d)))
-                            .inner_margin(egui::Margin::symmetric(7, 3))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{cicon} {label}  {dist}"))
-                                        .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
-                                        .strong(),
-                                );
-                            })
-                            .response
-                            .on_hover_text(format!("Death {dist} from {cname}"));
-                    }
                 }
 
                 // A message that parsed to a system and nothing else (no count/ships/pilots/
