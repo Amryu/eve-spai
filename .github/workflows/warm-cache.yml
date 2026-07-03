@@ -1,0 +1,60 @@
+name: Warm release cache
+
+# The Release workflow only runs on v* tags, and GitHub Actions caches are restorable across refs
+# ONLY from the default branch (a tag can read a `main` cache, but not another tag's). So a
+# tag-triggered release never finds a cache and does a full cold build every time. This job builds
+# the exact release target/profile on `main` with the SAME rust-cache key as release.yml, populating
+# a default-branch cache that tag releases then restore (deps cached -> only the final crate + LTO
+# recompile). It runs only when it pays off: when Cargo.lock changes (every dev-version bump and any
+# dependency change), a weekly refresh so the cache never evicts, or on demand.
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.lock"]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  warm:
+    name: Warm ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Same key as release.yml so the cache this saves on `main` is the one the tag build restores.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # winit/egui need X11 + Wayland dev libs to link on Linux (mirrors release.yml).
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxcursor-dev \
+            libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config
+
+      - name: Build (populate cache)
+        run: cargo build --release --target ${{ matrix.target }}

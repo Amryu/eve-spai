@@ -40,10 +40,14 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Restore only: warm-cache.yml populates the default-branch cache (the only scope a tag build
+      # can read); a tag build's own save would be a junk tag-scoped cache that could LRU-evict the
+      # useful main one. So tags restore the warm cache and never save.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          save-if: false
 
       # winit/egui need X11 + Wayland dev libs to link on Linux.
       - name: Install Linux build deps
