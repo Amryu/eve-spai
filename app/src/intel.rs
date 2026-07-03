@@ -620,8 +620,8 @@ const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe", "
 
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
-    "gate", "camp", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
-    "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "ess", "skyhook", "hostile",
+    "gate", "camp", "camper", "campers", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
+    "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "nvm", "ess", "skyhook", "hostile",
     "filament", "filaments", "needlejack", "needlejacks", "trace", "traces",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
     "bridge", "jump", "jumping", "warp", "warping", "the", "incoming", "inc", "coming", "gcc",
@@ -634,6 +634,10 @@ const PILOT_STOP: &[&str] = &[
     "just", "is", "are", "was", "were", "be", "been", "has", "have", "had", "not", "but",
     "now", "still", "back", "with", "this", "that", "they", "them", "their", "here", "there", "to",
     "crit", "wrong", "channel", "see", "nothing", "else", "safe",
+    // Interrogative / indefinite pronouns — prose, never a pilot even Capitalised at a sentence
+    // start (so they bypass the lowercase-only dictionary filter): "whoever tackling", "someone jam".
+    "whoever", "whatever", "whenever", "wherever", "however", "someone", "somebody", "anybody",
+    "everyone", "everybody", "nobody",
     // Common English words that are ALSO real cached pilot names (found by scanning the known-pilot
     // cache against an English dictionary). Stop-listed so the cache doesn't false-match them when
     // they appear as plain prose — a player happening to be named "Time"/"Worm" loses to the word.
@@ -3291,7 +3295,7 @@ pub fn analyze_ctx(
         no_visual: lower_tokens.iter().any(|t| t == "nv" && !pilot_tokens.contains(t))
             || lower.contains("no visual"),
         spike: flagged(&lower_tokens, &pilot_tokens, &["spike"]),
-        camp: flagged(&lower_tokens, &pilot_tokens, &["camp", "gatecamp", "camping", "camped", "gatecamping"]) || lower.contains("蹲"),
+        camp: flagged(&lower_tokens, &pilot_tokens, &["camp", "gatecamp", "camping", "camped", "gatecamping", "camper", "campers"]) || lower.contains("蹲"),
         help: flagged_exact(&lower_tokens, &pilot_tokens, &["help", "sos"])
             || lower.contains("need backup")
             || lower.contains("needs backup")
@@ -6579,6 +6583,30 @@ mod tests {
             );
             assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "{t}: ships={:?}", r.ships);
         }
+    }
+
+    #[test]
+    fn nvm_camper_whoever_are_not_pilots() {
+        let s = systems();
+        // "nvm" (never-mind) is status shorthand, not a pilot.
+        let r = analyze("Rancer nvm", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("nvm")), "nvm: {:?}", r.pilots);
+        // "campers" fires the gate-camp flag and is not a pilot.
+        let r = analyze("Rancer campers on gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.camp, "campers should fire camp");
+        assert!(
+            !r.pilots.iter().any(|p| p.to_lowercase().contains("camper")),
+            "camper as pilot: {:?}",
+            r.pilots
+        );
+        // A Capitalised prose pronoun at a sentence start is never a pilot (bypasses the
+        // lowercase-only dictionary filter via the stop list).
+        let r = analyze("Whoever is tackling in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("whoever")),
+            "whoever as pilot: {:?}",
+            r.pilots
+        );
     }
 
     #[test]
