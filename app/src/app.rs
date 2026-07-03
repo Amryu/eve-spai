@@ -18433,17 +18433,17 @@ fn intel_row(
                 }
 
                 // Status flags.
-                // A flag badge: a bordered pill in the flag's colour (border + faint fill + rounded
-                // corners), so wormhole / anomaly / status flags all read as proper badges.
+                // A flag badge: a bordered pill in the flag's colour. Rendered as a (non-clickable)
+                // Button so it's an INLINE widget — it takes the row's uniform badge height
+                // (interact_size.y, same as the pilot/ship badges) and wraps correctly. A Frame
+                // sub-ui here would break wrapping and grow the card vertically.
                 let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
-                    egui::Frame::new()
-                        .stroke(egui::Stroke::new(1.0, col))
-                        .fill(col.gamma_multiply(0.15))
-                        .corner_radius(4.0)
-                        .inner_margin(egui::Margin::symmetric(5, 1))
-                        .show(ui, |ui| {
-                            ui.label(egui::RichText::new(txt).color(col).strong());
-                        });
+                    ui.add(
+                        egui::Button::new(egui::RichText::new(txt).color(col).strong())
+                            .fill(col.gamma_multiply(0.15))
+                            .stroke(egui::Stroke::new(1.0, col))
+                            .sense(egui::Sense::hover()),
+                    );
                 };
                 // A "status?" request (no threat of its own) — a badge so the card isn't empty.
                 if r.status {
