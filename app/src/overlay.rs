@@ -275,6 +275,53 @@ impl Overlay {
                         }
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                     }
+                    Ok(crate::ipc::MainToOverlay::AlertPush(m)) => {
+                        // Lightweight daemon pop: arrives while the main's UI thread is parked
+                        // (window minimized). APPEND the fired reports; the full enriched feed
+                        // (jumps/kills/affil) re-syncs via `Alert` when the main un-parks. Ship
+                        // details/roles come from our own SDE, like `Alert`.
+                        let ship_ids: HashSet<i64> =
+                            m.reports.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
+                        let (ship_details, ship_roles) = match &ship_lookup {
+                            Some(sl) => (
+                                ship_ids
+                                    .iter()
+                                    .filter_map(|&i| sl.details(i).map(|d| (i, d)))
+                                    .collect::<HashMap<_, _>>(),
+                                ship_ids.iter().map(|&i| (i, sl.roles(i))).collect::<HashMap<_, _>>(),
+                            ),
+                            None => (HashMap::new(), HashMap::new()),
+                        };
+                        {
+                            let mut st = alert_shared.lock().unwrap();
+                            for rs in m.reports {
+                                st.feed.push(rs);
+                                st.from_you.push(None); // no jump info until the enriched re-sync
+                            }
+                            let n = st.feed.len();
+                            if n > 100 {
+                                let cut = n - 100;
+                                st.feed.drain(0..cut);
+                                let fy_cut = cut.min(st.from_you.len());
+                                st.from_you.drain(0..fy_cut);
+                            }
+                            for (i, d) in ship_details {
+                                st.ship_details.insert(i, d);
+                            }
+                            for (i, r) in ship_roles {
+                                st.ship_roles.insert(i, r);
+                            }
+                            st.kills = Some(kills.clone());
+                            st.affil = Some(affil.clone());
+                            if m.secs >= 0.0 {
+                                st.secs = m.secs;
+                            } else if m.secs <= crate::app::ALERT_SECS_INFINITE + 0.5 {
+                                st.secs = f32::INFINITY;
+                            }
+                            st.focus_pending = true;
+                        }
+                        ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
+                    }
                     Ok(crate::ipc::MainToOverlay::Config(c)) => {
                         {
                             let mut st = ping_shared.lock().unwrap();
@@ -418,6 +465,21 @@ impl eframe::App for Overlay {
         {
             let mut st = self.alert_shared.lock().unwrap();
             st.on_top_level = alert_on_top;
+            // Windows: the alert viewport starts HIDDEN, and a hidden deferred viewport's own render
+            // closure can't run to un-hide itself. Drive its visibility from the ROOT (which always
+            // repaints) so it shows on an alert and hides when idle. Send only on change (each
+            // command pins egui at vsync); `applied_visible` is the shared tracker the closure uses.
+            #[cfg(target_os = "windows")]
+            {
+                let active = st.enabled && (st.secs > 0.0 || st.pinned);
+                if st.applied_visible != Some(active) {
+                    ctx.send_viewport_cmd_to(
+                        egui::ViewportId::from_hash_of("alert_window"),
+                        egui::ViewportCommand::Visible(active),
+                    );
+                    st.applied_visible = Some(active);
+                }
+            }
         }
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("alert_window"),

@@ -84,11 +84,24 @@ pub struct OverlayConfig {
     pub win_size: Option<(f32, f32)>,
 }
 
+/// A lightweight alert push from the background alert daemon straight to the overlay, so an alert
+/// pops even while the main's UI thread is PARKED (the main window minimized / hidden to tray, when
+/// eframe stops calling `update`). Carries only the freshly fired reports; the enriched feed
+/// (jumps / kills / affiliations) is re-synced by the UI thread's [`AlertMsg`] once it un-parks.
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct AlertPush {
+    pub reports: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
+    /// Countdown seconds to (re)start (a negative sentinel means "infinite"), matching `AlertMsg`.
+    pub secs: f32,
+}
+
 /// Messages the main process sends to the overlay child.
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
 pub enum MainToOverlay {
     Ping(PingMsg),
     Alert(AlertMsg),
+    /// Daemon-thread pop (works while the UI thread is parked); appends to the overlay's feed.
+    AlertPush(AlertPush),
     Config(OverlayConfig),
     /// Ask the overlay to exit its process cleanly.
     Shutdown,
@@ -102,6 +115,18 @@ pub fn send<T: Serialize, W: Write>(w: &mut W, msg: &T) -> io::Result<()> {
     w.write_all(&len.to_be_bytes())?;
     w.write_all(&body)?;
     w.flush()
+}
+
+/// Send one frame down a shared write-half. Used by BOTH `OverlayLink::send` (UI thread) and the
+/// background alert daemon, so an alert can be pushed while the UI thread is parked. Best-effort: on
+/// a write error the half is cleared, and `OverlayLink::poll` respawns + re-wires the child.
+pub fn send_shared(stdin: &Arc<Mutex<Option<ChildStdin>>>, msg: &MainToOverlay) {
+    let mut guard = stdin.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(w) = guard.as_mut() {
+        if send(w, msg).is_err() {
+            *guard = None;
+        }
+    }
 }
 
 /// Read one length-prefixed JSON frame written by [`send`].
@@ -145,9 +170,11 @@ impl OverlayLink {
     const MAX_RESTARTS: u32 = 5;
     const RESPAWN_DEBOUNCE: Duration = Duration::from_secs(2);
 
-    /// Spawn the overlay child with piped stdio and wire its reader thread, returning the link.
-    pub fn start(ctx: egui::Context) -> io::Result<Self> {
-        let stdin = Arc::new(Mutex::new(None));
+    /// Spawn the overlay child with piped stdio and wire its reader thread, returning the link. The
+    /// caller supplies the write-half handle (`Arc<Mutex<Option<ChildStdin>>>`) so the background
+    /// alert daemon can share it and push alerts while the UI thread is parked; the link keeps it
+    /// populated across respawns.
+    pub fn start(ctx: egui::Context, stdin: Arc<Mutex<Option<ChildStdin>>>) -> io::Result<Self> {
         let inbox = Arc::new(Mutex::new(Vec::new()));
         let reconnected = Arc::new(AtomicBool::new(false));
         let mut child = Self::spawn_child()?;

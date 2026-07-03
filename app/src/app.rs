@@ -1027,11 +1027,16 @@ impl SpaiApp {
         // threaded into both the engine (which pushes the feed) and the daemon.
         let alert_shared: SharedAlertWindow =
             std::sync::Arc::new(std::sync::Mutex::new(AlertWindowState::default()));
+        // Shared overlay write-half: the alert daemon and the overlay link both hold this, so the
+        // daemon can push an alert to the overlay while the UI thread is parked (window minimized).
+        let overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
         let alerts_engine = std::sync::Arc::new(AlertEngine::new(
             recent_alerts.clone(),
             chrono::Utc::now().timestamp(),
             alert_shared.clone(),
             cc.egui_ctx.clone(),
+            overlay_stdin.clone(),
         ));
         spawn_alert_daemon(
             alerts_engine.clone(),
@@ -1218,7 +1223,7 @@ impl SpaiApp {
             tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
             raise_reset_top: false,
-            overlay: match crate::ipc::OverlayLink::start(cc.egui_ctx.clone()) {
+            overlay: match crate::ipc::OverlayLink::start(cc.egui_ctx.clone(), overlay_stdin) {
                 Ok(link) => Some(link),
                 Err(e) => {
                     eprintln!("[main] overlay failed to start (in-process fallback): {e}");
@@ -14083,6 +14088,11 @@ struct AlertEngine {
     /// To wake the alert viewport when a window-alert fires (it may be the only thing repainting
     /// while the root is minimized).
     ctx: egui::Context,
+    /// The overlay child's write-half, shared with `OverlayLink`. The daemon pushes a fired alert
+    /// straight to the overlay over IPC here — this runs while the main's UI thread is PARKED (window
+    /// minimized), so the alert still pops. `None` until the overlay link is wired; unused in the
+    /// in-process fallback.
+    overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
 }
 
 impl AlertEngine {
@@ -14091,6 +14101,7 @@ impl AlertEngine {
         last_alert_time: i64,
         alert_shared: SharedAlertWindow,
         ctx: egui::Context,
+        overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
     ) -> Self {
         Self {
             config: std::sync::Mutex::new(AlertConfig::default()),
@@ -14098,6 +14109,7 @@ impl AlertEngine {
             recent,
             alert_shared,
             ctx,
+            overlay_stdin,
         }
     }
 
@@ -14247,19 +14259,31 @@ impl AlertEngine {
         // off the UI thread so the window pops + counts down even while the root is minimized.
         if fired.iter().any(|f| f.win) {
             let timeout = acfg.window_timeout;
+            let secs = if timeout <= 0.0 { f32::INFINITY } else { timeout.max(3.0) };
+            let pushed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
+                fired.iter().filter(|f| f.win).map(|f| (f.report.clone(), f.sev)).collect();
             let mut st = self.alert_shared.lock().unwrap();
-            for f in &fired {
-                if f.win {
-                    st.feed.push((f.report.clone(), f.sev));
-                }
+            for rs in &pushed {
+                st.feed.push(rs.clone());
             }
             let n = st.feed.len();
             if n > 100 {
                 st.feed.drain(0..n - 100);
             }
-            st.secs = if timeout <= 0.0 { f32::INFINITY } else { timeout.max(3.0) };
+            st.secs = secs;
             st.focus_pending = true; // bring the window forward once
             drop(st);
+            // Push the fired reports straight to the overlay CHILD over IPC. This runs on the daemon
+            // thread, so it works while the main's UI thread is parked (window minimized) — otherwise
+            // the alert would never reach the overlay until the main is restored. The UI thread's
+            // `send_alert_to_overlay` re-syncs the full enriched feed on the next unparked frame.
+            crate::ipc::send_shared(
+                &self.overlay_stdin,
+                &crate::ipc::MainToOverlay::AlertPush(crate::ipc::AlertPush {
+                    reports: pushed,
+                    secs: if secs.is_finite() { secs } else { ALERT_SECS_INFINITE },
+                }),
+            );
             self.ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
             // When the overlay child owns the alert window, it lives in the child process, not this
             // viewport. Wake the root so `alert_window` runs and forwards the fresh alert over IPC.
