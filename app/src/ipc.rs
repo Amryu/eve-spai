@@ -22,9 +22,11 @@ use std::time::{Duration, Instant};
 pub enum OverlayToMain {
     /// First message after connecting — proves the child is alive and talking.
     Hello,
-    /// A click in the alert window's feed — the main opens the relevant window in its own viewport.
+    /// A click in the alert window's feed - the main opens the relevant window in its own viewport.
     Click(crate::app::IntelClick),
-    /// The alert window was moved/resized — the main persists the geometry into settings.
+    /// An uncertain-pilot verdict decided in the overlay - the main persists it (real / not a pilot).
+    Verdict { name: String, hidden: bool },
+    /// The alert window was moved/resized - the main persists the geometry into settings.
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
 }
 

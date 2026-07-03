@@ -337,9 +337,14 @@ impl eframe::App for Overlay {
         // forwarded value (pos exact, size >2px) to avoid flooding the pipe — matching the main's
         // own persist thresholds. Lock stdout once so each frame is written atomically.
         {
-            let (clicks, moved, moved_size) = {
+            let (clicks, verdicts, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
-                (std::mem::take(&mut st.clicks), st.moved.take(), st.moved_size.take())
+                (
+                    std::mem::take(&mut st.clicks),
+                    std::mem::take(&mut st.verdict_out),
+                    st.moved.take(),
+                    st.moved_size.take(),
+                )
             };
             let pos = moved.filter(|p| Some(*p) != self.alert_pos_sent);
             let size = moved_size.filter(|s| {
@@ -362,10 +367,16 @@ impl eframe::App for Overlay {
                     other => to_main.push(other),
                 }
             }
-            if !to_main.is_empty() || pos.is_some() || size.is_some() {
+            if !to_main.is_empty() || !verdicts.is_empty() || pos.is_some() || size.is_some() {
                 let mut out = std::io::stdout().lock();
                 for c in to_main {
                     let _ = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Click(c));
+                }
+                for (name, hidden) in verdicts {
+                    let _ = crate::ipc::send(
+                        &mut out,
+                        &crate::ipc::OverlayToMain::Verdict { name, hidden },
+                    );
                 }
                 if pos.is_some() || size.is_some() {
                     let _ = crate::ipc::send(

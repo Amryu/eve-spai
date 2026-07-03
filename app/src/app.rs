@@ -3623,6 +3623,15 @@ impl SpaiApp {
         self.verdict_popup = Some(name);
     }
 
+    /// Persist a verdict for a pilot (true = hide / not a pilot, false = real) without opening a
+    /// dialog. Used when the decision was made in the overlay window.
+    fn apply_pilot_verdict(&mut self, name: &str, hidden: bool) {
+        self.pilots.lock().unwrap_or_else(|e| e.into_inner()).set_verdict(name, hidden);
+        if let Some(store) = &self.store {
+            store.set_pilot_verdict(name, hidden);
+        }
+    }
+
     /// The one-time explainer + the "real / not a pilot" verdict popup for an uncertain pilot.
     fn verdict_dialog(&mut self, ctx: &egui::Context) {
         if self.verdict_explainer_open {
@@ -3673,10 +3682,7 @@ impl SpaiApp {
             });
         });
         if let Some(hidden) = verdict {
-            self.pilots.lock().unwrap_or_else(|e| e.into_inner()).set_verdict(&name, hidden);
-            if let Some(store) = &self.store {
-                store.set_pilot_verdict(&name, hidden);
-            }
+            self.apply_pilot_verdict(&name, hidden);
             self.verdict_popup = None;
             ctx.request_repaint();
         } else if !open {
@@ -6948,7 +6954,7 @@ impl SpaiApp {
             let player_sys = self.player_system();
 
             // Publish into the shared state + drain the closure's outputs.
-            let (active, just_opened, clicks, moved, moved_size) = {
+            let (active, just_opened, clicks, verdicts, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
                 st.enabled = feature;
                 st.on_top_level = on_top;
@@ -6979,14 +6985,19 @@ impl SpaiApp {
                 // the geometry-save guard below.
                 let just_opened = active && !st.open;
                 let clicks = std::mem::take(&mut st.clicks);
+                let verdicts = std::mem::take(&mut st.verdict_out);
                 let moved = st.moved.take();
                 let moved_size = st.moved_size.take();
-                (active, just_opened, clicks, moved, moved_size)
+                (active, just_opened, clicks, verdicts, moved, moved_size)
             };
 
             // A click in the feed opens the relevant window (in the main viewport).
             for click in clicks {
                 self.act_on_intel_click(click, ctx);
+            }
+            // Verdicts decided in the overlay: persist them here.
+            for (name, hidden) in verdicts {
+                self.apply_pilot_verdict(&name, hidden);
             }
             // Save a moved position / resized size — but NOT on the open frame, where the window
             // briefly reports its builder default before the saved geometry is re-applied.
@@ -14779,6 +14790,9 @@ impl eframe::App for SpaiApp {
             for m in msgs {
                 match m {
                     crate::ipc::OverlayToMain::Click(c) => self.act_on_intel_click(c, &ctx),
+                    crate::ipc::OverlayToMain::Verdict { name, hidden } => {
+                        self.apply_pilot_verdict(&name, hidden)
+                    }
                     crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
                         self.persist_alert_geometry(pos, size)
                     }
@@ -16244,10 +16258,14 @@ pub(crate) fn build_alert_viewport_cb(
         let pinned_in = st.pinned;
         let mut level_applied = st.level_applied;
         let mut level_at = st.level_at;
+        let mut verdict_pending = st.verdict_pending.clone();
+        let mut verdict_explained = st.verdict_explained;
         if just_opened {
             level_applied = None; // force the level to be re-applied
         }
         drop(st);
+        // Verdicts decided this frame (name, hidden), drained to the main to persist.
+        let mut verdict_out_new: Vec<(String, bool)> = Vec::new();
 
         // A new alert: bring the window forward once — Windows only (a focus request on
         // Linux/X11 steals focus from the game, winit#1160, which the user doesn't want).
@@ -16381,7 +16399,12 @@ pub(crate) fn build_alert_viewport_cb(
                                 &uncertain, &last_ship,
                                 kills, *sev, false, affil,
                             ) {
-                                clicks.push(c);
+                                // A "?" click opens its verdict dialog HERE (in the overlay), not in
+                                // the main window; other clicks still route to the root viewport.
+                                match c {
+                                    IntelClick::PilotVerdict(name) => verdict_pending = Some(name),
+                                    other => clicks.push(other),
+                                }
                             }
                         }
                     }
@@ -16389,6 +16412,77 @@ pub(crate) fn build_alert_viewport_cb(
                 hovered = ui.ui_contains_pointer();
                 resize_grip(ui);
             });
+        // Uncertain-pilot verdict dialog, rendered HERE in the overlay so it opens where the "?"
+        // was clicked. The explainer shows once per overlay session; the decision is drained by the
+        // main to persist. A pointer over either dialog keeps the overlay awake.
+        if let Some(name) = verdict_pending.clone() {
+            if !verdict_explained {
+                let mut ack = false;
+                let mut open = true;
+                let resp = egui::Window::new("Uncertain pilot  (?)")
+                    .collapsible(false)
+                    .resizable(false)
+                    .open(&mut open)
+                    .show(&ctx, |ui| {
+                        ui.set_max_width(320.0);
+                        ui.label(
+                            "A \"?\" means this name matched a real EVE character that looks \
+                             inactive. It may be a rarely-used pilot, or a chat word that matches a \
+                             character name.",
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            "Mark it \"Real pilot\" to keep it, or \"Not a pilot\" to hide it. Your \
+                             choice is remembered.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Got it").clicked() {
+                            ack = true;
+                        }
+                    });
+                if resp.map(|r| r.response.hovered()).unwrap_or(false) {
+                    hovered = true;
+                }
+                if ack {
+                    verdict_explained = true;
+                } else if !open {
+                    verdict_pending = None;
+                }
+            } else {
+                let mut decision: Option<bool> = None;
+                let mut open = true;
+                let resp = egui::Window::new(format!("Is \"{name}\" a pilot?"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .open(&mut open)
+                    .show(&ctx, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "\"{name}\" matched a character that looks inactive."
+                            ))
+                            .weak(),
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Real pilot").clicked() {
+                                decision = Some(false);
+                            }
+                            if ui.button("Not a pilot (hide)").clicked() {
+                                decision = Some(true);
+                            }
+                        });
+                    });
+                if resp.map(|r| r.response.hovered()).unwrap_or(false) {
+                    hovered = true;
+                }
+                if let Some(hidden) = decision {
+                    verdict_out_new.push((name.clone(), hidden));
+                    verdict_pending = None;
+                } else if !open {
+                    verdict_pending = None;
+                }
+            }
+        }
         if let Some(p) = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y))) {
             moved = Some(p);
         }
@@ -16420,6 +16514,9 @@ pub(crate) fn build_alert_viewport_cb(
         st.level_applied = level_applied;
         st.level_at = level_at;
         st.clicks.extend(clicks);
+        st.verdict_pending = verdict_pending;
+        st.verdict_explained = verdict_explained;
+        st.verdict_out.extend(verdict_out_new);
         // Don't capture geometry on the open frame (the window briefly reports its builder
         // default before the saved geometry is re-applied).
         if !just_opened {
@@ -16572,9 +16669,16 @@ pub(crate) struct AlertWindowState {
     pub(crate) player_sys: Option<i64>,
     pub(crate) kills: Option<crate::kills::KillCache>,
     pub(crate) affil: Option<crate::affiliation::SharedAffil>,
+    /// An uncertain pilot whose verdict dialog is open IN THIS overlay (so the popup shows where
+    /// the "?" was clicked, not in the main window).
+    pub(crate) verdict_pending: Option<String>,
+    /// Whether the one-time uncertain-pilot explainer has been shown in this overlay session.
+    pub(crate) verdict_explained: bool,
     // -- outputs drained by the UI thread --
     /// Feed clicks to act on in the root viewport.
     pub(crate) clicks: Vec<IntelClick>,
+    /// Pilot verdicts decided in the overlay: (name, hidden). Drained by the main to persist.
+    pub(crate) verdict_out: Vec<(String, bool)>,
     /// Latest window position / size, to persist.
     pub(crate) moved: Option<(f32, f32)>,
     pub(crate) moved_size: Option<(f32, f32)>,
@@ -18050,7 +18154,7 @@ fn intel_row(
                         );
                         ui.label(
                             egui::RichText::new(if is_uncertain {
-                                "Looks inactive — click to mark real or hide"
+                                "Looks inactive - click to mark real or hide"
                             } else {
                                 "Click to look up"
                             })
