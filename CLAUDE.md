@@ -110,3 +110,19 @@ It uses only EVE's public static data.
 - Do not mutate the user's real config or database during verification; prefer unit tests
   and scratch dirs.
 - Push and publish only when asked.
+
+## Writing and comments (stop slop)
+
+Applies to prose (replies, PR bodies, commit messages) and to code comments. Adapted from the
+"stop slop" skill (github.com/hardikpandya/stop-slop).
+
+- NEVER use em-dashes. Use commas for a pause. Do not overuse hyphens or semicolons; prefer plain
+  commas and periods.
+- Cut filler: no throat-clearing openers ("here's what", "in general"), no emphasis adverbs, no
+  softening or hand-holding. State facts directly, in active voice, with a human subject.
+- Avoid formulaic shapes: "not X, it's Y" contrasts, negative listings, rhetorical Wh- setups,
+  three sentences of equal length in a row, paragraphs that end on a punchy one-liner.
+- Be specific. Drop lazy extremes ("always", "never", "every") unless they are literally true.
+- Comments are terse and rare. Write one only when a piece of code needs a specific justification
+  (WHY it is this way, e.g. a non-obvious workaround or constraint), never to restate WHAT the code
+  already says. Default to no comment.
