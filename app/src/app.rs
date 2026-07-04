@@ -14802,7 +14802,11 @@ pub(crate) fn alert_viewport_builder(
         // A normal managed top-level (kept above, off the taskbar). On KWin/Wayland the reliable
         // lever to keep it visible while the main window is minimized is a KWin window rule forcing
         // this window (title "EVE Spai \u{2014} alerts") to Minimized=No.
-        .with_transparent(true)
+        //
+        // Opaque on Windows: transparency is only for the Linux transparent-when-idle behaviour;
+        // Windows hides the window when idle instead, so a transparent (composite-alpha DX12)
+        // swapchain buys nothing there and crashes the GPU driver when dragged across monitors.
+        .with_transparent(!cfg!(target_os = "windows"))
         .with_mouse_passthrough(true)
         // Build with the saved geometry so no frame re-applies the default (on Windows the
         // hidden->visible cycle would otherwise snap the window back to the default each open).
@@ -15844,6 +15848,9 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
     if r.bubble {
         parts.push("bubble".into());
     }
+    if r.nullified {
+        parts.push("nullified".into());
+    }
     if r.camp {
         parts.push("gate camp".into());
     }
@@ -16231,6 +16238,12 @@ fn sound_picker(
     changed
 }
 
+/// A ship-class badge is worth showing only when the class is specific: a generic hull tier
+/// (frigate..battleship) is noise, but T2/T3 specialisations and any capital-size hull matter.
+fn interesting_ship_class(class: &str) -> bool {
+    !matches!(class, "Frigate" | "Destroyer" | "Cruiser" | "Battlecruiser" | "Battleship")
+}
+
 fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(sig) = &r.wh_sig {
@@ -16238,19 +16251,22 @@ fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
     }
     if let Some(code) = &r.wh_type {
         if !code.eq_ignore_ascii_case("K162") {
-            parts.push(format!("({code})"));
+            parts.push(code.clone());
         }
     }
+    if let Some(size) = r.wh_size {
+        parts.push(size.short().to_string());
+    }
     if r.wh_drifter {
-        parts.push("(Drifter)".into());
+        parts.push("Drifter".into());
     }
     if let Some(dest) = r.wh_dest {
         use crate::wormholes::DestClass;
         match dest {
-            DestClass::Thera => parts.push("(Thera)".into()),
-            DestClass::Turnur => parts.push("(Turnur)".into()),
+            DestClass::Thera => parts.push("Thera".into()),
+            DestClass::Turnur => parts.push("Turnur".into()),
             DestClass::Unknown => {}
-            other => parts.push(format!("(\u{2192} {})", other.label())),
+            other => parts.push(format!("\u{2192} {}", other.label())),
         }
     }
     let icon = egui_phosphor::regular::SPIRAL;
@@ -16563,6 +16579,7 @@ fn intel_row(
                     && !r.camp
                     && !r.help
                     && !r.bubble
+                    && !r.nullified
                     && !r.killmail
                     && !r.cyno
                     && !r.dropper
@@ -16608,7 +16625,7 @@ fn intel_row(
                     }
                 }
 
-                for class in &r.classes {
+                for class in r.classes.iter().filter(|c| interesting_ship_class(c)) {
                     ui.add(egui::Button::new(egui::RichText::new(class).italics()))
                         .on_hover_text("Ship class, no exact hull reported");
                 }
@@ -16943,6 +16960,9 @@ fn intel_row(
                 }
                 if r.bubble {
                     tag(ui, "BUBBLE", warn);
+                }
+                if r.nullified {
+                    tag(ui, "NULLIFIED", warn);
                 }
                 if r.killmail && !is_zkill {
                     tag(ui, "KILL", red);
@@ -17566,16 +17586,35 @@ mod wh_badge_tests {
         let l = wormhole_badge_label(&wh(|ir| {
             ir.wh_sig = Some("ABC-123".into());
             ir.wh_type = Some("S899".into());
+            ir.wh_size = Some(crate::wormholes::ShipSize::XLarge);
             ir.wh_drifter = true;
             ir.wh_dest = Some(DestClass::Highsec);
         }));
         assert!(l.starts_with(icon), "{l}");
-        for want in ["ABC-123", "(S899)", "(Drifter)", "Highsec"] {
+        for want in ["ABC-123", "S899", "XL", "Drifter", "Highsec"] {
             assert!(l.contains(want), "missing {want} in {l:?}");
         }
+        // The card must not contain literal parentheses (they only marked optionality).
+        assert!(!l.contains('(') && !l.contains(')'), "unexpected parens in {l:?}");
         assert!(!wormhole_badge_label(&wh(|ir| ir.wh_type = Some("K162".into()))).contains("K162"));
-        assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Thera))).contains("(Thera)"));
-        assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Turnur))).contains("(Turnur)"));
+        assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Thera))).contains("Thera"));
+        assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Turnur))).contains("Turnur"));
+        // A frigate-size hole reads "Small", not "Frig".
+        let frig = wormhole_badge_label(&wh(|ir| ir.wh_size = Some(crate::wormholes::ShipSize::Frigate)));
+        assert!(frig.contains("Small") && !frig.contains("Frig"), "{frig:?}");
+    }
+
+    #[test]
+    fn only_specific_ship_classes_badge() {
+        use super::interesting_ship_class;
+        // Generic hull tiers are noise.
+        for generic in ["Frigate", "Destroyer", "Cruiser", "Battlecruiser", "Battleship"] {
+            assert!(!interesting_ship_class(generic), "{generic} should be hidden");
+        }
+        // T2/T3 specialisations and capitals are shown.
+        for keep in ["Interdictor", "Heavy Interdictor", "Black Ops", "Strategic Cruiser", "Dreadnought", "Titan"] {
+            assert!(interesting_ship_class(keep), "{keep} should show");
+        }
     }
 
     #[test]

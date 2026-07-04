@@ -86,6 +86,9 @@ pub struct IntelReport {
     pub camp: bool,
     pub help: bool,
     pub bubble: bool,
+    /// The reporter noted an Interdiction Nullifier (the ship ignores bubbles).
+    #[serde(default)]
+    pub nullified: bool,
     pub killmail: bool,
     #[serde(default)]
     pub near_celestial: Option<(String, f64)>,
@@ -97,6 +100,8 @@ pub struct IntelReport {
     pub wormhole: bool,
     pub wh_type: Option<String>,
     pub wh_dest: Option<crate::wormholes::DestClass>,
+    #[serde(default)]
+    pub wh_size: Option<crate::wormholes::ShipSize>,
     pub wh_eol: bool,
     pub wh_drifter: bool,
     pub wh_sig: Option<String>,
@@ -226,6 +231,7 @@ impl IntelState {
             || new.cyno
             || new.dropper
             || new.filament
+            || new.nullified
             || new.cap_tackled;
         if !adds {
             return false;
@@ -333,6 +339,7 @@ impl IntelState {
             prev.camp |= new.camp;
             prev.help |= new.help;
             prev.bubble |= new.bubble;
+            prev.nullified |= new.nullified;
             prev.cyno |= new.cyno;
             prev.filament |= new.filament;
             prev.diamond_rats |= new.diamond_rats;
@@ -353,6 +360,7 @@ impl IntelState {
             prev.wormhole |= new.wormhole;
             prev.wh_type = new.wh_type.clone().or_else(|| prev.wh_type.clone());
             prev.wh_dest = new.wh_dest.or(prev.wh_dest);
+            prev.wh_size = new.wh_size.or(prev.wh_size);
             prev.wh_eol |= new.wh_eol;
             prev.wh_drifter |= new.wh_drifter;
             prev.wh_sig = new.wh_sig.clone().or_else(|| prev.wh_sig.clone());
@@ -508,6 +516,7 @@ fn merge_report_into(dst: &mut IntelReport, src: &IntelReport) {
     dst.camp |= src.camp;
     dst.help |= src.help;
     dst.bubble |= src.bubble;
+    dst.nullified |= src.nullified;
     dst.cyno |= src.cyno;
     dst.dropper |= src.dropper;
     dst.cap_tackled |= src.cap_tackled;
@@ -518,6 +527,7 @@ fn merge_report_into(dst: &mut IntelReport, src: &IntelReport) {
     dst.wormhole |= src.wormhole;
     dst.wh_type = dst.wh_type.clone().or_else(|| src.wh_type.clone());
     dst.wh_dest = dst.wh_dest.or(src.wh_dest);
+    dst.wh_size = dst.wh_size.or(src.wh_size);
     dst.wh_eol |= src.wh_eol;
     dst.wh_drifter |= src.wh_drifter;
     dst.wh_sig = dst.wh_sig.clone().or_else(|| src.wh_sig.clone());
@@ -683,6 +693,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
                 | "marauder" | "marauders" | "blops"
                 | "tackled" | "tackle" | "tackling" | "takled" | "pointed" | "point"
                 | "scrammed" | "scram" | "scrambled" | "webbed"
+                | "nullified" | "nullifier" | "nullifiers" | "nullification" | "nully" | "nullie" | "nullies"
         )
 }
 
@@ -2327,15 +2338,16 @@ pub fn analyze_ctx(
             matches!(t.as_str(), "wh" | "hole" | "holes" | "thera" | "turnur")
                 && !pilot_tokens.contains(t)
         });
-    let (wh_dest, wh_eol, wh_drifter, wh_sig) = if is_wh_msg {
+    let (wh_dest, wh_size, wh_eol, wh_drifter, wh_sig) = if is_wh_msg {
         (
             parse_wh_dest(&lower, &lower_tokens),
+            parse_wh_size(&lower, &lower_tokens),
             lower.contains("eol") || lower.contains("end of life") || lower.contains("dying"),
             lower.contains("drifter"),
             tokens.iter().find(|t| looks_like_sig(t)).map(|t| t.to_uppercase()),
         )
     } else {
-        (None, false, false, None)
+        (None, None, false, false, None)
     };
 
     let mut ships: Vec<DetectedShip> = Vec::new();
@@ -2620,6 +2632,12 @@ pub fn analyze_ctx(
             &["bubble", "bubbles", "bubbled", "bubbling", "dragbubble", "drag", "drags"],
         ) || lower.contains("泡泡")
             || lower.contains("气泡"),
+        // Token match (not `flagged_exact`): "nullified" is a capability note that often sits next
+        // to the ship/pilot, so it must fire even when it lands inside a name run. It is a stop-word
+        // so it never shows as a pilot itself.
+        nullified: ["nullified", "nullifier", "nullifiers", "nullification", "nully", "nullie", "nullies"]
+            .iter()
+            .any(|w| lower_tokens.iter().any(|t| t == w)),
         killmail: links.iter().any(|l| l.kind == LinkKind::Killmail)
             || KILL_WORDS.iter().any(|w| lower.contains(w)),
         near_celestial: None,
@@ -2646,6 +2664,7 @@ pub fn analyze_ctx(
         wormhole: is_wh_msg,
         wh_type: wh_code,
         wh_dest,
+        wh_size,
         wh_eol,
         wh_drifter,
         wh_sig,
@@ -3342,6 +3361,25 @@ fn parse_wh_dest(lower: &str, lower_tokens: &[String]) -> Option<crate::wormhole
             .any(|t| t.len() >= 2 && t.starts_with('c') && t[1..].bytes().all(|c| c.is_ascii_digit()))
     {
         Some(DestClass::Wspace)
+    } else {
+        None
+    }
+}
+
+/// The max-ship-size class a wormhole passes, from a scout's words. "Extra large" (and xl/xlarge)
+/// is XL; a bare "large"/"medium"/"small" is the hole class in a wormhole message.
+fn parse_wh_size(lower: &str, lower_tokens: &[String]) -> Option<crate::wormholes::ShipSize> {
+    use crate::wormholes::ShipSize;
+    let has = |w: &str| lower_tokens.iter().any(|t| t == w);
+    // XL variants must be tested before the "large" substring.
+    if lower.contains("extra large") || lower.contains("extra-large") || lower.contains("xlarge") || has("xl") {
+        Some(ShipSize::XLarge)
+    } else if lower.contains("large") {
+        Some(ShipSize::Large)
+    } else if lower.contains("medium") || has("med") {
+        Some(ShipSize::Medium)
+    } else if lower.contains("frigate") || has("frig") || has("small") {
+        Some(ShipSize::Frigate)
     } else {
         None
     }
@@ -4511,6 +4549,38 @@ mod tests {
         let r = analyze("thera hole in Rancer", &s, &noships(), &noknown(), 1, "ch", "wwhh");
         assert!(r.wormhole, "should be a wormhole message");
         assert!(matches!(r.wh_dest, Some(crate::wormholes::DestClass::Thera)), "dest={:?}", r.wh_dest);
+    }
+
+    #[test]
+    fn nullified_is_a_flag_not_a_pilot() {
+        let s = systems();
+        let ships = ships_with(&[("Loki", 29990)]);
+        let r = analyze("Nullified Loki on gate in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(r.nullified, "nullified flag should fire");
+        assert!(
+            !proposed(&r.pilots, "Nullified") && !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("nullified")),
+            "nullified leaked as a pilot: {:?}",
+            r.pilots
+        );
+        // "nullifier" (the module name) also triggers it.
+        assert!(analyze("ceptor with interdiction nullifier", &s, &noships(), &noknown(), 1, "ch", "x").nullified);
+        // A plain nullsec mention must NOT trigger it.
+        assert!(!analyze("hostiles in null in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").nullified);
+    }
+
+    #[test]
+    fn wormhole_size_parsed_from_words() {
+        use crate::wormholes::ShipSize;
+        let s = systems();
+        let sz = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x").wh_size;
+        // "Extra large" (and xl / xlarge) is XL, and must beat the "large" substring.
+        assert_eq!(sz("K162 nullsec extra large EOL"), Some(ShipSize::XLarge));
+        assert_eq!(sz("wormhole xl to nullsec"), Some(ShipSize::XLarge));
+        assert_eq!(sz("large wormhole in Rancer"), Some(ShipSize::Large));
+        assert_eq!(sz("medium hole"), Some(ShipSize::Medium));
+        assert_eq!(sz("frig hole in Rancer"), Some(ShipSize::Frigate));
+        // Size is only read inside a wormhole message, so a normal gang report is unaffected.
+        assert_eq!(sz("large gang in Rancer"), None);
     }
 
     #[test]

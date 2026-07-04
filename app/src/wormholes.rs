@@ -49,7 +49,7 @@ impl DestClass {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ShipSize {
     Frigate,
     Medium,
@@ -68,11 +68,11 @@ impl ShipSize {
     }
 
     pub fn from_code(code: &str) -> Option<ShipSize> {
-        match code.to_ascii_lowercase().as_str() {
-            "frigate" | "small" => Some(ShipSize::Frigate),
-            "medium" => Some(ShipSize::Medium),
+        match code.trim().to_ascii_lowercase().replace('-', " ").as_str() {
+            "frigate" | "frig" | "small" => Some(ShipSize::Frigate),
+            "medium" | "med" => Some(ShipSize::Medium),
             "large" => Some(ShipSize::Large),
-            "xlarge" | "capital" => Some(ShipSize::XLarge),
+            "xlarge" | "xl" | "extra large" | "capital" => Some(ShipSize::XLarge),
             _ => None,
         }
     }
@@ -83,6 +83,16 @@ impl ShipSize {
             ShipSize::Medium => "Medium",
             ShipSize::Large => "Large",
             ShipSize::XLarge => "XL / Capital",
+        }
+    }
+
+    /// Compact tag for the wormhole intel badge (wormhole sizes read Small/Medium/Large/XL).
+    pub fn short(self) -> &'static str {
+        match self {
+            ShipSize::Frigate => "Small",
+            ShipSize::Medium => "Med",
+            ShipSize::Large => "Large",
+            ShipSize::XLarge => "XL",
         }
     }
 }
