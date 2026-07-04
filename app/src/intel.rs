@@ -3148,6 +3148,25 @@ pub fn format_isk(isk: u64) -> String {
     }
 }
 
+const COUNT_KEYWORDS: &[&str] =
+    &["red", "reds", "neut", "neuts", "neutral", "neutrals", "hostile", "hostiles"];
+
+fn is_plus_token(w: &str) -> bool {
+    let t = w.trim();
+    !t.is_empty() && t.chars().all(|c| c == '+')
+}
+
+fn is_count_keyword(w: &str) -> bool {
+    let lw = w.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+    COUNT_KEYWORDS.contains(&lw.as_str())
+}
+
+fn is_ship_or_class_word(w: &str, ship_index: &HashMap<String, (i64, String)>) -> bool {
+    let lw = w.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+    !lw.is_empty()
+        && (SHIP_CLASSES.iter().any(|(k, _)| *k == lw.as_str()) || ship_of(&lw, ship_index).is_some())
+}
+
 fn parse_count(
     text: &str,
     consumed: &[String],
@@ -3176,12 +3195,23 @@ fn parse_count(
         if digits.is_empty() || digits.len() > 3 {
             continue;
         }
-        let decorated =
-            t.starts_with('+') || t.starts_with('x') || t.ends_with('x') || t.ends_with('+');
+        let attached_plus = t.starts_with('+') || t.ends_with('+');
+        let attached_x = t.starts_with('x') || t.ends_with('x');
         let bare_number = t.chars().all(|c| c.is_ascii_digit());
-        if !(decorated || bare_number) {
+        if !(attached_plus || attached_x || bare_number) {
             continue;
         }
+        // A number is a hostile count only when qualified: a '+' (attached or a standalone
+        // neighbour), an x/X multiplier, a red/neut/hostile keyword beside it, or a
+        // ship/ship-class beside it. A lone number is too error-prone to count.
+        let prev = i.checked_sub(1).map(|j| words[j]);
+        let next = words.get(i + 1).copied();
+        let plus_neighbour = prev.is_some_and(is_plus_token) || next.is_some_and(is_plus_token);
+        let kw_neighbour = prev.is_some_and(is_count_keyword) || next.is_some_and(is_count_keyword);
+        let ship_neighbour = prev.is_some_and(|w| is_ship_or_class_word(w, ship_index))
+            || next.is_some_and(|w| is_ship_or_class_word(w, ship_index));
+        let qualified =
+            attached_plus || attached_x || plus_neighbour || kw_neighbour || ship_neighbour;
         if bare_number
             && pilots.iter().any(|p| {
                 let pl = p.to_lowercase();
@@ -3195,22 +3225,22 @@ fn parse_count(
         {
             continue;
         }
-        if bare_number && i > 0 {
-            let prev = words[i - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
-            let plc = prev.to_lowercase();
-            if name_part(prev) && systems.lookup(prev).is_none() && !ship_index.contains_key(&plc) {
+        if bare_number && !qualified && i > 0 {
+            let prevw = words[i - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
+            let plc = prevw.to_lowercase();
+            if name_part(prevw) && systems.lookup(prevw).is_none() && !ship_index.contains_key(&plc) {
                 if let Ok(n) = digits.parse::<u32>() {
-                    name_skips.push((format!("{prev} {digits}"), n));
+                    name_skips.push((format!("{prevw} {digits}"), n));
                 }
                 continue;
             }
         }
-        if bare_number && !decorated {
+        if bare_number && !attached_plus && !attached_x {
             if consumed.iter().any(|c| c == &t.to_lowercase()) {
                 continue;
             }
-            if let Some(next) = words.get(i + 1) {
-                let n = next.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            if let Some(nx) = next {
+                let n = nx.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
                 if MAGNITUDE.contains(&n.as_str()) {
                     continue;
                 }
@@ -3218,10 +3248,12 @@ fn parse_count(
         }
         if let Ok(n) = digits.parse::<u32>() {
             if (1..=999).contains(&n) {
-                if t.starts_with('+') || t.ends_with('+') {
+                if attached_plus || plus_neighbour {
                     plus = (plus + n).min(999);
-                } else {
+                } else if attached_x || kw_neighbour || ship_neighbour {
                     best = Some(best.map_or(n, |b| (b + n).min(999)));
+                } else {
+                    continue;
                 }
             }
         }
@@ -3920,11 +3952,12 @@ mod tests {
     #[test]
     fn isk_amount_is_not_a_count() {
         let s = systems();
-        let r = analyze("ESS raid 2 Bellicose 334 million 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        let ships = ships_with(&[("Bellicose", 632)]);
+        let r = analyze("ESS raid 2 Bellicose 334 million 6:00 Rancer", &s, &ships, &noknown(), 1, "ch", "x");
         assert_eq!(r.count, Some(2), "ISK amount must not inflate the count");
-        let r2 = analyze("ESS raid 2 Bellicose 300 kk 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        let r2 = analyze("ESS raid 2 Bellicose 300 kk 6:00 Rancer", &s, &ships, &noknown(), 1, "ch", "x");
         assert_eq!(r2.count, Some(2), "300 kk must not be counted: {:?}", r2.count);
-        let r3 = analyze("ESS raid 2 Bellicose 5 bill 6:00 Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        let r3 = analyze("ESS raid 2 Bellicose 5 bill 6:00 Rancer", &s, &ships, &noknown(), 1, "ch", "x");
         assert_eq!(r3.count, Some(2), "5 bill must not be counted: {:?}", r3.count);
     }
 
@@ -5150,7 +5183,36 @@ mod tests {
         let s = systems();
         assert_eq!(analyze("8X6T-8 Malcolm 41", &s, &noships(), &noknown(), 1, "ch", "x").count, None);
         assert_eq!(analyze("Adama 80 pls help", &s, &noships(), &noknown(), 1, "ch", "x").count, None);
-        assert_eq!(analyze("Rancer 5", &s, &noships(), &noknown(), 1, "ch", "x").count, Some(5));
+        // A lone trailing number after a system is too error-prone to be a count.
+        assert_eq!(analyze("Rancer 5", &s, &noships(), &noknown(), 1, "ch", "x").count, None);
+    }
+
+    #[test]
+    fn bare_numbers_need_a_qualifier() {
+        let s = systems();
+        let ships = ships_with(&[("Drake", 24698)]);
+        let pos = |t: &str, ships: &std::collections::HashMap<String, (i64, String)>| {
+            analyze(t, &s, ships, &noknown(), 1, "ch", "x").count
+        };
+        // Positive: a number qualified by +, x/X, a hostile keyword, or a ship counts.
+        assert_eq!(pos("+3 in Rancer", &noships()), Some(3), "attached +N");
+        assert_eq!(pos("3+ in Rancer", &noships()), Some(3), "attached N+");
+        assert_eq!(pos("Rancer + 5", &noships()), Some(5), "+ before number, spaced");
+        assert_eq!(pos("Rancer 5 +", &noships()), Some(5), "+ after number, spaced");
+        assert_eq!(pos("x5 in Rancer", &noships()), Some(5), "x multiplier");
+        assert_eq!(pos("X5 in Rancer", &noships()), Some(5), "X multiplier");
+        assert_eq!(pos("5 reds in Rancer", &noships()), Some(5), "keyword after number");
+        assert_eq!(pos("Rancer neuts 3", &noships()), Some(3), "keyword before number");
+        assert_eq!(pos("hostiles 10 in Rancer", &noships()), Some(10), "hostile keyword");
+        assert_eq!(pos("2 marauders in Rancer", &noships()), Some(2), "ship class");
+        assert_eq!(pos("3 Drake in Rancer", &ships), Some(3), "known hull");
+        assert_eq!(pos("2 Drakes in Rancer", &ships), Some(2), "plural hull");
+        // Negative: a lone number, with no +/x/keyword/ship beside it, does not count.
+        assert_eq!(pos("Rancer 5", &noships()), None, "lone trailing number");
+        assert_eq!(pos("5 in Rancer", &noships()), None, "lone leading number");
+        assert_eq!(pos("Rancer 5 gate", &noships()), None, "number between system and gate");
+        assert_eq!(pos("camp in Rancer 8", &noships()), None, "stray number");
+        assert_eq!(pos("3 Drake in Rancer", &noships()), None, "unknown word is not a ship");
     }
 
     #[test]
@@ -5187,7 +5249,8 @@ mod tests {
     fn detects_systems_count_and_flags() {
         let s = systems();
 
-        let r = analyze("hostile in Rancer, 3 Drake +2", &s, &noships(), &noknown(), 100, "ch", "Scout");
+        let drake = ships_with(&[("Drake", 24698)]);
+        let r = analyze("hostile in Rancer, 3 Drake +2", &s, &drake, &noknown(), 100, "ch", "Scout");
         assert_eq!(r.systems.len(), 1);
         assert_eq!(r.systems[0].name, "Rancer");
         assert_eq!(r.count, Some(5));
