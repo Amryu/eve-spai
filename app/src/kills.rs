@@ -1,16 +1,11 @@
-//! Killmail enrichment: given a zKillboard kill id, fetch the victim, attackers and
-//! value (zKill for the hash + value, ESI for the full killmail). Results are cached
-//! and filled on a background thread, like the pilot resolver.
-
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Enriched killmail details for the KILL badge + window.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)] // some fields are kept for the window / future use
+#[allow(dead_code)]
 pub struct KillInfo {
     pub kill_id: i64,
     pub hash: Option<String>,
@@ -25,19 +20,15 @@ pub struct KillInfo {
     pub final_blow_corp: Option<i64>,
     pub final_blow_alliance: Option<i64>,
     pub final_blow_ship: Option<i64>,
-    /// Attacker alliance ids (most frequent first), for the "dominant side" display.
     pub attacker_alliances: Vec<i64>,
     pub attacker_count: usize,
-    /// Nearest celestial to the death (name, distance in metres) when the kill had a position.
     #[serde(default)]
     pub near_celestial: Option<(String, f64)>,
 }
 
-/// kill id → fetched info. A present `None` means pending or failed (don't refetch).
 pub type KillCache = Arc<Mutex<HashMap<i64, Option<KillInfo>>>>;
 pub type KillSender = Sender<i64>;
 
-/// Spawn the background killmail fetcher. Send a kill id to enqueue enrichment.
 pub fn spawn_fetcher(cache: KillCache, ctx: egui::Context) -> KillSender {
     let (tx, rx) = std::sync::mpsc::channel::<i64>();
     std::thread::spawn(move || {
@@ -48,10 +39,8 @@ pub fn spawn_fetcher(cache: KillCache, ctx: egui::Context) -> KillSender {
         else {
             return;
         };
-        // Persist enriched details so a reloaded card doesn't re-fetch them next startup.
         let store = crate::store::Store::open().ok();
         for id in rx {
-            // Mark as in-flight so the UI doesn't keep re-requesting.
             {
                 let mut c = cache.lock().unwrap();
                 if c.get(&id).is_some_and(|v| v.is_some()) {
@@ -66,7 +55,7 @@ pub fn spawn_fetcher(cache: KillCache, ctx: egui::Context) -> KillSender {
                 cache.lock().unwrap().insert(id, Some(k));
                 ctx.request_repaint();
             }
-            std::thread::sleep(Duration::from_millis(300)); // be gentle on zKill
+            std::thread::sleep(Duration::from_millis(300));
         }
     });
     tx
@@ -117,7 +106,6 @@ fn fetch_kill(client: &reqwest::blocking::Client, id: i64) -> Option<KillInfo> {
     let km: Km = client.get(eurl).send().ok()?.error_for_status().ok()?.json().ok()?;
 
     let fb = km.attackers.iter().find(|a| a.final_blow);
-    // Attacker alliances, most frequent first.
     let mut counts: HashMap<i64, usize> = HashMap::new();
     for a in &km.attackers {
         if let Some(al) = a.alliance_id {

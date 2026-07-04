@@ -1,6 +1,3 @@
-//! Game-log watcher: polls the Gamelogs directory and fires desktop alerts on
-//! combat events (under attack / warp scrambled), with per-kind cooldowns.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,7 +7,6 @@ use crate::gamelog::{self, CombatKind};
 
 const POLL: Duration = Duration::from_millis(1500);
 
-/// Shared log of fired alerts (unix seconds, text), shared with the Alerts view.
 pub type AlertLog = Arc<Mutex<Vec<(i64, String)>>>;
 
 pub fn spawn(
@@ -21,7 +17,6 @@ pub fn spawn(
 ) {
     std::thread::spawn(move || {
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
-        // Per-file (size, mtime) so an unchanged game log isn't re-read+parsed every poll.
         let mut file_sigs: HashMap<PathBuf, (u64, i64)> = HashMap::new();
         let mut cooldown: HashMap<CombatKind, i64> = HashMap::new();
         loop {
@@ -71,7 +66,7 @@ fn scan(
             && mtime != 0
             && chrono::Utc::now().timestamp() - mtime > 12 * 3600
         {
-            continue; // an ancient, never-seen log — no need to open it
+            continue;
         }
         let sig = crate::logpaths::real_len(&path).map(|len| (len, mtime));
         if let Some(sig) = sig {
@@ -109,7 +104,6 @@ fn scan(
     }
 
     if fired {
-        // Trim the shared log.
         let mut log = alerts.lock().unwrap();
         let len = log.len();
         if len > 50 {

@@ -1,6 +1,3 @@
-//! Server-rendered, mobile-first HTML: the public report directory (`GET /br`) and
-//! the single-report viewer (`GET /br/{id}`).
-//!
 //! Built with [`maud`] - compile-time templates that auto-escape every interpolation.
 //! Every user- or EVE-supplied string (titles, uploader names, side/alliance/pilot
 //! names) is rendered through a normal `(value)` interpolation, never via
@@ -15,18 +12,14 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 /// it is not a pod worth surfacing.
 const POD_VALUE_MIN: f64 = 10_000.0;
 
-/// EVE ship/structure icon for a type id (64 px). Empty markup for type id 0.
 fn icon_url(type_id: i64) -> String {
     format!("https://images.evetech.net/types/{type_id}/icon?size=64")
 }
 
-/// zKillboard permalink for a killmail.
 fn zkill_url(kill_id: i64) -> String {
     format!("https://zkillboard.com/kill/{kill_id}/")
 }
 
-/// Alliance/corporation logo URL for a party (32 px). `None` for characters, factions,
-/// unknowns, or a 0 id - those have no entity logo.
 fn party_logo_url(p: &Party) -> Option<String> {
     if p.id == 0 {
         return None;
@@ -42,8 +35,6 @@ fn party_logo_url(p: &Party) -> Option<String> {
     }
 }
 
-/// zKillboard entity page for a party: alliance or corporation. `None` for characters,
-/// factions, unknowns, or a 0 id.
 fn party_zkill_url(p: &Party) -> Option<String> {
     if p.id == 0 {
         return None;
@@ -55,11 +46,6 @@ fn party_zkill_url(p: &Party) -> Option<String> {
     }
 }
 
-/// A pilot's corp + alliance logos for the Details view: the corporation logo first, then
-/// the alliance logo, each linking to its zKillboard entity page (new tab). The alliance
-/// logo is omitted when the pilot has no alliance (`alliance_id == 0`). Empty markup when
-/// `affil` is `None` (an unresolved char), so the pilot renders exactly as before. Names go
-/// through normal interpolation, so they are auto-escaped.
 fn affil_icons(affil: Option<&Affil>) -> Markup {
     html! {
         @if let Some(a) = affil {
@@ -81,8 +67,6 @@ fn affil_icons(affil: Option<&Affil>) -> Markup {
     }
 }
 
-/// Inline party logo (alliance/corp) with the party name as accessible label. Empty for
-/// parties with no logo.
 fn party_logo(p: &Party) -> Markup {
     html! {
         @if let Some(url) = party_logo_url(p) {
@@ -91,11 +75,6 @@ fn party_logo(p: &Party) -> Markup {
     }
 }
 
-/// A side's composition by entity: every participating Alliance/Corporation identity with
-/// its participant count and share of the side. Returns `(total_roster, entries)` where
-/// `entries` is `(party, count, ratio)` sorted by count desc (stable tie-break by id). The
-/// denominator is the *full* roster, so shares sum to ≤ 1 (characters/factions, which have
-/// no entity logo, are excluded from the entries but still counted in the total).
 fn side_breakdown(battle: &Battle, side_idx: usize) -> (usize, Vec<(Party, usize, f64)>) {
     use std::collections::HashMap;
     let roster = battle.roster(side_idx);
@@ -116,14 +95,11 @@ fn side_breakdown(battle: &Battle, side_idx: usize) -> (usize, Vec<(Party, usize
     (total, v)
 }
 
-/// Parties that make up more than 10% of a side's roster, as `(party, ratio)`, biggest
-/// first, at most three - the logos shown inline in the side header.
 fn dominant_parties(battle: &Battle, side_idx: usize) -> Vec<(Party, f64)> {
     let (_, entries) = side_breakdown(battle, side_idx);
     entries.into_iter().filter(|(_, _, r)| *r > 0.10).map(|(p, _, r)| (p, r)).take(3).collect()
 }
 
-/// One report row's render inputs: its public id, the stored doc, uploader, view count.
 pub struct CardData {
     pub id: String,
     pub doc: BattleReportDoc,
@@ -131,8 +107,6 @@ pub struct CardData {
     pub views: i64,
 }
 
-/// Current directory filter/sort state, used both to pre-fill the form and to build
-/// shareable pagination links. All fields are the raw query-string values.
 #[derive(Default, Clone)]
 pub struct DirQuery {
     pub system: String,
@@ -144,8 +118,6 @@ pub struct DirQuery {
 }
 
 impl DirQuery {
-    /// `/br?...` for a given page, carrying the current filters. Values are
-    /// percent-encoded so a name with spaces/`&` stays a single, valid parameter.
     fn link(&self, page: i64) -> String {
         let mut q: Vec<(&str, &str)> = Vec::new();
         if !self.system.is_empty() {
@@ -173,8 +145,6 @@ impl DirQuery {
     }
 }
 
-/// Minimal percent-encoding for a query-string value: keep the RFC 3986 unreserved
-/// set, encode everything else. Avoids pulling in a URL crate for one job.
 fn enc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -188,8 +158,6 @@ fn enc(s: &str) -> String {
     out
 }
 
-/// Security-status colour band, echoing EVE's map palette: high-sec blue/green,
-/// low-sec amber, null/anom red.
 fn sec_color(sec: f64) -> &'static str {
     if sec >= 0.5 {
         "#4fc3a1"
@@ -200,7 +168,6 @@ fn sec_color(sec: f64) -> &'static str {
     }
 }
 
-/// `1.23B`, `345.0M`, `12k`, `900` - compact ISK with a unit suffix.
 fn fmt_isk(v: f64) -> String {
     let a = v.abs();
     if a >= 1e12 {
@@ -216,7 +183,6 @@ fn fmt_isk(v: f64) -> String {
     }
 }
 
-/// `1h 23m`, `7m`, `<1m`.
 fn fmt_duration(secs: i64) -> String {
     if secs < 60 {
         return "<1m".to_string();
@@ -229,14 +195,12 @@ fn fmt_duration(secs: i64) -> String {
     }
 }
 
-/// `2024-01-02 14:05 UTC`, or `-` for an out-of-range timestamp.
 fn fmt_time(unix: i64) -> String {
     chrono::DateTime::from_timestamp(unix, 0)
         .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| "-".to_string())
 }
 
-/// ISK-efficiency percentage as `73%`, or `-` when no ISK was exchanged.
 fn fmt_eff(side: &Side) -> String {
     side.isk_efficiency().map(|e| format!("{e:.0}%")).unwrap_or_else(|| "-".to_string())
 }
@@ -250,8 +214,6 @@ fn side_label(side: &Side) -> String {
         .unwrap_or_else(|| "Unknown".to_string())
 }
 
-/// Title to show for a battle: the human title if present, else a derived
-/// `System - date` (first system + start date).
 fn display_title(doc: &BattleReportDoc) -> String {
     if let Some(t) = doc.title.as_deref().filter(|t| !t.trim().is_empty()) {
         return t.to_string();
@@ -267,7 +229,6 @@ fn display_title(doc: &BattleReportDoc) -> String {
     }
 }
 
-/// Inline systems chip list with per-system security colour.
 fn systems_chips(battle: &Battle) -> Markup {
     html! {
         span .systems {
@@ -283,7 +244,6 @@ fn systems_chips(battle: &Battle) -> Markup {
     }
 }
 
-/// Two-side ISK-efficiency bar pair (top two sides), used on directory cards.
 fn side_bars(battle: &Battle) -> Markup {
     html! {
         div .sides {
@@ -299,7 +259,6 @@ fn side_bars(battle: &Battle) -> Markup {
     }
 }
 
-/// One directory card, linking to `/br/{id}`.
 pub fn card(data: &CardData) -> Markup {
     let b = &data.doc.battle;
     let href = format!("/br/{}", data.id);
@@ -327,7 +286,6 @@ pub fn card(data: &CardData) -> Markup {
     }
 }
 
-/// The directory page: filter form (pre-filled, GET, shareable) + cards + pagination.
 pub fn directory_page(cards: &[CardData], q: &DirQuery, page: i64, has_next: bool) -> Markup {
     let body = html! {
         section .toolbar {
@@ -379,7 +337,6 @@ pub fn directory_page(cards: &[CardData], q: &DirQuery, page: i64, has_next: boo
     layout("Battle reports - EVE Spai", body, Some(DIRECTORY_JS))
 }
 
-/// Per-ship-type aggregation of a side's roster.
 struct ShipGroup {
     ship: i64,
     lost: usize,
@@ -396,7 +353,6 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     use std::collections::HashMap;
     let roster = battle.roster(side_idx);
 
-    // Final blows landed by this side, counted per attacker ship type (pods excluded).
     let mut fb_by_ship: HashMap<i64, usize> = HashMap::new();
     for e in &battle.engagements {
         for a in &e.attackers {
@@ -412,7 +368,7 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     let mut by_ship: HashMap<i64, (usize, usize)> = HashMap::new();
     for p in &roster {
         if POD_TYPES.contains(&p.ship) {
-            continue; // capsules are not shown as tiles
+            continue;
         }
         let entry = by_ship.entry(p.ship).or_insert((0, 0));
         if p.lost.is_some() {
@@ -430,7 +386,6 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
             final_blows: fb_by_ship.get(&ship).copied().unwrap_or(0),
         })
         .collect();
-    // Most losses first, then most ships, then a stable type-id order.
     groups.sort_by(|a, b| {
         b.lost
             .cmp(&a.lost)
@@ -440,9 +395,6 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     groups
 }
 
-/// Map each podded pilot's character id to the kill id of their capsule killmail, scanning
-/// the raw engagements once. A folded pod loss (`Lost::pod_value`) carries no kill id of its
-/// own, so this recovers it for the pod sub-row's zKill link.
 fn pod_kill_ids(battle: &Battle) -> std::collections::HashMap<i64, i64> {
     use br_core::battle::POD_TYPES;
     let mut m = std::collections::HashMap::new();
@@ -454,11 +406,6 @@ fn pod_kill_ids(battle: &Battle) -> std::collections::HashMap<i64, i64> {
     m
 }
 
-/// One participant in the Details layout: the ship row (hull, pilot, party, loss + zKill),
-/// plus - when a capsule was killed alongside (`pod_value > POD_VALUE_MIN`) - a secondary,
-/// indented pod sub-row carrying the pod hull icon, its ISK value, and a zKill link to the
-/// pod killmail (recovered from `pod_kills`; omitted gracefully if unknown). The pod row
-/// shares the ship's `data-ship` so the hull filter keeps the two rows together.
 fn detail_cell(
     p: &br_core::battle::Participant,
     pod_kills: &std::collections::HashMap<i64, i64>,
@@ -518,9 +465,6 @@ fn detail_cell(
     }
 }
 
-/// One side's full panel: header (name + dominant logos + overflow chip), stats, and both
-/// the Tiles (grouped hulls) and Details (per-pilot) layouts. Only one layout is visible at
-/// a time, switched by the report-level `view-tiles`/`view-details` class.
 fn side_panel(
     battle: &Battle,
     side_idx: usize,
@@ -533,7 +477,6 @@ fn side_panel(
     let pilots: usize = groups.iter().map(|g| g.lost + g.survived).sum();
     let doms = dominant_parties(battle, side_idx);
     let (_, breakdown) = side_breakdown(battle, side_idx);
-    // Distinct alliance/corp entities beyond the (≤3) shown inline.
     let overflow = breakdown.len().saturating_sub(doms.len());
     let roster = battle.roster(side_idx);
     html! {
@@ -607,8 +550,6 @@ fn side_panel(
     }
 }
 
-/// One side's entry in the breakdown modal: heading + every alliance/corp with logo, name,
-/// participant count, and share, biggest first.
 fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
     let side = &battle.sides[side_idx];
     let (_, entries) = side_breakdown(battle, side_idx);
@@ -634,7 +575,6 @@ fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
                             }
                             span .bd-count { (count) }
                             span .bd-pct { (format!("{:.0}%", r * 100.0)) }
-                            // Populated + wired by the side editor JS; hidden without it.
                             select .bd-move data-party=(p.id) aria-label="Move party to side" {}
                         }
                     }
@@ -644,9 +584,6 @@ fn breakdown_section(battle: &Battle, side_idx: usize) -> Markup {
     }
 }
 
-/// The "emblem A vs B" strip at the top of a report: each side's single most-represented
-/// alliance/corp logo, clickable to open that side's breakdown. Skipped if no side has a
-/// logo-bearing entity.
 fn versus_strip(battle: &Battle) -> Markup {
     let emblems: Vec<(usize, Party)> = (0..battle.sides.len())
         .filter_map(|i| side_breakdown(battle, i).1.into_iter().next().map(|(p, _, _)| (i, p)))
@@ -708,12 +645,8 @@ fn js_safe_json(s: &str) -> String {
     s.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
 }
 
-/// All the inputs the client-side side editor needs to recompute the report under a custom
 /// party->side grouping, with no server round-trip. Integers and short kind strings only,
 /// except party/ship names, which are escaped by [`js_safe_json`]. Schema:
-/// `{ sides_count, parties:[{id,name,kind,side}], participants:[{char,party_id,party_name,
-/// party_kind,ship,lost_value,is_lost,side}], engagements:[{kill_id,victim_char,victim_value,
-/// attacker_party_ids:[..],fb:[{p,s}]}], ship_names:{id:name} }`.
 fn sides_data_json(doc: &BattleReportDoc) -> String {
     use serde_json::json;
     let b = &doc.battle;
@@ -771,7 +704,6 @@ fn sides_data_json(doc: &BattleReportDoc) -> String {
     js_safe_json(&v.to_string())
 }
 
-/// The single-report viewer page.
 pub fn viewer_page(data: &CardData) -> Markup {
     let b = &data.doc.battle;
     let json_href = format!("/api/br/{}.json", data.id);
@@ -792,7 +724,7 @@ pub fn viewer_page(data: &CardData) -> Markup {
                 h2 { (display_title(&data.doc)) }
                 (systems_chips(b))
                 div .v-meta {
-                    span { (fmt_time(b.start)) " – " (fmt_time(b.end)) }
+                    span { (fmt_time(b.start)) " to " (fmt_time(b.end)) }
                     span .dot-sep { "·" }
                     span { (fmt_duration(b.end - b.start)) }
                     span .dot-sep { "·" }
@@ -824,11 +756,8 @@ pub fn viewer_page(data: &CardData) -> Markup {
                     }
                 }
             }
-            // Hover-highlight maps (integer ids only - safe to emit verbatim).
             script type="application/json" #inv-data { (PreEscaped(inv)) }
-            // Side-editor inputs (names escaped for safe in-script embedding).
             script type="application/json" #sides-data { (PreEscaped(sides_data_json(&data.doc))) }
-            // Per-side composition + the client-side side editor, hidden until opened.
             div .modal #breakdown-modal hidden {
                 div .modal-overlay {}
                 div .modal-panel role="dialog" aria-modal="true" aria-label="Edit sides" {
@@ -836,7 +765,7 @@ pub fn viewer_page(data: &CardData) -> Markup {
                     h3 { "Sides" }
                     p .modal-hint .editor-only {
                         "Move an alliance or corp to another side, or to a new side, then Apply. "
-                        "This only changes your view - nothing is saved or uploaded."
+                        "This only changes your view. Nothing is saved or uploaded."
                     }
                     div .bd-sides {
                         @for i in 0..b.sides.len() {
@@ -854,7 +783,6 @@ pub fn viewer_page(data: &CardData) -> Markup {
     layout(&format!("{} - EVE Spai", display_title(&data.doc)), body, Some(VIEWER_JS))
 }
 
-/// Themed 404, used when a report is missing or an unlisted one is requested without it.
 pub fn not_found_page() -> Markup {
     let body = html! {
         section .notfound {
@@ -866,7 +794,6 @@ pub fn not_found_page() -> Markup {
     layout("Not found - EVE Spai", body, None)
 }
 
-/// Shared base template: viewport, inlined theme CSS, branded header, centred column.
 fn layout(title: &str, body: Markup, script: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
@@ -886,7 +813,7 @@ fn layout(title: &str, body: Markup, script: Option<&str>) -> Markup {
                 main .wrap {
                     (body)
                 }
-                footer { p { "EVE Spai - battle reports. EVE Online and all related assets are property of Fenris Creations." } }
+                footer { p { "EVE Spai battle reports. EVE Online and all related assets are property of Fenris Creations." } }
                 @if let Some(js) = script {
                     script { (PreEscaped(js)) }
                 }
@@ -895,7 +822,6 @@ fn layout(title: &str, body: Markup, script: Option<&str>) -> Markup {
     }
 }
 
-/// Tiny, data-free auto-submit helper for the filter form (no SPA, no framework).
 const DIRECTORY_JS: &str = r#"
 (function(){
   var f=document.querySelector('form.filters'); if(!f) return;
@@ -924,12 +850,8 @@ const DIRECTORY_JS: &str = r#"
 const ICON_DOWNLOAD: &str = r#"<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>"#;
 const ICON_LINK: &str = r#"<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>"#;
 
-/// Viewer interactions, all reading data already in the DOM (no API round-trips):
-/// copy-link, the Tiles/Details toggle, the hull-filter chip, the involvement hover
-/// highlight (driven by the embedded #inv-data integer maps), and the breakdown modal.
 const VIEWER_JS: &str = r#"
 (function(){
-  // Copy current URL to clipboard.
   var cp=document.getElementById('copy-link');
   if(cp){ cp.addEventListener('click',function(){
     navigator.clipboard.writeText(window.location.href).then(function(){
@@ -1159,7 +1081,6 @@ const VIEWER_JS: &str = r#"
     var v=document.getElementById('versus'); if(!v) return; v.innerHTML='';
     for(var i=0;i<n;i++){
       var c=computeSide(i);
-      // top alliance/corp on this side
       var counts={};
       c.parts.forEach(function(p){ if((p.party_kind==='alliance'||p.party_kind==='corp')&&p.party_id){
         var e=counts[p.party_id]||(counts[p.party_id]={id:p.party_id,name:p.party_name,kind:p.party_kind,c:0}); e.c++; } });
@@ -1231,8 +1152,6 @@ const VIEWER_JS: &str = r#"
 })();
 "#;
 
-/// The full stylesheet, inlined into every page. Colour tokens are taken verbatim from
-/// `site/index.html`; the rest are mobile-first layout rules for cards and rosters.
 const CSS: &str = r#"
 :root{
   --bg:#0c1117; --panel:#141a22; --panel-2:#171f29; --line:#243040;
@@ -1497,7 +1416,6 @@ mod tests {
         ];
         let battle = br_core::battle::preview_battle(engs.clone(), BATTLE_BREAK_SECS);
         let ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
-        // RedPilot (char 1001) has a corp + alliance; RedGuy (char 2002) a corp but no alliance.
         let affiliations = [
             (
                 1001i64,
@@ -1538,12 +1456,12 @@ mod tests {
     fn card_shows_key_facts_and_links() {
         let html = card(&card_data(Some("Jita Brawl"), "Scout One")).into_string();
         assert!(html.contains("Jita Brawl"));
-        assert!(html.contains("Jita")); // system
+        assert!(html.contains("Jita"));
         assert!(html.contains("Red Alliance") && html.contains("Blue Alliance"));
         assert!(html.contains("ISK"));
         assert!(html.contains("Scout One"));
         assert!(html.contains("42 views"));
-        assert!(html.contains("/br/AbCd123456")); // links to the viewer
+        assert!(html.contains("/br/AbCd123456"));
     }
 
     #[test]
@@ -1553,13 +1471,10 @@ mod tests {
         assert!(html.contains("Jita"));
         assert!(html.contains("Red Alliance") && html.contains("Blue Alliance"));
         assert!(html.contains("ISK destroyed"));
-        // Ship icon URL for the hulls in the fight.
         assert!(html.contains("https://images.evetech.net/types/587/icon?size=64"));
         assert!(html.contains("loading=\"lazy\""));
-        // Download-JSON link points at the M3 JSON route.
         assert!(html.contains("/api/br/AbCd123456.json"));
         assert!(html.contains("Copy link"));
-        // No delete control on the public page.
         assert!(!html.to_lowercase().contains(">delete<"));
     }
 
@@ -1584,7 +1499,6 @@ mod tests {
 
     #[test]
     fn malicious_side_name_is_escaped() {
-        // A side/alliance name with markup must be escaped wherever it is shown.
         let engs = vec![
             eng(1, 0, (100, "<img src=x onerror=alert(1)>", "V", 587), (200, "Blue", "K", 588), true),
             eng(2, 20, (200, "Blue", "V2", 588), (100, "<img src=x onerror=alert(1)>", "K2", 587), true),
@@ -1600,7 +1514,6 @@ mod tests {
     #[test]
     fn derived_title_when_absent() {
         let html = card(&card_data(None, "u")).into_string();
-        // Derives "System - date" from the battle.
         assert!(html.contains("Jita - "));
     }
 
@@ -1614,37 +1527,32 @@ mod tests {
         };
         let cards = vec![card_data(Some("A"), "u")];
         let html = directory_page(&cards, &q, 2, true).into_string();
-        // Form pre-filled from the query.
         assert!(html.contains("value=\"Jita\""));
         assert!(html.contains("value=\"Red Alliance\""));
-        // Pagination keeps the filters (percent-encoded) and moves the page.
         assert!(html.contains("system=Jita"));
         assert!(html.contains("participant=Red%20Alliance"));
-        assert!(html.contains("page=3")); // next
-        assert!(html.contains("page=1")); // prev
+        assert!(html.contains("page=3"));
+        assert!(html.contains("page=1"));
     }
 
     #[test]
     fn not_found_is_themed() {
         let html = not_found_page().into_string();
         assert!(html.contains("Report not found"));
-        assert!(html.contains("EVE")); // branded layout
+        assert!(html.contains("EVE"));
         assert!(html.contains("/br"));
     }
 
     #[test]
     fn viewer_renders_both_layouts_and_toggle() {
         let html = viewer_page(&card_data(Some("Layouts"), "u")).into_string();
-        // The Tiles/Details toggle, both layouts, and the report wrapper all render server-side.
         assert!(html.contains("data-mode=\"tiles\""));
         assert!(html.contains("data-mode=\"details\""));
-        assert!(html.contains("class=\"report view-tiles\"")); // default = Tiles
-        assert!(html.contains("class=\"roster\"")); // Tiles layout
-        assert!(html.contains("class=\"details\"")); // Details layout
-        // Tiles are clickable (carry their hull type id) and details cells carry hover ids.
+        assert!(html.contains("class=\"report view-tiles\""));
+        assert!(html.contains("class=\"roster\""));
+        assert!(html.contains("class=\"details\""));
         assert!(html.contains("data-ship=\"587\""));
         assert!(html.contains("data-char="));
-        // Back-to-directory affordance.
         assert!(html.contains("All battle reports"));
         assert!(html.contains("href=\"/br\""));
     }
@@ -1652,14 +1560,11 @@ mod tests {
     #[test]
     fn details_view_has_zkill_links_and_involvement_maps() {
         let html = viewer_page(&card_data(Some("Kills"), "u")).into_string();
-        // Each loss links to its zKill killmail (kill ids 1 and 3 are losses in `doc`).
         assert!(html.contains("https://zkillboard.com/kill/1/"));
         assert!(html.contains("rel=\"noopener\""));
         assert!(html.contains("data-kill=\"1\""));
-        // The embedded involvement maps (integer-only) are present for the hover JS.
         assert!(html.contains("id=\"inv-data\""));
         assert!(html.contains("\"ka\"") && html.contains("\"ck\""));
-        // The JSON keeps its quotes (not HTML-escaped) so JSON.parse works.
         assert!(!html.contains("&quot;ka&quot;"));
     }
 
@@ -1674,7 +1579,6 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Zz22222222".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        // The malicious pilot name (shown in the Details cell) is escaped.
         assert!(!html.contains("<script>alert(1)</script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     }
@@ -1689,7 +1593,6 @@ mod tests {
                 assert!(*r > 0.10, "only parties above 10%");
             }
         }
-        // The viewer renders the dominant logos (alliance logo URL) in side headers.
         let html = viewer_page(&card_data(Some("Dom"), "u")).into_string();
         assert!(html.contains("images.evetech.net/alliances/100/logo"));
         assert!(html.contains("class=\"dom-logo\""));
@@ -1697,19 +1600,13 @@ mod tests {
 
     #[test]
     fn hull_filter_ids_match_between_tiles_and_details() {
-        // The hull filter only works if the grouped-tile `data-ship` equals the per-
-        // participant `data-ship` it filters against. Both must carry the same hull type id.
         let html = viewer_page(&card_data(Some("Filter"), "u")).into_string();
-        // The Tiles tile and the Details cells share hull id 587 (and 588).
         for id in ["587", "588"] {
             let tile = format!("class=\"ship\" data-ship=\"{id}\"");
             let cell = format!("data-ship=\"{id}\"");
             assert!(html.contains(&tile), "tile carries data-ship={id}");
-            // A Details cell carries the same id (appears beyond the single tile occurrence).
             assert!(html.matches(&cell).count() >= 2, "a detail cell also has data-ship={id}");
         }
-        // The filter hides via a class (so author `.dcell` display can't override `[hidden]`),
-        // and the chip's [hidden] is force-hidden - both required for apply/clear to work.
         assert!(CSS.contains(".dcell.filtered-out{display:none;}"));
         assert!(CSS.contains(".filter-chip[hidden]{display:none;}"));
     }
@@ -1726,10 +1623,8 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Ll44444444".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        // The long party name is truncated with an ellipsis class and shown in full via title.
         assert!(html.contains("class=\"dparty-name\""));
         assert!(html.contains(&format!("title=\"{long}\"")));
-        // The ellipsis CSS and the shrink-enabling min-width:0 are present.
         assert!(CSS.contains(".dparty-name{min-width:0; overflow:hidden; text-overflow:ellipsis"));
         assert!(CSS.contains(".side-panel{min-width:0;"));
         assert!(CSS.contains(".bd-side{min-width:0;}"));
@@ -1747,11 +1642,9 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Mm33333333".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        // The breakdown modal is rendered (hidden) with per-side composition lists.
         assert!(html.contains("id=\"breakdown-modal\""));
         assert!(html.contains("class=\"bd-list\""));
         assert!(html.contains("class=\"bd-count\""));
-        // The malicious party name is escaped in the breakdown.
         assert!(!html.contains("<b>Sneaky</b> Alliance"));
         assert!(html.contains("&lt;b&gt;Sneaky&lt;/b&gt; Alliance"));
     }
@@ -1759,23 +1652,18 @@ mod tests {
     #[test]
     fn tiles_show_ship_names_kb_marker_and_isk_colors() {
         let html = viewer_page(&card_data(Some("Hulls"), "u")).into_string();
-        // Hull names from `ship_names` are labelled under the tiles, with an ellipsis class.
         assert!(html.contains("class=\"ship-name\""));
         assert!(html.contains("Rifter") && html.contains("Rupture"));
-        // Final blows use a "KB N" marker titled "killing blows", not a star.
         assert!(html.contains("KB "));
         assert!(!html.contains('★'));
         assert!(html.contains("title=\"killing blows\""));
-        // ISK destroyed / lost stats carry their colour classes (number and label).
         assert!(html.contains("isk-destroyed"));
         assert!(html.contains("isk-lost"));
         assert!(CSS.contains(".stat-num.isk-destroyed{color:var(--green);}"));
         assert!(CSS.contains(".stat-num.isk-lost{color:var(--red);}"));
-        // No pod sub-row when no pod was killed.
         assert!(!html.contains("dcell lost dpod-row"));
     }
 
-    // Build an arbitrary engagement (used to fold a pod into a pilot's ship loss).
     fn eng_full(
         kill_id: i64,
         victim_party: (i64, &str),
@@ -1810,8 +1698,6 @@ mod tests {
     #[test]
     fn pods_excluded_from_tiles_but_pod_kill_shown_in_details() {
         use br_core::battle::POD_TYPES;
-        // Same pilot (char 5000) loses a ship (587, kill 1) and then a pod (670, kill 2, worth
-        // 50M): the pod folds into the ship row. A reciprocal kill forms the second side.
         let engs = vec![
             eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
             eng_full(2, (100, "Red"), 5000, "RedVictim", 670, (200, "Blue"), 50_000_000.0),
@@ -1822,24 +1708,17 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, ship_names, Default::default());
         let data = CardData { id: "Pp55555555".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        // No capsule tile in the grouped Tiles view.
         for pod in POD_TYPES {
             assert!(!html.contains(&format!("data-ship=\"{pod}\"")), "pod {pod} must not be a tile");
         }
-        // The folded pod kill (value > 10000) renders as its own indented sub-row with the
-        // pod hull icon.
         assert!(html.contains("dcell lost dpod-row"));
         assert!(html.contains(&icon_url(670)));
-        // The pod sub-row links to the POD killmail (kill 2), distinct from the ship's kill 1.
-        assert!(html.contains("https://zkillboard.com/kill/1/")); // ship loss
-        assert!(html.contains("https://zkillboard.com/kill/2/")); // pod loss, separate link
+        assert!(html.contains("https://zkillboard.com/kill/1/"));
+        assert!(html.contains("https://zkillboard.com/kill/2/"));
     }
 
     #[test]
     fn pod_row_without_known_kill_id_omits_zkill_link() {
-        // The pod killmail has victim_char 0 (so `pod_kill_ids`, keyed by char, can't find it),
-        // but folds into the ship loss by matching pilot name -> pod_value is set. The pod row
-        // must still render, just without a zKill link (graceful fallback).
         let engs = vec![
             eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
             eng_full(2, (100, "Red"), 0, "RedVictim", 670, (200, "Blue"), 50_000_000.0),
@@ -1849,16 +1728,13 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Rr77777777".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        // Pod sub-row renders (folded pod value > 10000)...
         assert!(html.contains("dcell lost dpod-row"));
         assert!(html.contains(&icon_url(670)));
-        // ...but the pod's kill id was unrecoverable, so no /kill/2/ link is emitted.
         assert!(!html.contains("https://zkillboard.com/kill/2/"));
     }
 
     #[test]
     fn small_pod_value_shows_nothing_pod_related() {
-        // pod_value at/below 10000 (the default/empty value) must not render a pod block.
         let engs = vec![
             eng_full(1, (100, "Red"), 5000, "RedVictim", 587, (200, "Blue"), 100_000_000.0),
             eng_full(2, (100, "Red"), 5000, "RedVictim", 670, (200, "Blue"), 10_000.0),
@@ -1884,14 +1760,9 @@ mod tests {
 
     #[test]
     fn no_coalition_side_still_renders_subtitle_placeholder() {
-        // The test parties aren't a recognized coalition, so every side lacks one. The
-        // subtitle row must still render (nbsp placeholder + aria-hidden) so both headers
-        // are the same height and the panels below align.
         let html = viewer_page(&card_data(Some("Align"), "u")).into_string();
         assert!(html.contains("class=\"coalition-members\" aria-hidden=\"true\""));
-        // Both sides get the placeholder row (two-sided battle).
         assert!(html.matches("class=\"coalition-members\"").count() >= 2);
-        // The min-height rule that reserves the row's space is present.
         assert!(CSS.contains(".coalition-members{") && CSS.contains("min-height:1.6em"));
     }
 
@@ -1899,20 +1770,16 @@ mod tests {
     fn sides_data_json_is_present_and_well_formed() {
         let html = viewer_page(&card_data(None, "u")).into_string();
         assert!(html.contains("id=\"sides-data\""));
-        // The embedded blob (no special chars in these names) parses as JSON.
         let j = sides_data_json(&doc(None));
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert!(v["sides_count"].as_u64().unwrap() >= 2);
-        // A known party id (Red Alliance = 100) appears with its kind and original side.
         let parties = v["parties"].as_array().unwrap();
         let red = parties.iter().find(|p| p["id"] == 100).expect("party 100 present");
         assert_eq!(red["kind"], "alliance");
         assert!(red["side"].as_u64().is_some());
-        // Participants carry char + party_id; at least one references party 100.
         let parts = v["participants"].as_array().unwrap();
         assert!(parts.iter().all(|p| p["char"].as_i64().is_some()));
         assert!(parts.iter().any(|p| p["party_id"] == 100));
-        // Engagements expose kill_id, victim, value, and attacker party ids.
         let engs = v["engagements"].as_array().unwrap();
         assert!(engs.iter().all(|e| e["kill_id"].as_i64().is_some()
             && e["attacker_party_ids"].is_array()));
@@ -1920,7 +1787,6 @@ mod tests {
 
     #[test]
     fn sides_data_escapes_markup_in_names() {
-        // A party name containing </script> must not break out of the embedding script tag.
         let engs = vec![
             eng(1, 0, (100, "</script><b>x", "V", 587), (200, "Blue", "K", 588), true),
             eng(2, 20, (200, "Blue", "V2", 588), (100, "</script><b>x", "K2", 587), true),
@@ -1929,24 +1795,20 @@ mod tests {
         let d = BattleReportDoc::new(battle, engs, Overrides::default(), None, 1_700_000_000, Default::default(), Default::default());
         let data = CardData { id: "Ss88888888".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
-        // No raw </script> escaped into the page from the JSON blob.
         let blob = sides_data_json(&data.doc);
         assert!(!blob.contains("</script>"));
-        assert!(blob.contains("\\u003c")); // < was escaped
-        // And the page as a whole carries no stray closing-script breakout from the name.
+        assert!(blob.contains("\\u003c"));
         assert!(!html.contains("</script><b>x"));
     }
 
     #[test]
     fn party_logos_and_names_link_to_zkill() {
-        // Alliance entities (Red = 100) link to the alliance zKill page in header + breakdown.
         let html = viewer_page(&card_data(Some("Z"), "u")).into_string();
         assert!(html.contains("https://zkillboard.com/alliance/100/"));
-        assert!(html.contains("class=\"dom-logo-link\"")); // header logo is a link
-        assert!(html.contains("class=\"bd-entity\"")); // breakdown row entity is a link
-        assert!(html.contains("class=\"vs-emblem\"")); // emblem present
+        assert!(html.contains("class=\"dom-logo-link\""));
+        assert!(html.contains("class=\"bd-entity\""));
+        assert!(html.contains("class=\"vs-emblem\""));
 
-        // A corporation party links to the corporation zKill page (chosen by Party.kind).
         let corp = Party { id: 300, name: "Corp X".to_string(), kind: PartyKind::Corporation };
         let ally = party(100, "Red Alliance");
         let mk = |kill_id: i64, victim: &Party, vchar: i64, vship: i64, killer: &Party| Engagement {
@@ -1975,15 +1837,12 @@ mod tests {
         let data = CardData { id: "Cc99999999".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
         assert!(html.contains("https://zkillboard.com/corporation/300/"));
-        // The sides-data marks party 300 as a corp.
         let v: serde_json::Value = serde_json::from_str(&sides_data_json(&data.doc)).unwrap();
         assert!(v["parties"].as_array().unwrap().iter().any(|p| p["id"] == 300 && p["kind"] == "corp"));
     }
 
     #[test]
     fn details_render_pilot_corp_and_alliance_icons() {
-        // Two lost pilots (victim chars 1001, 1002): one with corp + alliance, one with a
-        // corp but no alliance. Ids chosen to not collide with the side party ids (100/200).
         let engs = vec![
             eng(1, 0, (100, "Red Alliance", "Pilot A", 587), (200, "Blue Alliance", "Killer A", 588), true),
             eng(2, 30, (100, "Red Alliance", "Pilot B", 587), (200, "Blue Alliance", "Killer B", 588), true),
@@ -2023,22 +1882,18 @@ mod tests {
         let data = CardData { id: "Aa10101010".into(), doc: d, uploader: "u".into(), views: 1 };
         let html = viewer_page(&data).into_string();
 
-        // Pilot A (char 1001): corp logo + alliance logo, each linking to its zKill entity.
         assert!(html.contains("https://images.evetech.net/corporations/98001/logo?size=32"));
         assert!(html.contains("https://zkillboard.com/corporation/98001/"));
         assert!(html.contains("https://images.evetech.net/alliances/99001/logo?size=32"));
         assert!(html.contains("https://zkillboard.com/alliance/99001/"));
-        // The corp icon comes before the alliance icon (corp-first ordering).
         let corp_at = html.find("corporations/98001").unwrap();
         let ally_at = html.find("alliances/99001").unwrap();
         assert!(corp_at < ally_at, "corp logo must precede alliance logo");
-        // The pilot name links to their character zKill page.
         assert!(html.contains("https://zkillboard.com/character/1001/"));
 
-        // Pilot B (char 1002, alliance_id 0): corp logo present, NO alliance logo emitted.
         assert!(html.contains("https://images.evetech.net/corporations/98002/logo?size=32"));
-        assert!(!html.contains("alliances/99002")); // no alliance for Bravo
-        assert!(!html.contains("alliances/0/")); // never emit a zero-id alliance logo
+        assert!(!html.contains("alliances/99002"));
+        assert!(!html.contains("alliances/0/"));
         assert!(html.contains("class=\"affil-logo\""));
     }
 }

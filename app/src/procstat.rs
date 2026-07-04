@@ -1,9 +1,3 @@
-//! Self process resource usage: resident memory and CPU%.
-//!
-//! Cheap to poll every frame — it only re-samples about once a second and computes CPU%
-//! from the change in consumed CPU time over wall-clock time. Linux reads /proc; Windows
-//! uses GetProcessMemoryInfo + GetProcessTimes.
-
 use std::time::{Duration, Instant};
 
 // Standard on Linux: 100 scheduler ticks/sec and 4 KiB pages.
@@ -27,7 +21,6 @@ impl Monitor {
         Self { ncpu, prev: None, next: None, rss_bytes: 0, cpu_percent: 0.0 }
     }
 
-    /// Refresh the figures (no-op until ~1 s since the last refresh).
     pub fn tick(&mut self) {
         let now = Instant::now();
         if self.next.is_some_and(|t| now < t) {
@@ -40,7 +33,6 @@ impl Monitor {
         self.tick_windows(now);
     }
 
-    /// Update cpu_percent from the cumulative CPU time, expressed in `units_per_sec` units.
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn record_cpu(&mut self, cpu_total: u64, units_per_sec: f64, now: Instant) {
         if let Some((prev_total, prev_t)) = self.prev {
@@ -137,7 +129,6 @@ impl Monitor {
         }
     }
 
-    /// RSS as a compact "123 MB" / "1.2 GB" string.
     pub fn rss_human(&self) -> String {
         let mb = self.rss_bytes as f64 / (1024.0 * 1024.0);
         if mb >= 1024.0 {

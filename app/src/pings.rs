@@ -1,12 +1,5 @@
-// Wired into the Jabber transport + alert framework in a follow-up; the parser
-// itself is complete and tested.
 #![allow(dead_code)]
-//! Fleet-ping parsing (Imperium/Goonswarm Jabber pings). A ping is a directorbot
-//! broadcast whose text ends
-//! with a `~~~ This was a … broadcast from … to … ~~~` signature. Pings with an
-//! `FC` field are fleet pings; the rest are plain broadcasts.
 
-/// A parsed ping.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Ping {
     Plain {
@@ -14,7 +7,6 @@ pub enum Ping {
         text: String,
         sender: Option<String>,
         target: Option<String>,
-        /// The original ping text (signature stripped) for the Copy button.
         #[serde(default)]
         raw: String,
     },
@@ -29,29 +21,24 @@ pub enum Ping {
         doctrine: Option<String>,
         source: Option<String>,
         target: Option<String>,
-        /// The original ping text (signature stripped) for the Copy button.
         #[serde(default)]
         raw: String,
     },
 }
 
 impl Ping {
-    /// When the ping was broadcast (unix seconds).
     pub fn timestamp(&self) -> i64 {
         match self {
             Ping::Plain { timestamp, .. } | Ping::Fleet { timestamp, .. } => *timestamp,
         }
     }
 
-    /// The original ping text for the Copy button.
     pub fn raw(&self) -> &str {
         match self {
             Ping::Plain { raw, .. } | Ping::Fleet { raw, .. } => raw,
         }
     }
 
-    /// A fleet call worth surfacing in the popup: a structured Fleet ping, or a (often
-    /// malformed, FC-less) broadcast that reads like a cap save / form-up / urgent call.
     pub fn is_fleet_call(&self) -> bool {
         match self {
             Ping::Fleet { .. } => true,
@@ -87,8 +74,6 @@ pub enum Comms {
     Text(String),
 }
 
-/// A field key with its accepted names; `multiline` keys absorb following lines
-/// that have no `:` of their own (e.g. Doctrine).
 struct Key {
     names: &'static [&'static str],
     multiline: bool,
@@ -102,8 +87,6 @@ const COMMS: Key = Key { names: &["Comms"], multiline: false };
 const DOCTRINE: Key = Key { names: &["Doctrine"], multiline: true };
 const ALL_KEYS: &[&Key] = &[&FC, &FLEET, &FORMUP, &PAP, &COMMS, &DOCTRINE];
 
-/// First enabled ping rule whose filters all match `p` (FC, pap, doctrine, formup, keyword).
-/// Shared by the UI (window/badge decision) and the Jabber thread (sound/notification firing).
 pub fn match_ping_rule<'a>(
     rules: &'a [crate::settings::PingRule],
     p: &Ping,
@@ -147,10 +130,6 @@ pub fn match_ping_rule<'a>(
     })
 }
 
-/// Whether this ping should raise the fleet-ping window + alert sound. When ping rules are
-/// configured, ONLY a matching, non-suppressed rule alerts (so non-matching pings still land in
-/// the feed silently). With no rules at all, fall back to the fleet-call heuristic so a fresh
-/// install still alerts on real fleet pings.
 pub fn ping_alerts(rules: &[crate::settings::PingRule], p: &Ping) -> bool {
     match match_ping_rule(rules, p) {
         Some(r) => !r.suppress && r.notify,
@@ -158,8 +137,6 @@ pub fn ping_alerts(rules: &[crate::settings::PingRule], p: &Ping) -> bool {
     }
 }
 
-/// Parse a directorbot message into zero or more pings. `resolve` maps a formup
-/// token to a solar-system id (None ⇒ keep as text).
 pub fn parse_ping(timestamp: i64, text: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Vec<Ping> {
     let clean = clean_text(text);
     if !clean.contains("~~~ This was") {
@@ -182,7 +159,6 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
 
     let description = build_description(ping_text);
 
-    // If no keyed formup, look for a system mentioned in the description.
     if formup.is_empty() {
         for line in description.lines() {
             let sys: Vec<Formup> =
@@ -196,7 +172,6 @@ fn parse_one(timestamp: i64, clean: &str, ping_text: &str, resolve: &dyn Fn(&str
 
     let sig = parse_signature(clean);
 
-    // Original ping text without the "~~~ This was …" signature, for the Copy button.
     let raw = ping_text
         .lines()
         .filter(|l| !l.trim_start().starts_with("~~~ This was"))
@@ -246,8 +221,6 @@ fn clean_text(text: &str) -> String {
     DOCTRINE_RE.replace_all(&t, "\nDoctrine:").into_owned()
 }
 
-/// A ping can carry several fleets (each block with its own FC). Split on blank
-/// lines so each fleet's block stays together.
 fn split_multi_fleet(text: &str) -> Vec<String> {
     let blocks: Vec<&str> = text.split("\n\n").collect();
     let fc_idx: Vec<usize> =
@@ -265,7 +238,6 @@ fn split_multi_fleet(text: &str) -> Vec<String> {
     splits
 }
 
-/// Signature → (source, sender, target).
 type Sig = (Option<String>, Option<String>, Option<String>);
 
 fn parse_signature(clean: &str) -> Option<Sig> {
@@ -290,7 +262,6 @@ fn parse_formups(text: &str, resolve: &dyn Fn(&str) -> Option<i64>) -> Vec<Formu
     } else {
         vec![text]
     };
-    // Resolve and merge consecutive free-text entries.
     let mut out: Vec<Formup> = Vec::new();
     for p in parts {
         let token = p.trim_end_matches(',');
@@ -339,21 +310,16 @@ fn parse_comms(text: &str) -> Comms {
 pub fn extract_mumble_url(html: &str) -> Option<String> {
     let start = html.find("mumble://")?;
     let rest = &html[start..];
-    // Stop at the first quote / whitespace / angle bracket that ends the URL literal.
     let end = rest.find(|c: char| c == '\'' || c == '"' || c == '<' || c.is_whitespace());
     Some(rest[..end.unwrap_or(rest.len())].to_owned())
 }
 
-/// The free-text description: every line that isn't a key/value or the signature,
-/// with runs of blank lines collapsed.
 fn build_description(ping_text: &str) -> String {
     let mut lines: Vec<String> =
         ping_text.lines().map(|l| l.trim().to_owned()).filter(|l| !l.starts_with("~~~ This was")).collect();
-    // Strip out key/value line ranges, repeatedly.
     while let Some(idx) = value_indices(&lines) {
         lines = lines.into_iter().enumerate().filter(|(i, _)| !idx.contains(i)).map(|(_, l)| l).collect();
     }
-    // Collapse consecutive blank lines (keep a blank only when the next isn't blank).
     let mut out: Vec<String> = Vec::new();
     for i in 0..lines.len() {
         let a = &lines[i];
@@ -366,7 +332,6 @@ fn build_description(ping_text: &str) -> String {
     out.join("\n").trim().to_owned()
 }
 
-/// The line indices spanned by the first key/value found in `lines`, if any.
 fn value_indices(lines: &[String]) -> Option<Vec<usize>> {
     let start = lines.iter().position(|l| ALL_KEYS.iter().any(|k| k.names.iter().any(|n| l.contains(&format!("{n}:")))))?;
     let key = ALL_KEYS.iter().find(|k| k.names.iter().any(|n| lines[start].contains(&format!("{n}:"))))?;
@@ -382,7 +347,6 @@ fn value_indices(lines: &[String]) -> Option<Vec<usize>> {
     Some(idx)
 }
 
-/// Read a keyed value (e.g. `FC: Name`), honouring multiline keys.
 fn get_value(text: &str, key: &Key) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.iter().position(|l| key.names.iter().any(|n| l.contains(&format!("{n}:"))))?;
@@ -405,7 +369,6 @@ fn get_value(text: &str, key: &Key) -> Option<String> {
 mod tests {
     use super::*;
 
-    // System resolver matching the names used in the ping test cases.
     fn resolve(token: &str) -> Option<i64> {
         match token {
             "1DQ1-A" => Some(100000001),
@@ -479,7 +442,7 @@ mod tests {
         assert_eq!(formup, &vec![Formup::System(100000001)]);
         assert_eq!(pap, &Some(PapType::Peacetime));
         assert_eq!(comms, &Some(Comms::Text("General".to_owned())));
-        assert_eq!(source, &None); // "a broadcast" -> empty source
+        assert_eq!(source, &None);
         assert_eq!(target.as_deref(), Some("gooniversity"));
     }
 
@@ -490,13 +453,9 @@ mod tests {
         let fleet = parse_ping(5, text, &resolve).remove(0);
         let rule = |fc: &str| PingRule { fc: fc.into(), ..Default::default() };
 
-        // No rules configured → fall back to the fleet-call heuristic (a real fleet ping alerts).
         assert!(ping_alerts(&[], &fleet));
-        // Rules defined but none match → silent (no window, no sound).
         assert!(!ping_alerts(&[rule("someone else")], &fleet));
-        // A matching rule → alerts.
         assert!(ping_alerts(&[rule("havish")], &fleet));
-        // A matching but suppressed rule → silent.
         assert!(!ping_alerts(
             &[PingRule { fc: "havish".into(), suppress: true, ..Default::default() }],
             &fleet

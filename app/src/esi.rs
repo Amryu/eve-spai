@@ -1,9 +1,3 @@
-//! ESI access for the active character (docs/DESIGN.md §7.1 E7).
-//!
-//! Background poller: keeps the active character's solar-system location current
-//! (refreshing the access token from the keychain when expired). Drives
-//! "N jumps from you" distances in the intel and battle views.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,14 +10,11 @@ use crate::tokens;
 const LOCATION_URL: &str = "https://esi.evetech.net/latest/characters";
 const POLL: Duration = Duration::from_secs(20);
 
-/// Shared active character name (written by the UI) and resolved system id.
 #[derive(Default)]
 pub struct Player {
     pub active_name: String,
     pub system_id: Option<i64>,
-    /// True when docked in a station/structure (ESI location has a station id).
     pub docked: bool,
-    /// All linked characters' locations: name → (system id, docked).
     pub locations: std::collections::HashMap<String, (i64, bool)>,
 }
 
@@ -42,7 +33,6 @@ pub fn spawn_location_poller(client_id: String, player: SharedPlayer, ctx: egui:
             std::thread::sleep(POLL);
             let active = player.lock().unwrap().active_name.clone();
             let Ok(store) = Store::open() else { continue };
-            // Poll every linked character so rules can alert on any of them.
             let mut fresh: std::collections::HashMap<String, (i64, bool)> =
                 std::collections::HashMap::new();
             for ch in store.list_characters() {
@@ -103,9 +93,6 @@ fn location_for(
     Some((loc.solar_system_id, docked))
 }
 
-/// Set the in-game autopilot destination (`clear` = true) or add a waypoint
-/// (`clear` = false) for the active character, via ESI. Requires the
-/// `esi-ui.write_waypoint.v1` scope. Runs on a background thread.
 pub fn set_waypoint(
     client_id: String,
     char_name: String,
@@ -134,8 +121,6 @@ pub fn set_waypoint(
     });
 }
 
-/// Set an ordered list of waypoints (clears existing, then appends each in turn). Used
-/// for wormhole-aware routing: a waypoint at each hole entrance, then the destination.
 pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
     std::thread::spawn(move || {
         let Ok(store) = Store::open() else { return };
@@ -153,7 +138,7 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
             return;
         };
         for (i, sys) in waypoints.iter().enumerate() {
-            let clear = i == 0; // first clears any existing route, rest append in order
+            let clear = i == 0;
             let url = format!(
                 "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={sys}"
             );
@@ -162,12 +147,9 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
     });
 }
 
-/// Shared slot for a fetched (Jump Drive Calibration, Jump Fuel Conservation) skill pair.
 pub type SharedJumpSkills = std::sync::Arc<std::sync::Mutex<Option<(u32, u32)>>>;
 
 /// Fetch the character's Jump Drive Calibration (21611) and Jump Fuel Conservation (21610)
-/// trained levels via ESI (`esi-skills.read_skills.v1`) and write them into `out`. Does nothing
-/// on failure / missing scope — the planner keeps the manually-entered (assume-V) values.
 pub fn fetch_jump_skills(
     client_id: String,
     char_name: String,
@@ -212,9 +194,6 @@ pub fn fetch_jump_skills(
     });
 }
 
-/// Save a fitting to the active character's in-game fitting list, via ESI.
-/// Requires `esi-fittings.write_fittings.v1`. `items` = (type_id, flag, quantity).
-/// Runs on a background thread.
 pub fn save_fitting(
     client_id: String,
     char_name: String,
@@ -250,7 +229,6 @@ pub fn save_fitting(
     });
 }
 
-/// Per-character lock serialising token refresh across the ESI helper threads.
 fn refresh_lock(id: i64) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<std::sync::Mutex<()>>>>,
@@ -258,8 +236,6 @@ fn refresh_lock(id: i64) -> std::sync::Arc<std::sync::Mutex<()>> {
     LOCKS.lock().unwrap().entry(id).or_default().clone()
 }
 
-/// Return a valid access token, refreshing via the keychain refresh token if the
-/// stored one is within a minute of expiry.
 fn current_access_token(
     store: &Store,
     client_id: &str,
@@ -267,7 +243,7 @@ fn current_access_token(
     expires_at: i64,
 ) -> Option<String> {
     let now = chrono::Utc::now().timestamp();
-    // Use the cached access token while it's still valid.
+    // 60s margin so a token doesn't expire mid-request.
     if expires_at - 60 > now {
         if let Some(access) = store.kv_get(&format!("access:{id}")).filter(|a| !a.is_empty()) {
             return Some(access);

@@ -1,8 +1,3 @@
-//! The upload pipeline's pure, DB-free core: bounded gzip decompression (gzip-bomb
-//! guard), server-side re-derivation of the battle snapshot, canonical hashing,
-//! id generation, and column extraction. Everything here is unit-tested without a
-//! database or network.
-
 use br_core::battle::{Battle, BattleReportDoc, BATTLE_BREAK_SECS};
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -18,12 +13,9 @@ pub enum PipelineError {
     Parse(String),
 }
 
-/// Base62-ish id alphabet with visually ambiguous glyphs (0/O, 1/I/l) removed, so a
-/// shared id is unambiguous when read aloud or copied. URL-safe.
 const ID_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const ID_LEN: usize = 10;
 
-/// A random ~10-char public id.
 pub fn generate_id() -> String {
     let mut rng = rand::rng();
     (0..ID_LEN)
@@ -44,8 +36,6 @@ pub fn decompress_bounded(gz: &[u8], cap: usize) -> Result<Vec<u8>, PipelineErro
     Ok(out)
 }
 
-/// Parse the decompressed bytes into a document (rejecting unknown `format_version`,
-/// which `from_json` already enforces).
 pub fn parse_doc(bytes: &[u8]) -> Result<BattleReportDoc, PipelineError> {
     let s = std::str::from_utf8(bytes).map_err(|e| PipelineError::Parse(e.to_string()))?;
     BattleReportDoc::from_json(s).map_err(|e| PipelineError::Parse(format!("{e:#}")))
@@ -68,7 +58,6 @@ pub fn canonicalize(doc: &BattleReportDoc) -> Result<(serde_json::Value, String)
     Ok((value, hex::encode(h.finalize())))
 }
 
-/// The flat columns extracted from a re-derived battle for indexed querying.
 #[derive(Debug, Clone)]
 pub struct Columns {
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -79,19 +68,13 @@ pub struct Columns {
     pub kills: i32,
     pub participants: i32,
     pub side_names: Vec<String>,
-    /// Lower-cased, de-duplicated set of every party name (alliances/corps on the sides
-    /// and on every killmail) and every pilot name in the battle. Drives the `participant`
-    /// filter so any alliance/corp/pilot present in the fight is searchable - not just the
-    /// two side labels in `side_names`.
     pub search_names: Vec<String>,
 }
 
-/// Derive the stored columns from a (server-computed) battle.
 pub fn extract_columns(battle: &Battle) -> Columns {
     let systems: Vec<String> = battle.systems.iter().map(|(_, name, _)| name.clone()).collect();
     let system_ids: Vec<i64> = battle.systems.iter().map(|(id, _, _)| *id).collect();
 
-    // A side's display name: its coalition, else its most-involved party.
     let side_names: Vec<String> = battle
         .sides
         .iter()
@@ -116,8 +99,6 @@ pub fn extract_columns(battle: &Battle) -> Columns {
         }
     }
 
-    // Comprehensive searchable names: every party (side members + per-killmail) and every
-    // pilot, lower-cased and de-duplicated case-insensitively, empties skipped.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut search_names: Vec<String> = Vec::new();
     let mut add = |name: &str| {
@@ -173,7 +154,6 @@ mod tests {
         Party { id, name: name.to_string(), kind: PartyKind::Alliance }
     }
 
-    // A kill: `victim_side` loses a ship to `killer_side`.
     fn eng(kill_id: i64, time: i64, victim_side: (i64, &str), killer_side: (i64, &str)) -> Engagement {
         Engagement {
             kill_id,
@@ -219,7 +199,7 @@ mod tests {
 
     #[test]
     fn gzip_bomb_aborts_past_cap() {
-        let bomb = gzip(&vec![0u8; 1_000_000]); // ~1 MB of zeros, compresses tiny
+        let bomb = gzip(&vec![0u8; 1_000_000]);
         match decompress_bounded(&bomb, 1024) {
             Err(PipelineError::TooLarge(1024)) => {}
             other => panic!("expected TooLarge, got {other:?}"),
@@ -253,7 +233,6 @@ mod tests {
     #[test]
     fn rederivation_overwrites_forged_tallies() {
         let mut doc = real_doc();
-        // Forge garbage client tallies: absurd isk, wrong kill count, bogus systems.
         doc.battle.isk = 9.9e30;
         doc.battle.kills = 99999;
         doc.battle.systems = vec![(1, "Forged System".into(), -1.0)];
@@ -262,8 +241,6 @@ mod tests {
 
         rederive(&mut doc);
 
-        // The stored battle must match br_core's own clustering of the engagements,
-        // not the forged numbers.
         let expected = br_core::battle::preview_battle(doc.engagements.clone(), BATTLE_BREAK_SECS);
         assert_eq!(doc.battle, expected);
         assert_eq!(doc.battle.kills, 3);
@@ -274,7 +251,6 @@ mod tests {
     #[test]
     fn rederivation_preserves_ship_names() {
         let mut doc = real_doc();
-        // An uploaded doc carries hull names; re-deriving the battle must not drop them.
         doc.ship_names = [(587, "Rifter".to_string()), (588, "Rupture".to_string())].into();
         let before = doc.ship_names.clone();
         rederive(&mut doc);
@@ -296,19 +272,15 @@ mod tests {
     #[test]
     fn search_names_cover_parties_and_pilots() {
         let cols = extract_columns(&real_doc().battle);
-        // Every entry is lower-cased and de-duplicated.
         assert!(cols.search_names.iter().all(|n| n == &n.to_lowercase()));
         let mut sorted = cols.search_names.clone();
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), cols.search_names.len(), "no duplicates");
-        // Alliance/corp names from the battle are searchable (not just side labels).
         assert!(cols.search_names.contains(&"red alliance".to_string()));
         assert!(cols.search_names.contains(&"blue alliance".to_string()));
-        // Pilot names are searchable too - this is what side_names could never match.
         assert!(cols.search_names.iter().any(|n| n.starts_with("victim ")));
         assert!(cols.search_names.iter().any(|n| n.starts_with("killer ")));
-        // Empty names are never stored.
         assert!(cols.search_names.iter().all(|n| !n.is_empty()));
     }
 

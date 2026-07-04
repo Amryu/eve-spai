@@ -1,11 +1,3 @@
-//! EVE Online SSO login via OAuth2 **PKCE** (public client, no secret), with a
-//! loopback callback server (docs/DESIGN.md §7.1 E2). The client ID is
-//! configurable in Settings and defaults to the project's registered application.
-//!
-//! Flow: build the authorize URL with a PKCE challenge → open the browser → catch
-//! the redirect on a local HTTP server → exchange the code for tokens → decode the
-//! access-token JWT claims for the character id/name → persist the character.
-//!
 //! NOTE (scaffold): tokens are stored in plaintext in the local SQLite DB and the
 //! JWT signature is not yet verified against EVE's JWKS — the token is trusted
 //! because it came directly from the SSO token endpoint over TLS. Hardening
@@ -24,12 +16,9 @@ use sha2::{Digest, Sha256};
 const AUTHORIZE_URL: &str = "https://login.eveonline.com/v2/oauth/authorize/";
 const TOKEN_URL: &str = "https://login.eveonline.com/v2/oauth/token";
 
-/// The project's registered EVE application (a public PKCE client).
 pub const DEFAULT_CLIENT_ID: &str = "fef96bde615b450bba89c9414962ca38";
 pub const DEFAULT_CALLBACK: &str = "http://localhost:8765/callback";
 
-/// Minimal scope set for M1 (location + contacts for standings). More scopes are
-/// requested per-feature as Advanced views are built (docs/DESIGN.md §7.1 E2).
 pub const DEFAULT_SCOPES: &[&str] = &[
     "esi-location.read_location.v1",
     "esi-location.read_online.v1",
@@ -40,7 +29,6 @@ pub const DEFAULT_SCOPES: &[&str] = &[
     "esi-skills.read_skills.v1",
 ];
 
-/// Observable state of a login attempt, shared with the UI.
 #[derive(Clone, Debug, Default)]
 pub enum AuthStatus {
     #[default]
@@ -52,7 +40,6 @@ pub enum AuthStatus {
 
 pub type SharedAuth = Arc<Mutex<AuthStatus>>;
 
-/// Start an interactive login on a background thread.
 pub fn spawn_login(
     client_id: String,
     callback: String,
@@ -134,7 +121,6 @@ fn run(
     Ok(claims.name)
 }
 
-/// Block until the OAuth redirect arrives (or time out), answering the browser.
 fn wait_for_callback(server: &tiny_http::Server) -> Result<(String, String)> {
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
@@ -146,7 +132,6 @@ fn wait_for_callback(server: &tiny_http::Server) -> Result<(String, String)> {
             None => bail!("login timed out"),
         };
 
-        // Parse query params from the request path.
         let full = format!("http://localhost{}", request.url());
         let parsed = reqwest::Url::parse(&full)?;
         let mut code = None;
@@ -170,7 +155,6 @@ fn wait_for_callback(server: &tiny_http::Server) -> Result<(String, String)> {
         if let (Some(c), Some(s)) = (code, state) {
             return Ok((c, s));
         }
-        // Ignore stray requests (e.g. favicon) and keep waiting.
     }
 }
 
@@ -202,7 +186,6 @@ fn exchange_code(client_id: &str, code: &str, verifier: &str) -> Result<TokenRes
     resp.json().context("parsing token response")
 }
 
-/// Exchange a stored refresh token for a fresh access token.
 pub fn refresh_access_token(client_id: &str, refresh_token: &str) -> Result<TokenResponse> {
     let client = http_client()?;
     let resp = client
@@ -233,7 +216,6 @@ fn http_client() -> Result<reqwest::blocking::Client> {
 
 #[derive(Deserialize)]
 struct Claims {
-    /// e.g. "CHARACTER:EVE:2112000000"
     sub: String,
     name: String,
 }

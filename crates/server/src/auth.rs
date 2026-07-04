@@ -1,11 +1,3 @@
-//! Full EVE SSO access-token verification — stricter than the desktop app, which
-//! only base64-decodes the payload (`app/src/auth.rs`). Here the RS256 signature is
-//! checked against EVE's JWKS, and `iss`, `exp` and `aud` are all validated.
-//!
-//! The [`Verifier`] is constructed either live (fetching + caching the JWKS over the
-//! network) or from an injected [`jsonwebtoken::jwk::JwkSet`], which is how the unit
-//! tests verify tokens with a locally generated keypair and never touch the network.
-
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -27,7 +19,6 @@ const ISSUERS: [&str; 3] = [
     "https://login.eveonline.com/",
 ];
 
-/// A verified identity, extracted from a valid token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub char_id: i64,
@@ -50,11 +41,8 @@ pub enum AuthError {
     Jwks(String),
 }
 
-/// The minimal claim set we read. `iss`/`exp`/`aud` are validated by jsonwebtoken
-/// itself (see [`Verifier::validation`]); we only pull identity fields out here.
 #[derive(Debug, Deserialize)]
 struct Claims {
-    /// e.g. "CHARACTER:EVE:2112000000"
     sub: String,
     name: String,
 }
@@ -65,9 +53,7 @@ struct LiveKeys {
 }
 
 enum Source {
-    /// Keys injected once (tests, or a pinned key set) — never refreshed.
     Static(HashMap<String, DecodingKey>),
-    /// Keys fetched from the JWKS URL and cached with a TTL.
     Live { url: String, http: reqwest::Client, cache: RwLock<Option<LiveKeys>> },
 }
 
@@ -77,7 +63,6 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    /// Live verifier: lazily fetches and caches EVE's JWKS.
     pub fn live(jwks_url: impl Into<String>, audience: impl Into<String>) -> Self {
         Self {
             source: Source::Live {
@@ -89,7 +74,6 @@ impl Verifier {
         }
     }
 
-    /// Build from an in-memory JWKS — the test seam (no network).
     pub fn from_jwks(jwks: &JwkSet, audience: impl Into<String>) -> anyhow::Result<Self> {
         Ok(Self { source: Source::Static(build_keys(jwks)?), audience: audience.into() })
     }
@@ -102,7 +86,6 @@ impl Verifier {
         v
     }
 
-    /// Verify a raw JWT and extract the character identity, or fail with the reason.
     pub async fn verify(&self, token: &str) -> Result<Identity, AuthError> {
         let header = decode_header(token).map_err(|e| AuthError::Invalid(e.to_string()))?;
         let kid = header.kid.ok_or(AuthError::NoKid)?;
@@ -117,11 +100,9 @@ impl Verifier {
         match &self.source {
             Source::Static(map) => map.get(kid).cloned().ok_or(AuthError::UnknownKid),
             Source::Live { url, http, cache } => {
-                // Fast path: a fresh cache that already has the kid.
                 if let Some(k) = fresh_cached(cache, kid) {
                     return Ok(k);
                 }
-                // Refresh (cache stale, empty, or kid rotated in).
                 let jwks: JwkSet = http
                     .get(url)
                     .send()
@@ -148,7 +129,6 @@ fn fresh_cached(cache: &RwLock<Option<LiveKeys>>, kid: &str) -> Option<DecodingK
     live.keys.get(kid).cloned()
 }
 
-/// Build kid -> RS256 decoding key from a JWKS, skipping keys without a kid.
 fn build_keys(jwks: &JwkSet) -> anyhow::Result<HashMap<String, DecodingKey>> {
     let mut out = HashMap::new();
     for jwk in &jwks.keys {
@@ -160,7 +140,6 @@ fn build_keys(jwks: &JwkSet) -> anyhow::Result<HashMap<String, DecodingKey>> {
     Ok(out)
 }
 
-/// `"CHARACTER:EVE:<id>"` -> `<id>`.
 fn parse_char_id(sub: &str) -> Result<i64, AuthError> {
     sub.rsplit(':')
         .next()
@@ -174,8 +153,6 @@ mod tests {
     use jsonwebtoken::{encode, EncodingKey, Header};
     use serde_json::json;
 
-    // A throwaway 2048-bit RSA keypair generated for the tests (never used in prod).
-    // The matching JWKS modulus/exponent are below, so the verifier and signer agree.
     const TEST_KID: &str = "testkey";
     const TEST_PRIV_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCSvEmzmdMFgdXc\n\
@@ -242,7 +219,6 @@ QxUVZGDK2388KblxKYy3YTE=\n\
         json!({
             "sub": "CHARACTER:EVE:2112000001",
             "name": "Spai Pilot",
-            // EVE's current tokens use the URI form (no trailing slash) — the server must accept it.
             "iss": "https://login.eveonline.com",
             "aud": [AUD, "EVE Online"],
             "exp": future(),
@@ -259,7 +235,6 @@ QxUVZGDK2388KblxKYy3YTE=\n\
     #[tokio::test]
     async fn tampered_signature_rejected() {
         let mut token = sign(valid_claims());
-        // Flip a character in the signature segment.
         let last = token.pop().unwrap();
         token.push(if last == 'A' { 'B' } else { 'A' });
         assert!(verifier().verify(&token).await.is_err());

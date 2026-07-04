@@ -1,10 +1,3 @@
-//! The application shell: window, nav rail, top/status bars, settings dialog,
-//! theme application, and persistence wiring (docs/DESIGN.md §6).
-
-/// The embedded program icon (256×256), decoded once and shared by the main window, every
-/// child window (alerts, map, Jabber, lookups, D-scan), and the tray — so they all show the
-/// same logo. Falls back to a 1×1 transparent pixel only if the embedded PNG fails to decode
-/// (it won't — it's validated at build time by `include_bytes!`).
 pub fn app_icon() -> std::sync::Arc<egui::IconData> {
     use std::sync::{Arc, OnceLock};
     static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
@@ -16,7 +9,6 @@ pub fn app_icon() -> std::sync::Arc<egui::IconData> {
     .clone()
 }
 
-/// Intel feed type filter.
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum IntelTypeFilter {
     All,
@@ -26,7 +18,6 @@ enum IntelTypeFilter {
     Threat,
 }
 
-/// Sovereignty territory colouring mode.
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum SovMode {
     Off,
@@ -34,7 +25,6 @@ enum SovMode {
     Coalition,
 }
 
-/// Which ESI activity metric the heat overlay shows.
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum ActivityMode {
     Off,
@@ -72,7 +62,6 @@ impl ActivityMode {
             ActivityMode::Jumps => f.jumps,
         }
     }
-    /// Approximate "busy" value for scaling the heat colour.
     fn scale(self) -> f32 {
         match self {
             ActivityMode::Jumps => 400.0,
@@ -91,10 +80,8 @@ impl ActivityMode {
     }
 }
 
-/// A system suggestion row: (id, name, security, constellation, region).
 type SysHit = (i64, String, f64, String, String);
 
-/// Toggleable map overlays (the top-right Layers menu).
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct MapOverlays {
@@ -107,7 +94,6 @@ struct MapOverlays {
     wormholes: bool,
     thera: bool,
     turnur: bool,
-    /// Gate-camp markers (red campfire icon) from the live kill feed.
     camps: bool,
 }
 
@@ -128,8 +114,6 @@ impl Default for MapOverlays {
     }
 }
 
-/// Map mode. Standard is today's intel map; the others (planned in docs/MAP_MODES.md) add a
-/// focused panel and auto-adapt the overlays to surface only what that mode needs.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum MapMode {
     #[default]
@@ -140,14 +124,12 @@ enum MapMode {
     JumpPlan,
 }
 
-/// What the clipboard share-popup detected.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PasteKind {
     Dscan,
     Local,
 }
 
-/// Which kind of saved route a row in the merged Routes dialog refers to.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RouteKind {
     #[default]
@@ -155,7 +137,6 @@ enum RouteKind {
     Jump,
 }
 
-/// How the merged Routes dialog groups its list.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RouteView {
     #[default]
@@ -164,7 +145,6 @@ enum RouteView {
     BySystem,
 }
 
-/// A unified row for the merged Routes dialog (either route kind).
 #[derive(Clone)]
 struct RouteItem {
     kind: RouteKind,
@@ -186,8 +166,6 @@ impl MapMode {
             MapMode::JumpPlan => "Jump Plan",
         }
     }
-    /// Overlay preset for a non-Standard mode: hide the sov/connection clutter, surface
-    /// ship-kills (danger), keep jump bridges for the routing-oriented modes.
     fn overlay_preset(self) -> MapOverlays {
         MapOverlays {
             sov: SovMode::Off,
@@ -207,8 +185,6 @@ impl MapMode {
     }
 }
 
-/// Map + intel-filter options persisted between sessions (as a JSON blob in
-/// settings, so settings.rs needn't know these app types).
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 struct PersistedView {
     overlays: MapOverlays,
@@ -224,26 +200,21 @@ fn default_threat_jumps() -> u32 {
     5
 }
 
-/// A click on an intel card panel.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum IntelClick {
     System(i64),
     Ship(i64),
     Pilot(String),
     Dscan(String),
-    /// The user clicked the "?" on an activity-flagged (uncertain) pilot to classify it.
     PilotVerdict(String),
 }
 
-/// Which tab the map's right dock is showing (the mode panel, or docked system info).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightDockTab {
     Mode,
     System,
 }
 
-/// What rendering the system-info panel produced (shared by the pop-out window and the map's
-/// docked System tab): pending navigations and an intel-card click, applied by the caller.
 #[derive(Default)]
 struct SystemInfoOut {
     nav: Option<i64>,
@@ -306,392 +277,208 @@ pub struct SpaiApp {
     sov_paste: String,
     coalitions_open: bool,
     severity_open: bool,
-    /// Live edit buffers for the coalition editor: (name, alliances-one-per-line).
     coal_edit: Vec<(String, String)>,
-    /// Text input for manually adding an alliance to the sov list.
     alliance_add: String,
     active_character: String,
-    /// Settings changed this frame and should be persisted.
     needs_save: bool,
-    /// SDE download/bake state (shared with the background worker).
     sde_status: SharedStatus,
-    /// SSO login state (shared with the background login worker).
     auth_status: SharedAuth,
-    /// Authenticated characters, refreshed from the store each frame.
     characters: Vec<CharacterRow>,
-    /// Live intel reports (shared with the chat-log watcher).
     intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
-    /// Whether the chat-log watcher has been started (after the SDE is ready).
     watcher_started: bool,
-    /// Resolved chat-logs directory, or None if EVE logs weren't found.
     chat_dir: Option<std::path::PathBuf>,
-    /// Intel-view filters.
     intel_query: String,
     intel_max_jumps: u32,
     intel_type: IntelTypeFilter,
-    /// Clustered battle reports (shared with the zKill feed worker).
     battles: crate::zkill::SharedBattles,
-    /// Full recorded history, clustered on demand from every persisted engagement.
     battle_history: crate::zkill::SharedBattles,
-    /// True while the history is being (re)loaded in the background.
     battle_history_loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Battles view: show the full history instead of the live 1-day window.
     show_history: bool,
-    /// Battles view: the opened battle's representative kill id (None = list view).
     battle_selected: Option<i64>,
-    /// Cached heavy data for the open battle detail (clone + involvement + per-side rosters),
-    /// rebuilt only when the underlying battle changes — the detail repaints every frame for the
-    /// "Live" badge and hover, and recomputing this for a big fight each frame is the slow path.
     battle_detail_cache: Option<BattleDetailCache>,
-    /// A battle report opened from a saved JSON file (standalone viewer, not the live cluster).
     loaded_report: Option<LoadedReport>,
-    /// Transient feedback for the save/open-report actions (saved path, or a load error).
     report_msg: Option<String>,
-    /// "Build a report from one zKill kill" worker state (shared with the off-thread builder).
     build_from_kill: crate::zkill::SharedBuildFromKill,
-    /// Battles toolbar: the zKill kill link / id the user is typing for "Build from kill".
     build_kill_input: String,
-    /// Inline error for the "Build from kill" action (bad input, or a worker failure).
     build_kill_error: Option<String>,
-    /// Listed ship/structure type ids, retained so the "Build from kill" action can hand them to
-    /// the off-thread builder (the live feed worker owns its own clone).
     battle_ship_ids: Option<std::sync::Arc<std::collections::HashSet<i64>>>,
-    /// "Share to eve-spai.com" upload state (shared with the upload/delete worker).
     br_share: crate::brshare::SharedShare,
-    /// "My shared BRs" panel state (shared with the list/delete worker).
     br_mine: crate::brshare::SharedMine,
-    /// Whether the "My shared BRs" panel is open.
     br_mine_open: bool,
-    /// Share the report unlisted (kept out of the public directory). Default public.
     br_unlisted: bool,
-    /// The character chosen to upload/manage battle reports under (the user may have many alts; BRs
-    /// are owned per character). `None` falls back to the active/first authenticated character.
     br_character: Option<i64>,
-    /// Battles view: free-text filter (system, alliance/coalition, pilot, ship).
     battle_search: String,
-    /// Battle detail: the participant currently hovered (for the involvement highlight).
     battle_hover: Option<BattleHover>,
-    /// Battle detail: condensed mode stacks each side's ships by hull (count + losses) instead of
-    /// listing every pilot. Off by default.
     battle_condensed: bool,
-    /// Battle detail: how the roster rows are ordered (by value or by hull size).
     battle_roster_sort: RosterSort,
-    /// Custom battle inclusion rules, shared live with the zKill worker.
     battle_filter: crate::zkill::SharedBattleFilter,
-    /// Ship type id → hull size tier (for filter hull conditions).
     ship_sizes: crate::zkill::ShipSizes,
-    /// Active character's current system, published to the worker for jumps-from-me rules.
     player_sys_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
-    /// Wormhole systems the player has recently been in (id -> last-seen ts), so the zKill feed
-    /// keeps surfacing kills there for ~10 min even though wormholes aren't jump-reachable.
     recent_wh: crate::zkill::RecentWh,
-    /// Work throttle level (WorkThrottle as u8), shared live with the zKill worker.
     work_throttle_shared: std::sync::Arc<std::sync::atomic::AtomicU8>,
-    /// Battle-filter dialog open.
     battle_filter_open: bool,
-    /// Open alert-rule filter picker dialog (ships / systems / … ), if any.
     filter_picker: Option<crate::pickers::FilterPicker>,
-    /// An uncertain pilot whose verdict popup ("real" / "not a pilot") is open, if any.
     verdict_popup: Option<String>,
-    /// Whether the one-time uncertain-pilot explainer dialog is showing.
     verdict_explainer_open: bool,
-    /// Background ESI result for the character picker's "add by exact name" box.
     filter_add_result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
-    /// Awaiting confirmation to restore default battle rules.
     battle_filter_confirm_reset: bool,
-    /// Bumped whenever the battle-filter rules are edited (invalidates the card cache).
     battle_filter_gen: u64,
-    /// Manual battle overrides (split/merge tags, excluded kills, scrubbed pilots), shared live
-    /// with the zKill worker and the history clusterer.
     battle_overrides: crate::zkill::SharedOverrides,
-    /// Activity-break gap (seconds) the worker segments battles on, shared live.
     battle_break_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
-    /// Bumped (RAM + shared atomic) on every manual battle edit, to force a re-cluster and
-    /// invalidate the candidate/detail caches.
     battle_overrides_gen: u64,
     battle_overrides_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Kill ids the editor asked to add (zKill link / recent-kills browser); the worker fetches +
-    /// buffers them so the next cluster groups them by the tag the edit already recorded.
     battle_add_queue: std::sync::Arc<std::sync::Mutex<Vec<i64>>>,
-    /// Cached excluded-kill / scrubbed-pilot counts (refreshed on edit, not per frame).
     battle_excluded_count: usize,
     battle_scrub_count: usize,
-    /// Battle editor: in the detail view this is the per-kill split/exclude editor; in the list
-    /// view it's merge mode (a checkbox per battle card).
     battle_edit_mode: bool,
-    /// Editor: kill_ids selected in the per-kill list (the half to split off).
     battle_kill_sel: std::collections::HashSet<i64>,
-    /// Cached split preview (selection set → the two halves' battles), rebuilt only when the
-    /// selection changes — infer_sides is O(n²), so re-running it every frame for a big battle is
-    /// both slow and (pre-determinism-fix) the source of the side flicker.
     battle_split_preview:
         Option<(std::collections::HashSet<i64>, crate::battle::Battle, crate::battle::Battle)>,
-    /// List merge mode: representative kill-ids of the battles ticked for merging.
     battle_merge_sel: std::collections::HashSet<i64>,
-    /// "Add kill" panel open, and its zKill-link input.
     battle_add_open: bool,
     battle_add_link: String,
-    /// Review panels: excluded kills and scrubbed pilots.
     battle_excluded_open: bool,
     battle_scrubs_open: bool,
-    /// All overview battles matching everything EXCEPT the ISK threshold — (open kill id,
-    /// jumps-from-you, cumulative ISK, light battle). This holds the expensive work (the custom
-    /// battle-filter match + per-battle distance search), rebuilt only when the underlying battles
-    /// / query / area change — NOT when the ISK slider moves.
     battle_candidates: Vec<(i64, Option<u32>, f64, crate::battle::Battle)>,
     battle_candidates_sig: u64,
-    /// Cached, capped battles list for the overview — (open kill id, jumps-from-you, battle).
-    /// Derived cheaply from `battle_candidates` by applying the ISK threshold, so dragging the
-    /// ISK filter doesn't re-run the expensive candidate selection.
     battle_cards: Vec<(i64, Option<u32>, crate::battle::Battle)>,
     battle_cards_sig: u64,
-    /// Total battles matching the current filter (the cards list is capped).
     battle_cards_total: usize,
-    /// Battles dropped solely by the minimum-ISK filter (shown as "(N filtered)").
     battle_cards_filtered: usize,
     camps: crate::camp::SharedCamps,
-    /// Cached camped-system list (recomputed every couple of seconds) so the overlay doesn't
-    /// lock + scan the camp state every frame for every map.
     camped_cache: Vec<(i64, crate::camp::CampLevel)>,
     camped_cache_at: i64,
-    /// Live kill-feed buffer (from zkill) turned into optional kill-intel cards.
     killfeed: crate::zkill::SharedKillFeed,
-    /// Ship type id → name, built from the ship index, for naming kill-feed ships.
     ship_by_id: std::collections::HashMap<i64, String>,
-    /// Persisted zKill kill-intel reloaded into the feed once on startup (one-shot).
     kills_loaded: bool,
-    /// Active character name + ESI-resolved system (shared with the location poller).
     player: crate::esi::SharedPlayer,
-    /// System graph for UI distance queries (set once the SDE is ready).
     systems: Option<std::sync::Arc<crate::geo::Systems>>,
-    /// Jump bridges currently baked into `systems` (to detect config changes).
     bridges_applied: Vec<crate::settings::JumpBridge>,
-    /// Live per-system status (incursion/FW/sov), shared with the ESI poller.
     system_status: crate::systemstatus::SharedStatus,
-    /// Off-UI-thread alert evaluation + firing (sound, OS notification, pushover). Owns the
-    /// dedup/cooldown/last-alert-time state the old `check_alerts` held on `self`.
     alerts_engine: std::sync::Arc<AlertEngine>,
-    /// Recent fired alerts (unix, text) — shared with the game-log watcher and the alert engine.
     recent_alerts: crate::gamewatcher::AlertLog,
-    /// Reports shown in the in-app "Recent alerts" history, with their severity (the alert
-    /// daemon feeds this via `fired_ui`/`drain_alerts`; the floating window uses `alert_shared`).
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
-    /// Shared state for the DEFERRED alert viewport: the feed/countdown/pin/focus are produced
-    /// off the UI thread by the alert daemon; render context + on-top/enabled flags are published
-    /// here each frame; clicks/move/resize are drained back. Lets the window show + count down
-    /// independently of the main window's minimized state.
     alert_shared: SharedAlertWindow,
-    /// The deferred alert viewport's render closure (built once in `new()`; declared every frame
-    /// in `alert_window`). Captures only Send+Sync shared state, so it paints standalone. Used only
-    /// in the IN-PROCESS fallback path (when the overlay child failed to spawn); when the overlay is
-    /// running it owns the alert window and builds its own identical closure.
     alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
-    /// Master OS-notification gate (mirrors alerts.system_notifications), shared with
-    /// the combat-log watcher.
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Self process resource usage (status bar).
     proc_monitor: crate::procstat::Monitor,
-    /// Jabber (XMPP) chat + fleet-ping client state.
     jabber: crate::jabber::SharedJabber,
     jabber_tx: Option<crate::jabber::CmdSender>,
     jabber_popped: bool,
-    /// Selected conversation (bare JID) in the Jabber view.
     jabber_chat: Option<String>,
-    /// Per-conversation message drafts (keeps a half-typed message when switching
-    /// chats; a non-empty draft also keeps an otherwise-empty DM open).
     jabber_drafts: std::collections::HashMap<String, String>,
-    /// "Join room" text input (a room JID).
     jabber_room_input: String,
-    /// Search filter over the shown contacts.
     jabber_contact_search: String,
-    /// "Message someone" input — opens a DM by JID/local part.
     jabber_dm_input: String,
-    /// Feedback when a DM target can't be resolved to a real contact.
     jabber_dm_error: String,
-    /// Roster list shows the public directory (true) or the private contact list.
     jabber_show_directory: bool,
-    /// Directory groups the user has collapsed (session-only).
     jabber_collapsed: std::collections::HashSet<String>,
-    /// Our own chosen availability + status text.
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
-    /// Password field in the Jabber connect form (transient).
     jabber_pw_input: String,
-    /// Quick-ping composer state.
-    /// Notifications/alert-rules dialog open.
     ping_rules_open: bool,
-    /// App-start time, to mark the historic/new boundary in conversations.
     session_start: i64,
-    /// Whether the EVE client is the focused window (for "smart" always-on-top). Shared so the
-    /// deferred ping viewport's render closure can read it off the UI thread.
     eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Throttle for the EVE-focus check.
     eve_focus_checked: Option<std::time::Instant>,
-    /// Ship name -> (id, name), for reclassifying ship-words wrongly read as pilots.
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
-    /// Update-checker state + one-shot startup check + per-session "ask later" flag.
     update: crate::update::SharedUpdate,
     update_checked: bool,
     update_dismissed: bool,
-    /// Killmail enrichment cache + fetch channel (feeds the kill badges on cards).
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
-    /// Embedded zKill lookup: pasted/dropped names, one tab each.
     lookup_input: String,
     lookup_tabs: Vec<String>,
     lookup_active: usize,
     lookup_cache: crate::charlookup::LookupCache,
     lookup_tx: Option<crate::charlookup::LookupSender>,
-    /// Cached intel-card heights (by report key) for feed virtualization.
     intel_heights: std::collections::HashMap<u64, f32>,
-    /// First-run setup wizard (dismissable; re-runnable from Settings).
     wizard_open: bool,
     wizard_step: u8,
     wizard_checked: bool,
-    /// System tray (Show / Exit) + whether a real quit was requested.
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
-    /// True for one frame after a second launch asked us to raise: the window was
-    /// pushed AlwaysOnTop to force it to the front, and the next frame resets it to Normal.
     raise_reset_top: bool,
-    /// Overlay child process + IPC link (spawned in `new`, monitored from `update`). `None` if the
-    /// child failed to spawn — the windows then render in-process as a fallback. All platforms.
     overlay: Option<crate::ipc::OverlayLink>,
-    /// Hash of the last Config+Ping snapshot pushed to the overlay, so the main only resends on
-    /// change (reset to `None` on overlay reconnect to force a full resend).
     ping_sent_hash: Option<u64>,
-    /// Hash of the last overlay *config* (ping + alert behaviour/geometry) pushed to the overlay,
-    /// tracked separately from the ping content so an alert-window move/resize never resends the
-    /// ping list (which would otherwise re-blink old pings). Reset on overlay reconnect.
     config_sent_hash: Option<u64>,
-    /// Hash of the last alert snapshot pushed to the overlay (content only; the countdown reset +
-    /// focus bypass it). Reset to `None` on overlay reconnect for a forced resend.
     alert_sent_hash: Option<u64>,
-    /// D-scan clipboard sharing.
     dscan_clip: Option<arboard::Clipboard>,
     dscan_checked: Option<std::time::Instant>,
-    /// Hash of the last clipboard text we examined / the dismissed one.
     dscan_seen_hash: u64,
     dscan_dismissed_hash: u64,
-    /// Pending prompt: (dscan text, row count).
     dscan_prompt: Option<(String, usize, PasteKind)>,
-    /// Cached screen position for the d-scan popup (bottom-right of the EVE window).
     dscan_pos: Option<(f32, f32)>,
-    /// D-scan popup: whether the shared link was opened/copied, and when it last lost
-    /// focus (to auto-close 5 s after the user is done with it).
     dscan_link_used: bool,
     dscan_unfocused_at: Option<std::time::Instant>,
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
-    /// D-scan viewer dialog (a clicked d-scan link, fetched + shown inline).
     dscan_view: Option<DscanView>,
-    /// Known wormholes (reloaded from the store on a timer; written by the EVE-Scout
-    /// poller and the intel watcher).
     wh_cache: Vec<crate::wormholes::Wormhole>,
     wh_reloaded: Option<std::time::Instant>,
-    /// Map overlay derived from `wh_cache` (recomputed on reload, not per frame).
     wh_overlay: WhOverlay,
-    /// Wormholes-view filters.
     wh_filter_dest: Option<crate::wormholes::DestClass>,
     wh_filter_source: Option<crate::wormholes::Source>,
     wh_filter_expiring: bool,
-    // --- Map view state ---
     map_overlays: MapOverlays,
-    /// Active map mode; the non-Standard modes auto-adapt the overlays.
     map_mode: MapMode,
-    /// The user's saved Standard-mode overlays, restored when returning to Standard.
     standard_overlays: MapOverlays,
-    // --- Travel Mode ---
     travel_start: Option<i64>,
     travel_end: Option<i64>,
     travel_start_q: String,
     travel_end_q: String,
     travel_regional_gates: bool,
     travel_jump_bridges: bool,
-    /// Route around systems currently flagged as gate camps.
     travel_avoid_camps: bool,
     travel_max_ship_kills: u32,
-    /// Allowed security bands for intermediate systems (high / low / null).
     travel_sec: [bool; 3],
-    /// Highlighted index in the From/To suggestion dropdowns (keyboard nav).
     travel_start_sel: usize,
     travel_end_sel: usize,
-    /// Cached From/To suggestions, keyed by (start_q, start, end_q, end) so the SDE search
-    /// (a full-table fuzzy scan) runs only when an input changes, not every frame.
     travel_sugg_key: (String, Option<i64>, String, Option<i64>),
     travel_sugg: (Vec<SysHit>, Vec<SysHit>),
-    /// "Add waypoint" input + its cached suggestions and keyboard-nav index.
     travel_wp_q: String,
     travel_wp_sel: usize,
     travel_wp_sugg_key: String,
     travel_wp_sugg: Vec<SysHit>,
-    /// Activity metric the max-per-hour cap applies to (ship/pod/NPC kills or jumps).
     travel_metric: ActivityMode,
-    /// Route re-plan debounce: the input hash the route was last planned for, the last-seen
-    /// input hash, and the egui time (seconds) the inputs last changed.
     travel_planned_hash: u64,
     travel_pending_hash: u64,
     travel_dirty_at: Option<f64>,
-    /// The game's own shortest gate route (for the comparison overlay).
     travel_direct_route: Option<Vec<i64>>,
-    /// Live Mode: track position, continuously re-plan, and re-route in-game on changes.
     travel_live: bool,
-    /// The route as first planned when Live Mode engaged (drawn dimmed for comparison).
     travel_live_base: Option<Vec<i64>>,
-    /// Systems newly added by the last live re-plan, to blink briefly.
     travel_changed: Vec<i64>,
-    /// Wall-clock time the route last changed under Live Mode (for the blink window).
     travel_changed_at: Option<i64>,
-    /// Next Live-Mode re-plan time (egui seconds).
     travel_live_next: f64,
     /// The single in-game destination we last wrote (the next hop on the route), so we only
     /// re-write it when it changes. EVE rejects duplicate waypoints, so we advance one hop at a
     /// time instead of writing the whole (possibly self-revisiting) route at once.
     travel_ingame_dest: Option<i64>,
-    /// Ordered intermediate waypoints the route must pass through.
     travel_waypoints: Vec<i64>,
-    /// Saved-routes dialog state (merged travel + jump routes).
     routes_dialog_open: bool,
     route_save_name: String,
     route_save_folder: String,
     route_search: String,
     route_new_folder: String,
-    /// Which route kind the dialog's Save row targets, and how the list is grouped.
     route_kind: RouteKind,
     route_view: RouteView,
-    /// Inline edit: (kind, original folder, original name) of the row being renamed/moved.
     route_edit: Option<(RouteKind, String, String)>,
     route_edit_name: String,
     route_edit_folder: String,
-    /// Systems the route must avoid.
     travel_avoid: Vec<i64>,
-    /// Sov holders (alliance names) to route around, picked from the coalition tree dialog.
     travel_avoid_sov: std::collections::HashSet<String>,
-    /// Whether the avoid-sov coalition tree dialog is open.
     travel_sov_dialog_open: bool,
     travel_route: Option<Vec<i64>>,
-    /// System targeted by the map right-click context menu.
     ctx_menu_system: Option<i64>,
-    /// Jump-route planner endpoints (seeded from the map right-click menu).
     jump_plan_from: Option<i64>,
     jump_plan_to: Option<i64>,
-    /// Jump-route planner inputs: selected hull class, Jump Drive Calibration / Fuel
-    /// Conservation skill levels.
     jump_ship: usize,
     jump_jdc: u32,
     jump_jfc: u32,
-    /// ESI-fetched (JDC, JFC) levels, applied to the inputs when they arrive.
     jump_skills: crate::esi::SharedJumpSkills,
-    /// Interior waypoints the route must pass through (between start and destination).
     jump_waypoints: Vec<i64>,
-    /// Favourited systems — preferred mid-points, and toggled from the map menu (persisted).
     jump_favourites: std::collections::HashSet<i64>,
-    /// All K-space systems with 3D coords (loaded once) for the jump graph.
     jump_systems: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
-    /// The computed route, leg by leg (each anchor pair; legs can be invalid/red), its flattened
-    /// system sequence, and any error — recomputed only when the inputs change.
     jump_legs: Vec<crate::jumproute::Leg>,
     jump_route: Vec<i64>,
-    /// Ghost alternatives: drop-in replacements within range of a waypoint's neighbours (§8.5).
     jump_alt: Vec<i64>,
     jump_route_err: Option<String>,
     jump_route_key: Option<u64>,
@@ -703,161 +490,94 @@ pub struct SpaiApp {
     map_systems: Vec<crate::store::MapSystem>,
     map_loaded: Option<crate::map::MapView>,
     map_pan: egui::Vec2,
-    /// Last map canvas rect, to keep the centre fixed when the window resizes.
     map_last_rect: Option<egui::Rect>,
     map_zoom: f32,
     map_follow: bool,
-    /// Cached (player system, its region) so map-follow doesn't query the DB every frame.
     map_follow_region: Option<(i64, i64)>,
     map_popped: bool,
-    /// True while drawing a per-character pop-out window, so its controls hide the
-    /// main-window management buttons (pop-out, on-top, overlay) that don't apply there.
     map_in_popout: bool,
-    /// Per-character pop-out map windows (character names) + their saved view state
-    /// (region/universe, pan, zoom, whether we've centred on them yet).
     map_char_popouts: Vec<String>,
     map_char_view: std::collections::HashMap<
         String,
         (crate::map::MapView, egui::Vec2, f32, bool, Option<egui::Rect>),
     >,
-    /// Pop-out map window kept above other windows.
     map_window_on_top: bool,
-    /// Hide all map control overlays (leaving just a "show" button).
     map_controls_hidden: bool,
-    /// Overlay mode: borderless, on-top, draggable-on-empty, minimal controls.
     map_overlay_mode: bool,
-    /// Overlay mode locked (no moving or resizing).
     map_overlay_locked: bool,
-    /// Last (decorations, resizable) applied to the popped map window, so toggling
-    /// overlay↔bordered re-applies them live (the builder only sets them on creation).
     map_vp_props: Option<(bool, bool)>,
-    /// A window-move drag is in progress (so the map doesn't also pan).
     map_overlay_drag: bool,
-    /// How systems are laid out (geographic / spaced / radial / tree).
     map_layout: crate::map::MapLayout,
-    /// Jumps shown in the radial/tree threat views.
     map_threat_jumps: u32,
-    /// Centre system for the threat views (None = active character's system).
     map_threat_center: Option<i64>,
-    /// Include jump bridges in the radial/tree threat-view distance.
     threat_include_bridges: bool,
-    /// Safety Mode: systems threatened on the last watch tick (to alarm only on a new one).
     safety_prev: Option<std::collections::HashSet<i64>>,
-    /// egui time of the last Safety watch scan, to throttle its per-report BFS off the frame rate.
     safety_last_scan: f64,
-    /// egui time of the last sov-alliance auto-discovery scan (throttled off the frame rate).
     sov_discover_last: f64,
-    /// Map layout to restore when leaving Safety mode (Safety forces the Tree view).
     safety_prev_layout: Option<crate::map::MapLayout>,
-    /// egui time the red screen-flash overlay stays up until (Safety alarm).
     flash_until: f64,
-    /// Coordinates actually drawn (geographic or the 2D layout).
     map_draw: Vec<crate::store::MapSystem>,
     map_draw_spaced: bool,
     map_draw_key: Option<(crate::map::MapView, bool)>,
-    /// Per-view caches so multiple map instances (main + pop-outs) don't re-query the DB
-    /// and re-project every frame as the view is swapped between them.
     map_systems_cache: std::collections::HashMap<crate::map::MapView, Vec<crate::store::MapSystem>>,
     map_draw_cache:
         std::collections::HashMap<(crate::map::MapView, bool), Vec<crate::store::MapSystem>>,
-    /// One-shot: centre the map on this system on the next draw (from intel click).
     map_focus: Option<i64>,
-    /// Persistently highlighted system on the map (from a search selection).
     map_selected: Option<i64>,
-    /// Destination for the in-app route overlay (set via "Set Destination").
     route_destination: Option<i64>,
     map_search: String,
     map_search_sel: usize,
-    /// Cached search results keyed by the query, so the SDE scans run only on input change.
     map_search_key: String,
     map_search_sys: Vec<(i64, String, f64)>,
     map_search_const: Vec<(String, i64)>,
     map_search_reg: Vec<(i64, String)>,
-    /// Sov-upgrade name matches for the search popover (cached per query, not per frame).
     map_search_upgrades: Vec<String>,
-    /// Whether the left (standard) and right (mode) map docks are expanded.
     left_dock_open: bool,
     right_dock_open: bool,
-    /// A system docked as a tab in the map's right dock (from clicking a system on the map);
-    /// pops out to the standalone `system_window` on request.
     map_docked_system: Option<i64>,
-    /// Which tab the right dock shows (mode panel vs. docked system info).
     right_dock_tab: RightDockTab,
-    /// Sov-upgrade overlay sub-filters: show Ratting / Exploration / Mining / Other kinds.
     upgrade_kinds: [bool; 4],
-    /// An upgrade name to faint-highlight on the map (from the search).
     map_highlight_upgrade: Option<String>,
-    /// System-info window: the system currently shown (if any).
     system_window: Option<i64>,
-    /// System-info window: show the "Recent kills" tab instead of intel.
     system_kills_tab: bool,
-    /// Per-system recent-kills feed (lazily fetched from zKill when the tab is opened).
     system_kills_cache: std::collections::HashMap<i64, crate::lookup::SharedLookup>,
-    /// Open constellation / region info windows (by id).
     constellation_window: Option<i64>,
     region_window: Option<i64>,
-    /// A viewport to bring to the foreground this frame (a click updated its data).
     focus_window: Option<egui::ViewportId>,
     /// Overlay→main clicks that OPEN a dialog window, deferred to the next frame. Opening an
     /// immediate viewport in the same frame the IPC message was drained (the frame the overlay's
     /// reader thread woke via `request_repaint`) panics egui with "the user callback was never
     /// called"; processing them at the top of a normally-scheduled frame avoids that.
     pending_overlay_clicks: Vec<IntelClick>,
-    /// Ship-info window: the ship type currently shown (if any).
     ship_window: Option<i64>,
-    /// Pilot lookup (zKill) input + shared result.
     pilot_query: String,
     pilot_lookup: crate::lookup::SharedLookup,
-    /// Per-character killmail feed (Kills/Solo/Losses) for the sidebar lookup tabs, fetched
-    /// lazily when a list tab is opened.
     feed_cache: std::collections::HashMap<String, crate::lookup::SharedLookup>,
     pilot_window_open: bool,
     pilot_sort: PilotSort,
     pilot_tab: PilotTab,
-    /// Fit window: (ship type id, which fit).
     fit_view: Option<(i64, FitMode)>,
-    /// A specific clicked killmail to show in the fit window (takes precedence over fit_view).
     fit_loss: Option<crate::lookup::Loss>,
-    /// Shared state for the deferred fleet-ping viewport (pings, on-top, render context). Produced
-    /// off the UI thread by the Jabber thread; consumed by the in-process `ping_viewport_cb`.
     ping_shared: SharedPingWindow,
-    /// The deferred fleet-ping viewport's render closure, built once in `new()`. Used only in the
-    /// IN-PROCESS fallback path (when the overlay child failed to spawn); when the overlay is
-    /// running it owns the ping window and builds its own identical closure.
     ping_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
-    /// Resolved pilot-name cache (shared with the chat watcher + resolver thread).
     pilots: crate::pilot::SharedPilots,
-    /// Character → corp/alliance cache for pilot badges + the lookup window.
     affiliations: crate::affiliation::SharedAffil,
-    /// Per-character zKill-activity + account-age cache (Phase 1 data layer; consumed in Phase 2).
-    #[allow(dead_code)] // read in Phase 2 (reconcile/demotion); Phase 1 only fills + persists it
+    #[allow(dead_code)]
     activity: crate::activity::SharedActivity,
-    /// Pilot → recent (system, time) sightings index (Phase 1 data layer; consumed in Phase 2).
     sightings: crate::intel::SharedSightings,
-    /// Per-pilot 30-day revival window (Phase 2): kept alive + refreshed on every feed mention.
     revivals: crate::watcher::SharedRevivals,
-    /// Static ship-detail cache (avoids per-frame DB queries).
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
-    /// Cached role badges per ship id.
     ship_roles_cache: std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
-    /// Type-id → name cache for fit modules (filled on demand via ESI).
     type_names: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>,
     type_names_loading: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
 impl SpaiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Phosphor icons + a CJK fallback so icons render inline and Chinese names show
-        // instead of tofu (shared with the overlay so both windows look identical).
         crate::theme::install_fonts(&cc.egui_ctx);
 
-        // Image loaders (ship icons / portraits from EVE's image server), fronted by our
-        // 30-day on-disk cache so they aren't re-fetched every run.
         crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
 
-        // Listen on the loopback control port so a second launch can raise this window
-        // instead of opening a duplicate. Best-effort: a bind failure just disables the
-        // feature (see instance.rs).
         crate::instance::start_control_listener(cc.egui_ctx.clone());
 
         let store = Store::open().map_err(|e| eprintln!("store: {e:#}")).ok();
@@ -869,21 +589,16 @@ impl SpaiApp {
         settings.theme.apply(&cc.egui_ctx);
 
         let combat_on = settings.alert_combat;
-        // Seed the default alert rule once (covers nearby intel out of the box).
         if !settings.alerts.seeded {
             settings.alerts.rules.insert(0, crate::settings::default_rule());
             settings.alerts.seeded = true;
         }
-        // Seed the default strategic/peacetime ping rules once (only if the user has none).
         if !settings.jabber_ping_rules_seeded {
             if settings.jabber_ping_rules.is_empty() {
                 settings.jabber_ping_rules = crate::settings::default_ping_rules();
             }
             settings.jabber_ping_rules_seeded = true;
         }
-        // One-time: force the fleet ping window on for existing users (it's now on by default).
-        // Runs once — afterwards the user can turn it back off and it stays off. Persist the
-        // marker immediately so the force can't repeat on the next launch.
         if !settings.fleet_window_forced {
             settings.fleet_ping_window = true;
             settings.fleet_window_forced = true;
@@ -891,7 +606,6 @@ impl SpaiApp {
                 let _ = s.save_settings(&settings);
             }
         }
-        // Restore persisted map/intel options (or defaults).
         let pv: PersistedView = serde_json::from_str(&settings.view_options).unwrap_or(PersistedView {
             overlays: MapOverlays::default(),
             map_layout: crate::map::MapLayout::Spaced,
@@ -900,7 +614,6 @@ impl SpaiApp {
             intel_type: IntelTypeFilter::All,
         });
 
-        // Resolve SDE state from what's already baked; otherwise download on first run.
         let initial = if store.as_ref().map(|s| s.sde_ready()).unwrap_or(false) {
             SdeStatus::Ready
         } else {
@@ -919,7 +632,6 @@ impl SpaiApp {
             .map(|s| s.list_characters())
             .unwrap_or_default();
 
-        // Poll the active character's ESI location in the background.
         let player: crate::esi::SharedPlayer =
             std::sync::Arc::new(std::sync::Mutex::new(crate::esi::Player::default()));
         if let Some(store) = &store {
@@ -928,14 +640,12 @@ impl SpaiApp {
             crate::esi::spawn_location_poller(cid, player.clone(), cc.egui_ctx.clone());
         }
 
-        // Restore persisted fleet pings (kept indefinitely).
         let loaded_pings: Vec<crate::pings::Ping> = store
             .as_ref()
             .map(|s| {
                 s.load_pings(2000).into_iter().filter_map(|j| serde_json::from_str(&j).ok()).collect()
             })
             .unwrap_or_default();
-        // Seed the op-channel comms-link cache from persisted well-formed pings.
         for p in &loaded_pings {
             if let crate::pings::Ping::Fleet {
                 comms: Some(crate::pings::Comms::Mumble { channel, link }),
@@ -947,13 +657,11 @@ impl SpaiApp {
                 }
             }
         }
-        // Restore persisted conversations, grouped by JID (in time order).
         let mut loaded_chats: std::collections::BTreeMap<String, Vec<crate::jabber::ChatMsg>> =
             std::collections::BTreeMap::new();
         if let Some(s) = &store {
             let mut purge: std::collections::HashSet<String> = std::collections::HashSet::new();
             for (jid, sender, body, time, outgoing) in s.load_chats(5000) {
-                // Auto-purge DMs to non-existent (syntactically invalid) JIDs.
                 if !valid_bare_jid(&jid) {
                     purge.insert(jid);
                     continue;
@@ -982,8 +690,6 @@ impl SpaiApp {
         let lookup_tx =
             Some(crate::charlookup::spawn_fetcher(lookup_cache.clone(), cc.egui_ctx.clone()));
 
-        // Per-character zKill-activity + account-age cache (Phase 1). Preload persisted rows so a
-        // restart doesn't re-storm zKill, then start the background fetcher.
         let activity: crate::activity::SharedActivity = {
             let mut c = crate::activity::ActivityCache::default();
             if let Some(s) = &store {
@@ -992,10 +698,7 @@ impl SpaiApp {
             std::sync::Arc::new(std::sync::Mutex::new(c))
         };
         crate::activity::spawn(activity.clone(), cc.egui_ctx.clone());
-        // Pilot → recent (system, time) sightings index (Phase 1), populated by the chat watcher.
         let sightings: crate::intel::SharedSightings = Default::default();
-        // Per-pilot 30-day revival window (Phase 2). Preload persisted (unexpired) entries so a
-        // recently-mentioned real pilot stays kept across a restart; the watcher refreshes them.
         let revivals: crate::watcher::SharedRevivals = {
             let now = chrono::Utc::now().timestamp();
             let mut map = std::collections::HashMap::new();
@@ -1011,8 +714,6 @@ impl SpaiApp {
         let jump_favourites: std::collections::HashSet<i64> =
             settings.jump_favourites.iter().copied().collect();
 
-        // Intel state + recent-alert log are shared with the off-thread alert daemon, so build
-        // them as locals here and hand the daemon its own clones before moving them into `self`.
         let intel_state =
             std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default()));
         let pilots: crate::pilot::SharedPilots =
@@ -1022,13 +723,8 @@ impl SpaiApp {
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recent_alerts: crate::gamewatcher::AlertLog =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        // Shared state for the deferred alert viewport (produced by the alert daemon below,
-        // consumed by its render closure + the UI thread). Created before the engine so it can be
-        // threaded into both the engine (which pushes the feed) and the daemon.
         let alert_shared: SharedAlertWindow =
             std::sync::Arc::new(std::sync::Mutex::new(AlertWindowState::default()));
-        // Shared overlay write-half: the alert daemon and the overlay link both hold this, so the
-        // daemon can push an alert to the overlay while the UI thread is parked (window minimized).
         let overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let alerts_engine = std::sync::Arc::new(AlertEngine::new(
@@ -1048,23 +744,14 @@ impl SpaiApp {
             cc.egui_ctx.clone(),
         );
 
-        // Shared state for the deferred fleet-ping viewport + the EVE-focus flag the viewport's
-        // render closure reads. Both are produced/consumed off the UI thread so the window works
-        // while the main window is minimized.
         let eve_focused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let ping_shared: SharedPingWindow = std::sync::Arc::new(std::sync::Mutex::new(
             PingWindowState { enabled: settings.fleet_ping_window, ..Default::default() },
         ));
 
-        // The deferred viewport render closures, built once for the IN-PROCESS fallback (declared
-        // every frame in `fleet_ping_window_ui` / `alert_window` only when the overlay child failed
-        // to spawn). Factored into free fns so the overlay child process builds the identical
-        // closures (they capture only Send+Sync shared state, no `&self`).
         let ping_viewport_cb = build_ping_viewport_cb(ping_shared.clone());
         let alert_viewport_cb = build_alert_viewport_cb(alert_shared.clone());
 
-        // Background ticker: while pings or alerts are showing, wake the child viewport ~4x/s so
-        // its countdown/blink keep advancing even when the root is minimized and idle.
         {
             let ctx = cc.egui_ctx.clone();
             let ping_shared = ping_shared.clone();
@@ -1398,32 +1085,22 @@ impl SpaiApp {
         }
     }
 
-    /// Open the system-info window for a system (from map/intel/search click).
     fn open_system(&mut self, system_id: i64) {
         self.system_window = Some(system_id);
         self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
     }
 
-    /// Dock a system in the map's right dock (the default for clicking a system on the map);
-    /// it can be popped out to the standalone window from the dock's System tab.
     fn dock_system(&mut self, system_id: i64) {
         self.map_docked_system = Some(system_id);
         self.right_dock_open = true;
         self.right_dock_tab = RightDockTab::System;
     }
 
-    /// Open the ship-info window for a ship type (from an intel ship panel click).
     fn open_ship(&mut self, ship_id: i64) {
         self.ship_window = Some(ship_id);
         self.focus_window = Some(egui::ViewportId::from_hash_of("ship_window"));
     }
 
-    /// Evaluate new intel against the alert rules and dispatch the resulting actions
-    /// (system notification / sound / custom window / push). Only reports newer than
-    /// the last watermark are considered.
-    /// Publish the current alert config to the daemon and drain the alerts it fired into the UI
-    /// (feed + notification window). The heavy evaluation + side effects run on the alert daemon
-    /// (see [`AlertEngine`]) so they keep working while the window is minimized.
     fn drain_alerts(&mut self) {
         {
             let mut cfg = self.alerts_engine.config.lock().unwrap();
@@ -1444,8 +1121,6 @@ impl SpaiApp {
             return;
         }
         for (report, sev, _win) in fired {
-            // The floating alert window's feed/countdown/focus are owned by the alert daemon via
-            // `alert_shared` now; here we only feed the in-app "Recent alerts" history.
             self.alert_feed.push((report, sev));
         }
         let n = self.alert_feed.len();
@@ -1466,12 +1141,12 @@ impl SpaiApp {
         if !self.settings.alert_enabled {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                "Intel alerts are off — no rule will fire until this is enabled.",
+                "Intel alerts are off. No rule will fire until this is enabled.",
             );
         } else if !self.settings.alerts.rules.iter().any(|r| r.enabled) {
             ui.colored_label(
                 crate::theme::standing::WARNING,
-                "No alert rule is enabled — nothing will fire. Enable or add a rule below.",
+                "No alert rule is enabled. Nothing will fire. Enable or add a rule below.",
             );
         }
         ui.add_space(4.0);
@@ -1509,7 +1184,6 @@ impl SpaiApp {
         });
     }
 
-    /// Render the recent fired alerts as full intel cards (same panels as the feed).
     fn alert_history_ui(&mut self, ui: &mut egui::Ui) {
         if self.alert_feed.is_empty() {
             ui.label(egui::RichText::new("None yet.").weak());
@@ -1517,11 +1191,6 @@ impl SpaiApp {
         }
         let mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
             self.alert_feed.iter().rev().take(60).cloned().collect();
-        // These are STORED alert snapshots; unlike the live feed they never pass through reconcile,
-        // so a pilot that is demoted (zKill-inactive), a confirmed non-character, or a stop-word would
-        // sit in `r.pilots` yet never enter `resolved_pilots` - and the card's "resolving" check would
-        // animate "..." forever. Clean each snapshot the same way reconcile cleans the live feed:
-        // drop stop-words / demoted / negatives, keep confirmed, and re-queue genuinely-pending names.
         {
             let mut cache = self.pilots.lock().unwrap_or_else(|e| e.into_inner());
             for (r, _) in feed.iter_mut() {
@@ -1530,10 +1199,10 @@ impl SpaiApp {
                         return false;
                     }
                     match cache.get(p) {
-                        Some(Some(_)) => !cache.is_hidden(p), // confirmed; drop only if user-hidden
-                        Some(None) => false,                  // not a character
+                        Some(Some(_)) => !cache.is_hidden(p),
+                        Some(None) => false,
                         None => {
-                            cache.queue(p); // still pending: keep, but (re)queue so it resolves
+                            cache.queue(p);
                             true
                         }
                     }
@@ -1590,8 +1259,6 @@ impl SpaiApp {
         }
     }
 
-    /// Start (or reflect the enabled state of) the Jabber client. Spawns once the
-    /// SDE is loaded (formup locations resolve to systems) and a password is stored.
     fn maybe_start_jabber(&mut self, ctx: &egui::Context) {
         let enabled = self.settings.jabber_enabled && !self.settings.jabber_jid.trim().is_empty();
         {
@@ -1621,8 +1288,6 @@ impl SpaiApp {
         ));
     }
 
-    /// Resolve a room the user typed: a bare local part ("scouts") gets the MUC
-    /// conference host appended (configured, or derived as `conference.<jid domain>`).
     fn full_room_jid(&self, input: &str) -> String {
         let input = input.trim();
         if input.contains('@') {
@@ -1637,7 +1302,6 @@ impl SpaiApp {
         format!("{input}@{domain}")
     }
 
-    /// Whether a conversation/feed key is currently muted.
     fn jabber_is_muted(&self, key: &str) -> bool {
         self.settings
             .jabber_muted
@@ -1645,7 +1309,6 @@ impl SpaiApp {
             .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
     }
 
-    /// Any non-muted unread conversation or a new ping → drives the badges.
     fn jabber_has_unread(&self) -> bool {
         let st = self.jabber.lock().unwrap();
         if st.pings_unread && !self.jabber_is_muted(crate::jabber::PING_FEED_KEY) {
@@ -1654,10 +1317,6 @@ impl SpaiApp {
         st.unread.iter().any(|k| !self.jabber_is_muted(k))
     }
 
-    /// Drain new-message notifications each frame: play sounds (respecting mute) and
-    /// flash the taskbar when we're not focused.
-    /// Cache the gnf.lt comms link of any well-formed fleet ping, keyed by its op channel, so a
-    /// later malformed ping that only names the channel can still surface "Join Mumble".
     fn cache_op_links(&mut self, pings: &[crate::pings::Ping]) {
         use crate::pings::{Comms, Ping};
         let mut changed = false;
@@ -1677,8 +1336,6 @@ impl SpaiApp {
     }
 
     fn poll_jabber_notify(&mut self, ctx: &egui::Context) {
-        // Publish the notification settings each frame so the Jabber thread can fire sounds +
-        // desktop notifications itself — that path keeps working while the window is minimized.
         let events: Vec<(String, bool)> = {
             let mut st = self.jabber.lock().unwrap();
             st.notify_cfg.sound_enabled = self.settings.jabber_sound_enabled;
@@ -1691,7 +1348,6 @@ impl SpaiApp {
         if events.is_empty() {
             return;
         }
-        // Learn op-channel comms links from any new well-formed fleet pings.
         let recent: Vec<crate::pings::Ping> =
             { self.jabber.lock().unwrap().pings.iter().rev().take(10).cloned().collect() };
         self.cache_op_links(&recent);
@@ -1700,9 +1356,6 @@ impl SpaiApp {
             if self.jabber_is_muted(&key) {
                 continue;
             }
-            // The sound + desktop notification are fired by the Jabber thread (off the UI thread);
-            // here we only do the UI-side bits — raise the fleet-ping window and the unread
-            // attention — so still resolve whether the ping is suppressed.
             let suppress = if is_ping {
                 let latest = self.jabber.lock().unwrap().pings.last().cloned();
                 match latest.as_ref().and_then(|p| self.matching_ping_rule(p)) {
@@ -1713,12 +1366,9 @@ impl SpaiApp {
                 false
             };
             if suppress {
-                continue; // no badge or attention for suppressed pings
+                continue;
             }
             any = true;
-            // The fleet-ping window data is produced by the Jabber thread (into `ping_shared`) so
-            // it keeps appearing while the main window is minimized; here we only do the UI-side
-            // attention badge below.
         }
         if any && !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -1727,14 +1377,10 @@ impl SpaiApp {
         }
     }
 
-
-    /// The first enabled ping-alert rule a fleet ping matches (for the window/highlight).
     fn matching_ping_rule(&self, p: &crate::pings::Ping) -> Option<&crate::settings::PingRule> {
         crate::pings::match_ping_rule(&self.settings.jabber_ping_rules, p)
     }
 
-    /// Resolve a DM target the user typed: a bare local part gets the user's own JID
-    /// domain appended ("Bob" → "Bob@goonfleet.com").
     fn full_user_jid(&self, input: &str) -> String {
         let input = input.trim();
         if input.contains('@') {
@@ -1744,10 +1390,6 @@ impl SpaiApp {
         format!("{input}@{domain}")
     }
 
-    /// The quick-ping composer: pick a group, optionally fill the fleet form, send a
-    /// `!bping <group> …` command to the bot.
-
-    /// Fleet-ping alert rules + notification sound settings.
     fn ping_rules_dialog(&mut self, ctx: &egui::Context) {
         if !self.ping_rules_open {
             return;
@@ -1814,7 +1456,7 @@ impl SpaiApp {
                 });
                 ui.separator();
                 ui.label(
-                    egui::RichText::new("Fleet-ping rules — a match plays its sound + highlights the ping.")
+                    egui::RichText::new("Fleet-ping rules. A match plays its sound and highlights the ping.")
                         .weak(),
                 );
                 let mut remove: Option<usize> = None;
@@ -1879,11 +1521,10 @@ impl SpaiApp {
                                 changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).hint_text("any").desired_width(wide)).changed();
                                 ui.end_row();
                             });
-                            // Actions — suppress overrides (disables) the others.
                             ui.horizontal(|ui| {
                                 changed |= ui
                                     .checkbox(&mut r.suppress, "Suppress")
-                                    .on_hover_text("Ignore matching pings — no sound, highlight or push")
+                                    .on_hover_text("Ignore matching pings: no sound, no highlight, no push")
                                     .changed();
                                 if r.suppress {
                                     r.notify = false;
@@ -1927,7 +1568,6 @@ impl SpaiApp {
         }
     }
 
-    /// Request zKill/ESI enrichment for any killmail links not yet in the cache.
     fn poll_kill_fetches(&self) {
         let Some(tx) = &self.kill_tx else { return };
         let mut to_fetch: Vec<i64> = Vec::new();
@@ -1961,10 +1601,7 @@ impl SpaiApp {
         self.jabber_ui(ui);
     }
 
-    /// The Jabber chat client: connection form, conversation list, messages +
-    /// composer, and a fleet-ping feed.
     fn jabber_ui(&mut self, ui: &mut egui::Ui) {
-        // Connection form when not enabled / no password yet.
         let configured = self.settings.jabber_enabled
             && !self.settings.jabber_jid.trim().is_empty()
             && crate::jabber::has_password(self.settings.jabber_jid.trim());
@@ -2014,7 +1651,6 @@ impl SpaiApp {
                     }
                 }
             }
-            // Show any error/status from the client.
             let status = self.jabber.lock().unwrap().status.clone();
             if !status.is_empty() {
                 ui.add_space(4.0);
@@ -2023,7 +1659,6 @@ impl SpaiApp {
             return;
         }
 
-        // Snapshot what we need, then render (so we don't hold the lock during UI).
         let (connected, status, convos, sel_msgs, pings, rooms, open_dms) = {
             let st = self.jabber.lock().unwrap();
             let mut set: std::collections::BTreeMap<String, Convo> =
@@ -2061,11 +1696,8 @@ impl SpaiApp {
                 .and_then(|j| st.chats.get(j))
                 .cloned()
                 .unwrap_or_default();
-            // Joined rooms (with unread flag), sorted by JID.
             let rooms: Vec<(String, bool)> =
                 st.rooms.iter().map(|r| (r.clone(), st.unread.contains(r))).collect();
-            // Open 1:1 DMs (any chat history that isn't a room) — kept as chips like
-            // rooms, independent of the directory/contacts toggle.
             let open_dms: Vec<(String, bool)> = st
                 .chats
                 .keys()
@@ -2085,7 +1717,6 @@ impl SpaiApp {
                         .color(egui::Color32::from_rgb(r, g, b))
                         .size(10.0),
                 );
-                // The user's own JID next to the status circle.
                 ui.label(egui::RichText::new(&self.settings.jabber_jid).weak());
                 egui::ComboBox::from_id_salt("my_presence")
                     .selected_text(self.jabber_my_presence.label())
@@ -2144,7 +1775,6 @@ impl SpaiApp {
         ui.separator();
 
         let systems = self.systems.clone();
-        // Resizable split: contact list (left) | messages (right).
         egui::Panel::left("jabber_split")
             .resizable(true)
             .default_size(210.0)
@@ -2158,8 +1788,6 @@ impl SpaiApp {
                     self.jabber.lock().unwrap().pings_unread = false;
                 }
                 ui.separator();
-                // Rooms + DMs, each with its input above, capped so the directory
-                // keeps at least half the sidebar height.
                 let chips_h = (ui.available_height() * 0.5).max(90.0);
                 egui::ScrollArea::vertical()
                     .id_salt("chips")
@@ -2187,7 +1815,6 @@ impl SpaiApp {
                             self.settings.jabber_rooms.push(room.clone());
                             self.needs_save = true;
                         }
-                        // Open the room immediately so it stays in view.
                         self.jabber_chat = Some(room);
                     }
                 });
@@ -2240,8 +1867,6 @@ impl SpaiApp {
                         self.jabber_chat = None;
                     }
                 }
-                // DM: open a direct conversation by JID / local part — grouped with the
-                // room/DM chips above (active DMs live here, not down by the directory).
                 ui.horizontal(|ui| {
                     let dm_btn = ui
                         .button(egui_phosphor::regular::CHAT_CIRCLE_DOTS)
@@ -2255,11 +1880,6 @@ impl SpaiApp {
                     let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (dm_btn || go) && !self.jabber_dm_input.trim().is_empty() {
                         let input = self.jabber_dm_input.trim().to_owned();
-                        // A full JID is trusted; a bare name must resolve to a real
-                        // roster contact (so we send to the correct JID, not a guess).
-                        // A full JID is used as-is; a bare name resolves to a roster
-                        // contact's exact JID, else the domain is auto-amended (a valid
-                        // local part); a name with spaces that matches nobody is rejected.
                         let resolved = if input.contains('@') {
                             Some(input.clone())
                         } else if let Some(c) = convos.iter().find(|c| {
@@ -2295,8 +1915,7 @@ impl SpaiApp {
                             .color(crate::theme::standing::WARNING)
                             .small(),
                     );
-                }                // Open DMs (persistent chips like rooms): started conversations, plus
-                // any empty DM that still holds a non-whitespace draft.
+                }
                 let mut dm_chips = open_dms.clone();
                 for (jid, draft) in &self.jabber_drafts {
                     if !draft.trim().is_empty()
@@ -2309,7 +1928,6 @@ impl SpaiApp {
                 }
                 let mut close_dm: Option<String> = None;
                 for (djid, unread) in &dm_chips {
-                    // Closed DMs are hidden (history kept); re-opening un-hides them.
                     if self.settings.jabber_closed_dms.iter().any(|j| j == djid) {
                         continue;
                     }
@@ -2369,8 +1987,6 @@ impl SpaiApp {
                 }
                 });
                 ui.separator();
-                // Directory / Contacts toggle (independent of pings/DMs above), each
-                // marked when it has unread.
                 let contacts: std::collections::HashSet<String> =
                     self.settings.jabber_contacts.iter().cloned().collect();
                 let dir_unread = convos.iter().any(|c| c.unread);
@@ -2397,8 +2013,6 @@ impl SpaiApp {
                     [ui.available_width(), 20.0],
                     egui::TextEdit::singleline(&mut self.jabber_contact_search).hint_text("Search"),
                 );
-                // Filter: directory shows the whole roster, contacts only the private
-                // list; the search box narrows by name or JID.
                 let search = self.jabber_contact_search.to_lowercase();
                 let show_dir = self.jabber_show_directory;
                 let shown: Vec<&Convo> = convos
@@ -2417,14 +2031,13 @@ impl SpaiApp {
                     groups.entry(g).or_default().push(c);
                 }
                 let accent = ui.visuals().hyperlink_color;
-                let mut toggle_contact: Option<(String, bool)> = None; // (jid, add?)
+                let mut toggle_contact: Option<(String, bool)> = None;
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
                     if groups.is_empty() && !show_dir {
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new("No contacts yet — add people from the Directory.").weak());
+                        ui.label(egui::RichText::new("No contacts yet. Add people from the Directory.").weak());
                     }
                     for (group, mut members) in groups {
-                        // Sort A–Z within each group (case-insensitive).
                         members.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         let online = members.iter().filter(|c| c.presence.online()).count();
                         ui.add_space(7.0);
@@ -2451,7 +2064,6 @@ impl SpaiApp {
                                 ui.label(
                                     egui::RichText::new(format!("{online}/{}", members.len())).weak(),
                                 );
-                                // Collapsed group with unread → red dot.
                                 if collapsed && grp_unread {
                                     ui.label(
                                         egui::RichText::new(egui_phosphor::regular::CIRCLE)
@@ -2478,8 +2090,6 @@ impl SpaiApp {
                             let dot = egui::RichText::new(egui_phosphor::regular::CIRCLE)
                                 .color(egui::Color32::from_rgb(r, g, b))
                                 .size(9.0);
-                            // Ellipsize to the space left after the dot + star (the
-                            // scroll area already excludes the scrollbar from avail).
                             let disp = truncate_to(
                                 &c.name,
                                 fit_chars(ui.available_width() - 34.0 - if c.unread { 16.0 } else { 0.0 }),
@@ -2497,7 +2107,6 @@ impl SpaiApp {
                                 let clicked = ui.selectable_label(sel, name)
                                     .on_hover_text(&c.name)
                                     .clicked();
-                                // Unread DM / group conversation → red dot.
                                 if c.unread {
                                     ui.label(
                                         egui::RichText::new(egui_phosphor::regular::CIRCLE)
@@ -2505,7 +2114,6 @@ impl SpaiApp {
                                             .size(8.0),
                                     );
                                 }
-                                // Add to / remove from the private contact list.
                                 let star_col = if is_contact {
                                     ui.visuals().hyperlink_color
                                 } else {
@@ -2555,7 +2163,6 @@ impl SpaiApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
                 match self.jabber_chat.clone() {
                     None => {
-                        // Pre-compute which pings match an alert rule (for highlight).
                         let hl: Vec<bool> =
                             pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
                         let doctrine_url = self.settings.doctrine_url.clone();
@@ -2573,7 +2180,6 @@ impl SpaiApp {
                         use egui_phosphor::regular as icon;
                         let is_room = rooms.iter().any(|(r, _)| r == &jid);
                         let muted = self.jabber_is_muted(&jid);
-                        // Header: name, mute menu, and Leave (rooms only).
                         ui.horizontal(|ui| {
                             let name = jid.split('@').next().unwrap_or(&jid);
                             let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
@@ -2595,7 +2201,6 @@ impl SpaiApp {
                                         self.needs_save = true;
                                         self.jabber_chat = None;
                                     }
-                                    // Add/remove this DM partner from the contact list.
                                     if !is_room {
                                         let is_contact =
                                             self.settings.jabber_contacts.contains(&jid);
@@ -2655,8 +2260,6 @@ impl SpaiApp {
                         let composer_h = 32.0;
                         let session_start = self.session_start;
                         let mut dm_click: Option<String> = None;
-                        // Measure the height left after the (optional) room header so
-                        // the composer always stays on-screen.
                         let body_h = ui.available_height();
                         // Don't snap to the bottom while the pointer is held: that snap on
                         // every incoming message was wiping out any text selection mid-drag
@@ -2671,16 +2274,14 @@ impl SpaiApp {
                                 let accent = ui.visuals().hyperlink_color;
                                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
                                 let now = chrono::Utc::now().timestamp();
-                                // Tight rows so the time line hugs its message.
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 let mut hist_drawn = false;
                                 let mut prev_sender: Option<String> = None;
                                 let mut prev_time: i64 = 0;
                                 for m in &sel_msgs {
-                                    // A divider where historic (loaded) messages end.
                                     if !hist_drawn && m.time >= session_start && m.time > 0 {
                                         hist_drawn = true;
-                                        prev_sender = None; // don't group across the divider
+                                        prev_sender = None;
                                         ui.add_space(2.0);
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new("— new —").weak().small());
@@ -2689,15 +2290,11 @@ impl SpaiApp {
                                     }
                                     let sender =
                                         if m.outgoing { "\u{0}me".to_owned() } else { m.from.clone() };
-                                    // Group consecutive messages from the same sender within 5 min
-                                    // (skip the repeated time + name lines until someone else talks
-                                    // or 5 min elapses).
                                     let grouped = prev_sender.as_deref() == Some(sender.as_str())
                                         && m.time >= prev_time
                                         && m.time - prev_time < 300;
                                     if !grouped {
-                                        // Compact EVE-time line directly above the sender.
-                                        ui.add_space(5.0); // gap from the previous message
+                                        ui.add_space(5.0);
                                         ui.label(
                                             egui::RichText::new(eve_time_label(m.time, now))
                                                 .weak()
@@ -2712,7 +2309,6 @@ impl SpaiApp {
                                                 );
                                             } else {
                                                 let n = m.from.split('@').next().unwrap_or(&m.from);
-                                                // Clickable in rooms → DM that person.
                                                 let lbl = egui::Label::new(
                                                     egui::RichText::new(format!("{n}:"))
                                                         .strong()
@@ -2736,8 +2332,6 @@ impl SpaiApp {
                                 }
                             });
                         ui.horizontal_top(|ui| {
-                            // 2-line composer that grows with content (capped); Enter
-                            // sends, Shift+Enter inserts a newline.
                             let shift_enter = egui::KeyboardShortcut::new(
                                 egui::Modifiers::SHIFT,
                                 egui::Key::Enter,
@@ -2782,7 +2376,6 @@ impl SpaiApp {
                                 }
                             }
                         });
-                        // Clicking a room member's name opens a DM with them.
                         if let Some(nick) = dm_click {
                             let dm = self.full_user_jid(&nick);
                             self.jabber.lock().unwrap().unread.remove(&dm);
@@ -2793,13 +2386,12 @@ impl SpaiApp {
             });
     }
 
-    /// The Jabber chat in its own OS window.
     #[allow(deprecated)]
     fn show_jabber_viewport(&mut self, ctx: &egui::Context) {
         let mut keep = true;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("jabber_window"),
-            egui::ViewportBuilder::default().with_icon(app_icon()).with_title("EVE Spai — Jabber").with_inner_size([720.0, 560.0]),
+            egui::ViewportBuilder::default().with_icon(app_icon()).with_title("EVE Spai - Jabber").with_inner_size([720.0, 560.0]),
             |ctx, _| {
                 egui::CentralPanel::default().show(ctx, |ui| self.jabber_ui(ui));
                 ontop_pin(ctx, "jabber_window");
@@ -2813,9 +2405,6 @@ impl SpaiApp {
         }
     }
 
-    /// Turn buffered zkill killmails into intel cards when within range and worth showing
-    /// (skips shuttles, rookie corvettes and empty pods).
-    /// Populate the ship-id → name map from the ship index, once it's available.
     fn ensure_ship_by_id(&mut self) {
         if self.ship_by_id.is_empty() {
             if let Some(idx) = &self.ship_index {
@@ -2826,12 +2415,6 @@ impl SpaiApp {
         }
     }
 
-    /// Build a kill-intel card from a zKill event (no range filter), or None for a ship
-    /// type not worth showing (shuttle, rookie corvette, cheap empty pod).
-    /// Reload persisted zKill kill-intel into the feed once on startup, so cards survive a
-    /// restart. Kept within the same 1-hour window the intel feed prunes to; older rows are
-    /// dropped. Bypasses the range filter (location may differ from when first seen). Waits
-    /// until the SDE/ship index is ready so ships are named.
     fn load_persisted_kills(&mut self) {
         if self.kills_loaded {
             return;
@@ -2839,7 +2422,7 @@ impl SpaiApp {
         let Some(geo) = self.systems.clone() else { return };
         self.ensure_ship_by_id();
         if self.ship_by_id.is_empty() {
-            return; // ship index not baked yet — retry next frame
+            return;
         }
         self.kills_loaded = true;
         let now = chrono::Utc::now().timestamp();
@@ -2851,8 +2434,6 @@ impl SpaiApp {
             let details = store.load_kill_details();
             (rows, details)
         };
-        // Preload the enriched details so the reloaded cards render their attacker/victim
-        // badges immediately and `poll_kill_fetches` doesn't re-request them from zKill/ESI.
         if !details.is_empty() {
             let mut c = self.kill_cache.lock().unwrap();
             for k in details {
@@ -2865,8 +2446,6 @@ impl SpaiApp {
         }
         let mut reports = Vec::new();
         for (killmail_id, system_id, ship_type_id, time, value) in saved {
-            // Rich enrichment is looked up from the cache at render time; carry only the persisted
-            // nearest-celestial through `info` so a reloaded card still shows "near <celestial>".
             let near_celestial = self
                 .kill_cache
                 .lock()
@@ -2901,10 +2480,6 @@ impl SpaiApp {
         }
     }
 
-    /// A pilot candidate that ESI confirms is NOT a character falls back to being a
-    /// system if the name contains one ("Amarr slave 3424" → Amarr, once we learn
-    /// it's not a real pilot). showinfo-confirmed characters are never demoted.
-    /// Reload the wormhole cache from the store (throttled), dropping expired holes.
     fn reload_wormholes(&mut self) {
         let due = self.wh_reloaded.map(|t| t.elapsed().as_millis() > 2000).unwrap_or(true);
         if !due {
@@ -2922,9 +2497,6 @@ impl SpaiApp {
         }
     }
 
-    /// Wormhole-aware route from `from` to `dest`: the entrance system of each hole the
-    /// shortest path uses, then the destination. `None` if unreachable; a single-element
-    /// `[dest]` means no hole shortens the route (use a plain waypoint).
     fn wh_route_waypoints(&self, from: i64, dest: i64) -> Option<Vec<i64>> {
         use std::collections::{HashMap, HashSet, VecDeque};
         let geo = self.systems.as_ref()?;
@@ -2974,8 +2546,6 @@ impl SpaiApp {
         Some(waypoints)
     }
 
-    /// Set the in-game destination, routing via wormholes (waypoints at each hole
-    /// entrance) when enabled and that's shorter than the gate route.
     fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
         if self.settings.route_via_wormholes {
             let from = self.player_system();
@@ -2991,15 +2561,12 @@ impl SpaiApp {
         crate::esi::set_waypoint(cid, cname, dest, true);
     }
 
-    /// The Wormholes view (docs/WORMHOLES_AND_NEXT.md W4): a table of known holes
-    /// seeded from EVE-Scout (Thera/Turnur) and intel channels.
     fn wormholes_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.heading(format!("{}  Wormholes", egui_phosphor::regular::SPIRAL));
             ui.label(egui::RichText::new(format!("{} known", self.wh_cache.len())).weak());
         });
-        // Filters: destination class, source, and "expiring soon".
         ui.horizontal(|ui| {
             use crate::wormholes::{DestClass, Source};
             ui.label("Dest:");
@@ -3045,8 +2612,6 @@ impl SpaiApp {
         }
 
         let now = chrono::Utc::now().timestamp();
-        // Precompute display strings so the table closure only borrows &mut self for
-        // the click handlers.
         struct Row {
             sys_id: i64,
             sys: String,
@@ -3077,15 +2642,11 @@ impl SpaiApp {
                 if let Some(sig) = &w.signature {
                     sys = format!("{sys}  [{sig}]");
                 }
-                // Prefer the actual far system (with its constellation/region) when
-                // known, else the bare destination class.
                 let (dest, dest_const, dest_region) = match w.dest_system_id.and_then(info_of) {
                     Some(i) => (i.name, i.constellation, i.region),
                     None => (w.dest.label().to_string(), String::new(), String::new()),
                 };
                 let life = if w.explicit_expiry.is_some() {
-                    // A hole only advertises a coarse maximum ("< Nh"); the real life is
-                    // always shorter, so present it as an upper bound.
                     match w.hours_left(now) {
                         Some(h) => format!("< {h}h left"),
                         None => "expired".into(),
@@ -3134,7 +2695,6 @@ impl SpaiApp {
                                 );
                             }
                         });
-                        // Destination: an arrow icon + the target (clickable when known).
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(icon::ARROW_RIGHT).weak());
                             if let Some(id) = r.dest_click {
@@ -3157,7 +2717,6 @@ impl SpaiApp {
         });
     }
 
-    /// Start the chat-log watcher once the SDE is baked (it needs the system index).
     fn maybe_start_watcher(&mut self, ctx: &egui::Context) {
         if self.watcher_started {
             return;
@@ -3169,10 +2728,8 @@ impl SpaiApp {
         let Some(store) = &self.store else { return };
 
         self.chat_dir = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
-        self.watcher_started = true; // mark started regardless, so we don't re-detect every frame
+        self.watcher_started = true;
 
-        // Build the system graph once, adding any configured jump bridges, and
-        // share it with both the chat watcher and the battle (zKill) feed.
         let mut systems = store.load_systems();
         let bridges: Vec<(i64, i64)> = self
             .settings
@@ -3189,7 +2746,6 @@ impl SpaiApp {
         self.systems = Some(systems.clone());
         self.bridges_applied = self.settings.jump_bridges.clone();
 
-        // Bake ship role bonuses (invTraits) lazily, once.
         if let Some(store) = &self.store {
             if !store.traits_baked() {
                 sde::spawn_traits_bake(store.path().to_path_buf(), ctx.clone());
@@ -3204,15 +2760,11 @@ impl SpaiApp {
             }
         }
 
-        // The battle feed runs whenever the SDE is ready (independent of logs).
         let camp_types = self.store.as_ref().map(|s| s.load_camp_types()).unwrap_or_default();
-        // Ship type ids, so battle clustering can drop deployable kills.
         let ship_ids = std::sync::Arc::new(
             store.ship_index().values().map(|(id, _)| *id).collect::<std::collections::HashSet<i64>>(),
         );
-        // Keep a handle so the Battles "Build from kill" action can reconstruct a fight off-thread.
         self.battle_ship_ids = Some(ship_ids.clone());
-        // Hull sizes for battle-filter rules, and the live filter config from settings.
         self.ship_sizes = std::sync::Arc::new(store.ship_sizes());
         *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
         *self.battle_overrides.lock().unwrap() = store.load_battle_overrides();
@@ -3259,7 +2811,6 @@ impl SpaiApp {
             );
         }
 
-        // Combat alerts from game logs.
         if self.settings.alert_combat {
             if let Some(game_dir) = crate::logpaths::game_logs_dir(&self.settings.eve_logs_dir) {
                 crate::gamewatcher::spawn(
@@ -3286,7 +2837,6 @@ impl SpaiApp {
         let player_sys = self.player_system();
         let systems = self.systems.clone();
 
-        // Full-width filter bar: type · max-jumps · search.
         ui.horizontal(|ui| {
             use IntelTypeFilter::*;
             for (lbl, v) in [
@@ -3363,8 +2913,6 @@ impl SpaiApp {
         let mut matches: Vec<&crate::intel::IntelReport> = state
             .reports
             .iter()
-            // A parked report (location held inside an unresolved name) has no system/gate yet —
-            // don't show it until the reconcile derives a confirmed location (no false alarms).
             .filter(|r| r.primary_system().is_some() || !r.gates.is_empty())
             .filter(|r| type_filter.matches(r))
             .filter(|r| {
@@ -3379,16 +2927,11 @@ impl SpaiApp {
                     || r.systems.iter().any(|s| s.name.to_lowercase().contains(&query))
             })
             .collect();
-        // Strictly newest-first by report time (insertion order can drift once a
-        // report is amended and its time refreshed).
         matches.sort_by(|a, b| b.received.cmp(&a.received));
         let last_ship = build_last_ship(&state.reports);
 
         ui.label(egui::RichText::new(format!("{} reports", matches.len())).weak());
         ui.add_space(4.0);
-        // Nothing matched: if any filter is narrowing the feed, say so and offer a one-click
-        // reset (jumps, search text, and the type buttons) so a stale filter can't look like
-        // "no intel". Disjoint-field mutations below run while `state` is still borrowed.
         let filters_active = !query.is_empty()
             || type_filter != IntelTypeFilter::All
             || max_jumps != 0;
@@ -3409,7 +2952,6 @@ impl SpaiApp {
             }
             return;
         }
-        // Ship details (cached) for hull names/icons mentioned in the reports.
         let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> = matches
             .iter()
             .flat_map(|r| r.ships.iter().map(|s| s.id))
@@ -3424,7 +2966,6 @@ impl SpaiApp {
             .into_iter()
             .map(|id| (id, self.ship_roles_cached(id)))
             .collect();
-        // Pilot names confirmed as real characters (by the background resolver).
         let (resolved_pilots, uncertain) = {
             let mut cache = self.pilots.lock().unwrap();
             let rp =
@@ -3436,16 +2977,10 @@ impl SpaiApp {
         let ttl = self.settings.intel_ttl_secs;
         {
             let status = self.system_status.lock().unwrap();
-            // Cards are variable-height (badges wrap), so render normally rather than
-            // with fixed-row virtualisation; cap the count to keep it cheap.
             const CARD_CAP: usize = 250;
-            // Bound the height cache (report keys change on merge).
             if self.intel_heights.len() > 2000 {
                 self.intel_heights.clear();
             }
-            // Virtualised: only on-screen cards are rendered; off-screen ones reserve
-            // their cached height. egui doesn't virtualise variable-height content, so
-            // with hundreds of cards this is what keeps the per-frame cost low.
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(
                 ui,
                 |ui, viewport| {
@@ -3496,7 +3031,6 @@ impl SpaiApp {
         self.handle_intel_click(action, ui.ctx());
     }
 
-    /// Dispatch a click on an intel card (system / kill / ship / pilot).
     fn handle_intel_click(&mut self, action: Option<IntelClick>, ctx: &egui::Context) {
         match action {
             Some(IntelClick::System(id)) => self.open_system(id),
@@ -3513,7 +3047,6 @@ impl SpaiApp {
         }
     }
 
-    /// Open the verdict popup for an uncertain pilot (first time shows the explainer).
     fn open_pilot_verdict(&mut self, name: String) {
         if !self.settings.verdict_explained {
             self.verdict_explainer_open = true;
@@ -3521,8 +3054,6 @@ impl SpaiApp {
         self.verdict_popup = Some(name);
     }
 
-    /// Persist a verdict for a pilot (true = hide / not a pilot, false = real) without opening a
-    /// dialog. Used when the decision was made in the overlay window.
     fn apply_pilot_verdict(&mut self, name: &str, hidden: bool) {
         self.pilots.lock().unwrap_or_else(|e| e.into_inner()).set_verdict(name, hidden);
         if let Some(store) = &self.store {
@@ -3530,15 +3061,12 @@ impl SpaiApp {
         }
     }
 
-    /// The one-time explainer + the "real / not a pilot" verdict popup for an uncertain pilot.
     fn verdict_dialog(&mut self, ctx: &egui::Context) {
-        // Modal (not Window): the backdrop blocks input to the intel cards behind it, so a click on
-        // the dialog can't fall through to a card (which would reopen a verdict popup).
         if self.verdict_explainer_open {
             let mut ack = false;
             let resp = egui::Modal::new(egui::Id::new("verdict_explainer")).show(ctx, |ui| {
                 ui.set_max_width(360.0);
-                ui.heading("Uncertain pilot  (?)");
+                ui.heading("Uncertain pilot (?)");
                 ui.add_space(4.0);
                 ui.label(
                     "A \"?\" means this name matched a real EVE character, but that character looks \
@@ -3560,12 +3088,12 @@ impl SpaiApp {
                 self.settings.verdict_explained = true;
                 self.needs_save = true;
             }
-            return; // don't stack the verdict popup under the explainer
+            return;
         }
         let Some(name) = self.verdict_popup.clone() else {
             return;
         };
-        let mut verdict: Option<bool> = None; // Some(true) = hide, Some(false) = real
+        let mut verdict: Option<bool> = None;
         let resp = egui::Modal::new(egui::Id::new("verdict_popup")).show(ctx, |ui| {
             ui.heading(format!("Is \"{name}\" a pilot?"));
             ui.add_space(4.0);
@@ -3592,8 +3120,6 @@ impl SpaiApp {
         }
     }
 
-    /// Render a small list of intel reports as proper cards (same `intel_row` the feed uses).
-    /// For short lists (Safety / Hunting boards) — no virtualisation. Returns a click action.
     fn render_intel_cards(
         &mut self,
         ui: &mut egui::Ui,
@@ -3647,14 +3173,12 @@ impl SpaiApp {
         action
     }
 
-    /// Overview: at-a-glance summary of live state.
     fn dashboard_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         let now = chrono::Utc::now().timestamp();
         let player_sys = self.player_system();
         let systems = self.systems.clone();
 
-        // Active character + location.
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
@@ -3674,7 +3198,6 @@ impl SpaiApp {
         });
         ui.add_space(6.0);
 
-        // Intel + battle summary.
         let (intel_count, nearest) = {
             let state = self.intel_state.lock().unwrap();
             let live: Vec<&crate::intel::IntelReport> =
@@ -3714,7 +3237,6 @@ impl SpaiApp {
         ui.separator();
         ui.add_space(6.0);
 
-        // Recent alerts.
         ui.label(egui::RichText::new("Recent alerts").strong());
         let log = self.recent_alerts.lock().unwrap();
         if log.is_empty() {
@@ -3729,10 +3251,8 @@ impl SpaiApp {
         }
     }
 
-    /// Queue one tab per (de-duplicated) name from a block of pasted/dropped text.
     fn add_lookup_names(&mut self, text: &str) {
         for line in text.lines() {
-            // First tab-separated column = the name (a pasted member list may carry more columns).
             let name = line.split('\t').next().unwrap_or(line).trim();
             if name.len() < 3 || name.len() > 37 {
                 continue;
@@ -3750,7 +3270,6 @@ impl SpaiApp {
         }
     }
 
-    /// Embedded zKill lookup: paste/drop pilot names, one tab per pilot.
     fn lookup_view(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
@@ -3772,7 +3291,7 @@ impl SpaiApp {
         );
         ui.add(
             egui::TextEdit::multiline(&mut self.lookup_input)
-                .hint_text("Pilot names, one per line...")
+                .hint_text("Pilot names, one per line…")
                 .desired_rows(3)
                 .desired_width(f32::INFINITY),
         );
@@ -3839,7 +3358,6 @@ impl SpaiApp {
             ui.selectable_value(&mut self.pilot_tab, PilotTab::Losses, "Losses");
         });
         ui.separator();
-        // For a list tab, lazily fetch this character's killmail feed.
         let feed = if self.pilot_tab != PilotTab::Overview {
             Some(
                 self.feed_cache
@@ -3892,7 +3410,6 @@ impl SpaiApp {
         });
     }
 
-    /// Render a looked-up pilot's zKill profile.
     fn lookup_profile(ui: &mut egui::Ui, info: &crate::charlookup::LookupInfo) {
         use egui_phosphor::regular as icon;
         ui.horizontal(|ui| {
@@ -3902,7 +3419,6 @@ impl SpaiApp {
             );
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new(&info.name).strong().size(18.0));
-                // Alliance + corp logos, with their names as tooltips.
                 ui.horizontal(|ui| {
                     if let Some(aid) = info.alliance_id {
                         ui.add(
@@ -3975,7 +3491,6 @@ impl SpaiApp {
         }
     }
 
-    /// The "Battle rules" dialog: edit the custom inclusion/exclusion rules.
     fn battle_filter_dialog(&mut self, ctx: &egui::Context) {
         use crate::settings::{BattleCond, RuleAction, ShipSize};
         use egui_phosphor::regular as icon;
@@ -3983,7 +3498,7 @@ impl SpaiApp {
             return;
         }
         let mut changed = false;
-        let keep = Self::dialog_viewport(ctx, "battle_filter", "EVE Spai — Battle rules", [580.0, 620.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "battle_filter", "EVE Spai - Battle rules", [580.0, 620.0], |ui| {
             ui.label(
                 egui::RichText::new(
                     "Battles near your intel are shown by default. Add rules to include or exclude \
@@ -4001,7 +3516,6 @@ impl SpaiApp {
                     egui::Frame::group(ui.style()).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
-                            // Include / Exclude.
                             let mut act = rule.action;
                             egui::ComboBox::from_id_salt(("br_act", i))
                                 .selected_text(if act == RuleAction::Include { "Include" } else { "Exclude" })
@@ -4011,7 +3525,6 @@ impl SpaiApp {
                                     changed |= ui.selectable_value(&mut act, RuleAction::Exclude, "Exclude").changed();
                                 });
                             rule.action = act;
-                            // All / Any.
                             let mut all = rule.match_all;
                             egui::ComboBox::from_id_salt(("br_all", i))
                                 .selected_text(if all { "All of" } else { "Any of" })
@@ -4023,7 +3536,7 @@ impl SpaiApp {
                             rule.match_all = all;
                             if rule.is_broad() {
                                 ui.label(egui::RichText::new(icon::WARNING).color(egui::Color32::from_rgb(0xE0, 0xB0, 0x4C)))
-                                    .on_hover_text("Matches anywhere in EVE — can store a lot of battle history. Add a region/constellation/system/jumps or participant condition to bound it.");
+                                    .on_hover_text("Matches anywhere in EVE and can store a lot of battle history. Add a region/constellation/system/jumps or participant condition to bound it.");
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(icon::TRASH).clicked() {
@@ -4037,7 +3550,6 @@ impl SpaiApp {
                                 }
                             });
                         });
-                        // Conditions.
                         let mut del_cond: Option<usize> = None;
                         for (j, cond) in rule.conditions.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
@@ -4099,7 +3611,6 @@ impl SpaiApp {
                                     }
                                 });
                             });
-                            // Hint for conditions that only filter at display (can't widen ingest).
                             if matches!(
                                 cond,
                                 BattleCond::Alliance(_)
@@ -4141,7 +3652,6 @@ impl SpaiApp {
                 }
                 ui.add_space(8.0);
                 ui.separator();
-                // Restore defaults (with confirmation).
                 if self.battle_filter_confirm_reset {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Replace all rules with the default?").strong());
@@ -4170,8 +3680,6 @@ impl SpaiApp {
         }
     }
 
-    /// Battle-level facts for the filter rules (display side — names are already resolved).
-    /// `max_jumps` is the largest jumps-from-me any rule uses (None = skip the distance search).
     fn battle_match_data(&self, b: &crate::battle::Battle, max_jumps: Option<u32>) -> crate::settings::MatchData {
         use crate::battle::PartyKind;
         let mut d = crate::settings::MatchData { total_isk: Some(b.isk), ..Default::default() };
@@ -4230,7 +3738,6 @@ impl SpaiApp {
         }
         d.max_size = max;
         d.in_intel_area = self.battle_in_tracked_area(b);
-        // Distance from the active character to the nearest battle system (only when a rule uses it).
         if let (Some(maxj), Some(me), Some(systems)) = (max_jumps, self.player_system(), &self.systems) {
             d.min_jumps_from_me = b
                 .systems
@@ -4241,8 +3748,6 @@ impl SpaiApp {
         d
     }
 
-    /// Is a battle within the default intel-tracked area (any system within `ANCHOR_JUMPS` of an
-    /// intel-feed system)?
     fn battle_in_tracked_area(&self, b: &crate::battle::Battle) -> bool {
         let Some(systems) = &self.systems else { return false };
         let intel: Vec<i64> = {
@@ -4254,11 +3759,8 @@ impl SpaiApp {
         })
     }
 
-    /// Whether a clustered battle should be shown given the user's filter rules.
     fn battle_shown(&self, b: &crate::battle::Battle) -> bool {
         let rules = self.battle_filter.lock().unwrap();
-        // Common case (only the default Intel-area rule): visibility is just the tracked-area
-        // test — skip building per-battle match data every frame.
         if rules.is_default_only() {
             return self.battle_in_tracked_area(b);
         }
@@ -4270,18 +3772,12 @@ impl SpaiApp {
         }
     }
 
-    /// Open a clicked d-scan link: fetch + show it inline when it's a public dscan.info share,
-    /// otherwise (auth-gated or unknown host) open it in the browser as before. Delegates the actual
-    /// fetch+host logic to the shared [`open_dscan_view`] so the overlay can reuse it.
     fn open_dscan(&mut self, url: String, ctx: &egui::Context) {
         if let Some(view) = open_dscan_view(url, self.ship_index.clone(), ctx) {
             self.dscan_view = Some(view);
         }
     }
 
-    /// The d-scan viewer dialog: hull counts from a fetched scan; click a hull for ship info.
-    /// The body lives in the shared [`dscan_view_dialog_ui`] so the overlay can render the same
-    /// dialog; the main keeps `taskbar_off=false` (matching the other in-app dialogs).
     fn dscan_view_dialog(&mut self, ctx: &egui::Context) {
         let mut open_ship: Option<i64> = None;
         dscan_view_dialog_ui(ctx, &mut self.dscan_view, false, &mut open_ship);
@@ -4290,11 +3786,10 @@ impl SpaiApp {
         }
     }
 
-    /// (Re)cluster every persisted engagement into `battle_history` on a background thread.
     fn load_battle_history(&self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering;
         if self.battle_history_loading.swap(true, Ordering::SeqCst) {
-            return; // already loading
+            return;
         }
         let Some(systems) = self.systems.clone() else {
             self.battle_history_loading.store(false, Ordering::SeqCst);
@@ -4308,7 +3803,7 @@ impl SpaiApp {
             let battles = crate::store::Store::open()
                 .ok()
                 .map(|s| {
-                    let engs = s.load_engagements(0); // all of recorded history
+                    let engs = s.load_engagements(0);
                     let overrides = s.load_battle_overrides();
                     crate::battle::cluster(
                         &engs,
@@ -4319,9 +3814,6 @@ impl SpaiApp {
                         |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
                     )
                     .into_iter()
-                    // Only real fights that touched the watched area: anchored (the flag is
-                    // persisted per engagement) and with two belligerent sides (drop friendly
-                    // fire / NPC-only losses).
                     .filter(|b| b.is_anchored() && b.is_two_sided())
                     .collect()
                 })
@@ -4332,10 +3824,6 @@ impl SpaiApp {
         });
     }
 
-    /// Run a manual battle-override edit (`f` does the store writes — set tag / exclude / scrub /
-    /// clear, using `Store::next_battle_tag` etc.), then republish the override map to the worker
-    /// and bump the generation so the live + history clusters and the candidate/detail caches all
-    /// refresh. Persisted, so the edit survives the constant re-clustering and a restart.
     fn apply_battle_edit(&mut self, ctx: &egui::Context, f: impl FnOnce(&crate::store::Store)) {
         {
             let Some(store) = &self.store else { return };
@@ -4349,21 +3837,14 @@ impl SpaiApp {
         self.battle_overrides_gen_shared
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.battle_detail_cache = None;
-        // The live worker re-clusters on the gen bump; the history view is a one-shot cluster, so
-        // re-run it explicitly when it's the active source.
         if self.show_history {
             self.load_battle_history(ctx);
         }
     }
 
-    /// The battle-editor body (shown in place of the side columns when Edit is on): a suggested-split
-    /// strip, a split preview when kills are selected, the time-sorted per-kill list (select / open /
-    /// remove), and a pilots sub-panel (purge a pilot from this battle).
     fn battle_edit_view(&mut self, ui: &mut egui::Ui, now: i64) {
         use egui_phosphor::regular as icon;
         let ctx = ui.ctx().clone();
-        // Snapshot the open battle's engagements (a cheap clone, edit-mode only) so the rest of the
-        // method has full &mut self without holding the detail-cache borrow.
         let mut engs: Vec<crate::battle::Engagement> = self
             .battle_detail_cache
             .as_ref()
@@ -4379,7 +3860,6 @@ impl SpaiApp {
             ui.label(egui::RichText::new("No kills to edit.").weak());
             return;
         }
-        // Resolve victim-hull names (async) and snapshot what's resolved this frame.
         let ship_ids: Vec<i64> = engs.iter().map(|e| e.victim_ship).filter(|&i| i != 0).collect();
         self.ensure_type_names(&ship_ids, &ctx);
         let names: std::collections::HashMap<i64, String> = {
@@ -4400,15 +3880,12 @@ impl SpaiApp {
         };
         let break_gap = self.settings.battle_break_secs;
 
-        // Deferred actions (applied after the UI borrows end).
         let mut do_exclude: Option<i64> = None;
         let mut open_sys: Option<i64> = None;
         let mut purge_pilot: Option<i64> = None;
         let mut do_split = false;
 
-        // --- Suggested-splits strip ---
         if !splits.is_empty() {
-            // Distinct pilots ("ships") in the engagements matching `pred`, to size each half.
             let ship_count = |pred: &dyn Fn(&crate::battle::Engagement) -> bool| -> usize {
                 let mut set: std::collections::HashSet<i64> = std::collections::HashSet::new();
                 for e in engs.iter().filter(|e| pred(e)) {
@@ -4429,8 +3906,6 @@ impl SpaiApp {
                     let boundary = sug.time;
                     let before_ships = ship_count(&|e| e.time < boundary);
                     let after_ships = ship_count(&|e| e.time >= boundary);
-                    // Peel off the SMALLER group (e.g. a 5-ship tail, not the 122-ship body); an
-                    // exact ship-count tie breaks toward the fewer-kills half.
                     let before_kills = engs.iter().filter(|e| e.time < boundary).count();
                     let after_kills = engs.len() - before_kills;
                     let split_before = before_ships < after_ships
@@ -4441,9 +3916,9 @@ impl SpaiApp {
                         .unwrap_or_default();
                     let reason = sug.reason.label();
                     if ui
-                        .button(format!("{} Split off {off} ships — {reason} ({hhmm})", icon::SCISSORS))
+                        .button(format!("{} Split off {off} ships: {reason} ({hhmm})", icon::SCISSORS))
                         .on_hover_text(format!(
-                            "Suggested because of a {reason} at {hhmm}; selects the smaller group ({off} ships) to split off."
+                            "Suggested because of a {reason} at {hhmm}. Selects the smaller group ({off} ships) to split off."
                         ))
                         .clicked()
                     {
@@ -4458,13 +3933,11 @@ impl SpaiApp {
             ui.add_space(6.0);
         }
 
-        // --- Split preview (when a selection exists) ---
         let sel_ids = self.battle_kill_sel.clone();
         if sel_ids.is_empty() {
             self.battle_split_preview = None;
         }
         if !sel_ids.is_empty() {
-            // Rebuild the two preview battles only when the selection changes (not every frame).
             let stale = self
                 .battle_split_preview
                 .as_ref()
@@ -4488,7 +3961,7 @@ impl SpaiApp {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
-                    egui::RichText::new(format!("Split preview — {} kills selected", sel_ids.len())).strong(),
+                    egui::RichText::new(format!("Split preview: {} kills selected", sel_ids.len())).strong(),
                 );
                 ui.horizontal_wrapped(|ui| {
                     battle_preview_summary(ui, "Split off", pa);
@@ -4516,7 +3989,6 @@ impl SpaiApp {
             ui.add_space(6.0);
         }
 
-        // --- Per-kill list ---
         let avail_h = (ui.available_height() - 8.0).max(160.0);
         egui::ScrollArea::vertical().id_salt("battle_edit_kills").max_height(avail_h).show(ui, |ui| {
             for e in &engs {
@@ -4566,7 +4038,6 @@ impl SpaiApp {
                 ui.add_space(2.0);
             }
 
-            // --- Pilots sub-panel: purge a pilot from this battle ---
             ui.add_space(6.0);
             egui::CollapsingHeader::new(
                 egui::RichText::new(format!("{} Pilots", egui_phosphor::regular::USERS)).strong(),
@@ -4611,7 +4082,6 @@ impl SpaiApp {
             });
         });
 
-        // --- Apply deferred actions ---
         if let Some(sid) = open_sys {
             self.open_system(sid);
         }
@@ -4645,7 +4115,6 @@ impl SpaiApp {
                     s.set_battle_tag(*kid, Some(tb));
                 }
             });
-            // Drop back to the list so the re-cluster surfaces both halves.
             self.battle_kill_sel.clear();
             self.battle_edit_mode = false;
             self.battle_selected = None;
@@ -4653,12 +4122,10 @@ impl SpaiApp {
         }
     }
 
-    /// The floating review panels: excluded kills, scrubbed pilots, and the add-kill browser.
     fn battle_review_panels(&mut self, ctx: &egui::Context) {
         use egui_phosphor::regular as icon;
         let now = chrono::Utc::now().timestamp();
 
-        // --- Excluded kills ---
         if self.battle_excluded_open {
             let list = self.store.as_ref().map(|s| s.list_excluded_engagements()).unwrap_or_default();
             let ids: Vec<i64> = list.iter().map(|e| e.victim_ship).filter(|&i| i != 0).collect();
@@ -4714,7 +4181,6 @@ impl SpaiApp {
             }
         }
 
-        // --- Scrubbed pilots ---
         if self.battle_scrubs_open {
             let list = self.store.as_ref().map(|s| s.list_scrubs()).unwrap_or_default();
             let mut open = true;
@@ -4748,10 +4214,7 @@ impl SpaiApp {
             }
         }
 
-        // --- Add kill ---
         if self.battle_add_open {
-            // The target battle is the open one; its current kills (to tag the whole group) and any
-            // existing group tag.
             let target_kids: Vec<i64> = self
                 .battle_detail_cache
                 .as_ref()
@@ -4761,7 +4224,6 @@ impl SpaiApp {
                 let o = self.battle_overrides.lock().unwrap();
                 target_kids.iter().find_map(|k| o.tag.get(k).copied())
             };
-            // Every kill id already in a known battle (live + history), for the "in a BR" badge.
             let known: std::collections::HashSet<i64> = {
                 let mut s = std::collections::HashSet::new();
                 for src in [&self.battles, &self.battle_history] {
@@ -4774,7 +4236,7 @@ impl SpaiApp {
                 s
             };
             let mut rows = self.store.as_ref().map(|s| s.load_kill_intel(now - 86_400)).unwrap_or_default();
-            rows.reverse(); // newest first
+            rows.reverse();
             rows.truncate(300);
             let ship_ids: Vec<i64> = rows.iter().map(|r| r.2).filter(|&i| i != 0).collect();
             self.ensure_type_names(&ship_ids, ctx);
@@ -4825,7 +4287,7 @@ impl SpaiApp {
                     });
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("Recent kills (last 24h) — pick one to attach to this battle.")
+                        egui::RichText::new("Recent kills (last 24h). Pick one to attach to this battle.")
                             .weak(),
                     );
                     ui.label(
@@ -4868,8 +4330,6 @@ impl SpaiApp {
             self.battle_add_link = link_input;
             self.battle_add_open = open;
             if let Some(nk) = add_kid {
-                // A kill that isn't a persisted engagement yet is still tagged here; the tag attaches
-                // when the engagement is fetched. Tagging an existing engagement's kill is immediate.
                 let tids = target_kids.clone();
                 self.apply_battle_edit(ctx, move |s| {
                     let tag = existing_tag.unwrap_or_else(|| s.next_battle_tag());
@@ -4880,18 +4340,12 @@ impl SpaiApp {
                     }
                     s.set_battle_tag(nk, Some(tag));
                 });
-                // Ask the worker to fetch + buffer the killmail if it isn't a persisted engagement
-                // yet; once it arrives the recorded tag pulls it into this battle's group.
                 self.battle_add_queue.lock().unwrap().push(nk);
                 self.battle_add_link.clear();
             }
         }
     }
 
-    /// Save `battle` as a self-contained report JSON via a native save dialog. The document embeds
-    /// the Battle snapshot, the engagements that compose it (so it can be re-clustered on import),
-    /// and the manual overrides in force. Writes only to the path the user picks — no config
-    /// mutation. Returns the chosen path, or `None` if the dialog was cancelled.
     fn save_battle_report(
         &self,
         battle: &crate::battle::Battle,
@@ -4901,7 +4355,7 @@ impl SpaiApp {
             .add_filter("EVE Spai battle report", &["json"])
             .save_file()
         else {
-            return Ok(None); // cancelled
+            return Ok(None);
         };
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
@@ -4920,10 +4374,6 @@ impl SpaiApp {
         Ok(Some(path))
     }
 
-    /// The character to share as (its id + the DB path): the active character when it has a
-    /// stored token, else any character with a stored refresh token. `None` → no login yet.
-    /// Characters that can actually manage battle reports — those with a stored refresh token. The
-    /// user picks one of these (they may have many alts); BRs are owned per character server-side.
     fn br_authed_chars(&self) -> Vec<(i64, String)> {
         self.characters
             .iter()
@@ -4932,10 +4382,6 @@ impl SpaiApp {
             .collect()
     }
 
-    /// The character to upload/manage BRs under: the explicitly chosen `br_character` if it's still
-    /// authenticated, else the active character (if authenticated), else any authenticated character.
-    /// Only ever returns a character with a usable token, so a logged-out alt can't trigger a
-    /// spurious re-auth.
     fn share_identity(&self) -> Option<(i64, std::path::PathBuf)> {
         let path = self.store.as_ref()?.path().to_path_buf();
         let authed = |id: i64| crate::tokens::load_refresh(id).is_some();
@@ -4952,11 +4398,6 @@ impl SpaiApp {
         Some((id, path))
     }
 
-    /// Resolve every ship type id referenced by `battle` (victims, attackers, pods, and roster
-    /// participants) to its hull name, so the exported document is self-contained and a web viewer
-    /// can label hulls without an SDE. Reuses the app's already-resolved `type_names` cache (the
-    /// roster UI populates it for the open battle); ids whose name is not resolved are omitted, and
-    /// the viewer falls back to the id. Id 0 (unknown ship) is skipped.
     fn battle_ship_names(
         &self,
         battle: &crate::battle::Battle,
@@ -4983,13 +4424,6 @@ impl SpaiApp {
             .collect()
     }
 
-    /// Resolve every pilot character id referenced by `battle` (victims, attackers, and roster
-    /// participants) to its corp/alliance [`Affil`](crate::battle::Affil)iation, so the exported
-    /// document is self-contained and a web viewer can show a corp icon and an alliance icon per
-    /// pilot without an SDE. Reuses the app's already-resolved `affiliations` cache (the pilot
-    /// badges populate it) — read-only, no blocking network on the UI thread, exactly like
-    /// [`battle_ship_names`](Self::battle_ship_names). A pilot with no cached corp is omitted; a
-    /// pilot in no alliance keeps the alliance fields 0 / empty. Char id 0 is skipped.
     fn battle_affiliations(
         &self,
         battle: &crate::battle::Battle,
@@ -5011,7 +4445,6 @@ impl SpaiApp {
         ids.into_iter()
             .filter_map(|id| {
                 let a = cache.get(id)?;
-                // Need at least a corp to place the pilot; drop anyone not yet resolved.
                 let corp_id = a.corp?;
                 Some((
                     id,
@@ -5026,8 +4459,6 @@ impl SpaiApp {
             .collect()
     }
 
-    /// Build the `BattleReportDoc` for the open battle (same content as Save JSON), ready to
-    /// gzip + upload.
     fn build_share_doc(&self, battle: &crate::battle::Battle) -> crate::breport::BattleReportDoc {
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
@@ -5044,8 +4475,6 @@ impl SpaiApp {
         )
     }
 
-    /// Kick off a "Share to eve-spai.com" upload for the open battle. Triggers a login when no
-    /// character is available.
     fn start_share(&mut self, battle: &crate::battle::Battle, ctx: &egui::Context) {
         match self.share_identity() {
             Some((char_id, path)) => {
@@ -5060,7 +4489,6 @@ impl SpaiApp {
                 );
             }
             None => {
-                // No character yet — start the SSO flow so the user can log in to share.
                 *self.br_share.lock().unwrap() =
                     crate::brshare::ShareStatus::Error("Log in to share (opening EVE SSO…).".into());
                 self.start_login(ctx);
@@ -5068,7 +4496,6 @@ impl SpaiApp {
         }
     }
 
-    /// Open (and lazily load) the "My shared BRs" panel.
     fn open_my_shared(&mut self, ctx: &egui::Context) {
         self.br_mine_open = true;
         match self.share_identity() {
@@ -5082,8 +4509,6 @@ impl SpaiApp {
         }
     }
 
-    /// Inline share status under the battle toolbar: progress, the resulting link (with Copy /
-    /// Open / Delete), or an error.
     fn share_status_ui(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
         enum Action {
@@ -5155,7 +4580,6 @@ impl SpaiApp {
         }
     }
 
-    /// The "My shared BRs" modal: the caller's reports with per-row open + delete.
     fn my_shared_window(&mut self, ctx: &egui::Context) {
         use egui_phosphor::regular as icon;
         if !self.br_mine_open {
@@ -5292,9 +4716,6 @@ impl SpaiApp {
         }
     }
 
-    /// Load a saved report file into the standalone viewer (`self.loaded_report`). When the document
-    /// carries raw engagements they are re-clustered through `preview_battle` so the report renders
-    /// exactly like a live battle; otherwise the embedded Battle snapshot is shown directly.
     fn load_battle_report(&mut self, path: &std::path::Path, ctx: &egui::Context) {
         let parsed = std::fs::read_to_string(path)
             .map_err(anyhow::Error::from)
@@ -5315,9 +4736,6 @@ impl SpaiApp {
         }
     }
 
-    /// Show a battle in the standalone "Imported" viewer (`self.loaded_report`): resolves the
-    /// hull names and builds the render-ready involvement + rosters, exactly as the Open-JSON path
-    /// does, so an opened report and a built-from-kill report display identically.
     fn show_imported_report(&mut self, b: crate::battle::Battle, title: String, ctx: &egui::Context) {
         let ids: Vec<i64> = b
             .engagements
@@ -5337,9 +4755,6 @@ impl SpaiApp {
         self.report_msg = None;
     }
 
-    /// Poll the "Build from kill" worker. When it finishes, show the reconstructed fight through
-    /// the same standalone viewer an opened JSON uses; surface a failure inline. Only consumes a
-    /// terminal state so an in-flight Loading is left untouched.
     fn poll_build_from_kill(&mut self, ctx: &egui::Context) {
         let done = {
             let mut g = self.build_from_kill.lock().unwrap();
@@ -5352,8 +4767,6 @@ impl SpaiApp {
         };
         match done {
             Some(crate::zkill::BuildFromKill::Done(engs, _seed)) => {
-                // The worker centers the engagement set on the seed kill, so the single battle
-                // built here contains it (the same path Open JSON takes for a saved report).
                 let b = crate::battle::preview_battle(engs, self.settings.battle_break_secs);
                 let title = b
                     .systems
@@ -5369,7 +4782,6 @@ impl SpaiApp {
         }
     }
 
-    /// Standalone viewer for a report opened from disk. Reuses [`battle_detail`].
     fn loaded_report_view(&mut self, ui: &mut egui::Ui) {
         use egui_phosphor::regular as icon;
         let Some(lr) = self.loaded_report.as_ref() else { return };
@@ -5423,11 +4835,8 @@ impl SpaiApp {
     }
 
     fn battles_view(&mut self, ui: &mut egui::Ui) {
-        // The "My shared BRs" modal floats above any battles sub-view.
         self.my_shared_window(&ui.ctx().clone());
-        // Surface a finished "Build from kill" report (or its failure) as soon as it's ready.
         self.poll_build_from_kill(&ui.ctx().clone());
-        // A report opened from disk (or built from a kill) takes over the view until dismissed.
         if self.loaded_report.is_some() {
             self.loaded_report_view(ui);
             return;
@@ -5436,16 +4845,9 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let player_sys = self.player_system();
         let systems = self.systems.clone();
-        // The default view is the live 1-day cluster; "Full history" re-clusters everything ever
-        // recorded.
         let source = if self.show_history { self.battle_history.clone() } else { self.battles.clone() };
 
-        // Detail mode: the opened battle (matched by a representative kill id). The heavy data
-        // (clone + involvement + per-side rosters) is cached and rebuilt only when the battle
-        // changes — the view repaints every frame (Live badge, hover) and recomputing it each
-        // frame for a big fight is the slow path.
         if let Some(kid) = self.battle_selected {
-            // Cheap change signature under the lock — no clone unless the battle actually changed.
             let sig = source
                 .lock()
                 .unwrap()
@@ -5454,7 +4856,6 @@ impl SpaiApp {
                 .map(|b| (b.kills, b.end, self.battle_overrides_gen));
             match sig {
                 None => {
-                    // The battle aged out of the cluster — drop back to the list.
                     self.battle_selected = None;
                     self.battle_detail_cache = None;
                 }
@@ -5499,7 +4900,6 @@ impl SpaiApp {
                         let mut save_clicked = false;
                         let mut share_clicked = false;
                         let mut mine_clicked = false;
-                        // Wrap to a second row on narrow/default windows instead of overflowing.
                         ui.horizontal_wrapped(|ui| {
                             if ui
                                 .button(format!("{}  Back to battles", icon::ARROW_LEFT))
@@ -5551,8 +4951,6 @@ impl SpaiApp {
                                 save_clicked = true;
                             }
                             toolbar_sep(ui);
-                            // Which character owns/manages the shared reports (the user may have
-                            // many alts; BRs are owned per character server-side).
                             let authed = self.br_authed_chars();
                             if authed.len() > 1 {
                                 let current = self.share_identity().map(|(id, _)| id);
@@ -5612,13 +5010,12 @@ impl SpaiApp {
                             let ctx = ui.ctx().clone();
                             self.open_my_shared(&ctx);
                         }
-                        // Share status + result (link with Copy / Open / Delete).
                         self.share_status_ui(ui);
                         if save_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 self.report_msg = match self.save_battle_report(&b) {
                                     Ok(Some(path)) => Some(format!("Saved report to {}", path.display())),
-                                    Ok(None) => None, // dialog cancelled
+                                    Ok(None) => None,
                                     Err(e) => Some(format!("Could not save report: {e}")),
                                 };
                             }
@@ -5636,7 +5033,6 @@ impl SpaiApp {
                             return;
                         }
                         ui.add_space(6.0);
-                        // The review panels float above whichever body is shown.
                         self.battle_review_panels(ui.ctx());
                         if ambiguous && !self.battle_edit_mode {
                             egui::Frame::new()
@@ -5669,9 +5065,6 @@ impl SpaiApp {
                         let sort = self.battle_roster_sort;
                         let ship_sizes = self.ship_sizes.clone();
                         let cache = self.battle_detail_cache.as_ref().unwrap();
-                        // Read type names LIVE each frame — they resolve asynchronously, so a
-                        // snapshot taken when the cache was built would freeze unresolved hulls as
-                        // "Type <id>". The heavy involvement/rosters stay cached.
                         let (clicked_system, hover) = {
                             let type_names = self.type_names.lock().unwrap();
                             battle_detail(
@@ -5709,14 +5102,11 @@ impl SpaiApp {
             );
         }
 
-        // Filter + scope toggle.
         let mut to_load: Option<std::path::PathBuf> = None;
         let mut open_my_shared = false;
         let mut do_build = false;
         let building =
             matches!(*self.build_from_kill.lock().unwrap(), crate::zkill::BuildFromKill::Loading);
-        // Wrap to a second row on narrow/default windows instead of overflowing (this row carries
-        // search + several filters + Open JSON / My shared / Build-from-kill).
         ui.horizontal_wrapped(|ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add(
@@ -5727,7 +5117,6 @@ impl SpaiApp {
             if !self.battle_search.is_empty() && ui.button("Clear").clicked() {
                 self.battle_search.clear();
             }
-            // Minimum cumulative ISK destroyed (in billions) — hides small skirmishes. Persisted.
             toolbar_sep(ui);
             ui.label("\u{2265} ISK").on_hover_text("Only list battles whose total ISK destroyed is at least this many billions");
             let mut bn = self.settings.min_battle_isk / 1e9;
@@ -5743,7 +5132,6 @@ impl SpaiApp {
                 self.settings.min_battle_isk = (bn * 1e9).max(0.0);
                 self.needs_save = true;
             }
-            // Activity-break gap: a lull longer than this auto-splits one battle into two.
             toolbar_sep(ui);
             ui.label("Split gap (min)")
                 .on_hover_text("Auto-split a battle when there's a lull longer than this.");
@@ -5758,7 +5146,6 @@ impl SpaiApp {
                 self.needs_save = true;
                 self.battle_break_shared.store(secs, std::sync::atomic::Ordering::Relaxed);
             }
-            // "Full history" re-clusters every recorded engagement; default is the live 1-day view.
             if ui.checkbox(&mut self.show_history, "Full history").changed() {
                 self.battle_selected = None;
                 if self.show_history {
@@ -5769,7 +5156,6 @@ impl SpaiApp {
                 self.battle_filter_open = true;
             }
             toolbar_sep(ui);
-            // Open a battle-report JSON the user picks (native dialog) — no config dir is scanned.
             if ui
                 .button(format!("{}  Open JSON", egui_phosphor::regular::FOLDER_OPEN))
                 .on_hover_text("Open a saved battle-report JSON file")
@@ -5790,7 +5176,6 @@ impl SpaiApp {
                 open_my_shared = true;
             }
             toolbar_sep(ui);
-            // Reconstruct a whole fight from a single zKill kill link / id (off-thread).
             let input = ui.add_enabled(
                 !building,
                 egui::TextEdit::singleline(&mut self.build_kill_input)
@@ -5816,7 +5201,6 @@ impl SpaiApp {
             if building {
                 ui.add(egui::Spinner::new());
             }
-            // Work throttle — caps how hard the feed + clustering run.
             let mut th = self.settings.work_throttle;
             egui::ComboBox::from_id_salt("work_throttle")
                 .selected_text(format!("{}  {}", egui_phosphor::regular::GAUGE, th.label()))
@@ -5884,15 +5268,8 @@ impl SpaiApp {
         let query = self.battle_search.trim().to_lowercase();
         let loading = self.battle_history_loading.load(std::sync::atomic::Ordering::Relaxed);
 
-        // Filtering + the per-battle distance search are expensive, so rebuild the (capped) card
-        // list only when an input actually changes — not every repaint. The cap keeps rendering
-        // bounded no matter how large the history grows.
         const MAX_CARDS: usize = 150;
-        // Safety bound on the candidate set (well above MAX_CARDS so the ISK filter still has room
-        // to choose from); in-area battles are normally far fewer.
         const MAX_CANDIDATES: usize = 1000;
-        // Candidate signature: everything EXCEPT the ISK threshold. Only this triggers the
-        // expensive selection (custom-filter match + distance BFS per battle).
         let cand_sig = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -5922,8 +5299,6 @@ impl SpaiApp {
             let battles = source.lock().unwrap();
             let mut cands: Vec<(i64, Option<u32>, f64, crate::battle::Battle)> = Vec::new();
             for b in battles.iter() {
-                // "Full history" is the comprehensive view — show every recorded battle, not just
-                // those near current intel; the live view still applies the tracked-area filter.
                 let shown = self.show_history || self.battle_shown(b);
                 if b.kills >= 2 && b.matches(&query) && shown {
                     let from_you = b
@@ -5932,9 +5307,6 @@ impl SpaiApp {
                         .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
                         .min();
                     let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
-                    // The list row only needs the summary (systems, sides, kills, isk, span) — NOT
-                    // the engagements, which are heavy to clone for a big fight. Strip them; the
-                    // detail view clones the full battle on open.
                     let light = crate::battle::Battle {
                         engagements: Vec::new(),
                         start: b.start,
@@ -5954,11 +5326,8 @@ impl SpaiApp {
             }
             drop(battles);
             self.battle_candidates = cands;
-            self.battle_cards_sig = 0; // force the cheap card derivation below to re-run
+            self.battle_cards_sig = 0;
         }
-        // Cheap: apply the ISK threshold to the candidates. Re-runs when the candidates or the
-        // threshold change — so dragging the ISK slider only does this numeric pass, not the
-        // expensive selection above.
         let cards_sig = self
             .battle_candidates_sig
             .wrapping_add(self.settings.min_battle_isk.to_bits());
@@ -6064,14 +5433,10 @@ impl SpaiApp {
         });
         self.battle_merge_sel = merge_sel;
         if let Some(kid) = open {
-            // Opening a battle leaves merge mode; the detail view's own Edit toggle drives the
-            // per-kill editor.
             self.battle_selected = Some(kid);
             self.battle_edit_mode = false;
         }
         if do_merge {
-            // Collect the selected battles' kill ids from the clustered source (matched by their
-            // representative = max kill id), then tag them all into one group. Drop the lock first.
             let sel = self.battle_merge_sel.clone();
             let mut kids: Vec<i64> = Vec::new();
             {
@@ -6106,7 +5471,6 @@ impl SpaiApp {
         }
     }
 
-    /// Whether a character (by name) is missing a scope the app now needs.
     fn char_missing_scope(&self, name: &str, scope: &str) -> bool {
         self.characters
             .iter()
@@ -6131,7 +5495,6 @@ impl SpaiApp {
         }
     }
 
-    /// The Characters view (M1: SSO login + token storage; live ESI data lands later).
     fn characters_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
 
@@ -6241,7 +5604,6 @@ impl SpaiApp {
         }
     }
 
-    /// Cached role badges for a ship (derived from its baked role bonuses).
     fn ship_roles_cached(&self, id: i64) -> Vec<(&'static str, &'static str)> {
         match self.store.as_ref() {
             Some(s) => ship_roles_cached(s, &self.ship_roles_cache, id),
@@ -6249,7 +5611,6 @@ impl SpaiApp {
         }
     }
 
-    /// Cached static ship details (avoids a DB query per ship every frame).
     fn ship_details_cached(&self, id: i64) -> Option<crate::store::ShipDetails> {
         match self.store.as_ref() {
             Some(s) => ship_details_cached(s, &self.ship_cache, id),
@@ -6257,13 +5618,12 @@ impl SpaiApp {
         }
     }
 
-    /// Pilot lookup window (zKill): hulls flown + fits, in its own OS window.
     fn pilot_window(&mut self, ctx: &egui::Context) {
         use crate::lookup::LookupState;
         if !self.pilot_window_open {
             return;
         }
-        let keep = Self::dialog_viewport(ctx, "pilot_window", "EVE Spai — Pilot", [420.0, 560.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "pilot_window", "EVE Spai - Pilot", [420.0, 560.0], |ui| {
             ui.horizontal(|ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.pilot_query)
@@ -6303,7 +5663,6 @@ impl SpaiApp {
         }
     }
 
-    /// A killmail list for a Kills / Solo / Losses tab (newest first, as fetched).
     fn km_list(&mut self, ui: &mut egui::Ui, list: &[crate::lookup::Loss], loading: bool) {
         if list.is_empty() {
             let msg = if loading { "Loading\u{2026}" } else { "Nothing in this category." };
@@ -6315,7 +5674,6 @@ impl SpaiApp {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for l in list {
                 let det = self.ship_details_cached(l.ship_type_id);
-                // Skip the noise: pods, rookie corvettes, and the basic NPC racial shuttles.
                 let skip = det.as_ref().is_some_and(|d| {
                     d.group == "Capsule"
                         || d.group == "Corvette"
@@ -6401,7 +5759,6 @@ impl SpaiApp {
             ui.selectable_value(&mut self.pilot_sort, PilotSort::Recent, "Recent");
         });
 
-        // Aggregate hulls (excluding pods, corvettes and shuttles).
         let mut agg: std::collections::HashMap<i64, (u32, i64)> = std::collections::HashMap::new();
         for l in &report.losses {
             let skip = self
@@ -6447,7 +5804,6 @@ impl SpaiApp {
         });
     }
 
-    /// Ensure module type names are resolved (background ESI bulk lookup).
     fn ensure_type_names(&self, ids: &[i64], ctx: &egui::Context) {
         let missing: Vec<i64> = {
             let names = self.type_names.lock().unwrap();
@@ -6474,9 +5830,7 @@ impl SpaiApp {
         });
     }
 
-    /// Fit window: the pilot's chosen fit for a hull, with EFT copy + open-in-site.
     fn fit_window(&mut self, ctx: &egui::Context) {
-        // A clicked killmail (specific fit) takes precedence over the (ship, mode) aggregate.
         let (loss, ship_id, mode, has_mode) = if let Some(l) = self.fit_loss.clone() {
             let sid = l.ship_type_id;
             (Some(l), sid, FitMode::Recent, false)
@@ -6501,7 +5855,7 @@ impl SpaiApp {
         let names = self.type_names.lock().unwrap().clone();
         let mut new_mode = mode;
 
-        let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai — Fit", [460.0, 620.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "fit_window", "EVE Spai - Fit", [460.0, 620.0], |ui| {
             ui.horizontal(|ui| {
                 let url = eve_type_icon_url(ship_id, 28.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(28.0)));
@@ -6522,8 +5876,6 @@ impl SpaiApp {
 
             egui::ScrollArea::vertical().max_height(330.0).auto_shrink([false, false]).show(ui, |ui| {
                 use crate::lookup::Slot;
-                // Modules sit in their slots (qty 1); loaded charges (qty > 1 in a
-                // fitted slot) and cargo are collected into the cargo hold, stacked.
                 let cargo = fit_cargo(loss);
                 let section = |ui: &mut egui::Ui, title: &str, slot: Slot| {
                     let mods: Vec<&crate::lookup::Item> = loss
@@ -6565,7 +5917,6 @@ impl SpaiApp {
                 if ui.button("Copy EFT").clicked() {
                     ui.ctx().copy_text(eft_string(&ship_name, loss, &names));
                 }
-                // Save to the active character's in-game fittings.
                 let has_char = self.active_character != "No character";
                 ui.add_enabled_ui(has_char, |ui| {
                     if ui.button("Save Fit").on_hover_text("Save to your in-game fittings").clicked() {
@@ -6616,15 +5967,7 @@ impl SpaiApp {
         }
     }
 
-    /// Declare the fleet-ping window as a DEFERRED viewport, EVERY frame regardless of whether
-    /// any ping is showing. Declaring it unconditionally means the child window object exists
-    /// before the main window is ever minimized and survives the minimize (a deferred viewport
-    /// paints standalone, woken by `request_repaint_of`), so fleet pings still appear while the
-    /// root is minimized. Visibility/contents are managed entirely by `ping_viewport_cb` (it
-    /// starts hidden and shows itself when there are pings). Data is produced off the UI thread by
-    /// the Jabber thread; here we only publish the current settings + render context.
     fn fleet_ping_window_ui(&mut self, ctx: &egui::Context) {
-        // For "smart" on-top, refresh whether EVE is focused (throttled), like the alert window.
         if self.settings.fleet_ping_on_top == crate::settings::OnTop::Smart {
             let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
             if due {
@@ -6632,7 +5975,6 @@ impl SpaiApp {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
-        // Publish the on-top/enabled flags + render context into the shared state each frame.
         {
             let mut st = self.ping_shared.lock().unwrap();
             st.on_top = self.settings.fleet_ping_on_top;
@@ -6643,16 +5985,11 @@ impl SpaiApp {
             st.eve_focused = self.eve_focused.load(std::sync::atomic::Ordering::Relaxed);
         }
 
-        // When the overlay child is running it owns the fleet-ping window (a separate X11 client KWin
-        // won't iconify with the main window, and on every OS it survives the main minimizing). The
-        // main never declares the viewport then; instead it pushes the current ping set + config to
-        // the overlay over IPC (change-detected).
         if self.overlay.is_some() {
             self.send_ping_to_overlay();
             return;
         }
 
-        // Fallback (overlay child failed to spawn): render the fleet-ping window in-process.
         let on_top = self.settings.fleet_ping_on_top != crate::settings::OnTop::Never
             && (self.settings.fleet_ping_on_top == crate::settings::OnTop::Always
                 || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
@@ -6666,16 +6003,11 @@ impl SpaiApp {
         );
     }
 
-    /// True when the floating alert window feature is active (alerts on AND a custom-window rule
-    /// enabled). Shared by `alert_window` and the overlay-config send.
     fn alert_window_feature(&self) -> bool {
         self.settings.alert_enabled
             && self.settings.alerts.rules.iter().any(|r| r.enabled && r.custom_window)
     }
 
-    /// Build the combined overlay config (ping + alert fields) from settings + the ping shared
-    /// state. Sent by `send_ping_to_overlay` (which runs every frame) so a single Config carries
-    /// both windows' behaviour.
     fn overlay_config(&self) -> crate::ipc::OverlayConfig {
         let (ping_enabled, ping_on_top) = {
             let st = self.ping_shared.lock().unwrap();
@@ -6692,22 +6024,15 @@ impl SpaiApp {
         }
     }
 
-    /// Push the current fleet-ping set + combined overlay config to the overlay child over IPC.
-    /// Resends only when the snapshot changed, when a new ping needs raising, or after the overlay
-    /// reconnects (forced full resend so a respawned overlay repopulates).
     fn send_ping_to_overlay(&mut self) {
         use std::hash::{Hash, Hasher};
         let Some(link) = self.overlay.as_ref() else { return };
-        // A fresh overlay connection forces a full resend (its state is empty). Reset BOTH the ping
-        // and alert change-detection so the respawned overlay is fully repopulated.
         if link.take_reconnected() {
             self.ping_sent_hash = None;
             self.config_sent_hash = None;
             self.alert_sent_hash = None;
         }
 
-        // Snapshot the shared state; consume `raise` here (the in-process closure that used to is
-        // no longer declared on Linux, so nothing else clears it).
         let msg = {
             let mut st = self.ping_shared.lock().unwrap();
             let raise = std::mem::take(&mut st.raise);
@@ -6746,13 +6071,10 @@ impl SpaiApp {
             h.finish()
         };
 
-        // Config: resend only when it actually changed (or after a reconnect reset).
         if Some(config_hash) != self.config_sent_hash {
             link.send(&crate::ipc::MainToOverlay::Config(cfg));
             self.config_sent_hash = Some(config_hash);
         }
-        // Ping: resend on a content change or a pending raise (a fresh ping), never on a config-only
-        // change.
         if Some(ping_hash) != self.ping_sent_hash || msg.raise {
             link.send(&crate::ipc::MainToOverlay::Ping(msg));
             self.ping_sent_hash = Some(ping_hash);
@@ -6765,16 +6087,8 @@ impl SpaiApp {
         }
     }
 
-    /// Declare the custom-notification (alert) window as a DEFERRED viewport, EVERY frame
-    /// regardless of whether an alert is showing. Declaring it unconditionally means the child
-    /// window exists before the main window is ever minimized and survives the minimize (a deferred
-    /// viewport paints standalone, woken by `request_repaint_of`), so alerts still appear + count
-    /// down while the root is minimized. The feed/countdown/pin are produced off the UI thread by
-    /// the alert daemon (`alert_shared`); here we only publish the current settings + render
-    /// context, drain the closure's outputs, and declare the viewport.
     fn alert_window(&mut self, ctx: &egui::Context) {
         let feature = self.alert_window_feature();
-        // For "smart" on-top, refresh whether EVE is focused (throttled to ~1 s).
         if self.settings.alerts.on_top == crate::settings::OnTop::Smart {
             let due = self
                 .eve_focus_checked
@@ -6786,24 +6100,15 @@ impl SpaiApp {
             }
         }
 
-        // Build the window's feed from the authoritative in-app `alert_feed` (last 50), each entry
-        // swapped for its LIVE reconciled report so the window shows the same resolved pilots/ships
-        // as the main feed — exactly as the old immediate window did. This OVERWRITES whatever the
-        // daemon pushed into `alert_shared.feed` (which only serves the minimized case, when this
-        // publish doesn't run); the same alerts are already in `alert_feed` via `drain_alerts`.
         let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
             if !feature || self.alert_feed.is_empty() {
                 Vec::new()
             } else {
                 let live = self.intel_state.lock().unwrap();
-                // Last 50 in chronological order (oldest first) — the daemon's `push` also produces
-                // oldest-first, and the closure renders `.rev()` (newest first), like the old window.
                 let start = self.alert_feed.len().saturating_sub(50);
                 self.alert_feed[start..]
                     .iter()
                     .filter_map(|(r, sev)| {
-                        // Match by stable report id (an amendment keeps the id), swapping the stale
-                        // snapshot for the live report; a truly removed report drops out.
                         let id = r.id;
                         live.reports.iter().find(|lr| lr.id == id).cloned().map(|lr| (lr, *sev))
                     })
@@ -6831,17 +6136,11 @@ impl SpaiApp {
             build_last_ship(&self.intel_state.lock().unwrap().reports)
         };
 
-        // When the overlay child is running it owns the alert window (a separate X11 client KWin won't
-        // iconify with the main window, and on every OS it survives the main minimizing). The main
-        // never declares the viewport then; instead it pushes the feed + pre-resolved kill/
-        // affiliation subsets to the overlay over IPC. The overlay derives ship details/roles +
-        // system names from its own SDE, so those aren't sent.
         if self.overlay.is_some() {
             self.send_alert_to_overlay(feed, status, resolved_pilots, uncertain, last_ship, feature);
             return;
         }
 
-        // Fallback (overlay child failed to spawn): render the alert window in-process.
         {
             let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
                 && (self.settings.alerts.on_top == crate::settings::OnTop::Always
@@ -6855,13 +6154,9 @@ impl SpaiApp {
             let systems = self.systems.clone();
             let player_sys = self.player_system();
 
-            // Publish into the shared state + drain the closure's outputs.
             let (_active, just_opened, clicks, verdicts, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
                 st.enabled = feature;
-                // One-time explainer flag: sync with the overlay (monotonic false->true). An ack in
-                // EITHER window persists to settings, and the flag is pushed back so neither window
-                // shows the explainer twice or forgets it across a restart.
                 if st.verdict_explained && !self.settings.verdict_explained {
                     self.settings.verdict_explained = true;
                     self.needs_save = true;
@@ -6882,17 +6177,11 @@ impl SpaiApp {
                 st.kills = Some(self.kill_cache.clone());
                 st.affil = Some(self.affiliations.clone());
                 if !feature {
-                    // Feature off: reset the countdown/pin (the daemon won't, since no win-rule fires).
                     st.secs = 0.0;
                     st.pinned = false;
                     st.feed.clear();
                 }
-                // Visibility is driven by the countdown (and pin), like the old window — NOT by
-                // whether the feed has entries (the feed persists in `alert_feed`, rarely empty).
                 let active = st.enabled && (st.secs > 0.0 || st.pinned);
-                // `open` is flipped true by the closure once it actually paints; on this frame the
-                // viewport hasn't rendered yet, so `!st.open` still detects the open transition for
-                // the geometry-save guard below.
                 let just_opened = active && !st.open;
                 let clicks = std::mem::take(&mut st.clicks);
                 let verdicts = std::mem::take(&mut st.verdict_out);
@@ -6901,11 +6190,9 @@ impl SpaiApp {
                 (active, just_opened, clicks, verdicts, moved, moved_size)
             };
 
-            // A click in the feed opens the relevant window (in the main viewport).
             for click in clicks {
                 self.act_on_intel_click(click, ctx);
             }
-            // Verdicts decided in the overlay: persist them here.
             for (name, hidden) in verdicts {
                 self.apply_pilot_verdict(&name, hidden);
             }
@@ -6915,10 +6202,6 @@ impl SpaiApp {
                 self.persist_alert_geometry(moved, moved_size);
             }
 
-            // Declare the deferred viewport UNCONDITIONALLY (not gated on an active alert), so the
-            // child window exists before the root is minimized; the closure drives visibility /
-            // click-through / level via ViewportCommand. The closure starts it hidden and shows
-            // itself when an alert is active.
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of("alert_window"),
                 alert_viewport_builder(on_top),
@@ -6930,8 +6213,6 @@ impl SpaiApp {
         }
     }
 
-    /// Act on a click in the alert window's feed (open the relevant window in the main viewport).
-    /// Shared by the in-process drain (non-Linux) and the IPC drain (Linux, `OverlayToMain::Click`).
     fn act_on_intel_click(&mut self, click: IntelClick, ctx: &egui::Context) {
         match click {
             IntelClick::System(id) => self.open_system(id),
@@ -6951,8 +6232,6 @@ impl SpaiApp {
         }
     }
 
-    /// Persist a moved/resized alert-window geometry into settings (threshold-guarded). Shared by
-    /// the in-process drain (non-Linux) and the IPC drain (Linux, `OverlayToMain::AlertMoved`).
     fn persist_alert_geometry(&mut self, moved: Option<(f32, f32)>, moved_size: Option<(f32, f32)>) {
         if let Some(p) = moved {
             if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
@@ -6969,12 +6248,6 @@ impl SpaiApp {
         }
     }
 
-    /// Push the current alert feed + pre-resolved kill/affiliation subsets to the overlay child over
-    /// IPC. The overlay has no fetchers, so the main resolves (and queues via `want`) the kill info
-    /// keyed by killmail id and the affiliations keyed by character id (feed pilots + each kill's
-    /// victim/final-blow char) that `intel_row` will look up, and sends only those subsets. Resends
-    /// only when the content changed; a fresh alert force-resends (to reset the countdown + refocus)
-    /// even if unchanged.
     fn send_alert_to_overlay(
         &mut self,
         feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
@@ -6986,9 +6259,6 @@ impl SpaiApp {
     ) {
         use std::hash::{Hash, Hasher};
 
-        // Per-report jumps from the player's current system, computed HERE with the main's bridged
-        // `Systems` (the overlay's own `Systems` has no bridges, so it can't recompute correctly).
-        // Parallel to `feed`; the in-process render closure derives this identically.
         let player_sys = self.player_system();
         let from_you: Vec<Option<u32>> = feed
             .iter()
@@ -6997,8 +6267,6 @@ impl SpaiApp {
 
         let Some(link) = self.overlay.as_ref() else { return };
 
-        // Gather the cached kill info for the feed's killmail links + the character ids each kill's
-        // victim/final-blow references (for the affil tooltip).
         let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
         let mut kill_chars: Vec<i64> = Vec::new();
         {
@@ -7016,8 +6284,6 @@ impl SpaiApp {
                 }
             }
         }
-        // Resolve (and queue) the affiliation for every char id the alert will look up: feed pilots
-        // + the kill victim/final-blow chars. `want` keeps the main's resolver filling the rest.
         let mut affil_send: std::collections::HashMap<i64, crate::affiliation::Affil> = Default::default();
         {
             let mut ac = self.affiliations.lock().unwrap();
@@ -7029,24 +6295,21 @@ impl SpaiApp {
             }
         }
 
-        // A fresh alert (the daemon set focus_pending + secs when a window-rule fired) resets the
-        // overlay's countdown + refocuses; consume the one-shot flag here.
         let (fresh, daemon_secs) = {
             let mut st = self.alert_shared.lock().unwrap();
             (std::mem::take(&mut st.focus_pending), st.secs)
         };
         let secs = if !feature || feed.is_empty() {
-            0.0 // hide the overlay window
+            0.0
         } else if fresh {
             if daemon_secs.is_finite() { daemon_secs.max(0.0) } else { ALERT_SECS_INFINITE }
         } else {
-            ALERT_SECS_REFRESH // content-only refresh: leave the overlay's own countdown running
+            ALERT_SECS_REFRESH
         };
 
-        // Content hash (order-independent for the maps); excludes the one-shot secs/focus.
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
-        from_you.hash(&mut hasher); // resend when the player moves (distances change, feed doesn't)
+        from_you.hash(&mut hasher);
         hash_sorted_map(&mut hasher, &status);
         hash_sorted_map(&mut hasher, &resolved_pilots);
         hash_sorted_map(&mut hasher, &last_ship);
@@ -7073,10 +6336,8 @@ impl SpaiApp {
         self.alert_sent_hash = Some(hash);
     }
 
-    /// Persist map overlay + intel-filter options when they change.
     fn persist_view_options(&mut self) {
         let pv = PersistedView {
-            // Persist the Standard layers, not a transient mode preset.
             overlays: if self.map_mode == MapMode::Standard {
                 self.map_overlays
             } else {
@@ -7095,8 +6356,6 @@ impl SpaiApp {
         }
     }
 
-    /// Rebuild the system graph when the jump-bridge config changes, so stale
-    /// bridge edges are removed from the map and routing at runtime.
     fn maybe_rebuild_graph(&mut self, ctx: &egui::Context) {
         if self.systems.is_none() || self.settings.jump_bridges == self.bridges_applied {
             return;
@@ -7112,7 +6371,7 @@ impl SpaiApp {
         systems.add_bridges(&bridges);
         self.systems = Some(std::sync::Arc::new(systems));
         self.bridges_applied = self.settings.jump_bridges.clone();
-        self.map_loaded = None; // reload map systems with the new connectivity
+        self.map_loaded = None;
         self.map_draw_key = None;
         self.map_systems_cache.clear();
         self.map_draw_cache.clear();
@@ -7184,9 +6443,7 @@ impl SpaiApp {
         }
     }
 
-    /// Render the interactive map into `ui` (used in the main panel and the pop-out
-    /// window). Full-panel canvas with floating controls.
-    #[allow(deprecated)] // show_tooltip_at_pointer: replacement API is heavier
+    #[allow(deprecated)]
     fn draw_map(&mut self, ui: &mut egui::Ui) {
         use crate::map::MapView;
         if self.map_regions.is_empty() {
@@ -7194,7 +6451,6 @@ impl SpaiApp {
                 self.map_regions = store.regions();
             }
         }
-        // Per-system character presence: system id → (count, includes the active char).
         let active_char = self.active_character.clone();
         let (player_sys, char_here) = {
             let p = self.player.lock().unwrap();
@@ -7207,20 +6463,14 @@ impl SpaiApp {
                     e.1 = true;
                 }
             }
-            // Match the canonical `player_system()` (prefer the active character's resolved
-            // location over the lagging `system_id`), so the radial/tree threat view picks up
-            // the centre as soon as ESI reports the location at startup.
             let sys = p.locations.get(&active_char).map(|(s, _)| *s).or(p.system_id);
             (sys, here)
         };
         if !self.map_initialized {
-            // Open on the full universe map (in-game style); navigate in from there.
             self.map_view = MapView::Universe;
             self.map_initialized = true;
         }
 
-        // Follow: keep the view on the player's region. Cache the player-system→region
-        // lookup so this doesn't hit SQLite every frame (the map repaints continuously).
         if self.map_follow {
             if let (MapView::Region(r), Some(psys)) = (self.map_view, player_sys) {
                 let pr = match self.map_follow_region {
@@ -7241,8 +6491,6 @@ impl SpaiApp {
             }
         }
 
-        // Threat views (radial / tree) are laid out from a centre system by jumps;
-        // they don't use the geographic projection at all.
         if self.map_layout.is_threat() {
             let rect = ui.available_rect_before_wrap();
             self.map_last_rect = Some(rect);
@@ -7254,8 +6502,6 @@ impl SpaiApp {
             return;
         }
 
-        // (Re)load systems for the current view, keeping only gate-connected systems
-        // (drops wormhole / abyssal islands that have no K-space connections).
         if self.map_loaded != Some(self.map_view) {
             if let Some(old) = self.map_loaded {
                 self.map_systems_cache.insert(old, std::mem::take(&mut self.map_systems));
@@ -7272,7 +6518,6 @@ impl SpaiApp {
                     raw.into_iter()
                         .filter(|s| !g.neighbors(s.id).is_empty())
                         .filter(|s| {
-                            // Hide permanently inaccessible regions (e.g. UUA-F4).
                             g.info_of(s.id).map(|i| !is_hidden_region(&i.region)).unwrap_or(true)
                         })
                         .collect()
@@ -7283,8 +6528,6 @@ impl SpaiApp {
             self.map_loaded = Some(self.map_view);
         }
 
-        // Drawn coordinates: EVE's flattened 2D layout (position2D) when "Spaced" is
-        // on, else raw geographic x/z. The 2D coords are baked, so this is instant.
         let spaced = self.map_layout == crate::map::MapLayout::Spaced;
         let want = (self.map_view, spaced);
         if self.map_draw_key != Some(want) {
@@ -7314,12 +6557,10 @@ impl SpaiApp {
             return;
         };
 
-        // Overlay mode fades the whole map to the configured opacity.
         if self.map_overlay_mode {
             ui.set_opacity(self.settings.map_overlay_opacity.clamp(0.2, 1.0));
         }
         let rect = ui.available_rect_before_wrap();
-        // On window resize, rescale the pan so the same world point stays centred.
         if let Some(prev) = self.map_last_rect {
             let d = prev.size() - rect.size();
             if d.x.abs() > 0.5 || d.y.abs() > 0.5 {
@@ -7333,14 +6574,12 @@ impl SpaiApp {
         self.map_last_rect = Some(rect);
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
-        // Mouse back/forward buttons.
         if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra1)) {
             self.map_back();
         }
         if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra2)) {
             self.map_forward_nav();
         }
-        // Drag pans (and disables follow) — unless an overlay window-move is active.
         if resp.dragged() && !self.map_overlay_drag {
             self.map_pan += resp.drag_delta();
             self.map_follow = false;
@@ -7348,14 +6587,11 @@ impl SpaiApp {
         if !resp.dragged() {
             self.map_overlay_drag = false;
         }
-        // Zoom centred on the cursor.
         if resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
                 if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
                     let old = self.map_zoom;
-                    // Min ~= fit-to-view (can't shrink past the whole map); max lets
-                    // individual systems separate.
                     let new = (old * (scroll * 0.003).exp()).clamp(0.7, 60.0);
                     let q = cursor - (rect.center() + self.map_pan);
                     self.map_pan += q * (1.0 - new / old);
@@ -7363,7 +6599,6 @@ impl SpaiApp {
                 }
             }
         }
-        // Follow: centre the player's system.
         if self.map_follow {
             if let Some(ps) = player_sys.and_then(|id| self.map_draw.iter().find(|s| s.id == id)) {
                 let base = crate::map::project(ps.x, ps.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
@@ -7371,13 +6606,11 @@ impl SpaiApp {
             }
         }
 
-        // Project all systems.
         let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
         for s in &self.map_draw {
             pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
         }
 
-        // One-shot focus from an intel click.
         if let Some(fid) = self.map_focus.take() {
             if let Some(s) = self.map_draw.iter().find(|s| s.id == fid) {
                 let base = crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, egui::Vec2::ZERO);
@@ -7385,7 +6618,6 @@ impl SpaiApp {
             }
         }
 
-        // Overlay mode: a drag that doesn't start on a system moves the window.
         if self.map_overlay_mode && !self.map_overlay_locked && resp.drag_started() {
             let on_obj = ui
                 .input(|i| i.pointer.press_origin())
@@ -7397,8 +6629,6 @@ impl SpaiApp {
             }
         }
 
-        // Click a system: in Jump Plan mode edit the route (§8.6); otherwise dock its info in
-        // the right dock (pop out to a window from there).
         if resp.clicked() {
             if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
                 if let Some(id) = nearest_system(click, &pos, 10.0) {
@@ -7411,15 +6641,12 @@ impl SpaiApp {
             }
         }
 
-        // Right-click a system: context menu (destination / waypoint / jump route).
         if resp.secondary_clicked() {
             self.ctx_menu_system =
                 ui.input(|i| i.pointer.interact_pos()).and_then(|p| nearest_system(p, &pos, 10.0));
         }
         let ctx_sys = self.ctx_menu_system;
         resp.context_menu(|ui| {
-            // Widen the menu so the longest labels ("Plan Jump Route From Here", the Travel
-            // actions) lay out on one line instead of wrapping awkwardly.
             ui.set_min_width(220.0);
             let Some(sid) = ctx_sys else {
                 ui.close();
@@ -7476,14 +6703,13 @@ impl SpaiApp {
                     self.jump_favourites.insert(sid);
                 }
                 self.persist_jump_favourites();
-                self.jump_route_key = None; // re-route with the new favourite bias
+                self.jump_route_key = None;
                 ui.close();
             }
             if ui.button("Show Info").clicked() {
                 self.dock_system(sid);
                 ui.close();
             }
-            // Capital docking permits (user-set; preferred when routing, never required).
             let permit = self
                 .systems
                 .as_ref()
@@ -7504,10 +6730,6 @@ impl SpaiApp {
                 if ui.button("Travel: set as start").clicked() {
                     self.travel_start = Some(sid);
                     self.travel_start_q.clear();
-                    // A start that isn't the character's current system can't coexist with
-                    // following the character: Live mode forces the start to your position
-                    // (it would immediately revert this pick), and the map-follow view-lock
-                    // keeps snapping back to your region. Disable both so the pick sticks.
                     if Some(sid) != self.player_system() {
                         self.travel_live = false;
                         self.map_follow = false;
@@ -7543,21 +6765,10 @@ impl SpaiApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-        // Small uniform dots like the in-game star map.
-        // Scale dots with zoom so they don't look tiny when zoomed in (spacing scales
-        // linearly with zoom up to 60×); cap so they stay sane at extreme zoom.
         let dot = (0.5 * self.map_zoom).clamp(0.7, 7.0);
-        // Offsets for labels / sov-upgrade icons are in screen pixels, so when zoomed
-        // out (systems crowd together) a fixed gap makes them drift onto neighbours.
-        // Shrink the gap as we zoom out (full size once reasonably zoomed in).
         let label_off = (self.map_zoom / 8.0).clamp(0.35, 1.0);
 
-        // Sovereignty territory: opaque filled regions per holder. Drawing opaque
-        // (rather than translucent) means same-colour overlaps merge into one
-        // uniform region instead of darkening per system. Only player-sov nullsec
-        // is coloured — NPC sov (no alliance) and hi/low-sec are left clear.
         if self.map_overlays.sov != SovMode::Off {
-            // Adaptive radius from the median gate-edge length on screen.
             let mut edge_len: Vec<f32> = Vec::new();
             if let Some(graph) = &self.systems {
                 for s in self.map_draw.iter().take(600) {
@@ -7571,7 +6782,6 @@ impl SpaiApp {
                     }
                 }
             }
-            // Median via quickselect (O(n)) instead of a full sort — same value, no full order.
             let terr = if edge_len.is_empty() {
                 (dot * 6.0).max(dot * 3.0) * 0.72
             } else {
@@ -7581,7 +6791,6 @@ impl SpaiApp {
                 });
                 edge_len[mid].max(dot * 3.0) * 0.72
             };
-            // Muted, opaque region colour (keeps dots/labels readable on top).
             let region = |c: egui::Color32| {
                 egui::Color32::from_rgb(
                     (c.r() as f32 * 0.5) as u8,
@@ -7592,7 +6801,6 @@ impl SpaiApp {
             let status = self.system_status.lock().unwrap();
             for s in &self.map_draw {
                 let Some(f) = status.get(&s.id) else { continue };
-                // Player sovereignty only (NPC sov has no alliance id).
                 if f.sov_alliance.is_none() {
                     continue;
                 }
@@ -7605,14 +6813,13 @@ impl SpaiApp {
                         .iter()
                         .find(|c| c.alliances.iter().any(|a| a.eq_ignore_ascii_case(name)))
                         .map(Self::coalition_paint)
-                        .unwrap_or(egui::Color32::from_rgb(0x60, 0x60, 0x60)), // independent
+                        .unwrap_or(egui::Color32::from_rgb(0x60, 0x60, 0x60)),
                     SovMode::Off => continue,
                 };
                 painter.circle_filled(pos[&s.id], terr, region(col));
             }
         }
 
-        // Search highlight: faint background on systems that have a chosen upgrade.
         if let Some(up) = &self.map_highlight_upgrade {
             let upl = up.to_lowercase();
             let hi: std::collections::HashSet<String> = self
@@ -7630,7 +6837,6 @@ impl SpaiApp {
             }
         }
 
-        // Configured jump bridges (drawn distinctly, in green, like in-game).
         let bridges: std::collections::HashSet<(i64, i64)> = if let Some(g) = &self.systems {
             self.settings
                 .jump_bridges
@@ -7645,12 +6851,9 @@ impl SpaiApp {
             Default::default()
         };
 
-        // Cull anything whose bounding box is off-screen — most of the ~13k edges / ~5k nodes
-        // are outside the viewport when zoomed in, and drawing them just wastes tessellation.
         let cull = rect.expand(8.0);
         let seg_visible = |a: egui::Pos2, b: egui::Pos2| egui::Rect::from_two_pos(a, b).intersects(cull);
 
-        // Gate links (each pair once); bridges are drawn separately below.
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
         if let Some(graph) = &self.systems {
             for s in &self.map_draw {
@@ -7677,9 +6880,6 @@ impl SpaiApp {
             }
         }
 
-        // Wormhole overlay: direct k-space↔k-space holes (teal), chains through
-        // J-space (purple, dashed, labelled with the J-space hop count), and a spiral
-        // marker on systems that hold a hole into (disconnected) J-space.
         if self.map_overlays.wormholes {
             let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
             let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
@@ -7733,8 +6933,6 @@ impl SpaiApp {
                     );
                 }
             }
-            // Thera isn't on the k-space map: place it near its in-view connections
-            // (clamped just inside the map) and draw its holes.
             if self.map_overlays.thera {
                 let conns: Vec<&crate::store::MapSystem> = self
                     .wh_overlay
@@ -7745,13 +6943,10 @@ impl SpaiApp {
                 let conn_screen: Vec<egui::Pos2> =
                     conns.iter().filter_map(|s| pos.get(&s.id).copied()).collect();
                 if !conns.is_empty() && !conn_screen.is_empty() {
-                    // Stable WORLD position (above the centroid) so it pans/zooms with the map.
                     let mut cx = conns.iter().map(|s| s.x).sum::<f64>() / conns.len() as f64;
                     let min_z = conns.iter().map(|s| s.z).fold(f64::INFINITY, f64::min);
                     let max_z = conns.iter().map(|s| s.z).fold(f64::NEG_INFINITY, f64::max);
                     let mut tz = min_z - (max_z - min_z).max(1.0) * 0.25;
-                    // In the 2D layout, anchor Thera between Cobalt Edge and Tenal (its
-                    // in-game map location) when both regions are in view.
                     if self.map_layout == crate::map::MapLayout::Spaced {
                         let rc = |rid: i64| -> Option<(f64, f64)> {
                             let sys: Vec<&crate::store::MapSystem> =
@@ -7771,8 +6966,8 @@ impl SpaiApp {
                         }
                     }
                     let tp = crate::map::project(cx, tz, &bounds, rect, self.map_zoom, self.map_pan);
-                    let line_col = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0); // blue links
-                    let tcol = egui::Color32::from_rgb(0xB0, 0x70, 0xE0); // purple: J-space -1.0
+                    let line_col = egui::Color32::from_rgb(0x6E, 0xC8, 0xF0);
+                    let tcol = egui::Color32::from_rgb(0xB0, 0x70, 0xE0);
                     for p in &conn_screen {
                         painter.line_segment([tp, *p], egui::Stroke::new(1.6, line_col));
                     }
@@ -7787,7 +6982,6 @@ impl SpaiApp {
                         egui::FontId::proportional(12.0), tcol);
                 }
             }
-            // Turnur badge (the system stays on the map; this just marks it).
             if self.map_overlays.turnur {
                 if let Some(tp) = pos.get(&TURNUR).copied() {
                     let col = egui::Color32::from_rgb(0xE0, 0xA8, 0x4C);
@@ -7803,10 +6997,7 @@ impl SpaiApp {
             }
         }
 
-        // Map overlays (ADM / activity / sov upgrades) as rings/markers behind dots.
-        // (Sovereignty territory is drawn separately, below.)
         let ov = self.map_overlays;
-        // Show sov-upgrade icons exactly when the system name labels appear (not earlier).
         let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {
             let status = self.system_status.lock().unwrap();
@@ -7832,7 +7023,6 @@ impl SpaiApp {
                             } else {
                                 crate::theme::standing::HOSTILE
                             };
-                            // Colored backdrop behind the system (not a ring).
                             painter.circle_filled(p, dot + 7.0, c.gamma_multiply(0.30));
                         }
                     }
@@ -7846,13 +7036,8 @@ impl SpaiApp {
                         }
                     }
                 }
-                // Sov upgrades: specific, level-coloured icons near the system when
-                // zoomed in (mineral image for mining, skull for ratting, dish for
-                // exploration). Not a ring.
                 if ov.upgrades && zoomed {
                     if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
-                        // One stored label can list several comma-separated upgrades
-                        // ("...Array 3, Exploration Detector 3") — draw an icon for each.
                         let ukinds = self.upgrade_kinds;
                         let parts: Vec<&str> = ups
                             .iter()
@@ -7860,11 +7045,8 @@ impl SpaiApp {
                             .filter(|up| ukinds[upgrade_kind(up) as usize])
                             .collect();
                         for (k, up) in parts.iter().take(6).enumerate() {
-                            // Sit the icons in a row above the system name, clear of the dot.
                             let ip = p
                                 + egui::vec2(dot + 4.0 + k as f32 * 20.0, -(dot + 9.0) * label_off);
-                            // Skip icons that would spill onto a dock — the mineral image uses
-                            // ui.put (not the rect-clipped painter), so it isn't clipped.
                             if ip.x + 20.0 > rect.right() || ip.y - 20.0 < rect.top() || !rect.contains(ip) {
                                 continue;
                             }
@@ -7888,7 +7070,6 @@ impl SpaiApp {
                                     );
                                     let url = eve_type_icon_url(tid, sz);
                                     ui.put(rect, egui::Image::new(url)).on_hover_text(*up);
-                                    // Level indicator dot (top-right corner).
                                     painter.circle_filled(rect.right_top(), 3.0, lcol);
                                 }
                             }
@@ -7898,8 +7079,6 @@ impl SpaiApp {
             }
         }
 
-        // Player route: animated dashed line flowing toward the destination. Clears itself
-        // once the active character reaches the destination.
         let mut reached_dest = false;
         if let (Some(dest), Some(ps), Some(graph)) =
             (self.route_destination, player_sys, self.systems.as_ref())
@@ -7914,14 +7093,13 @@ impl SpaiApp {
                         dashed_flow(&painter, *p1, *p2, route_col, phase);
                     }
                 }
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33)); // dashes
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
             }
         }
         if reached_dest {
             self.route_destination = None;
         }
 
-        // Gate-camp markers from the live kill feed: a red campfire above the system.
         if self.map_overlays.camps {
             let now = chrono::Utc::now().timestamp();
             if now - self.camped_cache_at >= 2 {
@@ -7931,13 +7109,11 @@ impl SpaiApp {
             let font = egui::FontId::proportional(15.0);
             for (id, level) in &self.camped_cache {
                 if let Some(p) = pos.get(id) {
-                    // Colour by camp probability: red = likely camp, orange = possible, yellow = flag.
                     let col = match level {
                         crate::camp::CampLevel::Likely => egui::Color32::from_rgb(0xEF, 0x44, 0x44),
                         crate::camp::CampLevel::Possible => egui::Color32::from_rgb(0xFF, 0xA7, 0x26),
                         crate::camp::CampLevel::Flag => egui::Color32::from_rgb(0xFF, 0xD5, 0x4F),
                     };
-                    // Highlight glow under the system, stronger for higher probability.
                     let glow = match level {
                         crate::camp::CampLevel::Likely => 0.30,
                         crate::camp::CampLevel::Possible => 0.20,
@@ -7955,11 +7131,8 @@ impl SpaiApp {
             }
         }
 
-        // Travel Mode: the planned route legs + square markers on the start / waypoints /
-        // destination (shown even before a route is computed).
         if self.map_mode == MapMode::Travel {
             let cyan = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
-            // The game's direct gate route, dimmer and behind the planned one for comparison.
             if let Some(direct) = &self.travel_direct_route {
                 let gray = egui::Color32::from_rgb(0x9E, 0x9E, 0x9E);
                 for w in direct.windows(2) {
@@ -7968,7 +7141,6 @@ impl SpaiApp {
                     }
                 }
             }
-            // Live Mode: the route as first planned, dimmed in purple for comparison.
             if let Some(base) = self.travel_live.then_some(self.travel_live_base.as_ref()).flatten() {
                 let purple = egui::Color32::from_rgb(0x95, 0x75, 0xCD);
                 for w in base.windows(2) {
@@ -7998,12 +7170,11 @@ impl SpaiApp {
                 }
             }
             if let Some(p) = self.travel_start.and_then(|s| pos.get(&s)) {
-                mark(*p, egui::Color32::from_rgb(0x66, 0xBB, 0x6A)); // start — green
+                mark(*p, egui::Color32::from_rgb(0x66, 0xBB, 0x6A));
             }
             if let Some(p) = self.travel_end.and_then(|e| pos.get(&e)) {
-                mark(*p, egui::Color32::from_rgb(0xFF, 0xA7, 0x26)); // destination — amber
+                mark(*p, egui::Color32::from_rgb(0xFF, 0xA7, 0x26));
             }
-            // Blink systems newly added by a live re-plan, for a few seconds.
             if let Some(at) = self.travel_changed_at {
                 if chrono::Utc::now().timestamp() - at < 6 {
                     let blink = ((ui.input(|i| i.time) * 5.0).sin() * 0.5 + 0.5) as f32;
@@ -8022,19 +7193,15 @@ impl SpaiApp {
             }
         }
 
-        // Jump Plan: each leg as straight jumps (violet when valid, red when out of range),
-        // a dot per hop, ghost alternatives, favourite stars and ringed start/waypoints/dest.
         if self.map_mode == MapMode::JumpPlan {
             let jcol = egui::Color32::from_rgb(0x9C, 0x6A, 0xF7);
             let red = crate::theme::standing::HOSTILE;
-            // Systems the chosen hull can dock in — a teal anchor ring (preferred, not required).
             let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
             for d in self.jump_dockable_ids() {
                 if let Some(p) = pos.get(&d) {
                     painter.circle_stroke(*p, 9.0, egui::Stroke::new(1.5, teal));
                 }
             }
-            // Ghost alternatives first (faint, behind the route).
             for alt in &self.jump_alt {
                 if let Some(p) = pos.get(alt) {
                     painter.circle_stroke(*p, 6.0, egui::Stroke::new(1.0, jcol.gamma_multiply(0.5)));
@@ -8059,7 +7226,6 @@ impl SpaiApp {
             let gold = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
             for fav in &self.jump_favourites {
                 if let Some(p) = pos.get(fav) {
-                    // A gold marker above the system (a star glyph isn't in the map font).
                     painter.circle_filled(*p + egui::vec2(0.0, -11.0), 3.0, gold);
                 }
             }
@@ -8076,9 +7242,6 @@ impl SpaiApp {
             }
         }
 
-        // Jump-range hover. Distances are always true light-years (real coords);
-        // in schematic mode we keep the band-coloured highlights but drop the rings
-        // (the on-screen distances aren't metric there).
         let hovered_id = ui
             .input(|i| i.pointer.hover_pos())
             .filter(|_| resp.hovered())
@@ -8086,11 +7249,10 @@ impl SpaiApp {
         if let (true, Some(h_id)) = (self.map_overlays.jump_range, hovered_id) {
             if let Some(real_h) = self.map_systems.iter().find(|s| s.id == h_id) {
                 let hp = pos[&h_id];
-                // One colour per band (capital / black ops / jump freighter).
                 let band_color = [
-                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // capital — green
-                    egui::Color32::from_rgb(0xE0, 0xA4, 0x3A), // black ops — amber
-                    egui::Color32::from_rgb(0xD8, 0x4C, 0x4C), // jump freighter — red
+                    egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+                    egui::Color32::from_rgb(0xE0, 0xA4, 0x3A),
+                    egui::Color32::from_rgb(0xD8, 0x4C, 0x4C),
                 ];
                 if !schematic {
                     for (i, (name, ly)) in crate::map::JUMP_RANGES.iter().enumerate().rev() {
@@ -8106,7 +7268,6 @@ impl SpaiApp {
                         );
                     }
                 }
-                // Highlight each in-range system in the colour of the tightest band.
                 // map_draw and map_systems share order, so index zips draw↔real.
                 for (i, s) in self.map_draw.iter().enumerate() {
                     if s.id == h_id {
@@ -8115,17 +7276,13 @@ impl SpaiApp {
                     let d = crate::map::ly_distance(real_h, &self.map_systems[i]);
                     if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
                         let col = band_color.get(b).copied().unwrap_or(band_color[2]);
-                        // Faint backglow behind the dot (drawn on top later).
                         painter.circle_filled(pos[&s.id], dot + 4.0, col.gamma_multiply(0.30));
                     }
                 }
             }
         }
 
-        // Hover tooltip: system info + ESI activity + intel for the hovered system.
         if let Some(h_id) = hovered_id {
-            // Open to the top-right of the cursor (pivot at its bottom-left) so it clears the
-            // system and the jump-range rings below it.
             if let Some(ptr) = ui.ctx().pointer_hover_pos() {
                 egui::Area::new(ui.id().with("map_hover_tip"))
                     .order(egui::Order::Tooltip)
@@ -8139,7 +7296,6 @@ impl SpaiApp {
             }
         }
 
-        // Systems + overlays. Per system, the highest active severity + latest time.
         let now_ts = chrono::Utc::now().timestamp();
         let sev_rules = self.settings.severity.clone();
         let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
@@ -8159,21 +7315,17 @@ impl SpaiApp {
             }
             m
         };
-        // Blink phase for fresh intel (≈3 Hz).
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
-        // System labels: always on when viewing a single region, otherwise once zoomed in
-        // a bit (a collision check below still drops any that would overlap).
         let show_sys_labels =
             matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         let mut placed_labels: Vec<egui::Rect> = Vec::new();
         for s in &self.map_draw {
             let p = pos[&s.id];
             if !cull.contains(p) {
-                continue; // off-screen system — skip its dot, rings and label
+                continue;
             }
             painter.circle_filled(p, dot, security_color(s.security));
-            // Bookmarked systems: a teal outline on the dot itself (not a separate ring, same size).
             if self.settings.bookmarks.contains(&s.id) {
                 painter.circle_stroke(
                     p,
@@ -8190,13 +7342,10 @@ impl SpaiApp {
                 } else {
                     (0.40, 2.5)
                 };
-                // A solid glow behind the dot + an opaque severity-coloured ring.
                 painter.circle_filled(p, dot + 5.0, base.gamma_multiply(fill_a));
                 painter.circle_stroke(p, dot + 3.0, egui::Stroke::new(ring_w, base));
             }
             if let Some((count, has_active)) = char_here.get(&s.id) {
-                // Regular blue when the active char is here; light blue for other
-                // characters only. A larger ring than the red intel ring so they coexist.
                 let blue = if *has_active {
                     egui::Color32::from_rgb(0x4F, 0xC3, 0xF7)
                 } else {
@@ -8220,7 +7369,6 @@ impl SpaiApp {
                 painter.circle_stroke(p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             }
             if show_sys_labels && rect.contains(p) {
-                // Name sits next to the dot (clear of it); sov-upgrade icons sit above it.
                 let anchor = p + egui::vec2(dot + 4.0, -2.0 * label_off);
                 let approx = egui::Rect::from_min_size(
                     anchor,
@@ -8238,12 +7386,10 @@ impl SpaiApp {
                 }
             }
         }
-        // Keep animating while any fresh intel is blinking.
         if any_fresh {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
         }
 
-        // Low zoom: label regions (centroid) instead of every system.
         if !show_sys_labels {
             let mut acc: std::collections::HashMap<i64, (egui::Vec2, u32)> =
                 std::collections::HashMap::new();
@@ -8252,8 +7398,6 @@ impl SpaiApp {
                 e.0 += pos[&s.id].to_vec2();
                 e.1 += 1;
             }
-            // Deterministic order (HashMap iteration flickers which label wins) and
-            // skip any label that would overlap an already-placed one (no z-fighting).
             let mut labels: Vec<(i64, egui::Pos2)> =
                 acc.into_iter().map(|(rid, (sum, n))| (rid, (sum / n as f32).to_pos2())).collect();
             labels.sort_by_key(|(rid, _)| *rid);
@@ -8265,9 +7409,6 @@ impl SpaiApp {
                 let Some((_, name)) = self.map_regions.iter().find(|(id, _)| *id == rid) else {
                     continue;
                 };
-                // Always draw every region name (overlap is acceptable — the user wants
-                // all of them visible, not collision-pruned).
-                // Shadow for legibility over the starfield, then a bright label.
                 painter.text(
                     c + egui::vec2(1.0, 1.0),
                     egui::Align2::CENTER_CENTER,
@@ -8282,8 +7423,6 @@ impl SpaiApp {
         self.map_chrome(ui, rect);
     }
 
-    /// Radial / tree "threat" view: lay systems out by jumps from a centre system
-    /// (the active character, or one chosen by right-click), out to N jumps.
     fn draw_threat_view(&mut self, ui: &mut egui::Ui, rect: egui::Rect, player_sys: Option<i64>) {
         use crate::map::MapLayout;
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
@@ -8298,8 +7437,6 @@ impl SpaiApp {
             if scroll.abs() > 0.0 {
                 let old = self.map_zoom;
                 let new = (old * (scroll * 0.003).exp()).clamp(0.3, 6.0);
-                // Keep the point under the cursor fixed (the layout spreads from rect.center()+pan,
-                // scaled by zoom), so scrolling zooms toward the mouse rather than the centre.
                 if let Some(m) = ui.input(|i| i.pointer.hover_pos()) {
                     let rel = m - (rect.center() + self.map_pan);
                     self.map_pan += rel * (1.0 - new / old);
@@ -8316,26 +7453,21 @@ impl SpaiApp {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "No centre system — set an active character, or right-click a system on the map.",
+                "No centre system. Set an active character, or right-click a system on the map.",
                 egui::FontId::proportional(13.0),
                 visuals.weak_text_color(),
             );
-            // The centre comes from ESI, which loads ~20s after startup on a background
-            // thread. Poll while we wait so the view fills in on its own even if that
-            // thread's repaint signal is missed; this stops once a centre exists.
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             return;
         };
         let depth = self.map_threat_jumps.max(1);
 
-        // BFS tree from the centre.
         let (dist, children, order) = bfs_tree(&graph, center, depth, self.threat_include_bridges);
         let leaves = order.iter().filter(|id| children.get(id).map_or(true, |c| c.is_empty())).count();
         let mut frac: std::collections::HashMap<i64, f32> = std::collections::HashMap::new();
         let mut next = 0u32;
         assign_fracs(center, &children, leaves.max(1) as f32, &mut next, &mut frac);
 
-        // Lay out.
         let zoom = self.map_zoom;
         let mut pos: std::collections::HashMap<i64, egui::Pos2> = std::collections::HashMap::new();
         match self.map_layout {
@@ -8354,7 +7486,6 @@ impl SpaiApp {
                 }
             }
             _ => {
-                // Tree: root at top, levels descend, leaves spread across the width.
                 let level = (rect.height() * 0.82 / (depth as f32 + 0.5)) * zoom;
                 let width = rect.width() * 0.92 * zoom;
                 let cx = rect.center().x + self.map_pan.x;
@@ -8367,7 +7498,6 @@ impl SpaiApp {
             }
         }
 
-        // Per-system: highest active severity + latest time (for a graded glow).
         let sev_rules = self.settings.severity.clone();
         let intel_map: std::collections::HashMap<i64, (crate::settings::Severity, i64)> = {
             let st = self.intel_state.lock().unwrap();
@@ -8390,7 +7520,6 @@ impl SpaiApp {
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
 
-        // Edges (each undirected pair once). Jump bridges are drawn green.
         let edge = visuals.weak_text_color().gamma_multiply(0.5);
         let bridge_col = egui::Color32::from_rgb(0x4C, 0xC2, 0x6A);
         for &a in &order {
@@ -8407,13 +7536,8 @@ impl SpaiApp {
             }
         }
 
-        // Labels: out to 3 jumps; the outermost labelled ring is height-staggered to
-        // reduce overlaps; further-out systems reveal their name only on hover.
         let label_max = 3;
         let line_h = 13.0;
-        // Stagger only helps the Tree layout, where the outer level is a single horizontal row
-        // that crowds. In Radial the ring is spread around a full circle, so each label already
-        // clears its neighbours — staggering there just floats labels off their dots.
         let stagger: std::collections::HashMap<i64, f32> = if matches!(self.map_layout, MapLayout::Radial) {
             std::collections::HashMap::new()
         } else {
@@ -8423,7 +7547,6 @@ impl SpaiApp {
         };
         let hovered = ui.input(|i| i.pointer.hover_pos()).and_then(|hp| nearest_system(hp, &pos, 12.0));
 
-        // Nodes.
         let node_r = (5.5 * zoom.clamp(0.6, 1.6)).max(3.5);
         let font = egui::FontId::proportional((12.0 * zoom).clamp(9.0, 15.0));
         for &id in &order {
@@ -8432,8 +7555,6 @@ impl SpaiApp {
             let sec = info.map(|i| i.security).unwrap_or(0.0);
             let is_center = id == center;
             let r = if is_center { node_r + 2.5 } else { node_r };
-            // Intel: a soft glow + an opaque severity-coloured ring (as in 2D/3D),
-            // brighter/blinking while fresh.
             if let Some((isev, received)) = intel_map.get(&id) {
                 let base = severity_color(*isev);
                 let fresh = now_ts - received < 15;
@@ -8455,7 +7576,6 @@ impl SpaiApp {
                 visuals.window_stroke.color
             };
             painter.circle_stroke(p, r, egui::Stroke::new(if is_center { 2.0 } else { 1.0 }, outline));
-            // Hover highlight.
             if Some(id) == hovered {
                 painter.circle_stroke(p, r + 2.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
             }
@@ -8471,7 +7591,6 @@ impl SpaiApp {
             }
         }
 
-        // Hovered far-out system: reveal its name with a small backdrop.
         if let Some(hid) = hovered {
             if dist[&hid] > label_max {
                 if let Some(info) = graph.info_of(hid) {
@@ -8489,7 +7608,6 @@ impl SpaiApp {
             }
         }
 
-        // Interaction: left-click docks a system; right-click re-centres on it.
         let pointer = ui.input(|i| i.pointer.interact_pos());
         if resp.clicked() {
             if let Some(id) = pointer.and_then(|p| nearest_system(p, &pos, 12.0)) {
@@ -8504,7 +7622,6 @@ impl SpaiApp {
             }
         }
 
-        // Title chip: centre name + jumps.
         let cname = graph.info_of(center).map(|i| i.name.clone()).unwrap_or_default();
         painter.text(
             rect.left_bottom() + egui::vec2(10.0, -10.0),
@@ -8518,12 +7635,10 @@ impl SpaiApp {
         }
     }
 
-    /// The map control overlays (or the minimal overlay-mode bar / hidden state).
     fn map_chrome(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         if self.map_overlay_mode {
             self.map_overlay_controls(ui, rect);
         } else if self.map_controls_hidden {
-            // Just a small button to bring the controls back.
             egui::Area::new(ui.id().with("map_show_controls"))
                 .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
                 .order(egui::Order::Foreground)
@@ -8539,7 +7654,6 @@ impl SpaiApp {
                     });
                 });
         } else {
-            // Reopen buttons for minimized docks.
             if !self.left_dock_open {
                 egui::Area::new(ui.id().with("reopen_left"))
                     .fixed_pos(rect.left_top() + egui::vec2(6.0, 6.0))
@@ -8566,8 +7680,6 @@ impl SpaiApp {
                         });
                     });
             }
-            // Controls + layers + legend live in the left dock (see map_area); the search is
-            // the only thing still floating over the map.
             self.map_search_overlay(ui, rect);
         }
     }
@@ -8610,7 +7722,6 @@ impl SpaiApp {
         {
             self.needs_save = true;
         }
-        // Sov-upgrade icon legend (only meaningful while that overlay is on).
         if self.map_overlays.upgrades {
             ui.separator();
             ui.label(egui::RichText::new("Upgrade icons").strong());
@@ -8634,8 +7745,6 @@ impl SpaiApp {
         }
     }
 
-    /// Wormhole connections in/out of a system (from the cached store), shown in the
-    /// map tooltip and the system-info window. No-op if the system has no known holes.
     fn wormhole_section(&self, ui: &mut egui::Ui, id: i64) {
         let now = chrono::Utc::now().timestamp();
         let holes: Vec<&crate::wormholes::Wormhole> = self
@@ -8675,8 +7784,6 @@ impl SpaiApp {
         }
     }
 
-    /// A gate-camp warning line (red campfire) for `id`, if it's currently flagged. Shared by
-    /// the map tooltip and the system-info window.
     fn camp_line(&self, ui: &mut egui::Ui, id: i64) {
         let now = chrono::Utc::now().timestamp();
         if let Some(c) = self.camps.lock().unwrap().camp(id, now) {
@@ -8695,7 +7802,7 @@ impl SpaiApp {
             let over = (c.span / 60).max(0);
             ui.label(
                 egui::RichText::new(format!(
-                    "{}  {label} \u{2014} {} kills over {over}m, last {mins}m ago",
+                    "{}  {label}: {} kills over {over}m, last {mins}m ago",
                     egui_phosphor::regular::CAMPFIRE,
                     c.kills,
                 ))
@@ -8705,11 +7812,7 @@ impl SpaiApp {
         }
     }
 
-    /// Hover tooltip for a map system: name/security/location, ESI activity, and
-    /// any current intel. (Click the system for the full interactive window.)
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
-        // Compact + translucent so it doesn't hide nearby/jumpable systems; extra-translucent
-        // while the jump-range overlay is on so the rings stay readable through it.
         ui.set_max_width(270.0);
         ui.set_opacity(if self.map_overlays.jump_range { 0.40 } else { 0.82 });
         let status = self.system_status.lock().unwrap();
@@ -8718,7 +7821,6 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
                 ui.label(egui::RichText::new(&info.name).strong());
-                // Sov alliance logo, top-right (instead of a "Sov:" text chip).
                 if let Some(aid) = flags.sov_alliance {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let url = eve_alliance_logo_url(aid, 26.0);
@@ -8745,7 +7847,6 @@ impl SpaiApp {
         drop(status);
         self.camp_line(ui, id);
 
-        // Current intel for this system (compact).
         let now = chrono::Utc::now().timestamp();
         let state = self.intel_state.lock().unwrap();
         let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
@@ -8772,7 +7873,7 @@ impl SpaiApp {
                 for sh in &r.ships {
                     ui.label(egui::RichText::new(&sh.name).weak());
                 }
-                ui.label(egui::RichText::new(format!("— {}", r.reporter)).weak());
+                ui.label(egui::RichText::new(format!("- {}", r.reporter)).weak());
             });
             shown += 1;
             if shown >= 4 {
@@ -8787,8 +7888,6 @@ impl SpaiApp {
         self.wormhole_section(ui, id);
     }
 
-    /// Minimal overlay-mode controls: exit, lock, smart-on-top, opacity. When
-    /// locked, only an unlock button shows (everything else hidden).
     fn map_overlay_controls(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use egui_phosphor::regular as icon;
         egui::Area::new(ui.id().with("map_overlay_bar"))
@@ -8801,7 +7900,6 @@ impl SpaiApp {
                             if ui.button(icon::LOCK).on_hover_text("Unlock").clicked() {
                                 self.map_overlay_locked = false;
                             }
-                            // Re-center is still useful while locked.
                             if ui
                                 .add(egui::Button::new(icon::CROSSHAIR).selected(self.map_follow))
                                 .on_hover_text("Follow active character")
@@ -8847,33 +7945,24 @@ impl SpaiApp {
             });
     }
 
-    /// The active character's current system — from the per-character location map, so the
-    /// map and distances follow the character selected at the top of the window, not
-    /// whichever character ESI happened to update last.
     fn player_system(&self) -> Option<i64> {
         let p = self.player.lock().unwrap();
         p.locations.get(&self.active_character).map(|(s, _)| *s).or(p.system_id)
     }
 
-    /// Switch map mode, auto-adapting the overlays (saving/restoring the Standard layers).
     fn set_map_mode(&mut self, new: MapMode) {
         if new == self.map_mode {
             return;
         }
-        // Jump Plan keeps the normal map layers (you want intel / activity visible to route
-        // around danger), so it behaves like Standard for overlays — only Travel / Hunting /
-        // Safety swap in the focused preset.
         let keeps_layers = |m: MapMode| matches!(m, MapMode::Standard | MapMode::JumpPlan);
         if keeps_layers(self.map_mode) {
-            self.standard_overlays = self.map_overlays; // remember the user's layers
+            self.standard_overlays = self.map_overlays;
         }
         self.map_overlays = if keeps_layers(new) {
             self.standard_overlays
         } else {
             new.overlay_preset()
         };
-        // Safety watch is read on the jump-distance Tree; force it (saving the geographic
-        // layout) when entering Safety, and restore the prior layout when leaving.
         if new == MapMode::Safety {
             if !self.map_layout.is_threat() {
                 self.safety_prev_layout = Some(self.map_layout);
@@ -8885,8 +7974,6 @@ impl SpaiApp {
             }
         }
         self.map_mode = new;
-        // A non-Standard mode opens its panel in the right dock — switch to it so the new
-        // panel is visible (not whatever tab, e.g. a docked system, was last shown).
         if new != MapMode::Standard {
             self.right_dock_open = true;
             self.right_dock_tab = RightDockTab::Mode;
@@ -8894,7 +7981,6 @@ impl SpaiApp {
         self.needs_save = true;
     }
 
-    /// Load a saved route into Travel mode (set start/end/waypoints, then re-plan).
     fn load_route(&mut self, r: &crate::settings::SavedRoute) {
         let nm = |id: i64| {
             self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default()
@@ -8917,7 +8003,6 @@ impl SpaiApp {
         self.plan_route();
     }
 
-    /// Save / load / organise both Travel and Jump routes (named, in folders, searchable).
     fn routes_dialog(&mut self, ctx: &egui::Context) {
         if !self.routes_dialog_open {
             return;
@@ -8926,7 +8011,6 @@ impl SpaiApp {
         let nm = |id: i64| {
             geo.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_else(|| "?".into())
         };
-        // Unified rows from both saved-route kinds.
         let mut items: Vec<RouteItem> = Vec::new();
         for r in &self.settings.saved_routes {
             items.push(RouteItem {
@@ -8987,7 +8071,6 @@ impl SpaiApp {
             .default_width(520.0)
             .default_height(500.0)
             .show(ctx, |ui| {
-                // Save row: kind · name · folder · save.
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("route_kind")
                         .selected_text(kind_label(self.route_kind))
@@ -9054,7 +8137,6 @@ impl SpaiApp {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let visible: Vec<&RouteItem> =
                         items.iter().filter(|it| q.is_empty() || it.name.to_lowercase().contains(&q)).collect();
-                    // Render one row; mirror its action back into the local action slots.
                     let mut emit = |ui: &mut egui::Ui, it: &RouteItem| {
                         let is_ed = editing
                             .as_ref()
@@ -9215,7 +8297,6 @@ impl SpaiApp {
         }
     }
 
-    /// Save the current planner state as a route of the dialog's selected kind.
     fn save_current_route(&mut self) {
         let nm = |id: i64| {
             self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default()
@@ -9277,7 +8358,6 @@ impl SpaiApp {
         self.needs_save = true;
     }
 
-    /// Load a saved route (either kind) and switch the map into the matching mode.
     fn load_route_item(&mut self, it: &RouteItem) {
         match it.kind {
             RouteKind::Travel => {
@@ -9313,8 +8393,6 @@ impl SpaiApp {
         }
     }
 
-    /// The next system on the planned route after the character's current position (None at the
-    /// end or with no route). Used to advance the in-game destination one hop at a time.
     fn next_route_hop(&self) -> Option<i64> {
         let route = self.travel_route.as_ref()?;
         if route.len() < 2 {
@@ -9328,8 +8406,6 @@ impl SpaiApp {
         route.get(1).copied()
     }
 
-    /// Set the in-game destination to the next hop on the route (only when it changes), so EVE
-    /// follows our exact path without ever needing a duplicate waypoint.
     fn push_ingame_dest(&mut self) {
         let next = self.next_route_hop();
         if next == self.travel_ingame_dest {
@@ -9342,7 +8418,6 @@ impl SpaiApp {
         self.travel_ingame_dest = next;
     }
 
-    /// Hash of the inputs that affect the planned route, for the re-plan debounce.
     fn travel_input_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -9364,7 +8439,6 @@ impl SpaiApp {
         h.finish()
     }
 
-    /// Compute the Travel route from the typed start/end + the active constraints.
     fn plan_route(&mut self) {
         let Some(geo) = self.systems.clone() else { return };
         if let Some(store) = self.store.as_ref() {
@@ -9396,7 +8470,6 @@ impl SpaiApp {
             self.travel_avoid_sov.iter().map(|s| s.to_lowercase()).collect();
         let camped: std::collections::HashSet<i64> = if self.travel_avoid_camps {
             let now = chrono::Utc::now().timestamp();
-            // Only route around real camps (possible/likely), not lone flag kills.
             self.camps
                 .lock()
                 .unwrap()
@@ -9410,7 +8483,7 @@ impl SpaiApp {
         };
         let regional = self.travel_regional_gates;
         let bridges = self.travel_jump_bridges;
-        let geo2 = geo.clone(); // a second handle so the node-mask can read security
+        let geo2 = geo.clone();
         let allowed = |sys: i64| {
             if avoid.contains(&sys) || camped.contains(&sys) {
                 return false;
@@ -9426,11 +8499,11 @@ impl SpaiApp {
                 .info_of(sys)
                 .map(|i| {
                     if i.security >= 0.45 {
-                        sec[0] // high
+                        sec[0]
                     } else if i.security > 0.0 {
-                        sec[1] // low
+                        sec[1]
                     } else {
-                        sec[2] // null
+                        sec[2]
                     }
                 })
                 .unwrap_or(true);
@@ -9438,7 +8511,6 @@ impl SpaiApp {
                 max_kills == 0 || status.get(&sys).map(|f| metric.value(f)).unwrap_or(0) <= max_kills;
             sec_ok && activity_ok
         };
-        // Stitch each leg start -> wp1 -> ... -> end; an unreachable leg invalidates the route.
         let mut route = vec![s];
         let mut ok = true;
         for leg in points.windows(2) {
@@ -9452,11 +8524,7 @@ impl SpaiApp {
         }
         let prev = self.travel_route.clone();
         self.travel_route = ok.then_some(route);
-        // The game's own shortest gate route (all stargates, no bridges or constraints), shown
-        // in a different colour so the player can compare.
         self.travel_direct_route = geo.route(s, e, true, false, |_| true);
-        // Live Mode: a deviation (new systems vs the previous route) re-routes in-game, blinks
-        // the changed legs, and warns aloud when the detour is much longer.
         if self.travel_live {
             if let (Some(p), Some(n)) = (&prev, &self.travel_route) {
                 if p != n {
@@ -9466,8 +8534,6 @@ impl SpaiApp {
                         let much_longer = n.len() > p.len() + 4;
                         self.travel_changed = newsys;
                         self.travel_changed_at = Some(chrono::Utc::now().timestamp());
-                        // The in-game destination is advanced hop-by-hop by push_ingame_dest;
-                        // here we only flag the change visually and warn on a big detour.
                         if much_longer {
                             crate::sound::play_prio("danger", 2);
                         }
@@ -9479,9 +8545,6 @@ impl SpaiApp {
         self.travel_dirty_at = None;
     }
 
-    /// Travel Mode side panel: start/end + constraints + a planned, summarised route.
-    /// Search systems for the From/To dropdowns: (id, name, security, constellation, region).
-    /// Empty when the query is blank or already exactly names the picked system.
     fn travel_suggestions(&self, q: &str) -> Vec<SysHit> {
         let q = q.trim();
         if q.is_empty() {
@@ -9503,28 +8566,22 @@ impl SpaiApp {
             .collect()
     }
 
-    /// §8.6 — left-clicking the map in Jump Plan mode edits the route: set the destination if
-    /// there isn't one, otherwise add the clicked system as a waypoint.
     fn jump_click_edit(&mut self, id: i64) {
         if self.jump_plan_from.is_none() {
             self.jump_plan_from = Some(id);
             return;
         }
-        // Ignore a click on a system already on the route (avoid duplicate anchors).
         if Some(id) == self.jump_plan_from
             || Some(id) == self.jump_plan_to
             || self.jump_waypoints.contains(&id)
         {
             return;
         }
-        // The click becomes the new destination; the previous destination drops into the
-        // waypoint chain so the route extends naturally.
         if let Some(old_dest) = self.jump_plan_to.replace(id) {
             self.jump_waypoints.push(old_dest);
         }
     }
 
-    /// Persist the favourite set into settings (sorted, so the saved blob is stable).
     fn persist_jump_favourites(&mut self) {
         let mut v: Vec<i64> = self.jump_favourites.iter().copied().collect();
         v.sort_unstable();
@@ -9532,10 +8589,8 @@ impl SpaiApp {
         self.needs_save = true;
     }
 
-    /// System ids where the currently-selected hull can dock (per the user's permits). Supers
-    /// need a `supers` permit; regular capitals accept either flag.
     fn jump_dockable_ids(&self) -> std::collections::HashSet<i64> {
-        let supers = self.jump_ship == 1; // "Supercarrier / Titan" in SHIP_CLASSES
+        let supers = self.jump_ship == 1;
         let Some(g) = &self.systems else { return Default::default() };
         self.settings
             .jump_dock
@@ -9545,7 +8600,6 @@ impl SpaiApp {
             .collect()
     }
 
-    /// Toggle a capital/super docking permit for a system (by name) and persist it.
     fn toggle_dock_permit(&mut self, sid: i64, supers: bool) {
         let Some(name) = self.systems.as_ref().and_then(|g| g.info_of(sid).map(|s| s.name.clone())) else {
             return;
@@ -9561,17 +8615,16 @@ impl SpaiApp {
         if supers {
             p.supers = !p.supers;
             if p.supers {
-                p.capitals = true; // a Keepstar docks both
+                p.capitals = true;
             }
         } else {
             p.capitals = !p.capitals;
         }
         dock.retain(|p| p.capitals || p.supers);
-        self.jump_route_key = None; // re-route with the updated dock preference
+        self.jump_route_key = None;
         self.needs_save = true;
     }
 
-    /// Load every K-space system with 3D coords once, for the jump graph.
     fn ensure_jump_systems(&mut self) {
         if self.jump_systems.is_none() {
             if let Some(store) = &self.store {
@@ -9580,8 +8633,6 @@ impl SpaiApp {
         }
     }
 
-    /// Recompute the jump route when an input (endpoints / ship / JDC) changed — keyed so the
-    /// graph isn't rebuilt every frame.
     fn recompute_jump_route(&mut self) {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -9615,7 +8666,6 @@ impl SpaiApp {
         let legs = crate::jumproute::plan(&systems, max_ly, &anchors, &prefer);
         self.jump_route = crate::jumproute::flatten(&legs);
         self.jump_legs = legs;
-        // Ghost alternatives for each waypoint: systems within range of both its neighbours.
         self.jump_alt.clear();
         for w in anchors.windows(3) {
             self.jump_alt.extend(crate::jumproute::alternatives(&systems, max_ly, w[0], w[2]));
@@ -9624,13 +8674,10 @@ impl SpaiApp {
         self.jump_alt.dedup();
     }
 
-    /// The Jump Plan panel: hull + skills, endpoints (set from the map right-click menu), and
-    /// the computed fewest-jumps capital route with its fuel / fatigue summary.
     fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
 
-        // Default the start to the current system once.
         if self.jump_plan_from.is_none() {
             self.jump_plan_from = self.player_system();
         }
@@ -9650,7 +8697,7 @@ impl SpaiApp {
         ui.add_space(4.0);
         ui.label(egui::RichText::new("Jump Plan").strong());
         ui.label(
-            egui::RichText::new("Fewest-jumps capital route — set endpoints from the map right-click menu.")
+            egui::RichText::new("Fewest-jumps capital route. Set endpoints from the map right-click menu.")
                 .weak(),
         );
         ui.separator();
@@ -9664,7 +8711,6 @@ impl SpaiApp {
                 }
             });
         let class = SHIP_CLASSES[self.jump_ship];
-        // Apply ESI-fetched skills when they arrive.
         if let Some((jdc, jfc)) = self.jump_skills.lock().unwrap().take() {
             self.jump_jdc = jdc.min(5);
             self.jump_jfc = jfc.min(5);
@@ -9711,7 +8757,6 @@ impl SpaiApp {
                 self.jump_plan_from = self.player_system();
             }
         });
-        // Waypoints the route must pass through (added from the map menu / left-click).
         let mut remove_wp: Option<usize> = None;
         for (i, wp) in self.jump_waypoints.clone().iter().enumerate() {
             ui.horizontal(|ui| {
@@ -9752,7 +8797,6 @@ impl SpaiApp {
         self.recompute_jump_route();
         let any_invalid = self.jump_legs.iter().any(|l| !l.valid);
 
-        // Non-blocking docking warning: the destination has no marked dock for this hull.
         if let Some(to) = self.jump_plan_to {
             if !self.settings.jump_dock.is_empty() && !self.jump_dockable_ids().contains(&to) {
                 ui.label(
@@ -9762,7 +8806,6 @@ impl SpaiApp {
             }
         }
 
-        // Saved routes above the (height-filling) hops list, so it can't be pushed off-screen.
         if ui
             .button(format!("{}  Saved routes\u{2026}", icon::FOLDER))
             .on_hover_text("Save, load and organise routes")
@@ -9776,13 +8819,12 @@ impl SpaiApp {
         if let Some(err) = self.jump_route_err.clone() {
             ui.label(egui::RichText::new(err).color(crate::theme::standing::HOSTILE));
         } else if any_invalid {
-            // Name the first leg that can't be routed within range.
             if let Some(bad) = self.jump_legs.iter().find(|l| !l.valid) {
                 let a = name_of(Some(bad.from), &self.systems);
                 let b = name_of(Some(bad.to), &self.systems);
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} {a} {} {b} out of range — add a closer waypoint.",
+                        "{} {a} {} {b} out of range. Add a closer waypoint.",
                         icon::WARNING,
                         icon::ARROW_RIGHT
                     ))
@@ -9831,9 +8873,7 @@ impl SpaiApp {
         }
     }
 
-    /// Travel Mode panel content, rendered inside a docked SidePanel (see `map_area`).
     fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
-        // A field with a keyboard-navigable suggestion dropdown (system, sec, const, region).
         fn travel_field(
             ui: &mut egui::Ui,
             q: &mut String,
@@ -9848,8 +8888,6 @@ impl SpaiApp {
             if resp.changed() {
                 *sel = 0;
             }
-            // Only while the field is focused — so a resolved field at rest ("Jita") shows no
-            // dropdown, but actively editing always does (typing "Jit"→"Jita" keeps suggesting).
             if !suggestions.is_empty() && resp.has_focus() {
                 let focused = true;
                 let n = suggestions.len();
@@ -9864,10 +8902,7 @@ impl SpaiApp {
                         *sel = sel.saturating_sub(1);
                     }
                 }
-                // While the pointer is actually moving, hovering a row takes over the
-                // highlight, so Enter accepts whichever row the mouse is over.
                 let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                // Float the dropdown above the controls below it, matching the input's width.
                 let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
                 let width = resp.rect.width();
                 egui::Area::new(ui.id().with(("travel_sugg", hint)))
@@ -9894,7 +8929,6 @@ impl SpaiApp {
                     pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
                 }
             }
-            // A pick resolves the field — drop focus so the dropdown closes (Enter, too).
             if pick.is_some() {
                 resp.surrender_focus();
             }
@@ -10062,8 +9096,6 @@ impl SpaiApp {
                     });
                 ui.label("/h");
             });
-            // Picking the route metric also points the map heat at it; the overlay can then be
-            // switched freely (it's no longer forced to the metric every frame).
             if self.travel_metric != metric_before {
                 self.map_overlays.activity = self.travel_metric;
             }
@@ -10096,7 +9128,7 @@ impl SpaiApp {
                 }
                 None => {
                     ui.label(
-                        egui::RichText::new("Set a from / to \u{2014} the route updates automatically.")
+                        egui::RichText::new("Set a from / to. The route updates automatically.")
                             .weak(),
                     );
                 }
@@ -10126,9 +9158,6 @@ impl SpaiApp {
         }
         if set_dest {
             if let Some(route) = self.travel_route.clone() {
-                // Dedup: EVE rejects a repeated waypoint, and a route can revisit a system when
-                // waypoint legs overlap. (For revisiting routes, Live mode follows the exact path
-                // hop by hop instead.)
                 let mut seen = std::collections::HashSet::new();
                 let unique: Vec<i64> = route.into_iter().filter(|s| seen.insert(*s)).collect();
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
@@ -10153,8 +9182,6 @@ impl SpaiApp {
             self.travel_route = None;
             self.travel_direct_route = None;
         }
-        // Live Mode: track the character's current system as the start and re-plan on a timer so
-        // changing live data (camps, kills, sov) is picked up.
         if self.travel_live {
             let now_t = ui.input(|i| i.time);
             if let Some(me) = self.player_system() {
@@ -10183,8 +9210,6 @@ impl SpaiApp {
             self.travel_live_base = None;
             self.travel_ingame_dest = None;
         }
-        // Auto-replan: a short debounce after the inputs settle (no Plan button). plan_route
-        // stamps travel_planned_hash, so discrete actions (picks/right-click) stay instant.
         let now = ui.input(|i| i.time);
         let h = self.travel_input_hash();
         if h != self.travel_planned_hash {
@@ -10203,11 +9228,6 @@ impl SpaiApp {
         }
     }
 
-    /// Safety Mode panel: a live, colour-coded read of threats within the threat-view jump
-    /// range of the active character \u{2014} nearby non-clear intel as mini-cards and recent
-    /// ESI kill hotspots, nearest first. The range is shared with the radial/tree views.
-    /// Safety Mode AFK watch: alarm (sound + screen flash) when a *new* system within range
-    /// becomes threatened. Runs every frame in Safety mode regardless of the active view.
     fn safety_watch(&mut self, ctx: &egui::Context) {
         if self.map_mode != MapMode::Safety {
             self.safety_prev = None;
@@ -10216,9 +9236,6 @@ impl SpaiApp {
         let (Some(me), Some(geo)) = (self.player_system(), self.systems.clone()) else {
             return;
         };
-        // The scan runs a BFS per nearby report/kill; throttle to ~1s so it doesn't ride the
-        // frame rate. The alarm is edge-triggered (new threatened system vs. the last scan),
-        // so a coarser tick only delays an AFK alert by up to a second.
         let now = ctx.input(|i| i.time);
         if now - self.safety_last_scan < 1.0 {
             return;
@@ -10248,7 +9265,7 @@ impl SpaiApp {
             }
         }
         match self.safety_prev.take() {
-            None => {} // first tick = baseline; don't alarm for what's already there
+            None => {}
             Some(prev) => {
                 if current.iter().any(|s| !prev.contains(s)) {
                     crate::sound::play_prio("danger", 2);
@@ -10260,7 +9277,6 @@ impl SpaiApp {
         self.safety_prev = Some(current);
     }
 
-    /// Brief red full-screen flash for the Safety Mode alarm.
     fn screen_flash(&self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         if now >= self.flash_until {
@@ -10306,7 +9322,6 @@ impl SpaiApp {
 
         let me_sys = self.player_system();
         let range = self.map_threat_jumps;
-        // Nearby intel (cloned), nearest first, one card per system; plus kill hotspots.
         let mut reports: Vec<(u32, crate::intel::IntelReport)> = Vec::new();
         let mut kills: Vec<(String, u32, u32, u32)> = Vec::new();
         if let (Some(me), Some(geo)) = (me_sys, self.systems.clone()) {
@@ -10403,7 +9418,6 @@ impl SpaiApp {
             .filter(|n| !in_coalition.contains(n))
             .collect();
         others.sort();
-        // NPC sov holders: live systems whose sov has a holder name but no alliance id.
         let npc: Vec<String> = {
             let status = self.system_status.lock().unwrap();
             let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -10505,10 +9519,7 @@ impl SpaiApp {
         }
     }
 
-    /// Render the map, prefixed by a docked left SidePanel for the active mode's panel (so the
-    /// panel and the map never overlap and both reflow when the window is resized).
     fn map_area(&mut self, ui: &mut egui::Ui) {
-        // Docks only in normal mode — overlay mode is a minimal borderless map.
         if !self.map_overlay_mode {
             if self.left_dock_open {
                 egui::Panel::left("map_standard_dock")
@@ -10527,8 +9538,6 @@ impl SpaiApp {
                         });
                     });
             }
-            // Right dock: a tab strip of the mode panel (Travel / Threat) and the docked
-            // system info (from clicking a system on the map).
             let has_mode = self.map_mode != MapMode::Standard;
             if self.right_dock_open && (has_mode || self.map_docked_system.is_some()) {
                 use egui_phosphor::regular as icon;
@@ -10539,7 +9548,6 @@ impl SpaiApp {
                     .size_range(190.0..=380.0)
                     .show_inside(ui, |ui| {
                         let has_system = self.map_docked_system.is_some();
-                        // Keep the active tab valid as panels appear/disappear.
                         if self.right_dock_tab == RightDockTab::System && !has_system {
                             self.right_dock_tab = RightDockTab::Mode;
                         }
@@ -10615,8 +9623,6 @@ impl SpaiApp {
         ui.push_id("map:main", |ui| self.draw_map(ui));
     }
 
-    /// Standard map controls, laid out vertically in the left dock with titled sections and
-    /// text-labelled buttons (the dock is wider than the old floating bar).
     fn map_controls_content(&mut self, ui: &mut egui::Ui) {
         use crate::map::{MapLayout, MapView};
         use egui_phosphor::regular as icon;
@@ -10772,8 +9778,6 @@ impl SpaiApp {
             (false, false, false, false)
         };
 
-        // Combined results: systems, then constellations, then regions. Cached by query so the
-        // SDE table scans only run when the input changes (was per-frame — hence the lag).
         if !has_query {
             self.map_search_key.clear();
             self.map_search_sys.clear();
@@ -10796,8 +9800,6 @@ impl SpaiApp {
             self.map_search_sys = sys;
             self.map_search_const = cons;
             self.map_search_reg = reg;
-            // Sov-upgrade name matches (the list can be hundreds of entries — was scanned per
-            // frame in the popover).
             let ql = query.to_lowercase();
             let mut names: std::collections::BTreeSet<String> = Default::default();
             for u in &self.settings.sov_upgrades {
@@ -10844,8 +9846,6 @@ impl SpaiApp {
         let mut clear_upgrade = false;
         let mut clear_search = false;
 
-        // Results dropdown (variable size) — a SEPARATE area above the input, so the
-        // input box never moves when results change.
         const INPUT_H: f32 = 40.0;
         if has_query {
             let roff = egui::vec2(
@@ -10857,10 +9857,8 @@ impl SpaiApp {
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        // Match the search-bar panel width below.
                         ui.set_min_width(SEARCH_PANEL_W);
                         ui.set_max_width(SEARCH_PANEL_W);
-                        // Sov-upgrade matches (highlight every system that has one).
                         if let Some(up) = self.map_highlight_upgrade.clone() {
                             if ui
                                 .button(format!("{}  {up}  {}", icon::MAP_PIN_LINE, icon::X))
@@ -10882,7 +9880,6 @@ impl SpaiApp {
                                 clear_search = true;
                             }
                         }
-                        // Results: best match (sel 0) rendered last = nearest the input.
                         if hits.is_empty() {
                             ui.label(egui::RichText::new("No match").weak());
                         } else {
@@ -10910,13 +9907,10 @@ impl SpaiApp {
                 });
         }
 
-        // Search input — its own fixed-size area, so it never jitters.
         let ioff = egui::vec2(
             rect.left() - screen.left() + 8.0,
             rect.bottom() - screen.bottom() - 10.0,
         );
-        // Accessible regions for the picker (computed outside the closure so the TextEdit's
-        // &mut borrow of self.map_search doesn't clash with reading self.map_regions).
         if self.map_regions.is_empty() {
             if let Some(r) = self.store.as_ref().map(|s| s.regions()) {
                 self.map_regions = r;
@@ -11020,25 +10014,20 @@ impl SpaiApp {
         }
     }
 
-    /// Focus a system on the map; if currently in a region view, swap to its region.
     fn focus_map_on_select(&mut self, id: i64) {
         if matches!(self.map_view, crate::map::MapView::Region(_)) {
             if let Some(r) = self.store.as_ref().and_then(|s| s.region_of_system(id)) {
-                self.map_go(crate::map::MapView::Region(r)); // resets zoom/pan
+                self.map_go(crate::map::MapView::Region(r));
             }
         }
-        // Zoom in enough that system names show, centre + highlight the selection.
         self.map_zoom = 18.0;
         self.map_focus = Some(id);
         self.map_selected = Some(id);
     }
 
-    /// Render the popped-out map in its own OS window.
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    #[allow(deprecated)]
     fn show_map_viewport(&mut self, ctx: &egui::Context) {
         let overlay = self.map_overlay_mode;
-        // Overlay mode forces on-top; "smart" keeps it on top only while EVE is the
-        // focused window (refreshed throttled, like the alert window).
         if overlay && self.settings.map_overlay_smart {
             let due = self.eve_focus_checked.map(|t| t.elapsed().as_millis() > 800).unwrap_or(true);
             if due {
@@ -11056,7 +10045,7 @@ impl SpaiApp {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("map_window"),
             egui::ViewportBuilder::default().with_icon(app_icon())
-                .with_title("EVE Spai — Map")
+                .with_title("EVE Spai - Map")
                 .with_inner_size([960.0, 720.0])
                 .with_decorations(!overlay)
                 .with_transparent(overlay)
@@ -11067,8 +10056,6 @@ impl SpaiApp {
                     egui::WindowLevel::Normal
                 }),
             |ctx, _class| {
-                // Translucent backdrop in overlay mode (the content opacity is set
-                // inside draw_map); a solid panel otherwise.
                 let frame = if overlay {
                     let a = (self.settings.map_overlay_opacity.clamp(0.2, 1.0) * 255.0) as u8;
                     egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(0x0A, 0x0C, 0x10, a))
@@ -11078,15 +10065,10 @@ impl SpaiApp {
                 let locked = self.map_overlay_locked;
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     self.map_area(ui);
-                    // Borderless overlay has no native resize edge — draw a grip
-                    // (hidden when locked, which also disables resizing).
                     if overlay && !locked {
                         resize_grip(ui);
                     }
                 });
-                // Re-apply decorations/resizable on change — the builder only sets
-                // them at creation, so toggling overlay↔bordered otherwise left the
-                // restored window borderless / non-resizable.
                 let want = (!overlay, !(overlay && self.map_overlay_locked));
                 if self.map_vp_props != Some(want) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(want.0));
@@ -11101,14 +10083,11 @@ impl SpaiApp {
         if !keep {
             self.map_popped = false;
             self.map_overlay_mode = false;
-            self.map_vp_props = None; // re-apply when the window is re-opened
+            self.map_vp_props = None;
         }
     }
 
-    /// Per-character pop-out map windows: each renders the map centred on that
-    /// character, in their region, with its own pan/zoom (reusing draw_map via a state
-    /// swap — viewports render sequentially, so the shared map state is safe to borrow).
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    #[allow(deprecated)]
     fn char_popout_windows(&mut self, ctx: &egui::Context) {
         if self.map_char_popouts.is_empty() {
             return;
@@ -11116,7 +10095,6 @@ impl SpaiApp {
         let names = self.map_char_popouts.clone();
         let locs = self.player.lock().unwrap().locations.clone();
         let mut closed: Vec<String> = Vec::new();
-        // Save the main map's view state once.
         let (sv_view, sv_pan, sv_zoom, sv_focus, sv_follow, sv_rect) = (
             self.map_view,
             self.map_pan,
@@ -11140,17 +10118,13 @@ impl SpaiApp {
             self.map_pan = cpan;
             self.map_zoom = czoom;
             self.map_focus = if centered { None } else { Some(sys) };
-            // A pop-out centres on its character once; it must NOT inherit the main map's
-            // "follow", which would yank it to the active player's system every frame.
             self.map_follow = false;
-            // Per-instance last-rect: the resize-rescale must compare against THIS window's
-            // previous rect, not another instance's — otherwise it rescales pan every frame.
             self.map_last_rect = crect;
             let mut keep = true;
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(format!("charmap_{name}")),
                 egui::ViewportBuilder::default().with_icon(app_icon())
-                    .with_title(format!("EVE Spai — {name}"))
+                    .with_title(format!("EVE Spai - {name}"))
                     .with_inner_size([640.0, 520.0])
                     .with_min_inner_size([360.0, 280.0]),
                 |ctx, _| {
@@ -11161,7 +10135,6 @@ impl SpaiApp {
                     }
                 },
             );
-            // Persist this character's view; mark it centred so we don't re-snap.
             self.map_char_view.insert(
                 name.clone(),
                 (self.map_view, self.map_pan, self.map_zoom, true, self.map_last_rect),
@@ -11170,7 +10143,6 @@ impl SpaiApp {
                 closed.push(name.clone());
             }
         }
-        // Restore the main map's state; force its next draw to rebuild map_draw.
         self.map_view = sv_view;
         self.map_pan = sv_pan;
         self.map_zoom = sv_zoom;
@@ -11184,9 +10156,7 @@ impl SpaiApp {
         }
     }
 
-    /// Render `content` as a standalone, non-modal, always-on-top OS window.
-    /// Returns false when the window's close button was pressed.
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    #[allow(deprecated)]
     fn dialog_viewport(
         parent: &egui::Context,
         id: &str,
@@ -11239,7 +10209,6 @@ impl SpaiApp {
                         };
                         ui.label(egui::RichText::new(clock).monospace());
                         ui.separator();
-                        // ESI is "online" once the public status poller has data.
                         let esi_ok = !self.system_status.lock().unwrap().is_empty();
                         let (icon, text, col) = if esi_ok {
                             (
@@ -11269,17 +10238,15 @@ impl SpaiApp {
                     ui.label(egui::RichText::new(&self.active_character).weak());
                     ui.separator();
                     ui.label(egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).weak());
-                    // Small badge when a newer release is available.
                     if let Some(av) = self.update.lock().unwrap().available.clone() {
                         if av.version != self.settings.update_skip_version {
                             ui.label(
                                 egui::RichText::new(format!("● v{} available", av.version))
                                     .color(egui::Color32::from_rgb(0x5a, 0xc8, 0x7a)),
                             )
-                            .on_hover_text("A newer version is available — see the update prompt.");
+                            .on_hover_text("A newer version is available. See the update prompt.");
                         }
                     }
-                    // Resource usage, right-aligned.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
                         ui.label(
@@ -11320,16 +10287,11 @@ impl SpaiApp {
             });
     }
 
-    /// System-info window: details, conditions, neighbour navigation (with intel
-    /// density), and the intel reported for this system.
-    /// Renders the system-info panel into `ui` (shared by the pop-out window and the map's
-    /// docked System tab) and returns the navigations/clicks for the caller to apply.
     fn system_info_body(&mut self, ui: &mut egui::Ui, id: i64, docked: bool) -> SystemInfoOut {
         let mut nav: Option<i64> = None;
         let mut show_on_map = false;
         let now = chrono::Utc::now().timestamp();
 
-        // Build the data the proper intel cards need (same as the intel feed).
         let ttl = self.settings.intel_ttl_secs;
         let player_sys = self.player_system();
         let (sys_reports, stale_flags, sys_last_ship): (
@@ -11392,7 +10354,6 @@ impl SpaiApp {
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
                 ui.heading(&info.name);
-                // Bookmark toggle: a teal outline appears on this system's dot on the map.
                 let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
                 let marked = self.settings.bookmarks.contains(&id);
                 let icon = egui::RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
@@ -11410,8 +10371,6 @@ impl SpaiApp {
                     }
                     self.needs_save = true;
                 }
-                // Docked: a screen-anchored Area floats at the main window's corner, not the
-                // panel's, so render the sov logo + ADM inline on the right of the name row.
                 if docked {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(adm) = flags.adm {
@@ -11430,7 +10389,6 @@ impl SpaiApp {
                     });
                 }
             });
-            // Windowed: float the logo + ADM top-right so they don't affect the name line height.
             if !docked && (flags.sov_alliance.is_some() || flags.adm.is_some()) {
                 egui::Area::new(egui::Id::new("sys_sov"))
                     .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
@@ -11463,9 +10421,7 @@ impl SpaiApp {
                         });
                     });
             }
-            // Conditions only — the clickable breadcrumb below shows location.
             system_chips_ex(ui, &self.systems, &status, id, false, false);
-            // Breadcrumb: navigate up to the constellation / region.
             ui.horizontal_wrapped(|ui| {
                 if let Some((cid, cname)) = &constellation {
                     if ui.link(egui::RichText::new(cname).weak()).clicked() {
@@ -11479,7 +10435,6 @@ impl SpaiApp {
                     }
                 }
             });
-            // Last-hour activity, highlighted vs the region average.
             let region_ids: Vec<i64> = self
                 .store
                 .as_ref()
@@ -11513,7 +10468,6 @@ impl SpaiApp {
             });
         }
         self.camp_line(ui, info.id);
-        // NPC rats (consistent per region).
         if let Some(rp) = crate::rats::rat_profile(&info.region) {
             ui.separator();
             ui.horizontal_wrapped(|ui| {
@@ -11533,7 +10487,6 @@ impl SpaiApp {
             }
         }
         self.wormhole_section(ui, id);
-        // Configured sovereignty upgrades for this system.
         let upgrades: Vec<&str> = self
             .settings
             .sov_upgrades
@@ -11560,9 +10513,6 @@ impl SpaiApp {
                 });
             }
         }
-        // Wrapped so the action buttons reflow in the narrow docked panel. Use per-button
-        // add_enabled (not a nested add_enabled_ui, which is a non-wrapping group that pushes
-        // "Add Waypoint" off the edge).
         let has_char = self.active_character != "No character";
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         let cname = self.active_character.clone();
@@ -11572,7 +10522,7 @@ impl SpaiApp {
             }
             if ui.add_enabled(has_char, egui::Button::new("Set Destination")).clicked() {
                 self.set_destination_esi(cid.clone(), cname.clone(), id);
-                self.route_destination = Some(id); // mirror on the map
+                self.route_destination = Some(id);
             }
             if ui.add_enabled(has_char, egui::Button::new("Add Waypoint")).clicked() {
                 crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);
@@ -11580,7 +10530,6 @@ impl SpaiApp {
         });
         ui.separator();
 
-        // Active-intel counts per system (density proxy) + this system's reports.
         let state = self.intel_state.lock().unwrap();
         let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
         for r in &state.reports {
@@ -11591,7 +10540,7 @@ impl SpaiApp {
                 *counts.entry(s.id).or_default() += 1;
             }
         }
-        drop(state); // release the intel lock; the kills tab needs &mut self
+        drop(state);
 
         ui.label(egui::RichText::new("Neighbours").strong());
         ui.horizontal_wrapped(|ui| {
@@ -11605,7 +10554,6 @@ impl SpaiApp {
                     }
                     let text = egui::RichText::new(label).color(security_color(ni.security)).strong();
                     let mut btn = egui::Button::new(text);
-                    // Highlight a jump that leaves the constellation/region.
                     let cross_region = ni.region != info.region && !ni.region.is_empty();
                     let cross_const = ni.constellation != info.constellation;
                     if cross_region {
@@ -11637,7 +10585,6 @@ impl SpaiApp {
         });
         ui.separator();
         if self.system_kills_tab {
-            // Lazily fetch this system's recent kills from zKill (cached per system).
             let feed = self
                 .system_kills_cache
                 .entry(id)
@@ -11693,8 +10640,6 @@ impl SpaiApp {
         SystemInfoOut { nav, show_on_map, intel_click, open_const, open_region }
     }
 
-    /// Apply the navigations/clicks a system-info panel produced. `docked` routes a neighbour
-    /// click to the docked tab instead of the pop-out window.
     fn apply_system_info_out(
         &mut self,
         out: SystemInfoOut,
@@ -11717,7 +10662,6 @@ impl SpaiApp {
             self.region_window = Some(r);
             self.focus_window = Some(egui::ViewportId::from_hash_of("region_window"));
         }
-        // A click inside an intel card (ship / pilot / system).
         match out.intel_click {
             Some(IntelClick::System(sid)) => self.open_system(sid),
             Some(IntelClick::Ship(sid)) => self.open_ship(sid),
@@ -11740,7 +10684,6 @@ impl SpaiApp {
         }
     }
 
-    /// The standalone system-info window (pop-out): renders the shared body inside a viewport.
     fn system_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.system_window else {
             return;
@@ -11749,7 +10692,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "system_window",
-            "EVE Spai — System info",
+            "EVE Spai - System info",
             [470.0, 660.0],
             |ui| {
                 out = self.system_info_body(ui, id, false);
@@ -11761,7 +10704,6 @@ impl SpaiApp {
         }
     }
 
-    /// Map colour for an alliance (override from settings, else auto from name).
     fn alliance_paint(&self, name: &str) -> egui::Color32 {
         self.settings
             .alliances
@@ -11772,19 +10714,13 @@ impl SpaiApp {
             .unwrap_or_else(|| name_color(name))
     }
 
-    /// Map colour for a coalition (override, else auto from name).
     fn coalition_paint(c: &crate::settings::Coalition) -> egui::Color32 {
         c.color
             .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
             .unwrap_or_else(|| name_color(&c.name))
     }
 
-    /// Record any newly-seen sov-holding alliance (from ESI) in the settings list.
-    /// Never prunes — alliances persist after they stop holding sov.
     fn discover_sov_alliances(&mut self, ctx: &egui::Context) {
-        // Sov data changes slowly (ESI poll cadence), and this only ever *adds* newly-seen
-        // alliances, so throttle off the frame rate instead of rebuilding the name set and
-        // scanning settings.alliances every frame.
         let now = ctx.input(|i| i.time);
         if now - self.sov_discover_last < 3.0 {
             return;
@@ -11807,7 +10743,6 @@ impl SpaiApp {
         }
     }
 
-    /// Top sov-holding alliances over a set of systems: (alliance id, name, count).
     fn dominant_alliances(&self, ids: &[i64]) -> Vec<(i64, Option<String>, usize)> {
         let status = self.system_status.lock().unwrap();
         let mut counts: std::collections::HashMap<i64, (Option<String>, usize)> =
@@ -11830,7 +10765,6 @@ impl SpaiApp {
         v
     }
 
-    /// Top-right column of dominant alliance logos (largest first), with the count.
     fn dominant_logos(&self, ui: &mut egui::Ui, ids: &[i64], area_id: &str) {
         let dom = self.dominant_alliances(ids);
         if dom.is_empty() {
@@ -11852,7 +10786,6 @@ impl SpaiApp {
             });
     }
 
-    /// Rat-faction summary line (shared by system/constellation/region windows).
     fn rat_line(ui: &mut egui::Ui, region_name: &str) {
         if let Some(rp) = crate::rats::rat_profile(region_name) {
             ui.separator();
@@ -11873,8 +10806,6 @@ impl SpaiApp {
         }
     }
 
-    /// Constellation info window — navigates up to its region, down to its systems,
-    /// and across to neighbouring constellations.
     fn constellation_window(&mut self, ctx: &egui::Context) {
         let Some(cid) = self.constellation_window else { return };
         let Some(store) = &self.store else { return };
@@ -11891,7 +10822,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "constellation_window",
-            "EVE Spai — Constellation",
+            "EVE Spai - Constellation",
             [420.0, 560.0],
             |ui| {
                 ui.heading(&name);
@@ -11915,7 +10846,6 @@ impl SpaiApp {
                 }
                 ui.separator();
                 ui.label(egui::RichText::new(format!("Systems ({})", systems.len())).strong());
-                // Fill the remaining height; full width; recomputed each frame.
                 let h = ui.available_height();
                 egui::ScrollArea::vertical()
                     .id_salt("const_sys")
@@ -11948,8 +10878,6 @@ impl SpaiApp {
         }
     }
 
-    /// Region info window — navigates down to its constellations and across to
-    /// neighbouring regions.
     fn region_window(&mut self, ctx: &egui::Context) {
         let Some(rid) = self.region_window else { return };
         let Some(store) = &self.store else { return };
@@ -11964,7 +10892,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "region_window",
-            "EVE Spai — Region",
+            "EVE Spai - Region",
             [420.0, 580.0],
             |ui| {
                 ui.heading(&name);
@@ -12017,7 +10945,6 @@ impl SpaiApp {
         }
     }
 
-    /// Ship-info window: render image, hull class, resists, fitting, speed.
     fn ship_window(&mut self, ctx: &egui::Context) {
         let Some(id) = self.ship_window else {
             return;
@@ -12025,7 +10952,6 @@ impl SpaiApp {
         let details = self.store.as_ref().and_then(|s| s.ship_details(id));
         let traits = self.store.as_ref().map(|s| s.ship_traits(id)).unwrap_or_default();
         let roles = derive_roles(&traits);
-        // Resolve skill names (ESI, cached) for the per-skill bonus sections.
         let skill_ids: Vec<i64> = {
             let mut s: Vec<i64> = traits.iter().map(|t| t.0).filter(|&s| s > 0).collect();
             s.sort_unstable();
@@ -12034,7 +10960,7 @@ impl SpaiApp {
         };
         self.ensure_type_names(&skill_ids, ctx);
         let names = self.type_names.lock().unwrap().clone();
-        let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai — Ship", [380.0, 600.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "ship_window", "EVE Spai - Ship", [380.0, 600.0], |ui| {
             ui.horizontal(|ui| {
                 let url = eve_type_render_url(id, 96.0);
                 ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(96.0)));
@@ -12071,13 +10997,11 @@ impl SpaiApp {
                         format!("• {text}")
                     }
                 };
-                // Fill the remaining window height; scroll if it overflows.
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .max_height(ui.available_height())
                     .id_salt("ship_traits")
                     .show(ui, |ui| {
-                        // Per-skill sections first (specialised → generic), role bonuses last.
                         let mut skills: Vec<i64> = Vec::new();
                         for (s, _, _) in &traits {
                             if *s > 0 && !skills.contains(s) {
@@ -12114,8 +11038,6 @@ impl SpaiApp {
         }
     }
 
-    /// "Update available" prompt: Yes (download + self-replace), No (don't ask again
-    /// for this version), or Ask Me Again Later (re-prompt next launch).
     fn update_dialog(&mut self, ctx: &egui::Context) {
         let st = self.update.lock().unwrap().clone();
         let Some(av) = st.available.clone() else { return };
@@ -12149,7 +11071,7 @@ impl SpaiApp {
                     ui.add_space(4.0);
                 }
                 ui.label(format!(
-                    "EVE Spai v{} is available — you have v{}.",
+                    "EVE Spai v{} is available. You have v{}.",
                     av.version,
                     crate::update::current()
                 ));
@@ -12186,7 +11108,6 @@ impl SpaiApp {
                         ctx2.request_repaint();
                     });
                 }
-                // No binary for this platform — send them to the release page.
                 None => {
                     let _ = open::that(&av.html_url);
                     close = true;
@@ -12198,7 +11119,6 @@ impl SpaiApp {
         }
     }
 
-    /// Watch the clipboard (throttled); when it newly holds a d-scan, queue a prompt.
     fn poll_dscan_clipboard(&mut self) {
         if !self.settings.dscan_autoprompt {
             return;
@@ -12208,7 +11128,6 @@ impl SpaiApp {
             return;
         }
         self.dscan_checked = Some(std::time::Instant::now());
-        // A prompt or upload already in flight — don't poll over it.
         if self.dscan_prompt.is_some() || self.dscan_share.lock().unwrap().uploading {
             return;
         }
@@ -12229,13 +11148,10 @@ impl SpaiApp {
         }
     }
 
-    /// Prompt to share a detected d-scan, and show the resulting link.
-    /// True when the user is set up for the Imperium (an `*.imperium` intel channel).
     fn is_imperium(&self) -> bool {
         self.settings.intel_channels.iter().any(|c| c.trim().to_lowercase().ends_with(".imperium"))
     }
 
-    /// Whether d-scans should go to adashboard.info/intel rather than dscan.info.
     fn dscan_uses_adashboard(&self) -> bool {
         match self.settings.dscan_service {
             crate::settings::DscanService::Auto => self.is_imperium(),
@@ -12244,9 +11160,6 @@ impl SpaiApp {
         }
     }
 
-    /// Imperium d-scan: copy it to the clipboard and open adashboard.info/intel, where the
-    /// member (logged in via ESI) pastes it. adashboard has no anonymous upload API, so we
-    /// can't fetch a shareable link the way dscan.info works.
     fn open_adashboard_intel(&self, ctx: &egui::Context, text: String) {
         ctx.copy_text(text);
         let _ = open::that("https://adashboard.info/intel");
@@ -12267,7 +11180,7 @@ impl SpaiApp {
         });
     }
 
-    #[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+    #[allow(deprecated)]
     fn dscan_dialog(&mut self, ctx: &egui::Context) {
         let adashboard = self.dscan_uses_adashboard();
         let active = self.dscan_prompt.is_some() || {
@@ -12279,8 +11192,6 @@ impl SpaiApp {
             self.dscan_link_used = false;
             self.dscan_unfocused_at = None;
         }
-        // Auto mode: act on a detected d-scan straight away (local pastes always prompt so the
-        // user can choose what to do with them).
         let auto_dscan =
             matches!(self.dscan_prompt, Some((_, _, PasteKind::Dscan))) && self.settings.dscan_autoupload;
         if active && auto_dscan {
@@ -12300,11 +11211,7 @@ impl SpaiApp {
                 }
             }
         }
-        // Position the popup once, at the bottom-right of the EVE window if we can find
-        // it (X11), otherwise a sensible screen position.
         if active && self.dscan_pos.is_none() {
-            // Outer window size (inner + the title bar the decorations add) and a small
-            // margin, so it sits just inside the EVE window's bottom-right, not touching.
             let (ow, oh, margin) = (300.0_f32, 150.0_f32, 14.0_f32);
             self.dscan_pos = Some(match eve_window_rect() {
                 Some((x, y, w, h)) => (
@@ -12327,11 +11234,11 @@ impl SpaiApp {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("dscan_popup"),
             egui::ViewportBuilder::default().with_icon(app_icon())
-                .with_title("EVE Spai — D-scan")
-                .with_visible(active) // created at startup, just toggled visible
+                .with_title("EVE Spai - D-scan")
+                .with_visible(active)
                 .with_window_level(egui::WindowLevel::AlwaysOnTop)
-                .with_active(false) // do not steal focus from the game
-                .with_decorations(true) // border + title bar so it can be dragged
+                .with_active(false)
+                .with_decorations(true)
                 .with_taskbar(false)
                 .with_resizable(true)
                 .with_position([pos.0, pos.1])
@@ -12341,7 +11248,6 @@ impl SpaiApp {
                     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |_ui| {});
                     return;
                 }
-                // Always-on-top toggle (re-asserted each frame; some WMs drop the initial hint).
                 ontop_pin(ctx, "dscan_popup");
                 let frame = egui::Frame::central_panel(&ctx.style());
                 egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
@@ -12368,7 +11274,7 @@ impl SpaiApp {
                     } else if uploading {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Uploading to dscan.info...");
+                            ui.label("Uploading to dscan.info…");
                         });
                     } else {
                         if let Some(e) = &error {
@@ -12379,10 +11285,9 @@ impl SpaiApp {
                         }
                         if let Some((_, n, kind)) = &self.dscan_prompt {
                             let (n, kind) = (*n, *kind);
-                            // Hint at the configured default, but let the user pick here.
                             let ada = format!("{}  adashboard.info", icon::UPLOAD_SIMPLE);
                             let ada_hint =
-                                "Copy and open adashboard.info/intel — paste it there (Ctrl+V)";
+                                "Copy and open adashboard.info/intel, then paste it there (Ctrl+V)";
                             match kind {
                                 PasteKind::Dscan => {
                                     ui.label(format!("D-scan detected ({n} rows). Share with:"));
@@ -12436,8 +11341,6 @@ impl SpaiApp {
                 if ctx.input(|i| i.viewport().close_requested()) {
                     dismiss = true;
                 }
-                // Once the shared link has been opened/copied, close after 5 s without
-                // focus, so it doesn't linger over the game.
                 if self.dscan_link_used {
                     if ctx.input(|i| i.viewport().focused).unwrap_or(false) {
                         self.dscan_unfocused_at = None;
@@ -12464,7 +11367,7 @@ impl SpaiApp {
             if let Some((text, _, _)) = self.dscan_prompt.take() {
                 self.open_adashboard_intel(ctx, text);
             }
-            dismiss = true; // nothing more to show — we handed off to the browser
+            dismiss = true;
         }
         if do_lookup {
             if let Some((text, _, _)) = self.dscan_prompt.take() {
@@ -12482,16 +11385,12 @@ impl SpaiApp {
         }
     }
 
-    /// First-run setup wizard (docs/WORMHOLES_AND_NEXT.md A8). Dismissable; can be
-    /// re-run from Settings. Walks logs → channels → character → theme.
     fn setup_wizard(&mut self, ctx: &egui::Context) {
         if !self.wizard_open {
             return;
         }
         use egui_phosphor::regular as icon;
 
-        // The active step list — Imperium adds optional jump-bridge / sov-upgrade /
-        // jabber steps once that pack is applied.
         #[derive(Clone, Copy, PartialEq)]
         enum S {
             Welcome,
@@ -12543,8 +11442,6 @@ impl SpaiApp {
                         let hint = crate::logpaths::chat_logs_dir("")
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "auto-detect".into());
-                        // Validate the entered (or auto-detected) location and show a
-                        // check / cross.
                         let resolved = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir);
                         ui.horizontal(|ui| {
                             ui.add(
@@ -12786,7 +11683,6 @@ impl SpaiApp {
         }
     }
 
-    /// Open a filter picker dialog for `kind`, seeded from rule `rule_idx`'s current selection.
     fn open_filter_picker(&mut self, kind: crate::pickers::PickerKind, rule_idx: usize) {
         use crate::pickers::{
             build_geo_picker, build_ship_tree, seed_selection, FilterPicker, PickerData, PickerKind,
@@ -12796,7 +11692,6 @@ impl SpaiApp {
         let mut picker = FilterPicker::new(kind, rule_idx);
         match kind {
             PickerKind::Systems => {
-                // One geo tree edits regions + constellations + systems (tick any level).
                 let (roots, flat) = build_geo_picker(&store.all_systems_geo());
                 picker.geo_roots = roots;
                 picker.geo_flat = flat;
@@ -12839,8 +11734,6 @@ impl SpaiApp {
         self.filter_picker = Some(picker);
     }
 
-    /// Render the open filter picker (if any), write selection changes back to the rule, and handle
-    /// the characters "add by exact name" ESI resolve.
     fn filter_picker_dialog(&mut self, ctx: &egui::Context) {
         if self.filter_picker.is_none() {
             return;
@@ -12917,8 +11810,6 @@ impl SpaiApp {
         }
     }
 
-    /// Resolve a pilot name to its canonical form via ESI (off-thread); result lands in
-    /// `filter_add_result` for the characters picker to pick up.
     fn spawn_char_resolve(&self, name: String, ctx: &egui::Context) {
         let out = self.filter_add_result.clone();
         let ctx = ctx.clone();
@@ -12934,13 +11825,10 @@ impl SpaiApp {
         });
     }
 
-    /// Alert-rules editor (inline). Rules are evaluated top-first; the first matching
-    /// enabled rule decides the actions (or suppresses the alert).
     fn alert_rules_ui(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let mut remove: Option<usize> = None;
         let mut move_up: Option<usize> = None;
-        // A filter Edit-button click; opened after the rules loop (can't borrow self inside it).
         let mut open_picker: Option<(crate::pickers::PickerKind, usize)> = None;
         ui.label(
             egui::RichText::new(
@@ -12999,7 +11887,6 @@ impl SpaiApp {
                 if !ru.expanded {
                     return;
                 }
-                // Conditions.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("if severity ≥");
                     egui::ComboBox::from_id_salt(("rsev", i))
@@ -13038,7 +11925,6 @@ impl SpaiApp {
                         changed = true;
                     }
                 });
-                // Condition tags.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("requires:");
                     for tag in [
@@ -13057,8 +11943,6 @@ impl SpaiApp {
                         }
                     }
                 });
-                // Filters: each opens a dedicated picker dialog (tree/list with search) instead of a
-                // comma-separated text field. A row shows a summary + an "Edit" button; empty = any.
                 {
                     use crate::pickers::PickerKind;
                     let row = |ui: &mut egui::Ui, label: &str, list: &[String], any_hint: &str| -> bool {
@@ -13080,7 +11964,6 @@ impl SpaiApp {
                         clicked
                     };
                     let mut want: Option<PickerKind> = None;
-                    // One "location" picker covers regions + constellations + systems (tick any level).
                     ui.horizontal(|ui| {
                         ui.label("location:");
                         if ui.small_button("Edit").clicked() {
@@ -13103,7 +11986,6 @@ impl SpaiApp {
                         open_picker = Some((kind, i));
                     }
                 }
-                // Actions.
                 ui.horizontal_wrapped(|ui| {
                     ui.label("then:");
                     changed |= ui.checkbox(&mut ru.suppress, "suppress").changed();
@@ -13166,7 +12048,6 @@ impl SpaiApp {
         }
     }
 
-    /// Intel severity configuration dialog.
     fn severity_window(&mut self, ctx: &egui::Context) {
         if !self.severity_open {
             return;
@@ -13176,7 +12057,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "severity_window",
-            "EVE Spai — Intel severity",
+            "EVE Spai - Intel severity",
             [620.0, 480.0],
             |ui| {
                 ui.label(
@@ -13209,7 +12090,6 @@ impl SpaiApp {
                     changed |=
                         ui.add(egui::DragValue::new(&mut sv.big_gang_threshold).range(2..=100)).changed();
                 });
-                // Two columns so the conditions fit without a tall window.
                 ui.columns(2, |c| {
                     changed |= combo(&mut c[0], "Small gang (< threshold)", &mut sv.small_gang);
                     changed |= combo(&mut c[0], "Big gang (≥ threshold)", &mut sv.big_gang);
@@ -13252,8 +12132,6 @@ impl SpaiApp {
         }
     }
 
-    /// Coalition editor: name + member alliance names (one per line). Unlisted
-    /// alliances are independent.
     fn coalitions_window(&mut self, ctx: &egui::Context) {
         if !self.coalitions_open {
             return;
@@ -13261,7 +12139,6 @@ impl SpaiApp {
         let mut remove: Option<usize> = None;
         let mut add = false;
         let mut reset = false;
-        // Deferred edits (avoid borrowing settings.* mutably mid-iteration).
         let mut coal_color: Vec<(String, Option<(u8, u8, u8)>)> = Vec::new();
         let mut ally_color: Vec<(usize, Option<(u8, u8, u8)>)> = Vec::new();
         let mut ally_remove: Option<usize> = None;
@@ -13270,7 +12147,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "coalitions_window",
-            "EVE Spai — Coalitions",
+            "EVE Spai - Coalitions",
             [520.0, 680.0],
             |ui| {
                 ui.label(
@@ -13296,7 +12173,6 @@ impl SpaiApp {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("Coalition").weak());
                                 ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
-                                // Colour (override or auto from name).
                                 let cur = self
                                     .settings
                                     .coalitions
@@ -13324,7 +12200,6 @@ impl SpaiApp {
                     }
                 });
 
-                // --- Alliances holding sov (auto-discovered from ESI) ---
                 ui.separator();
                 ui.label(egui::RichText::new("Alliances (sov holders)").strong());
                 ui.horizontal(|ui| {
@@ -13394,7 +12269,6 @@ impl SpaiApp {
         if let Some(i) = remove {
             self.coal_edit.remove(i);
         }
-        // Apply deferred alliance/coalition colour + membership edits.
         for (name, col) in coal_color {
             if let Some(c) = self.settings.coalitions.iter_mut().find(|c| c.name == name) {
                 c.color = col;
@@ -13422,7 +12296,6 @@ impl SpaiApp {
                     c.alliances.push(ally);
                 }
             }
-            // Keep the editor buffers in step with the changed membership.
             self.coal_edit = self
                 .settings
                 .coalitions
@@ -13442,7 +12315,6 @@ impl SpaiApp {
             }
             self.alliance_add.clear();
         }
-        // Sync edit buffers back into settings.
         let parsed: Vec<crate::settings::Coalition> = self
             .coal_edit
             .iter()
@@ -13467,8 +12339,6 @@ impl SpaiApp {
         }
     }
 
-    /// Jump-bridge configuration: paste a coalition list (any separator); each
-    /// line's first two SDE systems become a bridge. Drawn green on the map.
     fn jump_bridges_window(&mut self, ctx: &egui::Context) {
         if !self.jump_bridges_open {
             return;
@@ -13477,7 +12347,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "jump_bridges_window",
-            "EVE Spai — Jump bridges",
+            "EVE Spai - Jump bridges",
             [440.0, 520.0],
             |ui| {
                 ui.horizontal(|ui| {
@@ -13547,7 +12417,6 @@ impl SpaiApp {
         }
     }
 
-    /// Sovereignty-upgrade configuration: paste lines of "<system> <upgrade…>".
     fn sov_upgrades_window(&mut self, ctx: &egui::Context) {
         if !self.sov_upgrades_open {
             return;
@@ -13556,7 +12425,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "sov_upgrades_window",
-            "EVE Spai — Sov upgrades",
+            "EVE Spai - Sov upgrades",
             [460.0, 520.0],
             |ui| {
                 ui.horizontal(|ui| {
@@ -13636,7 +12505,7 @@ impl SpaiApp {
         let keep = Self::dialog_viewport(
             ctx,
             "intel_channels_window",
-            "EVE Spai — Intel channels",
+            "EVE Spai - Intel channels",
             [420.0, 480.0],
             |ui| {
                 ui.add_space(6.0);
@@ -13647,7 +12516,6 @@ impl SpaiApp {
                     .weak(),
                 );
                 ui.add_space(6.0);
-                // Button above the (bounded) list so it never gets pushed off-screen.
                 if ui.button("Add channel").clicked() {
                     self.settings.intel_channels.push(String::new());
                     changed = true;
@@ -13695,7 +12563,6 @@ impl SpaiApp {
                     }
                     ui.separator();
 
-                    // --- Theme ---
                     ui.label(egui::RichText::new("Theme (3 colours)").strong());
                     ui.horizontal_wrapped(|ui| {
                         for preset in Theme::presets() {
@@ -13712,7 +12579,6 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    // --- General ---
                     ui.label(egui::RichText::new("General").strong());
                     changed |= ui
                         .checkbox(&mut self.settings.use_eve_time, "Show EVE time (UTC)")
@@ -13792,7 +12658,6 @@ impl SpaiApp {
                             ))
                             .clicked()
                         {
-                            // Re-check even if this version was previously skipped.
                             self.update_dismissed = false;
                             self.settings.update_skip_version.clear();
                             changed = true;
@@ -13844,7 +12709,6 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    // --- Alerts ---
                     ui.label(egui::RichText::new("Alerts").strong());
                     changed |= ui
                         .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
@@ -13886,7 +12750,6 @@ impl SpaiApp {
                                     changed |= ui.selectable_value(&mut a.on_top, OnTop::Never, "Never").changed();
                                 });
                         });
-                        // Per-severity sounds (preset name or file path) + test.
                         ui.label(egui::RichText::new("Sounds (preset: off/info/warning/danger/critical/beep/chime, or a file path)").weak());
                         for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
                             if a.sounds.len() <= i {
@@ -13903,7 +12766,6 @@ impl SpaiApp {
                                 changed |= sound_picker(ui, ("severity_sound", i), false, &mut a.sounds[i]);
                             });
                         }
-                        // Pushover (mobile push).
                         changed |= ui
                             .checkbox(&mut a.push_enabled, "Mobile push (Pushover)")
                             .on_hover_text("Install the Pushover app; create an application for the token")
@@ -13925,7 +12787,6 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    // --- Configuration packs ---
                     ui.label(egui::RichText::new("Configuration packs").strong());
                     ui.label(
                         egui::RichText::new("Apply a coalition's preset intel channels.").weak(),
@@ -13964,7 +12825,6 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    // --- Intel channels ---
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Intel channels").strong());
                         ui.label(
@@ -13978,7 +12838,6 @@ impl SpaiApp {
 
                     ui.separator();
 
-                    // --- Jump bridges & sov upgrades ---
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Coalition data").strong());
                         ui.label(
@@ -14048,12 +12907,6 @@ impl SpaiApp {
     }
 }
 
-// ============================== Alert daemon ==============================
-// Alert evaluation + firing runs on a background thread so it keeps working when the window is
-// minimized/occluded (eframe parks the UI thread then). The UI publishes a config snapshot each
-// frame and drains the `fired_ui` queue for the alert window/feed; the daemon itself fires the
-// thread-safe side effects — sound, OS notification, pushover — and records recent alerts.
-
 #[derive(Clone, Default)]
 struct AlertConfig {
     enabled: bool,
@@ -14074,7 +12927,6 @@ struct AlertRuntime {
     last_alert_time: i64,
     cooldown: std::collections::HashMap<i64, i64>,
     alerted: std::collections::HashMap<u64, i64>,
-    /// Drained by the UI into the alert feed / window: (report, severity, raise_window).
     fired_ui: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>,
 }
 
@@ -14082,16 +12934,8 @@ struct AlertEngine {
     config: std::sync::Mutex<AlertConfig>,
     runtime: std::sync::Mutex<AlertRuntime>,
     recent: crate::gamewatcher::AlertLog,
-    /// Shared state for the deferred alert viewport — the daemon pushes the feed/countdown/focus
-    /// here so the floating window shows independently of the UI thread.
     alert_shared: SharedAlertWindow,
-    /// To wake the alert viewport when a window-alert fires (it may be the only thing repainting
-    /// while the root is minimized).
     ctx: egui::Context,
-    /// The overlay child's write-half, shared with `OverlayLink`. The daemon pushes a fired alert
-    /// straight to the overlay over IPC here — this runs while the main's UI thread is PARKED (window
-    /// minimized), so the alert still pops. `None` until the overlay link is wired; unused in the
-    /// in-process fallback.
     overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
 }
 
@@ -14113,8 +12957,6 @@ impl AlertEngine {
         }
     }
 
-    /// Evaluate all current reports and fire any new alerts. Returns true if anything fired.
-    /// Mirrors the former `SpaiApp::check_alerts`, but runs off the UI thread.
     fn evaluate(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
@@ -14124,7 +12966,7 @@ impl AlertEngine {
         if !cfg.enabled {
             return false;
         }
-        let systems = cfg.systems.clone(); // Option<Arc<Systems>>; helpers handle None (no jumps)
+        let systems = cfg.systems.clone();
         let acfg = &cfg.alerts;
         let sev_rules = &cfg.severity;
         let only_undocked = cfg.only_undocked;
@@ -14165,7 +13007,7 @@ impl AlertEngine {
         let mut rt = self.runtime.lock().unwrap();
         let mut newest = rt.last_alert_time;
         {
-            const KILLMAIL_ALERT_WINDOW: i64 = 600; // 10 min
+            const KILLMAIL_ALERT_WINDOW: i64 = 600;
             let state = intel_state.lock().unwrap();
             for r in &state.reports {
                 if r.primary_system().is_none() && r.gates.is_empty() {
@@ -14217,12 +13059,12 @@ impl AlertEngine {
                     .map(|s| s.name.clone())
                     .unwrap_or_else(|| "Intel".to_owned());
                 let title = match jumps {
-                    Some(j) if j > 0 => format!("{title} — {j} jumps"),
-                    Some(_) => format!("{title} — here"),
+                    Some(j) if j > 0 => format!("{title}: {j} jumps"),
+                    Some(_) => format!("{title} (here)"),
                     None => title,
                 };
                 let text = alert_text(r);
-                let body = format!("{text}\n— {} · {}", r.reporter, r.channel);
+                let body = format!("{text}\n{} · {}", r.reporter, r.channel);
                 fired.push(Fire {
                     id: r.id,
                     sys_id,
@@ -14245,18 +13087,12 @@ impl AlertEngine {
         if fired.is_empty() {
             return false;
         }
-        // Single daemon, so no double-fire race: record dedup/cooldown + queue the UI bits, then
-        // release the runtime lock BEFORE the (possibly slow) notify/sound so the UI drain can't
-        // block on them.
         for f in &fired {
             rt.cooldown.insert(f.sys_id, now);
             rt.alerted.insert(f.id, now);
             rt.fired_ui.push((f.report.clone(), f.sev, f.win));
         }
         drop(rt);
-        // Feed the floating alert window (deferred viewport) for any rule with `custom_window`.
-        // This is in ADDITION to `fired_ui` (which feeds the in-app "Recent alerts" history). Done
-        // off the UI thread so the window pops + counts down even while the root is minimized.
         if fired.iter().any(|f| f.win) {
             let timeout = acfg.window_timeout;
             let secs = if timeout <= 0.0 { f32::INFINITY } else { timeout.max(3.0) };
@@ -14271,12 +13107,8 @@ impl AlertEngine {
                 st.feed.drain(0..n - 100);
             }
             st.secs = secs;
-            st.focus_pending = true; // bring the window forward once
+            st.focus_pending = true;
             drop(st);
-            // Push the fired reports straight to the overlay CHILD over IPC. This runs on the daemon
-            // thread, so it works while the main's UI thread is parked (window minimized) — otherwise
-            // the alert would never reach the overlay until the main is restored. The UI thread's
-            // `send_alert_to_overlay` re-syncs the full enriched feed on the next unparked frame.
             crate::ipc::send_shared(
                 &self.overlay_stdin,
                 &crate::ipc::MainToOverlay::AlertPush(crate::ipc::AlertPush {
@@ -14285,9 +13117,6 @@ impl AlertEngine {
                 }),
             );
             self.ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
-            // When the overlay child owns the alert window, it lives in the child process, not this
-            // viewport. Wake the root so `alert_window` runs and forwards the fresh alert over IPC.
-            // (Harmless when running the in-process fallback.)
             self.ctx.request_repaint();
         }
         {
@@ -14314,8 +13143,6 @@ impl AlertEngine {
         true
     }
 
-    /// Drain the zKill feed into intel_state (so killmail alerts fire), off the UI thread.
-    /// Mirrors the former `SpaiApp::ingest_killfeed`. `ship_by_id` + `store` are the daemon's own.
     fn ingest_kills(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
@@ -14340,7 +13167,6 @@ impl AlertEngine {
             p.locations.get(&cfg.active_character).map(|(s, _)| *s).or(p.system_id)
         };
         let Some(me) = me else { return false };
-        // 0 = follow the regular intel feed's jump range; if that's "any" (0), cap the global feed.
         let range = match (cfg.kill_intel_jumps, cfg.intel_max_jumps) {
             (0, 0) => 10,
             (0, feed) => feed,
@@ -14354,7 +13180,6 @@ impl AlertEngine {
                 continue;
             }
             let Some(report) = kill_report(&ev, &geo, ship_by_id) else { continue };
-            // The feed carries the full killmail, so enrich the card immediately from it.
             kill_cache.lock().unwrap().insert(ev.killmail_id, Some(ev.info.clone()));
             if let Some(store) = store {
                 store.add_kill_intel(ev.killmail_id, ev.system_id, ev.ship_type_id, ev.time, ev.value);
@@ -14372,8 +13197,6 @@ impl AlertEngine {
         true
     }
 
-    /// Resolve "parked" reports (a location held inside an unresolved name) and cover
-    /// over-glued runs, off the UI thread. Mirrors the former `SpaiApp::reconcile_unresolved_pilots`.
     fn reconcile(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
@@ -14391,21 +13214,13 @@ impl AlertEngine {
             let mut new_pilots: Vec<String> = Vec::new();
             for p in original.iter().cloned() {
                 if crate::intel::is_pilot_stopword(&p) {
-                    continue; // blacklist overrides any cached verdict
+                    continue;
                 }
                 match cache.get(&p) {
-                    // Confirmed character the USER marked "not a pilot": drop it from the pilot list
-                    // entirely (hidden from resolved_pilots; keeping it would animate "..." forever).
-                    // An activity-flagged (uncertain) pilot is NOT dropped — it stays, with a "?".
                     Some(Some(_)) if cache.is_hidden(&p) => {
                         changed = true;
                     }
-                    // Confirmed character — keep as-is.
                     Some(Some(_)) => new_pilots.push(p),
-                    // Still pending — keep showing it, and (re)queue the full name + its
-                    // sub-spans so a lost queue entry (dropped at the cap, in flight when a
-                    // batch failed, or a never-queued 4+ word run) still resolves instead of
-                    // staying pending until a restart.
                     None => {
                         cache.queue(&p);
                         for w in crate::pilot::name_windows(&p) {
@@ -14413,8 +13228,6 @@ impl AlertEngine {
                         }
                         new_pilots.push(p);
                     }
-                    // Not a character as a whole: cover it with confirmed sub-names
-                    // (the over-glued run "Wwallddo Lulu Uanid" -> Wwallddo + Lulu Uanid).
                     Some(None) => {
                         let cover: Vec<String> = cache
                             .cover(&p)
@@ -14424,9 +13237,6 @@ impl AlertEngine {
                         if !cover.is_empty() {
                             new_pilots.extend(cover);
                         } else if p.split_whitespace().count() == 2 && !cache.is_reverified(&p) {
-                            // A two-word block whose pair ESI rejected: re-verify the pair once
-                            // (in case the negative is stale) before deciding. Keep showing it as
-                            // pending; once the negative is re-confirmed, cover splits it.
                             cache.force_requeue(&p);
                             new_pilots.push(p);
                         } else {
@@ -14448,8 +13258,6 @@ impl AlertEngine {
             }
             let mut seen = std::collections::HashSet::new();
             new_pilots.retain(|p| seen.insert(p.to_lowercase()));
-            // A standalone word that is a known ship is the ship, not a pilot — even when
-            // a character shares the name ("Buzzard"). Move it to the ship list.
             let mut final_pilots: Vec<String> = Vec::new();
             for p in new_pilots {
                 if let Some(idx) = &ships {
@@ -14471,19 +13279,11 @@ impl AlertEngine {
                 changed = true;
             }
             r.pilots = final_pilots;
-            // A name that only appears as the leading words of a longer detected name here
-            // ("Gallente Citizen" inside "Gallente Citizen 17120704") is the same span — drop
-            // it even when both are real characters.
             let deduped = crate::intel::drop_covered_prefixes(&r.pilots, &r.text);
             if deduped.len() != r.pilots.len() {
                 changed = true;
                 r.pilots = deduped;
             }
-            // Held-location re-derivation: a report whose only system was a token inside a name
-            // blob shows no location at parse time (the held model — never a guessed location).
-            // Once ESI confirms the names and frees the remaining tokens, derive the location
-            // from them. Only fires while there's no location yet, so a context-resolved system
-            // from parse time is never clobbered.
             if r.systems.is_empty() && r.gates.is_empty() && !r.pilots.is_empty() {
                 let reserved: std::collections::HashSet<String> = r
                     .pilots
@@ -14501,15 +13301,10 @@ impl AlertEngine {
                     changed = true;
                 }
             }
-            // Count fallback: a bare number tentatively read as a name component ("Adama
-            // 80") is counted after all if ESI says the "{name} {n}" candidate isn't a
-            // real character ("Bob 80" -> 80 was a hostile count).
             let mut add = 0u32;
             let mut requeue: Vec<String> = Vec::new();
             let pilots_lc: Vec<String> = r.pilots.iter().map(|p| p.to_lowercase()).collect();
             r.name_number_skips.retain(|(cand, num)| {
-                // The number belongs to an already-parsed pilot name (e.g. the tagged
-                // "Cyberdyne Systems 101") — it's part of the name, never a count.
                 if pilots_lc.iter().any(|p| p.contains(&cand.to_lowercase())) {
                     return false;
                 }
@@ -14538,8 +13333,6 @@ impl AlertEngine {
 
 }
 
-/// Compact label for a nearest-celestial badge. Moons become "Moon <planet>-<moon>" (how pilots
-/// reference a moon, e.g. "Moon 5-3" — the planet number matters); everything else keeps its name.
 fn celestial_badge_label(name: &str) -> String {
     if let Some((planet_part, moon_n)) = name.split_once(" - Moon ") {
         if let Some(roman) = planet_part.rsplit(' ').next() {
@@ -14551,7 +13344,6 @@ fn celestial_badge_label(name: &str) -> String {
     name.to_owned()
 }
 
-/// Roman numeral → integer (planet indices in celestial names). None if not a valid roman numeral.
 fn roman_to_int(s: &str) -> Option<i64> {
     let mut total = 0;
     let mut prev = 0;
@@ -14576,36 +13368,26 @@ fn roman_to_int(s: &str) -> Option<i64> {
     (total > 0).then_some(total)
 }
 
-/// Whether a zKill victim is intel noise (not worth a card): an UNRESOLVED hull (empty name - a
-/// category-22 deployable or any type not in our SDE, e.g. Mobile Warp Disruptor / Cyno Inhibitor /
-/// Tractor Unit / Depot / Encounter Surveillance System), a shuttle, a rookie corvette, an
-/// anchorable "Mobile X" deployable, or a cheap empty pod. A real ship or Upwell structure resolves
-/// to a non-empty name without these markers and is kept.
 fn kill_is_noise(ship_name: &str, value: f64) -> bool {
     let lower = ship_name.to_lowercase();
     lower.is_empty()
         || lower.contains("shuttle")
         || lower.contains("mobile ")
         || matches!(lower.as_str(), "reaper" | "impairor" | "ibis" | "velator")
-        // Regular pod and the Genolution "Auroral" 197-variant capsule: skip unless valuable.
         || (lower.starts_with("capsule") && value < 10_000_000.0)
 }
 
-/// Background loop: evaluate alerts every 400 ms regardless of the window's visibility.
-/// Build an intel card from a zKill event. `ship_by_id` maps a hull type id to its name.
 fn kill_report(
     ev: &crate::zkill::KillEvent,
     geo: &crate::geo::Systems,
     ship_by_id: &std::collections::HashMap<i64, String>,
 ) -> Option<crate::intel::IntelReport> {
         let sys = geo.info_of(ev.system_id)?;
-        // Hull from the SDE, or an Upwell structure (not in the ship table) so structure kills show.
         let ship = ship_by_id
             .get(&ev.ship_type_id)
             .cloned()
             .or_else(|| crate::intel::structure_name_by_type(ev.ship_type_id).map(str::to_owned))
             .unwrap_or_default();
-        // An unresolved (deployable/unknown) or otherwise-noise victim never becomes a card.
         if kill_is_noise(&ship, ev.value) {
             return None;
         }
@@ -14623,8 +13405,6 @@ fn kill_report(
         });
         report.ships.push(crate::intel::DetectedShip { id: ev.ship_type_id, name: ship.clone() });
         report.text = format!("{} lost in {}", ship, sys.name);
-        // The killmail link gives the card an "open on zKill" button + triggers enrichment
-        // (which resolves the victim who lost the ship).
         report.links.push(crate::intel::IntelLink {
             kind: crate::intel::LinkKind::Killmail,
             url: format!("https://zkillboard.com/kill/{}/", ev.killmail_id),
@@ -14632,7 +13412,6 @@ fn kill_report(
         });
         Some(report)
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_alert_daemon(
@@ -14645,12 +13424,10 @@ fn spawn_alert_daemon(
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
-        // The daemon's own DB connection (Store isn't Sync) — same pattern as the chat watcher.
         let store = crate::store::Store::open().ok();
         let mut ship_by_id: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(400));
-            // Build the hull-id → name map once, when the SDE ship index is available.
             if ship_by_id.is_empty() {
                 if let Some(idx) = engine.config.lock().unwrap().ship_index.clone() {
                     for (id, name) in idx.values() {
@@ -14658,8 +13435,6 @@ fn spawn_alert_daemon(
                     }
                 }
             }
-            // Maintain intel_state off the UI thread — ingest kills, resolve parked reports — then
-            // evaluate alerts, so the whole pipeline keeps running while the window is minimized.
             let mut dirty = engine.ingest_kills(
                 &intel_state,
                 &kill_cache,
@@ -14671,7 +13446,7 @@ fn spawn_alert_daemon(
             dirty |= engine.reconcile(&intel_state, &pilots);
             dirty |= engine.evaluate(&intel_state, &player);
             if dirty {
-                ctx.request_repaint(); // wake the UI to re-render / show the alert window
+                ctx.request_repaint();
             }
         }
     });
@@ -14681,17 +13456,10 @@ impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
-        // Act on overlay clicks deferred from the previous frame (see `pending_overlay_clicks`):
-        // this is a normally-scheduled frame, so opening a dialog's immediate viewport is safe here.
         for c in std::mem::take(&mut self.pending_overlay_clicks) {
             self.act_on_intel_click(c, &ctx);
         }
 
-        // A second launch asked us (over the loopback control port) to come to the front.
-        // Viewport commands must be issued from the UI thread, so the listener thread only
-        // set a flag + requested a repaint; we consume it here. De-minimize, ensure visible,
-        // focus, and briefly force AlwaysOnTop so the window is actually raised; the level is
-        // reset to Normal next frame so it does not stay pinned above everything.
         if crate::instance::take_raise_request() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -14706,21 +13474,14 @@ impl eframe::App for SpaiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
         }
 
-        // Respawn the overlay child if it died (cheap try_wait; debounced internally).
         if let Some(link) = self.overlay.as_mut() {
             link.poll();
         }
-        // Drain overlay→main messages: alert-feed clicks (open the relevant window) + alert-window
-        // geometry changes (persist). Acting on them needs `&mut self` + ctx, so it's done here in
-        // the root, not on the IPC reader thread. Drain into an owned Vec first so the immutable
-        // borrow of `self.overlay` is released before the `&mut self` handlers run.
         {
             let msgs = self.overlay.as_ref().map(|l| l.drain_inbox()).unwrap_or_default();
             for m in msgs {
                 match m {
                     crate::ipc::OverlayToMain::Click(c) => {
-                        // Defer to the next frame: a Ship/pilot click opens an immediate viewport,
-                        // which must not happen in this IPC-woken frame (see pending_overlay_clicks).
                         self.pending_overlay_clicks.push(c);
                         ctx.request_repaint();
                     }
@@ -14735,12 +13496,8 @@ impl eframe::App for SpaiApp {
             }
         }
 
-        // Publish the active character's system for the worker's jumps-from-me rules.
         let cur_sys = self.player_system().unwrap_or(0);
         self.player_sys_shared.store(cur_sys, std::sync::atomic::Ordering::Relaxed);
-        // Track recent wormhole presence: while the player sits in a hole its timestamp is
-        // refreshed each frame; after leaving it lingers for RECENT_WH_SECS so the zKill feed keeps
-        // surfacing kills there. Prune lapsed entries opportunistically.
         if crate::geo::is_wormhole_system(cur_sys) {
             let now = chrono::Utc::now().timestamp();
             let mut wh = self.recent_wh.lock().unwrap();
@@ -14748,8 +13505,6 @@ impl eframe::App for SpaiApp {
             wh.retain(|_, t| now - *t <= 600);
         }
 
-        // System tray: Show brings the window back; Exit quits for real. Closing the
-        // window hides to the tray instead of quitting (when enabled).
         if let Some(tray) = self.tray.clone() {
             if tray.take_show() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -14772,7 +13527,6 @@ impl eframe::App for SpaiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // Re-apply the theme every frame so colour edits are reflected live (cheap).
         self.settings.theme.apply(&ctx);
 
         self.refresh_characters();
@@ -14780,8 +13534,6 @@ impl eframe::App for SpaiApp {
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
         self.load_persisted_kills();
-        // Killfeed ingest + pilot reconcile + alert evaluation now run on the alert daemon
-        // (off the UI thread) so they keep working while the window is minimized.
         self.reload_wormholes();
         if !self.update_checked {
             self.update_checked = true;
@@ -14847,7 +13599,6 @@ impl eframe::App for SpaiApp {
         self.routes_dialog(&ctx);
         self.safety_watch(&ctx);
         self.screen_flash(&ctx);
-        // Bring a just-updated window to the foreground.
         if let Some(vp) = self.focus_window.take() {
             ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
         }
@@ -14885,11 +13636,9 @@ impl eframe::App for SpaiApp {
     }
 }
 
-/// Fire a desktop notification off the UI thread (dbus can block).
-/// The currently-active X11 window (id, name), best-effort via xdotool.
 #[cfg(not(target_os = "linux"))]
 fn active_window() -> Option<(String, String)> {
-    None // X11/xdotool only
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -14907,8 +13656,6 @@ fn active_window() -> Option<(String, String)> {
     Some((id, String::from_utf8_lossy(&name.stdout).trim().to_owned()))
 }
 
-/// Best-effort check whether the EVE client is the focused window (X11 via
-/// xdotool/xprop). Returns true when it can't tell (so "smart" ≈ always-on-top).
 pub(crate) fn eve_is_focused() -> bool {
     match active_window() {
         Some((_, name)) if !name.is_empty() => {
@@ -14919,11 +13666,9 @@ pub(crate) fn eve_is_focused() -> bool {
     }
 }
 
-/// Best-effort EVE client window geometry (x, y, width, height) via xdotool (X11).
-/// None when xdotool is missing or no EVE window is found.
 #[cfg(not(target_os = "linux"))]
 fn eve_window_rect() -> Option<(i32, i32, i32, i32)> {
-    None // X11/xdotool only
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -14959,8 +13704,6 @@ fn notify(summary: String, body: String) {
     });
 }
 
-/// Draw a dashed line from `p1` to `p2` whose dashes flow toward `p2` as `phase`
-/// increases (the in-game autopilot look).
 fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: egui::Color32, phase: f32) {
     let dir = p2 - p1;
     let len = dir.length();
@@ -14969,7 +13712,6 @@ fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: e
     }
     let unit = dir / len;
     let (dash, period) = (6.0f32, 12.0f32);
-    // Dashes advance toward p2 (the destination) as `phase` grows.
     let mut d = (phase % period) - period;
     let stroke = egui::Stroke::new(2.0, color);
     while d < len {
@@ -14982,9 +13724,6 @@ fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: e
     }
 }
 
-/// Resolve a pasted token to a canonical system name. Exact match only — paste
-/// data uses full system names, and prefix matching would resolve stray words to
-/// random systems whose name merely starts with the token.
 fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
     let tok = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '\'');
     if tok.len() < 2 {
@@ -14993,9 +13732,6 @@ fn resolve_system(graph: &crate::geo::Systems, raw: &str) -> Option<String> {
     graph.lookup(tok).map(|i| i.name.clone())
 }
 
-/// Parse a pasted jump-bridge list: the first two systems found on a
-/// line are a bridge. Tolerant of arrows/punctuation glued to system codes, so the
-/// user can paste a whole wiki page.
 fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings::JumpBridge> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -15017,11 +13753,6 @@ fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings
     out
 }
 
-/// Parse pasted sov upgrades. Primary: the in-game I-Hub copy — a header
-/// "Sovereignty Hub <System>" followed by tab-separated "N⇥Upgrade⇥Online/Offline"
-/// rows. Fallback: per-line "<system> <upgrade…>".
-/// Split a stored sov-upgrade label into individual upgrade names. The in-game / alliance
-/// paste packs several into one comma-separated line, sometimes with a "<-" marker.
 fn split_upgrade_label(label: &str) -> Vec<&str> {
     label
         .split(',')
@@ -15052,7 +13783,6 @@ fn parse_sov_upgrades(text: &str, graph: &crate::geo::Systems) -> Vec<crate::set
             }
         }
     }
-    // Generic fallback.
     let mut out = Vec::new();
     for line in lines {
         let words: Vec<&str> = line.split_whitespace().collect();
@@ -15073,7 +13803,6 @@ fn parse_sov_upgrades(text: &str, graph: &crate::geo::Systems) -> Vec<crate::set
     out
 }
 
-/// Nearest projected system to a point within `threshold` pixels.
 fn nearest_system(
     p: egui::Pos2,
     pos: &std::collections::HashMap<i64, egui::Pos2>,
@@ -15089,8 +13818,6 @@ fn nearest_system(
     best.map(|(id, _)| id)
 }
 
-/// BFS tree from `center` out to `depth` jumps. Returns (distance per system,
-/// children in the discovery tree, systems in BFS order).
 #[allow(clippy::type_complexity)]
 fn bfs_tree(
     graph: &crate::geo::Systems,
@@ -15117,7 +13844,7 @@ fn bfs_tree(
         } else {
             graph.neighbors_gates_only(s).to_vec()
         };
-        ns.sort_unstable(); // deterministic layout
+        ns.sort_unstable();
         for n in ns {
             if let std::collections::hash_map::Entry::Vacant(e) = dist.entry(n) {
                 e.insert(d + 1);
@@ -15130,8 +13857,6 @@ fn bfs_tree(
     (dist, children, order)
 }
 
-/// Assign each node a fraction in [0,1] for its angular/horizontal position:
-/// leaves are spread evenly, internal nodes sit at the mean of their children.
 fn assign_fracs(
     node: i64,
     children: &std::collections::HashMap<i64, Vec<i64>>,
@@ -15158,7 +13883,6 @@ fn assign_fracs(
     }
 }
 
-/// Jumps from the player's system to a target system, if both are known.
 fn jumps_from_you(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     player_sys: Option<i64>,
@@ -15168,8 +13892,6 @@ fn jumps_from_you(
     sys.jumps(t, p, 50)
 }
 
-/// Fewest jumps from any of `srcs` to `target` (None if none reach it / no target).
-/// `use_bridges` counts jump bridges; otherwise the distance is gate-only.
 fn min_jumps_from(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     srcs: &[i64],
@@ -15188,40 +13910,26 @@ fn min_jumps_from(
         .min()
 }
 
-/// A New Eden (k-space) system id — these are drawn on the map.
 fn is_kspace(id: i64) -> bool {
     (30_000_000..31_000_000).contains(&id)
 }
-/// A J-space / wormhole-region system id (incl. Thera) — never drawn on the map.
 fn is_jspace(id: i64) -> bool {
     (31_000_000..32_000_000).contains(&id)
 }
 
-/// Wormhole map overlay: k-space↔k-space links, chains through J-space (with the
-/// J-space hop count), and the set of k-space systems that hold a J-space hole.
 #[derive(Default, Clone)]
 struct WhOverlay {
-    /// Direct k-space ↔ k-space wormholes.
     direct: Vec<(i64, i64)>,
-    /// k-space ↔ k-space via ≥1 J-space system: (a, b, j-space hops).
     chains: Vec<(i64, i64, usize)>,
-    /// k-space systems with a hole leading into J-space.
     jspace_holes: std::collections::HashSet<i64>,
-    /// k-space systems with a known wormhole connection to Thera.
     thera_conns: Vec<i64>,
 }
 
 impl WhOverlay {
-    /// Build the overlay from the known connections. Chains are found by walking the
-    /// wormhole graph from each k-space system *through J-space only* until another
-    /// k-space system is reached; capped in depth and count to stay sane.
     fn build(whs: &[crate::wormholes::Wormhole]) -> WhOverlay {
         use std::collections::{HashMap, HashSet, VecDeque};
         const MAX_J_HOPS: usize = 4;
         const MAX_CHAINS: usize = 60;
-        // A real chain link has a handful of holes; a public hub (Thera) has many. We
-        // don't path *through* a high-degree J-space node, so we don't turn every pair
-        // of systems sharing Thera into a bogus chain — those show as hole markers.
         const MAX_HUB_DEGREE: usize = 6;
 
         let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -15268,7 +13976,6 @@ impl WhOverlay {
                                 chains.push((key.0, key.1, jhops));
                             }
                         }
-                        // A k-space node ends the chain — don't path through it.
                     } else if is_jspace(nb)
                         && !visited.contains(&nb)
                         && jhops < MAX_J_HOPS
@@ -15294,7 +14001,6 @@ impl WhOverlay {
     }
 }
 
-/// A Jabber roster entry / conversation for the contact list.
 struct Convo {
     jid: String,
     name: String,
@@ -15304,7 +14010,6 @@ struct Convo {
     status_text: String,
 }
 
-/// EVE (UTC) timestamp for a chat message: "EVE HH:MM" today, full date otherwise.
 fn eve_time_label(ts: i64, now: i64) -> String {
     use chrono::{Datelike, TimeZone, Utc};
     let Some(t) = Utc.timestamp_opt(ts, 0).single() else {
@@ -15318,8 +14023,6 @@ fn eve_time_label(ts: i64, now: i64) -> String {
     }
 }
 
-/// Render a chat message body, turning http(s) URLs into clickable links. Non-link text
-/// stays as plain (selectable) labels.
 fn render_message_body(ui: &mut egui::Ui, body: &str) {
     let mut rest = body;
     while let Some(rel) = rest.find("http") {
@@ -15333,7 +14036,6 @@ fn render_message_body(ui: &mut egui::Ui, body: &str) {
             ui.hyperlink_to(url, url);
             rest = &after[end..];
         } else {
-            // A bare "http" not starting a URL — emit it and move on.
             ui.label(&rest[..rel + 4]);
             rest = &rest[rel + 4..];
         }
@@ -15343,7 +14045,6 @@ fn render_message_body(ui: &mut egui::Ui, body: &str) {
     }
 }
 
-/// Whether a string is a syntactically valid bare JID (local@domain, no spaces).
 fn valid_bare_jid(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() || s.contains(char::is_whitespace) {
@@ -15356,7 +14057,6 @@ fn valid_bare_jid(s: &str) -> bool {
     }
 }
 
-/// Truncate to `max` chars with an ellipsis.
 fn truncate_to(s: &str, max: usize) -> String {
     if max > 1 && s.chars().count() > max {
         format!("{}…", s.chars().take(max - 1).collect::<String>())
@@ -15365,19 +14065,14 @@ fn truncate_to(s: &str, max: usize) -> String {
     }
 }
 
-/// Truncate a sidebar chip name so a long room/DM name can't widen the panel.
 fn short_chip(s: &str) -> String {
     truncate_to(s, 20)
 }
 
-/// Roughly how many characters fit in `width` px at the contact-list font size,
-/// so names ellipsize to the available space (scrollbar already excluded by egui).
 fn fit_chars(width: f32) -> usize {
     (width / 7.5).floor().max(3.0) as usize
 }
 
-
-/// State of an in-flight / completed d-scan upload.
 #[derive(Default)]
 struct DscanShare {
     uploading: bool,
@@ -15385,9 +14080,6 @@ struct DscanShare {
     error: Option<String>,
 }
 
-/// A d-scan link being viewed inline (fetched on click). Hosted by the main (from intel-feed
-/// cards) or by the overlay (from an alert-window card click); both render it via
-/// [`dscan_view_dialog_ui`].
 pub(crate) struct DscanView {
     url: String,
     fetch: std::sync::Arc<std::sync::Mutex<DscanFetch>>,
@@ -15395,7 +14087,6 @@ pub(crate) struct DscanView {
 
 pub(crate) enum DscanFetch {
     Loading,
-    /// (ship type id, name, count) — most numerous first.
     Ready(Vec<(i64, String, u32)>),
     Failed,
 }
@@ -15410,10 +14101,6 @@ impl DscanFetch {
     }
 }
 
-/// Fetch a public dscan.info share and tally its hulls. dscan.info serves shares as HTML (no data
-/// API), rendering the ships as a `<ul id="ships">` list; we parse that list and map each type name
-/// to its id via the ship index. Returns None when nothing parseable came back (caller opens the
-/// site instead).
 pub(crate) fn fetch_dscan_ships(
     url: &str,
     ship_index: Option<&std::collections::HashMap<String, (i64, String)>>,
@@ -15424,8 +14111,6 @@ pub(crate) fn fetch_dscan_ships(
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .ok()?;
-    // Prefer the canonical /v/<id> view (it carries the rendered ship list); if handed a bare-id
-    // link, also try the /v/ form.
     let mut candidates = vec![url.to_string()];
     if !url.contains("/v/") {
         if let Some(pos) = url.rfind('/') {
@@ -15452,10 +14137,6 @@ pub(crate) fn fetch_dscan_ships(
     None
 }
 
-/// Start viewing a clicked d-scan link. For a public dscan.info share, spawn the fetch+parse
-/// thread (resolving hull names via the caller's own SDE `ship_index`) and return the `DscanView`
-/// to host; for any other URL open it in the browser and return `None`. Shared by the main intel
-/// feed and the overlay's alert-window clicks.
 pub(crate) fn open_dscan_view(
     url: String,
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
@@ -15479,10 +14160,6 @@ pub(crate) fn open_dscan_view(
     Some(view)
 }
 
-/// Render the d-scan viewer dialog body (hull counts; click a hull for ship info). Shared by the
-/// main (`SpaiApp::dscan_view_dialog`) and the overlay. `taskbar_off` keeps the dialog off the
-/// taskbar (the overlay floats it over the game like the alert window); the main passes `false`.
-/// A hull click sets `*on_open_ship`; closing the window clears `*dscan_view`.
 pub(crate) fn dscan_view_dialog_ui(
     ctx: &egui::Context,
     dscan_view: &mut Option<DscanView>,
@@ -15497,7 +14174,7 @@ pub(crate) fn dscan_view_dialog_ui(
     let keep = dialog_viewport_ext(
         ctx,
         "dscan_view",
-        "EVE Spai — D-scan",
+        "EVE Spai - D-scan",
         [340.0, 520.0],
         taskbar_off,
         |ui| {
@@ -15516,7 +14193,7 @@ pub(crate) fn dscan_view_dialog_ui(
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
                 }
                 DscanFetch::Failed => {
-                    ui.label(egui::RichText::new("Couldn't read this scan — open it on the site.").weak());
+                    ui.label(egui::RichText::new("Couldn't read this scan. Open it on the site.").weak());
                 }
                 DscanFetch::Ready(ships) => {
                     let total: u32 = ships.iter().map(|(_, _, n)| n).sum();
@@ -15554,11 +14231,7 @@ pub(crate) fn dscan_view_dialog_ui(
     }
 }
 
-/// Immediate dialog viewport (used by every in-app pop-out window). `taskbar_off` adds
-/// `with_taskbar(false)` so the overlay's d-scan dialog stays off the taskbar and floats over the
-/// game; the main's in-app dialogs pass `false` (unchanged behaviour). Always-on-top is on by
-/// default for every caller (the pin toggle in [`ontop_pin`] can turn it off).
-#[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+#[allow(deprecated)]
 pub(crate) fn dialog_viewport_ext(
     parent: &egui::Context,
     id: &str,
@@ -15577,8 +14250,6 @@ pub(crate) fn dialog_viewport_ext(
         .with_always_on_top();
     if taskbar_off {
         builder = builder.with_taskbar(false);
-        // winit skip-taskbar is Windows-only; on X11 the Utility type keeps the overlay's d-scan
-        // dialog off the taskbar (matches the alert/ping windows).
         #[cfg(target_os = "linux")]
         {
             builder = builder.with_window_type(egui::X11WindowType::Utility);
@@ -15602,7 +14273,6 @@ pub(crate) fn dialog_viewport_ext(
     keep
 }
 
-/// Stable hash of a string (to detect clipboard changes).
 fn hash_str(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -15610,7 +14280,6 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-/// Compact "time ago" — minutes under an hour, hours under a day, else days.
 fn human_ago(secs: i64) -> String {
     let s = secs.max(0);
     if s < 3600 {
@@ -15622,9 +14291,6 @@ fn human_ago(secs: i64) -> String {
     }
 }
 
-/// System suffix chips: in-game-style `< Constellation < Region`, NPC faction
-/// (rats/sov), and live status (incursion / FW / player sovereignty). Looked up by
-/// id internally — no ids are ever shown.
 fn system_chips(
     ui: &mut egui::Ui,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
@@ -15634,8 +14300,6 @@ fn system_chips(
     system_chips_ex(ui, systems, status, system_id, true, true);
 }
 
-/// As `system_chips`, but `show_sov=false` omits the sov text chip (the system
-/// window shows the alliance logo instead).
 fn system_chips_ex(
     ui: &mut egui::Ui,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
@@ -15655,7 +14319,6 @@ fn system_chips_ex(
         if show_location && !loc.is_empty() {
             ui.label(egui::RichText::new(loc).weak());
         }
-        // Faction = rats / NPC sov; only meaningful in low/null (highsec is CONCORD).
         if !info.faction.is_empty() && info.security < 0.5 {
             ui.label(egui::RichText::new(&info.faction).color(standing::NEUTRAL));
         }
@@ -15675,16 +14338,13 @@ fn system_chips_ex(
     }
 }
 
-/// A weak "Nj" distance-from-you chip (blank if unknown).
 fn from_you_chip(ui: &mut egui::Ui, from_you: Option<u32>) {
     if let Some(j) = from_you {
         let txt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
-        // Monospace + padded so the jumps chip is a fixed width.
         ui.label(egui::RichText::new(format!("{txt:>4}")).monospace().weak());
     }
 }
 
-/// Format ISK compactly: 1.2B / 340M / 5.0k.
 fn fmt_isk(isk: f64) -> String {
     if isk >= 1e9 {
         format!("{:.1}B", isk / 1e9)
@@ -15697,7 +14357,6 @@ fn fmt_isk(isk: f64) -> String {
     }
 }
 
-/// A per-side colour (blue / red / green / grey) for battle sides.
 fn side_color(i: usize) -> egui::Color32 {
     match i {
         0 => egui::Color32::from_rgb(0x4f, 0xc3, 0xf7),
@@ -15707,41 +14366,31 @@ fn side_color(i: usize) -> egui::Color32 {
     }
 }
 
-/// EVE's image server (`images.evetech.net`) only serves a fixed set of sizes. Pick the
-/// smallest that still covers `px` on-screen, so we never over-fetch (e.g. a 512px logo
-/// for a 24px badge) — that saves bandwidth and, with the disk cache, disk space.
 fn eve_img_size(px: f32) -> u32 {
     let want = px.ceil().max(1.0) as u32;
     [32u32, 64, 128, 256, 512].into_iter().find(|&s| s >= want).unwrap_or(512)
 }
 
-/// A character portrait URL sized for a `px` on-screen display.
 fn eve_portrait_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/characters/{id}/portrait?size={}", eve_img_size(px))
 }
 
-/// A corporation logo URL sized for a `px` on-screen display.
 fn eve_corp_logo_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/corporations/{id}/logo?size={}", eve_img_size(px))
 }
 
-/// An alliance logo URL sized for a `px` on-screen display.
 fn eve_alliance_logo_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/alliances/{id}/logo?size={}", eve_img_size(px))
 }
 
-/// A ship/type inventory-icon URL sized for a `px` on-screen display.
 fn eve_type_icon_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/types/{id}/icon?size={}", eve_img_size(px))
 }
 
-/// A ship/type render (3D image) URL sized for a `px` on-screen display.
 fn eve_type_render_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/types/{id}/render?size={}", eve_img_size(px))
 }
 
-/// A battle party badge: its alliance/corp/character logo, hovered for the name. When
-/// `clickable`, opens that entity's zKill page.
 fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable: bool) {
     use crate::battle::PartyKind;
     let urls = match p.kind {
@@ -15773,7 +14422,6 @@ fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable
     }
 }
 
-/// A destroyed-hull badge: the ship icon, or an Upwell structure's render.
 fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
     if type_id == 0 {
         return;
@@ -15786,7 +14434,6 @@ fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
     ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(size)));
 }
 
-/// The display title for a side: its coalition, else its lead party's name.
 fn side_title(side: &crate::battle::Side) -> String {
     side.coalition
         .clone()
@@ -15794,10 +14441,6 @@ fn side_title(side: &crate::battle::Side) -> String {
         .unwrap_or_else(|| "?".to_owned())
 }
 
-/// A short, fixed-height vertical divider for a WRAPPING toolbar. A plain `ui.separator()` in
-/// `horizontal_wrapped` sizes its length to the whole available panel height, drawing an over-tall
-/// bar that dangles at wrap points; this allocates a one-control-tall cell and paints a rule in it,
-/// so it groups controls cleanly and wraps like any other item.
 fn toolbar_sep(ui: &mut egui::Ui) {
     let h = ui.spacing().interact_size.y;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, h), egui::Sense::hover());
@@ -15808,8 +14451,6 @@ fn toolbar_sep(ui: &mut egui::Ui) {
     );
 }
 
-/// A compact one-line summary of a previewed battle half (kills, ISK, each side's lead + k/l),
-/// shown in the split preview.
 fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Battle) {
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(label).strong());
@@ -15829,8 +14470,6 @@ fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Bat
     });
 }
 
-/// Render one clustered battle as a summary card. Returns true when the card is clicked
-/// (to open the detailed view).
 fn battle_row(
     ui: &mut egui::Ui,
     b: &crate::battle::Battle,
@@ -15843,7 +14482,6 @@ fn battle_row(
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("{:>7}", fmt_age(now - b.end))).monospace().weak());
             from_you_chip(ui, from_you);
-            // Systems involved — just security + name (no constellation/region clutter).
             for (_id, name, sec) in &b.systems {
                 ui.label(security_badge(*sec));
                 ui.label(egui::RichText::new(name).strong());
@@ -15856,14 +14494,13 @@ fn battle_row(
                         .color(crate::theme::standing::WARNING)
                         .strong(),
                 )
-                .on_hover_text("This battle may be two fights — open to review.");
+                .on_hover_text("This battle may be two fights. Open to review.");
             }
             ui.label(egui::RichText::new(format!("{} ISK", fmt_isk(b.isk))).weak());
             if span_min > 0 {
                 ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
             }
         });
-        // Belligerent sides: a logo + coalition/lead name + k/l, "vs"-separated.
         ui.horizontal_wrapped(|ui| {
             for (i, side) in b.sides.iter().take(2).enumerate() {
                 if i > 0 {
@@ -15886,19 +14523,13 @@ fn battle_row(
     resp.clicked()
 }
 
-/// How a participant row is background-highlighted relative to the hovered ship.
 #[derive(Clone, Copy, PartialEq)]
 enum ShipHighlight {
     None,
-    /// The row currently under the cursor (a plain hover background).
     Hovered,
-    /// A victim the hovered ship helped kill.
     Assist,
 }
 
-/// One participating-ship row (two lines): hull + name + value on top, pilot + final blow +
-/// zKill button below. Destroyed ships (`lost`) get a reddish background and the zKill button;
-/// survivors render plain.
 fn ship_row(
     ui: &mut egui::Ui,
     width: f32,
@@ -15912,18 +14543,13 @@ fn ship_row(
     border: bool,
 ) -> egui::Response {
     use egui_phosphor::regular as icon;
-    // Background highlight = a victim the hovered ship helped kill. A distinct amber tint (not
-    // egui's neutral hover grey); a brighter orange when the hovered ship got the final blow.
     let fill = match highlight {
         ShipHighlight::Assist => egui::Color32::from_rgb(0xE0, 0xB0, 0x4C).gamma_multiply(0.26),
-        // Plain neutral hover for the row under the cursor (over the loss-red base if any).
         ShipHighlight::Hovered if lost.is_some() => red.gamma_multiply(0.28),
         ShipHighlight::Hovered => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24),
         ShipHighlight::None if lost.is_some() => red.gamma_multiply(0.16),
         ShipHighlight::None => egui::Color32::TRANSPARENT,
     };
-    // Always reserve the stroke (transparent when no border) so toggling the red border doesn't
-    // resize the row — only its colour changes.
     let stroke = egui::Stroke::new(1.5, if border { red } else { egui::Color32::TRANSPARENT });
     let resp = egui::Frame::new()
         .fill(fill)
@@ -15932,7 +14558,6 @@ fn ship_row(
         .stroke(stroke)
         .show(ui, |ui| {
             ui.set_width(width);
-            // Line 1: hull icon + ship/structure name + lost value, then a "+ pod" indicator.
             ui.horizontal_wrapped(|ui| {
                 hull_badge(ui, ship, 28.0);
                 ui.label(egui::RichText::new(name_of(ship)).strong());
@@ -15950,7 +14575,6 @@ fn ship_row(
                     }
                 }
             });
-            // Line 2: owner badge + pilot + zKill button (destroyed only).
             ui.horizontal_wrapped(|ui| {
                 party_badge(ui, party, 14.0, true);
                 ui.label(egui::RichText::new(pilot).weak());
@@ -15970,45 +14594,28 @@ fn ship_row(
     resp
 }
 
-/// A fleet ping shown in the foreground window, with when it was added (for the new-ping blink).
 #[derive(Clone)]
 pub(crate) struct PingShown {
     pub(crate) ping: crate::pings::Ping,
     pub(crate) shown_at: std::time::Instant,
 }
 
-/// Shared state for the deferred fleet-ping viewport. Produced off the UI thread (the Jabber
-/// thread pushes new pings) and consumed by the viewport's render closure, so the window shows
-/// and updates independently of the main window's minimized state. Render context
-/// (`systems`/`doctrine_url`/`op_links`) and the on-top/enabled flags are published each frame by
-/// the UI; `level_applied`/`level_at` are render-only throttle state.
 #[derive(Default)]
 pub(crate) struct PingWindowState {
-    /// Pings shown, newest first (empty = window hidden).
     pub(crate) windows: Vec<PingShown>,
-    /// Set when a ping is added so the window foregrounds itself once.
     pub(crate) raise: bool,
-    /// On-top behaviour (published from settings each frame).
     pub(crate) on_top: crate::settings::OnTop,
-    /// Feature enabled (published from settings each frame).
     pub(crate) enabled: bool,
-    /// Whether EVE is focused (published each frame; drives Smart on-top inside the render closure
-    /// so the closure needs no external atomic and can run identically in the overlay process).
     pub(crate) eve_focused: bool,
-    /// Render context, published each frame by the UI.
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
     pub(crate) doctrine_url: String,
     pub(crate) op_links: std::collections::HashMap<String, String>,
-    /// Last window-level applied + when (throttles the on-top re-assert; render-only).
     pub(crate) level_applied: Option<bool>,
     pub(crate) level_at: Option<std::time::Instant>,
 }
 
 pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowState>>;
 
-/// The deferred fleet-ping viewport's builder. Factored so both the main process (non-Linux) and
-/// the overlay child declare the window identically. `on_top` only seeds the initial level; the
-/// render closure re-asserts it live via `ViewportCommand::WindowLevel`.
 pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
     #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
@@ -16017,15 +14624,13 @@ pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         .with_inner_size([520.0, 320.0])
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
-        .with_taskbar(false) // Windows-only in winit 0.30; X11 needs the Utility type below.
-        .with_visible(false) // the closure shows it when there are pings
+        .with_taskbar(false)
+        .with_visible(false)
         .with_window_level(if on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {
             egui::WindowLevel::Normal
         });
-    // winit's skip-taskbar is Windows-only, so on X11 tag it Utility — KWin keeps Utility windows
-    // off the taskbar (otherwise the overlay process shows a stray taskbar entry).
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
@@ -16058,10 +14663,6 @@ where
     }
 }
 
-/// The deferred alert viewport's builder. Factored so both the main process (non-Linux) and the
-/// overlay child declare the window identically. `on_top` only seeds the initial level; the window
-/// is always mapped from creation and the render closure re-asserts visibility / passthrough /
-/// level live via `ViewportCommand`.
 pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
     #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
@@ -16072,7 +14673,6 @@ pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         } else {
             egui::WindowLevel::Normal
         })
-        // with_active(false) keeps the re-map from stealing focus (WS_EX_NOACTIVATE on Windows).
         .with_active(false)
         // Linux/X11 maps from creation and stays mapped + transparent + click-through when idle
         // (re-mapping steals focus, winit#1160). Windows starts HIDDEN and the render closure maps
@@ -16087,11 +14687,8 @@ pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         // this window (title "EVE Spai \u{2014} alerts") to Minimized=No.
         .with_transparent(true)
         .with_mouse_passthrough(true)
-        // Fixed initial geometry only. The *saved* position/size are applied via ViewportCommand
-        // on open (just_opened) inside the closure.
         .with_position([80.0, 80.0])
         .with_inner_size([360.0, 240.0]);
-    // winit skip-taskbar is Windows-only; on X11 tag it Utility so KWin keeps it off the taskbar.
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
@@ -16099,28 +14696,14 @@ pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
     b
 }
 
-/// Build the deferred alert viewport's render closure from its shared state. Used by BOTH the main
-/// process (`SpaiApp::new`, non-Linux) and the overlay child (`overlay.rs`) so the window renders
-/// identically in either process. Captures only the `Send+Sync` shared state (no `&self`); produces
-/// clicks / move / resize as outputs drained by whoever owns it, and counts the auto-hide timer
-/// down here so it advances while the root is minimized.
-#[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+#[allow(deprecated)]
 pub(crate) fn build_alert_viewport_cb(
     alert_shared: SharedAlertWindow,
 ) -> std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync> {
     std::sync::Arc::new(move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
         let ctx = ui.ctx().clone();
         let mut st = alert_shared.lock().unwrap();
-        // Idle when the feature is off, or the countdown has expired and we're not pinned.
-        // Visibility tracks `secs`/`pinned` (the feed persists), like the old window.
         let active = st.enabled && (st.secs > 0.0 || st.pinned);
-        // Drive Visible + click-through from the CLOSURE (not the builder) so they're right
-        // even while the root is minimized. Only send a command on change (each one pins
-        // egui at vsync). Per-OS behaviour mirrors the old immediate window:
-        // - Linux/X11: while the feature is ON stay MAPPED (transparent + click-through when idle)
-        //   rather than hiding — re-mapping steals focus (winit#1160).
-        // - Windows: visible ONLY while active; a transparent-when-idle window renders as an opaque
-        //   black square (wgpu/DWM doesn't composite the alpha), so hide it when idle.
         let want_visible = active || (st.enabled && !cfg!(target_os = "windows"));
         let want_passthrough = !active;
         if st.applied_visible != Some(want_visible) {
@@ -16143,8 +14726,6 @@ pub(crate) fn build_alert_viewport_cb(
         st.open = true;
         let on_top = st.on_top_level;
         let focus = std::mem::take(&mut st.focus_pending);
-        // Clone the (small, ≤20-card) render data out, then release the lock before
-        // rendering — the daemon may push a new alert while we paint.
         let feed = st.feed.clone();
         let from_you_pre = st.from_you.clone();
         let systems = st.systems.clone();
@@ -16166,10 +14747,9 @@ pub(crate) fn build_alert_viewport_cb(
         let mut verdict_pending = st.verdict_pending.clone();
         let mut verdict_explained = st.verdict_explained;
         if just_opened {
-            level_applied = None; // force the level to be re-applied
+            level_applied = None;
         }
         drop(st);
-        // Verdicts decided this frame (name, hidden), drained to the main to persist.
         let mut verdict_out_new: Vec<(String, bool)> = Vec::new();
 
         // A new alert: bring the window forward once — Windows only (a focus request on
@@ -16177,8 +14757,6 @@ pub(crate) fn build_alert_viewport_cb(
         if focus && cfg!(target_os = "windows") {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        // Re-apply the saved geometry when an alert appears (builder values aren't reliably
-        // re-applied after unmapping).
         if just_opened {
             if let Some((w, h)) = win_size {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -16198,11 +14776,6 @@ pub(crate) fn build_alert_viewport_cb(
             level_applied = Some(on_top);
             level_at = Some(std::time::Instant::now());
         }
-        // While an alert is showing, periodically re-assert visibility + interactivity +
-        // (when wanted) the on-top level. A minimize/restore — e.g. KWin iconifying us with
-        // the main window, or a borderless game rising above a topmost window — resets these,
-        // and the change-tracking above won't re-send (it thinks they're already applied).
-        // Throttled to ~800ms so it doesn't pin egui at vsync.
         let due =
             level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
         if due {
@@ -16231,7 +14804,6 @@ pub(crate) fn build_alert_viewport_cb(
                     .inner_margin(8),
             )
             .show(&ctx, |ui| {
-                // The top row is a drag handle, up to where the buttons begin.
                 let mut buttons_left = f32::INFINITY;
                 let row = ui.horizontal(|ui| {
                     ui.label(
@@ -16245,7 +14817,7 @@ pub(crate) fn build_alert_viewport_cb(
                         egui::RichText::new(if secs.is_finite() {
                             format!("{:.0}s", secs)
                         } else {
-                            "\u{221E}".to_owned() // ∞
+                            "\u{221E}".to_owned()
                         })
                         .weak(),
                     );
@@ -16287,8 +14859,6 @@ pub(crate) fn build_alert_viewport_cb(
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if let (Some(kills), Some(affil)) = (&kills, &affil) {
                         for (i, (r, sev)) in feed.iter().enumerate().rev() {
-                            // Prefer the MAIN-computed distance (overlay path: bridged, parallel to
-                            // `feed`); fall back to recomputing in-process when it wasn't supplied.
                             let from_you = if i < from_you_pre.len() {
                                 from_you_pre[i]
                             } else {
@@ -16304,8 +14874,6 @@ pub(crate) fn build_alert_viewport_cb(
                                 &uncertain, &last_ship,
                                 kills, *sev, false, affil,
                             ) {
-                                // A "?" click opens its verdict dialog HERE (in the overlay), not in
-                                // the main window; other clicks still route to the root viewport.
                                 match c {
                                     IntelClick::PilotVerdict(name) => verdict_pending = Some(name),
                                     other => clicks.push(other),
@@ -16317,17 +14885,12 @@ pub(crate) fn build_alert_viewport_cb(
                 hovered = ui.ui_contains_pointer();
                 resize_grip(ui);
             });
-        // Uncertain-pilot verdict dialog, rendered HERE in the overlay so it opens where the "?"
-        // was clicked. The explainer shows once per overlay session; the decision is drained by the
-        // main to persist. A pointer over either dialog keeps the overlay awake.
         if let Some(name) = verdict_pending.clone() {
-            // Modal: the backdrop blocks input to the alert cards behind the dialog (a click on the
-            // dialog can't fall through to a card), and keeps the overlay awake while it is open.
             if !verdict_explained {
                 let mut ack = false;
                 let resp = egui::Modal::new(egui::Id::new("overlay_verdict_explainer")).show(&ctx, |ui| {
                     ui.set_max_width(320.0);
-                    ui.heading("Uncertain pilot  (?)");
+                    ui.heading("Uncertain pilot (?)");
                     ui.add_space(4.0);
                     ui.label(
                         "A \"?\" means this name matched a real EVE character that looks \
@@ -16344,7 +14907,7 @@ pub(crate) fn build_alert_viewport_cb(
                         ack = true;
                     }
                 });
-                hovered = true; // dialog open — keep the overlay alive to decide
+                hovered = true;
                 if ack {
                     verdict_explained = true;
                 } else if resp.should_close() {
@@ -16371,7 +14934,7 @@ pub(crate) fn build_alert_viewport_cb(
                         }
                     });
                 });
-                hovered = true; // dialog open — keep the overlay alive to decide
+                hovered = true;
                 if let Some(hidden) = decision {
                     verdict_out_new.push((name.clone(), hidden));
                     verdict_pending = None;
@@ -16391,14 +14954,10 @@ pub(crate) fn build_alert_viewport_cb(
             dismiss = true;
         }
 
-        // Countdown (paused while hovered/pinned; floor 3 s while hovered). unstable_dt is
-        // the true frame time; cap a long idle gap at 2 s.
         let dt = ctx.input(|i| i.unstable_dt).min(2.0);
         let ms = if hovered { 100 } else { 1000 };
         ctx.request_repaint_after(std::time::Duration::from_millis(ms));
 
-        // Write outputs + new countdown back. Apply the countdown to the LIVE `st.secs` (a
-        // fresh alert may have bumped it while we painted) rather than the stale copy.
         let mut st = alert_shared.lock().unwrap();
         if dismiss {
             st.secs = 0.0;
@@ -16414,8 +14973,6 @@ pub(crate) fn build_alert_viewport_cb(
         st.verdict_pending = verdict_pending;
         st.verdict_explained = verdict_explained;
         st.verdict_out.extend(verdict_out_new);
-        // Don't capture geometry on the open frame (the window briefly reports its builder
-        // default before the saved geometry is re-applied).
         if !just_opened {
             if let Some(p) = moved {
                 st.moved = Some(p);
@@ -16427,27 +14984,19 @@ pub(crate) fn build_alert_viewport_cb(
     })
 }
 
-/// Build the deferred fleet-ping viewport's render closure from its shared state. Used by BOTH the
-/// main process (`SpaiApp::new`, non-Linux) and the overlay child (`overlay.rs`) so the window
-/// renders identically in either process. Captures only the `Send+Sync` shared state — no `&self`
-/// and no external atomic (Smart on-top reads `st.eve_focused`, published by whoever owns it) — so
-/// it can paint the child window independently of any root `update()`.
-#[allow(deprecated)] // CentralPanel::show is correct for a viewport root ctx
+#[allow(deprecated)]
 pub(crate) fn build_ping_viewport_cb(
     ping_shared: SharedPingWindow,
 ) -> std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync> {
     std::sync::Arc::new(move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
         let ctx = ui.ctx().clone();
         let mut st = ping_shared.lock().unwrap();
-        // Hidden whenever the feature is off or there's nothing to show.
         if !st.enabled || st.windows.is_empty() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             st.level_applied = None;
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        // The window close button dismisses the whole window; the parent re-declares the
-        // (now empty) viewport next frame, which stays hidden.
         if ctx.input(|i| i.viewport().close_requested()) {
             st.windows.clear();
             st.level_applied = None;
@@ -16455,8 +15004,6 @@ pub(crate) fn build_ping_viewport_cb(
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             return;
         }
-        // On-top per setting + EVE focus (Smart = on top only while EVE is focused).
-        // Re-assert only on change or throttled (every 800 ms) so it doesn't pin repaints.
         let on_top = st.on_top != crate::settings::OnTop::Never
             && (st.on_top == crate::settings::OnTop::Always || st.eve_focused);
         let due = st
@@ -16471,7 +15018,6 @@ pub(crate) fn build_ping_viewport_cb(
             st.level_applied = Some(on_top);
             st.level_at = Some(std::time::Instant::now());
         }
-        // Raise/focus once when the window opens or a new ping arrives.
         if std::mem::take(&mut st.raise) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
@@ -16479,8 +15025,7 @@ pub(crate) fn build_ping_viewport_cb(
         let systems = st.systems.clone();
         let doctrine_url = st.doctrine_url.clone();
         let op_links = st.op_links.clone();
-        drop(st); // release before rendering
-        // Any ping still in its first 3 s blinks faintly; keep repainting while it does.
+        drop(st);
         let blinking = pings.iter().any(|s| s.shown_at.elapsed().as_secs_f32() < 3.0);
         egui::CentralPanel::default().show(&ctx, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -16493,11 +15038,10 @@ pub(crate) fn build_ping_viewport_cb(
                             render_ping(ui, &s.ping, &systems, true, &doctrine_url, &op_links);
                         })
                         .response;
-                    // Faint blink for the first 3 s after a ping is shown.
                     let t = s.shown_at.elapsed().as_secs_f32();
                     if t < 3.0 {
                         let pulse = (t * std::f32::consts::PI * 3.0).sin() * 0.5 + 0.5;
-                        let alpha = (pulse * 26.0) as u8; // faint (max ~10%)
+                        let alpha = (pulse * 26.0) as u8;
                         let tint = egui::Color32::from_rgba_unmultiplied(0xff, 0xd1, 0x66, alpha);
                         ui.painter().rect_filled(resp.rect, 4.0, tint);
                     }
@@ -16513,109 +15057,63 @@ pub(crate) fn build_ping_viewport_cb(
     })
 }
 
-/// Shared state for the DEFERRED alert (custom-notification) viewport. Mirrors `PingWindowState`:
-/// the feed/countdown/pin/focus are PRODUCED off the UI thread by the alert daemon; render context
-/// and the on-top/enabled flags are PUBLISHED each frame by the UI; clicks/move/resize are the
-/// OUTPUTS drained by the UI. Decouples the window from the main window's minimized state.
 #[derive(Default)]
 pub(crate) struct AlertWindowState {
-    // -- produced by the alert daemon (off the UI thread) --
-    /// Reports shown in the window, oldest first (rendered newest-first by the closure).
     pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
-    /// Jumps from the player's system to each `feed` report's primary system, parallel to `feed`.
-    /// Populated by the overlay's IPC handler (the MAIN computes it with the bridged `Systems`).
-    /// Empty in the in-process path, where the closure recomputes from `systems` + `player_sys`.
     pub(crate) from_you: Vec<Option<u32>>,
-    /// Seconds the window stays visible (counts down; 0 = hidden; ∞ = never auto-hide). The
-    /// daemon sets it when an alert fires; the render closure counts it down (paused while
-    /// hovered/pinned, floor 3 s while hovered).
     pub(crate) secs: f32,
-    /// Pin: temporarily hold the window open (toggled by the closure's pin button).
     pub(crate) pinned: bool,
-    /// Set when a new alert fires so the window foregrounds itself once (consumed by the closure).
     pub(crate) focus_pending: bool,
-    // -- render-only state owned by the closure --
-    /// True while the window is currently shown (detects re-opening to re-apply saved geometry).
     pub(crate) open: bool,
-    /// Last window-level applied + when (throttles the on-top re-assert; render-only).
     pub(crate) level_applied: Option<bool>,
     pub(crate) level_at: Option<std::time::Instant>,
-    /// Last Visible / MousePassthrough state applied by the CLOSURE (it drives them via
-    /// ViewportCommand, not the builder, so they're correct even while the root is minimized and
-    /// not re-declaring the builder). Tracked to only send a command on change (a viewport command
-    /// each frame pins egui at vsync).
     pub(crate) applied_visible: Option<bool>,
     pub(crate) applied_passthrough: Option<bool>,
-    // -- published by the UI thread each frame --
-    /// Feature enabled (alerts on AND a custom-window rule enabled).
     pub(crate) enabled: bool,
-    /// Resolved on-top decision (Always/Smart+focus/Never already collapsed to a bool).
     pub(crate) on_top_level: bool,
-    /// Saved geometry to re-apply when the window (re)opens.
     pub(crate) win_pos: Option<(f32, f32)>,
     pub(crate) win_size: Option<(f32, f32)>,
-    /// Render snapshots, built each frame from the current feed's reports.
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
     pub(crate) status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub(crate) ship_details: std::collections::HashMap<i64, crate::store::ShipDetails>,
     pub(crate) ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     pub(crate) resolved_pilots: std::collections::HashMap<String, i64>,
-    /// Lower-cased names among `resolved_pilots` that are activity-flagged (rendered with a "?").
     pub(crate) uncertain: std::collections::HashSet<String>,
     pub(crate) last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     pub(crate) player_sys: Option<i64>,
     pub(crate) kills: Option<crate::kills::KillCache>,
     pub(crate) affil: Option<crate::affiliation::SharedAffil>,
-    /// An uncertain pilot whose verdict dialog is open IN THIS overlay (so the popup shows where
-    /// the "?" was clicked, not in the main window).
     pub(crate) verdict_pending: Option<String>,
-    /// Whether the one-time uncertain-pilot explainer has been shown in this overlay session.
     pub(crate) verdict_explained: bool,
-    // -- outputs drained by the UI thread --
-    /// Feed clicks to act on in the root viewport.
     pub(crate) clicks: Vec<IntelClick>,
-    /// Pilot verdicts decided in the overlay: (name, hidden). Drained by the main to persist.
     pub(crate) verdict_out: Vec<(String, bool)>,
-    /// Latest window position / size, to persist.
     pub(crate) moved: Option<(f32, f32)>,
     pub(crate) moved_size: Option<(f32, f32)>,
 }
 
 pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowState>>;
 
-/// How the battle-detail roster is ordered (user-selectable).
 #[derive(Clone, Copy, PartialEq, Default)]
 enum RosterSort {
-    /// Highest total kill value (ship + pod) first.
     #[default]
     Value,
-    /// Largest hull class first (XL → S), then value within a class.
     Hull,
 }
 
-/// The participant the cursor is over in a battle detail (for the involvement highlight).
 #[derive(Clone, Copy, PartialEq)]
 struct BattleHover {
     char_id: i64,
-    /// The kill the hovered ship died on (None if it survived) — its attackers get a red border.
     kill_id: Option<i64>,
 }
 
-/// Heavy, per-battle data for the open detail view, cached so it's rebuilt only when the battle
-/// changes (`sig`) rather than every frame.
 struct BattleDetailCache {
     kid: i64,
-    /// Cheap change signature: (kill count, last-kill time, overrides generation). Same
-    /// engagements + no edit → same sides.
     sig: (usize, i64, u64),
     battle: crate::battle::Battle,
     inv: crate::battle::Involvement,
     rosters: Vec<Vec<crate::battle::Participant>>,
 }
 
-/// A battle report loaded from a saved JSON file, shown in a standalone viewer (separate from
-/// the live cluster). Holds the same render-ready data as [`BattleDetailCache`]; the JSON is
-/// self-contained, so no re-clustering or EVE static data is needed to display it.
 struct LoadedReport {
     title: String,
     battle: crate::battle::Battle,
@@ -16624,11 +15122,6 @@ struct LoadedReport {
     hover: Option<BattleHover>,
 }
 
-/// The detailed view of one battle: a header, then each side as its own column (horizontal
-/// scroll when they don't fit). Each column shows a summary header, then every participating
-/// ship as a row — destroyed ones (highest value first) on a reddish background with a zKill
-/// button, followed by the survivors. Returns the clicked system (to open its info) and the
-/// participant under the cursor (for next frame's highlight).
 fn battle_detail(
     ui: &mut egui::Ui,
     b: &crate::battle::Battle,
@@ -16643,11 +15136,8 @@ fn battle_detail(
     use egui_phosphor::regular as icon;
     use std::collections::HashSet;
     let mut open_system: Option<i64> = None;
-    // Victims the hovered ship helped kill (background highlight), and the subset it got the
-    // final blow on (special highlight).
     let killed: HashSet<i64> =
         prev_hover.and_then(|h| inv.killed.get(&h.char_id).cloned()).unwrap_or_default();
-    // Killers of the hovered (dead) ship, for the red border.
     let border_set: HashSet<i64> = prev_hover
         .and_then(|h| h.kill_id)
         .and_then(|kid| inv.attackers.get(&kid).cloned())
@@ -16657,7 +15147,6 @@ fn battle_detail(
     ui.horizontal_wrapped(|ui| {
         for (id, name, sec) in &b.systems {
             ui.label(security_badge(*sec));
-            // A link (hover-underlines, pointer cursor) opens the system info window.
             if ui.link(egui::RichText::new(name).strong()).on_hover_text("Open system info").clicked() {
                 open_system = Some(*id);
             }
@@ -16668,15 +15157,13 @@ fn battle_detail(
         if span_min > 0 {
             ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
         }
-        // Live: a battle keeps accepting kills for the window after its last one, and the view
-        // updates as they arrive.
         let now = chrono::Utc::now().timestamp();
         let remaining = crate::battle::BATTLE_WINDOW_SECS - (now - b.end);
         if remaining > 0 {
             let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
             ui.label(egui::RichText::new(format!("{} Live", icon::BROADCAST)).color(green).strong())
                 .on_hover_text(format!(
-                    "Still accepting new kills for ~{}m — the view updates live.",
+                    "Still accepting new kills for ~{}m. The view updates live.",
                     remaining / 60 + 1
                 ));
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -16686,7 +15173,6 @@ fn battle_detail(
 
     let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
     let red = crate::theme::standing::HOSTILE;
-    // Ship or structure name for a type id (structures are static; ships come from ESI).
     let name_of = |id: i64| -> String {
         if id == 0 {
             return "?".to_owned();
@@ -16697,11 +15183,8 @@ fn battle_detail(
             .unwrap_or_else(|| format!("Type {id}"))
     };
 
-    // Per-column min width keeps icon + ship + pilot legible; columns scroll horizontally.
     const SIDE_W: f32 = 360.0;
     const MAX_ROWS: usize = 200;
-    // The column fills the rest of the viewport; the inner list caps a bit short of that so a
-    // scrollbar appears only when the ships actually overflow.
     let col_h = (ui.available_height() - 12.0).max(180.0);
     let list_h = (col_h - 60.0).max(120.0);
     egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
@@ -16710,13 +15193,10 @@ fn battle_detail(
                 let col = side_color(i);
                 let roster = &rosters[i];
                 egui::Frame::group(ui.style()).fill(col.gamma_multiply(0.05)).show(ui, |ui| {
-                    // The side Frame inherits the parent's horizontal layout, so force a
-                    // top-down column or the rows stack sideways.
                     ui.vertical(|ui| {
                         ui.set_width(SIDE_W);
                         ui.set_min_width(SIDE_W);
-                        ui.set_min_height(col_h); // column fills the viewport height
-                        // Header: lead badge, side title, +N others.
+                        ui.set_min_height(col_h);
                         ui.horizontal_wrapped(|ui| {
                             if let Some(lead) = side.parties.first() {
                                 party_badge(ui, lead, 22.0, true);
@@ -16727,7 +15207,6 @@ fn battle_detail(
                                     .on_hover_text(side.parties.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
                             }
                         });
-                        // Tallies: kills / losses, ISK efficiency, ISK lost.
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 egui::RichText::new(format!("{} {}  {} {}", icon::SWORD, side.kills, icon::SKULL, side.losses)).weak(),
@@ -16747,17 +15226,12 @@ fn battle_detail(
                         egui::ScrollArea::vertical()
                             .id_salt(("battle_side", b.start, i))
                             .max_height(list_h)
-                            .auto_shrink([false, true]) // size to content; bar only when overflowing
+                            .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 ui.set_width(SIDE_W - 16.0);
                                 let row_w = SIDE_W - 16.0;
                                 if condensed {
-                                    // Stack ships by hull: one row per type with the fleet count and
-                                    // how many were destroyed. Hover highlights only that row — the
-                                    // participating/killer cross-links don't apply to a stack.
                                     let mut order: Vec<i64> = Vec::new();
-                                    // Per hull: (fleet count, ships lost, cumulative ship ISK,
-                                    // cumulative pod ISK). Ship and pod losses are kept apart.
                                     let mut agg: std::collections::HashMap<i64, (u32, u32, f64, f64)> =
                                         std::collections::HashMap::new();
                                     for p in roster.iter() {
@@ -16772,10 +15246,9 @@ fn battle_detail(
                                             e.3 += l.pod_value;
                                         }
                                     }
-                                    // Order per the selected sort: by ISK lost, or by hull size.
                                     order.sort_by(|a, b| {
                                         let (ta, tb) = (agg[a], agg[b]);
-                                        let (va, vb) = (ta.2 + ta.3, tb.2 + tb.3); // ship+pod ISK
+                                        let (va, vb) = (ta.2 + ta.3, tb.2 + tb.3);
                                         match sort {
                                             RosterSort::Value => vb
                                                 .total_cmp(&va)
@@ -16813,9 +15286,6 @@ fn battle_detail(
                                     }
                                     return;
                                 }
-                                // Rows ordered per the selected sort. roster() already returns
-                                // highest-value first (the Value mode); Hull mode re-sorts by hull
-                                // size (XL→S), then hull type, then value.
                                 let mut rows: Vec<&crate::battle::Participant> = roster.iter().collect();
                                 if matches!(sort, RosterSort::Hull) {
                                     let val = |p: &crate::battle::Participant| {
@@ -16838,8 +15308,6 @@ fn battle_detail(
                                 }
                                 for p in rows.into_iter().take(MAX_ROWS) {
                                     let row_kill = p.lost.as_ref().map(|l| l.kill_id);
-                                    // Hover matches the exact row (a pilot may have several loss
-                                    // rows — re-shipping shuttles — so match by kill, not just pilot).
                                     let is_hovered = p.char_id != 0
                                         && prev_hover.map_or(false, |h| h.char_id == p.char_id && h.kill_id == row_kill);
                                     let highlight = if is_hovered {
@@ -16877,8 +15345,6 @@ fn battle_detail(
     (open_system, new_hover.get())
 }
 
-/// One stacked-by-hull row in the condensed battle view: hull badge, ship name, fleet count, and
-/// how many were destroyed. Returns the row response so the caller can highlight it on hover.
 #[allow(clippy::too_many_arguments)]
 fn condensed_row(
     ui: &mut egui::Ui,
@@ -16897,7 +15363,6 @@ fn condensed_row(
             hull_badge(ui, ship, 26.0);
             ui.label(egui::RichText::new(name_of(ship)).strong());
             ui.label(egui::RichText::new(format!("\u{00d7}{total}")).weak());
-            // Right-aligned: ships lost, cumulative ship ISK, then pod ISK (separate).
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if pod_isk > 0.0 {
                     ui.label(egui::RichText::new(format!("+{} pods", fmt_isk(pod_isk))).weak())
@@ -16916,8 +15381,6 @@ fn condensed_row(
     resp.interact(egui::Sense::hover())
 }
 
-/// Resolve a pilot name to its canonical spelling via ESI `/universe/ids/` (exact match). Returns
-/// the canonical name on success, or a short error for the picker to display.
 fn resolve_char_name(
     client: &reqwest::blocking::Client,
     name: &str,
@@ -16937,7 +15400,6 @@ fn resolve_char_name(
         .ok_or_else(|| format!("No pilot named \"{name}\""))
 }
 
-/// Whether an alert rule's conditions all match a report.
 fn rule_matches(
     ru: &crate::settings::AlertRule,
     r: &crate::intel::IntelReport,
@@ -16948,12 +15410,7 @@ fn rule_matches(
     if sev < ru.min_severity {
         return false;
     }
-    // Channel filter: each entry is a case-insensitive regex (falls back to a plain
-    // substring match if it isn't a valid regex). zKill killmails aren't from a chat channel,
-    // so a channel-filtered rule must not silently exclude them.
     if !ru.channels.is_empty() && !r.killmail {
-        // Compile each channel pattern once and memoize it (keyed by the raw pattern);
-        // None caches a pattern that isn't a valid regex (it falls back to substring).
         static RE_CACHE: std::sync::LazyLock<
             std::sync::Mutex<std::collections::HashMap<String, Option<regex::Regex>>>,
         > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -16981,7 +15438,6 @@ fn rule_matches(
             return false;
         }
     }
-    // Location filter: systems, constellations, and/or regions (any may match).
     let loc_filter =
         !ru.systems.is_empty() || !ru.constellations.is_empty() || !ru.regions.is_empty();
     if loc_filter {
@@ -17005,7 +15461,6 @@ fn rule_matches(
             return false;
         }
     }
-    // Ship filter: the report must mention at least one of the selected hulls (empty = any).
     if !ru.ships.is_empty() {
         let matched = r
             .ships
@@ -17040,9 +15495,6 @@ fn rule_matches(
     true
 }
 
-/// Best-effort op-channel name from ping text ("op 9", "op9") when there's no comms field.
-/// A canonical key for an op channel ("Op 4", "op4", "OP 4 - dead keepstars" → "op4"), used to
-/// match a malformed ping's channel name against the cached comms links.
 fn op_key(text: &str) -> Option<String> {
     find_op_channel(text).map(|c| c.to_lowercase().replace(' ', ""))
 }
@@ -17052,7 +15504,7 @@ fn find_op_channel(text: &str) -> Option<String> {
     let bytes = lower.as_bytes();
     for (idx, _) in lower.match_indices("op") {
         if idx > 0 && bytes[idx - 1].is_ascii_alphabetic() {
-            continue; // not a word boundary ("stop")
+            continue;
         }
         let num: String =
             lower[idx + 2..].trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -17072,8 +15524,6 @@ enum RowAction {
     Cancel,
 }
 
-/// One row in the merged Routes dialog: either the normal display row (Load / name / from→to /
-/// jumps / edit / delete) or, when `is_editing`, an inline name + folder editor.
 #[allow(clippy::too_many_arguments)]
 fn route_item_row(
     ui: &mut egui::Ui,
@@ -17138,9 +15588,6 @@ fn route_item_row(
     act
 }
 
-/// A floated "always on top" pin toggle for a child window, in the content's top-right (just
-/// below the OS close button). The per-window state lives in the viewport's ctx data (default
-/// on, matching the prior always-on-top behaviour); the window level is applied every frame.
 fn ontop_pin(ctx: &egui::Context, id: &str) {
     let key = egui::Id::new(("ontop", id));
     let mut on = ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(true));
@@ -17171,7 +15618,6 @@ fn ontop_pin(ctx: &egui::Context, id: &str) {
     }
 }
 
-/// Show a desktop notification (best-effort, off the UI thread).
 pub(crate) fn notify_os(summary: &str, body: &str) {
     let (summary, body) = (summary.to_owned(), body.to_owned());
     std::thread::spawn(move || {
@@ -17179,10 +15625,6 @@ pub(crate) fn notify_os(summary: &str, body: &str) {
     });
 }
 
-/// Resolve a gnf.lt comms short-link to its `mumble://` target and open it, so the Mumble
-/// client joins the broadcast channel directly. If anything fails (offline, page changed, no
-/// Mumble handler) we fall back to opening the original link in the browser — the same path
-/// the user had before — so they're never left with nothing.
 fn open_mumble(link: String) {
     std::thread::spawn(move || {
         let resolved = reqwest::blocking::Client::builder()
@@ -17191,8 +15633,6 @@ fn open_mumble(link: String) {
             .build()
             .ok()
             .and_then(|client| {
-                // gnf.lt is occasionally flaky (intermittent errors / empty bodies), so retry the
-                // fetch up to 5 times before giving up and bouncing through the browser.
                 for attempt in 1..=5 {
                     let got = client
                         .get(&link)
@@ -17213,18 +15653,14 @@ fn open_mumble(link: String) {
         match &resolved {
             Some(url) => match open::that(url) {
                 Ok(_) => return,
-                // The mumble:// handler couldn't be launched (no registered scheme handler in this
-                // environment) — fall back to the browser, which has its own protocol prompt.
                 Err(e) => eprintln!("[mumble] opening {url} failed ({e}); falling back to browser"),
             },
-            // Couldn't resolve the gnf.lt page to a mumble:// target after retries — browser.
             None => eprintln!("[mumble] could not resolve {link} after 5 tries; opening in browser"),
         }
         let _ = open::that(&link);
     });
 }
 
-/// A concise one-line alert string for a report.
 fn alert_text(r: &crate::intel::IntelReport) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(s) = r.primary_system() {
@@ -17273,7 +15709,6 @@ fn alert_text(r: &crate::intel::IntelReport) -> String {
     parts.join(" · ")
 }
 
-/// Render a parsed fleet ping (or plain broadcast) as a card.
 pub(crate) fn render_ping(
     ui: &mut egui::Ui,
     p: &crate::pings::Ping,
@@ -17284,8 +15719,6 @@ pub(crate) fn render_ping(
 ) {
     use crate::pings::{Comms, Formup, PapType, Ping};
     use egui_phosphor::regular as icon;
-    // A comms row: label + "Join Mumble" (resolves the gnf.lt link to mumble://) + the raw link.
-    // Wrapped so it reflows in a narrow / resized window instead of overflowing.
     let mumble_row = |ui: &mut egui::Ui, label: String, link: &str| {
         ui.horizontal_wrapped(|ui| {
             ui.label(label);
@@ -17315,7 +15748,6 @@ pub(crate) fn render_ping(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    // "Time since the ping went out".
     let now = chrono::Utc::now().timestamp();
     let age = (now - p.timestamp()).max(0);
     let ago = if age < 60 {
@@ -17335,7 +15767,7 @@ pub(crate) fn render_ping(
         egui::Frame::group(ui.style())
     };
     frame.show(ui, |ui| {
-        ui.set_min_width(ui.available_width()); // full-width card
+        ui.set_min_width(ui.available_width());
         match p {
             Ping::Fleet { fc, fleet, formup, pap, comms, doctrine, description, source, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
@@ -17376,8 +15808,6 @@ pub(crate) fn render_ping(
                         }
                     }
                 } else if let Some(op) = find_op_channel(description) {
-                    // Malformed ping (no comms field) — if we've cached this op channel's link
-                    // from an earlier well-formed ping, still offer "Join Mumble".
                     match op_key(&op).and_then(|k| op_links.get(&k)) {
                         Some(link) => mumble_row(ui, format!("Comms: {op}"), link),
                         None => {
@@ -17387,7 +15817,6 @@ pub(crate) fn render_ping(
                 }
                 ui.horizontal_wrapped(|ui| {
                     if let Some(d) = doctrine {
-                        // Link the doctrine name straight to its baked forum thread if known.
                         if let Some(url) = crate::doctrines::link_for(d) {
                             if ui
                                 .link(format!("Doctrine: {d} \u{2197}"))
@@ -17411,7 +15840,7 @@ pub(crate) fn render_ping(
                 }
                 let from = source.as_deref().unwrap_or("?");
                 let to = target.as_deref().unwrap_or("?");
-                ui.label(egui::RichText::new(format!("— {from} {} {to}", icon::ARROW_RIGHT)).weak().small());
+                ui.label(egui::RichText::new(format!("{from} {} {to}", icon::ARROW_RIGHT)).weak().small());
             }
             Ping::Plain { text, sender, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
@@ -17435,19 +15864,15 @@ pub(crate) fn render_ping(
     });
 }
 
-/// Compute an intel report's severity from the configurable rules (highest match).
 fn severity_of(
     r: &crate::intel::IntelReport,
     rules: &crate::settings::SeverityRules,
 ) -> crate::settings::Severity {
     use crate::settings::Severity::*;
-    // zKill killmails count as at least Warning so they satisfy the default alert rules.
     let mut s = if r.killmail && r.channel.eq_ignore_ascii_case("zkill") { Warning } else { Info };
     if let Some(n) = r.count {
         s = s.max(if n >= rules.big_gang_threshold { rules.big_gang } else { rules.small_gang });
     } else if !r.systems.is_empty() && !r.clear && !r.killmail && !r.status {
-        // A sighting with no count — but not a bare status request ("status?"), which
-        // stays Info.
         s = s.max(rules.small_gang);
     }
     if r.bubble {
@@ -17486,7 +15911,6 @@ fn severity_of(
     s
 }
 
-/// Card tint colour for a severity level.
 fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
     use crate::settings::Severity::*;
     match s {
@@ -17497,9 +15921,6 @@ fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
     }
 }
 
-/// Latest reported ship per pilot (lower-cased name → (ship id, name, time)), so a
-/// later sighting without a ship can show a "last seen" ship badge. Only recorded
-/// when a report ties exactly one pilot to one ship (a clear 1:1 association).
 fn build_last_ship(
     reports: &[crate::intel::IntelReport],
 ) -> std::collections::HashMap<String, (i64, String, i64)> {
@@ -17519,7 +15940,6 @@ fn build_last_ship(
     out
 }
 
-/// Age as s / m+s / h+m pairs (only seconds when under a minute).
 fn fmt_age(secs: i64) -> String {
     let s = secs.max(0);
     if s < 60 {
@@ -17531,9 +15951,6 @@ fn fmt_age(secs: i64) -> String {
     }
 }
 
-/// A bottom-right resize grip for a borderless viewport (the map overlay, the alert
-/// window): hover highlights the diagonal ticks and shows the resize cursor; dragging
-/// begins a window resize. Call last so it paints over the content.
 fn resize_grip(ui: &mut egui::Ui) {
     const SZ: f32 = 18.0;
     let corner = ui.max_rect().right_bottom();
@@ -17564,7 +15981,6 @@ fn resize_grip(ui: &mut egui::Ui) {
     }
 }
 
-/// Stable-ish key for caching an intel card's measured height (feed virtualisation).
 fn report_key(r: &crate::intel::IntelReport) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -17574,8 +15990,6 @@ fn report_key(r: &crate::intel::IntelReport) -> u64 {
     h.finish()
 }
 
-/// The lower-cased names among `resolved` that are activity-flagged and not yet user-classified —
-/// these get a "?" on the card so the user can mark them real or hide them.
 fn uncertain_set(
     cache: &crate::pilot::PilotCache,
     resolved: &std::collections::HashMap<String, i64>,
@@ -17583,12 +15997,6 @@ fn uncertain_set(
     resolved.keys().filter(|n| cache.is_uncertain(n)).map(|n| n.to_lowercase()).collect()
 }
 
-/// A reusable sound selector used by every sound-settings field: a dropdown of the built-in presets
-/// (each previewable) + "Off" + "Custom file..." (native file picker), and a Test button that plays
-/// the current choice. `value` holds a preset name, "off", or a file path. When `allow_default` is
-/// set, an empty value means "use the higher-level default" and a "Default" entry is offered (used
-/// by per-rule sounds); otherwise an empty value reads as "Off". `salt` disambiguates the widget id
-/// (pass the field key, plus a loop index where the field repeats). Returns whether it changed.
 fn sound_picker(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash,
@@ -17634,7 +16042,7 @@ fn sound_picker(
                     }
                 });
             }
-            if ui.selectable_label(is_file, format!("{} Custom file...", icon::FOLDER_OPEN)).clicked() {
+            if ui.selectable_label(is_file, format!("{} Custom file…", icon::FOLDER_OPEN)).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("audio", &["wav", "mp3", "ogg", "flac"])
                     .pick_file()
@@ -17651,9 +16059,6 @@ fn sound_picker(
     changed
 }
 
-/// The wormhole badge label: a spiral icon plus, when known, the signature id, the type code
-/// (K162 is the generic exit, so it is skipped), a Drifter/Thera/Turnur marker, and the
-/// destination class. If only "WH" (no detail) was posted, just the icon shows.
 fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(sig) = &r.wh_sig {
@@ -17684,8 +16089,6 @@ fn wormhole_badge_label(r: &crate::intel::IntelReport) -> String {
     }
 }
 
-/// The anomaly/signature badge label: a crosshair icon + "Anom"/"Sig", plus the signature code when
-/// one was posted (a bare "anomaly"/"sig" callout shows just the icon + word).
 fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> String {
     let word = match kind {
         crate::intel::AnomKind::Anomaly => "Anom",
@@ -17699,9 +16102,6 @@ fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> String {
     }
 }
 
-/// Render one intel report as typed, clickable panels (no raw message inline; the raw text
-/// is available on hover). `stale` means a later "clear" has outdated it; `from_you` is jumps
-/// from the active character. Returns a clicked system id to focus the map.
 fn intel_row(
     ui: &mut egui::Ui,
     r: &crate::intel::IntelReport,
@@ -17728,9 +16128,6 @@ fn intel_row(
     let accent = ui.visuals().hyperlink_color;
     let jumps_color = crate::theme::standing::CORP;
 
-    // Report type drives the background tint and a leading icon.
-    // Leading icon by report kind; the card tint is the configurable severity.
-    // zKill-feed kills get a black crosshair to stand apart from chat-reported kills (skull).
     let is_zkill = r.killmail && r.channel.eq_ignore_ascii_case("zkill");
     let type_icon = if r.clear {
         icon::CHECK_CIRCLE
@@ -17748,8 +16145,6 @@ fn intel_row(
         icon::INFO
     };
     let tint = if r.clear { green } else { severity_color(sev) };
-    // zKill cards get a black card background (not a black icon); keep the crosshair red so it
-    // reads on black.
     let icon_color = if is_zkill { egui::Color32::from_rgb(0xEF, 0x53, 0x50) } else { tint };
     let card_fill = if is_zkill {
         egui::Color32::from_rgb(12, 12, 12).gamma_multiply(if stale { 0.6 } else { 1.0 })
@@ -17757,26 +16152,18 @@ fn intel_row(
         tint.gamma_multiply(if stale { 0.05 } else { 0.13 })
     };
 
-    // Clicking a card toggles between the parsed view and the raw message (with a minimal
-    // elapsed · jumps · system header). State is keyed by the report so it sticks per card.
-    // zKill cards have no meaningful raw text ("<ship> lost in <system>") and their badges
-    // are all click targets, so they never switch to raw mode.
     let toggle_id = egui::Id::new("intel_raw").with(report_key(r));
     let show_raw = !is_zkill && ui.ctx().data(|d| d.get_temp::<bool>(toggle_id).unwrap_or(false));
 
     let mut clicked: Option<IntelClick> = None;
-    // Set when a link badge (kill/BR/dscan) consumed the click, so it doesn't also toggle raw view.
     let mut consumed = false;
     let resp = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(8, 4))
         .fill(card_fill)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            // The raw message lives on the non-interactive left columns so it never
-            // competes with (or hides) the ship/system/pilot panel tooltips.
-            let msg = format!("{}\n— {} · {}", r.text, r.reporter, r.channel);
+            let msg = format!("{}\n{} · {}", r.text, r.reporter, r.channel);
             if show_raw {
-                // Raw view: a minimal header (elapsed · jumps · system), then the plain message.
                 ui.vertical(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new(type_icon).color(icon_color));
@@ -17806,22 +16193,13 @@ fn intel_row(
                 return;
             }
             let mut render = |ui: &mut egui::Ui| {
-                // Uniform badge height: match the image badges (24px avatar/ship) so the
-                // text-only badges line up. Forces the row's interactive line-height; the small
-                // button padding keeps the 24px image buttons from overshooting that height.
                 ui.spacing_mut().interact_size.y = 28.0;
                 ui.spacing_mut().button_padding.y = 2.0;
-                // Plain inline widgets (no fixed-size sub-uis — those break wrapping
-                // inside horizontal_wrapped and make the card grow vertically).
                 ui.label(egui::RichText::new(type_icon).color(icon_color)).on_hover_text(&msg);
-                // Fixed-width (monospace + padded) so the counting-up age doesn't shift
-                // the rest of the row.
                 ui.label(
                     egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak(),
                 )
                 .on_hover_text(&msg);
-                // Always reserve the jumps slot (padded) so it doesn't reflow when the
-                // distance is computed retroactively.
                 let jtxt = match from_you {
                     Some(0) => "here".to_owned(),
                     Some(j) => format!("{j}j"),
@@ -17829,8 +16207,6 @@ fn intel_row(
                 };
                 ui.label(egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color));
 
-                // System badge(s) first — the location is the anchor for everything else. Dedup by
-                // id so a report that ended up with the same system twice shows only one badge.
                 let mut seen_sys = std::collections::HashSet::new();
                 for s in &r.systems {
                     if !seen_sys.insert(s.id) {
@@ -17839,8 +16215,6 @@ fn intel_row(
                     let scol = security_color(s.security);
                     let text =
                         egui::RichText::new(format!("{} {}", icon::PLANET, s.name)).color(scol).strong();
-                    // A more opaque tint over a dark base so bright card backgrounds don't bleed
-                    // through the badge (dim the security colour but keep the fill fairly solid).
                     let dim = scol.gamma_multiply(0.5);
                     let fill = egui::Color32::from_rgb(
                         (dim.r() as u16 * 45 / 100 + 0x10) as u8,
@@ -17855,8 +16229,6 @@ fn intel_row(
                     }
                 }
 
-                // zKill card: where the death happened — the nearest celestial + distance (right
-                // after the system), when the kill had a position within ~15,000 km of it.
                 if let Some((cname, dm)) = &r.near_celestial {
                     if *dm <= 15_000_000.0 {
                         let km = (dm / 1000.0).round() as i64;
@@ -17892,7 +16264,6 @@ fn intel_row(
                     }
                 }
 
-                // Hostile-count badge — prominent; the number is what matters most.
                 if let Some(n) = r.count {
                     egui::Frame::new()
                         .fill(red)
@@ -17910,7 +16281,6 @@ fn intel_row(
                         .on_hover_text("hostiles");
                 }
 
-                // ISK amount posted (ESS bank, loot, bounty) — "300M", "1.5B".
                 if let Some(isk) = r.isk.filter(|_| !is_zkill) {
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(0x4a, 0x3d, 0x10))
@@ -17931,8 +16301,6 @@ fn intel_row(
                         .on_hover_text("ISK posted");
                 }
 
-                // Structures mentioned (Keepstar, Fortizar, …) + distance off, if given.
-                // Show the structure's type render when we know it, else a turret icon.
                 for (name, dist) in &r.structures {
                     let text = match dist {
                         Some(d) => format!("{name}  {d}"),
@@ -17964,8 +16332,6 @@ fn intel_row(
                         });
                 }
 
-                // Celestial locations ("Planet 4", "Moon 3", "Sun") — like a structure badge but
-                // with a celestial icon (and its own teal tint) to mark it as an in-system spot.
                 for cel in &r.celestials {
                     let cicon = if cel.starts_with("Moon") {
                         icon::MOON
@@ -17991,7 +16357,6 @@ fn intel_row(
                         .on_hover_text(format!("{cel} (celestial)"));
                 }
 
-                // Scanning probes (Core/Combat Scanner Probes) — a badge, not the Probe frigate.
                 if let Some(probes) = r.probes {
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(0x10, 0x3a, 0x40))
@@ -18008,9 +16373,6 @@ fn intel_row(
                         .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
                 }
 
-                // A message that parsed to a system and nothing else (no count/ships/pilots/
-                // keywords): show its text inline after the system badge — not the toggle-to-raw
-                // view — so a one-off note ("anyone in X?") isn't a near-empty card.
                 let nothing_else = r.count.is_none()
                     && r.isk.is_none()
                     && r.pilots.is_empty()
@@ -18042,7 +16404,6 @@ fn intel_row(
                     && r.anom_sigs.is_empty()
                     && r.movement.is_none();
                 if nothing_else && !r.systems.is_empty() {
-                    // Only when there's text beyond the system name(s) itself.
                     let mut residual = r.text.to_lowercase();
                     for s in &r.systems {
                         residual = residual.replace(&s.name.to_lowercase(), " ");
@@ -18052,8 +16413,6 @@ fn intel_row(
                     }
                 }
 
-                // Ship panel with the real EVE hull icon (or an Upwell structure's render);
-                // click -> ship window. Returns a click for the caller to record.
                 let ship_panel = |ui: &mut egui::Ui, sh: &crate::intel::DetectedShip| -> Option<IntelClick> {
                     let url = if crate::intel::structure_name_by_type(sh.id).is_some() {
                         eve_type_render_url(sh.id, 24.0)
@@ -18069,8 +16428,6 @@ fn intel_row(
                     }
                     panel.clicked().then_some(IntelClick::Ship(sh.id))
                 };
-                // zKill cards show the victim ship inside the kill badge (Killer > Victim > Ship),
-                // so render it there; other cards list ships here.
                 if !is_zkill {
                     for sh in &r.ships {
                         if let Some(c) = ship_panel(ui, sh) {
@@ -18079,14 +16436,11 @@ fn intel_row(
                     }
                 }
 
-                // Ship classes named only by keyword (no specific hull) — a lighter,
-                // italic chip so they read as a type rather than an exact ship.
                 for class in &r.classes {
                     ui.add(egui::Button::new(egui::RichText::new(class).italics()))
-                        .on_hover_text("Ship class — no exact hull was reported");
+                        .on_hover_text("Ship class, no exact hull reported");
                 }
 
-                // "<ship/type> TACKLED" badges (a generic one if no target was named).
                 let tackled_badge = |ui: &mut egui::Ui, label: String| {
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgb(0x5a, 0x18, 0x18))
@@ -18106,9 +16460,7 @@ fn intel_row(
                     tackled_badge(ui, "TACKLED".to_string());
                 }
 
-                // Pilot panels: names confirmed as real characters by the ESI resolver.
                 for name in &r.pilots {
-                    // A blacklisted word is never a pilot, even if it's cached.
                     if crate::intel::is_pilot_stopword(name) {
                         continue;
                     }
@@ -18116,14 +16468,11 @@ fn intel_row(
                         continue;
                     }
                     let char_id = resolved_pilots.get(name).copied();
-                    // Queue + read this pilot's corp/alliance (resolved in the background).
                     let aff = char_id.and_then(|cid| {
                         let mut c = affil.lock().unwrap();
                         c.want(cid);
                         c.get(cid)
                     });
-                    // One badge: alliance + corp logos + avatar + name as atoms in a single button
-                    // (grouped, shares the ship-badge background + height, wraps with the row).
                     let is_uncertain = uncertain.contains(&name.to_lowercase());
                     let amber = egui::Color32::from_rgb(0xfb, 0xbf, 0x24);
                     let sz = egui::Vec2::splat(20.0);
@@ -18137,8 +16486,6 @@ fn intel_row(
                             atoms.push_left(img(eve_alliance_logo_url(al, 20.0)));
                         }
                         atoms.push_right(egui::RichText::new(name));
-                        // Uncertain (activity-flagged): a "?" INSIDE the badge + an amber-tinted fill
-                        // so it reads as flagged. Clicking the badge opens the verdict popup.
                         if is_uncertain {
                             atoms.push_right(egui::RichText::new("?").color(amber).strong());
                         }
@@ -18155,8 +16502,6 @@ fn intel_row(
                     let corp_name = aff.as_ref().and_then(|a| a.corp_name.clone());
                     let alliance_name = aff.as_ref().and_then(|a| a.alliance_name.clone());
                     let resp = resp.on_hover_ui(|ui| {
-                        // The pilot name comes from the intel text (authoritative), corp/alliance
-                        // from the affiliation cache — same identity block as the kill-card badges.
                         tooltip_identity(
                             ui,
                             alliance_id,
@@ -18184,9 +16529,6 @@ fn intel_row(
                     }
                 }
 
-                // Candidate names still being checked against ESI: show one animated "…"
-                // placeholder rather than the raw candidate text, so the feed never displays a
-                // half-parsed blob ("Sevra jumped Navy Issue") while resolution is in flight.
                 let resolving = r.pilots.iter().any(|name| {
                     !crate::intel::is_pilot_stopword(name) && !resolved_pilots.contains_key(name)
                 });
@@ -18201,8 +16543,6 @@ fn intel_row(
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(450));
                 }
 
-                // No ship reported now: show each pilot's most recent (≤60 min) hull
-                // under a "Last seen as:" label, with the regular ship tooltip.
                 if r.ships.is_empty() {
                     let seen: Vec<(i64, String)> = r
                         .pilots
@@ -18212,10 +16552,6 @@ fn intel_row(
                         .map(|(id, ship, _)| (*id, ship.clone()))
                         .collect();
                     if !seen.is_empty() {
-                        // Render the prefix at the badge height (interact_size.y) and centred,
-                        // so it stays vertically aligned with the 28px ship badges when the
-                        // "Last seen as:" group wraps onto its own row. A bare text label keeps
-                        // its short text height and sits off-centre next to the taller badges.
                         let row_h = ui.spacing().interact_size.y;
                         let font = egui::TextStyle::Body.resolve(ui.style());
                         let w = ui
@@ -18248,8 +16584,6 @@ fn intel_row(
                     }
                 }
 
-                // Gate panels (a card may name several gates). A nameless gate (couldn't resolve a
-                // system) shows just the "gate" keyword.
                 for g in &r.gates {
                     let label = if g.is_empty() {
                         format!("{} gate", icon::SIGN_IN)
@@ -18259,36 +16593,25 @@ fn intel_row(
                     ui.label(egui::RichText::new(label).color(accent).strong());
                 }
 
-                // Alliance logos for shorthand mentions (frat, init, …).
                 for (name, id) in &r.alliances {
                     let url = eve_alliance_logo_url(id, 20.0);
                     ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(20.0, 20.0)))
                         .on_hover_text(name);
                 }
 
-                // External link badges (killmail / battle report / dscan).
                 for link in &r.links {
                     use crate::intel::LinkKind;
                     match link.kind {
                         LinkKind::Killmail => {
-                            // Rich KILL badge: victim ship + portrait + KILL; opens the
-                            // Kill window. Icons appear once zKill/ESI enrichment lands.
                             let info = link
                                 .kill_id
                                 .and_then(|id| kills.lock().unwrap().get(&id).cloned().flatten());
-                            // Inline into the wrapping row (NOT a nested horizontal, which is an
-                            // atomic non-wrapping unit) so the kill badges wrap with the rest of
-                            // the card in the narrow alert window instead of overflowing.
                             {
                                 if let Some(inf) = &info {
                                     let sz = egui::Vec2::splat(20.0);
                                     let img = |url: String| {
                                         egui::Image::new(url).fit_to_exact_size(sz)
                                     };
-                                    // A grouped badge: alliance + corp logos + portrait as atoms in
-                                    // one button (same style as the chat pilot badge). Clicking it
-                                    // opens that entity's zKill page — the most specific id wins
-                                    // (character, else corporation, else alliance).
                                     let badge = |ui: &mut egui::Ui,
                                                  alliance: Option<i64>,
                                                  corp: Option<i64>,
@@ -18312,17 +16635,12 @@ fn intel_row(
                                             .or_else(|| corp.map(|c| format!("https://zkillboard.com/corporation/{c}/")))
                                             .or_else(|| alliance.map(|a| format!("https://zkillboard.com/alliance/{a}/")));
                                         let resp = ui.add(egui::Button::new(atoms)).on_hover_ui(|ui| {
-                                            // Alliance / corporation / pilot, one per row, each with
-                                            // its icon. Names resolve via the affiliation cache (the
-                                            // killmail only carries ids); "…" until they land.
                                             ui.strong(title);
                                             let info = character.and_then(|c| {
                                                 let mut a = affil.lock().unwrap();
                                                 a.want(c);
                                                 a.get(c)
                                             });
-                                            // Prefer the resolved (current) corp/alliance for the
-                                            // names; fall back to the kill-time ids for the icons.
                                             tooltip_identity(
                                                 ui,
                                                 info.as_ref().and_then(|i| i.alliance).or(alliance),
@@ -18339,10 +16657,6 @@ fn intel_row(
                                             }
                                         }
                                     };
-                                    // Attacker badge: the final-blow pilot's alliance + corp +
-                                    // portrait. Its own badge, pointing ⚔→ at the victim. A kill
-                                    // with no per-character final blow falls back to the dominant
-                                    // attacker alliance (e.g. an NPC/structure final blow).
                                     let fb_alliance =
                                         inf.final_blow_alliance.or_else(|| inf.attacker_alliances.first().copied());
                                     if inf.final_blow_char.is_some()
@@ -18354,9 +16668,8 @@ fn intel_row(
                                             fb_alliance,
                                             inf.final_blow_corp,
                                             inf.final_blow_char,
-                                            "Attacker (final blow) — click for zKill",
+                                            "Attacker (final blow). Click for zKill.",
                                         );
-                                        // Gang size: "+X" others on the kill, or "S" for a solo kill.
                                         if inf.attacker_count > 0 {
                                             let (tag, hover) = if inf.attacker_count == 1 {
                                                 ("S".to_owned(), "Solo kill".to_owned())
@@ -18377,16 +16690,14 @@ fn intel_row(
                                             egui::RichText::new(icon::CARET_RIGHT).color(red).strong(),
                                         );
                                     }
-                                    // Victim badge: alliance + corp + portrait.
                                     badge(
                                         ui,
                                         inf.victim_alliance,
                                         inf.victim_corp,
                                         inf.victim_char,
-                                        "Victim — click for zKill",
+                                        "Victim. Click for zKill.",
                                     );
                                 }
-                                // Victim ship / structure (Killer > Victim > Ship).
                                 for sh in &r.ships {
                                     if let Some(c) = ship_panel(ui, sh) {
                                         clicked = Some(c);
@@ -18396,7 +16707,6 @@ fn intel_row(
                                     .color(red)
                                     .strong();
                                 if ui.add(egui::Button::new(lbl)).clicked() {
-                                    // Open the killmail on zKill directly (no in-app kill window).
                                     let _ = open::that(&link.url);
                                     consumed = true;
                                 }
@@ -18429,24 +16739,18 @@ fn intel_row(
                                 .on_hover_text(&link.url)
                                 .clicked()
                             {
-                                // Fetched + shown in a dialog when public; opens the site otherwise.
                                 clicked = Some(IntelClick::Dscan(link.url.clone()));
                             }
                         }
                     }
                 }
 
-                // Status flags. A flag badge is a (non-clickable) Button with the DEFAULT frame —
-                // identical in shape + height to the pilot/ship/link buttons in this row (the row's
-                // uniform badge height), just with the flag's colour on the text. A custom fill/
-                // stroke or a Frame sub-ui made them read taller/heavier than the rest.
                 let tag = |ui: &mut egui::Ui, txt: &str, col: egui::Color32| {
                     ui.add(
                         egui::Button::new(egui::RichText::new(txt).color(col).strong())
                             .sense(egui::Sense::hover()),
                     );
                 };
-                // A "status?" request (no threat of its own) — a badge so the card isn't empty.
                 if r.status {
                     tag(ui, "STATUS?", egui::Color32::from_rgb(0x7d, 0xd3, 0xde));
                 }
@@ -18468,8 +16772,6 @@ fn intel_row(
                 if r.bubble {
                     tag(ui, "BUBBLE", warn);
                 }
-                // zKill cards already have the "zKill" open button + kill styling, so the tag
-                // would be redundant; keep "KILL" only for chat-reported killmails.
                 if r.killmail && !is_zkill {
                     tag(ui, "KILL", red);
                 }
@@ -18512,9 +16814,6 @@ fn intel_row(
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
             };
-            // Everything in one wrapping row: badges then reporter·channel at the
-            // end (wraps to the next line only if it doesn't fit — no forced row,
-            // no vertical stretch).
             ui.horizontal_wrapped(|ui| {
                 render(ui);
                 if show_reporter && !is_zkill {
@@ -18531,9 +16830,6 @@ fn intel_row(
         })
         .response;
 
-    // A primary click inside the card that no inner system/ship/pilot link consumed toggles
-    // the raw message. Detected via input (not a card-wide click widget) so it doesn't steal
-    // the inner links' clicks — the card frame would otherwise sit on top of them.
     let bg_click = clicked.is_none()
         && !consumed
         && !is_zkill
@@ -18547,11 +16843,6 @@ fn intel_row(
     clicked
 }
 
-/// Shared identity block for hover tooltips: alliance, corporation, and pilot — one per row,
-/// each with its icon (alliance/corp logo, character portrait). Used by both the chat pilot
-/// badge and the zKill killer/victim badges so they look and behave the same. A row is omitted
-/// when its id is unknown; the pilot row shows the name even without a portrait, and a name that
-/// hasn't resolved yet shows "…".
 fn tooltip_identity(
     ui: &mut egui::Ui,
     alliance: Option<i64>,
@@ -18584,16 +16875,14 @@ fn tooltip_identity(
     }
 }
 
-/// Hover tooltip for a ship panel: group, resists, tank, drones, hardpoints, speed.
 fn ship_hover(ui: &mut egui::Ui, d: &crate::store::ShipDetails, roles: &[(&'static str, &'static str)]) {
     ui.label(egui::RichText::new(&d.name).strong());
     ui.label(egui::RichText::new(&d.group).weak());
-    role_badges(ui, roles); // icons only — bonus text is in the ship window
+    role_badges(ui, roles);
     ui.separator();
     ship_stats(ui, d);
 }
 
-/// Pick the loss whose fit to show: latest, or the most common fit signature.
 fn pick_loss(
     report: &crate::lookup::PilotReport,
     ship_id: i64,
@@ -18618,8 +16907,6 @@ fn pick_loss(
     }
 }
 
-/// Cargo contents of a loss (type_id → quantity), auto-stacked: cargo/drone-bay
-/// items plus any loaded charges (qty > 1 items found in fitted slots).
 fn fit_cargo(loss: &crate::lookup::Loss) -> std::collections::BTreeMap<i64, i64> {
     use crate::lookup::Slot;
     let mut cargo: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
@@ -18633,8 +16920,6 @@ fn fit_cargo(loss: &crate::lookup::Loss) -> std::collections::BTreeMap<i64, i64>
     cargo
 }
 
-/// EFT (paste-able) fit string. Slot order: low, mid, high, rig, subsystem, cargo.
-/// Loaded charges are moved to cargo (stacked) rather than left on modules.
 fn eft_string(
     ship: &str,
     loss: &crate::lookup::Loss,
@@ -18648,11 +16933,10 @@ fn eft_string(
         Slot::Mid => 1,
         Slot::High => 2,
         Slot::Rig => 3,
-        _ => 4, // subsystem
+        _ => 4,
     };
     for it in &loss.items {
         let s = crate::lookup::slot_of(it.flag);
-        // Only modules (qty 1) belong in a fitted slot; charges go to cargo below.
         if !matches!(s, Slot::Cargo | Slot::Other) && it.qty == 1 {
             sections[idx(s)].push(name(it.type_id));
         }
@@ -18675,7 +16959,6 @@ fn eft_string(
     out
 }
 
-/// Online fit sites the user can open a loss in. (id, label.)
 const FIT_SITES: &[(&str, &str)] =
     &[("eveship", "EVEShip.fit"), ("workbench", "EVE Workbench"), ("zkillboard", "zKillboard")];
 
@@ -18685,23 +16968,17 @@ fn site_label(site: &str) -> &str {
 
 fn fit_url(site: &str, _ship_id: i64, loss: &crate::lookup::Loss) -> String {
     match site {
-        // EVEShip.fit imports a killmail directly and renders the full fit.
         "eveship" => format!("https://eveship.fit/?fit=killmail:{}/{}", loss.killmail_id, loss.hash),
-        // EVE Workbench has no kill-import URL; open the importer (paste the EFT).
         "workbench" => "https://eveworkbench.com/fitting".to_owned(),
         _ => format!("https://zkillboard.com/kill/{}/", loss.killmail_id),
     }
 }
 
-/// Icon for a sov upgrade on the map.
 enum UpgradeIcon {
-    /// A mineral/ore item image (type id), for mining arrays.
     Mineral(i64),
-    /// A Phosphor glyph (ratting/exploration/cyno/other).
     Glyph(&'static str),
 }
 
-/// Categorise a sov upgrade by name → (icon, level 0–5).
 fn upgrade_info(name: &str) -> (UpgradeIcon, u8) {
     use egui_phosphor::regular as icon;
     let lower = name.to_lowercase();
@@ -18752,7 +17029,6 @@ enum UpgradeKind {
     Other = 3,
 }
 
-/// Classify a sov upgrade into one of the filterable kinds (mirrors `upgrade_info`).
 fn upgrade_kind(name: &str) -> UpgradeKind {
     let lower = name.to_lowercase();
     const MINERALS: &[&str] = &[
@@ -18779,24 +17055,18 @@ fn upgrade_kind(name: &str) -> UpgradeKind {
     }
 }
 
-/// Colour for a sov-upgrade level: white / green / red for level 1 / 2 / 3+.
 fn level_color(l: u8) -> egui::Color32 {
     match l {
-        2 => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), // green
-        3..=5 => egui::Color32::from_rgb(0xE5, 0x4B, 0x4B), // red
-        _ => egui::Color32::WHITE, // level 1 / unknown
+        2 => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+        3..=5 => egui::Color32::from_rgb(0xE5, 0x4B, 0x4B),
+        _ => egui::Color32::WHITE,
     }
 }
 
-/// Regions that are not reachable in-game and shouldn't appear on the map.
 fn is_hidden_region(region: &str) -> bool {
-    // Inaccessible space, hidden from the map and the region picker: wormhole and Jove
-    // regions carry a digit in their name (A-R00001, UUA-F4, A821-A…). Pochven
-    // (Triglavian) IS shown — it's a real, navigable k-space region.
     region.chars().any(|c| c.is_ascii_digit())
 }
 
-/// Broad hull-size class for a ship group (Frigate … Capital).
 fn hull_size(g: &str) -> &'static str {
     if g.contains("Capsule") {
         "Capsule"
@@ -18837,9 +17107,6 @@ fn hull_size(g: &str) -> &'static str {
     }
 }
 
-/// Cached static ship details, keyed by type id. Factored off `SpaiApp` so both the main process
-/// and the overlay child (via [`ShipLookup`]) resolve ship cards from a read-only `Store` with the
-/// same per-frame caching.
 pub(crate) fn ship_details_cached(
     store: &crate::store::Store,
     cache: &std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
@@ -18853,7 +17120,6 @@ pub(crate) fn ship_details_cached(
     d
 }
 
-/// Cached role badges for a ship (derived from its baked role bonuses). See [`ship_details_cached`].
 pub(crate) fn ship_roles_cached(
     store: &crate::store::Store,
     cache: &std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
@@ -18867,9 +17133,6 @@ pub(crate) fn ship_roles_cached(
     roles
 }
 
-/// A read-only ship-detail resolver: a `Store` plus the two per-id caches `intel_row` needs
-/// (`ShipDetails` + role badges). Used by the overlay child to build the alert feed's ship maps
-/// from its OWN SDE (the main resolves them from `SpaiApp`'s store/caches instead).
 pub(crate) struct ShipLookup {
     store: crate::store::Store,
     details: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
@@ -18894,7 +17157,6 @@ impl ShipLookup {
     }
 }
 
-/// Derive the ship's role badges (tank / weapon / utility) from its bonus text.
 fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static str)> {
     use egui_phosphor::regular as i;
     let t: String = traits.iter().map(|x| x.2.to_lowercase()).collect::<Vec<_>>().join(" | ");
@@ -18904,7 +17166,6 @@ fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static st
         out.push((i::SHIELD, "Shield"));
     }
     if has("armor") {
-        // A helmet — clearly distinct from the shield glyph (like the in-game icon).
         out.push((i::HARD_HAT, "Armor"));
     }
     if has("hybrid") || has("railgun") || has("blaster") {
@@ -18936,7 +17197,6 @@ fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static st
     out
 }
 
-/// Render the role badges as a row of icons with hover labels.
 fn role_badges(ui: &mut egui::Ui, roles: &[(&'static str, &'static str)]) {
     if roles.is_empty() {
         return;
@@ -18949,7 +17209,6 @@ fn role_badges(ui: &mut egui::Ui, roles: &[(&'static str, &'static str)]) {
     });
 }
 
-/// Effective HP of a layer against an even (omni) damage profile.
 fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
     if hp <= 0.0 {
         return 0.0;
@@ -18958,14 +17217,12 @@ fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
     hp / (1.0 - avg_resist).max(0.01)
 }
 
-/// Resists / tank / hardpoints / drones / speed for a ship.
 fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
-    // Damage-type colours (EM / thermal / kinetic / explosive), aligned in columns.
     let dmg_col = [
-        egui::Color32::from_rgb(0x5A, 0xA9, 0xE0), // EM — blue
-        egui::Color32::from_rgb(0xD6, 0x45, 0x45), // Thermal — red
-        egui::Color32::from_rgb(0x9A, 0xA3, 0xA8), // Kinetic — grey
-        egui::Color32::from_rgb(0xD6, 0xA6, 0x45), // Explosive — orange
+        egui::Color32::from_rgb(0x5A, 0xA9, 0xE0),
+        egui::Color32::from_rgb(0xD6, 0x45, 0x45),
+        egui::Color32::from_rgb(0x9A, 0xA3, 0xA8),
+        egui::Color32::from_rgb(0xD6, 0xA6, 0x45),
     ];
     let dmg_lbl = ["EM", "Th", "Kin", "Exp"];
     let layers = [
@@ -18989,7 +17246,6 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
             ui.label(egui::RichText::new(name).strong());
             ui.label(format!("{hp:.0}"));
             for i in 0..4 {
-                // Background bar sized to the resist %, white text on top.
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(42.0, 18.0), egui::Sense::hover());
                 let frac = (r[i] as f32 / 100.0).clamp(0.0, 1.0);
                 let painter = ui.painter();
@@ -19037,7 +17293,6 @@ fn ship_stats(ui: &mut egui::Ui, d: &crate::store::ShipDetails) {
     }
 }
 
-/// Hover tooltip for a system panel: security, location, live conditions.
 fn system_hover(
     ui: &mut egui::Ui,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
@@ -19051,7 +17306,6 @@ fn system_hover(
     system_chips(ui, systems, status, s.id);
 }
 
-/// Returns `value` trimmed if non-empty, otherwise the fallback.
 fn non_empty_or(value: &str, fallback: &str) -> String {
     let v = value.trim();
     if v.is_empty() {
@@ -19061,7 +17315,6 @@ fn non_empty_or(value: &str, fallback: &str) -> String {
     }
 }
 
-/// Stable pseudo-id from a coalition name (so it gets a consistent colour).
 fn coalition_hash(name: &str) -> i64 {
     let mut h: u64 = 1469598103934665603;
     for b in name.to_lowercase().bytes() {
@@ -19070,7 +17323,6 @@ fn coalition_hash(name: &str) -> i64 {
     h as i64
 }
 
-/// A stable, distinct-ish colour for an alliance id (sovereignty overlay tint).
 fn alliance_color(id: i64) -> egui::Color32 {
     let h = (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     egui::Color32::from_rgb(
@@ -19080,33 +17332,29 @@ fn alliance_color(id: i64) -> egui::Color32 {
     )
 }
 
-/// Auto colour generated from a name (alliance / coalition) when not overridden.
 fn name_color(name: &str) -> egui::Color32 {
     alliance_color(coalition_hash(name))
 }
 
-/// EVE's in-game security-status colours, keyed by security rounded to 0.1.
-/// Anything <= 0.0 is the null-sec red.
 fn security_color(security: f64) -> egui::Color32 {
     const COLORS: [(u8, u8, u8); 11] = [
-        (0xB0, 0x3A, 0x9A), // 0.0 and below — null-sec reddish purple
-        (0xD7, 0x30, 0x00), // 0.1
-        (0xF0, 0x48, 0x00), // 0.2
-        (0xF0, 0x60, 0x00), // 0.3
-        (0xD7, 0x77, 0x00), // 0.4
-        (0xEF, 0xEF, 0x00), // 0.5
-        (0x8F, 0xEF, 0x2F), // 0.6
-        (0x00, 0xF0, 0x00), // 0.7
-        (0x00, 0xEF, 0x47), // 0.8
-        (0x48, 0xF0, 0xC0), // 0.9
-        (0x2F, 0xEF, 0xEF), // 1.0
+        (0xB0, 0x3A, 0x9A),
+        (0xD7, 0x30, 0x00),
+        (0xF0, 0x48, 0x00),
+        (0xF0, 0x60, 0x00),
+        (0xD7, 0x77, 0x00),
+        (0xEF, 0xEF, 0x00),
+        (0x8F, 0xEF, 0x2F),
+        (0x00, 0xF0, 0x00),
+        (0x00, 0xEF, 0x47),
+        (0x48, 0xF0, 0xC0),
+        (0x2F, 0xEF, 0xEF),
     ];
     let idx = (security * 10.0).round().clamp(0.0, 10.0) as usize;
     let (r, g, b) = COLORS[idx];
     egui::Color32::from_rgb(r, g, b)
 }
 
-/// A coloured security-status label, e.g. `0.9` (green) … `-0.3` (red).
 fn security_badge(security: f64) -> egui::RichText {
     let sec = (security * 10.0).round() / 10.0;
     egui::RichText::new(format!("{sec:.1}"))
@@ -19114,7 +17362,6 @@ fn security_badge(security: f64) -> egui::RichText {
         .monospace()
 }
 
-/// A labelled sRGB colour picker row; returns true if the colour changed.
 fn color_row(ui: &mut egui::Ui, label: &str, rgb: &mut Rgb) -> bool {
     let mut arr = rgb.array();
     let mut changed = false;
@@ -19143,9 +17390,7 @@ mod wh_badge_tests {
     #[test]
     fn wormhole_badge_composition() {
         let icon = egui_phosphor::regular::SPIRAL;
-        // Only "WH" was posted: just the icon.
         assert_eq!(wormhole_badge_label(&wh(|_| {})), icon.to_string());
-        // Sig id + type code + Drifter + destination class, each shown when known.
         let l = wormhole_badge_label(&wh(|ir| {
             ir.wh_sig = Some("ABC-123".into());
             ir.wh_type = Some("S899".into());
@@ -19156,9 +17401,7 @@ mod wh_badge_tests {
         for want in ["ABC-123", "(S899)", "(Drifter)", "Highsec"] {
             assert!(l.contains(want), "missing {want} in {l:?}");
         }
-        // K162 is the generic exit — never shown.
         assert!(!wormhole_badge_label(&wh(|ir| ir.wh_type = Some("K162".into()))).contains("K162"));
-        // Thera / Turnur render as keywords, not "-> class".
         assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Thera))).contains("(Thera)"));
         assert!(wormhole_badge_label(&wh(|ir| ir.wh_dest = Some(DestClass::Turnur))).contains("(Turnur)"));
     }
@@ -19168,10 +17411,8 @@ mod wh_badge_tests {
         use super::anom_sig_badge_label;
         use crate::intel::AnomKind;
         let icon = egui_phosphor::regular::CROSSHAIR;
-        // Bare keyword: icon + word, no code.
         assert_eq!(anom_sig_badge_label(AnomKind::Anomaly, ""), format!("{icon} Anom"));
         assert_eq!(anom_sig_badge_label(AnomKind::Signature, ""), format!("{icon} Sig"));
-        // With a code.
         assert_eq!(anom_sig_badge_label(AnomKind::Signature, "ABC-123"), format!("{icon} Sig ABC-123"));
     }
 }
@@ -19202,8 +17443,6 @@ mod wh_overlay_tests {
 
     #[test]
     fn chains_through_jspace_and_direct_links() {
-        // kA(30000001) — J1(31000001) — kB(30000002): a 1-J-hop chain.
-        // kA — kC(30000003): a direct k↔k hole.
         let whs = vec![
             conn(30_000_001, 31_000_001),
             conn(31_000_001, 30_000_002),
@@ -19216,9 +17455,7 @@ mod wh_overlay_tests {
             "chains: {:?}",
             o.chains
         );
-        // kA holds a hole into J-space (J1), so it's marked.
         assert!(o.jspace_holes.contains(&30_000_001));
-        // A pure J-space system is never a chain endpoint.
         assert!(!o.direct.iter().any(|&(a, b)| is_jspace(a) || is_jspace(b)));
     }
 }
@@ -19229,17 +17466,15 @@ mod kill_noise_tests {
 
     #[test]
     fn deployables_and_unknowns_are_noise() {
-        // Unresolved victim (deployable / type not in our SDE) -> noise.
         assert!(kill_is_noise("", 5_000_000.0));
         assert!(kill_is_noise("Mobile Tractor Unit", 1_000_000.0));
         assert!(kill_is_noise("Mobile Depot", 500_000.0));
         assert!(kill_is_noise("Shuttle", 10_000.0));
-        assert!(kill_is_noise("Reaper", 1000.0)); // rookie corvette
-        assert!(kill_is_noise("Capsule", 100_000.0)); // cheap empty pod
-        // Real ships, valuable pods, and Upwell structures are kept.
+        assert!(kill_is_noise("Reaper", 1000.0));
+        assert!(kill_is_noise("Capsule", 100_000.0));
         assert!(!kill_is_noise("Stabber", 20_000_000.0));
         assert!(!kill_is_noise("Keepstar", 1e12));
-        assert!(!kill_is_noise("Capsule", 500_000_000.0)); // pod-goo
+        assert!(!kill_is_noise("Capsule", 500_000_000.0));
     }
 }
 
@@ -19249,12 +17484,10 @@ mod op_channel_tests {
 
     #[test]
     fn op_key_canonicalizes_variants() {
-        // With/without space, varying capitalization, trailing channel text all collapse.
         assert_eq!(op_key("Op 4").as_deref(), Some("op4"));
         assert_eq!(op_key("OP4").as_deref(), Some("op4"));
         assert_eq!(op_key("op 4 - dead keepstars").as_deref(), Some("op4"));
         assert_eq!(op_key("get to OP 9 now").as_deref(), Some("op9"));
-        // "op" inside another word, or with no number, isn't an op channel.
         assert_eq!(op_key("stop shooting"), None);
         assert_eq!(op_key("no channel here"), None);
     }

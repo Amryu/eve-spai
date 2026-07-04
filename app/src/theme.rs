@@ -1,13 +1,6 @@
-//! Three-colour theme engine.
-//!
-//! A theme is exactly three user-chosen colours — `background`, `foreground`,
-//! `accent` (docs/DESIGN.md §6.3). Every other surface/text/state colour is
-//! *derived* here at runtime so the whole UI stays cohesive from three inputs.
-
 use egui::{Color32, Stroke};
 use serde::{Deserialize, Serialize};
 
-/// A plain sRGB colour, serialisable in settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rgb {
     pub r: u8,
@@ -30,7 +23,6 @@ impl Rgb {
     }
 }
 
-/// The three-colour theme.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
     pub name: String,
@@ -46,7 +38,6 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Default EVE-flavoured dark theme: cyan accent on near-black blue.
     pub fn caldari() -> Self {
         Self {
             name: "Caldari".into(),
@@ -83,7 +74,6 @@ impl Theme {
         }
     }
 
-    /// High-contrast light theme to prove the 3-colour model works either polarity.
     pub fn daylight() -> Self {
         Self {
             name: "Daylight".into(),
@@ -103,14 +93,12 @@ impl Theme {
         ]
     }
 
-    /// Apply this theme to an egui context by deriving a full `Visuals`.
     pub fn apply(&self, ctx: &egui::Context) {
         let bg = self.background.color();
         let fg = self.foreground.color();
         let accent = self.accent.color();
 
         let dark = luminance(bg) < 0.5;
-        // Contrast direction: lighten surfaces on dark themes, darken on light ones.
         let contrast = if dark {
             Color32::WHITE
         } else {
@@ -140,7 +128,6 @@ impl Theme {
         v.selection.bg_fill = accent.gamma_multiply(0.35);
         v.selection.stroke = Stroke::new(1.0, accent);
 
-        // Widget states.
         v.widgets.noninteractive.bg_fill = surface;
         v.widgets.noninteractive.weak_bg_fill = surface;
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, line);
@@ -175,7 +162,6 @@ impl Theme {
 
         ctx.set_visuals(v);
 
-        // Spacing/density polish — a little more breathing room than egui defaults.
         ctx.all_styles_mut(|style| {
             style.spacing.item_spacing = egui::vec2(8.0, 6.0);
             style.spacing.button_padding = egui::vec2(10.0, 6.0);
@@ -185,9 +171,6 @@ impl Theme {
     }
 }
 
-/// Semantic standing colours — a small fixed palette, separate from the 3-colour
-/// theme because friend/foe meaning can't be derived from chrome colours
-/// (docs/DESIGN.md §6.3). Overriding these is an Advanced setting (not yet exposed).
 #[allow(dead_code)]
 pub mod standing {
     use egui::Color32;
@@ -199,15 +182,9 @@ pub mod standing {
     pub const WARNING: Color32 = Color32::from_rgb(0xE0, 0xA4, 0x3A);
 }
 
-/// Build and install the shared font set: egui's defaults + Phosphor icons + a CJK
-/// fallback so Chinese pilot/corp names render instead of tofu squares. Used by both
-/// `SpaiApp::new` and the overlay's `Overlay::new` so the two windows look identical.
-///
-/// The CJK face is loaded from a system font file (not embedded — that would bloat the
 /// binary by ~15 MB) and appended LAST in both the Proportional and Monospace families,
 /// so Latin/icon glyphs keep their existing fonts and metrics; the CJK font is only
 /// consulted for code points the earlier fonts lack. If no CJK font is found we log once
-/// and carry on (CJK stays tofu, never a crash).
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
@@ -221,7 +198,6 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Load the first available system CJK font as egui font data, or `None` (logged once).
 fn load_cjk_font() -> Option<egui::FontData> {
     for path in cjk_font_candidates() {
         if let Ok(bytes) = std::fs::read(path) {
@@ -233,14 +209,13 @@ fn load_cjk_font() -> Option<egui::FontData> {
     None
 }
 
-/// Common per-OS CJK font file locations, in preference order (cfg-free path lists).
 fn cjk_font_candidates() -> &'static [&'static str] {
     if cfg!(target_os = "windows") {
         &[
-            r"C:\Windows\Fonts\msyh.ttc",   // Microsoft YaHei
+            r"C:\Windows\Fonts\msyh.ttc",
             r"C:\Windows\Fonts\msyh.ttf",
-            r"C:\Windows\Fonts\simsun.ttc", // SimSun
-            r"C:\Windows\Fonts\simhei.ttf", // SimHei
+            r"C:\Windows\Fonts\simsun.ttc",
+            r"C:\Windows\Fonts\simhei.ttf",
         ]
     } else if cfg!(target_os = "macos") {
         &[
@@ -278,10 +253,6 @@ fn luminance(c: Color32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    /// `install_fonts` must build a valid font atlas and lay out CJK text without panicking.
-    /// epaint panics (rather than erroring) if a `FontData` fails to parse, so this exercises
-    /// the whole path — defaults + Phosphor + the system CJK fallback found on the host —
-    /// by laying out a Chinese string in a headless context. Guards against a bad CJK file.
     #[test]
     fn install_fonts_lays_out_cjk_without_panicking() {
         let ctx = egui::Context::default();

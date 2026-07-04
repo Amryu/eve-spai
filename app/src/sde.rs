@@ -1,11 +1,3 @@
-//! EVE Static Data Export (SDE) — downloaded on first run and baked into the local
-//! SQLite DB (docs/DESIGN.md §4, §7.1 E2). M1 imports the slice the intel/map
-//! features need: solar systems (id, name, region, security, coordinates),
-//! regions, and the system jump graph.
-//!
-//! Source: Fuzzwork's CSV conversion of the SDE. Columns are read positionally so
-//! a leading BOM or added columns don't break parsing.
-
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -29,7 +21,6 @@ const SHIP_ATTRS: &[i64] = &[
     600, 1281, // warp speed multiplier, base warp speed
 ];
 
-/// Shared, observable state of the SDE download/bake.
 #[derive(Clone, Debug, Default)]
 pub enum SdeStatus {
     #[default]
@@ -41,8 +32,6 @@ pub enum SdeStatus {
 
 pub type SharedStatus = Arc<Mutex<SdeStatus>>;
 
-/// Bake ship role bonuses (invTraits) lazily — small, separate from the main SDE
-/// so it doesn't force a re-download. No-op if already baked.
 pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(mut conn) = Connection::open(&path) else { return };
@@ -92,7 +81,6 @@ pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
     });
 }
 
-/// Strip simple HTML (`<a href=…>Name</a>` → `Name`) from SDE bonus text.
 fn strip_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
@@ -107,8 +95,6 @@ fn strip_html(s: &str) -> String {
     out.trim().to_owned()
 }
 
-/// Kick off a background download + bake. Updates `status` and repaints the UI as
-/// it progresses. Safe to call again to refresh.
 pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {
     std::thread::spawn(move || {
         let set = |s: SdeStatus| {
@@ -237,7 +223,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
     }
 
-    // --- Ships (category 6) + selected dogma attributes ---
     set(SdeStatus::Downloading("Building ship data…".to_owned()));
     tx.execute("DELETE FROM sde_ships", [])?;
     tx.execute("DELETE FROM sde_ship_attrs", [])?;
@@ -288,8 +273,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
     }
 
-    // Camp-relevant types for gate-camp signals: interdictors, HICs, smartbombs, and
-    // anchorable warp-disruption bubbles. Classified by their group name.
     {
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(true)
@@ -337,11 +320,7 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
     }
 
-    // --- EVE's flattened 2D map positions (position2D) from the modern JSONL SDE ---
-    // (Fuzzwork's CSV only has 3D x/y/z.) Used for the in-game-style map layout.
     set(SdeStatus::Downloading("Downloading 2D map layout…".to_owned()));
-    // Kept alive past the main commit so the celestial phase can re-open the archive
-    // without re-downloading the ~99MB zip (Bytes clone is a cheap refcount bump).
     let zip_bytes = client
         .get("https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip")
         .send()?
@@ -378,8 +357,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         }
         drop(stmt);
 
-        // Stargate positions per system (for on-gate gate-camp detection). Schema:
-        // { "_key": int, "solarSystemID": int, "position": {x,y,z} }.
         set(SdeStatus::Downloading("Indexing stargates…".to_owned()));
         let mut gates_jsonl = String::new();
         let _ = archive
@@ -403,8 +380,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
             }
         }
 
-        // Localized ship names (so intel from non-English clients resolves, e.g. a
-        // Chinese hull name). Stream types.jsonl (large) and keep only ship types.
         set(SdeStatus::Downloading("Indexing ship translations…".to_owned()));
         let ship_ids: HashSet<i64> = {
             let mut s = HashSet::new();
@@ -434,7 +409,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
                         continue;
                     }
                     if let Some(loc) = val.as_str() {
-                        // Skip languages that just repeat the English name.
                         if !loc.is_empty() && loc != en {
                             ins.execute(params![id, loc])?;
                         }
@@ -469,10 +443,6 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
     Ok(())
 }
 
-/// Populate `sde_celestials` (~432k rows) in ~30k-row chunked transactions, streaming the
-/// large celestial files (the 224MB moon file line-by-line — never read whole). Runs AFTER
-/// the main SDE commit, so it is the only writer and each chunk releases the WAL write-lock
-/// so concurrent UI-thread writes interleave and the app stays responsive.
 fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeStatus)) -> Result<()> {
     use std::io::{BufRead, BufReader, Read as _};
 
@@ -480,7 +450,6 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
 
     set(SdeStatus::Downloading("Indexing celestials…".to_owned()));
 
-    // system id -> name (sde_systems is committed by now), for the display labels.
     let sys_names: HashMap<i64, String> = {
         let mut m = HashMap::new();
         let mut q = conn.prepare("SELECT id, name FROM sde_systems")?;
@@ -496,7 +465,6 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
         .map_err(|e| anyhow::anyhow!("re-opening JSONL SDE for celestials: {e}"))?;
 
-    // Operation id -> English operation name (small 140KB file, read whole).
     let mut op_names: HashMap<i64, String> = HashMap::new();
     {
         let mut ops = String::new();
@@ -515,14 +483,11 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
         }
     }
 
-    // Clear once, in its own tiny transaction.
     conn.execute("DELETE FROM sde_celestials", [])?;
 
-    // Rows buffer -> flushed to a fresh transaction every CHUNK; `total` drives the status.
     let mut buf: Vec<(i64, String, [f64; 3])> = Vec::with_capacity(CHUNK);
     let mut total = 0usize;
 
-    // Gates (3MB): name = "<destination system> gate" (fallback "gate").
     if let Ok(entry) = archive.by_name("mapStargates.jsonl") {
         for line in BufReader::new(entry).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
@@ -541,7 +506,6 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
         }
     }
 
-    // Planets (50MB): name = "<system> <roman(celestialIndex)>" e.g. "Jita IV".
     if let Ok(entry) = archive.by_name("mapPlanets.jsonl") {
         for line in BufReader::new(entry).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
@@ -568,7 +532,6 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
         }
     }
 
-    // Stations (2MB): the operation name when known, else "<system> station".
     if let Ok(entry) = archive.by_name("npcStations.jsonl") {
         for line in BufReader::new(entry).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
@@ -586,14 +549,12 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
         }
     }
 
-    // Final partial chunk.
     total += buf.len();
     commit_chunk(conn, &mut buf)?;
     set(SdeStatus::Downloading(format!("Indexing celestials… {total}")));
     Ok(())
 }
 
-/// Flush the buffer to a fresh transaction once it reaches `chunk`, updating the status.
 fn flush_if_full(
     conn: &mut Connection,
     buf: &mut Vec<(i64, String, [f64; 3])>,
@@ -609,8 +570,6 @@ fn flush_if_full(
     Ok(())
 }
 
-/// Insert one buffered batch of celestials in a single transaction, then clear the buffer.
-/// The short-lived transaction releases the WAL write-lock between chunks.
 fn commit_chunk(conn: &mut Connection, buf: &mut Vec<(i64, String, [f64; 3])>) -> Result<()> {
     if buf.is_empty() {
         return Ok(());
@@ -628,13 +587,10 @@ fn commit_chunk(conn: &mut Connection, buf: &mut Vec<(i64, String, [f64; 3])>) -
     Ok(())
 }
 
-/// Extract an `{x, y, z}` position object into `[x, y, z]`, or `None` if any is missing.
 fn json_pos(p: &serde_json::Value) -> Option<[f64; 3]> {
     Some([p.get("x")?.as_f64()?, p.get("y")?.as_f64()?, p.get("z")?.as_f64()?])
 }
 
-/// Roman numeral for a celestial index (1 -> "I"). Planets reach ~13; handles any
-/// positive value. Non-positive input falls back to the decimal string.
 fn roman(n: i64) -> String {
     if n <= 0 {
         return n.to_string();

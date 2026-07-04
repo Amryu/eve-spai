@@ -1,11 +1,3 @@
-//! Shared application state.
-//!
-//! Two token layers live here, deliberately distinct: the EVE [`Verifier`] (used ONLY
-//! by the `/api/session` mint endpoint) and OUR [`SessionIssuer`]/[`SessionVerifier`]
-//! (used by every protected battle-report route via the [`SessionIdentity`] extractor).
-//!
-//! [`SessionIdentity`]: crate::session::SessionIdentity
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,18 +8,13 @@ use crate::auth::Verifier;
 use crate::config::Config;
 use crate::session::{SessionIssuer, SessionVerifier};
 
-/// A view counts once per (report, client) within this window — a cheap in-memory
-/// throttle so a refresh loop can't inflate `views` (good enough for M3).
 const VIEW_THROTTLE: Duration = Duration::from_secs(3600);
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    /// EVE SSO verifier — only the `/api/session` mint endpoint uses it.
     pub verifier: Arc<Verifier>,
-    /// Mints OUR session tokens at `/api/session`.
     pub session_issuer: Arc<SessionIssuer>,
-    /// Validates OUR session tokens on every protected BR route.
     pub session_verifier: Arc<SessionVerifier>,
     pub cfg: Arc<Config>,
     views: Arc<Mutex<HashMap<(String, String), Instant>>>,
@@ -48,8 +35,6 @@ impl AppState {
         }
     }
 
-    /// Returns true if this (id, ip) view should be counted now, recording it. Also
-    /// opportunistically evicts stale entries so the map can't grow unbounded.
     pub fn should_count_view(&self, id: &str, ip: &str) -> bool {
         let mut map = self.views.lock().unwrap();
         let now = Instant::now();

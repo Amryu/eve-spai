@@ -1,14 +1,6 @@
-//! Update checker. Queries the GitHub Releases API for a newer version and, only
-//! on the user's consent, downloads the platform binary and replaces the running
-//! executable. It never downloads automatically — it only checks and prompts.
-//!
-//! For a private repo, set `EVE_SPAI_UPDATE_TOKEN` to a GitHub token with `repo`
-//! scope. Set `REPO` below to your `owner/repo`.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// GitHub `owner/repo` to check. Set this to your repository.
 const REPO: &str = "Amryu/eve-spai";
 
 pub fn current() -> &'static str {
@@ -17,11 +9,8 @@ pub fn current() -> &'static str {
 
 #[derive(Clone)]
 pub struct Available {
-    /// Version without the leading 'v', e.g. "0.2.0".
     pub version: String,
     pub html_url: String,
-    /// GitHub API asset URL for this platform's binary (downloads need this for
-    /// private repos); None if the release has no matching asset.
     pub asset_api_url: Option<String>,
 }
 
@@ -29,7 +18,6 @@ pub struct Available {
 pub struct UpdateState {
     pub available: Option<Available>,
     pub installing: bool,
-    /// Installed successfully — the user should restart.
     pub done: bool,
     pub error: Option<String>,
 }
@@ -58,8 +46,6 @@ fn http() -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder().user_agent("eve-spai").timeout(Duration::from_secs(20)).build().ok()
 }
 
-/// Background check. Sets `state.available` if a newer (and not skipped) release
-/// exists. No-op when `REPO` is left at its placeholder.
 pub fn spawn_check(state: SharedUpdate, skip_version: String, ctx: egui::Context) {
     if REPO.starts_with("OWNER/") {
         return;
@@ -87,8 +73,6 @@ pub fn spawn_check(state: SharedUpdate, skip_version: String, ctx: egui::Context
     });
 }
 
-/// `a` newer than `b`, comparing dotted numeric components (pre-release suffixes
-/// after '-' are ignored).
 fn is_newer(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u64> {
         v.split('.').map(|p| p.split('-').next().unwrap_or("").parse::<u64>().unwrap_or(0)).collect()
@@ -96,8 +80,6 @@ fn is_newer(a: &str, b: &str) -> bool {
     parse(a) > parse(b)
 }
 
-/// Download the new binary and replace the running executable. The user should
-/// restart afterwards.
 pub fn download_and_replace(asset_api_url: &str) -> anyhow::Result<()> {
     use anyhow::Context;
     let client = reqwest::blocking::Client::builder()
@@ -133,7 +115,6 @@ pub fn download_and_replace(asset_api_url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Remove a leftover ".old" binary from a previous Windows self-update.
 pub fn cleanup_old() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_extension("old"));

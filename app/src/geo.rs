@@ -1,9 +1,3 @@
-//! Solar-system geography: name lookup + jump-distance over the SDE graph.
-//!
-//! Used by the intel parser (system detection, movement distance) and — later —
-//! by the battle-report clustering ("within N jumps"). Jump bridges will extend
-//! the adjacency once that feature lands (docs/DESIGN.md §7.2 A1).
-
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug)]
@@ -13,13 +7,9 @@ pub struct SystemInfo {
     pub security: f64,
     pub constellation: String,
     pub region: String,
-    /// NPC faction (sovereignty / rats), empty for unclaimed systems.
     pub faction: String,
 }
 
-/// Whether a solar-system id is a J-space wormhole system. EVE assigns wormhole systems ids in the
-/// 31,000,000-31,999,999 range (k-space is 30,000,000-30,999,999). Wormhole systems have no
-/// stargates, so they never appear in the jump graph.
 pub fn is_wormhole_system(id: i64) -> bool {
     (31_000_000..32_000_000).contains(&id)
 }
@@ -27,11 +17,8 @@ pub fn is_wormhole_system(id: i64) -> bool {
 pub struct Systems {
     by_name: HashMap<String, SystemInfo>,
     by_id: HashMap<i64, SystemInfo>,
-    /// Gate + jump-bridge edges.
     adjacency: HashMap<i64, Vec<i64>>,
-    /// Gate-only edges (no jump bridges) — for distances enemies can actually travel.
     gate_adjacency: HashMap<i64, Vec<i64>>,
-    /// Stargate positions per system (meters, system-local) for on-gate kill detection.
     stargates: HashMap<i64, Vec<[f64; 3]>>,
 }
 
@@ -48,14 +35,12 @@ impl Systems {
         }
     }
 
-    /// Install stargate positions (from the SDE) for on-gate detection.
     pub fn set_stargates(&mut self, stargates: HashMap<i64, Vec<[f64; 3]>>) {
         self.stargates = stargates;
     }
 
-    /// True if `pos` is within ~150 km of any stargate in `system` (an "on-gate" kill).
     pub fn on_gate(&self, system: i64, pos: [f64; 3]) -> bool {
-        const ON_GATE_M: f64 = 150_000.0; // ~150 km — gate-camp grid
+        const ON_GATE_M: f64 = 150_000.0;
         self.stargates.get(&system).is_some_and(|gates| {
             gates.iter().any(|g| {
                 let d2 = (g[0] - pos[0]).powi(2)
@@ -66,29 +51,23 @@ impl Systems {
         })
     }
 
-    /// Look up a system by id.
     pub fn info_of(&self, id: i64) -> Option<&SystemInfo> {
         self.by_id.get(&id)
     }
 
-    /// Adjacent systems (gate + bridge neighbours).
     pub fn neighbors(&self, id: i64) -> &[i64] {
         self.adjacency.get(&id).map_or(&[], |v| v.as_slice())
     }
 
-    /// Adjacent systems over stargates only (no jump bridges).
     pub fn neighbors_gates_only(&self, id: i64) -> &[i64] {
         self.gate_adjacency.get(&id).map_or(&[], |v| v.as_slice())
     }
 
-    /// Whether the edge a↔b is a jump bridge (an adjacency that isn't a gate).
     pub fn is_bridge(&self, a: i64, b: i64) -> bool {
         self.adjacency.get(&a).is_some_and(|v| v.contains(&b))
             && !self.gate_adjacency.get(&a).is_some_and(|v| v.contains(&b))
     }
 
-    /// The destination of the jump bridge in `id` (an adjacency that isn't a gate), or
-    /// None if the system has no configured bridge.
     pub fn jump_bridge_dest(&self, id: i64) -> Option<&SystemInfo> {
         let gates = self.gate_adjacency.get(&id);
         self.adjacency
@@ -98,12 +77,8 @@ impl Systems {
             .and_then(|n| self.by_id.get(n))
     }
 
-    /// Add bidirectional jump-bridge edges (configured by the user) so distance and
-    /// battle clustering can travel them like gates.
     pub fn add_bridges(&mut self, pairs: &[(i64, i64)]) {
         for &(a, b) in pairs {
-            // Don't duplicate an edge that already exists as a gate (or another
-            // bridge) — that would list the neighbour twice.
             let av = self.adjacency.entry(a).or_default();
             if !av.contains(&b) {
                 av.push(b);
@@ -115,20 +90,17 @@ impl Systems {
         }
     }
 
-    /// Look up a system by (case-insensitive) name token.
     pub fn lookup(&self, token: &str) -> Option<&SystemInfo> {
         self.by_name.get(&token.to_lowercase())
     }
 
-    /// Resolve an abbreviated null-sec code (e.g. "78-", "C-J") to a system, but
-    /// only when the prefix is unambiguous.
     pub fn lookup_prefix(&self, token: &str) -> Option<&SystemInfo> {
         let t = token.to_lowercase();
         let mut found: Option<&SystemInfo> = None;
         for (name, info) in &self.by_name {
             if name.starts_with(&t) {
                 if found.is_some() {
-                    return None; // ambiguous
+                    return None;
                 }
                 found = Some(info);
             }
@@ -136,7 +108,6 @@ impl Systems {
         found
     }
 
-    /// All region names present in the data, lower-cased (for matching channel MOTDs).
     pub fn region_names(&self) -> std::collections::HashSet<String> {
         self.by_name
             .values()
@@ -145,9 +116,6 @@ impl Systems {
             .collect()
     }
 
-    /// Resolve an ambiguous null-sec prefix by preferring the unique match whose region
-    /// is one of `regions`. A hint only: returns None if zero or several qualify, so an
-    /// out-of-region system is never forced.
     pub fn lookup_prefix_in_regions(&self, token: &str, regions: &[String]) -> Option<&SystemInfo> {
         if regions.is_empty() {
             return None;
@@ -169,14 +137,10 @@ impl Systems {
         found
     }
 
-    /// Shortest jump distance between two systems (0 if equal), or None if
-    /// unreachable within `max_jumps`. Includes jump bridges.
     pub fn jumps(&self, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
         Self::bfs_jumps(&self.adjacency, from, to, max_jumps)
     }
 
-    /// As [`Self::jumps`], but over gate edges only (ignoring jump bridges) — the
-    /// distance a hostile (who can't use your bridges) would actually have to travel.
     pub fn jumps_gates_only(&self, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
         Self::bfs_jumps(&self.gate_adjacency, from, to, max_jumps)
     }
@@ -203,16 +167,10 @@ impl Systems {
         None
     }
 
-    /// Shortest path from `from` to `to` (inclusive of both) over all edges, via BFS.
-    /// Includes jump bridges. Equivalent to an unconstrained [`Self::route`].
     pub fn path(&self, from: i64, to: i64) -> Option<Vec<i64>> {
         self.route(from, to, true, true, |_| true)
     }
 
-    /// Constrained shortest (fewest-jumps) route from `from` to `to`. Intermediate systems
-    /// must satisfy `allowed`; region-crossing stargates and jump bridges can each be toggled
-    /// off. This is the basis of Travel Mode (docs/MAP_MODES.md); ship-jump edges and weighted
-    /// costs come in later phases.
     pub fn route(
         &self,
         from: i64,
@@ -229,7 +187,6 @@ impl Systems {
         let mut queue: VecDeque<i64> = VecDeque::from([from]);
         while let Some(sys) = queue.pop_front() {
             for &n in self.adjacency.get(&sys).into_iter().flatten() {
-                // A non-gate adjacency is a jump bridge; a gate may cross a region boundary.
                 let is_gate = self.gate_adjacency.get(&sys).is_some_and(|g| g.contains(&n));
                 if is_gate {
                     let cross_region =
@@ -269,15 +226,14 @@ mod tests {
 
     #[test]
     fn wormhole_system_ids() {
-        assert!(is_wormhole_system(31_000_005)); // J-space
+        assert!(is_wormhole_system(31_000_005));
         assert!(is_wormhole_system(31_002_238));
-        assert!(!is_wormhole_system(30_000_142)); // Jita (k-space)
-        assert!(!is_wormhole_system(30_002_659)); // Tama (k-space)
+        assert!(!is_wormhole_system(30_000_142));
+        assert!(!is_wormhole_system(30_002_659));
         assert!(!is_wormhole_system(0));
     }
 
     fn line_graph() -> Systems {
-        // A - B - C - D  (ids 1..4)
         let by_name = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
             .into_iter()
             .map(|(n, id)| {
@@ -308,13 +264,12 @@ mod tests {
         assert_eq!(g.jumps(1, 1, 10), Some(0));
         assert_eq!(g.jumps(1, 2, 10), Some(1));
         assert_eq!(g.jumps(1, 4, 10), Some(3));
-        assert_eq!(g.jumps(1, 4, 2), None); // beyond max
-        assert_eq!(g.jumps(1, 99, 10), None); // unknown system
+        assert_eq!(g.jumps(1, 4, 2), None);
+        assert_eq!(g.jumps(1, 99, 10), None);
     }
 
     #[test]
     fn constrained_route() {
-        // A - B - C - D (ids 1..4); B↔C crosses a region boundary (R1 → R2).
         let mk = |id: i64, region: &str| SystemInfo {
             id,
             name: format!("S{id}"),
@@ -339,9 +294,7 @@ mod tests {
         }
         let g = Systems::new(by_name, adj);
         assert_eq!(g.route(1, 4, true, true, |_| true), Some(vec![1, 2, 3, 4]));
-        // Disallowing region-crossing gates blocks B↔C, with no alternative.
         assert_eq!(g.route(1, 4, false, true, |_| true), None);
-        // A node mask excluding C blocks the only path.
         assert_eq!(g.route(1, 4, true, true, |s| s != 3), None);
         assert_eq!(g.route(2, 2, true, true, |_| true), Some(vec![2]));
     }

@@ -1,8 +1,3 @@
-//! Directional-scan clipboard sharing (docs/WORMHOLES_AND_NEXT.md A9). When the
-//! clipboard holds an in-game d-scan, we offer to upload it to dscan.info and hand
-//! back a shareable link. Nothing is uploaded without the user's click.
-
-/// A distance column value from a d-scan row ("1,234 km", "12.3 AU", "-", "*").
 fn is_distance(s: &str) -> bool {
     let s = s.trim();
     s == "-"
@@ -12,9 +7,6 @@ fn is_distance(s: &str) -> bool {
         || s.ends_with(" m")
 }
 
-/// If `text` looks like an in-game d-scan paste, return the row count. Strict — every
-/// non-empty line must be a tab-separated row ending in a distance — so we don't
-/// prompt on unrelated clipboard contents.
 pub fn looks_like_dscan(text: &str) -> Option<usize> {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     if lines.is_empty() {
@@ -58,11 +50,7 @@ pub fn is_valid_char_name(s: &str) -> bool {
     true
 }
 
-/// If `text` looks like a pasted local member list — at least 3 lines, every one a valid EVE
-/// character name — return the pilot count. Used to also offer the share popup for local.
 pub fn looks_like_local(text: &str) -> Option<usize> {
-    // Take the first tab-separated field of each line as the name, so a copy that carries extra
-    // columns (corp/alliance/standing) still reads as a member list.
     let names: Vec<&str> = text
         .lines()
         .map(|l| l.split('\t').next().unwrap_or(l).trim())
@@ -74,7 +62,6 @@ pub fn looks_like_local(text: &str) -> Option<usize> {
     names.iter().all(|l| is_valid_char_name(l)).then_some(names.len())
 }
 
-/// Upload a d-scan to dscan.info; returns the shareable view URL.
 pub fn upload(text: &str) -> anyhow::Result<String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("eve-spai")
@@ -108,14 +95,12 @@ pub fn parse_dscan_ships_html(body: &str) -> Vec<(String, u32)> {
     let block = &rest[..rest.find("</ul>").unwrap_or(rest.len())];
     let mut out = Vec::new();
     for li in block.split("<li").skip(1) {
-        // Count: the digits right after the badge span's opening tag (`...label-default">14</span>`).
         let count = li
             .find("badge")
             .and_then(|b| li[b..].find('>').map(|g| b + g + 1))
             .map(|s| li[s..].split('<').next().unwrap_or("").trim())
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(1);
-        // Type name: inside the `<b>...</b>`.
         if let Some(b) = li.find("<b>") {
             if let Some(e) = li[b + 3..].find("</b>") {
                 let name = li[b + 3..b + 3 + e].trim();
@@ -134,7 +119,6 @@ mod tests {
 
     #[test]
     fn parses_ships_from_real_dscan_info_page() {
-        // The exact structure dscan.info serves for a populated share (/v/<id>).
         let html = r#"<ul class="list-group" id="ships">
             <li class="list-group-item shipclass27" data-sclid="27">
               <span class="badge label label-default">14</span>
@@ -155,7 +139,6 @@ mod tests {
             ships,
             vec![("Raven".to_owned(), 14), ("Ishtar".to_owned(), 2), ("Crow".to_owned(), 1)]
         );
-        // No ships block (bad id / non-d-scan) yields nothing.
         assert!(parse_dscan_ships_html("<html><body>nope</body></html>").is_empty());
     }
 
@@ -165,9 +148,7 @@ mod tests {
                     67890\tGate\tStargate\t-\n\
                     11111\tProbe\tCore Scanner Probe\t12.3 AU";
         assert_eq!(looks_like_dscan(scan), Some(3));
-        // A trailing blank line is tolerated.
         assert_eq!(looks_like_dscan(&format!("{scan}\n")), Some(3));
-        // Random text / partial tab data is not a d-scan.
         assert_eq!(looks_like_dscan("hello world"), None);
         assert_eq!(looks_like_dscan("a\tb"), None);
         assert_eq!(looks_like_dscan("name\ttype\tno-distance-here"), None);
@@ -177,24 +158,22 @@ mod tests {
     fn valid_char_names() {
         assert!(is_valid_char_name("Death Eater 101"));
         assert!(is_valid_char_name("ji wuming"));
-        assert!(is_valid_char_name("O'Neil")); // apostrophe
-        assert!(is_valid_char_name("Al-Khwarizmi Bin Musa")); // 3 words, hyphen
-        assert!(!is_valid_char_name("ab")); // too short
-        assert!(!is_valid_char_name("a\tb")); // tab (a d-scan row, not a name)
-        assert!(!is_valid_char_name("too  many   spaces")); // double space
-        assert!(!is_valid_char_name("one two three four")); // 4 words
+        assert!(is_valid_char_name("O'Neil"));
+        assert!(is_valid_char_name("Al-Khwarizmi Bin Musa"));
+        assert!(!is_valid_char_name("ab"));
+        assert!(!is_valid_char_name("a\tb"));
+        assert!(!is_valid_char_name("too  many   spaces"));
+        assert!(!is_valid_char_name("one two three four"));
         assert!(!is_valid_char_name("Has=Bad/Chars"));
-        assert!(!is_valid_char_name("ThisFamilyNameWayTooLong")); // family word > 12, 1 word
+        assert!(!is_valid_char_name("ThisFamilyNameWayTooLong"));
     }
 
     #[test]
     fn detects_local_member_list() {
         let local = "Death Eater 101\nji wuming\nO'Neil\nMittani\nThe Mittani";
         assert_eq!(looks_like_local(local), Some(5));
-        // Fewer than 3 lines, or a non-name line, isn't a local list.
         assert_eq!(looks_like_local("Alpha One\nBravo Two"), None);
         assert_eq!(looks_like_local("Alpha One\nBravo Two\nnot a name!!!"), None);
-        // A d-scan is tab-separated, not a local list.
         assert_eq!(looks_like_local("12345\tRifter\tRifter\t1 km\nx\ty\tz\t2 km\na\tb\tc\t3 km"), None);
     }
 }

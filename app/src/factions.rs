@@ -1,7 +1,3 @@
-//! NPC faction id -> name. Used for system NPC sovereignty / rats (from the SDE
-//! system faction), faction-warfare occupiers, and sovereignty-map NPC holders.
-//! Ids are internal only — never displayed.
-
 pub fn name(id: i64) -> &'static str {
     match id {
         500001 => "Caldari State",

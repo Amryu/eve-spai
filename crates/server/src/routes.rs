@@ -28,11 +28,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/br", get(list).post(upload))
         .route("/api/br/mine", get(mine))
         .route("/api/br/{id}", get(fetch_json).delete(delete_report))
-        // Server-rendered HTML directory + viewer (mobile-first, no client framework).
         .route("/br", get(directory))
         .route("/br/{id}", get(viewer))
-        // Hard ceiling on any request body (also rejects an oversize Content-Length
-        // before the body is read), independent of the per-handler checks.
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_compressed))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
@@ -42,7 +39,6 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-/// The body of a successful `POST /api/session` (matches the locked app contract).
 #[derive(serde::Serialize)]
 struct SessionResponse {
     token: String,
@@ -73,8 +69,6 @@ async fn create_session(
     }))
 }
 
-/// True if a present Content-Length is within the compressed cap. A missing length
-/// is allowed here (the RequestBodyLimitLayer still enforces the ceiling).
 pub fn within_compressed_cap(content_length: Option<u64>, cap: usize) -> bool {
     match content_length {
         Some(len) => len <= cap as u64,
@@ -97,7 +91,6 @@ pub struct UploadParams {
     pub unlisted: bool,
 }
 
-/// `POST /api/br` — create a report from a gzipped `BattleReportDoc`.
 async fn upload(
     State(st): State<AppState>,
     SessionIdentity(identity): SessionIdentity,
@@ -105,7 +98,6 @@ async fn upload(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
-    // (1) Reject an oversize declared length.
     let declared = headers
         .get(CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -117,7 +109,6 @@ async fn upload(
         return Err(AppError::PayloadTooLarge);
     }
 
-    // (2) Require gzip.
     let enc = headers.get(CONTENT_ENCODING).and_then(|v| v.to_str().ok()).unwrap_or("");
     if !enc.eq_ignore_ascii_case("gzip") {
         return Err(AppError::UnsupportedMediaType(
@@ -125,16 +116,13 @@ async fn upload(
         ));
     }
 
-    // (3) Bounded decompress (gzip-bomb guard) -> (4) parse -> (5) re-derive.
     let raw = pipeline::decompress_bounded(&body, st.cfg.max_decompressed)
         .map_err(map_pipeline_err)?;
     let mut doc = pipeline::parse_doc(&raw).map_err(map_pipeline_err)?;
     pipeline::rederive(&mut doc);
 
-    // (6) Canonicalize + hash for dedupe.
     let (canonical, sha) = pipeline::canonicalize(&doc).map_err(map_pipeline_err)?;
 
-    // Dedupe: an identical re-upload by the same character returns the existing id.
     if let Some(existing) = sqlx::query_scalar::<_, String>(
         "SELECT id FROM battle_reports WHERE uploader_char_id = $1 AND content_sha256 = $2",
     )
@@ -147,7 +135,6 @@ async fn upload(
         return Ok((StatusCode::OK, Json(CreateResponse { id: existing, url })));
     }
 
-    // (7) Quotas: lifetime total, then rolling-hour window.
     let total: i64 =
         sqlx::query_scalar("SELECT count(*) FROM battle_reports WHERE uploader_char_id = $1")
             .bind(identity.char_id)
@@ -170,7 +157,6 @@ async fn upload(
         return Err(AppError::TooManyRequests);
     }
 
-    // (8) Generate id, (9) insert with (10) columns extracted from the re-derived battle.
     let cols = pipeline::extract_columns(&doc.battle);
     let id = pipeline::generate_id();
     sqlx::query(
@@ -204,7 +190,6 @@ async fn upload(
     Ok((StatusCode::CREATED, Json(CreateResponse { id, url })))
 }
 
-/// `GET /api/br/{id}` (id may carry a `.json` suffix) — the canonical stored doc.
 async fn fetch_json(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -257,7 +242,6 @@ pub struct ListParams {
     pub page: Option<i64>,
 }
 
-/// `GET /api/br` — paginated public listing (unlisted reports excluded).
 async fn list(
     State(st): State<AppState>,
     Query(p): Query<ListParams>,
@@ -301,8 +285,6 @@ async fn list(
     Ok(Json(ReportPage { page, per_page: PER_PAGE, reports }))
 }
 
-/// Apply the shared public-list filters (same semantics as `list`) to a query builder
-/// already started with a `... WHERE unlisted = false` clause.
 fn push_filters(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, p: &ListParams) {
     if let Some(system) = &p.system {
         if !system.is_empty() {
@@ -333,8 +315,6 @@ fn push_filters(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, p: &ListParams) {
     });
 }
 
-/// `GET /br` — server-rendered public directory (HTML). Same filters/sort as the JSON
-/// list; renders cards from the stored doc and reflects every filter in the URL.
 async fn directory(
     State(st): State<AppState>,
     Query(p): Query<ListParams>,
@@ -346,7 +326,6 @@ async fn directory(
         "SELECT id, doc, uploader_name, views FROM battle_reports WHERE unlisted = false",
     );
     push_filters(&mut qb, &p);
-    // Fetch one extra row to know whether a next page exists.
     qb.push(" LIMIT ").push_bind(PER_PAGE + 1).push(" OFFSET ").push_bind(offset);
 
     let rows = qb.build().fetch_all(&st.db).await?;
@@ -355,8 +334,6 @@ async fn directory(
     let mut cards: Vec<CardData> = Vec::new();
     for r in rows.iter().take(PER_PAGE as usize) {
         let value: serde_json::Value = r.get("doc");
-        // A stored doc that no longer deserializes (e.g. a future format) is skipped
-        // rather than failing the whole page.
         if let Ok(doc) = serde_json::from_value::<BattleReportDoc>(value) {
             cards.push(CardData {
                 id: r.get("id"),
@@ -378,9 +355,6 @@ async fn directory(
     Ok(views::directory_page(&cards, &q, page, has_next))
 }
 
-/// `GET /br/{id}` — server-rendered single-report viewer (HTML). Unlisted reports are
-/// reachable by direct id; a missing id renders the themed 404. This human page view is
-/// the real view, so it bumps `views` (IP-throttled, reusing the M3 throttle).
 async fn viewer(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -416,7 +390,6 @@ async fn viewer(
     Ok(views::viewer_page(&data).into_response())
 }
 
-/// `GET /api/br/mine` — the caller's reports, including unlisted.
 async fn mine(
     State(st): State<AppState>,
     SessionIdentity(identity): SessionIdentity,
@@ -433,7 +406,6 @@ async fn mine(
     Ok(Json(ReportPage { page: 1, per_page: rows.len() as i64, reports }))
 }
 
-/// `DELETE /api/br/{id}` — owner-only.
 async fn delete_report(
     State(st): State<AppState>,
     SessionIdentity(identity): SessionIdentity,
@@ -474,7 +446,6 @@ fn row_to_report(r: &sqlx::postgres::PgRow, owner_view: bool) -> ReportRow {
     }
 }
 
-/// Parse a timestamp filter: RFC3339 first, then a bare unix-seconds integer.
 fn parse_ts(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&chrono::Utc));
@@ -501,7 +472,7 @@ mod tests {
         assert!(within_compressed_cap(Some(500), 1024));
         assert!(within_compressed_cap(Some(1024), 1024));
         assert!(!within_compressed_cap(Some(1025), 1024));
-        assert!(within_compressed_cap(None, 1024)); // layer still enforces
+        assert!(within_compressed_cap(None, 1024));
     }
 
     #[test]
@@ -513,17 +484,13 @@ mod tests {
 
     #[test]
     fn list_params_tolerate_empty_numeric_fields() {
-        // A cleared form still submits `min_isk=`/`page=`; these must parse as None,
-        // not 400 ("cannot parse float from empty string").
         let p: ListParams =
             serde_urlencoded::from_str("system=&participant=&min_isk=&page=&sort=newest").unwrap();
         assert_eq!(p.min_isk, None);
         assert_eq!(p.page, None);
-        // Real values still parse.
         let p2: ListParams = serde_urlencoded::from_str("min_isk=1500000&page=2").unwrap();
         assert_eq!(p2.min_isk, Some(1_500_000.0));
         assert_eq!(p2.page, Some(2));
-        // Whitespace-only is also treated as empty.
         let p3: ListParams = serde_urlencoded::from_str("min_isk=%20").unwrap();
         assert_eq!(p3.min_isk, None);
     }

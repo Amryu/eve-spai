@@ -1,9 +1,3 @@
-//! EVE game-log parsing + combat classification (docs/DESIGN.md §7.2 A3).
-//!
-//! Game logs are UTF-8, with lines `[ ts ] (type) message`. We classify the
-//! high-signal combat events worth alerting on: being warp-scrambled/disrupted
-//! (you are tackled) and taking incoming damage (under attack).
-
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -23,13 +17,11 @@ impl CombatKind {
 
 #[derive(Clone, Debug)]
 pub struct GameLogLine {
-    /// EVE timestamp — parsed for future use (event time display).
     #[allow(dead_code)]
     pub time: String,
     pub kind: Option<CombatKind>,
 }
 
-/// Read and classify a game-log file's lines.
 pub fn read(path: &Path) -> Vec<GameLogLine> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -49,7 +41,6 @@ fn parse_line(raw: &str) -> Option<GameLogLine> {
     })
 }
 
-/// Classify a combat line, if it's an alert-worthy event.
 pub fn classify(typ: &str, message: &str) -> Option<CombatKind> {
     let m = message.to_lowercase();
     if m.contains("warp scramble attempt") || m.contains("warp disruption attempt") {
@@ -76,9 +67,7 @@ mod tests {
             classify("combat", "<b>240</b> from <b>Ganker</b> - Hobgoblin - Hits"),
             Some(CombatKind::UnderAttack)
         );
-        // Outgoing damage is not "under attack".
         assert_eq!(classify("combat", "<b>240</b> to <b>Victim</b> - Hits"), None);
-        // Non-combat chatter ignored.
         assert_eq!(classify("notify", "Some hint message"), None);
     }
 

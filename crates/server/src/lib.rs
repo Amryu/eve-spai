@@ -1,8 +1,5 @@
-//! EVE Spai battle-report sharing API server (Linux-only).
-//!
 //! This is its OWN cargo workspace (see `Cargo.toml`'s empty `[workspace]` table) so
 //! the desktop app's cross-platform CI never tries to compile the tokio/axum/sqlx
-//! stack. It shares the battle model with the app through `br-core` (a path dep).
 
 pub mod auth;
 pub mod config;
@@ -23,16 +20,7 @@ use crate::auth::Verifier;
 use crate::config::Config;
 use crate::state::AppState;
 
-/// One-time, idempotent backfill of `search_names` for rows that predate the column
-/// (its migration default is `'{}'`). Re-derives the searchable name set from each row's
-/// stored `doc`, exactly as the insert path does, so already-uploaded reports become
-/// filterable without a re-upload. Safe to run on every startup: once populated a row no
-/// longer matches `cardinality(search_names) = 0`. A doc that fails to deserialize is
-/// logged and skipped (it just stays empty). Non-fatal: a backfill error never blocks
-/// serving. Public so the integration tests can exercise it directly.
 pub async fn backfill_search_names(pool: &PgPool) -> anyhow::Result<()> {
-    // Fetch only the candidate ids first (cheap), then process one doc at a time so memory
-    // stays bounded regardless of how many old rows exist.
     let ids: Vec<String> =
         sqlx::query_scalar("SELECT id FROM battle_reports WHERE cardinality(search_names) = 0")
             .fetch_all(pool)
@@ -69,7 +57,6 @@ pub async fn backfill_search_names(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Connect to Postgres, run migrations, and serve until shutdown.
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
 
@@ -80,8 +67,6 @@ pub async fn run() -> anyhow::Result<()> {
         .context("connecting to Postgres")?;
     sqlx::migrate!("./migrations").run(&pool).await.context("running migrations")?;
 
-    // Backfill searchable names for pre-existing rows. Non-fatal so a transient hiccup
-    // here never stops the server from coming up.
     if let Err(e) = backfill_search_names(&pool).await {
         tracing::error!(error = %e, "search_names backfill failed (continuing)");
     }

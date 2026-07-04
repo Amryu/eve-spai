@@ -1,10 +1,3 @@
-//! Pilot-name resolution (docs/DESIGN.md §7.1 E3 — named characters).
-//!
-//! The intel parser proposes candidate names (Title-Case word runs). We confirm
-//! which are real characters by batch-resolving them against ESI `/universe/ids/`
-//! (exact-name match) on a background thread, caching the verdict so each name is
-//! resolved at most once.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +10,6 @@ const NEG_TTL: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
 
 #[derive(Default)]
 pub struct PilotCache {
-    /// name_lower -> Some(character_id) if a character, None if confirmed not one.
     resolved: HashMap<String, Option<i64>>,
     /// When each negative verdict was recorded, for the NEG_TTL re-check. A negative without
     /// a timestamp (test fixture / preloaded) never expires.
@@ -28,12 +20,7 @@ pub struct PilotCache {
     reverified: std::collections::HashSet<String>,
     queued: std::collections::HashSet<String>,
     queue: VecDeque<String>,
-    /// Confirmed characters that FAILED all activity checks (name-lower) — Phase 2. NOT hidden:
-    /// they are still shown, with an uncertainty "?" so the user can classify them. Re-derived
-    /// every demotion cycle.
     activity_flagged: std::collections::HashSet<String>,
-    /// The user's manual verdicts (name-lower -> hidden): `true` = "not a pilot" (hide it and free
-    /// its tokens), `false` = "real" (always show, clears the uncertainty). Persisted.
     user_verdicts: HashMap<String, bool>,
 }
 
@@ -50,15 +37,10 @@ fn plausible_character_name(name: &str) -> bool {
 }
 
 impl PilotCache {
-    /// Verdict for a name: `Some(Some(id))` = character, `Some(None)` = not a
-    /// character, `None` = not resolved yet.
     pub fn get(&self, name: &str) -> Option<Option<i64>> {
         self.resolved.get(&name.to_lowercase()).copied()
     }
 
-    /// Ids to show as resolved pilots on a card: ESI-confirmed AND not user-hidden (activity-flagged
-    /// pilots are still shown — the UI marks them with a "?"). Also re-queues any still-pending name
-    /// so a visible card keeps resolving (fixes stuck "...").
     pub fn display_ids<'a>(&mut self, names: impl Iterator<Item = &'a str>) -> std::collections::HashMap<String, i64> {
         let mut out = std::collections::HashMap::new();
         for name in names {
@@ -67,15 +49,14 @@ impl PilotCache {
                 Some(Some(id)) if self.user_verdicts.get(&lw).copied() != Some(true) => {
                     out.insert(name.to_string(), id);
                 }
-                Some(Some(_)) => {}       // user-hidden: hide
-                Some(None) => {}          // ESI says not a character
-                None => self.queue(name), // pending: keep it resolving
+                Some(Some(_)) => {}
+                Some(None) => {}
+                None => self.queue(name),
             }
         }
         out
     }
 
-    /// Queue a candidate name for resolution if we haven't seen it.
     pub fn queue(&mut self, name: &str) {
         let lw = name.to_lowercase();
         if self.resolved.contains_key(&lw) || self.queued.contains(&lw) {
@@ -92,8 +73,6 @@ impl PilotCache {
         }
         self.queued.insert(lw);
         self.queue.push_back(name.to_owned());
-        // Bound the backlog (drop the oldest, least-relevant names) so a busy channel
-        // can't starve recent names of resolution.
         while self.queue.len() > 4000 {
             if let Some(old) = self.queue.pop_front() {
                 self.queued.remove(&old.to_lowercase());
@@ -101,25 +80,19 @@ impl PilotCache {
         }
     }
 
-    /// Whether a name's "not a character" verdict has been re-confirmed a second time
-    /// (a stale-free negative). Used by [`cover`] to decide it's safe to split a two-word block.
     pub fn is_reverified(&self, name: &str) -> bool {
         self.reverified.contains(&name.to_lowercase())
     }
 
-    /// Re-queue a name for a FRESH ESI lookup even though it already resolved — used to confirm a
-    /// "not a character" verdict isn't stale before acting on it (splitting a two-word block).
     pub fn force_requeue(&mut self, name: &str) {
         let lw = name.to_lowercase();
         if self.reverified.contains(&lw) || self.queued.contains(&lw) {
-            return; // already re-confirmed, or a re-check is already pending
+            return;
         }
         self.queued.insert(lw);
         self.queue.push_back(name.to_owned());
     }
 
-    /// Pre-load the known (persisted) pilot names so they're recognised at once. Skips any
-    /// poisoned over-length entry that a bad earlier resolution may have persisted.
     pub fn preload(&mut self, known: &HashMap<String, i64>) {
         for (lc, id) in known {
             if !plausible_character_name(lc) {
@@ -129,8 +102,6 @@ impl PilotCache {
         }
     }
 
-    /// Seed non-name verdicts (used by tests to simulate the resolver). Production negatives
-    /// live in-memory with a TTL and aren't preloaded.
     #[allow(dead_code)]
     pub fn preload_negatives(&mut self, names: &[String]) {
         for lc in names {
@@ -138,14 +109,12 @@ impl PilotCache {
         }
     }
 
-    /// Drop negative verdicts older than [`NEG_TTL`] so they are re-queried instead of being
-    /// cached as "not a name" forever. Called periodically by the resolver.
     pub fn expire_negatives(&mut self) {
         let stale: Vec<String> =
             self.neg_at.iter().filter(|(_, t)| t.elapsed() > NEG_TTL).map(|(n, _)| n.clone()).collect();
         for n in stale {
             self.neg_at.remove(&n);
-            self.reverified.remove(&n); // re-verify from scratch after the TTL
+            self.reverified.remove(&n);
             if matches!(self.resolved.get(&n), Some(None)) {
                 self.resolved.remove(&n); // a later positive must stick, so only forget negatives
             }
@@ -163,51 +132,38 @@ impl PilotCache {
             .collect()
     }
 
-    /// Every ESI-confirmed name → id, INCLUDING currently-demoted ones. Retained as part of the
-    /// pilot-cache API; the Phase 2 demotion pass now evaluates only the feed-present pilots
-    /// (see `watcher::demote_pass`) rather than the whole confirmed set.
     #[allow(dead_code)]
     pub fn all_confirmed(&self) -> HashMap<String, i64> {
         self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
     }
 
-    /// Replace the activity-flagged set (Phase 2): confirmed pilots that failed all activity checks.
-    /// Re-derived every evaluation cycle. These are shown with a "?" — not hidden.
     pub fn set_activity_flagged(&mut self, names: std::collections::HashSet<String>) {
         self.activity_flagged = names;
     }
 
-    /// The current activity-flagged set (for the demotion pass to carry forward between cycles).
     pub fn flagged(&self) -> std::collections::HashSet<String> {
         self.activity_flagged.clone()
     }
 
-    /// Whether the user marked this name "not a pilot" (hide it + free its tokens).
     pub fn is_hidden(&self, name: &str) -> bool {
         self.user_verdicts.get(&name.to_lowercase()).copied() == Some(true)
     }
 
-    /// Whether this confirmed pilot is UNCERTAIN: it failed the activity checks and the user hasn't
-    /// classified it yet → shown with a "?" so the user can decide.
     pub fn is_uncertain(&self, name: &str) -> bool {
         let lw = name.to_lowercase();
         self.activity_flagged.contains(&lw) && !self.user_verdicts.contains_key(&lw)
     }
 
-    /// Record a user verdict (`true` = not-a-pilot/hide, `false` = real). The caller persists it.
     pub fn set_verdict(&mut self, name: &str, hidden: bool) {
         self.user_verdicts.insert(name.to_lowercase(), hidden);
     }
 
-    /// Preload persisted user verdicts at startup.
     pub fn preload_verdicts(&mut self, verdicts: impl IntoIterator<Item = (String, bool)>) {
         for (n, h) in verdicts {
             self.user_verdicts.insert(n.to_lowercase(), h);
         }
     }
 
-    /// USER-HIDDEN names (lower-cased) — fed to the parser as `denied` so a name the user marked
-    /// "not a pilot" frees its tokens for keyword/ship/other-pilot detection.
     pub fn denied(&self) -> std::collections::HashSet<String> {
         self.user_verdicts.iter().filter(|(_, &h)| h).map(|(n, _)| n.clone()).collect()
     }
@@ -219,7 +175,7 @@ impl PilotCache {
     /// while any longer span is still pending resolution, so the longest name wins.
     pub fn cover(&self, candidate: &str) -> Vec<String> {
         let words: Vec<&str> = candidate.split_whitespace().collect();
-        let mut claims: Vec<(usize, usize)> = Vec::new(); // (start word, length) of each claim
+        let mut claims: Vec<(usize, usize)> = Vec::new();
         let mut i = 0;
         while i < words.len() {
             // A short bare number is a count ("Ace hodgens 30" = pilot + 30 ships), never a
@@ -242,8 +198,8 @@ impl PilotCache {
                         matched = Some(len);
                         break;
                     }
-                    None => return Vec::new(), // a longer span is still pending — wait
-                    Some(None) => {}           // resolved non-name — try a shorter span
+                    None => return Vec::new(),
+                    Some(None) => {}
                 }
             }
             match matched {
@@ -275,7 +231,7 @@ impl PilotCache {
                 && claims[j + 1].1 == 1
                 && claims[j].0 + claims[j].1 == claims[j + 1].0
             {
-                j += 1; // extend a contiguous single-word run
+                j += 1;
             }
             if claims[k].1 == 1 && j == k + 1 {
                 // Exactly two adjacent singles: almost always ONE two-word name whose pair ESI
@@ -302,8 +258,6 @@ impl PilotCache {
     }
 }
 
-/// 1–3 word sub-spans of a candidate, so the resolver can confirm the real names
-/// inside an over-glued run (EVE names are 1–3 words).
 pub fn name_windows(candidate: &str) -> Vec<String> {
     let words: Vec<&str> = candidate.split_whitespace().collect();
     let mut out = Vec::new();
@@ -324,7 +278,6 @@ pub fn name_windows(candidate: &str) -> Vec<String> {
 
 pub type SharedPilots = Arc<Mutex<PilotCache>>;
 
-/// Background resolver: drains queued names, batch-resolves via ESI, caches.
 pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(client) = reqwest::blocking::Client::builder()
@@ -339,7 +292,7 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
             // more than a stale backlog). 200/batch stays under ESI's limit + timeout.
             let batch: Vec<String> = {
                 let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
-                c.expire_negatives(); // re-query verdicts older than NEG_TTL
+                c.expire_negatives();
                 (0..200).map_while(|_| c.queue.pop_back()).collect()
             };
             if batch.is_empty() {
@@ -354,8 +307,6 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                     let ok = batch.iter().filter(|n| chars.contains_key(&n.to_lowercase())).count();
                     eprintln!("[pilot] resolved {}/{} (queue ~{})", ok, batch.len(), c.queue.len());
                     for name in &batch {
-                        // Resolved (or confirmed not-a-character) — free it from the dedup
-                        // set and record the outcome.
                         let lw = name.to_lowercase();
                         c.queued.remove(&lw);
                         let id = chars.get(&lw).copied();
@@ -371,17 +322,13 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                                 c.reverified.insert(lw);
                             }
                         } else {
-                            c.reverified.remove(&lw); // it's a character after all
+                            c.reverified.remove(&lw);
                             if let (Some(store), Some(cid)) = (&store, id) {
                                 store.add_known_pilot(name, cid);
                             }
                         }
                     }
                 } else {
-                    // Request failed (timeout / rate-limit / network). Re-queue the batch
-                    // for retry rather than dropping it — the names stay in `queued` (so
-                    // intel won't double-add them) but go back on `queue`, so they retry
-                    // after the backoff instead of waiting to be mentioned again.
                     eprintln!(
                         "[pilot] batch failed — re-queued {} names for retry (queue ~{})",
                         batch.len(),
@@ -393,11 +340,9 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                 }
             }
             match &result {
-                // Request failed (timeout/limit/rate) — don't poison the cache; back off.
                 None => std::thread::sleep(std::time::Duration::from_secs(3)),
                 Some(chars) => {
                     if !chars.is_empty() {
-                        // Coalesce: the intel feed only needs ~1fps as names resolve.
                         ctx.request_repaint_after(std::time::Duration::from_millis(1000));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(250));
@@ -407,8 +352,6 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
     });
 }
 
-/// Resolve a batch of exact names; returns the character names that matched
-/// (lower-cased) -> id.
 fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option<HashMap<String, i64>> {
     if names.is_empty() {
         return Some(HashMap::new());
@@ -416,7 +359,6 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
     let resp = match client.post(ESI_IDS).json(names).send() {
         Ok(r) => r,
         Err(e) => {
-            // network / timeout: transient, re-queue the whole batch
             crate::esilog::record(
                 "universe/ids network error",
                 &format!("error: {e}\nbatch size: {}", names.len()),
@@ -425,8 +367,6 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
         }
     };
     let status = resp.status();
-    // Read the raw body as text FIRST, so the EXACT bytes can be logged even on a 200 that yields
-    // zero matches (the "resolved 0/200" mystery); JSON is parsed from this text below.
     let body = resp.text().unwrap_or_default();
     // ESI returns 400 for the WHOLE batch if any single name is invalid (a parser fragment, a
     // too-short/odd token) or the batch is too large. Split to isolate the offender so one bad
@@ -446,7 +386,7 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
             let a = resolve_batch(client, &names[..mid]);
             let b = resolve_batch(client, &names[mid..]);
             return match (a, b) {
-                (None, None) => None, // both halves hit a transient error: re-queue
+                (None, None) => None,
                 (a, b) => {
                     let mut out = a.unwrap_or_default();
                     out.extend(b.unwrap_or_default());
@@ -460,7 +400,6 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
         return Some(HashMap::new());
     }
     if !status.is_success() {
-        // other HTTP error (rate limit 420, 5xx): transient, re-queue — log the raw body.
         crate::esilog::record(
             "universe/ids non-2xx",
             &format!(
@@ -474,7 +413,7 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
     }
     let Some(v) = serde_json::from_str::<serde_json::Value>(&body).ok() else {
         eprintln!("[pilot] ESI /universe/ids request failed for {} names; left unresolved", names.len());
-        return None; // 200 with an unparseable body: transient, re-queue
+        return None;
     };
     let mut out = HashMap::new();
     {
@@ -488,8 +427,6 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
             }
         }
     }
-    // A 200 that matched ZERO characters for a non-trivial batch is the "resolved 0/200" mystery —
-    // log the raw body so the exact ESI response can be inspected.
     if out.is_empty() && names.len() > 5 {
         crate::esilog::record(
             "universe/ids 200 zero matches",
@@ -503,7 +440,6 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
     Some(out)
 }
 
-/// First ~15 names of a batch, for a readable log sample.
 fn name_sample(names: &[String]) -> Vec<&String> {
     names.iter().take(15).collect()
 }
@@ -518,23 +454,20 @@ mod tests {
         c.resolved.insert("bob smith".into(), Some(123));
         c.resolved.insert("ann lee".into(), Some(9));
         c.set_activity_flagged(["bob smith".to_string(), "ann lee".to_string()].into_iter().collect());
-        // Flagged + undecided = uncertain, but still shown.
         assert!(c.is_uncertain("Bob Smith") && c.is_uncertain("Ann Lee"));
         assert_eq!(c.display_ids(["Bob Smith", "Ann Lee"].into_iter()).len(), 2);
-        // The user hides Bob, keeps Ann.
         c.set_verdict("Bob Smith", true);
         c.set_verdict("Ann Lee", false);
-        assert!(c.is_hidden("Bob Smith") && !c.is_uncertain("Bob Smith")); // decided -> not uncertain
+        assert!(c.is_hidden("Bob Smith") && !c.is_uncertain("Bob Smith"));
         assert!(!c.is_hidden("Ann Lee") && !c.is_uncertain("Ann Lee"));
         let ids = c.display_ids(["Bob Smith", "Ann Lee"].into_iter());
-        assert!(!ids.contains_key("Bob Smith") && ids.contains_key("Ann Lee")); // hidden vs shown
-        assert!(c.denied().contains("bob smith") && !c.denied().contains("ann lee")); // hidden -> denied
+        assert!(!ids.contains_key("Bob Smith") && ids.contains_key("Ann Lee"));
+        assert!(c.denied().contains("bob smith") && !c.denied().contains("ann lee"));
     }
 
     #[test]
     fn negative_verdict_expires_after_ttl() {
         let mut c = PilotCache::default();
-        // A timestamped negative older than the TTL is forgotten (re-queried as pending).
         if let Some(past) = std::time::Instant::now()
             .checked_sub(NEG_TTL + std::time::Duration::from_secs(1))
         {
@@ -543,7 +476,6 @@ mod tests {
             c.expire_negatives();
             assert_eq!(c.get("river pixies"), None, "stale negative should be re-queried");
         }
-        // A fresh negative is kept; one with no timestamp (test fixture) never expires.
         c.resolved.insert("real keyword".into(), None);
         c.neg_at.insert("real keyword".into(), std::time::Instant::now());
         c.resolved.insert("fixture".into(), None);
@@ -559,23 +491,19 @@ mod tests {
         c.resolved.insert("flagged pilot".into(), Some(7));
         c.resolved.insert("hidden pilot".into(), Some(8));
         c.resolved.insert("not a char".into(), None);
-        // Flagged = uncertain (still shown); only a user "not a pilot" verdict hides.
         c.set_activity_flagged(std::collections::HashSet::from(["flagged pilot".to_string()]));
         c.set_verdict("hidden pilot", true);
 
         let names = ["Real Pilot", "Flagged Pilot", "Hidden Pilot", "Not A Char", "Pending Pilot"];
         let out = c.display_ids(names.iter().copied());
 
-        // Confirmed names (including the activity-flagged/uncertain one) show with their id.
         assert_eq!(out.get("Real Pilot"), Some(&42));
         assert_eq!(out.get("Flagged Pilot"), Some(&7));
-        // User-hidden, not-a-character, and pending names are all omitted.
         assert!(!out.contains_key("Hidden Pilot"));
         assert!(!out.contains_key("Not A Char"));
         assert!(!out.contains_key("Pending Pilot"));
         assert_eq!(out.len(), 2);
 
-        // The pending name was re-queued so a visible card keeps resolving.
         assert!(c.queued.contains("pending pilot"));
         assert!(c.queue.iter().any(|n| n == "Pending Pilot"));
     }
@@ -583,32 +511,25 @@ mod tests {
     #[test]
     fn cover_splits_glued_names() {
         let mut c = PilotCache::default();
-        // All sub-spans resolved (Some(id) = character, None = not one).
         c.resolved.insert("wwallddo".into(), Some(1));
         c.resolved.insert("lulu uanid".into(), Some(2));
         c.resolved.insert("wwallddo lulu".into(), None);
         c.resolved.insert("wwallddo lulu uanid".into(), None);
         assert_eq!(c.cover("Wwallddo Lulu Uanid"), vec!["Wwallddo", "Lulu Uanid"]);
 
-        // "Amryu Alpha" with "Alpha" a confirmed non-name keeps the real character and drops
-        // the junk word (ESI says "Amryu Alpha" isn't a character, but "Amryu" is).
         c.resolved.insert("amryu".into(), Some(3));
         c.resolved.insert("amryu alpha".into(), None);
         c.resolved.insert("alpha".into(), None);
         assert_eq!(c.cover("Amryu Alpha"), vec!["Amryu"]);
 
-        // A run still pending a longer span defers (empty) rather than shortening.
         assert!(c.cover("Tea ship").is_empty());
     }
 
     #[test]
     fn cover_waits_for_a_longer_pending_name() {
         let mut c = PilotCache::default();
-        // "Yan" is also a real player, but "Yan Fan" is the real name and isn't resolved
-        // yet — the cover must wait, not grab "Yan".
         c.resolved.insert("yan".into(), Some(1));
         assert!(c.cover("Yan Fan Watt").is_empty());
-        // Once the real names resolve and the bridging span is a known non-name, split.
         c.resolved.insert("yan fan".into(), Some(2));
         c.resolved.insert("watt".into(), Some(3));
         c.resolved.insert("yan fan watt".into(), None);
@@ -627,8 +548,6 @@ mod tests {
         ] {
             c.resolved.insert(n.into(), Some(id));
         }
-        // The 3-word spans bridging two names are resolved as non-names (persisted) — the
-        // cover skips them instead of blocking.
         c.resolved.insert("grim iskander felmilia".into(), None);
         c.resolved.insert("ayaka iida ai-0002".into(), None);
         assert_eq!(
@@ -645,11 +564,6 @@ mod tests {
 
     #[test]
     fn cover_claims_name_from_single_space_glue() {
-        // Single-space intel (double-space is only a HINT, so the same line typed with single
-        // spaces must resolve too). The over-length blob a hand-typed line leaves is split by the
-        // ESI name-window cover, which claims the real 1-3 word name and skips every other span
-        // that resolved as a NON-character (a leading/trailing system code, a trailing prose word).
-        // "DUO-51 Roadman HighSec CynoLighter likely" (ship "prospect" already masked):
         let mut c = PilotCache::default();
         c.resolved.insert("roadman highsec cynolighter".into(), Some(100));
         for non in ["duo-51 roadman highsec", "duo-51 roadman", "duo-51", "likely"] {
@@ -659,8 +573,6 @@ mod tests {
             c.cover("DUO-51 Roadman HighSec CynoLighter likely"),
             vec!["Roadman HighSec CynoLighter"]
         );
-        // "Moh Lut 4DS-OI nv core probes": a pilot whose word "Moh" also names a system, glued to a
-        // trailing system code + status stop words, still yields just the pilot.
         let mut c2 = PilotCache::default();
         c2.resolved.insert("moh lut".into(), Some(200));
         for non in [
@@ -684,17 +596,13 @@ mod tests {
     fn cover_skips_trailing_count_number() {
         let mut c = PilotCache::default();
         c.resolved.insert("ace hodgens".into(), Some(1));
-        c.resolved.insert("ace hodgens 30".into(), None); // resolved as a non-name
-        // "30" is a count ("Ace hodgens +30 kikimoras"), not part of the name.
+        c.resolved.insert("ace hodgens 30".into(), None);
         assert_eq!(c.cover("Ace hodgens 30"), vec!["Ace hodgens"]);
     }
 
     #[test]
     fn cover_refuses_adjacent_singles_inside_a_mixed_run() {
         let mut c = PilotCache::default();
-        // "Zantor Thes" carries a (stale/transient) negative, but each word is a confirmed
-        // player and the next pair "Vasiliy Tochilkin" is confirmed. The two adjacent singles
-        // must NOT split into separate pilots — only the genuine pair does.
         c.resolved.insert("zantor".into(), Some(1));
         c.resolved.insert("thes".into(), Some(2));
         c.resolved.insert("vasiliy tochilkin".into(), Some(3));
@@ -710,20 +618,15 @@ mod tests {
     #[test]
     fn cover_keeps_two_word_name_over_two_single_players() {
         let mut c = PilotCache::default();
-        // "Andy" and "Shank" are each real players, but "Andy Shank" is one character. With
-        // the pair confirmed it is taken whole.
         c.resolved.insert("andy".into(), Some(1));
         c.resolved.insert("shank".into(), Some(2));
         c.resolved.insert("andy shank".into(), Some(3));
         assert_eq!(c.cover("Andy Shank"), vec!["Andy Shank"]);
-        // If ESI marks the pair a non-name (stale/partial), never explode it into the two
-        // coincidental singles — prefer the multi-word reading and refuse the split.
         let mut c2 = PilotCache::default();
         c2.resolved.insert("andy".into(), Some(1));
         c2.resolved.insert("shank".into(), Some(2));
         c2.resolved.insert("andy shank".into(), None);
         assert!(c2.cover("Andy Shank").is_empty(), "must not split into two singles");
-        // A genuine glued list still splits — it carries a multi-word name as the anchor.
         let mut c3 = PilotCache::default();
         c3.resolved.insert("redhorn mastro".into(), Some(1));
         c3.resolved.insert("falcon".into(), Some(2));
@@ -738,9 +641,7 @@ mod tests {
         c.resolved.insert("ghost".into(), Some(1));
         c.resolved.insert("magician".into(), Some(2));
         c.resolved.insert("ghost magician".into(), None);
-        // First "not a character" verdict (could be stale) → keep whole, don't split.
         assert!(c.cover("Ghost Magician").is_empty());
-        // Once the negative is re-confirmed (stale-free), it's genuinely two players → split.
         c.reverified.insert("ghost magician".into());
         assert_eq!(
             c.cover("Ghost Magician"),
@@ -751,8 +652,6 @@ mod tests {
     #[test]
     fn cover_splits_three_handles_but_keeps_a_two_word_name() {
         let mut c = PilotCache::default();
-        // Three separately-confirmed handles whose 3-word join ESI rejected as a name: a genuinely
-        // mis-joined list, so surface each.
         for n in ["gliar", "mliarvis", "sliarhia"] {
             c.resolved.insert(n.into(), Some(1));
         }
@@ -763,8 +662,6 @@ mod tests {
             c.cover("Gliar Mliarvis Sliarhia"),
             vec!["Gliar".to_string(), "Mliarvis".to_string(), "Sliarhia".to_string()]
         );
-        // But EXACTLY two adjacent singles stay whole — a likely two-word name ("Zantor Thes")
-        // whose words just happen to be players, kept as the pending blob.
         let mut c2 = PilotCache::default();
         c2.resolved.insert("zantor".into(), Some(1));
         c2.resolved.insert("thes".into(), Some(2));
@@ -775,8 +672,6 @@ mod tests {
     #[test]
     fn cover_keeps_real_name_with_trailing_junk() {
         let mut c = PilotCache::default();
-        // A real name with trailing typos/intel words glued on by the loose run; the cover
-        // keeps the confirmed name and drops the junk once ESI has rejected it.
         c.resolved.insert("tort radeon".into(), Some(1));
         for j in ["tort radeon skywook", "tort radeon skywook tief", "skywook tief", "skywook", "tief"] {
             c.resolved.insert(j.into(), None);
@@ -792,7 +687,6 @@ mod tests {
     #[test]
     fn cover_splits_standing_color_led_run() {
         let mut c = PilotCache::default();
-        // ESI confirms both real names; the glued plain-text run splits cleanly.
         c.resolved.insert("blue randomattac".into(), Some(1));
         c.resolved.insert("redhorn mastro".into(), Some(2));
         c.resolved.insert("blue randomattac redhorn mastro".into(), None);
@@ -805,7 +699,6 @@ mod tests {
 
     #[test]
     fn windows_one_to_three() {
-        // 1-2 char spans are filtered (EVE names are >= 3 chars).
         assert_eq!(name_windows("abc de"), vec!["abc", "abc de"]);
         assert!(name_windows("x").is_empty());
     }
@@ -813,20 +706,17 @@ mod tests {
     #[test]
     fn implausible_names_become_permanent_negatives_never_queued() {
         let mut c = PilotCache::default();
-        // A 4+ word over-glued run: never a character -> immediate negative, not queued, no "...".
         let junk = "Le Van Duc Nguyen Van Minh Phan Van Long";
         c.queue(junk);
         assert_eq!(c.get(junk), Some(None));
         assert!(c.queue.is_empty(), "must not be queued for ESI");
-        // A real 2-word name is queued and stays pending until the resolver answers.
         c.queue("Agent Benson");
         assert_eq!(c.get("Agent Benson"), None);
         assert_eq!(c.queue.len(), 1);
-        // plausibility bounds.
         assert!(plausible_character_name("Bob"));
         assert!(plausible_character_name("Ingrid Dubois"));
         assert!(plausible_character_name("Bob J Smith"));
-        assert!(!plausible_character_name("a")); // too short
-        assert!(!plausible_character_name("one two three four")); // 4 words
+        assert!(!plausible_character_name("a"));
+        assert!(!plausible_character_name("one two three four"));
     }
 }

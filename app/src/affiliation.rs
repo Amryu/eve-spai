@@ -1,7 +1,3 @@
-//! Resolve a character's current corporation + alliance (ESI
-//! `POST /characters/affiliation/`, public) so intel pilot badges and the lookup window can
-//! show corp/alliance logos. Results are cached; only ids not yet known are fetched.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,7 +10,6 @@ pub struct Affil {
     pub alliance: Option<i64>,
     pub corp_name: Option<String>,
     pub alliance_name: Option<String>,
-    /// The character's own name (resolved alongside corp/alliance), for kill-card tooltips.
     pub char_name: Option<String>,
 }
 
@@ -25,7 +20,6 @@ const AFFIL_TTL: i64 = 3600;
 #[derive(Default)]
 pub struct AffilCache {
     map: HashMap<i64, Affil>,
-    /// Unix seconds each id was last resolved, for TTL refresh.
     fetched_at: HashMap<i64, i64>,
     pending: HashSet<i64>,
 }
@@ -33,19 +27,15 @@ pub struct AffilCache {
 pub type SharedAffil = Arc<Mutex<AffilCache>>;
 
 impl AffilCache {
-    /// Known corp/alliance for a character, if resolved.
     pub fn get(&self, id: i64) -> Option<Affil> {
         self.map.get(&id).cloned()
     }
 
-    /// Insert an externally-resolved affiliation (the overlay child has no resolver of its own; the
-    /// main process pushes pre-resolved entries to it). Marks it fresh so `want` won't re-queue it.
     pub fn insert_resolved(&mut self, id: i64, affil: Affil) {
         self.fetched_at.insert(id, chrono::Utc::now().timestamp());
         self.map.insert(id, affil);
     }
 
-    /// Ensure `id` gets resolved (queues it if unknown or its cached value is stale).
     pub fn want(&mut self, id: i64) {
         if id <= 0 {
             return;
@@ -66,7 +56,6 @@ struct AffilResp {
     alliance_id: Option<i64>,
 }
 
-/// Background resolver: batches queued character ids and fills the cache.
 pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(client) = reqwest::blocking::Client::builder()
@@ -95,8 +84,6 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                     .and_then(|r| r.json::<Vec<AffilResp>>());
                 match resp {
                     Ok(list) => {
-                        // Resolve character + corp + alliance ids to names (one /universe/names
-                        // batch) so the pilot badge and kill-card tooltips can show them.
                         let mut ids: Vec<i64> = Vec::new();
                         for a in &list {
                             ids.push(a.character_id);
@@ -124,7 +111,6 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                         got = true;
                     }
                     Err(_) => {
-                        // Re-queue so a transient failure retries next tick.
                         let mut c = cache.lock().unwrap();
                         for id in chunk {
                             c.pending.insert(*id);

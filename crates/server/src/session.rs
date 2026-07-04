@@ -1,13 +1,8 @@
-//! Server-issued session tokens.
-//!
 //! The EVE SSO access token carries write scopes (`write_waypoint`, `write_fittings`)
 //! and is audienced to EVE — not to us. So it is verified exactly ONCE, at the
 //! [`POST /api/session`](crate::routes) mint endpoint, and is never logged or persisted.
 //! Every battle-report call then authenticates with one of OUR own short-lived HS256
 //! tokens, audienced to `eve-spai.com` and carrying no EVE scopes.
-//!
-//! [`SessionIssuer`] signs them; [`SessionVerifier`] (and the [`SessionIdentity`]
-//! extractor) validate them and yield the same [`Identity`] the BR handlers already use.
 
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
@@ -24,20 +19,16 @@ use crate::state::AppState;
 pub const SESSION_ISS: &str = "eve-spai.com";
 pub const SESSION_AUD: &str = "eve-spai.com";
 
-/// Claims in OUR session token. `iss`/`aud`/`exp` are enforced by jsonwebtoken at
-/// decode time (see [`SessionVerifier::new`]); `sub`/`name` carry the identity.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionClaims {
     pub iss: String,
     pub aud: String,
-    /// Character id as a string (JWT `sub` is conventionally a string).
     pub sub: String,
     pub name: String,
     pub exp: i64,
     pub iat: i64,
 }
 
-/// Signs short-lived HS256 session tokens.
 #[derive(Clone)]
 pub struct SessionIssuer {
     key: EncodingKey,
@@ -49,7 +40,6 @@ impl SessionIssuer {
         Self { key: EncodingKey::from_secret(secret), ttl_secs }
     }
 
-    /// Mint a token for `id`. Returns the compact JWT and its `exp` (unix seconds).
     pub fn issue(&self, id: &Identity) -> anyhow::Result<(String, i64)> {
         let now = chrono::Utc::now().timestamp();
         let exp = now + self.ttl_secs;
@@ -66,7 +56,6 @@ impl SessionIssuer {
     }
 }
 
-/// Validates OUR session tokens: HS256 signature + `iss` + `aud` + `exp`.
 pub struct SessionVerifier {
     key: DecodingKey,
     validation: Validation,
@@ -81,7 +70,6 @@ impl SessionVerifier {
         Self { key: DecodingKey::from_secret(secret), validation }
     }
 
-    /// Verify a session token and extract its identity, or fail with a 401.
     pub fn verify(&self, token: &str) -> Result<Identity, AppError> {
         let data = decode::<SessionClaims>(token, &self.key, &self.validation)
             .map_err(|e| AppError::Unauthorized(e.to_string()))?;
@@ -94,7 +82,6 @@ impl SessionVerifier {
     }
 }
 
-/// Pull the raw bearer token out of an `Authorization: Bearer <jwt>` header.
 pub fn bearer(headers: &HeaderMap) -> Result<&str, AppError> {
     headers
         .get(AUTHORIZATION)
@@ -157,13 +144,10 @@ mod tests {
 
     #[test]
     fn expired_token_rejected() {
-        // Negative TTL -> already expired.
         let (tok, _) = issuer(-3600).issue(&id()).unwrap();
         assert!(verifier().verify(&tok).is_err());
     }
 
-    /// Hand-roll an HS256 token signed with our secret but with the wrong `iss`/`aud`,
-    /// proving the verifier rejects a correctly-signed token aimed elsewhere.
     fn sign_claims(claims: serde_json::Value) -> String {
         encode(
             &Header::new(Algorithm::HS256),

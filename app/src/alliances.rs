@@ -1,9 +1,3 @@
-//! Alliance shorthands used in intel chat → canonical name + alliance id, so a
-//! mention like "frat" or "init" can show the alliance's logo on the intel card.
-//! IDs resolved from ESI (`/universe/ids/`).
-
-/// (shorthand tokens, canonical name, alliance id). Shorthands are matched as whole,
-/// lower-cased tokens.
 const ALLIANCES: &[(&[&str], &str, i64)] = &[
     (&["frat", "frt", "fraternity"], "Fraternity.", 99003581),
     (&["init", "initiative"], "The Initiative.", 1900696668),
@@ -17,10 +11,9 @@ const ALLIANCES: &[(&[&str], &str, i64)] = &[
     (&["shadow", "scl"], "Shadow Cartel", 495729389),
     (&["bastion"], "The Bastion", 99004425),
     (&["xdeath", "xxdeathxx", "deth"], "Legion of xXDEATHXx", 1411711376),
-    (&["uni", "euni", "e-uni"], "EVE University", 937872513), // alliance: Ivy League
+    (&["uni", "euni", "e-uni"], "EVE University", 937872513),
 ];
 
-/// Look up an alliance by one of its shorthands → (canonical name, id).
 pub fn lookup(token: &str) -> Option<(&'static str, i64)> {
     let t = token.to_lowercase();
     ALLIANCES

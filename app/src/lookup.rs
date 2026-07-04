@@ -1,20 +1,10 @@
-//! Built-in pilot lookup (docs/DESIGN.md §9b).
-//!
-//! Resolves a character name to its id (ESI), pulls recent **losses** from
-//! zKillboard, and fetches each killmail (ship + fitted items) from ESI. The UI
-//! aggregates which hulls the pilot flies and reconstructs their fits.
-
 use std::sync::{Arc, Mutex};
 
 const ESI: &str = "https://esi.evetech.net/latest";
 const ZKILL: &str = "https://zkillboard.com/api";
-/// Cap killmails resolved per category per lookup (keep zKill/ESI load gentle, but more
-/// than the last 50 the basic API returns).
 const MAX_KILLS: usize = 75;
-/// At most this many zKill pages (200 each) per category.
 const MAX_PAGES: i64 = 2;
 
-/// A fitted/cargo item from a killmail.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Item {
     pub type_id: i64,
@@ -22,7 +12,6 @@ pub struct Item {
     pub qty: i64,
 }
 
-/// Slot group an item flag belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
     High,
@@ -42,12 +31,11 @@ pub fn slot_of(flag: i64) -> Slot {
         92..=94 => Slot::Rig,
         125..=132 => Slot::Subsystem,
         5 => Slot::Cargo,
-        87 => Slot::Cargo, // drone bay
+        87 => Slot::Cargo,
         _ => Slot::Other,
     }
 }
 
-/// One lost ship (a killmail) with its fit.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Loss {
     pub killmail_id: i64,
@@ -60,8 +48,6 @@ pub struct Loss {
 }
 
 impl Loss {
-    /// Type ids fitted in high/mid/low/rig/subsystem slots, sorted — the fit's
-    /// identity for grouping (cargo ignored).
     pub fn signature(&self) -> Vec<i64> {
         let mut v: Vec<i64> = self
             .items
@@ -78,13 +64,9 @@ impl Loss {
 pub struct PilotReport {
     pub name: String,
     pub character_id: i64,
-    /// Recent losses, newest first.
     pub losses: Vec<Loss>,
-    /// Recent kills (the pilot was an attacker), newest first.
     pub kills: Vec<Loss>,
-    /// Recent solo kills, newest first.
     pub solo: Vec<Loss>,
-    /// Still fetching categories in the background.
     pub loading: bool,
 }
 
@@ -99,7 +81,6 @@ pub enum LookupState {
 
 pub type SharedLookup = Arc<Mutex<LookupState>>;
 
-/// On-disk cache path for a character's lookup result.
 fn cache_path(character_id: i64) -> Option<std::path::PathBuf> {
     let dir = crate::store::data_dir().ok()?.join("lookup");
     let _ = std::fs::create_dir_all(&dir);
@@ -119,7 +100,6 @@ fn save_cache(report: &PilotReport) {
     }
 }
 
-/// Newest `new` entries followed by the `cached` ones, capped so the cache stays bounded.
 fn combine(new: &[Loss], cached: &[Loss]) -> Vec<Loss> {
     let mut v = new.to_vec();
     v.extend_from_slice(cached);
@@ -127,15 +107,11 @@ fn combine(new: &[Loss], cached: &[Loss]) -> Vec<Loss> {
     v
 }
 
-/// Look up `name`: show the cached result instantly, then fetch only newer killmails (per
-/// category, in parallel) and merge, persisting the result for next time.
 pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     let name = name.trim().to_owned();
     if name.is_empty() {
         return;
     }
-    // Re-clicking the same pilot must not restart the zKill fetch: if it's already loading or
-    // loaded for this name, keep what we have.
     {
         let cur = state.lock().unwrap();
         let same = match &*cur {
@@ -170,7 +146,6 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
                 return;
             }
         };
-        // Show the cached report immediately (faster re-lookup), then refresh.
         let base = load_cache(character_id).unwrap_or_else(|| PilotReport {
             name: resolved.clone(),
             character_id,
@@ -225,8 +200,6 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     });
 }
 
-/// Fetch a zKill category's **newer** killmails (stopping at the first already-cached id),
-/// merging onto `cached`. `on_batch` gets the merged list as it grows.
 fn fetch_category(
     client: &reqwest::blocking::Client,
     character_id: i64,
@@ -255,7 +228,7 @@ fn fetch_category(
         for km in &entries {
             let Some(id) = km.get("killmail_id").and_then(|v| v.as_i64()) else { continue };
             if known.contains(&id) {
-                break 'pages; // reached already-cached killmails
+                break 'pages;
             }
             if new.len() >= MAX_KILLS {
                 break 'pages;
@@ -282,7 +255,6 @@ fn fetch_category(
     on_batch(&combine(&new, cached));
 }
 
-/// Resolve a character name to (id, canonical name) via ESI.
 fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, String), String> {
     let body: serde_json::Value = client
         .post(format!("{ESI}/universe/ids/"))
@@ -302,9 +274,6 @@ fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, 
         .ok_or_else(|| format!("No character named \"{name}\""))
 }
 
-/// Fetch a solar system's recent kills (newest first) for the system-info window. Reuses the
-/// `PilotReport.kills` list so the existing `km_list` renderer (badges, skips, click-to-fit)
-/// can show them.
 pub fn spawn_system_kills(system_id: i64, state: SharedLookup, ctx: egui::Context) {
     *state.lock().unwrap() = LookupState::Loading(format!("system {system_id}"));
     ctx.request_repaint();
@@ -366,7 +335,6 @@ pub fn spawn_system_kills(system_id: i64, state: SharedLookup, ctx: egui::Contex
     });
 }
 
-/// Fetch a killmail and reconstruct the (victim) ship + its fit.
 fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str, value: f64) -> Option<Loss> {
     let km: serde_json::Value = client
         .get(format!("{ESI}/killmails/{id}/{hash}/"))
@@ -401,7 +369,6 @@ fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str, value: f64)
     Some(Loss { killmail_id: id, hash: hash.to_owned(), time, ship_type_id, system_id, value, items })
 }
 
-/// Bulk-resolve type ids to names via ESI `/universe/names` (≤1000 per call).
 pub fn resolve_type_names(ids: &[i64]) -> std::collections::HashMap<i64, String> {
     let mut out = std::collections::HashMap::new();
     // /universe/names rejects duplicate ids (HTTP 400) — dedup first.

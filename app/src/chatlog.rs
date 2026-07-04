@@ -1,29 +1,19 @@
-//! Parsing EVE Online chat-log files.
-//!
-//! EVE writes chat logs as UTF-16LE text. Each file starts with a header block of
-//! `Key: value` lines (Channel Name, Listener, Session started, …) and message
-//! lines of the form `[ YYYY.MM.DD HH:MM:SS ] Author > message`. Every line is
-//! prefixed with a U+FEFF BOM, which we strip. These are EVE's static formats.
-
 use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub struct ChatMeta {
     pub channel: String,
-    /// The character whose client wrote the log (used for local-system tracking later).
     #[allow(dead_code)]
     pub listener: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
-    /// Raw EVE timestamp, e.g. "2026.06.22 18:30:45" (EVE/UTC).
     pub timestamp: String,
     pub author: String,
     pub text: String,
 }
 
-/// Read and parse a chat-log file. Returns metadata + all message lines.
 pub fn read(path: &Path) -> Option<(ChatMeta, Vec<ChatMessage>)> {
     let bytes = std::fs::read(path).ok()?;
     parse(&decode_utf16le(&bytes))
@@ -62,7 +52,6 @@ fn parse(text: &str) -> Option<(ChatMeta, Vec<ChatMessage>)> {
     ))
 }
 
-/// Parse one message line: `[ 2026.06.22 18:30:45 ] Author > message`.
 fn parse_message(line: &str) -> Option<ChatMessage> {
     let line = line.strip_prefix("[ ")?;
     let (timestamp, rest) = line.split_once(" ] ")?;

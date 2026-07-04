@@ -1,6 +1,3 @@
-//! The HTTP error type. Every handler returns `Result<T, AppError>`; the
-//! `IntoResponse` impl maps each variant to a status code and a small JSON body.
-
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;

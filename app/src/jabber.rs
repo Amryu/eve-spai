@@ -1,22 +1,12 @@
-//! Embedded XMPP client for fleet pings (Imperium / jabber-server.goonfleet.com).
-//!
-//! Runs a single-threaded tokio runtime on a background thread, connects over
-//! STARTTLS, and watches 1:1 chats from `directorbot` for fleet pings. Parsed pings
-//! and connection state are published via [`SharedJabber`]; the app drains new
-//! pings each frame (for the Pings view and the alert framework).
-
 use std::sync::{Arc, Mutex};
 
 use crate::pings::Ping;
 
-/// The Jabber localpart that broadcasts fleet pings.
 const PING_SENDER: &str = "directorbot";
-/// Notification key for the fleet-ping feed (not a real JID).
 pub const PING_FEED_KEY: &str = "__pings__";
 
 const KEYCHAIN_SERVICE: &str = "eve-spai-jabber";
 
-/// Store the Jabber password in the OS keychain (keyed by JID).
 pub fn save_password(jid: &str, password: &str) -> anyhow::Result<()> {
     use anyhow::Context;
     keyring::Entry::new(KEYCHAIN_SERVICE, jid)
@@ -26,47 +16,39 @@ pub fn save_password(jid: &str, password: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Read the Jabber password from the keychain, if present.
 pub fn load_password(jid: &str) -> Option<String> {
     keyring::Entry::new(KEYCHAIN_SERVICE, jid).ok()?.get_password().ok()
 }
 
-/// Whether a password is stored for this JID.
 pub fn has_password(jid: &str) -> bool {
     load_password(jid).is_some()
 }
 
-/// A chat message (1:1 or room), as shown in the Jabber view.
 #[derive(Clone, Debug)]
 pub struct ChatMsg {
     pub from: String,
     pub body: String,
-    #[allow(dead_code)] // kept for future timestamping in the chat UI
+    #[allow(dead_code)]
     pub time: i64,
     pub outgoing: bool,
 }
 
-/// A roster contact.
 #[derive(Clone, Debug)]
 pub struct Contact {
-    #[allow(dead_code)] // the map key is the JID; this mirrors it for convenience
+    #[allow(dead_code)]
     pub jid: String,
     pub name: Option<String>,
-    /// Roster groups the server places this contact in (e.g. "Directors").
     pub groups: Vec<String>,
     pub presence: Presence,
-    /// Free-text status message, if the contact set one.
     pub status_text: String,
 }
 
-/// A contact's availability, from their presence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Presence {
     #[default]
     Offline,
     Online,
     Away,
-    /// Extended away.
     Xa,
     Dnd,
 }
@@ -81,7 +63,6 @@ impl Presence {
             Presence::Dnd => "Do not disturb",
         }
     }
-    /// Dot colour (R, G, B).
     pub fn color(self) -> (u8, u8, u8) {
         match self {
             Presence::Online => (0x4C, 0xC2, 0x6A),
@@ -95,21 +76,14 @@ impl Presence {
     }
 }
 
-/// Commands sent from the UI to the background client.
 pub enum Cmd {
     Send { to: String, body: String },
-    /// Send a groupchat message to a joined room.
     SendRoom { room: String, body: String },
-    /// Join a multi-user chat room (bare room JID).
     JoinRoom { room: String },
-    /// Leave a joined room.
     LeaveRoom { room: String },
-    /// Set our own availability + status text.
     SetPresence { show: Presence, status: String },
 }
 
-/// Snapshot of the notification settings the UI publishes each frame, so the background client
-/// thread can fire sounds + desktop notifications itself (working while the window is minimized).
 #[derive(Clone, Default)]
 pub struct JabberNotifyCfg {
     pub sound_enabled: bool,
@@ -121,32 +95,18 @@ pub struct JabberNotifyCfg {
 
 #[derive(Default)]
 pub struct JabberState {
-    /// The user wants the connection up (cleared to stop the background loop).
     pub enabled: bool,
-    /// A background client thread is alive.
     pub running: bool,
     pub connected: bool,
-    /// Human-readable status / last error.
     pub status: String,
-    /// Roster contacts (bare JID → contact).
     pub roster: std::collections::BTreeMap<String, Contact>,
-    /// Latest presence per bare JID, kept independently of the roster so a presence
-    /// that arrives before (or without) a roster entry is never lost.
     pub presences: std::collections::BTreeMap<String, (Presence, String)>,
-    /// Currently-joined MUC rooms (bare room JID).
     pub rooms: std::collections::BTreeSet<String>,
-    /// New arrivals awaiting a notification sound/badge: (key, is_ping). Drained by
-    /// the UI thread (which knows the mute settings).
     pub notify: Vec<(String, bool)>,
-    /// A new fleet ping arrived and hasn't been viewed.
     pub pings_unread: bool,
-    /// Conversation history keyed by bare JID (1:1) or room JID.
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
-    /// Conversations with unread messages.
     pub unread: std::collections::BTreeSet<String>,
-    /// Parsed fleet pings (oldest first).
     pub pings: Vec<Ping>,
-    /// Notification settings snapshot, refreshed by the UI each frame.
     pub notify_cfg: JabberNotifyCfg,
 }
 
@@ -156,14 +116,10 @@ fn is_muted(muted: &std::collections::BTreeMap<String, i64>, key: &str) -> bool 
         .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
 }
 
-/// Fire the sound + desktop notification for a new arrival OFF the UI thread, so it works while the
-/// window is minimized. `ping` is set for a fleet-ping-feed event (else a 1:1/room message). The
-/// fleet-ping window + unread badge are still raised by the UI when it next paints.
 fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Ping>) {
     if is_muted(&cfg.muted, key) {
         return;
     }
-    // (suppress, notify, sound, sound-priority). Pings outrank plain messages in the cooldown.
     let (suppress, notify, sound, prio) = match ping {
         Some(p) => match crate::pings::match_ping_rule(&cfg.ping_rules, p) {
             Some(r) => (
@@ -172,8 +128,6 @@ fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Pin
                 if r.sound.is_empty() { cfg.ping_sound.clone() } else { r.sound.clone() },
                 1u8,
             ),
-            // No rule matched: alert only when the user has NO rules configured (out-of-box: every
-            // fleet ping sounds). With rules defined, a non-matching ping stays silent.
             None if cfg.ping_rules.is_empty() => (false, true, cfg.ping_sound.clone(), 1u8),
             None => return,
         },
@@ -185,7 +139,6 @@ fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Pin
     if cfg.sound_enabled && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
         crate::sound::play_prio(&sound, prio);
     }
-    // A fleet call also raises a desktop notification with the key details.
     if let Some(Ping::Fleet { fc, doctrine, .. }) = ping.filter(|p| p.is_fleet_call()) {
         let body = match doctrine {
             Some(d) => format!("FC: {fc} \u{00B7} {d}"),
@@ -199,8 +152,6 @@ pub type SharedJabber = Arc<Mutex<JabberState>>;
 pub type Resolver = Arc<dyn Fn(&str) -> Option<i64> + Send + Sync>;
 pub type CmdSender = tokio::sync::mpsc::UnboundedSender<Cmd>;
 
-/// Spawn the background XMPP client. Returns a sender for outgoing commands.
-/// `server` is the host to connect to directly (empty = resolve from the JID).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     jid: String,
@@ -223,16 +174,12 @@ pub fn spawn(
     tx
 }
 
-/// Push a freshly-arrived fleet ping into the deferred fleet-ping viewport's shared state and wake
-/// the child window — done off the UI thread so the window keeps appearing while the main window is
-/// minimized. No-op when the feature is disabled; dedups a re-detection of the same ping.
 fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Context, ping: &Ping) {
     {
         let mut st = ping_shared.lock().unwrap();
         if !st.enabled {
             return;
         }
-        // Newest first; skip a duplicate re-detection of the same ping.
         if st.windows.first().map(|s| &s.ping) == Some(ping) {
             return;
         }
@@ -263,7 +210,6 @@ fn push_msg(
         let mut s = state.lock().unwrap();
         let conv = s.chats.entry(key.to_owned()).or_default();
         conv.push(msg);
-        // Bound in-memory history per conversation (full history stays in the DB).
         let n = conv.len();
         if n > 1000 {
             conv.drain(0..n - 1000);
@@ -276,9 +222,6 @@ fn push_msg(
             None
         }
     };
-    // Fire the message sound off-thread (works while minimized). A directorbot fleet ping also
-    // lands here as a DM; its ping-feed event fires first at higher priority, so play_prio's
-    // cooldown keeps it from double-sounding.
     if let Some(cfg) = fire_cfg {
         fire_arrival_notification(&cfg, key, None);
     }
@@ -332,7 +275,6 @@ async fn run(
             .enable_feature(ClientFeature::ContactList)
             .build();
 
-    // One DB handle for the whole session (persisting pings + conversations).
     let store = crate::store::Store::open().ok();
 
     // tokio-xmpp reconnects transparently, so we simply process events until the user
@@ -369,8 +311,6 @@ async fn run(
                         background = true;
                     }
                 }
-                // Messages/status repaint promptly; presence churn only lazily, so a big
-                // roster's presence flood can't peg the render thread.
                 if urgent {
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 } else if background {
@@ -432,7 +372,6 @@ async fn run(
     state.lock().unwrap().running = false;
 }
 
-/// Map an XMPP presence stanza to our availability enum.
 fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
     use xmpp::parsers::presence::{Show, Type};
     match p.type_ {
@@ -441,9 +380,9 @@ fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
             Some(Show::Away) => Presence::Away,
             Some(Show::Xa) => Presence::Xa,
             Some(Show::Dnd) => Presence::Dnd,
-            _ => Presence::Online, // no <show> or "chat" = available
+            _ => Presence::Online,
         },
-        _ => Presence::Offline, // subscribe/error/etc.
+        _ => Presence::Offline,
     }
 }
 
@@ -456,8 +395,6 @@ fn handle_event(
     store: Option<&crate::store::Store>,
 ) -> bool {
     use xmpp::Event;
-    // Presence/roster churn is background (a big roster floods it); repaint lazily for
-    // those and promptly only for messages / connection changes.
     let urgent = !matches!(
         event,
         Event::Presence(_)
@@ -483,7 +420,6 @@ fn handle_event(
             let jid = item.jid.to_string();
             let groups: Vec<String> = item.groups.iter().map(|g| g.0.clone()).collect();
             let mut s = state.lock().unwrap();
-            // Apply any presence learned before this roster entry existed.
             let known = s.presences.get(&jid).cloned();
             let entry = s.roster.entry(jid.clone()).or_insert_with(|| Contact {
                 jid: jid.clone(),
@@ -502,15 +438,12 @@ fn handle_event(
         Event::ContactRemoved(item) => {
             state.lock().unwrap().roster.remove(&item.jid.to_string());
         }
-        // Raw presence stanzas (escape-hatch): update the contact's availability.
         Event::Presence(p) => {
             if let Some(from) = &p.from {
                 let bare = from.to_bare().to_string();
                 let presence = presence_from(&p);
                 let status = p.statuses.values().next().cloned().unwrap_or_default();
                 let mut s = state.lock().unwrap();
-                // Record it regardless of roster state (it may arrive first), and also
-                // apply it to the contact if we already have one.
                 s.presences.insert(bare.clone(), (presence, status.clone()));
                 if let Some(c) = s.roster.get_mut(&bare) {
                     c.presence = presence;
@@ -532,11 +465,9 @@ fn handle_event(
             // JID here fragmented the thread and hid the incoming DM entirely.
             let key = from.to_bare().to_string();
             let local = key.split('@').next().unwrap_or_default();
-            // directorbot broadcasts are also parsed into fleet pings.
             if local.eq_ignore_ascii_case(PING_SENDER) {
                 let parsed = crate::pings::parse_ping(stamp, &body, resolve);
                 if !parsed.is_empty() {
-                    // Persist indefinitely so pings survive restarts.
                     if let Some(store) = store {
                         for p in &parsed {
                             if let Ok(json) = serde_json::to_string(p) {
@@ -559,12 +490,8 @@ fn handle_event(
                             None
                         }
                     };
-                    // Fire the sound + desktop notification off-thread (works while minimized), and
-                    // push fleet calls into the deferred ping window (also off the UI thread).
                     if let Some((cfg, ping)) = fire {
                         fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping));
-                        // Raise the popup only for an alerting ping (matching, non-suppressed rule;
-                        // or any fleet call when no rules are configured) — same gate as the sound.
                         if crate::pings::ping_alerts(&cfg.ping_rules, &ping) {
                             push_ping_window(ping_shared, ctx, &ping);
                         }

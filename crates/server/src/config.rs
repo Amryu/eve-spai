@@ -1,22 +1,10 @@
-//! Runtime configuration, read from the environment with sane defaults. Only
-//! `DATABASE_URL` is required (and only at startup — the build and unit tests need
-//! no environment at all).
-
-/// EVE's registered application (public PKCE client) — the same id the desktop app
-/// uses (`app/src/auth.rs`). A verified token's `aud` must contain this.
 pub const DEFAULT_CLIENT_ID: &str = "fef96bde615b450bba89c9414962ca38";
-/// EVE's JWKS endpoint (RS256 signing keys).
 pub const DEFAULT_JWKS_URL: &str = "https://login.eveonline.com/oauth/jwks";
 
-/// 1 MiB of compressed upload by default.
 pub const DEFAULT_MAX_COMPRESSED: usize = 1024 * 1024;
-/// 8 MiB of decompressed document by default (gzip-bomb ceiling).
 pub const DEFAULT_MAX_DECOMPRESSED: usize = 8 * 1024 * 1024;
-/// Per-character lifetime report cap.
 pub const DEFAULT_MAX_PER_CHAR: i64 = 1000;
-/// Per-character uploads allowed per rolling hour.
 pub const DEFAULT_UPLOADS_PER_HOUR: i64 = 60;
-/// Default lifetime of an issued session token (24h).
 pub const DEFAULT_SESSION_TTL_SECS: i64 = 86_400;
 
 #[derive(Clone, Debug)]
@@ -30,15 +18,11 @@ pub struct Config {
     pub max_decompressed: usize,
     pub max_per_char: i64,
     pub uploads_per_hour: i64,
-    /// HS256 secret signing OUR session tokens. Required at startup.
     pub session_secret: String,
-    /// Lifetime of an issued session token, in seconds.
     pub session_ttl_secs: i64,
 }
 
 impl Config {
-    /// Build from the environment. Errors if `DATABASE_URL` or `BR_SESSION_SECRET`
-    /// is missing (both are required at startup; the build and unit tests need none).
     pub fn from_env() -> anyhow::Result<Self> {
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
@@ -63,7 +47,6 @@ impl Config {
         })
     }
 
-    /// Canonical public URL for a report id.
     pub fn report_url(&self, id: &str) -> String {
         format!("{}/br/{}", self.public_base_url, id)
     }

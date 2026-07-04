@@ -1,11 +1,3 @@
-//! EVE Spai — entry point.
-//!
-//! M0 scaffold: a single-window egui app with a collapsible "Neocom" nav rail,
-//! a three-colour theme engine, a settings dialog, and SQLite-backed persistence.
-//! No EVE data yet — views are placeholders (see docs/DESIGN.md §10, milestone M0).
-
-// Release builds on Windows are GUI-subsystem so no console window opens alongside the app.
-// Debug keeps the console for eprintln logging.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity;
@@ -61,20 +53,11 @@ mod watcher;
 mod wormholes;
 mod zkill;
 
-/// Whether to request a transparent backbuffer (needed for the see-through map
-/// overlay + click-through idle alert window). On by default; set EVE_SPAI_OPAQUE to
-/// force an opaque surface if a driver mis-presents transparency.
 pub fn transparency_enabled() -> bool {
     std::env::var_os("EVE_SPAI_OPAQUE").is_none()
 }
 
-/// Shared eframe setup used by both the main window and the overlay child, so they pick
-/// the same renderer/backend. Applies the transparency gate, the Windows wgpu renderer,
-/// and the Linux X11-forcing event loop. Callers supply their own pre-built `ViewportBuilder`.
 pub fn base_native_options(mut viewport: egui::ViewportBuilder) -> eframe::NativeOptions {
-    // A transparent backbuffer (gated on the root window) is what lets the map overlay
-    // and idle alert window be see-through / click-through. On by default; force opaque
-    // with EVE_SPAI_OPAQUE if a driver mis-presents transparency.
     if transparency_enabled() {
         viewport = viewport.with_transparent(true);
     }
@@ -107,18 +90,12 @@ pub fn base_native_options(mut viewport: egui::ViewportBuilder) -> eframe::Nativ
     native_options
 }
 
-/// Acquire a process-wide exclusive lock so a second user-launched main instance exits. Returns
-/// false if another instance already holds the lock. On success the lock `File` is leaked
-/// (`Box::leak`) so the OS lock is held for the whole process lifetime — dropping the `File` would
-/// release it. Cross-platform: `fs4` uses `flock(2)` on Unix and `LockFileEx` on Windows. The
-/// overlay child does NOT call this (it must always start as a child of the main).
 fn acquire_single_instance_lock() -> bool {
     let path = match store::data_dir() {
         Ok(dir) => {
             let _ = std::fs::create_dir_all(&dir);
             dir.join("eve-spai.lock")
         }
-        // No data dir: don't block startup over a missing lock file location.
         Err(_) => return true,
     };
     let file = match std::fs::OpenOptions::new().create(true).write(true).open(&path) {
@@ -148,10 +125,6 @@ fn main() -> eframe::Result<()> {
         return overlay::run_overlay();
     }
 
-    // Single-instance guard for the main process: a second user-launched eve-spai does not open
-    // a second window. Instead it asks the already-running primary (over the loopback control
-    // port) to bring its window to the front, then exits quietly. If the primary is not yet
-    // listening / cannot be reached, fall back to the plain quiet exit.
     if !acquire_single_instance_lock() {
         if instance::signal_raise() {
             eprintln!("another instance is running; asked it to raise its window");
@@ -166,8 +139,6 @@ fn main() -> eframe::Result<()> {
     // (otherwise the Jabber TLS handshake panics → "stuck at connecting").
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Warm the bundled English dictionary off-thread so the first intel parse doesn't pay the
-    // ~370k-word decompress on the hot path (see dict.rs).
     std::thread::spawn(dict::preload);
 
     let viewport = egui::ViewportBuilder::default()

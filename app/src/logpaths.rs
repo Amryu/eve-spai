@@ -1,16 +1,9 @@
-//! Locating EVE Online's chat-log directory across platforms.
-//!
-//! The candidate paths below are EVE's own static install locations (Documents,
-//! Steam Proton prefix for app id 8500, the macOS Wine wrapper). A user-set path
-//! in Settings overrides detection.
-
 use std::path::PathBuf;
 
 fn home() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf())
 }
 
-/// Common Steam library roots on Linux (default, Flatpak, alternate share path).
 #[cfg(target_os = "linux")]
 fn steam_libraries(home: &std::path::Path) -> Vec<PathBuf> {
     vec![
@@ -20,7 +13,6 @@ fn steam_libraries(home: &std::path::Path) -> Vec<PathBuf> {
     ]
 }
 
-/// Candidate `EVE/logs` directories for this platform.
 pub fn candidate_log_dirs() -> Vec<PathBuf> {
     let Some(home) = home() else {
         return Vec::new();
@@ -50,8 +42,6 @@ pub fn candidate_log_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Resolve the `Chatlogs` directory: honour a configured path (which may point at
-/// either `EVE/logs` or directly at `Chatlogs`), else auto-detect.
 pub fn chat_logs_dir(configured: &str) -> Option<PathBuf> {
     let configured = configured.trim();
     if !configured.is_empty() {
@@ -71,7 +61,6 @@ pub fn chat_logs_dir(configured: &str) -> Option<PathBuf> {
         .find(|d| d.is_dir())
 }
 
-/// Resolve the `Gamelogs` directory (combat logs), honouring a configured path.
 pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
     let configured = configured.trim();
     if !configured.is_empty() {
@@ -115,7 +104,6 @@ mod tests {
         f.write_all(b"hello").unwrap();
         f.flush().unwrap();
         assert_eq!(real_len(&path), Some(5));
-        // Append through the SAME open handle (as EVE does) and confirm the real size grows.
         f.write_all(b" world").unwrap();
         f.flush().unwrap();
         assert_eq!(real_len(&path), Some(11));

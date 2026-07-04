@@ -1,17 +1,9 @@
-//! Configuration packs — preset intel-channel sets for EVE coalitions
-//! (docs/DESIGN.md §7.2 A8). The channel names and member alliance IDs are static
-//! EVE/coalition facts; applying a pack merges its channels into the user's
-//! intel-channel list.
-
 pub struct ConfigPack {
     pub name: &'static str,
-    /// Distinct intel channel names to watch.
     pub channels: &'static [&'static str],
-    /// Member alliance IDs (coalition membership; also used to group battle sides).
     pub member_alliance_ids: &'static [i64],
 }
 
-/// The coalition an alliance belongs to (by member id), for grouping battle sides.
 pub fn coalition_of(alliance_id: i64) -> Option<&'static str> {
     PACKS
         .iter()

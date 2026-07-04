@@ -1,5 +1,3 @@
-//! Binary entry point: install tracing, then hand off to the library `run`.
-
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]

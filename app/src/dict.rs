@@ -1,16 +1,10 @@
-//! Bundled English dictionary, used to auto-filter single-word lowercase prose words that would
-//! otherwise be queued to ESI as pilot candidates (see `intel::is_lowercaseish` and the single-word
-//! drop in `analyze_ctx`). The wordlist is dwyl/english-words `words_alpha.txt` (~370k words, public
 //! domain / Unlicense), sorted (LC_ALL=C, i.e. byte order — matches `str` Ord for ASCII) and
-//! gzip-compressed at build time. It is decompressed once, lazily, into a sorted slice that is
-//! searched by binary search.
 
 use std::sync::LazyLock;
 
 /// Gzip-compressed, byte-sorted, newline-separated lowercase word list.
 static WORDS_GZ: &[u8] = include_bytes!("../assets/english_words.txt.gz");
 
-/// The decompressed word list as a sorted slice of lowercase words (binary-searchable).
 static DICT: LazyLock<Box<[Box<str>]>> = LazyLock::new(load);
 
 fn load() -> Box<[Box<str>]> {
@@ -22,7 +16,6 @@ fn load() -> Box<[Box<str>]> {
     text.lines().map(Box::<str>::from).collect()
 }
 
-/// Whether `w` is a known basic English word (case-insensitive). The empty string is not a word.
 pub fn is_word(w: &str) -> bool {
     if w.is_empty() {
         return false;
@@ -31,8 +24,6 @@ pub fn is_word(w: &str) -> bool {
     DICT.binary_search_by(|entry| entry.as_ref().cmp(lw.as_str())).is_ok()
 }
 
-/// Force the lazy decompression now (call once at startup, off the UI thread) so the first parse
-/// doesn't pay the ~370k-word decompress on the hot path.
 pub fn preload() {
     LazyLock::force(&DICT);
 }
@@ -46,7 +37,7 @@ mod tests {
         for w in ["time", "running", "worked", "worm", "silent", "hunter", "the", "a"] {
             assert!(is_word(w), "{w} should be a word");
         }
-        assert!(is_word("Time")); // case-insensitive
+        assert!(is_word("Time"));
         assert!(is_word("RUNNING"));
     }
 

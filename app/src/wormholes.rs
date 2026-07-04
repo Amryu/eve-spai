@@ -1,18 +1,10 @@
-//! Wormhole tracking (docs/WORMHOLES_AND_NEXT.md). A wormhole is a transient
-//! connection located in a system, seeded from EVE-Scout (Thera/Turnur) and from
-//! intel-channel reports. Lifetimes are bounded (2 days, 1 for drifters), so expired
-//! entries are pruned.
-
 const DAY: i64 = 86_400;
 
-/// Where a wormhole leads. Either a space *class* (we don't know the exact system),
-/// the special hubs Thera/Turnur, or a specific scouted system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DestClass {
     Highsec,
     Lowsec,
     Nullsec,
-    /// J-space / unknown wormhole space (a "disconnected" system).
     Wspace,
     Thera,
     Turnur,
@@ -20,7 +12,6 @@ pub enum DestClass {
 }
 
 impl DestClass {
-    /// Short tag stored in the DB.
     pub fn code(self) -> &'static str {
         match self {
             DestClass::Highsec => "hs",
@@ -58,7 +49,6 @@ impl DestClass {
     }
 }
 
-/// Largest hull that can transit, smallest → largest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShipSize {
     Frigate,
@@ -82,7 +72,6 @@ impl ShipSize {
             "frigate" | "small" => Some(ShipSize::Frigate),
             "medium" => Some(ShipSize::Medium),
             "large" => Some(ShipSize::Large),
-            // EVE-Scout reports caps as "capital"/"xlarge".
             "xlarge" | "capital" => Some(ShipSize::XLarge),
             _ => None,
         }
@@ -131,12 +120,6 @@ impl Source {
     }
 }
 
-// --- Static wormhole-type catalogue ----------------------------------------
-
-/// A wormhole signature code and what it nominally tells us. `dest`/`size` are the
-/// type's nominal attributes (the real destination can be more specific once
-/// scouted, and is `Unknown` for codes that vary, like K162 / k-space / LS-NS holes).
-/// Sourced from the EVE University wiki (`Wormhole_attributes`).
 pub struct Wh(pub &'static str, pub DestClass, pub Option<ShipSize>, pub bool);
 
 impl Wh {
@@ -151,13 +134,11 @@ impl Wh {
     }
 }
 
-/// Look up a wormhole code (case-insensitive); `None` if it isn't a known code.
 pub fn lookup_type(code: &str) -> Option<&'static Wh> {
     let code = code.trim();
     WH_TYPES.iter().find(|w| w.0.eq_ignore_ascii_case(code))
 }
 
-/// Is this token a valid wormhole signature code (e.g. "K162")?
 pub fn is_wh_code(token: &str) -> bool {
     lookup_type(token).is_some()
 }
@@ -264,8 +245,6 @@ pub static WH_TYPES: &[Wh] = &[
     Wh("Z971", DestClass::Wspace, Some(ShipSize::Medium), false),
 ];
 
-/// Source authority: a fact from a higher-ranked source is never overwritten by a
-/// lower one (EVE-Scout > manual > intel).
 fn rank(s: Source) -> u8 {
     match s {
         Source::EveScout => 2,
@@ -274,34 +253,25 @@ fn rank(s: Source) -> u8 {
     }
 }
 
-/// One known wormhole *connection*. It has two endpoints — the near side (where we
-/// primarily know it) and the far side — so a hole reported from both ends is a
-/// single connection, not two.
 #[derive(Clone, Debug)]
 pub struct Wormhole {
-    /// DB row id (0 before insert).
     pub id: i64,
-    // Near side.
     pub system_id: i64,
     pub signature: Option<String>,
     pub wh_type: Option<String>,
-    // Far side.
     pub dest: DestClass,
     pub dest_system_id: Option<i64>,
     pub dest_signature: Option<String>,
     pub dest_wh_type: Option<String>,
-    // Shared.
     pub size: Option<ShipSize>,
     pub is_drifter: bool,
     pub reported_at: i64,
-    /// Explicit end-of-life if a report gave one; otherwise derived from lifetime.
     pub explicit_expiry: Option<i64>,
     pub source: Source,
     pub updated_at: i64,
 }
 
 impl Wormhole {
-    /// Maximum lifetime in seconds: drifter holes collapse within ~1 h, others ~2 days.
     pub fn max_life_secs(&self) -> i64 {
         if self.is_drifter {
             3600
@@ -310,7 +280,6 @@ impl Wormhole {
         }
     }
 
-    /// Drifter holes are always Large; otherwise the type's nominal size.
     pub fn effective_size(&self) -> Option<ShipSize> {
         if self.is_drifter {
             Some(ShipSize::Large)
@@ -319,7 +288,6 @@ impl Wormhole {
         }
     }
 
-    /// When the hole is considered gone.
     pub fn expiry(&self) -> i64 {
         self.explicit_expiry.unwrap_or(self.reported_at + self.max_life_secs())
     }
@@ -328,14 +296,11 @@ impl Wormhole {
         now >= self.expiry()
     }
 
-    /// Hours of life remaining (None once expired).
     pub fn hours_left(&self, now: i64) -> Option<i64> {
         let s = self.expiry() - now;
         (s > 0).then(|| (s + 3599) / 3600)
     }
 
-    /// Identity for de-duplication: the near signature pins it exactly; without one we
-    /// fall back to the (system, type, destination) triple.
     pub fn dedup_key(&self) -> String {
         // Normalise the signature to its scan id (the 3-char prefix before the dash),
         // stripping brackets/spaces — so a seeded "ABC-123" and an intel "[ABC]" match.
@@ -360,26 +325,19 @@ impl Wormhole {
         }
     }
 
-    /// Merge another report of the *same near side* into this one. Optional gaps are
-    /// filled; facts from an equal-or-higher source win; a guess never overrides them.
     pub fn merge_from(&mut self, other: &Wormhole) {
         let auth = rank(other.source) >= rank(self.source);
         self.signature = self.signature.take().or_else(|| other.signature.clone());
         self.wh_type = self.wh_type.take().or_else(|| other.wh_type.clone());
-        // Far side (pairs the endpoints).
         self.dest_system_id = self.dest_system_id.or(other.dest_system_id);
         self.dest_signature = self.dest_signature.take().or_else(|| other.dest_signature.clone());
         self.dest_wh_type = self.dest_wh_type.take().or_else(|| other.dest_wh_type.clone());
-        // Destination class: a known class is a fact — only a >= source overrides it,
-        // and a guess only fills an Unknown.
         if !matches!(other.dest, DestClass::Unknown) && (auth || matches!(self.dest, DestClass::Unknown)) {
             self.dest = other.dest;
         }
         self.merge_shared(other);
     }
 
-    /// Merge only the *shared* facts (used when `other` confirms the far side, so its
-    /// near-side detail belongs to a different endpoint and must not be copied here).
     pub fn merge_shared(&mut self, other: &Wormhole) {
         let auth = rank(other.source) >= rank(self.source);
         if other.size.is_some() && (self.size.is_none() || auth) {
@@ -395,7 +353,6 @@ impl Wormhole {
         }
     }
 
-    /// Record the far-side endpoint from a report whose near side matched our far side.
     pub fn confirm_far(&mut self, far: &Wormhole) {
         if self.dest_signature.is_none() {
             self.dest_signature = far.signature.clone();
@@ -406,8 +363,6 @@ impl Wormhole {
         self.merge_shared(far);
     }
 }
-
-// --- EVE-Scout seeding -----------------------------------------------------
 
 const SCOUT_URL: &str = "https://api.eve-scout.com/v2/public/signatures";
 const SCOUT_POLL: std::time::Duration = std::time::Duration::from_secs(300);
@@ -426,7 +381,6 @@ struct ScoutSig {
     created_at: Option<String>,
 }
 
-/// Poll EVE-Scout's public Thera/Turnur signatures into the wormhole store.
 pub fn spawn_scout(ctx: egui::Context) {
     std::thread::spawn(move || {
         let Ok(client) = reqwest::blocking::Client::builder()
@@ -462,8 +416,6 @@ fn scout_to_wormhole(s: &ScoutSig, now: i64) -> Option<Wormhole> {
     if s.signature_type.as_deref() != Some("wormhole") {
         return None;
     }
-    // The hole sits in the connected system (`in_system`) and leads to the hub; we
-    // keep both endpoints (both signatures) so it's one connection.
     let dest = match s.out_system_name.as_deref() {
         Some("Turnur") => DestClass::Turnur,
         _ => DestClass::Thera,
@@ -528,7 +480,7 @@ mod tests {
         let normal = wh(false, 1000);
         assert_eq!(normal.expiry(), 1000 + 2 * DAY);
         let drift = wh(true, 1000);
-        assert_eq!(drift.expiry(), 1000 + 3600); // drifter holes collapse within ~1 h
+        assert_eq!(drift.expiry(), 1000 + 3600);
         assert_eq!(drift.effective_size(), Some(ShipSize::Large));
         assert!(!normal.is_expired(1000 + 3600));
         assert!(drift.is_expired(1000 + 3600));
@@ -547,36 +499,32 @@ mod tests {
     fn dedup_prefers_signature() {
         let mut a = wh(false, 1000);
         a.signature = Some("abc-123".into());
-        // Keyed by the unique 3-char scan id (brackets/suffix normalised away).
         assert_eq!(a.dedup_key(), "30000142|sig:ABC");
-        let b = wh(false, 1000); // no sig
+        let b = wh(false, 1000);
         assert_eq!(b.dedup_key(), "30000142|K162|ns");
     }
 
     #[test]
     fn evescout_facts_win_over_intel() {
-        // EVE-Scout established a Thera connection (Large). Intel later guesses a
-        // different class with no size — the facts must survive.
         let mut fact = wh(false, 1000);
         fact.dest = DestClass::Thera;
         fact.size = Some(ShipSize::Large);
         fact.source = Source::EveScout;
-        let mut guess = wh(false, 2000); // dest Nullsec, no size, Intel
+        let mut guess = wh(false, 2000);
         guess.dest = DestClass::Nullsec;
         fact.merge_from(&guess);
         assert_eq!(fact.dest, DestClass::Thera, "intel must not override the fact");
         assert_eq!(fact.size, Some(ShipSize::Large));
         assert_eq!(fact.source, Source::EveScout);
-        assert_eq!(fact.updated_at, 2000); // freshness still advances
+        assert_eq!(fact.updated_at, 2000);
     }
 
     #[test]
     fn intel_fills_unknown_then_evescout_upgrades() {
-        // Intel-only Unknown destination is filled by a guess, then EVE-Scout wins.
         let mut base = wh(false, 1000);
         base.dest = DestClass::Unknown;
         let mut intel = wh(false, 1500);
-        intel.dest = DestClass::Nullsec; // a guess fills the gap
+        intel.dest = DestClass::Nullsec;
         base.merge_from(&intel);
         assert_eq!(base.dest, DestClass::Nullsec);
         let mut scout = wh(false, 2000);
@@ -584,15 +532,13 @@ mod tests {
         scout.size = Some(ShipSize::XLarge);
         scout.source = Source::EveScout;
         base.merge_from(&scout);
-        assert_eq!(base.dest, DestClass::Thera); // fact overrides the earlier guess
+        assert_eq!(base.dest, DestClass::Thera);
         assert_eq!(base.size, Some(ShipSize::XLarge));
         assert_eq!(base.source, Source::EveScout);
     }
 
     #[test]
     fn confirm_far_pairs_endpoints() {
-        // A connection known from the near side; the far side gets reported and is
-        // recorded as the same connection's far endpoint, not a new one.
         let mut conn = wh(false, 1000);
         conn.system_id = 30000142;
         conn.signature = Some("ABC-123".into());
@@ -605,29 +551,23 @@ mod tests {
         conn.confirm_far(&far);
         assert_eq!(conn.dest_signature.as_deref(), Some("XYZ-789"));
         assert_eq!(conn.dest_wh_type.as_deref(), Some("K162"));
-        // Near side untouched.
         assert_eq!(conn.signature.as_deref(), Some("ABC-123"));
         assert_eq!(conn.system_id, 30000142);
     }
 
     #[test]
     fn wh_catalogue_lookup() {
-        // K162 is the generic exit: known code, no inferable size/destination.
         let k = lookup_type("k162").expect("K162 present");
         assert_eq!(k.dest(), DestClass::Unknown);
         assert!(k.size().is_none());
-        // J377 leads to Turnur, medium (matches the live EVE-Scout sizing).
         let j = lookup_type("J377").unwrap();
         assert_eq!(j.dest(), DestClass::Turnur);
         assert_eq!(j.size(), Some(ShipSize::Medium));
-        // Drifter flag is set for the five drifter holes.
         assert!(lookup_type("B735").unwrap().is_drifter());
         assert!(!lookup_type("N968").unwrap().is_drifter());
-        // Negatives.
         assert!(!is_wh_code("hello"));
         assert!(!is_wh_code("1DQ1"));
         assert!(is_wh_code("e587"));
-        // No duplicate codes.
         let mut codes: Vec<&str> = WH_TYPES.iter().map(|w| w.0).collect();
         codes.sort_unstable();
         let n = codes.len();

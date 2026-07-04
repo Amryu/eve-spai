@@ -1,10 +1,3 @@
-//! OAuth token storage in the OS keychain (docs/DESIGN.md §11 D5).
-//!
-//! Secrets (refresh + access tokens) live in the platform credential store —
-//! Secret Service on Linux, Keychain on macOS, Credential Manager on Windows —
-//! keyed by character id. Only non-secret metadata (name, scopes, expiry) is kept
-//! in the local SQLite DB.
-
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +23,6 @@ pub fn save_refresh(character_id: i64, refresh_token: &str) -> Result<()> {
         .context("writing refresh token to keychain")
 }
 
-/// Load a character's refresh token. Migrates the older `{refresh,access}` JSON blob format
 /// (the next save rewrites it as a plain refresh token).
 pub fn load_refresh(character_id: i64) -> Option<String> {
     let raw = entry(character_id).ok()?.get_password().ok()?;
@@ -40,7 +32,6 @@ pub fn load_refresh(character_id: i64) -> Option<String> {
     }
 }
 
-/// Delete a character's tokens from the keychain (no-op if already absent).
 pub fn delete(character_id: i64) -> Result<()> {
     match entry(character_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

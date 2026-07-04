@@ -1,14 +1,3 @@
-//! DB-backed integration tests, gated on `DATABASE_URL`. Without it every test is a
-//! no-op so `cargo test` stays green with no Postgres. With it (and `--ignored`):
-//!
-//!   docker compose up -d
-//!   export DATABASE_URL=postgres://evespai:evespai@localhost:5433/evespai
-//!   cargo test -- --ignored
-//!
-//! These drive the real axum router over `tower`'s `oneshot`, with a [`Verifier`]
-//! built from an injected JWKS (a throwaway local RSA key) so tokens are signed and
-//! verified end-to-end without touching EVE's network.
-
 use std::io::Write;
 
 use axum::body::{to_bytes, Body};
@@ -59,7 +48,6 @@ QxUVZGDK2388KblxKYy3YTE=\n\
 -----END PRIVATE KEY-----\n";
 const TEST_N: &str = "krxJs5nTBYHV3PMFRqguuw60seKG-Mu_efXvxQ8NtmO1bukJZzrg_cDydwIeU5byEVsBwcf9XgaOZ3_oibtKSvo6jMOEKGhsbG9aRZS32TL4Oqvi7Qn01JKoOcx5dlWVWrOtLjk-E-TD9hJOBWJY_EA6sg-zmDBiEA011hrqvBD_ru3sXd94Bmmn3COehIjowRusfskgVMySkruiJzkR6A4_1GL60ViFExmsM3groN84OYL9pB8B6tOOB3AaRmVxJqwQtT1iLQ6me63ydMg7kDG9i2KW354-nptCQwFLpygUCcySgHD3s4fChzUwXpJExKBqazmD3IBC2wDhDwLKoQ";
 
-// Serializes tests (one shared DB) and gives each a clean slate.
 static LOCK: Mutex<()> = Mutex::const_new(());
 
 fn test_jwks() -> JwkSet {
@@ -152,7 +140,6 @@ fn gzip_doc(doc: &BattleReportDoc) -> Vec<u8> {
     enc.finish().unwrap()
 }
 
-/// Connect, migrate, and truncate. Returns `None` (skip) when `DATABASE_URL` is unset.
 async fn pool() -> Option<PgPool> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new().max_connections(5).connect(&url).await.unwrap();
@@ -166,9 +153,6 @@ fn app(pool: PgPool, cfg: Config) -> axum::Router {
     eve_spai_br::routes::router(AppState::new(pool, verifier, cfg))
 }
 
-/// A router backed by a *lazy* pool that never connects — enough for the auth-layer
-/// tests below (mint and the 401 rejection paths return before any query runs), so they
-/// need no Postgres and run under a plain `cargo test`.
 fn lazy_app() -> axum::Router {
     let cfg = base_config("postgres://u:p@localhost/db".into());
     let pool = PgPoolOptions::new().connect_lazy(&cfg.database_url).unwrap();
@@ -202,8 +186,6 @@ async fn send(
     (status, value)
 }
 
-/// Exchange an EVE token for OUR session token via `POST /api/session`, returning the
-/// session token the protected routes now require.
 async fn mint(app: &axum::Router, char_id: i64, name: &str) -> String {
     let (status, body) = send(app, "POST", "/api/session", Some(&token(char_id, name)), None).await;
     assert_eq!(status, StatusCode::OK, "mint failed: {body:?}");
@@ -224,12 +206,10 @@ async fn upload_fetch_and_list() {
     let id = body["id"].as_str().unwrap().to_string();
     assert!(body["url"].as_str().unwrap().ends_with(&id));
 
-    // Fetch the canonical JSON back; server-derived battle must have 3 kills.
     let (status, doc) = send(&app, "GET", &format!("/api/br/{id}.json"), None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(doc["battle"]["kills"], 3);
 
-    // Appears in the public list.
     let (status, page) = send(&app, "GET", "/api/br", None, None).await;
     assert_eq!(status, StatusCode::OK);
     let ids: Vec<&str> = page["reports"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
@@ -268,7 +248,6 @@ async fn participant_filter_matches_pilots_and_any_alliance() {
     let app = app(pool, base_config(url));
     let tok = mint(&app, 90000010, "Filterer").await;
 
-    // sample_doc: sides "Red Alliance"/"Blue Alliance"; pilots "Victim N"/"Killer N".
     let (status, body) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("Filterable")))).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
     let id = body["id"].as_str().unwrap().to_string();
@@ -277,19 +256,15 @@ async fn participant_filter_matches_pilots_and_any_alliance() {
         page["reports"].as_array().unwrap().iter().any(|r| r["id"].as_str() == Some(id.as_str()))
     };
 
-    // A PILOT name now matches - side_names (the two side labels) never contained pilots.
     let (_, page) = send(&app, "GET", "/api/br?participant=Killer", None, None).await;
     assert!(listed(&page), "pilot-name filter should match the report");
 
-    // Any alliance present in the fight matches via case-insensitive substring.
     let (_, page) = send(&app, "GET", "/api/br?participant=blue", None, None).await;
     assert!(listed(&page), "alliance substring filter should match");
 
-    // An empty term returns everything.
     let (_, page) = send(&app, "GET", "/api/br?participant=", None, None).await;
     assert!(listed(&page), "empty participant term returns all reports");
 
-    // A term present in nothing excludes the report.
     let (_, page) = send(&app, "GET", "/api/br?participant=NobodyHere", None, None).await;
     assert!(!listed(&page), "non-matching term must exclude the report");
 }
@@ -307,7 +282,6 @@ async fn backfill_populates_legacy_search_names() {
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
     let id = body["id"].as_str().unwrap().to_string();
 
-    // Simulate a pre-migration row: blank its search_names, so the pilot filter misses it.
     sqlx::query("UPDATE battle_reports SET search_names = '{}' WHERE id = $1")
         .bind(&id).execute(&pool).await.unwrap();
     let (_, page) = send(&app, "GET", "/api/br?participant=Killer", None, None).await;
@@ -316,8 +290,6 @@ async fn backfill_populates_legacy_search_names() {
         "with blank search_names the pilot filter should miss"
     );
 
-    // Re-run the startup pool() path (migrate is idempotent) and the backfill: the row
-    // becomes filterable again without a re-upload.
     eve_spai_br::backfill_search_names(&pool).await.unwrap();
     let (_, page) = send(&app, "GET", "/api/br?participant=Killer", None, None).await;
     assert!(
@@ -339,19 +311,16 @@ async fn owner_only_delete() {
     let (_, body) = send(&app, "POST", "/api/br", Some(&owner), Some(gzip_doc(&sample_doc("Mine")))).await;
     let id = body["id"].as_str().unwrap().to_string();
 
-    // Wrong character -> 403, report still present.
     let (status, _) = send(&app, "DELETE", &format!("/api/br/{id}"), Some(&other), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = send(&app, "GET", &format!("/api/br/{id}.json"), None, None).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Owner -> 204, then gone (404).
     let (status, _) = send(&app, "DELETE", &format!("/api/br/{id}"), Some(&owner), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = send(&app, "GET", &format!("/api/br/{id}.json"), None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // Deleting a missing report -> 404.
     let (status, _) = send(&app, "DELETE", "/api/br/doesnotexist", Some(&owner), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -369,7 +338,7 @@ async fn dedupe_same_doc_same_id() {
     let (s1, b1) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&doc))).await;
     let (s2, b2) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&doc))).await;
     assert_eq!(s1, StatusCode::CREATED);
-    assert_eq!(s2, StatusCode::OK); // re-upload returns existing
+    assert_eq!(s2, StatusCode::OK);
     assert_eq!(b1["id"], b2["id"], "re-uploading the same doc must return the same id");
 }
 
@@ -384,7 +353,6 @@ async fn quota_over_cap_429() {
     let app = app(pool, cfg);
     let tok = mint(&app, 90000005, "Spammer").await;
 
-    // Distinct docs so dedupe doesn't mask the quota.
     let (s1, _) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("A")))).await;
     let (s2, _) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("B")))).await;
     let (s3, _) = send(&app, "POST", "/api/br", Some(&tok), Some(gzip_doc(&sample_doc("C")))).await;
@@ -404,10 +372,6 @@ async fn unauthenticated_upload_401() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-// --- Session-token layer (no DB; plain `cargo test`) ------------------------------
-
-/// A valid EVE token at `POST /api/session` mints a well-formed session token whose
-/// claims (`sub`/`name`/`aud`/`iss`/`exp`) match the contract and the response fields.
 #[tokio::test]
 async fn mint_returns_well_formed_session_token() {
     let app = lazy_app();
@@ -436,7 +400,6 @@ async fn mint_returns_well_formed_session_token() {
     assert!(data.claims.exp > chrono::Utc::now().timestamp());
 }
 
-/// `POST /api/session` with no bearer is a 401.
 #[tokio::test]
 async fn mint_without_token_401() {
     let app = lazy_app();
@@ -444,8 +407,6 @@ async fn mint_without_token_401() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// A raw EVE token presented to a protected BR route is REJECTED — only `/api/session`
-/// accepts the EVE token. The session extractor rejects before any DB access.
 #[tokio::test]
 async fn raw_eve_token_rejected_on_protected_routes() {
     let app = lazy_app();
@@ -460,7 +421,6 @@ async fn raw_eve_token_rejected_on_protected_routes() {
     }
 }
 
-/// A session token signed with the wrong secret is rejected on a protected route.
 #[tokio::test]
 async fn wrong_secret_session_rejected() {
     let app = lazy_app();
@@ -471,7 +431,6 @@ async fn wrong_secret_session_rejected() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// An expired session token is rejected on a protected route.
 #[tokio::test]
 async fn expired_session_rejected() {
     let app = lazy_app();

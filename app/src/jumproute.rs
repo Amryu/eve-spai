@@ -1,9 +1,3 @@
-//! Capital jump-route planning (docs/MAP_MODES.md §8).
-//!
-//! A geometric graph: an edge connects two systems whose true 3D distance is within the
-//! ship's jump range and whose destination is cyno-able (low/null sec — never hi-sec, and
-//! w-space isn't in the K-space map at all). The fewest-jumps path is a BFS over that graph.
-//!
 //! Range/fuel/fatigue match the live game mechanics (verified against the EVE University wiki
 //! and the official Jump Activation Cooldown article):
 //!   range  = base × (1 + 0.20 × JDC)
@@ -18,9 +12,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::map::{ly_distance, LY_METERS};
 use crate::store::MapSystem;
 
-/// A jump-capable hull class: base range at Jump Drive Calibration 0 (×2 at JDC V),
-/// approximate isotopes/ly, and the fatigue role reduction (jump freighters and black ops
-/// "reduce jump penalty" by 90%).
 #[derive(Clone, Copy)]
 pub struct ShipClass {
     pub name: &'static str,
@@ -39,7 +30,6 @@ pub const SHIP_CLASSES: &[ShipClass] = &[
     ShipClass { name: "Jump Freighter", base_ly: 5.0, fuel_per_ly: 3100.0, fatigue_role_reduction: 0.9 },
 ];
 
-/// Max jump range in light-years for a class at the given Jump Drive Calibration level.
 pub fn max_range_ly(class: &ShipClass, jdc: u32) -> f64 {
     class.base_ly * (1.0 + 0.20 * jdc as f64)
 }
@@ -49,8 +39,6 @@ pub fn cyno_able(security: f64) -> bool {
     (security * 10.0).round() / 10.0 < 0.5
 }
 
-/// 3D grid bucketing so "systems within `cell` metres" is a cheap 27-cell lookup instead of
-/// an O(N²) scan when building the graph during BFS.
 struct Grid {
     cell: f64,
     map: HashMap<(i64, i64, i64), Vec<usize>>,
@@ -83,9 +71,6 @@ impl Grid {
     }
 }
 
-/// Fewest-jumps path; at equal jump count, route through `prefer`red (favourited / dockable)
-/// when free — favourite neighbours are expanded first, biasing the recorded predecessors
-/// toward them without ever adding a jump (§8.5).
 pub fn shortest_path_pref(
     systems: &[MapSystem],
     max_ly: f64,
@@ -142,9 +127,6 @@ pub fn shortest_path_pref(
     None
 }
 
-/// One leg of a planned route between two consecutive anchors (start, waypoints, destination).
-/// `path` is the per-system jump sequence; `valid` is false when no route exists within range
-/// (drawn red, and the summary reports the plan as invalid until fixed).
 #[derive(Clone)]
 pub struct Leg {
     pub from: i64,
@@ -153,9 +135,6 @@ pub struct Leg {
     pub valid: bool,
 }
 
-/// Plan a route through the given anchors ([start, waypoints…, destination]) by routing each
-/// consecutive pair independently. An unreachable pair becomes an invalid leg rather than
-/// failing the whole plan.
 pub fn plan(systems: &[MapSystem], max_ly: f64, anchors: &[i64], prefer: &HashSet<i64>) -> Vec<Leg> {
     let mut legs = Vec::new();
     for w in anchors.windows(2) {
@@ -168,7 +147,6 @@ pub fn plan(systems: &[MapSystem], max_ly: f64, anchors: &[i64], prefer: &HashSe
     legs
 }
 
-/// Flatten planned legs into one system sequence (dropping the duplicated anchor between legs).
 pub fn flatten(legs: &[Leg]) -> Vec<i64> {
     let mut out: Vec<i64> = Vec::new();
     for leg in legs {
@@ -181,8 +159,6 @@ pub fn flatten(legs: &[Leg]) -> Vec<i64> {
     out
 }
 
-/// Systems reachable (within range, cyno-able) from BOTH `a` and `b` — drop-in alternatives
-/// for a waypoint between them (§8.5), excluding the anchors themselves.
 pub fn alternatives(systems: &[MapSystem], max_ly: f64, a: i64, b: i64) -> Vec<i64> {
     let max_m2 = (max_ly * LY_METERS).powi(2);
     let find = |id: i64| systems.iter().find(|s| s.id == id);
@@ -196,8 +172,6 @@ pub fn alternatives(systems: &[MapSystem], max_ly: f64, a: i64, b: i64) -> Vec<i
         .collect()
 }
 
-/// Route summary (§8.3): jumps, total light-years, fuel, the final blue fatigue and the total
-/// jump-activation delay (sum of cooldowns), assuming back-to-back jumps with no decay.
 pub struct RouteCost {
     pub jumps: usize,
     pub total_ly: f64,
@@ -211,19 +185,15 @@ pub fn route_cost(systems: &[MapSystem], path: &[i64], class: &ShipClass, jfc: u
     let fuel_mult = 1.0 - 0.10 * jfc as f64;
     let mut total_ly = 0.0;
     let mut fuel = 0.0;
-    let mut fatigue = 0.0_f64; // blue, minutes
+    let mut fatigue = 0.0_f64;
     let mut total_delay = 0.0_f64;
     for w in path.windows(2) {
         let (Some(a), Some(b)) = (idx.get(&w[0]), idx.get(&w[1])) else { continue };
         let ly = ly_distance(a, b);
         total_ly += ly;
         fuel += ly * class.fuel_per_ly * fuel_mult;
-        // Role bonus reduces the effective distance used by BOTH formulas.
         let d_eff = ly * (1.0 - class.fatigue_role_reduction);
-        // Activation cooldown (red) before this jump = max(pre-jump fatigue / 10, 1 + d'),
-        // capped at 30 minutes.
         total_delay += (fatigue / 10.0).max(1.0 + d_eff).min(30.0);
-        // Jump fatigue (blue) = max(current, 10) × (1 + d'), capped at 5 hours.
         fatigue = fatigue.max(10.0) * (1.0 + d_eff);
         fatigue = fatigue.min(300.0);
     }
@@ -245,7 +215,6 @@ mod tests {
 
     #[test]
     fn straight_line_route() {
-        // Four null-sec systems 4 ly apart in a line; a 5 ly range steps through each.
         let s = vec![sys(1, 0.0, -0.4), sys(2, 4.0, -0.4), sys(3, 8.0, -0.4), sys(4, 12.0, -0.4)];
         let path = shortest_path_pref(&s, 5.0, 1, 4, &HashSet::new()).unwrap();
         assert_eq!(path, vec![1, 2, 3, 4]);
@@ -256,23 +225,18 @@ mod tests {
 
     #[test]
     fn mechanics_match_game() {
-        // One 5 ly capital jump from rest: 60 min fatigue, 6 min cooldown (official example),
-        // and fuel = 5 ly × 1000 × (1 − 0.5) at JFC V.
         let s = vec![sys(1, 0.0, -0.4), sys(2, 5.0, -0.4)];
         let c = route_cost(&s, &[1, 2], &SHIP_CLASSES[0], 5);
         assert!((c.final_fatigue_min - 60.0).abs() < 0.01, "fatigue {}", c.final_fatigue_min);
         assert!((c.total_delay_min - 6.0).abs() < 0.01, "delay {}", c.total_delay_min);
         assert!((c.fuel - 2500.0).abs() < 0.5, "fuel {}", c.fuel);
 
-        // Black ops gets the 75% fatigue reduction (effective distance 1.25 ly), so the same
-        // 5 ly jump yields far less fatigue than a capital.
         let bo = route_cost(&s, &[1, 2], &SHIP_CLASSES[2], 5);
         assert!((bo.final_fatigue_min - 22.5).abs() < 0.01, "bo fatigue {}", bo.final_fatigue_min);
     }
 
     #[test]
     fn skips_when_in_range() {
-        // 5 ly range can skip the middle hop (systems 3 ly apart, dest 6 ly is too far, so 3).
         let s = vec![sys(1, 0.0, -0.4), sys(2, 3.0, -0.4), sys(3, 6.0, -0.4)];
         assert_eq!(shortest_path_pref(&s, 5.0, 1, 3, &HashSet::new()).unwrap(), vec![1, 2, 3]);
     }

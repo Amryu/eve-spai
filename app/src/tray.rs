@@ -1,10 +1,3 @@
-//! System-tray integration + autostart.
-//!
-//! Linux uses a StatusNotifierItem (via `ksni`) — the modern KDE/GNOME tray
-//! protocol. The tray runs on its own thread and signals the UI through atomics;
-//! the UI polls them each frame. Other platforms get no-op stubs for now.
-
-/// Write or remove the OS autostart entry pointing at the current executable.
 pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -26,7 +19,6 @@ pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
             let _ = std::fs::remove_file(autostart_path());
         }
     }
-    // Windows: a per-user Run value pointing at the (quoted, for spaces) executable.
     #[cfg(target_os = "windows")]
     {
         const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -43,10 +35,8 @@ pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
                 .args(["delete", RUN_KEY, "/v", VALUE, "/f"])
                 .status()
         };
-        // Best-effort: a missing value on delete returns non-zero, which is fine.
         let _ = status;
     }
-    // macOS: a LaunchAgent plist with RunAtLoad (loaded at login).
     #[cfg(target_os = "macos")]
     {
         let path = macos_agent_path();
@@ -106,7 +96,6 @@ mod linux {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    /// Shared between the tray thread and the UI: which menu action was chosen.
     #[derive(Clone, Default)]
     pub struct TrayCmd {
         show: Arc<AtomicBool>,
@@ -115,15 +104,12 @@ mod linux {
     }
 
     impl TrayCmd {
-        /// Consume a pending "Show" request (left-click or menu).
         pub fn take_show(&self) -> bool {
             self.show.swap(false, Ordering::SeqCst)
         }
-        /// Whether "Exit" was chosen (latched — we're quitting).
         pub fn exit_requested(&self) -> bool {
             self.exit.load(Ordering::SeqCst)
         }
-        /// Show/clear the unread badge on the tray icon.
         pub fn set_attention(&self, on: bool) {
             self.attention.store(on, Ordering::SeqCst);
         }
@@ -131,8 +117,6 @@ mod linux {
 
     struct SpaiTray {
         cmd: TrayCmd,
-        /// Wake the UI event loop so a menu action is acted on immediately, not on the
-        /// next idle repaint (which is why tray Exit/Show felt laggy when minimised).
         ctx: egui::Context,
     }
 
@@ -146,7 +130,6 @@ mod linux {
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             vec![icon(self.cmd.attention.load(Ordering::SeqCst))]
         }
-        // Left-click the tray icon → show the window.
         fn activate(&mut self, _x: i32, _y: i32) {
             self.cmd.show.store(true, Ordering::SeqCst);
             self.ctx.request_repaint();
@@ -176,9 +159,6 @@ mod linux {
         }
     }
 
-    /// The program logo as the tray icon (ARGB32, network byte order). With `badge`, a red
-    /// dot is overlaid in the bottom-right to signal unread messages. Falls back to a drawn
-    /// circle only if the embedded PNG can't be decoded.
     fn icon(badge: bool) -> ksni::Icon {
         use std::sync::OnceLock;
         static LOGO: OnceLock<Option<(i32, i32, Vec<u8>)>> = OnceLock::new();
@@ -213,8 +193,6 @@ mod linux {
         ksni::Icon { width: w, height: h, data }
     }
 
-    /// Drawn fallback: a round accent-blue dot with an optional red unread badge, used only
-    /// when the embedded logo PNG fails to decode.
     fn generated_icon(badge: bool) -> ksni::Icon {
         let (w, h) = (24i32, 24i32);
         let mut data = vec![0u8; (w * h * 4) as usize];
@@ -245,8 +223,6 @@ mod linux {
         ksni::Icon { width: w, height: h, data }
     }
 
-    /// Start the tray. Registration is done on a background thread so a slow/absent
-    /// tray host never delays app startup. Returns the command channel immediately.
     pub fn spawn(ctx: egui::Context) -> Option<TrayCmd> {
         let cmd = TrayCmd::default();
         let cmd_for_thread = cmd.clone();
@@ -300,7 +276,6 @@ mod desktop {
         pub fn exit_requested(&self) -> bool {
             self.exit.load(Ordering::SeqCst)
         }
-        /// Show/clear the unread badge by swapping the tray icon (main thread only).
         pub fn set_attention(&self, on: bool) {
             if self.attention.swap(on, Ordering::SeqCst) != on {
                 TRAY.with(|t| {
@@ -312,12 +287,10 @@ mod desktop {
         }
     }
 
-    // Keeps the tray handle alive for the app's lifetime (dropped only at main-thread exit).
     thread_local! {
         static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
     }
 
-    /// The program logo as a tray icon (RGBA), with an optional red unread badge bottom-right.
     fn make_icon(badge: bool) -> Option<tray_icon::Icon> {
         let img = image::load_from_memory(include_bytes!("../../assets/eve-spai.png")).ok()?.to_rgba8();
         let (w, h) = img.dimensions();
@@ -361,8 +334,6 @@ mod desktop {
         };
         TRAY.with(|t| *t.borrow_mut() = Some(tray));
 
-        // Route menu clicks to the shared atomics and wake the UI immediately (the handler runs on
-        // the event-loop thread, same as the channel would deliver).
         let show_flag = cmd.show.clone();
         let exit_flag = cmd.exit.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {

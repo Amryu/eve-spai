@@ -1,9 +1,3 @@
-//! Per-system live status from public ESI: incursions, faction-warfare contest
-//! state, and sovereignty (player alliance or NPC faction). No auth required.
-//!
-//! Out of scope (not in ESI): metaliminal storms and anomaly spawns — those need a
-//! community source (eve-scout) and are deferred.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,15 +16,10 @@ const POLL: Duration = Duration::from_secs(300);
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SysFlags {
     pub incursion: bool,
-    /// Faction-warfare contest, e.g. "vulnerable (Minmatar)"; None when uncontested.
     pub fw: Option<String>,
-    /// Sovereignty holder — player alliance name or NPC faction name.
     pub sov: Option<String>,
-    /// Sovereignty alliance id (Some only for player-held sov) — for the logo.
     pub sov_alliance: Option<i64>,
-    /// Activity Defense Multiplier (IHub vulnerability_occupancy_level), 1.0–6.0.
     pub adm: Option<f64>,
-    /// ESI activity in the last hour.
     pub ship_kills: u32,
     pub pod_kills: u32,
     pub npc_kills: u32,
@@ -133,7 +122,6 @@ fn fetch(
     }
 
     if let Ok(sov) = get::<Vec<SovSystem>>(client, SOV_URL) {
-        // Resolve any new alliance ids in bulk, then label sovereignty.
         let wanted: Vec<i64> = sov
             .iter()
             .filter_map(|s| s.alliance_id)
@@ -163,7 +151,6 @@ fn fetch(
         for st in structs {
             if let Some(adm) = st.vulnerability_occupancy_level {
                 let e = map.entry(st.solar_system_id).or_default();
-                // Prefer the higher (I-Hub) value when several structures exist.
                 e.adm = Some(e.adm.map_or(adm, |cur| cur.max(adm)));
             }
         }

@@ -1,24 +1,11 @@
-//! The overlay child process (`eve-spai --overlay`).
-//!
-//! The FLEET-PING (P2) and INTEL-ALERT (P3) floating windows live here, OUT of the main process, so
-//! on Linux each is a separate X11 client that KWin won't iconify together with the main window. The
-//! child re-execs the same binary into a tiny 1×1 root window, connects back to the main over the
-//! IPC socket, and declares the ping + alert deferred viewports itself — rendering with the SAME
-//! closures the main uses off Linux (`crate::app::build_ping_viewport_cb` /
-//! `build_alert_viewport_cb`). The main feeds it the current ping/alert state + config over IPC; the
-//! overlay opens its own read-only Store to resolve system names + ship details, and holds its own
-//! kill/affiliation caches (it has no fetchers — the main pre-resolves and pushes those entries).
-
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::app::{SharedAlertWindow, SharedPingWindow};
 
-/// Entry point for the `--overlay` child. Reuses the main binary's eframe setup so the
-/// renderer/backend choices stay identical to the parent.
 pub fn run_overlay() -> eframe::Result<()> {
-    #[allow(unused_mut)] // `viewport` is only reassigned in the Linux-only block below
+    #[allow(unused_mut)]
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai overlay")
         .with_inner_size([1.0, 1.0])
@@ -49,29 +36,17 @@ pub fn run_overlay() -> eframe::Result<()> {
     )
 }
 
-/// The overlay app. Owns the fleet-ping + alert shared state + render closures and declares both
-/// deferred viewports every frame. The IPC reader thread feeds them from the main.
 struct Overlay {
     ping_shared: SharedPingWindow,
     ping_viewport_cb: Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     alert_shared: SharedAlertWindow,
     alert_viewport_cb: Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
-    /// The alert window's raw on-top setting (resolved against live EVE focus each frame). Written
-    /// by the IPC `Config` handler, read in `update`.
     alert_on_top: Arc<Mutex<crate::settings::OnTop>>,
-    /// Last alert geometry forwarded to the main, so we only send `AlertMoved` on an actual change
-    /// (the render closure republishes the current position every frame). Clicks/geometry are
-    /// written straight to our stdout (the overlay→main IPC pipe).
     alert_pos_sent: Option<(f32, f32)>,
     alert_size_sent: Option<(f32, f32)>,
-    /// Last probed EVE-focus state (Smart on-top), refreshed on a throttle.
     eve_focused: bool,
     eve_focus_checked: Option<std::time::Instant>,
-    /// A d-scan link clicked in an alert card, hosted HERE in the overlay (its own X11 client, on
-    /// top of the game) instead of the main — set by the click drain, rendered each frame.
     dscan_view: Option<crate::app::DscanView>,
-    /// The overlay's own SDE hull-name index (lower-cased name → (type id, name)), used to resolve
-    /// a fetched d-scan's hulls. Loaded on a thread (mirrors the main's `self.ship_index`).
     ship_index: Arc<Mutex<Option<Arc<HashMap<String, (i64, String)>>>>>,
 }
 
@@ -81,7 +56,6 @@ impl Overlay {
         // setup — otherwise icons render as tofu squares and ship images as red error triangles.
         crate::theme::install_fonts(&cc.egui_ctx);
         crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
-        // Match the user's theme (best-effort; default if settings can't be read).
         let theme = crate::store::Store::open()
             .ok()
             .and_then(|s| s.load_settings())
@@ -93,11 +67,9 @@ impl Overlay {
             Arc::new(Mutex::new(crate::app::PingWindowState::default()));
         let alert_shared: SharedAlertWindow =
             Arc::new(Mutex::new(crate::app::AlertWindowState::default()));
-        // Same render closures the main uses off Linux, so the windows look identical.
         let ping_viewport_cb = crate::app::build_ping_viewport_cb(ping_shared.clone());
         let alert_viewport_cb = crate::app::build_alert_viewport_cb(alert_shared.clone());
         let alert_on_top = Arc::new(Mutex::new(crate::settings::OnTop::default()));
-        // The overlay has no fetchers; it serves clicks/tooltips from caches the main pre-fills.
         let kills: crate::kills::KillCache = Arc::new(Mutex::new(HashMap::new()));
         let affil: crate::affiliation::SharedAffil =
             Arc::new(Mutex::new(crate::affiliation::AffilCache::default()));
@@ -130,9 +102,6 @@ impl Overlay {
         }
     }
 
-    /// Open our OWN read-only Store and build the SDE hull-name index, so a d-scan clicked in an
-    /// alert card can be fetched + tallied here in the overlay. Done on a thread (the SDE is static,
-    /// so a second connection is safe); only read on a click, so no repaint wake is needed.
     fn load_ship_index(slot: Arc<Mutex<Option<Arc<HashMap<String, (i64, String)>>>>>) {
         std::thread::spawn(move || match crate::store::Store::open() {
             Ok(store) => *slot.lock().unwrap() = Some(Arc::new(store.ship_index())),
@@ -140,10 +109,6 @@ impl Overlay {
         });
     }
 
-    /// Open our OWN read-only Store and load the system graph (for ping/alert system-name + jumps
-    /// lookups), publishing it into both shared states. The SDE is static, so a second connection is
-    /// safe; done on a thread so the windows appear immediately. Jump bridges are NOT applied — they
-    /// only affect route graphs, and the cards need system NAMES (and straight-line jumps) only.
     fn load_systems(ping_shared: SharedPingWindow, alert_shared: SharedAlertWindow, ctx: egui::Context) {
         std::thread::spawn(move || match crate::store::Store::open() {
             Ok(store) => {
@@ -157,15 +122,9 @@ impl Overlay {
         });
     }
 
-    /// Read main→overlay frames from our stdin and pump them on a background thread. On
-    /// `Ping`/`Alert`/`Config` it updates the shared state and wakes the relevant viewport. The
-    /// transport is the child's piped stdio (cross-platform): stdin carries main→overlay, stdout
-    /// carries overlay→main (see `update`). On stdin EOF / any read error the overlay exits — this
-    /// is the "die with the main" behaviour (the main's send pipe closes when it goes away).
     fn spawn_ipc(args: IpcArgs) {
         let IpcArgs { ping_shared, alert_shared, alert_on_top, kills, affil, ctx } = args;
         std::thread::spawn(move || {
-            // Announce readiness on stdout so the main does its initial Config+Ping resend.
             {
                 let mut out = std::io::stdout().lock();
                 if let Err(e) = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Hello) {
@@ -174,7 +133,6 @@ impl Overlay {
                 }
             }
             eprintln!("[overlay] connected to main (stdio)");
-            // Our own SDE handle for ship details/roles (the main doesn't send those).
             let ship_lookup = match crate::store::Store::open() {
                 Ok(store) => Some(crate::app::ShipLookup::new(store)),
                 Err(e) => {
@@ -220,8 +178,6 @@ impl Overlay {
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
                     }
                     Ok(crate::ipc::MainToOverlay::Alert(m)) => {
-                        // Merge the pushed kill/affil subsets into the overlay's own caches; the
-                        // render closure reads them exactly as the main's `intel_row` does.
                         {
                             let mut kc = kills.lock().unwrap();
                             for (kid, info) in &m.kills {
@@ -234,7 +190,6 @@ impl Overlay {
                                 ac.insert_resolved(*cid, a.clone());
                             }
                         }
-                        // Build ship details/roles for the feed's ships from our own SDE.
                         let ship_ids: HashSet<i64> =
                             m.feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
                         let (ship_details, ship_roles) = match &ship_lookup {
@@ -276,10 +231,6 @@ impl Overlay {
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                     }
                     Ok(crate::ipc::MainToOverlay::AlertPush(m)) => {
-                        // Lightweight daemon pop: arrives while the main's UI thread is parked
-                        // (window minimized). APPEND the fired reports; the full enriched feed
-                        // (jumps/kills/affil) re-syncs via `Alert` when the main un-parks. Ship
-                        // details/roles come from our own SDE, like `Alert`.
                         let ship_ids: HashSet<i64> =
                             m.reports.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
                         let (ship_details, ship_roles) = match &ship_lookup {
@@ -296,7 +247,7 @@ impl Overlay {
                             let mut st = alert_shared.lock().unwrap();
                             for rs in m.reports {
                                 st.feed.push(rs);
-                                st.from_you.push(None); // no jump info until the enriched re-sync
+                                st.from_you.push(None);
                             }
                             let n = st.feed.len();
                             if n > 100 {
@@ -339,7 +290,6 @@ impl Overlay {
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                     }
                     Err(e) => {
-                        // stdin EOF (the main exited) or a malformed frame: die with the main.
                         eprintln!("[overlay] stdin closed ({e}); exiting");
                         std::process::exit(0);
                     }
@@ -349,7 +299,6 @@ impl Overlay {
     }
 }
 
-/// Bundled arguments for [`Overlay::spawn_ipc`] (keeps the call site readable as the set grew).
 struct IpcArgs {
     ping_shared: SharedPingWindow,
     alert_shared: SharedAlertWindow,
@@ -361,11 +310,9 @@ struct IpcArgs {
 
 impl eframe::App for Overlay {
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // The 1×1 root draws nothing; the ping + alert windows are separate deferred viewports.
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Refresh the EVE-focus flag (throttled) when either window uses Smart on-top.
         let ping_smart = self.ping_shared.lock().unwrap().on_top == crate::settings::OnTop::Smart;
         let alert_smart = *self.alert_on_top.lock().unwrap() == crate::settings::OnTop::Smart;
         if ping_smart || alert_smart {
@@ -375,14 +322,8 @@ impl eframe::App for Overlay {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
-        // Publish focus into the ping shared state (its closure reads it for Smart on-top).
         self.ping_shared.lock().unwrap().eve_focused = self.eve_focused;
 
-        // Forward alert-window outputs (feed clicks + geometry) back to the main over our stdout
-        // (the overlay→main IPC pipe), which acts on them with `&mut self` in its root `update`. The
-        // closure republishes the current position every frame, so dedup geometry against the last
-        // forwarded value (pos exact, size >2px) to avoid flooding the pipe — matching the main's
-        // own persist thresholds. Lock stdout once so each frame is written atomically.
         {
             let (clicks, verdicts, moved, moved_size) = {
                 let mut st = self.alert_shared.lock().unwrap();
@@ -397,10 +338,6 @@ impl eframe::App for Overlay {
             let size = moved_size.filter(|s| {
                 self.alert_size_sent.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0)
             });
-            // Split the alert-card clicks: a `Dscan` link is handled LOCALLY (the d-scan dialog lives
-            // in the overlay, on top of the game); System/Ship/Pilot still go to the main, whose
-            // windows live there. Each click points the user at exactly one dialog, so a later Dscan
-            // wins the slot.
             let mut to_main: Vec<crate::app::IntelClick> = Vec::new();
             for c in clicks {
                 match c {
@@ -440,7 +377,6 @@ impl eframe::App for Overlay {
             }
         }
 
-        // Fleet-ping viewport. Seed level from current on-top; the closure re-asserts it live.
         let ping_on_top = {
             let st = self.ping_shared.lock().unwrap();
             st.on_top != crate::settings::OnTop::Never
@@ -455,8 +391,6 @@ impl eframe::App for Overlay {
             },
         );
 
-        // Alert viewport. Resolve on-top (Smart depends on live EVE focus) + publish it, then
-        // declare the viewport. `enabled`/geometry come from the IPC `Config` handler.
         let alert_on_top = {
             let ot = *self.alert_on_top.lock().unwrap();
             ot != crate::settings::OnTop::Never
@@ -490,9 +424,6 @@ impl eframe::App for Overlay {
             },
         );
 
-        // D-scan dialog (only while a scan is being viewed). Hosted here as its own immediate
-        // viewport, on top of the game (taskbar-off). A hull click hops to the main's ship window
-        // via `OverlayToMain::Click(Ship)` — the ship card lives in the main.
         if self.dscan_view.is_some() {
             let mut open_ship: Option<i64> = None;
             crate::app::dscan_view_dialog_ui(ctx, &mut self.dscan_view, true, &mut open_ship);
@@ -509,6 +440,6 @@ impl eframe::App for Overlay {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0] // fully transparent
+        [0.0, 0.0, 0.0, 0.0]
     }
 }

@@ -1,16 +1,6 @@
-//! The "Neocom" navigation rail (docs/DESIGN.md §6.1).
-//!
-//! A vertical list of views on the left edge. Collapsed = icon-only (narrow);
-//! expanded = icon + left-aligned label with an accent bar on the active row.
-//! Icons come from the Phosphor icon font (loaded in `app::SpaiApp::new`).
-
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
-/// A top-level destination shown in the nav rail.
-///
-/// Only the Essential (MVP) views exist so far; Advanced views (Assets, Wallet,
-/// Comms, …) will be appended here as they are built (docs/DESIGN.md §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum View {
     Dashboard,
@@ -26,7 +16,6 @@ pub enum View {
 }
 
 impl View {
-    /// Primary views, in rail order.
     pub fn primary() -> &'static [View] {
         &[
             View::Dashboard,
@@ -77,14 +66,11 @@ pub const WIDTH_EXPANDED: f32 = 196.0;
 
 const ROW_HEIGHT: f32 = 38.0;
 
-/// Render the rail. Returns the (possibly changed) selected view. `badges` lists
-/// views that should show an unread dot.
 pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[View]) -> View {
     let mut selected = current;
     let accent = ui.visuals().hyperlink_color;
     let weak = ui.visuals().weak_text_color();
 
-    // --- Brand + collapse/expand toggle ---
     ui.add_space(12.0);
     if *expanded {
         ui.horizontal(|ui| {
@@ -120,7 +106,6 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[Vie
     ui.separator();
     ui.add_space(8.0);
 
-    // --- Primary views ---
     for &v in View::primary() {
         if nav_item(ui, v.icon(), v.label(), v == selected, *expanded, badges.contains(&v)) {
             selected = v;
@@ -128,7 +113,6 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[Vie
         ui.add_space(4.0);
     }
 
-    // --- Settings pinned to the bottom ---
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.add_space(10.0);
         if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded, false) {
@@ -141,13 +125,10 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[Vie
     selected
 }
 
-/// A borderless icon-only button.
 fn icon_button(ui: &mut egui::Ui, glyph: &str, color: egui::Color32) -> egui::Response {
     ui.add(egui::Button::new(egui::RichText::new(glyph).color(color).size(18.0)).frame(false))
 }
 
-/// A full-width, left-aligned navigation row with hover + active states, drawn by
-/// hand so we control alignment, the accent bar, and density.
 fn nav_item(
     ui: &mut egui::Ui,
     glyph: &str,
@@ -209,7 +190,6 @@ fn nav_item(
         );
     }
 
-    // Unread badge: a small red dot at the icon's top-right.
     if badge {
         let icon_pos = if expanded { egui::pos2(rect.left() + 22.0, cy) } else { rect.center() };
         painter.circle_filled(

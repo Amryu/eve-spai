@@ -1,14 +1,9 @@
-//! Character lookup for the embedded zKillboard view: resolve a name to a character
-//! and fetch its zKill stats + corp/alliance, on a background thread, cached. Used by
-//! the Lookup view, which shows one tab per looked-up pilot.
-
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// A pilot's looked-up profile (zKill stats + identity).
 #[derive(Clone, Debug, Default)]
 pub struct LookupInfo {
     pub char_id: i64,
@@ -23,19 +18,14 @@ pub struct LookupInfo {
     pub isk_lost: f64,
     pub danger_ratio: i64,
     pub gang_ratio: i64,
-    /// Most-used ship hulls (type id, name, kills), most first.
     pub top_ships: Vec<(i64, String, i64)>,
-    /// Solar systems most active in (name, kills).
     pub top_systems: Vec<(String, i64)>,
-    /// Whether the name resolved to a real character at all.
     pub found: bool,
 }
 
-/// name (lower-cased) -> info. A present `None` means in-flight or failed.
 pub type LookupCache = Arc<Mutex<HashMap<String, Option<LookupInfo>>>>;
 pub type LookupSender = Sender<String>;
 
-/// Spawn the background lookup fetcher. Send a name to enqueue it.
 pub fn spawn_fetcher(cache: LookupCache, ctx: egui::Context) -> LookupSender {
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
@@ -51,7 +41,7 @@ pub fn spawn_fetcher(cache: LookupCache, ctx: egui::Context) -> LookupSender {
             {
                 let mut c = cache.lock().unwrap();
                 if c.get(&key).is_some_and(|v| v.is_some()) {
-                    continue; // already done
+                    continue;
                 }
                 c.entry(key.clone()).or_insert(None);
             }
@@ -67,12 +57,11 @@ pub fn spawn_fetcher(cache: LookupCache, ctx: egui::Context) -> LookupSender {
 fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
     let mut info = LookupInfo { name: name.to_owned(), ..Default::default() };
     let Some(id) = resolve_id(client, name) else {
-        return info; // found = false
+        return info;
     };
     info.char_id = id;
     info.found = true;
 
-    // Identity: corp + alliance (ESI), names resolved in one batch.
     #[derive(Deserialize)]
     struct Char {
         name: String,
@@ -99,7 +88,6 @@ fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
         }
     }
 
-    // zKill stats.
     #[derive(Deserialize)]
     struct TopValue {
         #[serde(rename = "shipTypeID")]
@@ -169,7 +157,6 @@ fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
     info
 }
 
-/// Resolve an exact character name to its id via ESI.
 fn resolve_id(client: &reqwest::blocking::Client, name: &str) -> Option<i64> {
     #[derive(Deserialize)]
     struct Ids {
@@ -192,7 +179,6 @@ fn resolve_id(client: &reqwest::blocking::Client, name: &str) -> Option<i64> {
     v.characters?.into_iter().find(|e| e.name.eq_ignore_ascii_case(name)).map(|e| e.id)
 }
 
-/// Resolve corp/alliance ids to names via ESI /universe/names.
 fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> HashMap<i64, String> {
     #[derive(Deserialize)]
     struct Named {

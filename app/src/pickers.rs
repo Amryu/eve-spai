@@ -1,18 +1,7 @@
-//! Reusable multi-select picker dialogs for alert-rule filters (ships / systems / constellations /
-//! regions / channels / characters). Each picker replaces the old comma-separated text field with a
-//! tree or list you tick, plus a real-time search box. Selections are stored as `Vec<String>` names
-//! (matching how `rule_matches` compares, case-insensitively), so an empty list means "any".
-//!
-//! Rendering stays cheap: browse mode uses lazy `CollapsingHeader`s (closed branches draw nothing),
-//! and search mode flattens to a capped result list so even the ~8k-system tree never lags.
-
 use std::collections::HashSet;
 
-/// Max leaves drawn in search results before we stop and show a "+N more" note.
 const SEARCH_CAP: usize = 250;
 
-/// A node in a picker tree. Leaves (no children) carry the selectable value in `name`; internal
-/// nodes are labels (tier / group / region / constellation) whose "All" toggle selects their leaves.
 pub struct Node {
     pub name: String,
     pub children: Vec<Node>,
@@ -33,8 +22,6 @@ impl Node {
     }
 }
 
-/// A built tree plus a flat `(leaf, lowercase search text)` index for fast search. The search text
-/// includes ancestor labels so e.g. searching "cruiser" surfaces every hull under that class.
 pub struct TreeData {
     pub roots: Vec<Node>,
     pub flat: Vec<(String, String)>,
@@ -62,8 +49,6 @@ fn index_flat(node: &Node, ancestors_lc: &str, out: &mut Vec<(String, String)>) 
     }
 }
 
-/// Which rule field(s) a picker edits. `Systems` is a geo tree that edits regions + constellations +
-/// systems at once (tick any level), so there are no separate region/constellation pickers.
 #[derive(Clone, Copy, PartialEq)]
 pub enum PickerKind {
     Ships,
@@ -83,7 +68,6 @@ impl PickerKind {
     }
 }
 
-/// The level a geo-tree row selects into (each maps to a different rule field).
 #[derive(Clone, Copy, PartialEq)]
 pub enum GeoLevel {
     Region,
@@ -91,35 +75,28 @@ pub enum GeoLevel {
     System,
 }
 
-/// The data backing a picker, built once when it opens.
 pub enum PickerData {
     Tree(TreeData),
     List(Vec<String>),
-    /// (proper-case name, char id) — id currently unused by matching but handy for future.
     Chars(Vec<(String, i64)>),
 }
 
-/// Open picker dialog state (held as `Option<FilterPicker>` on the app).
 pub struct FilterPicker {
     pub kind: PickerKind,
     pub rule_idx: usize,
     pub query: String,
-    /// Single-set pickers (Ships / Channels / Characters).
     pub selected: HashSet<String>,
     pub data: PickerData,
-    // Systems (geo) picker: three independent sets, one per rule field.
     pub geo_roots: Vec<Node>,
     pub geo_flat: Vec<(GeoLevel, String, String)>,
     pub geo_regions: HashSet<String>,
     pub geo_consts: HashSet<String>,
     pub geo_systems: HashSet<String>,
-    // Characters-only: "add by exact name" box + last resolve status.
     pub add_name: String,
     pub add_status: Option<String>,
 }
 
 impl FilterPicker {
-    /// A blank picker of `kind` for `rule_idx`; the caller fills the relevant selection/data.
     pub fn new(kind: PickerKind, rule_idx: usize) -> Self {
         Self {
             kind,
@@ -138,9 +115,6 @@ impl FilterPicker {
     }
 }
 
-/// Build the Systems geo picker: a region → constellation → system tree, plus a flat search index
-/// tagged by level. System search text carries its region + constellation so "delve" surfaces the
-/// region row and its systems together.
 pub fn build_geo_picker(rows: &[(String, String, String)]) -> (Vec<Node>, Vec<(GeoLevel, String, String)>) {
     let tree = build_geo_tree(rows, true);
     let mut flat: Vec<(GeoLevel, String, String)> = Vec::new();
@@ -170,7 +144,6 @@ pub fn build_geo_picker(rows: &[(String, String, String)]) -> (Vec<Node>, Vec<(G
 }
 
 impl PickerData {
-    /// All selectable names in this data set (leaf names for a tree, options for a list/chars).
     pub fn names(&self) -> Vec<&str> {
         match self {
             PickerData::Tree(t) => t.flat.iter().map(|(n, _)| n.as_str()).collect(),
@@ -180,9 +153,6 @@ impl PickerData {
     }
 }
 
-/// Seed a working selection from the rule's stored `Vec<String>`, canonicalizing each entry to the
-/// data set's exact casing where it matches (so old hand-typed entries still show as ticked);
-/// unknown entries (e.g. a custom channel regex) are kept verbatim so they aren't silently dropped.
 pub fn seed_selection(current: &[String], data: &PickerData) -> HashSet<String> {
     let names = data.names();
     current
@@ -197,19 +167,14 @@ pub fn seed_selection(current: &[String], data: &PickerData) -> HashSet<String> 
         .collect()
 }
 
-/// What the caller must act on after rendering the body.
 #[derive(Default)]
 pub struct PickerActions {
-    /// The selection changed — write `selected` back into the rule field.
     pub changed: bool,
-    /// The user clicked "Add" in the characters picker — resolve `add_name` via ESI.
     pub add_clicked: bool,
 }
 
-/// Build the role/class ship tree: size tier → group_name → hull names, from `(id, name, group)`.
 pub fn build_ship_tree(ships: &[(i64, String, String)]) -> TreeData {
     use crate::settings::ShipSize;
-    // tier -> group -> hulls, preserving a sensible tier order.
     let tier_order = [
         ShipSize::Frigate,
         ShipSize::Destroyer,
@@ -255,8 +220,6 @@ fn tier_label(t: crate::settings::ShipSize) -> &'static str {
     }
 }
 
-/// Build a geography tree from ordered `(region, constellation, system)` rows. `leaf_systems` picks
-/// the leaf level: true → region→constellation→system, false → region→constellation.
 pub fn build_geo_tree(rows: &[(String, String, String)], leaf_systems: bool) -> TreeData {
     let mut roots: Vec<Node> = Vec::new();
     for (region, constellation, system) in rows {
@@ -283,11 +246,9 @@ pub fn build_geo_tree(rows: &[(String, String, String)], leaf_systems: bool) -> 
     TreeData::new(roots)
 }
 
-/// Render the picker body (search box + counts + tree/list). Returns actions for the caller.
 pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
     let mut act = PickerActions::default();
     let is_geo = picker.kind == PickerKind::Systems;
-    // Header: search + selection count + clear.
     ui.horizontal(|ui| {
         ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
         ui.add(
@@ -311,7 +272,7 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
     });
     if is_geo {
         ui.label(
-            egui::RichText::new("Tick a region, constellation, or system — any level.").weak(),
+            egui::RichText::new("Tick a region, constellation, or system at any level.").weak(),
         );
     }
     ui.separator();
@@ -345,7 +306,6 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
         }
     });
 
-    // Characters: add any pilot by exact name via ESI.
     if picker.kind == PickerKind::Characters {
         ui.separator();
         ui.horizontal(|ui| {
@@ -367,8 +327,6 @@ pub fn body(ui: &mut egui::Ui, picker: &mut FilterPicker) -> PickerActions {
     act
 }
 
-/// Browse-mode tree row. Internal nodes get a collapsing header with an "All" select-all; leaves get
-/// a checkbox. Lazy: a closed header renders none of its children.
 fn render_node(ui: &mut egui::Ui, node: &Node, selected: &mut HashSet<String>, changed: &mut bool) {
     if node.is_leaf() {
         toggle_leaf(ui, &node.name, selected, changed);
@@ -395,7 +353,6 @@ fn render_node(ui: &mut egui::Ui, node: &Node, selected: &mut HashSet<String>, c
     });
 }
 
-/// Search-mode flat list (also used for List/Chars data), capped to keep the frame cheap.
 fn render_search(
     ui: &mut egui::Ui,
     flat: &[(String, String)],
@@ -420,7 +377,7 @@ fn render_search(
         ui.label(egui::RichText::new("No matches.").weak());
     }
     if hidden > 0 {
-        ui.label(egui::RichText::new(format!("+{hidden} more — refine your search")).weak());
+        ui.label(egui::RichText::new(format!("+{hidden} more, refine your search")).weak());
     }
 }
 
@@ -436,8 +393,6 @@ fn toggle_leaf(ui: &mut egui::Ui, name: &str, selected: &mut HashSet<String>, ch
     }
 }
 
-/// Systems (geo) body: browse a region → constellation → system tree ticking any level, or a flat
-/// capped search list tagged by level. Each level writes to its own set (rule field).
 fn geo_body(ui: &mut egui::Ui, picker: &mut FilterPicker, q: &str, changed: &mut bool) {
     // Disjoint field borrows so the tree (read) and the three sets (write) coexist.
     let FilterPicker { geo_roots, geo_flat, geo_regions, geo_consts, geo_systems, .. } = picker;
@@ -497,7 +452,7 @@ fn geo_body(ui: &mut egui::Ui, picker: &mut FilterPicker, q: &str, changed: &mut
             ui.label(egui::RichText::new("No matches.").weak());
         }
         if hidden > 0 {
-            ui.label(egui::RichText::new(format!("+{hidden} more — refine your search")).weak());
+            ui.label(egui::RichText::new(format!("+{hidden} more, refine your search")).weak());
         }
     }
 }
@@ -530,14 +485,11 @@ mod tests {
             (3, "Cerberus".to_owned(), "Heavy Assault Cruiser".to_owned()),
         ];
         let tree = build_ship_tree(&ships);
-        // Empty tiers are dropped; the two used tiers survive.
         let tiers: Vec<&str> = tree.roots.iter().map(|n| n.name.as_str()).collect();
         assert!(tiers.contains(&"Frigates") && tiers.contains(&"Cruisers"));
-        // All three hulls are leaves.
         let mut ls = leaves(&tree);
         ls.sort();
         assert_eq!(ls, vec!["Cerberus", "Rifter", "Vagabond"]);
-        // Search text carries the ancestor class so "cruiser" surfaces the HACs.
         let vaga = tree.flat.iter().find(|(n, _)| n == "Vagabond").unwrap();
         assert!(vaga.1.contains("heavy assault cruiser"));
         assert!(vaga.1.contains("cruisers"));
@@ -568,13 +520,11 @@ mod tests {
             ("Delve".to_owned(), "O-EIMK".to_owned(), "319-3D".to_owned()),
         ];
         let (roots, flat) = build_geo_picker(&rows);
-        assert_eq!(roots.len(), 1); // one region
-        // 1 region + 1 constellation + 2 systems = 4 flat rows.
+        assert_eq!(roots.len(), 1);
         assert_eq!(flat.len(), 4);
         assert!(flat.iter().any(|(l, n, _)| *l == GeoLevel::Region && n == "Delve"));
         assert!(flat.iter().any(|(l, n, _)| *l == GeoLevel::Constellation && n == "O-EIMK"));
         assert_eq!(flat.iter().filter(|(l, _, _)| *l == GeoLevel::System).count(), 2);
-        // A system's search text carries region + constellation, so "delve" surfaces it.
         let sys = flat.iter().find(|(l, n, _)| *l == GeoLevel::System && n == "1DQ1-A").unwrap();
         assert!(sys.2.contains("delve") && sys.2.contains("o-eimk"));
     }
@@ -583,8 +533,8 @@ mod tests {
     fn seed_selection_canonicalizes_case_and_keeps_unknowns() {
         let data = PickerData::List(vec!["Rifter".to_owned(), "Cerberus".to_owned()]);
         let seeded = seed_selection(&["rifter".to_owned(), "Custom-Thing".to_owned()], &data);
-        assert!(seeded.contains("Rifter")); // canonicalized from "rifter"
-        assert!(seeded.contains("Custom-Thing")); // unknown kept verbatim
+        assert!(seeded.contains("Rifter"));
+        assert!(seeded.contains("Custom-Thing"));
         assert_eq!(seeded.len(), 2);
     }
 }

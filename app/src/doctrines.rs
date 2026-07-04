@@ -1,7 +1,3 @@
-//! Baked GSF doctrine thread links, extracted from the alliance forum's "Fleet Doctrines"
-//! page, so a fleet ping's doctrine name can link straight to its thread.
-
-/// (thread URL, keywords that identify the doctrine in a fleet ping).
 const DOCTRINES: &[(&str, &[&str])] = &[
     (
         "https://goonfleet.com/index.php/topic/380930-active-strat-typhoons/",
@@ -37,7 +33,6 @@ const DOCTRINES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The forum thread for a fleet-ping doctrine name, if recognised.
 pub fn link_for(doctrine: &str) -> Option<&'static str> {
     let d = doctrine.to_lowercase();
     DOCTRINES

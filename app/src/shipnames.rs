@@ -1,14 +1,6 @@
-//! Ship-name nicknames / abbreviations and acronym generation, used to widen
-//! intel ship detection beyond exact names. The nickname seed list is common
-//! community slang plus acronyms generated from multi-word hull names (kept only
-//! when unambiguous).
-
 use std::collections::HashMap;
 
-/// Lower-case slug → canonical ship name. Unambiguous, specific-hull only (class
-/// abbreviations like "hac"/"logi" are deliberately excluded).
 const NICKNAMES: &[(&str, &str)] = &[
-    // Common community ship nicknames.
     ("kiki", "Kikimora"),
     ("iki", "Ikitursa"),
     ("stileto", "Stiletto"),
@@ -22,8 +14,6 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("orthus", "Orthrus"),
     ("retri", "Retribution"),
     ("sythe", "Scythe"),
-    // Dropped-leading-S typo ("cythe" = "Scythe"); the multi-word "Scythe Fleet Issue"
-    // case is handled by the fuzzy window logic in `multiword_ships`.
     ("cythe", "Scythe"),
     ("ved", "Vedmak"),
     ("trasher", "Thrasher"),
@@ -36,7 +26,6 @@ const NICKNAMES: &[(&str, &str)] = &[
     // Acronym auto-gen drops "oni" as ambiguous (Omen vs Osprey Navy Issue); in common
     // usage ONI = Osprey Navy Issue.
     ("oni", "Osprey Navy Issue"),
-    // Common community slang.
     ("vaga", "Vagabond"),
     ("cane", "Hurricane"),
     ("nado", "Tornado"),
@@ -91,7 +80,7 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("oracle", "Oracle"),
     ("sabre", "Sabre"),
     ("flycatcher", "Flycatcher"),
-    ("fly catcher", "Flycatcher"), // spaced spelling — matched as a two-word phrase
+    ("fly catcher", "Flycatcher"),
     ("heretic", "Heretic"),
     ("eris", "Eris"),
     ("broadsword", "Broadsword"),
@@ -115,9 +104,6 @@ const NICKNAMES: &[(&str, &str)] = &[
     ("dd", "Daredevil"),
 ];
 
-/// Build extra `slug -> (id, canonical name)` aliases for the ship index, given the
-/// canonical lower-cased name → (id, name) map. Includes nicknames and unambiguous
-/// acronyms of multi-word hull names (e.g. "cfi" → Cyclone Fleet Issue).
 pub fn aliases(by_name: &HashMap<String, (i64, String)>) -> Vec<(String, (i64, String))> {
     let mut out: Vec<(String, (i64, String))> = Vec::new();
 
@@ -127,7 +113,6 @@ pub fn aliases(by_name: &HashMap<String, (i64, String)>) -> Vec<(String, (i64, S
         }
     }
 
-    // Acronyms from multi-word hull names; keep only those that resolve uniquely.
     let mut acro: HashMap<String, Option<(i64, String)>> = HashMap::new();
     for (lname, entry) in by_name {
         let words: Vec<&str> = lname.split_whitespace().collect();
@@ -141,12 +126,11 @@ pub fn aliases(by_name: &HashMap<String, (i64, String)>) -> Vec<(String, (i64, S
             continue;
         }
         acro.entry(a)
-            .and_modify(|e| *e = None) // collision -> ambiguous
+            .and_modify(|e| *e = None)
             .or_insert_with(|| Some(entry.clone()));
     }
     for (a, entry) in acro {
         if let Some(entry) = entry {
-            // Don't let an acronym shadow a real ship name / existing alias.
             if !by_name.contains_key(&a) {
                 out.push((a, entry));
             }
@@ -172,11 +156,10 @@ mod tests {
         .map(|(id, n)| (n.to_lowercase(), (id, n.to_string())))
         .collect();
         let map: HashMap<String, (i64, String)> = aliases(&by_name).into_iter().collect();
-        assert_eq!(map.get("vaga").map(|e| e.0), Some(1)); // nickname
+        assert_eq!(map.get("vaga").map(|e| e.0), Some(1));
         assert_eq!(map.get("cane").map(|e| e.0), Some(2));
-        assert_eq!(map.get("cfi").map(|e| e.0), Some(3)); // acronym
+        assert_eq!(map.get("cfi").map(|e| e.0), Some(3));
         assert_eq!(map.get("rni").map(|e| e.0), Some(4));
-        // Spaced nickname: "fly catcher" is keyed as a two-word phrase for `multiword_ships`.
         assert_eq!(map.get("fly catcher").map(|e| e.0), Some(5));
     }
 
@@ -197,7 +180,6 @@ mod tests {
     }
 }
 
-/// Levenshtein edit distance (bounded use — small strings).
 pub fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
