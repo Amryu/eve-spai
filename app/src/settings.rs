@@ -137,6 +137,16 @@ pub struct Settings {
     pub minimize_to_tray: bool,
     #[serde(default)]
     pub autostart: bool,
+    #[serde(default)]
+    pub main_window_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub main_window_size: Option<(f32, f32)>,
+    #[serde(default)]
+    pub main_window_maximized: bool,
+    #[serde(default)]
+    pub fleet_ping_window_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub fleet_ping_window_size: Option<(f32, f32)>,
 }
 
 fn default_jabber_server() -> String {
@@ -609,6 +619,11 @@ impl Default for Settings {
             route_via_wormholes: false,
             minimize_to_tray: true,
             autostart: false,
+            main_window_pos: None,
+            main_window_size: None,
+            main_window_maximized: false,
+            fleet_ping_window_pos: None,
+            fleet_ping_window_size: None,
             work_throttle: WorkThrottle::default(),
         }
     }
@@ -968,6 +983,51 @@ impl BattleRule {
 
 pub fn battle_decision(rules: &[BattleRule], d: &MatchData) -> Option<RuleAction> {
     rules.iter().find(|r| r.matches(d)).map(|r| r.action)
+}
+
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn geometry_fields_roundtrip() {
+        let mut s = Settings::default();
+        s.main_window_pos = Some((100.0, 200.0));
+        s.main_window_size = Some((1280.0, 800.0));
+        s.main_window_maximized = true;
+        s.fleet_ping_window_pos = Some((300.0, 50.0));
+        s.fleet_ping_window_size = Some((600.0, 400.0));
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.main_window_pos, Some((100.0, 200.0)));
+        assert_eq!(back.main_window_size, Some((1280.0, 800.0)));
+        assert!(back.main_window_maximized);
+        assert_eq!(back.fleet_ping_window_pos, Some((300.0, 50.0)));
+        assert_eq!(back.fleet_ping_window_size, Some((600.0, 400.0)));
+    }
+
+    #[test]
+    fn legacy_settings_without_geometry_default() {
+        // Settings JSON predating the geometry fields deserializes them to their defaults.
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.main_window_pos, None);
+        assert_eq!(s.main_window_size, None);
+        assert!(!s.main_window_maximized);
+        assert_eq!(s.fleet_ping_window_pos, None);
+        assert_eq!(s.fleet_ping_window_size, None);
+    }
+
+    #[test]
+    fn geometry_update_positive_and_negative() {
+        use crate::app::geometry_update;
+        // Positive: a first value, and a move/resize past the dead-zone, are stored.
+        assert_eq!(geometry_update(None, (10.0, 20.0), 2.0), Some((10.0, 20.0)));
+        assert_eq!(geometry_update(Some((100.0, 100.0)), (140.0, 100.0), 2.0), Some((140.0, 100.0)));
+        // Negative: sub-dead-zone jitter, an unchanged value, and off-screen coords are rejected.
+        assert_eq!(geometry_update(Some((100.0, 100.0)), (101.0, 100.5), 2.0), None);
+        assert_eq!(geometry_update(Some((100.0, 100.0)), (100.0, 100.0), 0.0), None);
+        assert_eq!(geometry_update(None, (-5.0, 10.0), 0.0), None);
+    }
 }
 
 #[cfg(test)]

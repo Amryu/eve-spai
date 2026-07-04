@@ -12,6 +12,7 @@ pub enum OverlayToMain {
     Click(crate::app::IntelClick),
     Verdict { name: String, hidden: bool },
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
+    PingMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
@@ -46,6 +47,10 @@ pub struct OverlayConfig {
     pub window_timeout: f32,
     pub win_pos: Option<(f32, f32)>,
     pub win_size: Option<(f32, f32)>,
+    #[serde(default)]
+    pub ping_win_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub ping_win_size: Option<(f32, f32)>,
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
@@ -283,6 +288,8 @@ mod tests {
             window_timeout: 12.0,
             win_pos: Some((10.0, 20.0)),
             win_size: Some((360.0, 240.0)),
+            ping_win_pos: Some((30.0, 40.0)),
+            ping_win_size: Some((520.0, 320.0)),
         });
         let mut buf: Vec<u8> = Vec::new();
         send(&mut buf, &msg).unwrap();

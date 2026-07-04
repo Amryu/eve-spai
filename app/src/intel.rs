@@ -62,6 +62,18 @@ pub struct IntelReport {
     pub classes: Vec<String>,
     pub pilots: Vec<String>,
     pub count: Option<u32>,
+    /// Count components, kept so `count` can be re-derived when the pilot list changes during
+    /// resolution (a discarded candidate must stop inflating the hostile count). `count_extra` is
+    /// an explicitly stated total (x5, a ship count), `count_plus` a `+N` addend, `count_ships`
+    /// the resolved "Name N" ship counts, `solo` the solo keyword. See `derive_count`.
+    #[serde(default)]
+    pub count_extra: Option<u32>,
+    #[serde(default)]
+    pub count_plus: u32,
+    #[serde(default)]
+    pub count_ships: u32,
+    #[serde(default)]
+    pub solo: bool,
     pub name_number_skips: Vec<(String, u32)>,
     pub isk: Option<u64>,
     pub structures: Vec<(String, Option<String>)>,
@@ -276,10 +288,20 @@ impl IntelState {
             if prev.systems.is_empty() {
                 prev.systems = new.systems.clone();
             }
-            prev.count = match (prev.count, new.count) {
+            prev.count_extra = match (prev.count_extra, new.count_extra) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
+            prev.count_plus = prev.count_plus.max(new.count_plus);
+            prev.count_ships = prev.count_ships.max(new.count_ships);
+            prev.solo = prev.solo || new.solo;
+            prev.count = derive_count(
+                prev.count_extra,
+                prev.count_plus,
+                prev.count_ships,
+                prev.pilots.len() as u32,
+                prev.solo,
+            );
             prev.isk = match (prev.isk, new.isk) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
@@ -461,10 +483,20 @@ fn merge_report_into(dst: &mut IntelReport, src: &IntelReport) {
             dst.links.push(l.clone());
         }
     }
-    dst.count = match (dst.count, src.count) {
+    dst.count_extra = match (dst.count_extra, src.count_extra) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     };
+    dst.count_plus = dst.count_plus.max(src.count_plus);
+    dst.count_ships = dst.count_ships.max(src.count_ships);
+    dst.solo = dst.solo || src.solo;
+    dst.count = derive_count(
+        dst.count_extra,
+        dst.count_plus,
+        dst.count_ships,
+        dst.pilots.len() as u32,
+        dst.solo,
+    );
     dst.isk = match (dst.isk, src.isk) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
@@ -2541,17 +2573,7 @@ pub fn analyze_ctx(
         parse_count(text, &consumed, systems, ship_index, &pilots, known_pilots);
     let named = pilots.len() as u32;
     let solo = lower_tokens.iter().any(|t| t == "solo" && !pilot_tokens.contains(t));
-    let count = if let Some(t) = total_count {
-        Some((t + plus_count).min(999))
-    } else if plus_count > 0 {
-        Some((named + plus_count).min(999))
-    } else if named >= 3 {
-        Some(named)
-    } else if solo {
-        Some(1)
-    } else {
-        None
-    };
+    let count = derive_count(total_count, plus_count, 0, named, solo);
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
     let structures = detect_structures(text);
@@ -2567,6 +2589,10 @@ pub fn analyze_ctx(
         ships,
         classes,
         count,
+        count_extra: total_count,
+        count_plus: plus_count,
+        count_ships: 0,
+        solo,
         name_number_skips,
         isk,
         structures,
@@ -3146,6 +3172,32 @@ pub fn format_isk(isk: u64) -> String {
     } else {
         isk.to_string()
     }
+}
+
+/// Derive the hostile count from its components and the CURRENT pilot count. `named` is the number
+/// of pilots still in the report, so re-deriving after resolution drops a count that was inflated by
+/// discarded candidates. An explicit total (`extra`) stands on its own; otherwise a `+N` addend or
+/// 3+ named pilots or the solo keyword seeds the base. Resolved ship counts always add on top.
+pub fn derive_count(
+    extra: Option<u32>,
+    plus: u32,
+    ships: u32,
+    named: u32,
+    solo: bool,
+) -> Option<u32> {
+    let base = if let Some(t) = extra {
+        t + plus
+    } else if plus > 0 {
+        named + plus
+    } else if named >= 3 {
+        named
+    } else if solo {
+        1
+    } else {
+        0
+    };
+    let total = (base + ships).min(999);
+    (total > 0).then_some(total)
 }
 
 const COUNT_KEYWORDS: &[&str] =
@@ -4410,6 +4462,36 @@ mod tests {
     }
 
     #[test]
+    fn derive_count_tracks_surviving_pilots() {
+        // 3+ named pilots -> that many; a drop below 3 shows no bare count (parse semantics).
+        assert_eq!(derive_count(None, 0, 0, 4, false), Some(4));
+        assert_eq!(derive_count(None, 0, 0, 3, false), Some(3));
+        assert_eq!(derive_count(None, 0, 0, 2, false), None);
+        // A +N addend survives when its named pilots are discarded.
+        assert_eq!(derive_count(None, 20, 0, 1, false), Some(21));
+        assert_eq!(derive_count(None, 20, 0, 0, false), Some(20));
+        // An explicit total (x5 / ship count) stands on its own, ignoring named pilots.
+        assert_eq!(derive_count(Some(5), 0, 0, 2, false), Some(5));
+        // Resolved ship counts add on top; solo seeds 1; nothing -> None.
+        assert_eq!(derive_count(None, 0, 3, 0, false), Some(3));
+        assert_eq!(derive_count(None, 0, 0, 0, true), Some(1));
+        assert_eq!(derive_count(None, 0, 0, 0, false), None);
+    }
+
+    #[test]
+    fn discarded_pilot_stops_inflating_count() {
+        let s = systems();
+        let r = analyze("Gorika Galrog +20 in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(21));
+        assert_eq!(r.count_plus, 20);
+        assert_eq!(r.count_extra, None);
+        // If "Gorika Galrog" is later discarded (ESI: not a character), re-deriving from the
+        // surviving pilots gives 0 named + 20 = 20, not the stale 21.
+        let after = derive_count(r.count_extra, r.count_plus, r.count_ships, 0, r.solo);
+        assert_eq!(after, Some(20));
+    }
+
+    #[test]
     fn combat_prob_is_probes_not_pilots() {
         let s = systems();
         let r = analyze("combat prob in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
@@ -4993,7 +5075,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[test]
     fn kill_paste_extracts_victim_and_ship() {
         let s = systems();

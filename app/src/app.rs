@@ -5975,7 +5975,7 @@ impl SpaiApp {
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
         }
-        {
+        let (moved, moved_size) = {
             let mut st = self.ping_shared.lock().unwrap();
             st.on_top = self.settings.fleet_ping_on_top;
             st.enabled = self.settings.fleet_ping_window;
@@ -5983,7 +5983,12 @@ impl SpaiApp {
             st.doctrine_url = self.settings.doctrine_url.clone();
             st.op_links = self.settings.op_channel_links.clone();
             st.eve_focused = self.eve_focused.load(std::sync::atomic::Ordering::Relaxed);
-        }
+            st.win_pos = self.settings.fleet_ping_window_pos;
+            st.win_size = self.settings.fleet_ping_window_size;
+            (st.moved.take(), st.moved_size.take())
+        };
+        // In-process only: the subprocess overlay reports its own move over IPC (PingMoved).
+        self.persist_ping_geometry(moved, moved_size);
 
         if self.overlay.is_some() {
             self.send_ping_to_overlay();
@@ -5995,7 +6000,11 @@ impl SpaiApp {
                 || self.eve_focused.load(std::sync::atomic::Ordering::Relaxed));
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("fleet_ping_window"),
-            ping_viewport_builder(on_top),
+            ping_viewport_builder(
+                on_top,
+                self.settings.fleet_ping_window_pos,
+                self.settings.fleet_ping_window_size,
+            ),
             {
                 let cb = self.ping_viewport_cb.clone();
                 move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
@@ -6021,6 +6030,8 @@ impl SpaiApp {
             window_timeout: self.settings.alerts.window_timeout,
             win_pos: self.settings.alerts.window_pos,
             win_size: self.settings.alerts.window_size,
+            ping_win_pos: self.settings.fleet_ping_window_pos,
+            ping_win_size: self.settings.fleet_ping_window_size,
         }
     }
 
@@ -6068,6 +6079,8 @@ impl SpaiApp {
             cfg.window_timeout.to_bits().hash(&mut h);
             cfg.win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             cfg.win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
+            cfg.ping_win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
+            cfg.ping_win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             h.finish()
         };
 
@@ -6204,7 +6217,11 @@ impl SpaiApp {
 
             ctx.show_viewport_deferred(
                 egui::ViewportId::from_hash_of("alert_window"),
-                alert_viewport_builder(on_top),
+                alert_viewport_builder(
+                    on_top,
+                    self.settings.alerts.window_pos,
+                    self.settings.alerts.window_size,
+                ),
                 {
                     let cb = self.alert_viewport_cb.clone();
                     move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
@@ -6233,18 +6250,51 @@ impl SpaiApp {
     }
 
     fn persist_alert_geometry(&mut self, moved: Option<(f32, f32)>, moved_size: Option<(f32, f32)>) {
-        if let Some(p) = moved {
-            if self.settings.alerts.window_pos != Some(p) && p.0 >= 0.0 && p.1 >= 0.0 {
-                self.settings.alerts.window_pos = Some(p);
-                self.needs_save = true;
-            }
+        if let Some(p) = moved.and_then(|p| geometry_update(self.settings.alerts.window_pos, p, 0.0)) {
+            self.settings.alerts.window_pos = Some(p);
+            self.needs_save = true;
         }
-        if let Some(s) = moved_size {
-            let prev = self.settings.alerts.window_size;
-            if prev.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0) {
-                self.settings.alerts.window_size = Some(s);
-                self.needs_save = true;
-            }
+        if let Some(s) = moved_size.and_then(|s| geometry_update(self.settings.alerts.window_size, s, 2.0)) {
+            self.settings.alerts.window_size = Some(s);
+            self.needs_save = true;
+        }
+    }
+
+    fn persist_ping_geometry(&mut self, moved: Option<(f32, f32)>, moved_size: Option<(f32, f32)>) {
+        if let Some(p) = moved.and_then(|p| geometry_update(self.settings.fleet_ping_window_pos, p, 0.0)) {
+            self.settings.fleet_ping_window_pos = Some(p);
+            self.needs_save = true;
+        }
+        if let Some(s) =
+            moved_size.and_then(|s| geometry_update(self.settings.fleet_ping_window_size, s, 2.0))
+        {
+            self.settings.fleet_ping_window_size = Some(s);
+            self.needs_save = true;
+        }
+    }
+
+    /// Persist the main window's geometry. While maximized we keep the last floating pos/size (so
+    /// un-maximizing returns there) and only record the maximized flag.
+    fn persist_main_geometry(
+        &mut self,
+        pos: Option<(f32, f32)>,
+        size: Option<(f32, f32)>,
+        maximized: bool,
+    ) {
+        if self.settings.main_window_maximized != maximized {
+            self.settings.main_window_maximized = maximized;
+            self.needs_save = true;
+        }
+        if maximized {
+            return;
+        }
+        if let Some(p) = pos.and_then(|p| geometry_update(self.settings.main_window_pos, p, 0.0)) {
+            self.settings.main_window_pos = Some(p);
+            self.needs_save = true;
+        }
+        if let Some(s) = size.and_then(|s| geometry_update(self.settings.main_window_size, s, 2.0)) {
+            self.settings.main_window_size = Some(s);
+            self.needs_save = true;
         }
     }
 
@@ -13324,7 +13374,19 @@ impl AlertEngine {
                 cache.queue(&c);
             }
             if add > 0 {
-                r.count = Some(r.count.unwrap_or(0) + add);
+                r.count_ships = (r.count_ships + add).min(999);
+            }
+            // Re-derive the count from the pilots that SURVIVED resolution, so a discarded
+            // candidate stops inflating it.
+            let new_count = crate::intel::derive_count(
+                r.count_extra,
+                r.count_plus,
+                r.count_ships,
+                r.pilots.len() as u32,
+                r.solo,
+            );
+            if r.count != new_count {
+                r.count = new_count;
                 changed = true;
             }
         }
@@ -13491,6 +13553,9 @@ impl eframe::App for SpaiApp {
                     crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
                         self.persist_alert_geometry(pos, size)
                     }
+                    crate::ipc::OverlayToMain::PingMoved { pos, size } => {
+                        self.persist_ping_geometry(pos, size)
+                    }
                     crate::ipc::OverlayToMain::Hello => {}
                 }
             }
@@ -13608,6 +13673,24 @@ impl eframe::App for SpaiApp {
         self.char_popout_windows(&ctx);
         if self.jabber_popped {
             self.show_jabber_viewport(&ctx);
+        }
+
+        // Remember the main window's location + size across restarts. Skip the first passes, where
+        // the window can briefly report a pre-restore rect.
+        if ctx.cumulative_pass_nr() > 30 {
+            let (pos, maximized, minimized) = ctx.input(|i| {
+                let vp = i.viewport();
+                (
+                    vp.outer_rect.map(|r| (r.min.x, r.min.y)),
+                    vp.maximized.unwrap_or(false),
+                    vp.minimized.unwrap_or(false),
+                )
+            });
+            if !minimized {
+                let s = ctx.content_rect().size();
+                let size = (s.x > 0.0 && s.y > 0.0).then_some((s.x, s.y));
+                self.persist_main_geometry(pos, size, maximized);
+            }
         }
 
         if self.needs_save {
@@ -14612,16 +14695,43 @@ pub(crate) struct PingWindowState {
     pub(crate) op_links: std::collections::HashMap<String, String>,
     pub(crate) level_applied: Option<bool>,
     pub(crate) level_at: Option<std::time::Instant>,
+    pub(crate) open: bool,
+    /// When the window last (re)opened, for the brief post-show geometry re-assert (Windows race).
+    pub(crate) geom_at: Option<std::time::Instant>,
+    pub(crate) win_pos: Option<(f32, f32)>,
+    pub(crate) win_size: Option<(f32, f32)>,
+    pub(crate) moved: Option<(f32, f32)>,
+    pub(crate) moved_size: Option<(f32, f32)>,
 }
 
 pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowState>>;
 
-pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
+/// Decide whether a captured window geometry should replace the stored one: rejects negative
+/// (off-screen) coords and ignores sub-`min_delta` jitter. `None` means "leave the stored value".
+pub(crate) fn geometry_update(
+    prev: Option<(f32, f32)>,
+    new: (f32, f32),
+    min_delta: f32,
+) -> Option<(f32, f32)> {
+    if new.0 < 0.0 || new.1 < 0.0 {
+        return None;
+    }
+    match prev {
+        Some((a, b)) if (a - new.0).abs() <= min_delta && (b - new.1).abs() <= min_delta => None,
+        _ => Some(new),
+    }
+}
+
+pub(crate) fn ping_viewport_builder(
+    on_top: bool,
+    pos: Option<(f32, f32)>,
+    size: Option<(f32, f32)>,
+) -> egui::ViewportBuilder {
     #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
         .with_title("EVE Spai \u{2014} Fleet ping")
-        .with_inner_size([520.0, 320.0])
+        .with_inner_size(size.map_or([520.0, 320.0], |(w, h)| [w, h]))
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
         .with_taskbar(false)
@@ -14631,6 +14741,9 @@ pub(crate) fn ping_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         } else {
             egui::WindowLevel::Normal
         });
+    if let Some((x, y)) = pos {
+        b = b.with_position([x, y]);
+    }
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
@@ -14663,7 +14776,11 @@ where
     }
 }
 
-pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
+pub(crate) fn alert_viewport_builder(
+    on_top: bool,
+    pos: Option<(f32, f32)>,
+    size: Option<(f32, f32)>,
+) -> egui::ViewportBuilder {
     #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
@@ -14687,8 +14804,10 @@ pub(crate) fn alert_viewport_builder(on_top: bool) -> egui::ViewportBuilder {
         // this window (title "EVE Spai \u{2014} alerts") to Minimized=No.
         .with_transparent(true)
         .with_mouse_passthrough(true)
-        .with_position([80.0, 80.0])
-        .with_inner_size([360.0, 240.0]);
+        // Build with the saved geometry so no frame re-applies the default (on Windows the
+        // hidden->visible cycle would otherwise snap the window back to the default each open).
+        .with_position(pos.map_or([80.0, 80.0], |(x, y)| [x, y]))
+        .with_inner_size(size.map_or([360.0, 240.0], |(w, h)| [w, h]));
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
@@ -14744,10 +14863,12 @@ pub(crate) fn build_alert_viewport_cb(
         let pinned_in = st.pinned;
         let mut level_applied = st.level_applied;
         let mut level_at = st.level_at;
+        let mut geom_at = st.geom_at;
         let mut verdict_pending = st.verdict_pending.clone();
         let mut verdict_explained = st.verdict_explained;
         if just_opened {
             level_applied = None;
+            geom_at = Some(std::time::Instant::now());
         }
         drop(st);
         let mut verdict_out_new: Vec<(String, bool)> = Vec::new();
@@ -14757,12 +14878,20 @@ pub(crate) fn build_alert_viewport_cb(
         if focus && cfg!(target_os = "windows") {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        if just_opened {
+        // Re-assert the saved geometry for a short settle after (re)open. On Windows the window is
+        // shown from hidden here and a single restore command races that map, so keep re-sending
+        // until it sticks; on Linux the one-shot on open is enough.
+        let settle = cfg!(target_os = "windows")
+            && geom_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(400));
+        if just_opened || settle {
             if let Some((w, h)) = win_size {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
             }
             if let Some((x, y)) = win_pos {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+            }
+            if settle {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
         // Re-assert the level only on change or (re)open — NOT every frame (a viewport
@@ -14969,11 +15098,14 @@ pub(crate) fn build_alert_viewport_cb(
         st.pinned = pinned;
         st.level_applied = level_applied;
         st.level_at = level_at;
+        st.geom_at = geom_at;
         st.clicks.extend(clicks);
         st.verdict_pending = verdict_pending;
         st.verdict_explained = verdict_explained;
         st.verdict_out.extend(verdict_out_new);
-        if !just_opened {
+        // Don't capture during the open/settle frames, where the window briefly reports its
+        // pre-restore geometry (which would overwrite the user's real placement).
+        if !just_opened && !settle {
             if let Some(p) = moved {
                 st.moved = Some(p);
             }
@@ -14994,16 +15126,26 @@ pub(crate) fn build_ping_viewport_cb(
         if !st.enabled || st.windows.is_empty() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             st.level_applied = None;
+            st.open = false;
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         if ctx.input(|i| i.viewport().close_requested()) {
             st.windows.clear();
             st.level_applied = None;
+            st.open = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             return;
         }
+        let just_opened = !st.open;
+        st.open = true;
+        if just_opened {
+            st.geom_at = Some(std::time::Instant::now());
+        }
+        let geom_at = st.geom_at;
+        let win_pos = st.win_pos;
+        let win_size = st.win_size;
         let on_top = st.on_top != crate::settings::OnTop::Never
             && (st.on_top == crate::settings::OnTop::Always || st.eve_focused);
         let due = st
@@ -15026,6 +15168,21 @@ pub(crate) fn build_ping_viewport_cb(
         let doctrine_url = st.doctrine_url.clone();
         let op_links = st.op_links.clone();
         drop(st);
+        // Re-assert saved geometry for a short settle after (re)open, so Windows' hidden->visible
+        // map doesn't race the restore (see the alert window for the same reasoning).
+        let settle = cfg!(target_os = "windows")
+            && geom_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(400));
+        if just_opened || settle {
+            if let Some((w, h)) = win_size {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+            }
+            if let Some((x, y)) = win_pos {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+            }
+            if settle {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+        }
         let blinking = pings.iter().any(|s| s.shown_at.elapsed().as_secs_f32() < 3.0);
         egui::CentralPanel::default().show(&ctx, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -15048,6 +15205,19 @@ pub(crate) fn build_ping_viewport_cb(
                 }
             });
         });
+        // Capture a user move/resize (not during the open/settle frames, which report the
+        // pre-restore geometry). Sent to the main process, which persists it.
+        if !just_opened && !settle {
+            let moved = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)));
+            let sz = ctx.screen_rect().size();
+            let mut st = ping_shared.lock().unwrap();
+            if let Some(p) = moved {
+                st.moved = Some(p);
+            }
+            if sz.x > 0.0 && sz.y > 0.0 {
+                st.moved_size = Some((sz.x, sz.y));
+            }
+        }
         if blinking {
             ctx.request_repaint();
         }
@@ -15067,6 +15237,8 @@ pub(crate) struct AlertWindowState {
     pub(crate) open: bool,
     pub(crate) level_applied: Option<bool>,
     pub(crate) level_at: Option<std::time::Instant>,
+    /// When the window last (re)opened, for the brief post-show geometry re-assert (Windows race).
+    pub(crate) geom_at: Option<std::time::Instant>,
     pub(crate) applied_visible: Option<bool>,
     pub(crate) applied_passthrough: Option<bool>,
     pub(crate) enabled: bool,

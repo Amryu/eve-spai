@@ -141,11 +141,22 @@ fn main() -> eframe::Result<()> {
 
     std::thread::spawn(dict::preload);
 
-    let viewport = egui::ViewportBuilder::default()
+    // Restore the main window's last location + size (persisted in settings) at creation, so it
+    // opens where the user left it instead of snapping on the first frame.
+    let saved = crate::store::Store::open().ok().and_then(|s| s.load_settings());
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai")
         .with_icon(app::app_icon())
-        .with_inner_size([1100.0, 720.0])
-        .with_min_inner_size([720.0, 460.0]);
+        .with_min_inner_size([720.0, 460.0])
+        .with_inner_size(
+            saved.as_ref().and_then(|s| s.main_window_size).map_or([1100.0, 720.0], |(w, h)| [w, h]),
+        );
+    if let Some((x, y)) = saved.as_ref().and_then(|s| s.main_window_pos) {
+        viewport = viewport.with_position([x, y]);
+    }
+    if saved.as_ref().is_some_and(|s| s.main_window_maximized) {
+        viewport = viewport.with_maximized(true);
+    }
     let native_options = base_native_options(viewport);
 
     eframe::run_native(

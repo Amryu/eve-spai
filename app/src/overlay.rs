@@ -44,6 +44,8 @@ struct Overlay {
     alert_on_top: Arc<Mutex<crate::settings::OnTop>>,
     alert_pos_sent: Option<(f32, f32)>,
     alert_size_sent: Option<(f32, f32)>,
+    ping_pos_sent: Option<(f32, f32)>,
+    ping_size_sent: Option<(f32, f32)>,
     eve_focused: bool,
     eve_focus_checked: Option<std::time::Instant>,
     dscan_view: Option<crate::app::DscanView>,
@@ -95,6 +97,8 @@ impl Overlay {
             alert_on_top,
             alert_pos_sent: None,
             alert_size_sent: None,
+            ping_pos_sent: None,
+            ping_size_sent: None,
             eve_focused: true,
             eve_focus_checked: None,
             dscan_view: None,
@@ -278,6 +282,8 @@ impl Overlay {
                             let mut st = ping_shared.lock().unwrap();
                             st.enabled = c.ping_enabled;
                             st.on_top = c.ping_on_top;
+                            st.win_pos = c.ping_win_pos;
+                            st.win_size = c.ping_win_size;
                         }
                         {
                             let mut st = alert_shared.lock().unwrap();
@@ -377,14 +383,31 @@ impl eframe::App for Overlay {
             }
         }
 
-        let ping_on_top = {
-            let st = self.ping_shared.lock().unwrap();
-            st.on_top != crate::settings::OnTop::Never
-                && (st.on_top == crate::settings::OnTop::Always || st.eve_focused)
+        let (ping_on_top, ping_pos, ping_size, p_moved, p_moved_size) = {
+            let mut st = self.ping_shared.lock().unwrap();
+            let on_top = st.on_top != crate::settings::OnTop::Never
+                && (st.on_top == crate::settings::OnTop::Always || st.eve_focused);
+            (on_top, st.win_pos, st.win_size, st.moved.take(), st.moved_size.take())
         };
+        {
+            let pos = p_moved.filter(|p| Some(*p) != self.ping_pos_sent);
+            let size = p_moved_size.filter(|s| {
+                self.ping_size_sent.map_or(true, |(w, h)| (w - s.0).abs() > 2.0 || (h - s.1).abs() > 2.0)
+            });
+            if pos.is_some() || size.is_some() {
+                let mut out = std::io::stdout().lock();
+                let _ = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::PingMoved { pos, size });
+                if pos.is_some() {
+                    self.ping_pos_sent = pos;
+                }
+                if size.is_some() {
+                    self.ping_size_sent = size;
+                }
+            }
+        }
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("fleet_ping_window"),
-            crate::app::ping_viewport_builder(ping_on_top),
+            crate::app::ping_viewport_builder(ping_on_top, ping_pos, ping_size),
             {
                 let cb = self.ping_viewport_cb.clone();
                 move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
@@ -396,7 +419,7 @@ impl eframe::App for Overlay {
             ot != crate::settings::OnTop::Never
                 && (ot == crate::settings::OnTop::Always || self.eve_focused)
         };
-        {
+        let (alert_pos, alert_size) = {
             let mut st = self.alert_shared.lock().unwrap();
             st.on_top_level = alert_on_top;
             // Windows: the alert viewport starts HIDDEN, and a hidden deferred viewport's own render
@@ -414,10 +437,11 @@ impl eframe::App for Overlay {
                     st.applied_visible = Some(active);
                 }
             }
-        }
+            (st.win_pos, st.win_size)
+        };
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("alert_window"),
-            crate::app::alert_viewport_builder(alert_on_top),
+            crate::app::alert_viewport_builder(alert_on_top, alert_pos, alert_size),
             {
                 let cb = self.alert_viewport_cb.clone();
                 move |ui: &mut egui::Ui, class: egui::ViewportClass| cb(ui, class)
