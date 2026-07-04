@@ -620,7 +620,8 @@ const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe", "
 
 /// Common Title-Case intel/English words that are not pilot names.
 const PILOT_STOP: &[&str] = &[
-    "gate", "camp", "camper", "campers", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
+    "gate", "gates", "stargate", "stargates", "camp", "camper", "campers", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
+    "solo",
     "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "nvm", "ess", "skyhook", "hostile",
     "filament", "filaments", "needlejack", "needlejacks", "trace", "traces",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
@@ -2281,8 +2282,10 @@ pub(crate) fn detect_location(
     // Prefer a system named in this message; otherwise fall back to the channel's
     // last-known system so a bare "C-J gate" still resolves against its neighbours.
     let primary = detected.first().map(|d| d.id).or(context_system);
+    let is_gate_word =
+        |t: &str| matches!(t.to_lowercase().as_str(), "gate" | "gates" | "stargate" | "stargates");
     for (i, tok) in tokens.iter().enumerate() {
-        if !tok.eq_ignore_ascii_case("gate") || i == 0 {
+        if !is_gate_word(tok) || i == 0 {
             continue;
         }
         let cand = tokens[i - 1];
@@ -2345,10 +2348,26 @@ pub(crate) fn detect_location(
         if resolved.is_none() && cand.chars().all(|c| c.is_ascii_digit()) {
             break;
         }
-        gate = Some(resolved.map_or_else(|| cand.to_string(), |s| s.name.clone()));
-        consumed.push(cand.to_lowercase());
-        if let Some(info) = resolved {
-            detected.retain(|d| d.id != info.id);
+        match resolved {
+            Some(info) => {
+                gate = Some(info.name.clone());
+                consumed.push(cand.to_lowercase());
+                detected.retain(|d| d.id != info.id);
+            }
+            None => {
+                // The word before the gate keyword isn't a resolvable system — never capture a
+                // keyword/word ("camp gate" is NOT a "camp" gate) as the gate name. If the system
+                // has exactly ONE gate neighbour, name the gate after it; otherwise show a NAMELESS
+                // gate (empty string). Leave `cand` unconsumed so it parses as its own keyword/name.
+                gate = Some(
+                    primary
+                        .map(|p| systems.neighbors_gates_only(p))
+                        .filter(|ns| ns.len() == 1)
+                        .and_then(|ns| systems.info_of(ns[0]))
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default(),
+                );
+            }
         }
         break;
     }
@@ -3287,12 +3306,16 @@ pub fn analyze_ctx(
     // "pilot1 pilot2 +20" = 22; a stated total ("7 reds") wins; otherwise a bare list of
     // 3+ named pilots reports its own count. Fewer than 3 named with no number = no badge.
     let named = pilots.len() as u32;
+    // "solo" = a single hostile (a keyword, not a pilot).
+    let solo = lower_tokens.iter().any(|t| t == "solo" && !pilot_tokens.contains(t));
     let count = if let Some(t) = total_count {
         Some((t + plus_count).min(999)) // a stated number ("3 Drake +2" = 5)
     } else if plus_count > 0 {
         Some((named + plus_count).min(999)) // named pilots + "N more" ("a b +20" = 22)
     } else if named >= 3 {
         Some(named) // a bare list of 3+ named pilots
+    } else if solo {
+        Some(1) // "solo" callout
     } else {
         None
     };
@@ -6697,6 +6720,31 @@ mod tests {
             );
             assert!(r.ships.iter().any(|sh| sh.name == "Prospect"), "{t}: ships={:?}", r.ships);
         }
+    }
+
+    #[test]
+    fn gate_variants_nameless_gate_and_solo() {
+        let s = systems();
+        // "camp gate": never capture the "camp" keyword as the gate name; a nameless gate + the
+        // camp flag (the test systems have no neighbour graph, so no single gate to name it after).
+        let r = analyze("1DQ1-A camp gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.camp, "camp keyword");
+        assert!(r.gates.iter().any(|g| g.is_empty()), "nameless gate expected: {:?}", r.gates);
+        assert!(
+            !r.gates.iter().any(|g| g.eq_ignore_ascii_case("camp")),
+            "camp captured as gate: {:?}",
+            r.gates
+        );
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("camp")), "camp pilot: {:?}", r.pilots);
+        // Gate-word variants are keywords, never pilots.
+        for kw in ["gates", "stargate", "stargates"] {
+            let r = analyze(&format!("Rancer {kw} clear"), &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case(kw)), "{kw} pilot: {:?}", r.pilots);
+        }
+        // "solo" = a single hostile, and is not a pilot.
+        let r = analyze("Rancer solo Sabre", &s, &ships_with(&[("Sabre", 22456)]), &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(1), "solo count: {:?}", r.count);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("solo")), "solo pilot: {:?}", r.pilots);
     }
 
     #[test]

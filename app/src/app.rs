@@ -18248,11 +18248,15 @@ fn intel_row(
                     }
                 }
 
-                // Gate panels (a card may name several gates).
+                // Gate panels (a card may name several gates). A nameless gate (couldn't resolve a
+                // system) shows just the "gate" keyword.
                 for g in &r.gates {
-                    ui.label(
-                        egui::RichText::new(format!("{} {g} gate", icon::SIGN_IN)).color(accent).strong(),
-                    );
+                    let label = if g.is_empty() {
+                        format!("{} gate", icon::SIGN_IN)
+                    } else {
+                        format!("{} {g} gate", icon::SIGN_IN)
+                    };
+                    ui.label(egui::RichText::new(label).color(accent).strong());
                 }
 
                 // Alliance logos for shorthand mentions (frat, init, …).
