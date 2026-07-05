@@ -2457,6 +2457,12 @@ pub fn analyze_ctx(
 
     let (diamond_rats, dia_consumed) = detect_diamond_rats(&tokens);
     let (anom_sigs, anom_consumed) = detect_anom_sigs(&tokens, systems);
+    // A wormhole already shows its signature on the wormhole badge, so drop a duplicate Sig badge
+    // for the same code.
+    let anom_sigs: Vec<(AnomKind, String)> = anom_sigs
+        .into_iter()
+        .filter(|(_, code)| wh_sig.as_deref().map_or(true, |ws| !code.eq_ignore_ascii_case(ws)))
+        .collect();
     let npc_consumed: std::collections::HashSet<String> =
         dia_consumed.into_iter().chain(anom_consumed).collect();
     consumed.extend(npc_consumed.iter().cloned());
@@ -4678,6 +4684,27 @@ mod tests {
         assert_eq!(sz("frig hole in Rancer"), Some(ShipSize::Frigate));
         // Size is only read inside a wormhole message, so a normal gang report is unaffected.
         assert_eq!(sz("large gang in Rancer"), None);
+    }
+
+    #[test]
+    fn wormhole_sig_not_duplicated_as_sig_badge() {
+        let s = systems();
+        // A wormhole sig shows on the wormhole badge, so it must not also raise a Sig badge.
+        let r = analyze("sig ABC-123 wormhole to nullsec", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.wormhole, "should be a wormhole");
+        assert_eq!(r.wh_sig.as_deref(), Some("ABC-123"), "wh_sig={:?}", r.wh_sig);
+        assert!(
+            !r.anom_sigs.iter().any(|(_, c)| c.eq_ignore_ascii_case("ABC-123")),
+            "duplicate Sig badge: {:?}",
+            r.anom_sigs
+        );
+        // A non-wormhole signature still raises its Sig badge.
+        let r2 = analyze("sig XYZ-456 in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(
+            r2.anom_sigs.iter().any(|(_, c)| c.eq_ignore_ascii_case("XYZ-456")),
+            "anom_sigs={:?}",
+            r2.anom_sigs
+        );
     }
 
     #[test]
