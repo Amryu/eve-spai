@@ -15186,7 +15186,9 @@ pub(crate) fn build_alert_viewport_cb(
 
         let mut st = alert_shared.lock().unwrap();
         if dismiss {
+            // Closing overrides a pin: otherwise `active` (secs > 0 || pinned) keeps it open.
             st.secs = 0.0;
+            pinned = false;
         } else if hovered {
             st.secs = st.secs.max(3.0);
         } else if !pinned && st.secs.is_finite() {
