@@ -48,7 +48,7 @@ COPY crates/server  crates/server
 # so no migration files need to ship in the runtime image.
 WORKDIR /build/crates/server
 RUN cargo build --release --locked --bin eve-spai-br \
-    && strip target/release/eve-spai-br || true
+    && { strip target/release/eve-spai-br || true; }
 
 ############################
 # Stage 2 — runtime
