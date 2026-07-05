@@ -1023,10 +1023,14 @@ mod window_geometry_tests {
         // Positive: a first value, and a move/resize past the dead-zone, are stored.
         assert_eq!(geometry_update(None, (10.0, 20.0), 2.0), Some((10.0, 20.0)));
         assert_eq!(geometry_update(Some((100.0, 100.0)), (140.0, 100.0), 2.0), Some((140.0, 100.0)));
-        // Negative: sub-dead-zone jitter, an unchanged value, and off-screen coords are rejected.
+        // Negative coords persist: a monitor left of / above the primary has negative
+        // virtual-desktop coords, needed to reopen the window on that monitor.
+        assert_eq!(geometry_update(None, (-1920.0, 10.0), 0.0), Some((-1920.0, 10.0)));
+        assert_eq!(geometry_update(None, (200.0, -1080.0), 0.0), Some((200.0, -1080.0)));
+        // Rejected: sub-dead-zone jitter, an unchanged value, and winit's minimized sentinel.
         assert_eq!(geometry_update(Some((100.0, 100.0)), (101.0, 100.5), 2.0), None);
         assert_eq!(geometry_update(Some((100.0, 100.0)), (100.0, 100.0), 0.0), None);
-        assert_eq!(geometry_update(None, (-5.0, 10.0), 0.0), None);
+        assert_eq!(geometry_update(Some((100.0, 100.0)), (-32001.0, -32001.0), 0.0), None);
     }
 }
 

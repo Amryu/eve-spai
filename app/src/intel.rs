@@ -3319,8 +3319,19 @@ fn parse_count(
         let kw_neighbour = prev.is_some_and(is_count_keyword) || next.is_some_and(is_count_keyword);
         let ship_neighbour = prev.is_some_and(|w| is_ship_or_class_word(w, ship_index))
             || next.is_some_and(|w| is_ship_or_class_word(w, ship_index));
-        let qualified =
-            attached_plus || attached_x || plus_neighbour || kw_neighbour || ship_neighbour;
+        // "N in system" / "N in local": the number is followed by "in" + a tight location word.
+        // Keep the vocab tight so "5 in Rancer" (a system name) stays unqualified.
+        let loc_neighbour = next.is_some_and(|w| w.eq_ignore_ascii_case("in"))
+            && words.get(i + 2).is_some_and(|w| {
+                let lw = w.trim_matches(|c: char| !c.is_alphanumeric()).to_ascii_lowercase();
+                matches!(lw.as_str(), "system" | "systems" | "sys" | "local")
+            });
+        let qualified = attached_plus
+            || attached_x
+            || plus_neighbour
+            || kw_neighbour
+            || ship_neighbour
+            || loc_neighbour;
         if bare_number
             && pilots.iter().any(|p| {
                 let pl = p.to_lowercase();
@@ -3359,7 +3370,7 @@ fn parse_count(
             if (1..=999).contains(&n) {
                 if attached_plus || plus_neighbour {
                     plus = (plus + n).min(999);
-                } else if attached_x || kw_neighbour || ship_neighbour {
+                } else if attached_x || kw_neighbour || ship_neighbour || loc_neighbour {
                     best = Some(best.map_or(n, |b| (b + n).min(999)));
                 } else {
                     continue;
@@ -5482,6 +5493,9 @@ mod tests {
         assert_eq!(pos("2 marauders in Rancer", &noships()), Some(2), "ship class");
         assert_eq!(pos("3 Drake in Rancer", &ships), Some(3), "known hull");
         assert_eq!(pos("2 Drakes in Rancer", &ships), Some(2), "plural hull");
+        assert_eq!(pos("5 in system", &noships()), Some(5), "N in system");
+        assert_eq!(pos("10 in local", &noships()), Some(10), "N in local");
+        assert_eq!(pos("6 in sys", &noships()), Some(6), "N in sys");
         // Negative: a lone number, with no +/x/keyword/ship beside it, does not count.
         assert_eq!(pos("Rancer 5", &noships()), None, "lone trailing number");
         assert_eq!(pos("5 in Rancer", &noships()), None, "lone leading number");

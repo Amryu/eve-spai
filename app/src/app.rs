@@ -13174,7 +13174,27 @@ impl AlertEngine {
                     None => title,
                 };
                 let text = alert_text(r);
-                let body = format!("{text}\n{} · {}", r.reporter, r.channel);
+                // Pilot names (even unconfirmed) in the OS notification, capped for readability.
+                // alert_text omits them and is shared with pushover/alert-window/log, so append
+                // here on the notification body only.
+                let names: Vec<&str> = r
+                    .pilots
+                    .iter()
+                    .map(|s| s.as_str())
+                    .filter(|n| !crate::intel::is_pilot_stopword(n))
+                    .collect();
+                let pilots_line = if names.is_empty() {
+                    String::new()
+                } else {
+                    let shown = names.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+                    let extra = names.len().saturating_sub(5);
+                    if extra > 0 {
+                        format!("\n{shown} +{extra} more")
+                    } else {
+                        format!("\n{shown}")
+                    }
+                };
+                let body = format!("{text}{pilots_line}\n{} · {}", r.reporter, r.channel);
                 fired.push(Fire {
                     id: r.id,
                     sys_id,
@@ -14785,7 +14805,10 @@ pub(crate) fn geometry_update(
     new: (f32, f32),
     min_delta: f32,
 ) -> Option<(f32, f32)> {
-    if new.0 < 0.0 || new.1 < 0.0 {
+    // Allow negative coords: a monitor left of / above the primary has negative virtual-desktop
+    // coordinates, and dropping them loses which monitor a window was on. Only reject winit garbage
+    // (minimized-window sentinels report values around -32000).
+    if new.0.abs() > 32000.0 || new.1.abs() > 32000.0 {
         return None;
     }
     match prev {
