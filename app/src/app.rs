@@ -399,9 +399,7 @@ pub struct SpaiApp {
     really_exit: bool,
     raise_reset_top: bool,
     overlay: Option<crate::ipc::OverlayLink>,
-    ping_sent_hash: Option<u64>,
     config_sent_hash: Option<u64>,
-    alert_sent_hash: Option<u64>,
     dscan_clip: Option<arboard::Clipboard>,
     dscan_checked: Option<std::time::Instant>,
     dscan_seen_hash: u64,
@@ -734,6 +732,16 @@ impl SpaiApp {
             cc.egui_ctx.clone(),
             overlay_stdin.clone(),
         ));
+        let system_status: crate::systemstatus::SharedStatus =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        crate::systemstatus::spawn(system_status.clone(), cc.egui_ctx.clone());
+        let affiliations = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::affiliation::AffilCache::default(),
+        ));
+        crate::affiliation::spawn(affiliations.clone(), cc.egui_ctx.clone());
+        let ping_shared: SharedPingWindow = std::sync::Arc::new(std::sync::Mutex::new(
+            PingWindowState { enabled: settings.fleet_ping_window, ..Default::default() },
+        ));
         spawn_alert_daemon(
             alerts_engine.clone(),
             intel_state.clone(),
@@ -741,13 +749,13 @@ impl SpaiApp {
             player.clone(),
             killfeed.clone(),
             kill_cache.clone(),
+            system_status.clone(),
+            affiliations.clone(),
+            ping_shared.clone(),
             cc.egui_ctx.clone(),
         );
 
         let eve_focused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let ping_shared: SharedPingWindow = std::sync::Arc::new(std::sync::Mutex::new(
-            PingWindowState { enabled: settings.fleet_ping_window, ..Default::default() },
-        ));
 
         let ping_viewport_cb = build_ping_viewport_cb(ping_shared.clone());
         let alert_viewport_cb = build_alert_viewport_cb(alert_shared.clone());
@@ -861,12 +869,7 @@ impl SpaiApp {
             player,
             systems: None,
             bridges_applied: Vec::new(),
-            system_status: {
-                let status: crate::systemstatus::SharedStatus =
-                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-                crate::systemstatus::spawn(status.clone(), cc.egui_ctx.clone());
-                status
-            },
+            system_status,
             alerts_engine,
             recent_alerts,
             alert_feed: Vec::new(),
@@ -917,9 +920,7 @@ impl SpaiApp {
                     None
                 }
             },
-            ping_sent_hash: None,
             config_sent_hash: None,
-            alert_sent_hash: None,
             dscan_clip: None,
             dscan_checked: None,
             dscan_seen_hash: 0,
@@ -1072,13 +1073,7 @@ impl SpaiApp {
             type_names: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             type_names_loading: std::sync::Arc::new(std::sync::Mutex::new(false)),
             pilots,
-            affiliations: {
-                let cache = std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::affiliation::AffilCache::default(),
-                ));
-                crate::affiliation::spawn(cache.clone(), cc.egui_ctx.clone());
-                cache
-            },
+            affiliations,
             activity,
             sightings,
             revivals,
@@ -6039,37 +6034,14 @@ impl SpaiApp {
         use std::hash::{Hash, Hasher};
         let Some(link) = self.overlay.as_ref() else { return };
         if link.take_reconnected() {
-            self.ping_sent_hash = None;
             self.config_sent_hash = None;
-            self.alert_sent_hash = None;
+            *self.alerts_engine.alert_sent_hash.lock().unwrap() = None;
+            *self.alerts_engine.ping_sent_hash.lock().unwrap() = None;
         }
 
-        let msg = {
-            let mut st = self.ping_shared.lock().unwrap();
-            let raise = std::mem::take(&mut st.raise);
-            let pings: Vec<crate::pings::Ping> = st.windows.iter().map(|w| w.ping.clone()).collect();
-            crate::ipc::PingMsg {
-                pings,
-                raise,
-                doctrine_url: st.doctrine_url.clone(),
-                op_links: st.op_links.clone(),
-            }
-        };
+        // The engine thread forwards the ping list (so pings raise the overlay while minimized);
+        // the UI only owns the overlay Config, which doesn't change while minimized.
         let cfg = self.overlay_config();
-
-        // Hash the PING content and the overlay CONFIG SEPARATELY so the two messages resend
-        // independently. Critically, an alert-window move/resize (cfg.win_pos / win_size) must NOT
-        // resend the ping list — otherwise the overlay would treat the unchanged pings as fresh and
-        // re-blink hours-old pings whenever the alert window is dragged.
-        let ping_hash = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            serde_json::to_string(&msg.pings).unwrap_or_default().hash(&mut h);
-            msg.doctrine_url.hash(&mut h);
-            let mut ops: Vec<(&String, &String)> = msg.op_links.iter().collect();
-            ops.sort();
-            ops.hash(&mut h);
-            h.finish()
-        };
         let config_hash = {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             cfg.ping_enabled.hash(&mut h);
@@ -6083,14 +6055,9 @@ impl SpaiApp {
             cfg.ping_win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             h.finish()
         };
-
         if Some(config_hash) != self.config_sent_hash {
             link.send(&crate::ipc::MainToOverlay::Config(cfg));
             self.config_sent_hash = Some(config_hash);
-        }
-        if Some(ping_hash) != self.ping_sent_hash || msg.raise {
-            link.send(&crate::ipc::MainToOverlay::Ping(msg));
-            self.ping_sent_hash = Some(ping_hash);
         }
     }
 
@@ -6111,6 +6078,12 @@ impl SpaiApp {
                 self.eve_focused.store(eve_is_focused(), std::sync::atomic::Ordering::Relaxed);
                 self.eve_focus_checked = Some(std::time::Instant::now());
             }
+        }
+
+        // Overlay subprocess: the engine thread pushes the enriched update (works while minimized);
+        // only the in-process fallback renders here.
+        if self.overlay.is_some() {
+            return;
         }
 
         let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
@@ -6148,11 +6121,6 @@ impl SpaiApp {
         } else {
             build_last_ship(&self.intel_state.lock().unwrap().reports)
         };
-
-        if self.overlay.is_some() {
-            self.send_alert_to_overlay(feed, status, resolved_pilots, uncertain, last_ship, feature);
-            return;
-        }
 
         {
             let on_top = self.settings.alerts.on_top != crate::settings::OnTop::Never
@@ -6296,94 +6264,6 @@ impl SpaiApp {
             self.settings.main_window_size = Some(s);
             self.needs_save = true;
         }
-    }
-
-    fn send_alert_to_overlay(
-        &mut self,
-        feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
-        status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
-        resolved_pilots: std::collections::HashMap<String, i64>,
-        uncertain: std::collections::HashSet<String>,
-        last_ship: std::collections::HashMap<String, (i64, String, i64)>,
-        feature: bool,
-    ) {
-        use std::hash::{Hash, Hasher};
-
-        let player_sys = self.player_system();
-        let from_you: Vec<Option<u32>> = feed
-            .iter()
-            .map(|(r, _)| jumps_from_you(&self.systems, player_sys, r.primary_system().map(|s| s.id)))
-            .collect();
-
-        let Some(link) = self.overlay.as_ref() else { return };
-
-        let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
-        let mut kill_chars: Vec<i64> = Vec::new();
-        {
-            let kc = self.kill_cache.lock().unwrap();
-            for (r, _) in &feed {
-                for lnk in &r.links {
-                    if let Some(kid) = lnk.kill_id {
-                        if let Some(Some(info)) = kc.get(&kid) {
-                            let info = info.clone();
-                            kill_chars.extend(info.victim_char);
-                            kill_chars.extend(info.final_blow_char);
-                            kills_send.insert(kid, info);
-                        }
-                    }
-                }
-            }
-        }
-        let mut affil_send: std::collections::HashMap<i64, crate::affiliation::Affil> = Default::default();
-        {
-            let mut ac = self.affiliations.lock().unwrap();
-            for &cid in resolved_pilots.values().chain(kill_chars.iter()) {
-                ac.want(cid);
-                if let Some(a) = ac.get(cid) {
-                    affil_send.insert(cid, a);
-                }
-            }
-        }
-
-        let (fresh, daemon_secs) = {
-            let mut st = self.alert_shared.lock().unwrap();
-            (std::mem::take(&mut st.focus_pending), st.secs)
-        };
-        let secs = if !feature || feed.is_empty() {
-            0.0
-        } else if fresh {
-            if daemon_secs.is_finite() { daemon_secs.max(0.0) } else { ALERT_SECS_INFINITE }
-        } else {
-            ALERT_SECS_REFRESH
-        };
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
-        from_you.hash(&mut hasher);
-        hash_sorted_map(&mut hasher, &status);
-        hash_sorted_map(&mut hasher, &resolved_pilots);
-        hash_sorted_map(&mut hasher, &last_ship);
-        hash_sorted_map(&mut hasher, &kills_send);
-        hash_sorted_map(&mut hasher, &affil_send);
-        let hash = hasher.finish();
-
-        if Some(hash) == self.alert_sent_hash && !fresh {
-            return;
-        }
-        let msg = crate::ipc::AlertMsg {
-            feed,
-            from_you,
-            status,
-            resolved_pilots,
-            uncertain,
-            last_ship,
-            kills: kills_send,
-            affil: affil_send,
-            secs,
-            focus: fresh,
-        };
-        link.send(&crate::ipc::MainToOverlay::Alert(msg));
-        self.alert_sent_hash = Some(hash);
     }
 
     fn persist_view_options(&mut self) {
@@ -12987,6 +12867,8 @@ struct AlertEngine {
     alert_shared: SharedAlertWindow,
     ctx: egui::Context,
     overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
+    alert_sent_hash: std::sync::Mutex<Option<u64>>,
+    ping_sent_hash: std::sync::Mutex<Option<u64>>,
 }
 
 impl AlertEngine {
@@ -13004,7 +12886,185 @@ impl AlertEngine {
             alert_shared,
             ctx,
             overlay_stdin,
+            alert_sent_hash: std::sync::Mutex::new(None),
+            ping_sent_hash: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Push the enriched `AlertMsg` (resolved pilots, jump distances, ...) from the engine thread,
+    /// so it keeps updating while the main window is minimized and its UI loop is parked.
+    fn push_overlay_update(
+        &self,
+        intel_state: &std::sync::Mutex<crate::intel::IntelState>,
+        pilots: &crate::pilot::SharedPilots,
+        player: &crate::esi::SharedPlayer,
+        system_status: &crate::systemstatus::SharedStatus,
+        affiliations: &crate::affiliation::SharedAffil,
+        kill_cache: &crate::kills::KillCache,
+    ) {
+        use std::hash::{Hash, Hasher};
+        if self.overlay_stdin.lock().unwrap().is_none() {
+            return;
+        }
+        let cfg = self.config.lock().unwrap().clone();
+        let feature = cfg.enabled && cfg.alerts.rules.iter().any(|r| r.enabled && r.custom_window);
+
+        let raw: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = {
+            let st = self.alert_shared.lock().unwrap();
+            let n = st.feed.len();
+            st.feed[n.saturating_sub(50)..].to_vec()
+        };
+        let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
+            if !feature || raw.is_empty() {
+                Vec::new()
+            } else {
+                let live = intel_state.lock().unwrap();
+                raw.iter()
+                    .filter_map(|(r, sev)| {
+                        live.reports.iter().find(|lr| lr.id == r.id).cloned().map(|lr| (lr, *sev))
+                    })
+                    .collect()
+            };
+
+        let resolved_pilots: std::collections::HashMap<String, i64> = if feed.is_empty() {
+            Default::default()
+        } else {
+            let mut cache = pilots.lock().unwrap();
+            cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
+        };
+        let uncertain = if feed.is_empty() {
+            Default::default()
+        } else {
+            uncertain_set(&pilots.lock().unwrap(), &resolved_pilots)
+        };
+        let status = if feed.is_empty() {
+            Default::default()
+        } else {
+            system_status.lock().unwrap().clone()
+        };
+        let last_ship = if feed.is_empty() {
+            Default::default()
+        } else {
+            build_last_ship(&intel_state.lock().unwrap().reports)
+        };
+
+        let player_sys = {
+            let p = player.lock().unwrap();
+            p.locations.get(&cfg.active_character).map(|(s, _)| *s).or(p.system_id)
+        };
+        let from_you: Vec<Option<u32>> = feed
+            .iter()
+            .map(|(r, _)| jumps_from_you(&cfg.systems, player_sys, r.primary_system().map(|s| s.id)))
+            .collect();
+
+        let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
+        let mut kill_chars: Vec<i64> = Vec::new();
+        {
+            let kc = kill_cache.lock().unwrap();
+            for (r, _) in &feed {
+                for lnk in &r.links {
+                    if let Some(kid) = lnk.kill_id {
+                        if let Some(Some(info)) = kc.get(&kid) {
+                            let info = info.clone();
+                            kill_chars.extend(info.victim_char);
+                            kill_chars.extend(info.final_blow_char);
+                            kills_send.insert(kid, info);
+                        }
+                    }
+                }
+            }
+        }
+        let mut affil_send: std::collections::HashMap<i64, crate::affiliation::Affil> = Default::default();
+        {
+            let mut ac = affiliations.lock().unwrap();
+            for &cid in resolved_pilots.values().chain(kill_chars.iter()) {
+                ac.want(cid);
+                if let Some(a) = ac.get(cid) {
+                    affil_send.insert(cid, a);
+                }
+            }
+        }
+
+        let (fresh, daemon_secs) = {
+            let mut st = self.alert_shared.lock().unwrap();
+            (std::mem::take(&mut st.focus_pending), st.secs)
+        };
+        let secs = if !feature || feed.is_empty() {
+            0.0
+        } else if fresh {
+            if daemon_secs.is_finite() { daemon_secs.max(0.0) } else { ALERT_SECS_INFINITE }
+        } else {
+            ALERT_SECS_REFRESH
+        };
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
+        from_you.hash(&mut hasher);
+        hash_sorted_map(&mut hasher, &status);
+        hash_sorted_map(&mut hasher, &resolved_pilots);
+        hash_sorted_map(&mut hasher, &last_ship);
+        hash_sorted_map(&mut hasher, &kills_send);
+        hash_sorted_map(&mut hasher, &affil_send);
+        let hash = hasher.finish();
+
+        {
+            let mut prev = self.alert_sent_hash.lock().unwrap();
+            if *prev == Some(hash) && !fresh {
+                return;
+            }
+            *prev = Some(hash);
+        }
+        let msg = crate::ipc::AlertMsg {
+            feed,
+            from_you,
+            status,
+            resolved_pilots,
+            uncertain,
+            last_ship,
+            kills: kills_send,
+            affil: affil_send,
+            secs,
+            focus: fresh,
+        };
+        crate::ipc::send_shared(&self.overlay_stdin, &crate::ipc::MainToOverlay::Alert(msg));
+    }
+
+    /// Forward fleet pings to the overlay from the engine thread, so a ping raises the overlay
+    /// window even while the main window is minimized. Config (geometry/on-top) stays on the UI
+    /// thread; it doesn't change while minimized.
+    fn push_ping_update(&self, ping_shared: &SharedPingWindow) {
+        use std::hash::{Hash, Hasher};
+        if self.overlay_stdin.lock().unwrap().is_none() {
+            return;
+        }
+        let msg = {
+            let mut st = ping_shared.lock().unwrap();
+            let raise = std::mem::take(&mut st.raise);
+            let pings: Vec<crate::pings::Ping> = st.windows.iter().map(|w| w.ping.clone()).collect();
+            crate::ipc::PingMsg {
+                pings,
+                raise,
+                doctrine_url: st.doctrine_url.clone(),
+                op_links: st.op_links.clone(),
+            }
+        };
+        let hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            serde_json::to_string(&msg.pings).unwrap_or_default().hash(&mut h);
+            msg.doctrine_url.hash(&mut h);
+            let mut ops: Vec<(&String, &String)> = msg.op_links.iter().collect();
+            ops.sort();
+            ops.hash(&mut h);
+            h.finish()
+        };
+        {
+            let mut prev = self.ping_sent_hash.lock().unwrap();
+            if Some(hash) == *prev && !msg.raise {
+                return;
+            }
+            *prev = Some(hash);
+        }
+        crate::ipc::send_shared(&self.overlay_stdin, &crate::ipc::MainToOverlay::Ping(msg));
     }
 
     fn evaluate(
@@ -13483,6 +13543,9 @@ fn spawn_alert_daemon(
     player: crate::esi::SharedPlayer,
     killfeed: crate::zkill::SharedKillFeed,
     kill_cache: crate::kills::KillCache,
+    system_status: crate::systemstatus::SharedStatus,
+    affiliations: crate::affiliation::SharedAffil,
+    ping_shared: SharedPingWindow,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -13507,6 +13570,15 @@ fn spawn_alert_daemon(
             );
             dirty |= engine.reconcile(&intel_state, &pilots);
             dirty |= engine.evaluate(&intel_state, &player);
+            engine.push_overlay_update(
+                &intel_state,
+                &pilots,
+                &player,
+                &system_status,
+                &affiliations,
+                &kill_cache,
+            );
+            engine.push_ping_update(&ping_shared);
             if dirty {
                 ctx.request_repaint();
             }
@@ -16059,6 +16131,13 @@ pub(crate) fn render_ping(
                     });
                 });
                 ui.label(text);
+                // Offer the op channel's cached Mumble link (from earlier well-formed pings).
+                if let Some(chan) = find_op_channel(text) {
+                    let key = chan.to_lowercase().replace(' ', "");
+                    if let Some(link) = op_links.get(&key) {
+                        mumble_row(ui, chan, link.as_str());
+                    }
+                }
             }
         }
     });

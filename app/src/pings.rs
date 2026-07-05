@@ -116,7 +116,14 @@ pub fn match_ping_rule<'a>(
             )
         }
         Ping::Plain { text, .. } => {
-            (String::new(), "", String::new(), String::new(), text.to_lowercase())
+            let lower = text.to_lowercase();
+            // A short "cap save" ping is always a strategic fleet call.
+            let pap = if lower.contains("cap save") || lower.contains("capsave") {
+                "strategic"
+            } else {
+                ""
+            };
+            (String::new(), pap, String::new(), String::new(), lower)
         }
     };
     let has = |field: &str, hay: &str| field.trim().is_empty() || hay.contains(&field.to_lowercase());
@@ -368,6 +375,28 @@ fn get_value(text: &str, key: &Key) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_save_plain_ping_is_strategic() {
+        let rules = vec![crate::settings::PingRule {
+            name: "Strategic".into(),
+            enabled: true,
+            pap: "strategic".into(),
+            notify: true,
+            ..Default::default()
+        }];
+        let plain = |t: &str| Ping::Plain {
+            timestamp: 0,
+            text: t.into(),
+            sender: None,
+            target: None,
+            raw: String::new(),
+        };
+        // A "cap save" ping matches the strategic rule (must ping).
+        assert!(match_ping_rule(&rules, &plain("cap save on llama\nop1\nsvips")).is_some());
+        // A plain ping that isn't a cap save does not match a strategic-only rule.
+        assert!(match_ping_rule(&rules, &plain("reinforce timer op1")).is_none());
+    }
 
     fn resolve(token: &str) -> Option<i64> {
         match token {
