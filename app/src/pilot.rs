@@ -193,6 +193,9 @@ impl PilotCache {
             let mut matched = None;
             for len in (1..=3.min(words.len() - i)).rev() {
                 let span = words[i..i + len].join(" ");
+                if span.chars().count() < 3 {
+                    continue;
+                }
                 match self.get(&span) {
                     Some(Some(_)) => {
                         matched = Some(len);
@@ -682,6 +685,14 @@ mod tests {
         c.resolved.insert("h3xat0r arazy".into(), None);
         c.resolved.insert("arazy".into(), None);
         assert_eq!(c.cover("H3xat0r arazy"), vec!["H3xat0r"]);
+    }
+
+    #[test]
+    fn cover_keeps_name_with_short_trailing_typo() {
+        let mut c = PilotCache::default();
+        c.resolved.insert("renpuu".into(), Some(1));
+        c.resolved.insert("renpuu bv".into(), None);
+        assert_eq!(c.cover("Renpuu bv"), vec!["Renpuu"]);
     }
 
     #[test]

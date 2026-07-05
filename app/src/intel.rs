@@ -249,6 +249,9 @@ impl IntelState {
         };
         let new_words = name_words(&new.pilots);
         for prev in self.reports.iter_mut().rev() {
+            if prev.clear {
+                continue;
+            }
             let same_reporter = prev.reporter == new.reporter;
             let shares_pilot = (!new_pilots.is_empty()
                 && prev.pilots.iter().any(|p| new_pilots.contains(&p.to_lowercase())))
@@ -3169,6 +3172,9 @@ fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
 
 /// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
 fn parse_isk(text: &str, ess: bool) -> Option<u64> {
+    if !ess {
+        return None;
+    }
     let mult = |s: &str| -> Option<f64> {
         match s {
             "k" => Some(1e3),
@@ -5000,8 +5006,10 @@ mod tests {
     #[test]
     fn parses_isk_amounts() {
         assert_eq!(parse_isk("ess 300kk 5 min", true), Some(300_000_000));
-        assert_eq!(parse_isk("worth 1.5b", false), Some(1_500_000_000));
-        assert_eq!(parse_isk("300 mil tag", false), Some(300_000_000));
+        assert_eq!(parse_isk("ess worth 1.5b", true), Some(1_500_000_000));
+        assert_eq!(parse_isk("ess 300 mil tag", true), Some(300_000_000));
+        assert_eq!(parse_isk("worth 1.5b", false), None);
+        assert_eq!(parse_isk("300 mil tag", false), None);
         assert_eq!(parse_isk("ess 750m", true), Some(750_000_000));
         assert_eq!(parse_isk("loot 750m", false), None);
         assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
@@ -5383,6 +5391,17 @@ mod tests {
         assert!(!state.try_amend(&other, 60, &s));
         let clear = analyze("Rancer clear", &s, &noships(), &noknown(), 150, "ch", "Scout");
         assert!(!state.try_amend(&clear, 60, &s));
+    }
+
+    #[test]
+    fn clear_card_is_not_amended_by_later_sighting() {
+        let s = systems();
+        let mut state = IntelState::default();
+        state.push(analyze("Rancer clear", &s, &noships(), &noknown(), 100, "ch", "Scout"));
+        let follow = analyze("3 reds in Rancer", &s, &noships(), &noknown(), 120, "ch", "Scout");
+        assert!(!state.try_amend(&follow, 60, &s));
+        assert_eq!(state.reports.len(), 1);
+        assert!(state.reports[0].clear);
     }
 
     #[test]
@@ -6293,8 +6312,8 @@ mod tests {
     #[test]
     fn parse_isk_handles_mio_million_abbreviation() {
         assert_eq!(parse_isk("ess 346mio", true), Some(346_000_000));
-        assert_eq!(parse_isk("346mio", false), Some(346_000_000));
-        assert_eq!(parse_isk("worth 12 mio", false), Some(12_000_000));
+        assert_eq!(parse_isk("346mio", false), None);
+        assert_eq!(parse_isk("ess worth 120 mio", true), Some(120_000_000));
         assert_eq!(parse_isk("ess 50mio.", true), Some(50_000_000));
         assert_eq!(parse_isk("loot 750m", false), None);
         assert_eq!(parse_isk("ess hostiles in 4M-HGW", true), None);
