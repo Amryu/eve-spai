@@ -341,29 +341,15 @@ struct ShipGroup {
     ship: i64,
     lost: usize,
     survived: usize,
-    final_blows: usize,
 }
 
 /// Group a side's roster by hull type (mirrors `Battle::roster(i)`, which already folds
-/// pods and dedups survivors): lost vs survived counts, plus final-blow tallies derived
-/// from the battle's engagements for that side. Heaviest-hit hulls first. Capsules
+/// pods and dedups survivors): lost vs survived counts. Heaviest-hit hulls first. Capsules
 /// (`POD_TYPES`) are excluded so pods never appear as their own tile.
 fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     use br_core::battle::POD_TYPES;
     use std::collections::HashMap;
     let roster = battle.roster(side_idx);
-
-    let mut fb_by_ship: HashMap<i64, usize> = HashMap::new();
-    for e in &battle.engagements {
-        for a in &e.attackers {
-            if a.final_blow
-                && !POD_TYPES.contains(&a.ship)
-                && battle.side_of(&a.party) == Some(side_idx)
-            {
-                *fb_by_ship.entry(a.ship).or_default() += 1;
-            }
-        }
-    }
 
     let mut by_ship: HashMap<i64, (usize, usize)> = HashMap::new();
     for p in &roster {
@@ -379,12 +365,7 @@ fn roster_groups(battle: &Battle, side_idx: usize) -> Vec<ShipGroup> {
     }
     let mut groups: Vec<ShipGroup> = by_ship
         .into_iter()
-        .map(|(ship, (lost, survived))| ShipGroup {
-            ship,
-            lost,
-            survived,
-            final_blows: fb_by_ship.get(&ship).copied().unwrap_or(0),
-        })
+        .map(|(ship, (lost, survived))| ShipGroup { ship, lost, survived })
         .collect();
     groups.sort_by(|a, b| {
         b.lost
@@ -534,9 +515,14 @@ fn side_panel(
                             span .ship-name title=(n) { (n) }
                         }
                         div .ship-counts {
-                            @if g.lost > 0 { span .lost { (g.lost) " lost" } }
-                            @if g.survived > 0 { span .survived { (g.survived) " survived" } }
-                            @if g.final_blows > 0 { span .fb title="killing blows" { "KB " (g.final_blows) } }
+                            @let total = g.lost + g.survived;
+                            @if total > 0 {
+                                @let pct = ((g.lost as f64 / total as f64) * 100.0).round() as u32;
+                                div .lossbar title=(format!("{} of {} destroyed ({}%)", g.lost, total, pct)) {
+                                    div .lossbar-fill style=(format!("width:{pct}%")) {}
+                                    span .lossbar-label { (g.lost) "/" (total) " (" (pct) "%)" }
+                                }
+                            }
                         }
                     }
                 }
@@ -997,9 +983,15 @@ const VIEWER_JS: &str = r#"
     img.src='https://images.evetech.net/types/'+ship+'/icon?size=64'; d.appendChild(img);
     if(name){ var ns=document.createElement('span'); ns.className='ship-name'; ns.title=name; ns.textContent=name; d.appendChild(ns); }
     var c=document.createElement('div'); c.className='ship-counts';
-    if(lost>0){ var s1=document.createElement('span'); s1.className='lost'; s1.textContent=lost+' lost'; c.appendChild(s1); }
-    if(survived>0){ var s2=document.createElement('span'); s2.className='survived'; s2.textContent=survived+' survived'; c.appendChild(s2); }
-    if(kb>0){ var s3=document.createElement('span'); s3.className='fb'; s3.title='killing blows'; s3.textContent='KB '+kb; c.appendChild(s3); }
+    var total=lost+survived;
+    if(total>0){
+      var pct=Math.round(lost/total*100);
+      var bar=document.createElement('div'); bar.className='lossbar';
+      bar.title=lost+' of '+total+' destroyed ('+pct+'%)';
+      var fill=document.createElement('div'); fill.className='lossbar-fill'; fill.style.width=pct+'%'; bar.appendChild(fill);
+      var lab=document.createElement('span'); lab.className='lossbar-label'; lab.textContent=lost+'/'+total+' ('+pct+'%)'; bar.appendChild(lab);
+      c.appendChild(bar);
+    }
     d.appendChild(c); return d;
   }
 
@@ -1260,10 +1252,11 @@ form.filters input:focus, form.filters select:focus{outline:none; border-color:v
 .ship-icon{width:48px; height:48px; border-radius:8px; border:1px solid var(--line); background:var(--panel-2);}
 /* Hull name under the tile; clipped with ellipsis so a long name can't widen the grid cell. */
 .ship-name{max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--text); text-align:center;}
-.ship-counts{display:flex; flex-direction:column; align-items:center; font-size:11px; line-height:1.3;}
-.ship-counts .lost{color:var(--red);}
-.ship-counts .survived{color:var(--muted);}
-.ship-counts .fb{color:var(--blue);}
+.ship-counts{display:flex; flex-direction:column; align-items:center; gap:3px; width:100%; font-size:11px; line-height:1.3;}
+/* Loss bar: full width = all pilots of this hull, red fill = destroyed, centred X/Y (NN%) overlay. */
+.lossbar{position:relative; align-self:stretch; height:15px; background:var(--panel-2); border:1px solid var(--line); border-radius:3px; overflow:hidden;}
+.lossbar-fill{position:absolute; left:0; top:0; bottom:0; background:var(--red);}
+.lossbar-label{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600; color:var(--text); text-shadow:0 1px 2px rgba(0,0,0,0.8); white-space:nowrap;}
 
 /* Tiles / Details toggle and layout switching */
 .report-tools{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:14px;}
@@ -1650,13 +1643,16 @@ mod tests {
     }
 
     #[test]
-    fn tiles_show_ship_names_kb_marker_and_isk_colors() {
+    fn tiles_show_ship_names_lossbar_and_isk_colors() {
         let html = viewer_page(&card_data(Some("Hulls"), "u")).into_string();
         assert!(html.contains("class=\"ship-name\""));
         assert!(html.contains("Rifter") && html.contains("Rupture"));
-        assert!(html.contains("KB "));
+        // Loss bar instead of "x lost / y survived" text and no killing-blow marker.
+        assert!(html.contains("class=\"lossbar\""));
+        assert!(html.contains("lossbar-fill"));
+        assert!(!html.contains("KB "));
+        assert!(!html.contains("killing blows"));
         assert!(!html.contains('★'));
-        assert!(html.contains("title=\"killing blows\""));
         assert!(html.contains("isk-destroyed"));
         assert!(html.contains("isk-lost"));
         assert!(CSS.contains(".stat-num.isk-destroyed{color:var(--green);}"));
