@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 const NICKNAMES: &[(&str, &str)] = &[
     ("kiki", "Kikimora"),
+    ("ceno", "Cenotaph"),
+    ("cenos", "Cenotaph"),
     ("iki", "Ikitursa"),
     ("stileto", "Stiletto"),
     ("stilleto", "Stiletto"),

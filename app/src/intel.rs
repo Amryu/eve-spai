@@ -542,8 +542,9 @@ const CLEAR_WORDS: &[&str] = &["clear", "clr", "cleared", "clr+", "safe"];
 const KEYWORD_NAME_PILOTS: &[&str] = &["Clean cyno toon", "RSS Scanner Probe", "clear rain"];
 
 const PILOT_STOP: &[&str] = &[
-    "gate", "gates", "stargate", "stargates", "camp", "camper", "campers", "gatecamp", "gatecamps", "clear", "clr", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
+    "gate", "gates", "stargate", "stargates", "camp", "camper", "campers", "gatecamp", "gatecamps", "clear", "clr", "cleared", "spike", "bubble", "drag", "dragbubble", "cyno", "local", "dock", "docked",
     "solo",
+    "type", "types", "shiptype", "shiptypes",
     "station", "kill", "killmail", "dead", "ded", "pod", "no", "visual", "nv", "nvm", "ess", "skyhook", "hostile",
     "filament", "filaments", "needlejack", "needlejacks", "trace", "traces",
     "hostiles", "neut", "neutral", "neuts", "red", "reds", "blue", "blues", "gang", "fleet",
@@ -646,10 +647,26 @@ const SHIP_CLASSES: &[(&str, &str)] = &[
     ("supers", "Supercarrier"),
 ];
 
-fn detect_classes(lower_tokens: &[String]) -> Vec<String> {
+/// A bare hull tier (frigate..battleship) is just a size, not worth a badge. Only specialised
+/// (T2/T3) and capital classes matter.
+fn is_generic_hull_class(class: &str) -> bool {
+    matches!(class, "Frigate" | "Destroyer" | "Cruiser" | "Battlecruiser" | "Battleship")
+}
+
+fn detect_classes(
+    lower_tokens: &[String],
+    pilot_tokens: &std::collections::HashSet<String>,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in lower_tokens {
+        // A class word that belongs to a pilot's name ("... Destroyer") is not a class report.
+        if pilot_tokens.contains(t) {
+            continue;
+        }
         if let Some((_, class)) = SHIP_CLASSES.iter().find(|(k, _)| *k == t.as_str()) {
+            if is_generic_hull_class(class) {
+                continue;
+            }
             if !out.iter().any(|c| c == class) {
                 out.push((*class).to_owned());
             }
@@ -2453,6 +2470,21 @@ pub fn analyze_ctx(
         }
     }
 
+    // A detected alliance name ("Shadow Cartel") must not also surface as pilots ("Shadow",
+    // "Cartel"): drop pilot candidates whose every word is part of a matched alliance name.
+    let pilots: Vec<String> = if alliances.is_empty() {
+        pilots
+    } else {
+        let alliance_words: std::collections::HashSet<String> = alliances
+            .iter()
+            .flat_map(|(name, _)| name.split_whitespace().map(|w| w.to_lowercase()))
+            .collect();
+        pilots
+            .into_iter()
+            .filter(|p| !p.split_whitespace().all(|w| alliance_words.contains(&w.to_lowercase())))
+            .collect()
+    };
+
     let mut reclassified: Vec<DetectedShip> = Vec::new();
     let pilots: Vec<String> = pilots
         .into_iter()
@@ -2525,7 +2557,7 @@ pub fn analyze_ctx(
         ships.retain(|s| !s.name.eq_ignore_ascii_case("Probe"));
     }
 
-    let classes = detect_classes(&lower_tokens);
+    let classes = detect_classes(&lower_tokens, &pilot_tokens);
     let (mut tackled, tackled_targets) = detect_tackle(&lower_tokens, &pilot_tokens, ship_index);
     tackled |= lower.contains("抓") || lower.contains("点住") || lower.contains("网住");
 
@@ -4354,8 +4386,9 @@ mod tests {
         assert!(r3.classes.iter().any(|c| c == "Strategic Cruiser"), "classes={:?}", r3.classes);
         assert!(!r3.pilots.iter().any(|p| p.eq_ignore_ascii_case("etc")), "pilots={:?}", r3.pilots);
         let r4 = analyze("CRUISERS and battleships in Jita", &s, &noships(), &noknown(), 1, "ch", "x");
-        assert!(r4.classes.iter().any(|c| c == "Cruiser"), "classes={:?}", r4.classes);
-        assert!(r4.classes.iter().any(|c| c == "Battleship"), "classes={:?}", r4.classes);
+        // Generic hull tiers are just a size, not a class badge (only T2/T3 + capitals are).
+        assert!(!r4.classes.iter().any(|c| c == "Cruiser"), "classes={:?}", r4.classes);
+        assert!(!r4.classes.iter().any(|c| c == "Battleship"), "classes={:?}", r4.classes);
         assert!(esi_resolve(&r4.pilots, &[]).is_empty(), "pilots={:?}", r4.pilots);
         let mut ships = noships();
         ships.insert("dni".into(), (37457, "Drake Navy Issue".into()));
@@ -4364,6 +4397,70 @@ mod tests {
         assert!(r5.pilots.is_empty(), "pilots={:?}", r5.pilots);
         assert!(r2.classes.iter().any(|c| c == "Logistics"), "classes={:?}", r2.classes);
         assert!(r2.classes.iter().any(|c| c == "Stealth Bomber"), "classes={:?}", r2.classes);
+    }
+
+    #[test]
+    fn class_word_in_pilot_name_is_not_a_class() {
+        let s = systems();
+        // A generic hull word in a pilot's name never becomes a class badge.
+        let r = analyze("Bob Destroyer tackled in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(!r.classes.iter().any(|c| c == "Destroyer"), "classes={:?} pilots={:?}", r.classes, r.pilots);
+        // A bare hull tier is never a class badge.
+        let r2 = analyze("battleship gang in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r2.classes.is_empty(), "classes={:?}", r2.classes);
+        // A standalone specialised class word still detects the class.
+        let r3 = analyze("2 dictors on gate", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r3.classes.iter().any(|c| c == "Interdictor"), "classes={:?}", r3.classes);
+    }
+
+    #[test]
+    fn alliance_name_not_double_consumed_as_pilots() {
+        let s = systems();
+        let r = analyze("Shadow Cartel gang in Rancer", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.alliances.iter().any(|(n, _)| n == "Shadow Cartel"), "alliances={:?}", r.alliances);
+        for w in ["Shadow", "Cartel", "Shadow Cartel"] {
+            assert!(
+                !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
+                "{w:?} leaked as a pilot: {:?}",
+                r.pilots
+            );
+        }
+    }
+
+    #[test]
+    fn ceno_resolves_to_cenotaph() {
+        let s = systems();
+        // Aliases are folded into the ship index (store.rs does this from the SDE); mimic that.
+        let mut by: std::collections::HashMap<String, (i64, String)> = std::collections::HashMap::new();
+        by.insert("cenotaph".into(), (85062i64, "Cenotaph".into()));
+        for (slug, e) in crate::shipnames::aliases(&by) {
+            by.insert(slug, e);
+        }
+        for msg in ["2 ceno on gate in Rancer", "cenos in Rancer"] {
+            let r = analyze(msg, &s, &by, &noknown(), 1, "ch", "x");
+            assert!(r.ships.iter().any(|sh| sh.name == "Cenotaph"), "{msg:?}: ships={:?}", r.ships);
+        }
+    }
+
+    #[test]
+    fn cleared_and_shiptype_ignored() {
+        let s = systems();
+        // "cleared" registers as a clear and is not a pilot.
+        let r = analyze("Rancer cleared", &s, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.clear, "cleared should register as clear: {:?}", r.text);
+        assert!(!r.pilots.iter().any(|p| p.eq_ignore_ascii_case("cleared")), "pilots={:?}", r.pilots);
+        // "ship type" / "shiptypes" is a common question, never a pilot.
+        for msg in ["ship type?", "what shiptypes?"] {
+            let r = analyze(msg, &s, &noships(), &noknown(), 1, "ch", "x");
+            assert!(
+                !r.pilots.iter().any(|p| {
+                    let l = p.to_lowercase();
+                    l.contains("type") || l.contains("ship")
+                }),
+                "{msg:?}: pilots={:?}",
+                r.pilots
+            );
+        }
     }
 
     #[test]
