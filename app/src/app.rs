@@ -14731,7 +14731,6 @@ pub(crate) fn ping_viewport_builder(
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
         .with_title("EVE Spai \u{2014} Fleet ping")
-        .with_inner_size(size.map_or([520.0, 320.0], |(w, h)| [w, h]))
         .with_min_inner_size([260.0, 100.0])
         .with_resizable(true)
         .with_taskbar(false)
@@ -14741,8 +14740,19 @@ pub(crate) fn ping_viewport_builder(
         } else {
             egui::WindowLevel::Normal
         });
-    if let Some((x, y)) = pos {
-        b = b.with_position([x, y]);
+    // See alert_viewport_builder: on Windows the live saved geometry is applied by the on-show
+    // settle re-assert, not the per-frame builder (which would oscillate); non-Windows seeds it here.
+    #[cfg(not(target_os = "windows"))]
+    {
+        b = b.with_inner_size(size.map_or([520.0, 320.0], |(w, h)| [w, h]));
+        if let Some((x, y)) = pos {
+            b = b.with_position([x, y]);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (pos, size);
+        b = b.with_inner_size([520.0, 320.0]);
     }
     #[cfg(target_os = "linux")]
     {
@@ -14807,11 +14817,22 @@ pub(crate) fn alert_viewport_builder(
         // Windows hides the window when idle instead, so a transparent (composite-alpha DX12)
         // swapchain buys nothing there and crashes the GPU driver when dragged across monitors.
         .with_transparent(!cfg!(target_os = "windows"))
-        .with_mouse_passthrough(true)
-        // Build with the saved geometry so no frame re-applies the default (on Windows the
-        // hidden->visible cycle would otherwise snap the window back to the default each open).
-        .with_position(pos.map_or([80.0, 80.0], |(x, y)| [x, y]))
-        .with_inner_size(size.map_or([360.0, 240.0], |(w, h)| [w, h]));
+        .with_mouse_passthrough(true);
+    // Seed saved geometry into the builder on non-Windows so no frame re-applies the default. On
+    // Windows the geometry is restored by the on-show settle re-assert (a ViewportCommand) instead:
+    // feeding the live saved position into the per-frame builder there fights egui's builder-diff
+    // and makes the window oscillate between two locations while open.
+    #[cfg(not(target_os = "windows"))]
+    {
+        b = b
+            .with_position(pos.map_or([80.0, 80.0], |(x, y)| [x, y]))
+            .with_inner_size(size.map_or([360.0, 240.0], |(w, h)| [w, h]));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (pos, size);
+        b = b.with_inner_size([360.0, 240.0]);
+    }
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
