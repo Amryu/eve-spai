@@ -2327,6 +2327,13 @@ pub fn analyze_ctx(
             || paste_origin.contains(&p.to_lowercase())
             || !crate::dict::is_word(p)
     });
+    pilots.retain(|p| {
+        let content: Vec<&str> = p.split_whitespace().filter(|w| !is_pilot_stopword(w)).collect();
+        content.len() < 4
+            || quoted.contains(&p.to_lowercase())
+            || paste_origin.contains(&p.to_lowercase())
+            || !content.iter().all(|w| crate::dict::is_word(w))
+    });
 
     let is_strong_name_word = |w: &str| {
         name_part(w) && w.chars().any(|c| c.is_ascii_lowercase()) && !is_pilot_stopword(w)
@@ -3932,6 +3939,17 @@ mod tests {
         assert!(analyze("Rancer clear", &s, &noships(), &noknown(), 1, "ch", "x").clear);
         assert!(!analyze("Rancer clear?", &s, &noships(), &noknown(), 1, "ch", "x").clear);
         assert!(!analyze("is Rancer safe?", &s, &noships(), &noknown(), 1, "ch", "x").clear);
+    }
+
+    #[test]
+    fn long_dictionary_prose_is_not_pilots() {
+        let s = systems();
+        let a = |t: &str| analyze(t, &s, &noships(), &noknown(), 1, "ch", "x").pilots;
+        assert!(a("Just another front row seat").is_empty(), "{:?}", a("Just another front row seat"));
+        assert!(a("front").is_empty());
+        // Short runs stay candidates for ESI, even all-dictionary ones.
+        assert_eq!(a("Silent Hunter in Rancer"), vec!["Silent Hunter".to_string()]);
+        assert_eq!(a("Cult is Dead in Rancer"), vec!["Cult is Dead".to_string()]);
     }
 
     #[test]

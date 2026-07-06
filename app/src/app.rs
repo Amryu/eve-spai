@@ -14943,7 +14943,11 @@ pub(crate) fn build_alert_viewport_cb(
         let ctx = ui.ctx().clone();
         let mut st = alert_shared.lock().unwrap();
         let active = st.enabled && (st.secs > 0.0 || st.pinned);
-        let want_visible = active || (st.enabled && !cfg!(target_os = "windows"));
+        if active {
+            st.dismissed = false;
+        }
+        let want_visible =
+            active || (st.enabled && !cfg!(target_os = "windows") && !st.dismissed);
         let want_passthrough = !active;
         if st.applied_visible != Some(want_visible) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want_visible));
@@ -15212,6 +15216,7 @@ pub(crate) fn build_alert_viewport_cb(
             // Closing overrides a pin: otherwise `active` (secs > 0 || pinned) keeps it open.
             st.secs = 0.0;
             pinned = false;
+            st.dismissed = true;
         } else if hovered {
             st.secs = st.secs.max(3.0);
         } else if !pinned && st.secs.is_finite() {
@@ -15383,6 +15388,9 @@ pub(crate) struct AlertWindowState {
     pub(crate) verdict_out: Vec<(String, bool)>,
     pub(crate) moved: Option<(f32, f32)>,
     pub(crate) moved_size: Option<(f32, f32)>,
+    /// Explicitly dismissed by the user. On Linux this unmaps the otherwise always-mapped window;
+    /// cleared when a new alert makes it active again.
+    pub(crate) dismissed: bool,
 }
 
 pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowState>>;
