@@ -2423,10 +2423,15 @@ impl SpaiApp {
                     self.needs_save = true;
                 }
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::Panel::top("jabber_tab_bar")
+            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+            .show_inside(ui, |ui| {
                 // Tab strip: Fleet pings (static, left-most) then one tab per open conversation.
                 let mut focus: Option<Option<String>> = None;
                 let mut close_tab: Option<(String, bool)> = None;
+                // Set when a not-currently-visible tab is picked from the dropdown, so it is moved to
+                // the front of the bar (right after Fleet pings) and the rightmost tab overflows.
+                let mut promote: Option<String> = None;
                 // One non-scrolling row: Fleet pings (pinned) + as many chat tabs as fit, the rest in
                 // a right-side overflow dropdown. Widths are estimated from the label galley so we can
                 // decide inclusion without a horizontal scroll area.
@@ -2434,87 +2439,124 @@ impl SpaiApp {
                     jid: String,
                     is_room: bool,
                     is_unread: bool,
-                    dot: Option<egui::Color32>,
-                    label: egui::RichText,
+                    lead: TabLead,
+                    label: String,
                 }
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    // The overflow dropdown is a fixed-width pseudo-tab pinned to the right edge;
+                    // tabs fill the space to its left. A boundary tab is ellipsized (rather than
+                    // dropped) when it only partly fits, so the row is packed and the dropdown
+                    // never moves.
+                    const MIN_TAB_W: f32 = 76.0;
+                    let full = ui.available_width();
+                    // Reserve the dropdown's exact width for its widest state (caret + the largest
+                    // possible overflow count) so the badge never grows the button past the edge.
+                    let dd_w = {
+                        let body = egui::TextStyle::Body.resolve(ui.style());
+                        let widest = format!(
+                            "{}  {}",
+                            egui_phosphor::regular::CARET_DOWN,
+                            self.jabber_tabs.len().max(1)
+                        );
+                        let text_w = ui
+                            .painter()
+                            .layout_no_wrap(widest, body, egui::Color32::WHITE)
+                            .size()
+                            .x;
+                        text_w + 2.0 * ui.spacing().button_padding.x + 4.0
+                    };
+                    let tab_area = (full - dd_w).max(0.0);
+
+                    let pings_label = format!("Fleet pings ({})", pings.len());
                     let (sel, _) = jabber_tab_box(
                         ui,
                         self.jabber_chat.is_none(),
                         pings_unread,
-                        None,
+                        TabLead::Icon(egui_phosphor::regular::MEGAPHONE),
                         false,
-                        egui::RichText::new(format!(
-                            "{}  Fleet pings ({})",
-                            egui_phosphor::regular::MEGAPHONE,
-                            pings.len()
-                        )),
+                        &pings_label,
                     );
                     if sel {
                         focus = Some(None);
                     }
+                    let mut used = jabber_tab_width(ui, false, pings_unread, &pings_label);
 
-                    let body = egui::TextStyle::Body.resolve(ui.style());
-                    let gap = ui.spacing().item_spacing.x;
-                    let tabs = self.jabber_tabs.clone();
-                    let mut budget = (ui.available_width() - 44.0).max(0.0);
-                    let mut visible: Vec<TabInfo> = Vec::new();
-                    let mut overflow: Vec<TabInfo> = Vec::new();
-                    for jid in &tabs {
-                        let is_room = rooms.iter().any(|(r, _)| r == jid);
-                        let is_unread = unread.contains(jid);
-                        let short = short_chip(jid.split('@').next().unwrap_or(jid));
-                        let (text, dot) = if is_room {
-                            (format!("{}  {short}", egui_phosphor::regular::USERS_THREE), None)
+                    let infos: Vec<TabInfo> = self
+                        .jabber_tabs
+                        .iter()
+                        .map(|jid| {
+                            let is_room = rooms.iter().any(|(r, _)| r == jid);
+                            let is_unread = unread.contains(jid);
+                            let label = short_chip(jid.split('@').next().unwrap_or(jid));
+                            let lead = if is_room {
+                                TabLead::Icon(egui_phosphor::regular::USERS_THREE)
+                            } else {
+                                let pres = convos
+                                    .iter()
+                                    .find(|c| &c.jid == jid)
+                                    .map(|c| c.presence)
+                                    .unwrap_or_default();
+                                let (pr, pg, pb) = pres.color();
+                                TabLead::Dot(egui::Color32::from_rgb(pr, pg, pb))
+                            };
+                            TabInfo { jid: jid.clone(), is_room, is_unread, lead, label }
+                        })
+                        .collect();
+
+                    // Plan the visible tabs (with the label actually rendered, possibly ellipsized)
+                    // and collect the rest into the dropdown.
+                    let mut plan: Vec<(&TabInfo, String)> = Vec::new();
+                    let mut overflow: Vec<&TabInfo> = Vec::new();
+                    let mut full_bar = false;
+                    for t in &infos {
+                        if full_bar {
+                            overflow.push(t);
+                            continue;
+                        }
+                        let w = jabber_tab_width(ui, true, t.is_unread, &t.label);
+                        let remaining = tab_area - used;
+                        if w <= remaining {
+                            used += w;
+                            plan.push((t, t.label.clone()));
+                        } else if remaining >= MIN_TAB_W {
+                            let lbl = ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
+                            used += jabber_tab_width(ui, true, t.is_unread, &lbl);
+                            plan.push((t, lbl));
+                            full_bar = true;
                         } else {
-                            let pres = convos
-                                .iter()
-                                .find(|c| &c.jid == jid)
-                                .map(|c| c.presence)
-                                .unwrap_or_default();
-                            let (pr, pg, pb) = pres.color();
-                            (short, Some(egui::Color32::from_rgb(pr, pg, pb)))
-                        };
-                        let text_w = ui
-                            .painter()
-                            .layout_no_wrap(text.clone(), body.clone(), egui::Color32::WHITE)
-                            .size()
-                            .x;
-                        // inner margin + close X + inter-tab gap, plus dot / unread marker when present.
-                        let mut width = 16.0 + text_w + 20.0 + gap;
-                        if dot.is_some() {
-                            width += 12.0;
-                        }
-                        if is_unread {
-                            width += 12.0;
-                        }
-                        let mut label = egui::RichText::new(text);
-                        if is_unread {
-                            label = label.strong();
-                        }
-                        let info = TabInfo { jid: jid.clone(), is_room, is_unread, dot, label };
-                        if width <= budget {
-                            budget -= width;
-                            visible.push(info);
-                        } else {
-                            overflow.push(info);
+                            overflow.push(t);
+                            full_bar = true;
                         }
                     }
-                    // Keep the selected tab on the bar even if it would otherwise overflow.
+                    // Guarantee the open conversation stays on the bar: evict trailing tabs until it
+                    // fits, then place it (ellipsized if needed).
                     if let Some(sel_jid) = self.jabber_chat.clone() {
-                        if let Some(pos) = overflow.iter().position(|t| t.jid == sel_jid) {
-                            visible.push(overflow.remove(pos));
+                        if !plan.iter().any(|(t, _)| t.jid == sel_jid) {
+                            if let Some(pos) = overflow.iter().position(|t| t.jid == sel_jid) {
+                                while tab_area - used < MIN_TAB_W && !plan.is_empty() {
+                                    let (t, lbl) = plan.pop().unwrap();
+                                    used -= jabber_tab_width(ui, true, t.is_unread, &lbl);
+                                    overflow.insert(0, t);
+                                }
+                                let t = overflow.remove(pos.min(overflow.len().saturating_sub(1)));
+                                let remaining = tab_area - used;
+                                let lbl =
+                                    ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
+                                used += jabber_tab_width(ui, true, t.is_unread, &lbl);
+                                plan.push((t, lbl));
+                            }
                         }
                     }
-                    for t in &visible {
+
+                    for (t, lbl) in &plan {
                         let (sel, close) = jabber_tab_box(
                             ui,
                             self.jabber_chat.as_deref() == Some(t.jid.as_str()),
                             t.is_unread,
-                            t.dot,
+                            t.lead,
                             true,
-                            t.label.clone(),
+                            lbl,
                         );
                         if sel {
                             focus = Some(Some(t.jid.clone()));
@@ -2523,50 +2565,67 @@ impl SpaiApp {
                             close_tab = Some((t.jid.clone(), t.is_room));
                         }
                     }
-                    if !overflow.is_empty() {
-                        let any_unread = overflow.iter().any(|t| t.is_unread);
-                        let mut btn = egui::RichText::new(format!(
-                            "{}  {}",
-                            egui_phosphor::regular::CARET_DOWN,
-                            overflow.len()
-                        ));
-                        if any_unread {
-                            btn = btn.strong();
-                        }
-                        ui.menu_button(btn, |ui| {
-                            for t in &overflow {
-                                ui.horizontal(|ui| {
-                                    if let Some(c) = t.dot {
-                                        status_dot(ui, c, 9.0);
-                                    }
-                                    if ui.selectable_label(false, t.label.clone()).clicked() {
-                                        focus = Some(Some(t.jid.clone()));
-                                        ui.close();
-                                    }
-                                    if t.is_unread {
-                                        ui.label(
-                                            egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                                .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
-                                                .size(8.0),
-                                        );
-                                    }
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                egui::RichText::new(egui_phosphor::regular::X).small(),
-                                            )
-                                            .frame(false),
-                                        )
-                                        .on_hover_text("Close")
-                                        .clicked()
-                                    {
-                                        close_tab = Some((t.jid.clone(), t.is_room));
-                                        ui.close();
-                                    }
-                                });
-                            }
-                        });
+
+                    // Pin the dropdown pseudo-tab to the right edge (always shown, static position).
+                    let pad = (full - used - dd_w).max(0.0);
+                    if pad > 0.0 {
+                        ui.add_space(pad);
                     }
+                    let any_unread = overflow.iter().any(|t| t.is_unread);
+                    let caret = if overflow.is_empty() {
+                        egui_phosphor::regular::CARET_DOWN.to_owned()
+                    } else {
+                        format!("{} {}", egui_phosphor::regular::CARET_DOWN, overflow.len())
+                    };
+                    let caret = if any_unread {
+                        egui::RichText::new(caret).strong()
+                    } else {
+                        egui::RichText::new(caret)
+                    };
+                    let dd_btn = egui::Button::new(caret)
+                        .min_size(egui::vec2(dd_w, TAB_H))
+                        .corner_radius(0.0);
+                    let menu_list: Vec<&TabInfo> =
+                        if overflow.is_empty() { infos.iter().collect() } else { overflow };
+                    egui::containers::menu::MenuButton::from_button(dd_btn).ui(ui, |ui| {
+                        for t in &menu_list {
+                            ui.horizontal(|ui| {
+                                match t.lead {
+                                    TabLead::Dot(c) => status_dot(ui, c, 9.0),
+                                    TabLead::Icon(ic) => {
+                                        ui.label(ic);
+                                    }
+                                }
+                                if ui.selectable_label(false, t.label.as_str()).clicked() {
+                                    focus = Some(Some(t.jid.clone()));
+                                    if !plan.iter().any(|(pt, _)| pt.jid == t.jid) {
+                                        promote = Some(t.jid.clone());
+                                    }
+                                    ui.close();
+                                }
+                                if t.is_unread {
+                                    ui.label(
+                                        egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                            .color(UNREAD_RED)
+                                            .size(8.0),
+                                    );
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(egui_phosphor::regular::X).small(),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_text("Close")
+                                    .clicked()
+                                {
+                                    close_tab = Some((t.jid.clone(), t.is_room));
+                                    ui.close();
+                                }
+                            });
+                        }
+                    });
                 });
                 if let Some(target) = focus {
                     match &target {
@@ -2580,7 +2639,14 @@ impl SpaiApp {
                 if let Some((jid, is_room)) = close_tab {
                     self.close_jabber_tab(&jid, is_room);
                 }
-                ui.separator();
+                if let Some(jid) = promote {
+                    if let Some(pos) = self.jabber_tabs.iter().position(|t| t == &jid) {
+                        let t = self.jabber_tabs.remove(pos);
+                        self.jabber_tabs.insert(0, t);
+                    }
+                }
+            });
+        egui::CentralPanel::default().show_inside(ui, |ui| {
                 match self.jabber_chat.clone() {
                     None => {
                         let hl: Vec<bool> =
@@ -14840,62 +14906,157 @@ fn selectable_chip<'a>(
     ui.add(egui::Button::new(text).selected(selected))
 }
 
-/// One Jabber tab as a single bordered box enclosing an optional presence dot, the name, an unread
-/// marker, and a close X (no separators between tabs). Selected tabs get a filled box; unselected
-/// keep just the border. Returns `(select_clicked, close_clicked)`.
+// Compact VSCode-style Jabber tabs: uniform height, flush (no rounded box), a leading room icon or
+// presence dot, the name, and a trailing close X on hover/active.
+const TAB_H: f32 = 24.0;
+const TAB_PAD_X: f32 = 8.0;
+const TAB_GAP: f32 = 6.0;
+const TAB_LEAD_W: f32 = 16.0;
+const TAB_CLOSE_W: f32 = 16.0;
+const UNREAD_RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x4C, 0x4C);
+
+#[derive(Clone, Copy)]
+enum TabLead {
+    Dot(egui::Color32),
+    Icon(&'static str),
+}
+
+/// Exact rendered width of a tab, so the overflow split matches what `jabber_tab_box` draws and the
+/// dropdown is never pushed off the edge. `closable` reserves the trailing close-X slot.
+fn jabber_tab_width(ui: &egui::Ui, closable: bool, unread: bool, label: &str) -> f32 {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let label_w =
+        ui.painter().layout_no_wrap(label.to_owned(), body, egui::Color32::WHITE).size().x;
+    let lead_w = TAB_LEAD_W + TAB_GAP;
+    let trail_w = if closable {
+        TAB_GAP + TAB_CLOSE_W
+    } else if unread {
+        TAB_GAP + 10.0
+    } else {
+        0.0
+    };
+    2.0 * TAB_PAD_X + lead_w + label_w + trail_w
+}
+
+/// Shorten `label` with a trailing ellipsis so the whole tab fits `max_tab_w`. Returns the original
+/// when it already fits, or "…" when there is not even room for one character.
+fn ellipsize_tab_label(
+    ui: &egui::Ui,
+    closable: bool,
+    unread: bool,
+    label: &str,
+    max_tab_w: f32,
+) -> String {
+    if jabber_tab_width(ui, closable, unread, label) <= max_tab_w {
+        return label.to_owned();
+    }
+    let fixed = jabber_tab_width(ui, closable, unread, "");
+    let label_budget = (max_tab_w - fixed).max(0.0);
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let width_of = |s: &str| {
+        ui.painter().layout_no_wrap(s.to_owned(), body.clone(), egui::Color32::WHITE).size().x
+    };
+    let chars: Vec<char> = label.chars().collect();
+    let mut n = chars.len();
+    while n > 0 {
+        let cand: String = chars[..n].iter().collect::<String>() + "…";
+        if width_of(&cand) <= label_budget {
+            return cand;
+        }
+        n -= 1;
+    }
+    "…".to_owned()
+}
+
+/// One compact, flush Jabber tab. Fixed height, optional leading dot/icon, the name, and a trailing
+/// close X shown on hover or when active (its slot otherwise carries the unread marker). Returns
+/// `(select_clicked, close_clicked)`.
 fn jabber_tab_box(
     ui: &mut egui::Ui,
     selected: bool,
     unread: bool,
-    dot: Option<egui::Color32>,
+    lead: TabLead,
     closable: bool,
-    label: egui::RichText,
+    label: &str,
 ) -> (bool, bool) {
-    let (fill, stroke) = if selected {
+    let w = jabber_tab_width(ui, closable, unread, label);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TAB_H), egui::Sense::click());
+    let hovered = resp.hovered();
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let (fill, text_color, accent, sep_col, weak_col, strong_col) = {
+        let v = ui.visuals();
         (
-            ui.visuals().selection.bg_fill,
-            egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
+            if selected {
+                v.selection.bg_fill
+            } else if hovered {
+                v.widgets.hovered.weak_bg_fill
+            } else {
+                egui::Color32::TRANSPARENT
+            },
+            if selected || unread { v.strong_text_color() } else { v.text_color() },
+            v.selection.stroke.color,
+            v.widgets.noninteractive.bg_stroke.color,
+            v.weak_text_color(),
+            v.strong_text_color(),
         )
-    } else {
-        (egui::Color32::TRANSPARENT, ui.visuals().widgets.inactive.bg_stroke)
     };
-    let mut select = false;
+
+    let painter = ui.painter().clone();
+    if fill != egui::Color32::TRANSPARENT {
+        painter.rect_filled(rect, 0.0, fill);
+    }
+    if selected {
+        painter.hline(rect.x_range(), rect.top() + 1.0, egui::Stroke::new(2.0, accent));
+    }
+    painter.vline(rect.right(), rect.y_range(), egui::Stroke::new(1.0, sep_col));
+
+    let cy = rect.center().y;
+    let mut x = rect.left() + TAB_PAD_X;
+    match lead {
+        TabLead::Dot(c) => {
+            painter.circle_filled(egui::pos2(x + TAB_LEAD_W / 2.0, cy), 4.0, c);
+            x += TAB_LEAD_W + TAB_GAP;
+        }
+        TabLead::Icon(ic) => {
+            painter.text(
+                egui::pos2(x, cy),
+                egui::Align2::LEFT_CENTER,
+                ic,
+                egui::FontId::proportional(15.0),
+                text_color,
+            );
+            x += TAB_LEAD_W + TAB_GAP;
+        }
+    }
+    let galley = painter.layout_no_wrap(label.to_owned(), body, text_color);
+    painter.galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, text_color);
+
+    let mut select = resp.clicked();
     let mut close = false;
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(4.0)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            if let Some(c) = dot {
-                status_dot(ui, c, 9.0);
-            }
-            if ui
-                .add(egui::Label::new(label).selectable(false).sense(egui::Sense::click()))
-                .clicked()
-            {
-                select = true;
-            }
-            if unread {
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                        .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
-                        .size(8.0),
-                );
-            }
-            if closable
-                && ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).small())
-                            .frame(false),
-                    )
-                    .on_hover_text("Close")
-                    .clicked()
-            {
+    let slot_cx = rect.right() - TAB_PAD_X - TAB_CLOSE_W / 2.0;
+    if closable {
+        let close_rect =
+            egui::Rect::from_center_size(egui::pos2(slot_cx, cy), egui::vec2(TAB_CLOSE_W, TAB_CLOSE_W));
+        if hovered || selected {
+            let cresp = ui.interact(close_rect, resp.id.with("close"), egui::Sense::click());
+            let col = if cresp.hovered() { strong_col } else { weak_col };
+            painter.text(
+                close_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::X,
+                egui::FontId::proportional(13.0),
+                col,
+            );
+            if cresp.clicked() {
                 close = true;
+                select = false;
             }
-        });
+        } else if unread {
+            painter.circle_filled(close_rect.center(), 4.0, UNREAD_RED);
+        }
+    } else if unread {
+        painter.circle_filled(egui::pos2(slot_cx, cy), 4.0, UNREAD_RED);
+    }
     (select, close)
 }
 
