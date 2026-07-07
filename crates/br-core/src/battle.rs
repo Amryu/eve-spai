@@ -230,7 +230,7 @@ pub struct Participant {
     pub lost: Option<Lost>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Involvement {
     pub killed: HashMap<i64, std::collections::HashSet<i64>>,
     pub attackers: HashMap<i64, std::collections::HashSet<i64>>,

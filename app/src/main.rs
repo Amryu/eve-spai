@@ -6,6 +6,7 @@ mod auth;
 mod battle;
 mod breport;
 mod brshare;
+mod brview;
 mod affiliation;
 mod alliances;
 mod camp;

@@ -48,6 +48,7 @@ pub fn spawn(
     overrides: SharedOverrides,
     overrides_gen: Arc<std::sync::atomic::AtomicU64>,
     add_queue: Arc<Mutex<Vec<i64>>>,
+    battles_enabled: Arc<std::sync::atomic::AtomicBool>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
@@ -70,7 +71,7 @@ pub fn spawn(
         let backfill_out: SharedBackfill = Arc::new(Mutex::new(Vec::new()));
         let mut battle_cache: HashMap<u64, battle::Battle> = HashMap::new();
         let mut last_ov_gen = overrides_gen.load(std::sync::atomic::Ordering::Relaxed);
-        if !buffer.is_empty() {
+        if !buffer.is_empty() && battles_enabled.load(std::sync::atomic::Ordering::Relaxed) {
             let bg = break_gap.load(std::sync::atomic::Ordering::Relaxed);
             let ov = overrides.lock().unwrap().clone();
             let clustered = battle::cluster_cached(
@@ -91,12 +92,20 @@ pub fn spawn(
             .unwrap_or_else(std::time::Instant::now);
         let mut dirty = false;
         let mut last_cluster = std::time::Instant::now();
+        let mut was_enabled = battles_enabled.load(Ordering::Relaxed);
 
         let mut seq = fetch_sequence(&client);
         let mut stuck = 0u32;
         let mut retries = 0u32;
         loop {
             let throttle = crate::settings::WorkThrottle::from_u8(throttle.load(Ordering::Relaxed));
+            // On the off->on edge, force a re-cluster so re-enabling refreshes immediately
+            // instead of waiting for the next incoming kill to mark the buffer dirty.
+            let enabled_now = battles_enabled.load(Ordering::Relaxed);
+            if enabled_now && !was_enabled {
+                dirty = true;
+            }
+            was_enabled = enabled_now;
             let mut changed = false;
             match seq {
                 None => {
@@ -236,6 +245,7 @@ pub fn spawn(
                 battle_cache.clear();
             }
             if dirty
+                && battles_enabled.load(Ordering::Relaxed)
                 && last_cluster.elapsed() >= Duration::from_millis(throttle.cluster_interval_ms())
             {
                 dirty = false;

@@ -1,3 +1,6 @@
+// Combat-event alerts are disabled for now (spawn is not called from app.rs); kept for re-enabling.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

@@ -279,6 +279,19 @@ pub fn name_windows(candidate: &str) -> Vec<String> {
     out
 }
 
+/// Sub-spans of a parser run worth resolving against ESI. Drops 1-word windows that are
+/// lowercase dictionary words: those never clear the parser's standalone-candidate filter, so
+/// letting a common word glued into a run ("careful" in "careful EFM ansi") reach ESI would let
+/// a real player of that name confirm it and resurface it as a pilot, bypassing the filter.
+pub fn resolvable_windows(candidate: &str) -> Vec<String> {
+    name_windows(candidate)
+        .into_iter()
+        .filter(|w| {
+            w.contains(' ') || !crate::intel::is_lowercaseish(w) || !crate::dict::is_word(w)
+        })
+        .collect()
+}
+
 pub type SharedPilots = Arc<Mutex<PilotCache>>;
 
 pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
@@ -712,6 +725,19 @@ mod tests {
     fn windows_one_to_three() {
         assert_eq!(name_windows("abc de"), vec!["abc", "abc de"]);
         assert!(name_windows("x").is_empty());
+    }
+
+    #[test]
+    fn resolvable_windows_drops_lowercase_dictionary_singles() {
+        // A common word glued into a run must not reach ESI as a 1-word window: it would let a
+        // real player of that name confirm it and resurface, bypassing the parser's dict filter.
+        let w = resolvable_windows("careful Rifter");
+        assert!(!w.iter().any(|s| s == "careful"), "lowercase dict word queued: {w:?}");
+        // The non-dictionary handle and the multi-word span still resolve.
+        assert!(w.iter().any(|s| s == "Rifter"), "{w:?}");
+        assert!(w.iter().any(|s| s == "careful Rifter"), "{w:?}");
+        // Capitalized dictionary words are real names (kept), matching analyze()'s case rule.
+        assert!(resolvable_windows("Careful Rifter").iter().any(|s| s == "Careful"));
     }
 
     #[test]

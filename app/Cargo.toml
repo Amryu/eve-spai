@@ -33,6 +33,7 @@ winit = "0.30"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 xmpp = { version = "0.7", default-features = false, features = ["ring", "starttls", "rustls-native-certs", "escape-hatch"] }
+sasl = "0.5"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "webpki-roots", "json", "form"] }
 csv = "1"
 tiny_http = "0.12"

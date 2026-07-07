@@ -193,11 +193,36 @@ pub struct IntelState {
     pub reports: Vec<IntelReport>,
     cleared: HashMap<String, i64>,
     orphans: Vec<IntelReport>,
+    seen_lines: std::collections::HashSet<u64>,
+    seen_order: std::collections::VecDeque<u64>,
 }
 
 static NEXT_REPORT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl IntelState {
+    /// True when this exact log line was already ingested. Multiple accounts (and relog/rejoin
+    /// files) carry identical `(channel, timestamp, reporter, text)` lines; the raw timestamp
+    /// string is used so a parse failure can't split a duplicate into two keys.
+    pub fn duplicate_line(&mut self, channel: &str, ts: &str, reporter: &str, text: &str) -> bool {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        channel.hash(&mut h);
+        ts.hash(&mut h);
+        reporter.hash(&mut h);
+        text.hash(&mut h);
+        let key = h.finish();
+        if !self.seen_lines.insert(key) {
+            return true;
+        }
+        self.seen_order.push_back(key);
+        if self.seen_order.len() > 8192 {
+            if let Some(old) = self.seen_order.pop_front() {
+                self.seen_lines.remove(&old);
+            }
+        }
+        false
+    }
+
     pub fn push(&mut self, mut report: IntelReport) -> u64 {
         let id = NEXT_REPORT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         report.id = id;
@@ -1919,7 +1944,22 @@ pub(crate) fn detect_location(
     if gate.is_none() && lower_tokens.iter().any(|t| t == "ansi" || t == "ansiblex") {
         if let Some(dest) = primary.and_then(|p| systems.jump_bridge_dest(p)) {
             detected.retain(|d| d.id != dest.id);
+            let dest_lc = dest.name.to_lowercase();
             gate = Some(dest.name.clone());
+            // An ansiblex is a player stargate to a neighbouring system: consume the keyword and
+            // the token naming the destination ("EFM" in "EFM Ansi") so neither becomes a pilot.
+            for tok in tokens.iter() {
+                let lc = tok.to_lowercase();
+                if consumed.contains(&lc) {
+                    continue;
+                }
+                let names_dest = lc.len() >= 3
+                    && dest_lc.starts_with(&lc)
+                    && tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                if lc == "ansi" || lc == "ansiblex" || names_dest {
+                    consumed.push(lc);
+                }
+            }
         }
     }
 
@@ -4618,6 +4658,36 @@ mod tests {
     }
 
     #[test]
+    fn ansi_destination_abbrev_is_not_a_pilot() {
+        use crate::geo::{SystemInfo, Systems};
+        let mk = |id, name: &str| SystemInfo {
+            id,
+            name: name.into(),
+            security: -0.5,
+            constellation: String::new(),
+            region: String::new(),
+            faction: String::new(),
+        };
+        // Destination abbreviation "EFM" carries no digit: a null code need not contain numbers.
+        let by_name: std::collections::HashMap<String, SystemInfo> =
+            [("o3-4mn", mk(1, "O3-4MN")), ("efm-j6", mk(2, "EFM-J6"))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        let mut sys = Systems::new(by_name, std::collections::HashMap::new());
+        sys.add_bridges(&[(1, 2)]);
+        let r = analyze("O3-4MN EFM Ansi", &sys, &noships(), &noknown(), 1, "ch", "x");
+        assert!(r.gates.iter().any(|g| g == "EFM-J6"), "the Ansi should lead to EFM-J6: {:?}", r.gates);
+        for w in ["EFM", "Ansi"] {
+            assert!(
+                !r.pilots.iter().any(|p| p.eq_ignore_ascii_case(w)),
+                "{w} should not be a pilot: {:?}",
+                r.pilots
+            );
+        }
+    }
+
+    #[test]
     fn system_code_known_as_pilot_is_not_a_pilot() {
         let s = systems();
         let known: std::collections::HashMap<String, i64> =
@@ -5394,6 +5464,48 @@ mod tests {
             "bare 'Road' leaked from kill paste: {:?}",
             r2.pilots
         );
+    }
+
+    #[test]
+    fn duplicate_line_flags_only_repeats() {
+        let mut st = IntelState::default();
+        assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:22", "Pilot X", "Delve Prober"));
+        assert!(st.duplicate_line("Delve", "2026.07.06 14:30:22", "Pilot X", "Delve Prober"));
+        assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:23", "Pilot X", "Delve Prober"));
+        assert!(!st.duplicate_line("Delve", "2026.07.06 14:30:22", "Pilot Y", "Delve Prober"));
+        assert!(!st.duplicate_line("Querious", "2026.07.06 14:30:22", "Pilot X", "Delve Prober"));
+    }
+
+    #[test]
+    fn identical_lines_across_accounts_make_one_card() {
+        let s = systems();
+        // Mirror the watcher: dedup the raw line, else analyze + amend-or-push.
+        let mut ingest = |st: &mut IntelState, ts: &str, who: &str, text: &str| {
+            if st.duplicate_line("ch", ts, who, text) {
+                return;
+            }
+            let r = analyze(text, &s, &noships(), &noknown(), 100, "ch", who);
+            if !st.try_amend(&r, 60, &s) {
+                st.push(r);
+            }
+        };
+        // Same regular line from three account logs (relog makes a 3rd file for 2 accounts).
+        let mut st = IntelState::default();
+        for _ in 0..3 {
+            ingest(&mut st, "2026.07.06 14:30:22", "Scout", "Rancer Slasher hostile");
+        }
+        assert_eq!(st.reports.len(), 1, "{:?}", st.reports);
+        // Clears duplicate worst (try_amend never merges them) — dedup must still collapse.
+        let mut st2 = IntelState::default();
+        for _ in 0..3 {
+            ingest(&mut st2, "2026.07.06 14:31:00", "Scout", "Rancer clear");
+        }
+        assert_eq!(st2.reports.len(), 1, "{:?}", st2.reports);
+        // Genuinely different lines are not over-deduped.
+        let mut st3 = IntelState::default();
+        ingest(&mut st3, "2026.07.06 14:32:00", "Scout", "Rancer Slasher hostile");
+        ingest(&mut st3, "2026.07.06 14:33:30", "Scout", "Jita clear");
+        assert_eq!(st3.reports.len(), 2, "{:?}", st3.reports);
     }
 
     #[test]

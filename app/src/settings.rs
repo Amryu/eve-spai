@@ -75,6 +75,8 @@ pub struct Settings {
     pub severity: SeverityRules,
     #[serde(default = "default_alerts")]
     pub alerts: AlertSettings,
+    #[serde(default = "default_true")]
+    pub battles_enabled: bool,
     #[serde(default)]
     pub battles: BattleFilter,
     #[serde(default)]
@@ -113,6 +115,11 @@ pub struct Settings {
     pub jabber_contacts: Vec<String>,
     #[serde(default)]
     pub jabber_closed_dms: Vec<String>,
+    #[serde(default)]
+    pub jabber_closed_rooms: Vec<String>,
+    // None = ask on first room-tab close; Some(true) = leave; Some(false) = keep joined, hide tab.
+    #[serde(default)]
+    pub jabber_close_room_leaves: Option<bool>,
     #[serde(default)]
     pub jabber_ping_bot: String,
     #[serde(default)]
@@ -212,6 +219,8 @@ impl Default for PingRule {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlertRule {
+    #[serde(default)]
+    pub id: u64,
     pub name: String,
     pub enabled: bool,
     pub min_severity: Severity,
@@ -246,6 +255,7 @@ pub struct AlertRule {
 impl Default for AlertRule {
     fn default() -> Self {
         Self {
+            id: 0,
             name: "New rule".to_owned(),
             enabled: true,
             min_severity: Severity::Warning,
@@ -277,6 +287,18 @@ pub enum OnTop {
     #[default]
     Smart,
     Never,
+}
+
+/// Assign a stable nonzero `id` to any rule missing one (id == 0). Ids key the per-rule match
+/// feed, which must survive reorder and delete. Idempotent.
+pub fn ensure_rule_ids(rules: &mut [AlertRule]) {
+    let mut next = rules.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    for r in rules.iter_mut() {
+        if r.id == 0 {
+            r.id = next;
+            next += 1;
+        }
+    }
 }
 
 pub fn default_rule() -> AlertRule {
@@ -590,6 +612,7 @@ impl Default for Settings {
             alliances: Vec::new(),
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
+            battles_enabled: true,
             battles: BattleFilter::default(),
             min_battle_isk: 0.0,
             battle_break_secs: default_battle_break(),
@@ -607,6 +630,8 @@ impl Default for Settings {
             jabber_sound_enabled: true,
             jabber_contacts: Vec::new(),
             jabber_closed_dms: Vec::new(),
+            jabber_closed_rooms: Vec::new(),
+            jabber_close_room_leaves: None,
             jabber_ping_bot: String::new(),
             jabber_ping_groups: Vec::new(),
             jabber_ping_rules: default_ping_rules(),
@@ -1053,6 +1078,31 @@ mod ping_seed_tests {
         let s = Settings::default();
         assert!(s.jabber_ping_rules_seeded);
         assert_eq!(s.jabber_ping_rules.len(), 2);
+    }
+
+    #[test]
+    fn ensure_rule_ids_assigns_unique_nonzero_and_is_idempotent() {
+        let mut rules = vec![
+            AlertRule { id: 0, ..AlertRule::default() },
+            AlertRule { id: 5, ..AlertRule::default() },
+            AlertRule { id: 0, ..AlertRule::default() },
+        ];
+        ensure_rule_ids(&mut rules);
+        assert!(rules.iter().all(|r| r.id != 0));
+        assert_eq!(rules[1].id, 5);
+        let ids: std::collections::HashSet<u64> = rules.iter().map(|r| r.id).collect();
+        assert_eq!(ids.len(), 3);
+
+        let snapshot: Vec<u64> = rules.iter().map(|r| r.id).collect();
+        ensure_rule_ids(&mut rules);
+        assert_eq!(snapshot, rules.iter().map(|r| r.id).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn ensure_rule_ids_default_rule_gets_id_one() {
+        let mut rules = vec![default_rule()];
+        ensure_rule_ids(&mut rules);
+        assert_eq!(rules[0].id, 1);
     }
 }
 

@@ -1,3 +1,6 @@
+// Combat-event alerts are disabled for now (see app.rs); kept intact for re-enabling.
+#![allow(dead_code)]
+
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

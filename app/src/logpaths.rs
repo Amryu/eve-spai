@@ -61,6 +61,8 @@ pub fn chat_logs_dir(configured: &str) -> Option<PathBuf> {
         .find(|d| d.is_dir())
 }
 
+// Only used by the combat-event watcher, which is disabled for now; kept for re-enabling.
+#[allow(dead_code)]
 pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
     let configured = configured.trim();
     if !configured.is_empty() {

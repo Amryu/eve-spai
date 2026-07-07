@@ -152,6 +152,9 @@ fn scan(
                 if m.author.eq_ignore_ascii_case("EVE System") {
                     continue;
                 }
+                if st.duplicate_line(&meta.channel, &m.timestamp, &m.author, &m.text) {
+                    continue;
+                }
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
                 let context = last_system.get(&meta.channel).map(|(id, _, _)| *id);
                 let mut report = intel::analyze_ctx(
@@ -165,7 +168,7 @@ fn scan(
                         let confirmed = matches!(cache.get(name), Some(Some(_)));
                         cache.queue(name);
                         if !confirmed {
-                            for w in crate::pilot::name_windows(name) {
+                            for w in crate::pilot::resolvable_windows(name) {
                                 cache.queue(&w);
                             }
                         }

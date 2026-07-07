@@ -260,6 +260,7 @@ impl IntelTypeFilter {
 }
 
 use crate::auth::{self, AuthStatus, SharedAuth};
+use crate::brview::RosterSort;
 use crate::nav::{self, View};
 use crate::sde::{self, SdeStatus, SharedStatus};
 use crate::settings::Settings;
@@ -295,7 +296,7 @@ pub struct SpaiApp {
     battle_history_loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
     show_history: bool,
     battle_selected: Option<i64>,
-    battle_detail_cache: Option<BattleDetailCache>,
+    battle_detail_cache: Option<std::sync::Arc<crate::brview::BattleDetail>>,
     loaded_report: Option<LoadedReport>,
     report_msg: Option<String>,
     build_from_kill: crate::zkill::SharedBuildFromKill,
@@ -303,6 +304,9 @@ pub struct SpaiApp {
     build_kill_error: Option<String>,
     battle_ship_ids: Option<std::sync::Arc<std::collections::HashSet<i64>>>,
     br_share: crate::brshare::SharedShare,
+    /// The battle (by kid) the current share status belongs to, so the "Shared:" banner shows only
+    /// on that report, not on whatever BR you navigate to next.
+    br_share_kid: Option<i64>,
     br_mine: crate::brshare::SharedMine,
     br_mine_open: bool,
     br_unlisted: bool,
@@ -316,6 +320,7 @@ pub struct SpaiApp {
     player_sys_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
     recent_wh: crate::zkill::RecentWh,
     work_throttle_shared: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    battles_enabled_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     battle_filter_open: bool,
     filter_picker: Option<crate::pickers::FilterPicker>,
     verdict_popup: Option<String>,
@@ -339,12 +344,19 @@ pub struct SpaiApp {
     battle_add_link: String,
     battle_excluded_open: bool,
     battle_scrubs_open: bool,
-    battle_candidates: Vec<(i64, Option<u32>, f64, crate::battle::Battle)>,
-    battle_candidates_sig: u64,
+    br_inputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrInputs>>,
+    br_outputs: std::sync::Arc<std::sync::Mutex<crate::brview::BrOutputs>>,
+    br_wake: crate::brview::Wake,
+    br_last_sent_sig: u64,
+    battle_filter_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    // UI-side snapshots of the worker output, re-cloned only when its signature changes (never
+    // per frame), so scrolling/rendering never clones the battle list or the open battle.
     battle_cards: Vec<(i64, Option<u32>, crate::battle::Battle)>,
-    battle_cards_sig: u64,
     battle_cards_total: usize,
     battle_cards_filtered: usize,
+    battle_cards_ready: bool,
+    battle_cards_out_sig: u64,
+    battle_detail_out_sig: u64,
     camps: crate::camp::SharedCamps,
     camped_cache: Vec<(i64, crate::camp::CampLevel)>,
     camped_cache_at: i64,
@@ -358,6 +370,10 @@ pub struct SpaiApp {
     alerts_engine: std::sync::Arc<AlertEngine>,
     recent_alerts: crate::gamewatcher::AlertLog,
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
+    alert_rules_open: bool,
+    alert_selected_rule: Option<u64>,
+    rule_feeds:
+        std::collections::HashMap<u64, Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>>,
     alert_shared: SharedAlertWindow,
     alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -366,6 +382,9 @@ pub struct SpaiApp {
     jabber_tx: Option<crate::jabber::CmdSender>,
     jabber_popped: bool,
     jabber_chat: Option<String>,
+    jabber_tabs: Vec<String>,
+    jabber_join_open: bool,
+    jabber_close_room_prompt: Option<String>,
     jabber_drafts: std::collections::HashMap<String, String>,
     jabber_room_input: String,
     jabber_contact_search: String,
@@ -376,6 +395,8 @@ pub struct SpaiApp {
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
     jabber_pw_input: String,
+    /// Fleet-ping history is paginated: render the newest N, load 50 more on scroll to bottom.
+    jabber_pings_visible: usize,
     ping_rules_open: bool,
     session_start: i64,
     eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -591,6 +612,7 @@ impl SpaiApp {
             settings.alerts.rules.insert(0, crate::settings::default_rule());
             settings.alerts.seeded = true;
         }
+        crate::settings::ensure_rule_ids(&mut settings.alerts.rules);
         if !settings.jabber_ping_rules_seeded {
             if settings.jabber_ping_rules.is_empty() {
                 settings.jabber_ping_rules = crate::settings::default_ping_rules();
@@ -809,7 +831,6 @@ impl SpaiApp {
             battle_history_loading: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             show_history: false,
             battle_selected: None,
-            battle_detail_cache: None,
             loaded_report: None,
             report_msg: None,
             build_from_kill: std::sync::Arc::new(std::sync::Mutex::new(
@@ -819,6 +840,7 @@ impl SpaiApp {
             build_kill_error: None,
             battle_ship_ids: None,
             br_share: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::ShareStatus::Idle)),
+            br_share_kid: None,
             br_mine: std::sync::Arc::new(std::sync::Mutex::new(crate::brshare::MineState::default())),
             br_mine_open: false,
             br_unlisted: false,
@@ -832,6 +854,7 @@ impl SpaiApp {
             player_sys_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             recent_wh: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             work_throttle_shared: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            battles_enabled_shared: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             battle_filter_open: false,
             filter_picker: None,
             verdict_popup: None,
@@ -854,12 +877,18 @@ impl SpaiApp {
             battle_add_link: String::new(),
             battle_excluded_open: false,
             battle_scrubs_open: false,
-            battle_candidates: Vec::new(),
-            battle_candidates_sig: 0,
+            battle_detail_cache: None,
+            br_inputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrInputs::default())),
+            br_outputs: std::sync::Arc::new(std::sync::Mutex::new(crate::brview::BrOutputs::default())),
+            br_wake: std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
+            br_last_sent_sig: 0,
+            battle_filter_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             battle_cards: Vec::new(),
-            battle_cards_sig: 0,
             battle_cards_total: 0,
             battle_cards_filtered: 0,
+            battle_cards_ready: false,
+            battle_cards_out_sig: u64::MAX,
+            battle_detail_out_sig: u64::MAX,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
             camped_cache_at: 0,
@@ -873,6 +902,9 @@ impl SpaiApp {
             alerts_engine,
             recent_alerts,
             alert_feed: Vec::new(),
+            alert_rules_open: false,
+            alert_selected_rule: None,
+            rule_feeds: std::collections::HashMap::new(),
             alert_shared,
             alert_viewport_cb,
             os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
@@ -881,6 +913,9 @@ impl SpaiApp {
             jabber_tx: None,
             jabber_popped: false,
             jabber_chat: None,
+            jabber_tabs: Vec::new(),
+            jabber_join_open: false,
+            jabber_close_room_prompt: None,
             jabber_drafts: std::collections::HashMap::new(),
             jabber_room_input: String::new(),
             jabber_contact_search: String::new(),
@@ -891,6 +926,7 @@ impl SpaiApp {
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
             jabber_pw_input: String::new(),
+            jabber_pings_visible: 50,
             ping_rules_open: false,
             session_start: chrono::Utc::now().timestamp(),
             eve_focused,
@@ -1111,7 +1147,18 @@ impl SpaiApp {
             cfg.kill_intel_jumps = self.settings.kill_intel_jumps;
             cfg.intel_max_jumps = self.intel_max_jumps;
         }
-        let fired = std::mem::take(&mut self.alerts_engine.runtime.lock().unwrap().fired_ui);
+        let (fired, matched) = {
+            let mut rt = self.alerts_engine.runtime.lock().unwrap();
+            (std::mem::take(&mut rt.fired_ui), std::mem::take(&mut rt.matched_ui))
+        };
+        for (report, sev, rule_id, suppressed) in matched {
+            let feed = self.rule_feeds.entry(rule_id).or_default();
+            feed.push((report, sev, suppressed));
+            let n = feed.len();
+            if n > 50 {
+                feed.drain(0..n - 50);
+            }
+        }
         if fired.is_empty() {
             return;
         }
@@ -1125,27 +1172,37 @@ impl SpaiApp {
     }
 
     fn alerts_view(&mut self, ui: &mut egui::Ui) {
+        if self.alert_rules_open {
+            self.alert_rules_editor(ui);
+            return;
+        }
         ui.add_space(10.0);
-        if ui
-            .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
-            .on_hover_text("Master switch for all intel alerts")
-            .changed()
-        {
-            self.needs_save = true;
-        }
-        if !self.settings.alert_enabled {
-            ui.colored_label(
-                crate::theme::standing::WARNING,
-                "Intel alerts are off. No rule will fire until this is enabled.",
-            );
-        } else if !self.settings.alerts.rules.iter().any(|r| r.enabled) {
-            ui.colored_label(
-                crate::theme::standing::WARNING,
-                "No alert rule is enabled. Nothing will fire. Enable or add a rule below.",
-            );
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
+                .on_hover_text("Master switch for all intel alerts")
+                .changed()
+            {
+                self.needs_save = true;
+            }
+            {
+                let mut snooze = self.alert_shared.lock().unwrap().snooze;
+                if ui
+                    .checkbox(
+                        &mut snooze,
+                        format!(
+                            "{}  Snooze alert window until I undock",
+                            egui_phosphor::regular::ALARM
+                        ),
+                    )
+                    .on_hover_text(
+                        "Suppress the alert window from opening. Intel is still collected. Clears when any character undocks.",
+                    )
+                    .changed()
+                {
+                    self.alert_shared.lock().unwrap().snooze = snooze;
+                }
+            }
             if ui
                 .checkbox(&mut self.settings.kill_intel, "zKill intel")
                 .on_hover_text("Within range, killmails appear as intel cards (and respect the alert rules)")
@@ -1167,13 +1224,35 @@ impl SpaiApp {
                 }
             }
         });
-        ui.add_space(4.0);
+        if !self.settings.alert_enabled {
+            ui.colored_label(
+                crate::theme::standing::WARNING,
+                "Intel alerts are off. No rule will fire until this is enabled.",
+            );
+        } else if !self.settings.alerts.rules.iter().any(|r| r.enabled) {
+            ui.colored_label(
+                crate::theme::standing::WARNING,
+                "No alert rule is enabled. Nothing will fire. Enable or add a rule below.",
+            );
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let n = self.settings.alerts.rules.iter().filter(|r| r.enabled).count();
+            if ui
+                .button(format!(
+                    "{}  Alert rules ({n} on)",
+                    egui_phosphor::regular::SLIDERS_HORIZONTAL
+                ))
+                .on_hover_text("Configure alert rules")
+                .clicked()
+            {
+                self.alert_rules_open = true;
+            }
+        });
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(egui::RichText::new("Alert rules").strong());
-            self.alert_rules_ui(ui);
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
             ui.label(egui::RichText::new("Recent alerts").strong());
             self.alert_history_ui(ui);
         });
@@ -1235,6 +1314,10 @@ impl SpaiApp {
                 click = Some(c);
             }
         }
+        self.apply_intel_click(click, ui);
+    }
+
+    fn apply_intel_click(&mut self, click: Option<IntelClick>, ui: &mut egui::Ui) {
         match click {
             Some(IntelClick::System(id)) => self.open_system(id),
             Some(IntelClick::Ship(id)) => self.open_ship(id),
@@ -1254,7 +1337,83 @@ impl SpaiApp {
         }
     }
 
+    /// Render one rule's "Recent matches" feed. Mirrors `alert_history_ui` but sources from
+    /// `rule_feeds` and tags each card as allowed or suppressed.
+    fn rule_feed_ui(&mut self, ui: &mut egui::Ui, rule_id: u64) {
+        let entries: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)> = self
+            .rule_feeds
+            .get(&rule_id)
+            .map(|f| f.iter().rev().take(60).cloned().collect())
+            .unwrap_or_default();
+        if entries.is_empty() {
+            ui.label(egui::RichText::new("None yet.").weak());
+            return;
+        }
+        let mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)> = entries;
+        {
+            let mut cache = self.pilots.lock().unwrap_or_else(|e| e.into_inner());
+            for (r, _, _) in feed.iter_mut() {
+                r.pilots.retain(|p| {
+                    if crate::intel::is_pilot_stopword(p) {
+                        return false;
+                    }
+                    match cache.get(p) {
+                        Some(Some(_)) => !cache.is_hidden(p),
+                        Some(None) => false,
+                        None => {
+                            cache.queue(p);
+                            true
+                        }
+                    }
+                });
+            }
+        }
+        let ship_ids: std::collections::HashSet<i64> =
+            feed.iter().flat_map(|(r, _, _)| r.ships.iter().map(|s| s.id)).collect();
+        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
+            ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
+        let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
+            ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
+        let (resolved_pilots, uncertain) = {
+            let mut cache = self.pilots.lock().unwrap();
+            let rp = cache
+                .display_ids(feed.iter().flat_map(|(r, _, _)| r.pilots.iter()).map(|s| s.as_str()));
+            let unc = uncertain_set(&cache, &rp);
+            (rp, unc)
+        };
+        let status = self.system_status.lock().unwrap().clone();
+        let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
+        let systems = self.systems.clone();
+        let player_sys = self.player_system();
+        let now = chrono::Utc::now().timestamp();
+        let mut click: Option<IntelClick> = None;
+        for (r, sev, suppressed) in &feed {
+            if *suppressed {
+                ui.label(
+                    egui::RichText::new(format!("{}  suppressed", egui_phosphor::regular::BELL_SLASH))
+                        .color(crate::theme::standing::NEUTRAL),
+                );
+            }
+            let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+            let kc = self.kill_cache.clone();
+            let affil = self.affiliations.clone();
+            if let Some(c) = intel_row(
+                ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
+                &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true, &affil,
+            ) {
+                click = Some(c);
+            }
+        }
+        self.apply_intel_click(click, ui);
+    }
+
     fn maybe_start_jabber(&mut self, ctx: &egui::Context) {
+        // A terminal failure (bad credentials, unreachable) drops back to the login form and stops
+        // auto-restarting; the reason stays in state until the user retries.
+        if self.jabber.lock().unwrap().fatal.is_some() && self.settings.jabber_enabled {
+            self.settings.jabber_enabled = false;
+            self.needs_save = true;
+        }
         let enabled = self.settings.jabber_enabled && !self.settings.jabber_jid.trim().is_empty();
         {
             let mut s = self.jabber.lock().unwrap();
@@ -1448,6 +1607,14 @@ impl SpaiApp {
                         )
                         .changed();
                     ui.end_row();
+                    ui.label("Closing a room tab");
+                    ui.horizontal(|ui| {
+                        let v = &mut self.settings.jabber_close_room_leaves;
+                        changed |= ui.selectable_value(v, None, "Ask").changed();
+                        changed |= ui.selectable_value(v, Some(true), "Leave room").changed();
+                        changed |= ui.selectable_value(v, Some(false), "Keep joined").changed();
+                    });
+                    ui.end_row();
                 });
                 ui.separator();
                 ui.label(
@@ -1587,6 +1754,197 @@ impl SpaiApp {
         }
     }
 
+    fn remove_jabber_tab(&mut self, jid: &str) {
+        if let Some(idx) = self.jabber_tabs.iter().position(|t| t == jid) {
+            self.jabber_tabs.remove(idx);
+            if self.jabber_chat.as_deref() == Some(jid) {
+                // Focus the left neighbour, falling back to the Fleet pings tab.
+                self.jabber_chat = if idx > 0 { self.jabber_tabs.get(idx - 1).cloned() } else { None };
+            }
+        }
+    }
+
+    fn close_jabber_tab(&mut self, jid: &str, is_room: bool) {
+        if is_room {
+            match self.settings.jabber_close_room_leaves {
+                None => {
+                    // First time: ask, then re-run with the saved choice.
+                    self.jabber_close_room_prompt = Some(jid.to_owned());
+                    return;
+                }
+                Some(true) => {
+                    if let Some(tx) = &self.jabber_tx {
+                        let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: jid.to_owned() });
+                    }
+                    self.settings.jabber_rooms.retain(|r| r != jid);
+                }
+                Some(false) => {
+                    if !self.settings.jabber_closed_rooms.iter().any(|r| r == jid) {
+                        self.settings.jabber_closed_rooms.push(jid.to_owned());
+                    }
+                }
+            }
+        } else if !self.settings.jabber_closed_dms.iter().any(|d| d == jid) {
+            self.settings.jabber_closed_dms.push(jid.to_owned());
+        }
+        self.needs_save = true;
+        self.remove_jabber_tab(jid);
+    }
+
+    fn jabber_join_dialog(&mut self, ctx: &egui::Context, convos: &[Convo]) {
+        if !self.jabber_join_open {
+            return;
+        }
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new(format!(
+            "{}  Join conversation",
+            egui_phosphor::regular::CHAT_CIRCLE_DOTS
+        ))
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            // Size fields to a constant, NOT ui.available_width(): this window auto-fits its content
+            // (resizable=false), so a field derived from available_width feeds the window width back
+            // into itself and the dialog creeps wider every frame.
+            const DIALOG_W: f32 = 320.0;
+            const FIELD_W: f32 = DIALOG_W - 70.0;
+            ui.set_min_width(DIALOG_W);
+            ui.label(egui::RichText::new("Join room").strong());
+            let room_go = ui
+                .horizontal(|ui| {
+                    let resp = ui.add_sized(
+                        [FIELD_W, 22.0],
+                        egui::TextEdit::singleline(&mut self.jabber_room_input)
+                            .hint_text("room@conference.…"),
+                    );
+                    let enter =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.button("Join").clicked() || enter
+                })
+                .inner;
+            if room_go && !self.jabber_room_input.trim().is_empty() {
+                let room = self.full_room_jid(&self.jabber_room_input);
+                self.jabber_room_input.clear();
+                if let Some(tx) = &self.jabber_tx {
+                    let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
+                }
+                if !self.settings.jabber_rooms.contains(&room) {
+                    self.settings.jabber_rooms.push(room.clone());
+                }
+                self.settings.jabber_closed_rooms.retain(|r| r != &room);
+                self.needs_save = true;
+                if !self.jabber_tabs.iter().any(|t| t == &room) {
+                    self.jabber_tabs.push(room.clone());
+                }
+                self.jabber_chat = Some(room);
+                close = true;
+            }
+
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Message someone").strong());
+            let dm_go = ui
+                .horizontal(|ui| {
+                    let resp = ui.add_sized(
+                        [FIELD_W, 22.0],
+                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
+                            .hint_text("Message someone…"),
+                    );
+                    let enter =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.button("Open").clicked() || enter
+                })
+                .inner;
+            if dm_go && !self.jabber_dm_input.trim().is_empty() {
+                let input = self.jabber_dm_input.trim().to_owned();
+                let resolved = if input.contains('@') {
+                    Some(input.clone())
+                } else if let Some(c) = convos.iter().find(|c| {
+                    c.name.eq_ignore_ascii_case(&input)
+                        || c.jid
+                            .split('@')
+                            .next()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(&input))
+                }) {
+                    Some(c.jid.clone())
+                } else if !input.contains(' ') {
+                    Some(self.full_user_jid(&input))
+                } else {
+                    None
+                };
+                match resolved {
+                    Some(jid) => {
+                        self.jabber_dm_input.clear();
+                        self.jabber_dm_error.clear();
+                        self.settings.jabber_closed_dms.retain(|j| j != &jid);
+                        self.needs_save = true;
+                        self.jabber.lock().unwrap().unread.remove(&jid);
+                        if !self.jabber_tabs.iter().any(|t| t == &jid) {
+                            self.jabber_tabs.push(jid.clone());
+                        }
+                        self.jabber_chat = Some(jid);
+                        close = true;
+                    }
+                    None => {
+                        self.jabber_dm_error = format!("No contact matching \"{input}\"");
+                    }
+                }
+            }
+            if !self.jabber_dm_error.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(&self.jabber_dm_error)
+                        .color(crate::theme::standing::WARNING),
+                );
+            }
+        });
+        if close || !open {
+            self.jabber_join_open = false;
+            self.jabber_dm_error.clear();
+        }
+    }
+
+    fn jabber_close_room_dialog(&mut self, ctx: &egui::Context) {
+        let Some(jid) = self.jabber_close_room_prompt.clone() else {
+            return;
+        };
+        let name = jid.split('@').next().unwrap_or(&jid).to_owned();
+        let mut open = true;
+        let mut dismiss = false;
+        egui::Window::new("Close room tab")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label(format!("Closing the tab for \"{name}\"."));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Leave the room, or keep it joined and just hide the tab? You can change this later in the Jabber alerts window.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Leave room").clicked() {
+                        self.settings.jabber_close_room_leaves = Some(true);
+                        self.close_jabber_tab(&jid, true);
+                        dismiss = true;
+                    }
+                    if ui.button("Just hide tab").clicked() {
+                        self.settings.jabber_close_room_leaves = Some(false);
+                        self.close_jabber_tab(&jid, true);
+                        dismiss = true;
+                    }
+                });
+            });
+        if dismiss || !open {
+            self.jabber_close_room_prompt = None;
+        }
+    }
+
     fn jabber_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         if self.jabber_popped {
@@ -1597,9 +1955,14 @@ impl SpaiApp {
     }
 
     fn jabber_ui(&mut self, ui: &mut egui::Ui) {
+        let (fatal_set, ever_online) = {
+            let s = self.jabber.lock().unwrap();
+            (s.fatal.is_some(), s.ever_online)
+        };
         let configured = self.settings.jabber_enabled
             && !self.settings.jabber_jid.trim().is_empty()
-            && crate::jabber::has_password(self.settings.jabber_jid.trim());
+            && crate::jabber::has_password(self.settings.jabber_jid.trim())
+            && !fatal_set;
         if !configured {
             ui.add_space(6.0);
             ui.label(
@@ -1627,34 +1990,85 @@ impl SpaiApp {
                 .on_hover_text("XMPP server host (the JID domain usually has no SRV record)");
                 ui.end_row();
                 ui.label("Password");
+                let pw_hint = if crate::jabber::has_password(self.settings.jabber_jid.trim()) {
+                    "<saved password>"
+                } else {
+                    ""
+                };
                 ui.add(
                     egui::TextEdit::singleline(&mut self.jabber_pw_input)
                         .password(true)
+                        .hint_text(pw_hint)
                         .desired_width(260.0),
                 );
                 ui.end_row();
             });
             if ui.button("Connect").clicked() {
                 let jid = self.settings.jabber_jid.trim().to_owned();
-                if !jid.is_empty() && !self.jabber_pw_input.is_empty() {
-                    if let Err(e) = crate::jabber::save_password(&jid, &self.jabber_pw_input) {
-                        self.jabber.lock().unwrap().status = format!("Keychain error: {e}");
+                if let Some(err) = crate::jabber::jid_format_error(&jid) {
+                    let mut s = self.jabber.lock().unwrap();
+                    s.fatal = Some(err.clone());
+                    s.status = err;
+                } else {
+                    // Save a freshly typed password, otherwise reuse the stored one (e.g. retrying
+                    // after a network error without re-typing it).
+                    let ready = if !self.jabber_pw_input.is_empty() {
+                        match crate::jabber::save_password(&jid, &self.jabber_pw_input) {
+                            Ok(()) => {
+                                self.jabber_pw_input.clear();
+                                true
+                            }
+                            Err(e) => {
+                                self.jabber.lock().unwrap().status = format!("Keychain error: {e}");
+                                false
+                            }
+                        }
                     } else {
-                        self.jabber_pw_input.clear();
+                        crate::jabber::has_password(&jid)
+                    };
+                    if ready {
+                        let mut s = self.jabber.lock().unwrap();
+                        s.fatal = None;
+                        s.status = "Connecting…".to_owned();
+                        drop(s);
                         self.settings.jabber_enabled = true;
                         self.needs_save = true;
+                    } else {
+                        self.jabber.lock().unwrap().status = "Enter your password".to_owned();
                     }
                 }
             }
-            let status = self.jabber.lock().unwrap().status.clone();
+            let (status, fatal) = {
+                let s = self.jabber.lock().unwrap();
+                (s.status.clone(), s.fatal.is_some())
+            };
             if !status.is_empty() {
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(status).weak());
+                let txt = egui::RichText::new(status);
+                ui.label(if fatal { txt.color(crate::theme::standing::HOSTILE) } else { txt.weak() });
             }
             return;
         }
 
-        let (connected, status, convos, sel_msgs, pings, rooms, open_dms) = {
+        if !ever_online {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.add(egui::Spinner::new().size(28.0));
+                ui.add_space(10.0);
+                let status = self.jabber.lock().unwrap().status.clone();
+                let txt = if status.is_empty() { "Connecting…".to_owned() } else { status };
+                ui.label(egui::RichText::new(txt).weak());
+                ui.add_space(10.0);
+                if ui.button("Cancel").clicked() {
+                    self.settings.jabber_enabled = false;
+                    self.needs_save = true;
+                    self.jabber.lock().unwrap().status.clear();
+                }
+            });
+            return;
+        }
+
+        let (connected, status, convos, sel_msgs, pings, rooms, dm_keys, unread, pings_unread) = {
             let st = self.jabber.lock().unwrap();
             let mut set: std::collections::BTreeMap<String, Convo> =
                 std::collections::BTreeMap::new();
@@ -1693,25 +2107,69 @@ impl SpaiApp {
                 .unwrap_or_default();
             let rooms: Vec<(String, bool)> =
                 st.rooms.iter().map(|r| (r.clone(), st.unread.contains(r))).collect();
-            let open_dms: Vec<(String, bool)> = st
+            let dm_keys: Vec<String> = st
                 .chats
                 .keys()
                 .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY && valid_bare_jid(k))
-                .map(|k| (k.clone(), st.unread.contains(k)))
+                .cloned()
                 .collect();
-            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, open_dms)
+            let unread = st.unread.clone();
+            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, dm_keys, unread, st.pings_unread)
         };
+
+        // Reconcile the open-conversation tabs from joined rooms + DM history. An incoming
+        // message (present in `unread`) reopens a conversation whose tab was closed.
+        {
+            let mut save = false;
+            for k in &unread {
+                if let Some(p) = self.settings.jabber_closed_dms.iter().position(|j| j == k) {
+                    self.settings.jabber_closed_dms.remove(p);
+                    save = true;
+                }
+                if let Some(p) = self.settings.jabber_closed_rooms.iter().position(|j| j == k) {
+                    self.settings.jabber_closed_rooms.remove(p);
+                    save = true;
+                }
+            }
+            let closed_dms: std::collections::HashSet<String> =
+                self.settings.jabber_closed_dms.iter().cloned().collect();
+            let closed_rooms: std::collections::HashSet<String> =
+                self.settings.jabber_closed_rooms.iter().cloned().collect();
+            let room_set: std::collections::HashSet<String> =
+                rooms.iter().map(|(r, _)| r.clone()).collect();
+            for (rjid, _) in &rooms {
+                if !closed_rooms.contains(rjid) && !self.jabber_tabs.iter().any(|t| t == rjid) {
+                    self.jabber_tabs.push(rjid.clone());
+                }
+            }
+            for k in &dm_keys {
+                if !closed_dms.contains(k) && !self.jabber_tabs.iter().any(|t| t == k) {
+                    self.jabber_tabs.push(k.clone());
+                }
+            }
+            self.jabber_tabs.retain(|t| {
+                if room_set.contains(t) {
+                    !closed_rooms.contains(t)
+                } else {
+                    !closed_dms.contains(t)
+                }
+            });
+            if let Some(jid) = self.jabber_chat.clone() {
+                if !room_set.contains(&jid) && !self.jabber_tabs.iter().any(|t| t == &jid) {
+                    self.jabber_chat = None;
+                }
+            }
+            if save {
+                self.needs_save = true;
+            }
+        }
 
         let mut presence_changed = false;
         ui.horizontal(|ui| {
             if connected {
                 use crate::jabber::Presence;
                 let (r, g, b) = self.jabber_my_presence.color();
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                        .color(egui::Color32::from_rgb(r, g, b))
-                        .size(10.0),
-                );
+                status_dot(ui, egui::Color32::from_rgb(r, g, b), 10.0);
                 ui.label(egui::RichText::new(&self.settings.jabber_jid).weak());
                 egui::ComboBox::from_id_salt("my_presence")
                     .selected_text(self.jabber_my_presence.label())
@@ -1735,11 +2193,7 @@ impl SpaiApp {
                     presence_changed = true;
                 }
             } else {
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                        .color(crate::theme::standing::WARNING)
-                        .size(10.0),
-                );
+                status_dot(ui, crate::theme::standing::WARNING, 10.0);
                 ui.label(egui::RichText::new(status.as_str()).weak());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1776,218 +2230,26 @@ impl SpaiApp {
             .size_range(150.0..=460.0)
             .show_inside(ui, |ui| {
                 if ui
-                    .selectable_label(self.jabber_chat.is_none(), format!("{}  Fleet pings ({})", egui_phosphor::regular::MEGAPHONE, pings.len()))
+                    .add_sized(
+                        [ui.available_width(), 24.0],
+                        egui::Button::new(format!(
+                            "{}  Join conversation",
+                            egui_phosphor::regular::CHAT_CIRCLE_DOTS
+                        )),
+                    )
+                    .on_hover_text("Join a room or start a direct message")
                     .clicked()
                 {
-                    self.jabber_chat = None;
-                    self.jabber.lock().unwrap().pings_unread = false;
+                    self.jabber_dm_error.clear();
+                    self.jabber_join_open = true;
                 }
-                ui.separator();
-                let chips_h = (ui.available_height() * 0.5).max(90.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("chips")
-                    .max_height(chips_h)
-                    .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let join_btn = ui
-                        .button(egui_phosphor::regular::PLUS)
-                        .on_hover_text("Join room")
-                        .clicked();
-                    let resp = ui.add_sized(
-                        [ui.available_width(), 20.0],
-                        egui::TextEdit::singleline(&mut self.jabber_room_input)
-                            .hint_text("room@conference.…"),
-                    );
-                    let go =
-                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (join_btn || go) && !self.jabber_room_input.trim().is_empty() {
-                        let room = self.full_room_jid(&self.jabber_room_input);
-                        self.jabber_room_input.clear();
-                        if let Some(tx) = &self.jabber_tx {
-                            let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: room.clone() });
-                        }
-                        if !self.settings.jabber_rooms.contains(&room) {
-                            self.settings.jabber_rooms.push(room.clone());
-                            self.needs_save = true;
-                        }
-                        self.jabber_chat = Some(room);
-                    }
-                });
-                let mut leave_room: Option<String> = None;
-                for (rjid, unread) in &rooms {
-                    ui.horizontal(|ui| {
-                        let name = short_chip(rjid.split('@').next().unwrap_or(rjid));
-                        let mut txt = egui::RichText::new(format!(
-                            "{}  {name}",
-                            egui_phosphor::regular::USERS_THREE
-                        ));
-                        if *unread {
-                            txt = txt.strong();
-                        }
-                        let sel = self.jabber_chat.as_deref() == Some(rjid.as_str());
-                        if ui.selectable_label(sel, txt).on_hover_text(rjid).clicked() {
-                            self.jabber_chat = Some(rjid.clone());
-                            self.jabber.lock().unwrap().unread.remove(rjid);
-                        }
-                        if *unread {
-                            ui.label(
-                                egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                    .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
-                                    .size(8.0),
-                            );
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(egui_phosphor::regular::X).small(),
-                                    )
-                                    .frame(false),
-                                )
-                                .on_hover_text("Leave (keeps history)")
-                                .clicked()
-                            {
-                                leave_room = Some(rjid.clone());
-                            }
-                        });
-                    });
-                }
-                if let Some(rjid) = leave_room {
-                    if let Some(tx) = &self.jabber_tx {
-                        let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: rjid.clone() });
-                    }
-                    self.settings.jabber_rooms.retain(|r| r != &rjid);
-                    self.needs_save = true;
-                    if self.jabber_chat.as_deref() == Some(rjid.as_str()) {
-                        self.jabber_chat = None;
-                    }
-                }
-                ui.horizontal(|ui| {
-                    let dm_btn = ui
-                        .button(egui_phosphor::regular::CHAT_CIRCLE_DOTS)
-                        .on_hover_text("Open DM")
-                        .clicked();
-                    let resp = ui.add_sized(
-                        [ui.available_width(), 20.0],
-                        egui::TextEdit::singleline(&mut self.jabber_dm_input)
-                            .hint_text("Message someone…"),
-                    );
-                    let go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (dm_btn || go) && !self.jabber_dm_input.trim().is_empty() {
-                        let input = self.jabber_dm_input.trim().to_owned();
-                        let resolved = if input.contains('@') {
-                            Some(input.clone())
-                        } else if let Some(c) = convos.iter().find(|c| {
-                            c.name.eq_ignore_ascii_case(&input)
-                                || c.jid
-                                    .split('@')
-                                    .next()
-                                    .is_some_and(|l| l.eq_ignore_ascii_case(&input))
-                        }) {
-                            Some(c.jid.clone())
-                        } else if !input.contains(' ') {
-                            Some(self.full_user_jid(&input))
-                        } else {
-                            None
-                        };
-                        match resolved {
-                            Some(jid) => {
-                                self.jabber_dm_input.clear();
-                                self.jabber_dm_error.clear();
-                                self.settings.jabber_closed_dms.retain(|j| j != &jid);
-                                self.jabber.lock().unwrap().unread.remove(&jid);
-                                self.jabber_chat = Some(jid);
-                            }
-                            None => {
-                                self.jabber_dm_error = format!("No contact matching \"{input}\"");
-                            }
-                        }
-                    }
-                });
-                if !self.jabber_dm_error.is_empty() {
-                    ui.label(
-                        egui::RichText::new(&self.jabber_dm_error)
-                            .color(crate::theme::standing::WARNING)
-                            .small(),
-                    );
-                }
-                let mut dm_chips = open_dms.clone();
-                for (jid, draft) in &self.jabber_drafts {
-                    if !draft.trim().is_empty()
-                        && jid.as_str() != crate::jabber::PING_FEED_KEY
-                        && !rooms.iter().any(|(r, _)| r == jid)
-                        && !dm_chips.iter().any(|(d, _)| d == jid)
-                    {
-                        dm_chips.push((jid.clone(), false));
-                    }
-                }
-                let mut close_dm: Option<String> = None;
-                for (djid, unread) in &dm_chips {
-                    if self.settings.jabber_closed_dms.iter().any(|j| j == djid) {
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        let pres = convos
-                            .iter()
-                            .find(|c| &c.jid == djid)
-                            .map(|c| c.presence)
-                            .unwrap_or_default();
-                        let (pr, pg, pb) = pres.color();
-                        ui.label(
-                            egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                .color(egui::Color32::from_rgb(pr, pg, pb))
-                                .size(9.0),
-                        );
-                        let name = short_chip(djid.split('@').next().unwrap_or(djid));
-                        let mut txt = egui::RichText::new(name);
-                        if *unread {
-                            txt = txt.strong();
-                        }
-                        let sel = self.jabber_chat.as_deref() == Some(djid.as_str());
-                        if ui.selectable_label(sel, txt).on_hover_text(djid).clicked() {
-                            self.jabber_chat = Some(djid.clone());
-                            self.jabber.lock().unwrap().unread.remove(djid);
-                        }
-                        if *unread {
-                            ui.label(
-                                egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                    .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
-                                    .size(8.0),
-                            );
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(egui_phosphor::regular::X).small(),
-                                    )
-                                    .frame(false),
-                                )
-                                .on_hover_text("Close (keeps history)")
-                                .clicked()
-                            {
-                                close_dm = Some(djid.clone());
-                            }
-                        });
-                    });
-                }
-                if let Some(jid) = close_dm {
-                    if !self.settings.jabber_closed_dms.contains(&jid) {
-                        self.settings.jabber_closed_dms.push(jid.clone());
-                        self.needs_save = true;
-                    }
-                    if self.jabber_chat.as_deref() == Some(jid.as_str()) {
-                        self.jabber_chat = None;
-                    }
-                }
-                });
                 ui.separator();
                 let contacts: std::collections::HashSet<String> =
                     self.settings.jabber_contacts.iter().cloned().collect();
                 let dir_unread = convos.iter().any(|c| c.unread);
                 let con_unread = convos.iter().any(|c| c.unread && contacts.contains(&c.jid));
                 ui.horizontal(|ui| {
-                    let dir = ui.selectable_label(self.jabber_show_directory, "Directory");
+                    let dir = selectable_chip(ui, self.jabber_show_directory, "Directory");
                     if dir_unread {
                         ui.scope(|ui| {
                             ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).size(8.0));
@@ -1996,7 +2258,7 @@ impl SpaiApp {
                     if dir.clicked() {
                         self.jabber_show_directory = true;
                     }
-                    let con = ui.selectable_label(!self.jabber_show_directory, "Contacts");
+                    let con = selectable_chip(ui, !self.jabber_show_directory, "Contacts");
                     if con_unread {
                         ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).size(8.0));
                     }
@@ -2028,6 +2290,12 @@ impl SpaiApp {
                 let accent = ui.visuals().hyperlink_color;
                 let mut toggle_contact: Option<(String, bool)> = None;
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
+                    // Roster rows are list items, not chips: a border here is too heavy and would pop
+                    // in on hover. Keep the fill highlight, drop the stroke, so nothing shifts.
+                    let w = &mut ui.visuals_mut().widgets;
+                    w.inactive.bg_stroke = egui::Stroke::NONE;
+                    w.hovered.bg_stroke = egui::Stroke::NONE;
+                    w.active.bg_stroke = egui::Stroke::NONE;
                     if groups.is_empty() && !show_dir {
                         ui.add_space(6.0);
                         ui.label(egui::RichText::new("No contacts yet. Add people from the Directory.").weak());
@@ -2082,9 +2350,6 @@ impl SpaiApp {
                         for c in members {
                             let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
                             let (r, g, b) = c.presence.color();
-                            let dot = egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                .color(egui::Color32::from_rgb(r, g, b))
-                                .size(9.0);
                             let disp = truncate_to(
                                 &c.name,
                                 fit_chars(ui.available_width() - 34.0 - if c.unread { 16.0 } else { 0.0 }),
@@ -2098,7 +2363,7 @@ impl SpaiApp {
                             };
                             let is_contact = contacts.contains(&c.jid);
                             let resp = ui.horizontal(|ui| {
-                                ui.label(dot);
+                                status_dot(ui, egui::Color32::from_rgb(r, g, b), 9.0);
                                 let clicked = ui.selectable_label(sel, name)
                                     .on_hover_text(&c.name)
                                     .clicked();
@@ -2138,6 +2403,9 @@ impl SpaiApp {
                             resp.response.on_hover_text(tip);
                             if resp.inner {
                                 self.settings.jabber_closed_dms.retain(|j| j != &c.jid);
+                                if !self.jabber_tabs.iter().any(|t| t == &c.jid) {
+                                    self.jabber_tabs.push(c.jid.clone());
+                                }
                                 self.jabber_chat = Some(c.jid.clone());
                                 self.jabber.lock().unwrap().unread.remove(&c.jid);
                             }
@@ -2156,22 +2424,196 @@ impl SpaiApp {
                 }
             });
         egui::CentralPanel::default().show_inside(ui, |ui| {
+                // Tab strip: Fleet pings (static, left-most) then one tab per open conversation.
+                let mut focus: Option<Option<String>> = None;
+                let mut close_tab: Option<(String, bool)> = None;
+                // One non-scrolling row: Fleet pings (pinned) + as many chat tabs as fit, the rest in
+                // a right-side overflow dropdown. Widths are estimated from the label galley so we can
+                // decide inclusion without a horizontal scroll area.
+                struct TabInfo {
+                    jid: String,
+                    is_room: bool,
+                    is_unread: bool,
+                    dot: Option<egui::Color32>,
+                    label: egui::RichText,
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let (sel, _) = jabber_tab_box(
+                        ui,
+                        self.jabber_chat.is_none(),
+                        pings_unread,
+                        None,
+                        false,
+                        egui::RichText::new(format!(
+                            "{}  Fleet pings ({})",
+                            egui_phosphor::regular::MEGAPHONE,
+                            pings.len()
+                        )),
+                    );
+                    if sel {
+                        focus = Some(None);
+                    }
+
+                    let body = egui::TextStyle::Body.resolve(ui.style());
+                    let gap = ui.spacing().item_spacing.x;
+                    let tabs = self.jabber_tabs.clone();
+                    let mut budget = (ui.available_width() - 44.0).max(0.0);
+                    let mut visible: Vec<TabInfo> = Vec::new();
+                    let mut overflow: Vec<TabInfo> = Vec::new();
+                    for jid in &tabs {
+                        let is_room = rooms.iter().any(|(r, _)| r == jid);
+                        let is_unread = unread.contains(jid);
+                        let short = short_chip(jid.split('@').next().unwrap_or(jid));
+                        let (text, dot) = if is_room {
+                            (format!("{}  {short}", egui_phosphor::regular::USERS_THREE), None)
+                        } else {
+                            let pres = convos
+                                .iter()
+                                .find(|c| &c.jid == jid)
+                                .map(|c| c.presence)
+                                .unwrap_or_default();
+                            let (pr, pg, pb) = pres.color();
+                            (short, Some(egui::Color32::from_rgb(pr, pg, pb)))
+                        };
+                        let text_w = ui
+                            .painter()
+                            .layout_no_wrap(text.clone(), body.clone(), egui::Color32::WHITE)
+                            .size()
+                            .x;
+                        // inner margin + close X + inter-tab gap, plus dot / unread marker when present.
+                        let mut width = 16.0 + text_w + 20.0 + gap;
+                        if dot.is_some() {
+                            width += 12.0;
+                        }
+                        if is_unread {
+                            width += 12.0;
+                        }
+                        let mut label = egui::RichText::new(text);
+                        if is_unread {
+                            label = label.strong();
+                        }
+                        let info = TabInfo { jid: jid.clone(), is_room, is_unread, dot, label };
+                        if width <= budget {
+                            budget -= width;
+                            visible.push(info);
+                        } else {
+                            overflow.push(info);
+                        }
+                    }
+                    // Keep the selected tab on the bar even if it would otherwise overflow.
+                    if let Some(sel_jid) = self.jabber_chat.clone() {
+                        if let Some(pos) = overflow.iter().position(|t| t.jid == sel_jid) {
+                            visible.push(overflow.remove(pos));
+                        }
+                    }
+                    for t in &visible {
+                        let (sel, close) = jabber_tab_box(
+                            ui,
+                            self.jabber_chat.as_deref() == Some(t.jid.as_str()),
+                            t.is_unread,
+                            t.dot,
+                            true,
+                            t.label.clone(),
+                        );
+                        if sel {
+                            focus = Some(Some(t.jid.clone()));
+                        }
+                        if close {
+                            close_tab = Some((t.jid.clone(), t.is_room));
+                        }
+                    }
+                    if !overflow.is_empty() {
+                        let any_unread = overflow.iter().any(|t| t.is_unread);
+                        let mut btn = egui::RichText::new(format!(
+                            "{}  {}",
+                            egui_phosphor::regular::CARET_DOWN,
+                            overflow.len()
+                        ));
+                        if any_unread {
+                            btn = btn.strong();
+                        }
+                        ui.menu_button(btn, |ui| {
+                            for t in &overflow {
+                                ui.horizontal(|ui| {
+                                    if let Some(c) = t.dot {
+                                        status_dot(ui, c, 9.0);
+                                    }
+                                    if ui.selectable_label(false, t.label.clone()).clicked() {
+                                        focus = Some(Some(t.jid.clone()));
+                                        ui.close();
+                                    }
+                                    if t.is_unread {
+                                        ui.label(
+                                            egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                                .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
+                                                .size(8.0),
+                                        );
+                                    }
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                egui::RichText::new(egui_phosphor::regular::X).small(),
+                                            )
+                                            .frame(false),
+                                        )
+                                        .on_hover_text("Close")
+                                        .clicked()
+                                    {
+                                        close_tab = Some((t.jid.clone(), t.is_room));
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+                if let Some(target) = focus {
+                    match &target {
+                        None => self.jabber.lock().unwrap().pings_unread = false,
+                        Some(jid) => {
+                            self.jabber.lock().unwrap().unread.remove(jid);
+                        }
+                    }
+                    self.jabber_chat = target;
+                }
+                if let Some((jid, is_room)) = close_tab {
+                    self.close_jabber_tab(&jid, is_room);
+                }
+                ui.separator();
                 match self.jabber_chat.clone() {
                     None => {
                         let hl: Vec<bool> =
                             pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
                         let doctrine_url = self.settings.doctrine_url.clone();
                         let op_links = self.settings.op_channel_links.clone();
-                        egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
+                        let visible = self.jabber_pings_visible.min(pings.len());
+                        let out = egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
                             if pings.is_empty() {
                                 ui.label(egui::RichText::new("No pings yet.").weak());
                             }
-                            for (i, p) in pings.iter().enumerate().rev() {
+                            for (i, p) in pings.iter().enumerate().rev().take(visible) {
                                 render_ping(ui, p, &systems, hl[i], &doctrine_url, &op_links);
                             }
+                            if visible < pings.len() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(format!("+{} older", pings.len() - visible))
+                                        .weak(),
+                                );
+                            }
                         });
+                        // Load the next page once the user scrolls near the bottom of the shown set.
+                        if visible < pings.len()
+                            && out.state.offset.y + out.inner_rect.height()
+                                >= out.content_size.y - 200.0
+                        {
+                            self.jabber_pings_visible = (visible + 50).min(pings.len());
+                            ui.ctx().request_repaint();
+                        }
                     }
                     Some(jid) => {
+                        self.jabber_pings_visible = 50;
                         use egui_phosphor::regular as icon;
                         let is_room = rooms.iter().any(|(r, _)| r == &jid);
                         let muted = self.jabber_is_muted(&jid);
@@ -2186,16 +2628,6 @@ impl SpaiApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if is_room && ui.button("Leave").clicked() {
-                                        if let Some(tx) = &self.jabber_tx {
-                                            let _ = tx.send(crate::jabber::Cmd::LeaveRoom {
-                                                room: jid.clone(),
-                                            });
-                                        }
-                                        self.settings.jabber_rooms.retain(|r| r != &jid);
-                                        self.needs_save = true;
-                                        self.jabber_chat = None;
-                                    }
                                     if !is_room {
                                         let is_contact =
                                             self.settings.jabber_contacts.contains(&jid);
@@ -2374,11 +2806,17 @@ impl SpaiApp {
                         if let Some(nick) = dm_click {
                             let dm = self.full_user_jid(&nick);
                             self.jabber.lock().unwrap().unread.remove(&dm);
+                            self.settings.jabber_closed_dms.retain(|j| j != &dm);
+                            if !self.jabber_tabs.iter().any(|t| t == &dm) {
+                                self.jabber_tabs.push(dm.clone());
+                            }
                             self.jabber_chat = Some(dm);
                         }
                     }
                 }
             });
+        self.jabber_join_dialog(ui.ctx(), &convos);
+        self.jabber_close_room_dialog(ui.ctx());
     }
 
     #[allow(deprecated)]
@@ -2769,6 +3207,8 @@ impl SpaiApp {
             .store(self.settings.battle_break_secs, std::sync::atomic::Ordering::Relaxed);
         self.work_throttle_shared
             .store(self.settings.work_throttle.as_u8(), std::sync::atomic::Ordering::Relaxed);
+        self.battles_enabled_shared
+            .store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
         crate::zkill::spawn(
             systems.clone(),
             self.intel_state.clone(),
@@ -2786,6 +3226,23 @@ impl SpaiApp {
             self.battle_overrides.clone(),
             self.battle_overrides_gen_shared.clone(),
             self.battle_add_queue.clone(),
+            self.battles_enabled_shared.clone(),
+            ctx.clone(),
+        );
+        crate::brview::spawn(
+            Some(systems.clone()),
+            self.intel_state.clone(),
+            self.battles.clone(),
+            self.battle_history.clone(),
+            self.battle_filter.clone(),
+            self.ship_sizes.clone(),
+            self.type_names.clone(),
+            self.battle_overrides_gen_shared.clone(),
+            self.battle_filter_gen_shared.clone(),
+            self.br_inputs.clone(),
+            self.br_outputs.clone(),
+            self.br_wake.clone(),
+            self.battles_enabled_shared.clone(),
             ctx.clone(),
         );
 
@@ -2806,16 +3263,8 @@ impl SpaiApp {
             );
         }
 
-        if self.settings.alert_combat {
-            if let Some(game_dir) = crate::logpaths::game_logs_dir(&self.settings.eve_logs_dir) {
-                crate::gamewatcher::spawn(
-                    game_dir,
-                    self.recent_alerts.clone(),
-                    self.os_notify.clone(),
-                    ctx.clone(),
-                );
-            }
-        }
+        // Combat-event alerts (warp scrambled / under attack) are disabled for now: the game-log
+        // watcher is not spawned, so no combat events reach the alert log or OS notifications.
     }
 
     fn intel_view(&mut self, ui: &mut egui::Ui) {
@@ -2841,7 +3290,7 @@ impl SpaiApp {
                 ("Kill", Kill),
                 ("Threat", Threat),
             ] {
-                if ui.selectable_label(self.intel_type == v, lbl).clicked() {
+                if selectable_chip(ui, self.intel_type == v, lbl).clicked() {
                     self.intel_type = v;
                 }
             }
@@ -3671,101 +4120,11 @@ impl SpaiApp {
         if changed {
             self.needs_save = true;
             self.battle_filter_gen = self.battle_filter_gen.wrapping_add(1);
+            self.battle_filter_gen_shared.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
         }
     }
 
-    fn battle_match_data(&self, b: &crate::battle::Battle, max_jumps: Option<u32>) -> crate::settings::MatchData {
-        use crate::battle::PartyKind;
-        let mut d = crate::settings::MatchData { total_isk: Some(b.isk), ..Default::default() };
-        let systems = self.systems.clone();
-        for (id, name, _) in &b.systems {
-            d.systems.insert(name.to_lowercase());
-            if let Some(info) = systems.as_ref().and_then(|s| s.info_of(*id)) {
-                if !info.region.is_empty() {
-                    d.regions.insert(info.region.to_lowercase());
-                }
-                if !info.constellation.is_empty() {
-                    d.constellations.insert(info.constellation.to_lowercase());
-                }
-            }
-        }
-        for side in &b.sides {
-            if let Some(c) = &side.coalition {
-                d.coalitions.insert(c.to_lowercase());
-            }
-            for p in &side.parties {
-                match p.kind {
-                    PartyKind::Alliance => {
-                        d.alliances.insert(p.name.to_lowercase());
-                        if let Some(c) = crate::packs::coalition_of(p.id) {
-                            d.coalitions.insert(c.to_lowercase());
-                        }
-                    }
-                    PartyKind::Corporation => {
-                        d.corporations.insert(p.name.to_lowercase());
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let type_names = self.type_names.lock().unwrap();
-        let mut max = crate::settings::ShipSize::Other;
-        let mut note_ship = |id: i64, d: &mut crate::settings::MatchData| {
-            if let Some(&sz) = self.ship_sizes.get(&id) {
-                if sz > max {
-                    max = sz;
-                }
-            }
-            if let Some(n) = type_names.get(&id) {
-                d.ship_names.insert(n.to_lowercase());
-            }
-        };
-        for e in &b.engagements {
-            note_ship(e.victim_ship, &mut d);
-            for a in &e.attackers {
-                note_ship(a.ship, &mut d);
-            }
-            d.pilots.insert(e.victim_pilot.to_lowercase());
-            for a in &e.attackers {
-                d.pilots.insert(a.pilot.to_lowercase());
-            }
-        }
-        d.max_size = max;
-        d.in_intel_area = self.battle_in_tracked_area(b);
-        if let (Some(maxj), Some(me), Some(systems)) = (max_jumps, self.player_system(), &self.systems) {
-            d.min_jumps_from_me = b
-                .systems
-                .iter()
-                .filter_map(|(id, _, _)| systems.jumps(*id, me, maxj))
-                .min();
-        }
-        d
-    }
-
-    fn battle_in_tracked_area(&self, b: &crate::battle::Battle) -> bool {
-        let Some(systems) = &self.systems else { return false };
-        let intel: Vec<i64> = {
-            let st = self.intel_state.lock().unwrap();
-            st.reports.iter().flat_map(|r| r.systems.iter().map(|s| s.id)).collect()
-        };
-        b.systems.iter().any(|(id, _, _)| {
-            intel.iter().any(|&s| systems.jumps(*id, s, crate::zkill::ANCHOR_JUMPS).is_some())
-        })
-    }
-
-    fn battle_shown(&self, b: &crate::battle::Battle) -> bool {
-        let rules = self.battle_filter.lock().unwrap();
-        if rules.is_default_only() {
-            return self.battle_in_tracked_area(b);
-        }
-        let data = self.battle_match_data(b, rules.max_jumps_condition());
-        match crate::settings::battle_decision(&rules.rules, &data) {
-            Some(crate::settings::RuleAction::Include) => true,
-            Some(crate::settings::RuleAction::Exclude) => false,
-            None => self.battle_in_tracked_area(b),
-        }
-    }
 
     fn open_dscan(&mut self, url: String, ctx: &egui::Context) {
         if let Some(view) = open_dscan_view(url, self.ship_index.clone(), ctx) {
@@ -4746,7 +5105,16 @@ impl SpaiApp {
         let inv = b.involvement();
         let rosters: Vec<Vec<crate::battle::Participant>> =
             (0..b.sides.len()).map(|i| b.roster(i)).collect();
-        self.loaded_report = Some(LoadedReport { title, battle: b, inv, rosters, hover: None });
+        self.loaded_report = Some(LoadedReport {
+            title,
+            battle: b,
+            inv,
+            rosters,
+            sorted: Vec::new(),
+            condensed_rows: Vec::new(),
+            sorted_for: None,
+            hover: None,
+        });
         self.report_msg = None;
     }
 
@@ -4801,7 +5169,17 @@ impl SpaiApp {
         ui.add_space(6.0);
         let condensed = self.battle_condensed;
         let sort = self.battle_roster_sort;
-        let ship_sizes = self.ship_sizes.clone();
+        // A single static report: (re)sort only when the toggle changes, then render pre-sorted.
+        if let Some(lr) = self.loaded_report.as_mut() {
+            if lr.sorted_for != Some((sort, condensed)) {
+                let type_names = self.type_names.lock().unwrap();
+                let (sorted, cond) =
+                    crate::brview::sorted_detail(&lr.rosters, sort, &self.ship_sizes, &type_names);
+                lr.sorted = sorted;
+                lr.condensed_rows = cond;
+                lr.sorted_for = Some((sort, condensed));
+            }
+        }
         let prev_hover = self.loaded_report.as_ref().and_then(|lr| lr.hover);
         let (clicked_system, hover) = {
             let lr = self.loaded_report.as_ref().unwrap();
@@ -4811,10 +5189,9 @@ impl SpaiApp {
                 &lr.battle,
                 &type_names,
                 &lr.inv,
-                &lr.rosters,
+                &lr.sorted,
+                &lr.condensed_rows,
                 condensed,
-                sort,
-                &ship_sizes,
                 prev_hover,
             )
         };
@@ -4836,53 +5213,67 @@ impl SpaiApp {
             self.loaded_report_view(ui);
             return;
         }
+        if !self.settings.battles_enabled {
+            ui.add_space(10.0);
+            if ui
+                .checkbox(&mut self.settings.battles_enabled, "Enable battle reports")
+                .on_hover_text(
+                    "Generate and compute battle reports from the zKill feed. \
+                     While off, no battles are clustered or computed.",
+                )
+                .changed()
+            {
+                self.battles_enabled_shared
+                    .store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
+                self.needs_save = true;
+                ui.ctx().request_repaint();
+            }
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Battle reports are off. No battles are generated or computed. \
+                     Gate-camp warnings and the kill feed keep working.",
+                )
+                .weak(),
+            );
+            return;
+        }
         ui.add_space(10.0);
         let now = chrono::Utc::now().timestamp();
-        let player_sys = self.player_system();
-        let systems = self.systems.clone();
         let source = if self.show_history { self.battle_history.clone() } else { self.battles.clone() };
 
         if let Some(kid) = self.battle_selected {
-            let sig = source
+            let exists = source
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
-                .map(|b| (b.kills, b.end, self.battle_overrides_gen));
-            match sig {
-                None => {
+                .any(|b| b.engagements.iter().any(|e| e.kill_id == kid));
+            match exists {
+                false => {
                     self.battle_selected = None;
                     self.battle_detail_cache = None;
                 }
-                Some(sig) => {
-                    let stale = self
-                        .battle_detail_cache
-                        .as_ref()
-                        .is_none_or(|c| c.kid != kid || c.sig != sig);
-                    if stale {
-                        let b = source
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .find(|b| b.engagements.iter().any(|e| e.kill_id == kid))
-                            .cloned();
-                        if let Some(b) = b {
-                            let ids: Vec<i64> = b
-                                .engagements
-                                .iter()
-                                .flat_map(|e| {
-                                    let mut v = vec![e.victim_ship];
-                                    v.extend(e.attackers.iter().map(|a| a.ship));
-                                    v
-                                })
-                                .filter(|&id| id != 0)
-                                .collect();
-                            self.ensure_type_names(&ids, ui.ctx());
-                            let inv = b.involvement();
-                            let rosters: Vec<Vec<crate::battle::Participant>> =
-                                (0..b.sides.len()).map(|i| b.roster(i)).collect();
-                            self.battle_detail_cache =
-                                Some(BattleDetailCache { kid, sig, battle: b, inv, rosters });
+                true => {
+                    // The brview worker builds the detail off-thread; mirror it into the cache only
+                    // when the worker publishes new output or the selection changed — never a
+                    // per-frame clone of the (heavy) battle.
+                    let need = self.battle_detail_cache.as_ref().map(|c| c.kid) != Some(kid)
+                        || self.battle_detail_out_sig != self.br_outputs.lock().unwrap().sig;
+                    if need {
+                        let out = self.br_outputs.lock().unwrap();
+                        self.battle_detail_out_sig = out.sig;
+                        let fresh = out.detail.as_ref().is_some_and(|d| d.kid == kid);
+                        if fresh {
+                            let d = out.detail.clone();
+                            drop(out);
+                            if let Some(d) = &d {
+                                self.ensure_type_names(&d.ship_ids, ui.ctx());
+                            }
+                            self.battle_detail_cache = d;
+                        } else if self.battle_detail_cache.as_ref().map(|c| c.kid) != Some(kid) {
+                            // Worker hasn't produced this battle yet and we have nothing for it.
+                            // Render nothing (no spinner) — the worker repaints when it's ready.
+                            self.battle_detail_cache = None;
                         }
                     }
                     if self.battle_detail_cache.is_some() {
@@ -4998,6 +5389,7 @@ impl SpaiApp {
                         if share_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 let ctx = ui.ctx().clone();
+                                self.br_share_kid = self.battle_selected;
                                 self.start_share(&b, &ctx);
                             }
                         }
@@ -5005,7 +5397,9 @@ impl SpaiApp {
                             let ctx = ui.ctx().clone();
                             self.open_my_shared(&ctx);
                         }
-                        self.share_status_ui(ui);
+                        if self.battle_selected == self.br_share_kid {
+                            self.share_status_ui(ui);
+                        }
                         if save_clicked {
                             if let Some(b) = self.battle_detail_cache.as_ref().map(|c| c.battle.clone()) {
                                 self.report_msg = match self.save_battle_report(&b) {
@@ -5057,23 +5451,29 @@ impl SpaiApp {
                         }
                         let prev_hover = self.battle_hover;
                         let condensed = self.battle_condensed;
-                        let sort = self.battle_roster_sort;
-                        let ship_sizes = self.ship_sizes.clone();
                         let cache = self.battle_detail_cache.as_ref().unwrap();
-                        let (clicked_system, hover) = {
-                            let type_names = self.type_names.lock().unwrap();
-                            battle_detail(
-                                ui,
-                                &cache.battle,
-                                &type_names,
-                                &cache.inv,
-                                &cache.rosters,
-                                condensed,
-                                sort,
-                                &ship_sizes,
-                                prev_hover,
-                            )
+                        // Snapshot only the type names this battle needs, so the render loop
+                        // (hundreds of rows) does not hold the shared type_names lock and stall
+                        // the brview worker. 670 = the default capsule pod fallback.
+                        let names: std::collections::HashMap<i64, String> = {
+                            let t = self.type_names.lock().unwrap();
+                            cache
+                                .ship_ids
+                                .iter()
+                                .chain(std::iter::once(&670))
+                                .filter_map(|id| t.get(id).map(|n| (*id, n.clone())))
+                                .collect()
                         };
+                        let (clicked_system, hover) = battle_detail(
+                            ui,
+                            &cache.battle,
+                            &names,
+                            &cache.inv,
+                            &cache.rosters,
+                            &cache.condensed,
+                            condensed,
+                            prev_hover,
+                        );
                         if hover != prev_hover {
                             self.battle_hover = hover;
                             ui.ctx().request_repaint();
@@ -5211,6 +5611,19 @@ impl SpaiApp {
                 self.work_throttle_shared.store(th.as_u8(), std::sync::atomic::Ordering::Relaxed);
                 self.needs_save = true;
             }
+            toolbar_sep(ui);
+            if ui
+                .checkbox(&mut self.settings.battles_enabled, "Enabled")
+                .on_hover_text(
+                    "Generate and compute battle reports. Turn off to stop all \
+                     battle-report computation.",
+                )
+                .changed()
+            {
+                self.battles_enabled_shared
+                    .store(self.settings.battles_enabled, std::sync::atomic::Ordering::Relaxed);
+                self.needs_save = true;
+            }
         });
         if open_my_shared {
             self.open_my_shared(&ui.ctx().clone());
@@ -5263,91 +5676,64 @@ impl SpaiApp {
         let query = self.battle_search.trim().to_lowercase();
         let loading = self.battle_history_loading.load(std::sync::atomic::Ordering::Relaxed);
 
-        const MAX_CARDS: usize = 150;
-        const MAX_CANDIDATES: usize = 1000;
-        let cand_sig = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            {
-                let b = source.lock().unwrap();
-                b.len().hash(&mut h);
-                if let Some(f) = b.first() {
-                    f.end.hash(&mut h);
-                    f.kills.hash(&mut h);
-                }
-                if let Some(l) = b.last() {
-                    l.end.hash(&mut h);
-                    l.kills.hash(&mut h);
-                }
-            }
-            query.hash(&mut h);
-            self.show_history.hash(&mut h);
-            self.player_system().unwrap_or(0).hash(&mut h);
-            self.battle_filter_gen.hash(&mut h);
-            self.battle_overrides_gen.hash(&mut h);
-            self.settings.battle_break_secs.hash(&mut h);
-            self.intel_state.lock().unwrap().reports.len().hash(&mut h);
-            h.finish()
+        // All filtering/roster work runs on the brview worker; the UI only publishes inputs and
+        // reads results, showing a spinner while the worker catches up.
+        {
+            let mut inp = self.br_inputs.lock().unwrap();
+            inp.query = self.battle_search.trim().to_owned();
+            inp.min_isk = self.settings.min_battle_isk;
+            inp.show_history = self.show_history;
+            inp.break_secs = self.settings.battle_break_secs;
+            inp.player_sys = self.player_system().unwrap_or(0);
+            inp.selected_kid = self.battle_selected;
+            inp.sort = self.battle_roster_sort;
+            inp.condensed = self.battle_condensed;
+        }
+        let want_sig = {
+            let inp = self.br_inputs.lock().unwrap();
+            crate::brview::ui_signature(
+                &self.battles,
+                &self.battle_history,
+                &self.battle_filter_gen_shared,
+                &self.battle_overrides_gen_shared,
+                &self.intel_state,
+                &inp,
+            )
         };
-        if cand_sig != self.battle_candidates_sig {
-            self.battle_candidates_sig = cand_sig;
-            let battles = source.lock().unwrap();
-            let mut cands: Vec<(i64, Option<u32>, f64, crate::battle::Battle)> = Vec::new();
-            for b in battles.iter() {
-                let shown = self.show_history || self.battle_shown(b);
-                if b.kills >= 2 && b.matches(&query) && shown {
-                    let from_you = b
-                        .systems
-                        .iter()
-                        .filter_map(|(id, _, _)| jumps_from_you(&systems, player_sys, Some(*id)))
-                        .min();
-                    let kid = b.engagements.iter().map(|e| e.kill_id).max().unwrap_or(0);
-                    let light = crate::battle::Battle {
-                        engagements: Vec::new(),
-                        start: b.start,
-                        end: b.end,
-                        systems: b.systems.clone(),
-                        sides: b.sides.clone(),
-                        kills: b.kills,
-                        isk: b.isk,
-                        ambiguous: b.ambiguous,
-                        suggested_splits: b.suggested_splits.clone(),
-                    };
-                    cands.push((kid, from_you, b.isk, light));
-                    if cands.len() >= MAX_CANDIDATES {
-                        break;
-                    }
-                }
+        if want_sig != self.br_last_sent_sig {
+            self.br_last_sent_sig = want_sig;
+            crate::brview::poke(&self.br_wake);
+        }
+        {
+            let out = self.br_outputs.lock().unwrap();
+            if out.sig != self.battle_cards_out_sig {
+                self.battle_cards_out_sig = out.sig;
+                self.battle_cards = out.cards.clone();
+                self.battle_cards_total = out.total;
+                self.battle_cards_filtered = out.filtered;
+                self.battle_cards_ready = out.ready;
             }
-            drop(battles);
-            self.battle_candidates = cands;
-            self.battle_cards_sig = 0;
         }
-        let cards_sig = self
-            .battle_candidates_sig
-            .wrapping_add(self.settings.min_battle_isk.to_bits());
-        if cards_sig != self.battle_cards_sig {
-            self.battle_cards_sig = cards_sig;
-            let min_isk = self.settings.min_battle_isk;
-            self.battle_cards_total =
-                self.battle_candidates.iter().filter(|c| c.2 >= min_isk).count();
-            self.battle_cards_filtered = self.battle_candidates.len() - self.battle_cards_total;
-            self.battle_cards = self
-                .battle_candidates
-                .iter()
-                .filter(|c| c.2 >= min_isk)
-                .take(MAX_CARDS)
-                .map(|(kid, from_you, _, b)| (*kid, *from_you, b.clone()))
-                .collect();
-        }
+        let total = self.battle_cards_total;
+        let filtered = self.battle_cards_filtered;
+        let ready = self.battle_cards_ready;
+        let fresh = self.battle_cards_out_sig == want_sig;
 
         if self.battle_cards.is_empty() {
+            if !ready || !fresh {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.label(egui::RichText::new("Loading battles…").weak());
+                });
+                ui.ctx().request_repaint();
+                return;
+            }
             let msg = if self.show_history && loading {
                 "Loading full history…".to_owned()
-            } else if self.battle_cards_filtered > 0 {
+            } else if filtered > 0 {
                 format!(
                     "{} battle(s) below the {} ISK minimum.",
-                    self.battle_cards_filtered,
+                    filtered,
                     fmt_isk(self.settings.min_battle_isk)
                 )
             } else if self.show_history {
@@ -5361,10 +5747,9 @@ impl SpaiApp {
             return;
         }
 
-        let total = self.battle_cards_total;
         let shown_n = self.battle_cards.len();
-        let count_txt = if self.battle_cards_filtered > 0 {
-            format!("{total} battles ({} filtered)", self.battle_cards_filtered)
+        let count_txt = if filtered > 0 {
+            format!("{total} battles ({filtered} filtered)")
         } else {
             format!("{total} battles")
         };
@@ -5395,8 +5780,9 @@ impl SpaiApp {
         let mut open: Option<i64> = None;
         let edit = self.battle_edit_mode;
         let mut merge_sel = std::mem::take(&mut self.battle_merge_sel);
+        let cards = &self.battle_cards;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (kid, from_you, b) in &self.battle_cards {
+            for (kid, from_you, b) in cards {
                 if edit {
                     ui.horizontal(|ui| {
                         let mut on = merge_sel.contains(kid);
@@ -11755,211 +12141,345 @@ impl SpaiApp {
         });
     }
 
-    fn alert_rules_ui(&mut self, ui: &mut egui::Ui) {
+    fn alert_rule_config(
+        ui: &mut egui::Ui,
+        ru: &mut crate::settings::AlertRule,
+        i: usize,
+    ) -> (bool, Option<crate::pickers::PickerKind>) {
+        use crate::settings::Severity::*;
+        let mut changed = false;
+        let mut open_picker: Option<crate::pickers::PickerKind> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("if severity ≥");
+            egui::ComboBox::from_id_salt(("rsev", i))
+                .selected_text(format!("{:?}", ru.min_severity))
+                .show_ui(ui, |ui| {
+                    for lvl in [Info, Warning, Danger, Critical] {
+                        changed |= ui
+                            .selectable_value(&mut ru.min_severity, lvl, format!("{lvl:?}"))
+                            .changed();
+                    }
+                });
+            ui.label("within");
+            let mut mj = ru.max_jumps.unwrap_or(0);
+            if ui
+                .add(egui::DragValue::new(&mut mj).range(0..=50).custom_formatter(|n, _| {
+                    if n == 0.0 { "any".into() } else { format!("{n}j") }
+                }))
+                .changed()
+            {
+                ru.max_jumps = if mj == 0 { None } else { Some(mj) };
+                changed = true;
+            }
+            if ru.max_jumps.is_some() {
+                changed |= ui
+                    .checkbox(&mut ru.count_bridges, "bridges")
+                    .on_hover_text(
+                        "Count jump bridges in the range. Off = gate-only \
+                         (how far a hostile, who can't use your bridges, really is).",
+                    )
+                    .changed();
+            }
+            ui.label("count ≥");
+            let mut mc = ru.min_count.unwrap_or(0);
+            if ui.add(egui::DragValue::new(&mut mc).range(0..=999)).changed() {
+                ru.min_count = if mc == 0 { None } else { Some(mc) };
+                changed = true;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("requires:");
+            for tag in [
+                "bubble", "camp", "cyno", "dropper", "captackled", "kill", "ess", "spike",
+                "wormhole", "help",
+            ] {
+                let label = if tag == "captackled" { "cap tackled" } else { tag };
+                let mut on = ru.require.iter().any(|t| t == tag);
+                if selectable_chip(ui, on, label).clicked() {
+                    on = !on;
+                    ru.require.retain(|t| t != tag);
+                    if on {
+                        ru.require.push(tag.to_owned());
+                    }
+                    changed = true;
+                }
+            }
+        });
+        {
+            use crate::pickers::PickerKind;
+            let row = |ui: &mut egui::Ui, label: &str, list: &[String], any_hint: &str| -> bool {
+                let mut clicked = false;
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    if ui.small_button("Edit").clicked() {
+                        clicked = true;
+                    }
+                    let s = if list.is_empty() {
+                        any_hint.to_owned()
+                    } else if list.len() <= 3 {
+                        list.join(", ")
+                    } else {
+                        format!("{} selected", list.len())
+                    };
+                    ui.label(egui::RichText::new(s).weak());
+                });
+                clicked
+            };
+            let mut want: Option<PickerKind> = None;
+            ui.horizontal(|ui| {
+                ui.label("location:");
+                if ui.small_button("Edit").clicked() {
+                    want = Some(PickerKind::Systems);
+                }
+                let total = ru.regions.len() + ru.constellations.len() + ru.systems.len();
+                let s = if total == 0 { "any".to_owned() } else { format!("{total} selected") };
+                ui.label(egui::RichText::new(s).weak());
+            });
+            if row(ui, "channels:", &ru.channels, "any") {
+                want = Some(PickerKind::Channels);
+            }
+            if row(ui, "ships:", &ru.ships, "any") {
+                want = Some(PickerKind::Ships);
+            }
+            if row(ui, "characters:", &ru.characters, "any enabled") {
+                want = Some(PickerKind::Characters);
+            }
+            if let Some(kind) = want {
+                open_picker = Some(kind);
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label("then:");
+            changed |= ui.checkbox(&mut ru.suppress, "suppress").changed();
+            if !ru.suppress {
+                changed |= ui.checkbox(&mut ru.system_notification, "notify").changed();
+                changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
+                changed |= ui.checkbox(&mut ru.push, "push").changed();
+                ui.label("sound");
+                changed |= sound_picker(ui, ("alert_rule", i), true, &mut ru.sound);
+                ui.label("severity");
+                egui::ComboBox::from_id_salt(("rsevover", i))
+                    .selected_text(match ru.severity_override {
+                        None => "keep".to_owned(),
+                        Some(s) => format!("{s:?}"),
+                    })
+                    .show_ui(ui, |ui| {
+                        changed |= ui
+                            .selectable_value(&mut ru.severity_override, None, "keep")
+                            .changed();
+                        for lvl in [Info, Warning, Danger, Critical] {
+                            changed |= ui
+                                .selectable_value(
+                                    &mut ru.severity_override,
+                                    Some(lvl),
+                                    format!("{lvl:?}"),
+                                )
+                                .changed();
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Override the alert's severity (sound + colour). Leave 'keep' \
+                         to use the event's own severity. Set Info to show it silently.",
+                    );
+            }
+            ui.label("cooldown");
+            changed |= ui
+                .add(egui::DragValue::new(&mut ru.cooldown_secs).range(0..=3600).suffix("s"))
+                .changed();
+        });
+        (changed, open_picker)
+    }
+
+    fn alert_rules_editor(&mut self, ui: &mut egui::Ui) {
+        use egui_phosphor::regular as ic;
         let mut changed = false;
         let mut remove: Option<usize> = None;
         let mut move_up: Option<usize> = None;
+        let mut move_down: Option<usize> = None;
+        let mut dnd: Option<(usize, usize)> = None;
         let mut open_picker: Option<(crate::pickers::PickerKind, usize)> = None;
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button(format!("{}  Back", ic::ARROW_LEFT))
+                .on_hover_text("Back to alerts")
+                .clicked()
+            {
+                self.alert_rules_open = false;
+            }
+            ui.separator();
+            if ui.button(format!("{}  Add rule", ic::PLUS)).clicked() {
+                self.settings
+                    .alerts
+                    .rules
+                    .push(crate::settings::AlertRule { expanded: true, ..Default::default() });
+                crate::settings::ensure_rule_ids(&mut self.settings.alerts.rules);
+                self.alert_selected_rule = self.settings.alerts.rules.last().map(|r| r.id);
+                changed = true;
+            }
+        });
+        ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
                 "Top rule wins. A matching rule's actions apply (or it suppresses the alert). \
                  Empty condition fields mean \"any\". Jumps are measured from the rule's \
-                 characters (or any enabled character).",
+                 characters (or any enabled character). Drag the handle or use the arrows to reorder.",
             )
             .weak(),
         );
-        if ui.button("Add rule").clicked() {
-            self.settings
-                .alerts
-                .rules
-                .push(crate::settings::AlertRule { expanded: true, ..Default::default() });
-            changed = true;
+        ui.add_space(4.0);
+        ui.separator();
+
+        // Keep the selection valid (first rule by default, cleared rules fall back).
+        let ids: Vec<u64> = self.settings.alerts.rules.iter().map(|r| r.id).collect();
+        if self.alert_selected_rule.map_or(true, |id| !ids.contains(&id)) {
+            self.alert_selected_rule = ids.first().copied();
         }
-        let mut move_down: Option<usize> = None;
-        use crate::settings::Severity::*;
         let n_rules = self.settings.alerts.rules.len();
-        for (i, ru) in self.settings.alerts.rules.iter_mut().enumerate() {
-            ui.group(|ui| {
-                use egui_phosphor::regular as ic;
-                ui.horizontal(|ui| {
-                    changed |= ui.checkbox(&mut ru.enabled, "").changed();
-                    let toggle = if ru.expanded { ic::CARET_DOWN } else { ic::CARET_RIGHT };
-                    if ui.button(toggle).on_hover_text("Expand / collapse").clicked() {
-                        ru.expanded = !ru.expanded;
-                    }
-                    if ru.expanded {
-                        changed |= ui
-                            .add(egui::TextEdit::singleline(&mut ru.name).desired_width(180.0))
-                            .changed();
-                    } else {
-                        let name = if ru.name.is_empty() { "(unnamed rule)" } else { &ru.name };
-                        let txt = if ru.enabled {
-                            egui::RichText::new(name).strong()
-                        } else {
-                            egui::RichText::new(name).weak().strikethrough()
-                        };
-                        if ui.add(egui::Label::new(txt).sense(egui::Sense::click())).clicked() {
-                            ru.expanded = true;
-                        }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(ic::X).on_hover_text("Delete").clicked() {
-                            remove = Some(i);
-                        }
-                        if i + 1 < n_rules && ui.button(ic::ARROW_DOWN).on_hover_text("Move down").clicked() {
-                            move_down = Some(i);
-                        }
-                        if i > 0 && ui.button(ic::ARROW_UP).on_hover_text("Move up").clicked() {
-                            move_up = Some(i);
+
+        egui::Panel::left("alert_rules_split")
+            .resizable(true)
+            .default_size(240.0)
+            .size_range(180.0..=400.0)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .id_salt("alert_rule_list")
+                    .show(ui, |ui| {
+                        for i in 0..n_rules {
+                            let (id, enabled, name) = {
+                                let r = &self.settings.alerts.rules[i];
+                                (r.id, r.enabled, r.name.clone())
+                            };
+                            let selected = self.alert_selected_rule == Some(id);
+                            let (_, payload) = ui.dnd_drop_zone::<usize, _>(
+                                egui::Frame::default().inner_margin(2.0),
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        let mut en = enabled;
+                                        if ui.checkbox(&mut en, "").changed() {
+                                            self.settings.alerts.rules[i].enabled = en;
+                                            changed = true;
+                                        }
+                                        ui.dnd_drag_source(
+                                            egui::Id::new(("alert_rule_dnd", id)),
+                                            i,
+                                            |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(ic::DOTS_SIX_VERTICAL).weak(),
+                                                )
+                                                .on_hover_text("Drag to reorder");
+                                            },
+                                        );
+                                        let label =
+                                            if name.is_empty() { "(unnamed rule)" } else { &name };
+                                        let txt = if enabled {
+                                            egui::RichText::new(label)
+                                        } else {
+                                            egui::RichText::new(label).weak().strikethrough()
+                                        };
+                                        if ui
+                                            .add(egui::Button::selectable(selected, txt))
+                                            .clicked()
+                                        {
+                                            self.alert_selected_rule = Some(id);
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if i + 1 < n_rules
+                                                    && ui
+                                                        .small_button(ic::ARROW_DOWN)
+                                                        .on_hover_text("Move down")
+                                                        .clicked()
+                                                {
+                                                    move_down = Some(i);
+                                                }
+                                                if i > 0
+                                                    && ui
+                                                        .small_button(ic::ARROW_UP)
+                                                        .on_hover_text("Move up")
+                                                        .clicked()
+                                                {
+                                                    move_up = Some(i);
+                                                }
+                                            },
+                                        );
+                                    });
+                                },
+                            );
+                            if let Some(from) = payload {
+                                dnd = Some((*from, i));
+                            }
                         }
                     });
-                });
-                if !ru.expanded {
-                    return;
-                }
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("if severity ≥");
-                    egui::ComboBox::from_id_salt(("rsev", i))
-                        .selected_text(format!("{:?}", ru.min_severity))
-                        .show_ui(ui, |ui| {
-                            for lvl in [Info, Warning, Danger, Critical] {
-                                changed |= ui
-                                    .selectable_value(&mut ru.min_severity, lvl, format!("{lvl:?}"))
-                                    .changed();
-                            }
-                        });
-                    ui.label("within");
-                    let mut mj = ru.max_jumps.unwrap_or(0);
-                    if ui
-                        .add(egui::DragValue::new(&mut mj).range(0..=50).custom_formatter(|n, _| {
-                            if n == 0.0 { "any".into() } else { format!("{n}j") }
-                        }))
-                        .changed()
-                    {
-                        ru.max_jumps = if mj == 0 { None } else { Some(mj) };
-                        changed = true;
-                    }
-                    if ru.max_jumps.is_some() {
-                        changed |= ui
-                            .checkbox(&mut ru.count_bridges, "bridges")
-                            .on_hover_text(
-                                "Count jump bridges in the range. Off = gate-only \
-                                 (how far a hostile, who can't use your bridges, really is).",
-                            )
-                            .changed();
-                    }
-                    ui.label("count ≥");
-                    let mut mc = ru.min_count.unwrap_or(0);
-                    if ui.add(egui::DragValue::new(&mut mc).range(0..=999)).changed() {
-                        ru.min_count = if mc == 0 { None } else { Some(mc) };
-                        changed = true;
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("requires:");
-                    for tag in [
-                        "bubble", "camp", "cyno", "dropper", "captackled", "kill", "ess", "spike",
-                        "wormhole", "help",
-                    ] {
-                        let label = if tag == "captackled" { "cap tackled" } else { tag };
-                        let mut on = ru.require.iter().any(|t| t == tag);
-                        if ui.selectable_label(on, label).clicked() {
-                            on = !on;
-                            ru.require.retain(|t| t != tag);
-                            if on {
-                                ru.require.push(tag.to_owned());
-                            }
+            });
+
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            let Some(sel_id) = self.alert_selected_rule else {
+                ui.add_space(20.0);
+                ui.label(egui::RichText::new("Select a rule to configure it.").weak());
+                return;
+            };
+            let Some(idx) = self.settings.alerts.rules.iter().position(|r| r.id == sel_id) else {
+                return;
+            };
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .id_salt("alert_rule_config")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut en = self.settings.alerts.rules[idx].enabled;
+                        if ui.checkbox(&mut en, "").changed() {
+                            self.settings.alerts.rules[idx].enabled = en;
                             changed = true;
                         }
-                    }
-                });
-                {
-                    use crate::pickers::PickerKind;
-                    let row = |ui: &mut egui::Ui, label: &str, list: &[String], any_hint: &str| -> bool {
-                        let mut clicked = false;
-                        ui.horizontal(|ui| {
-                            ui.label(label);
-                            if ui.small_button("Edit").clicked() {
-                                clicked = true;
-                            }
-                            let s = if list.is_empty() {
-                                any_hint.to_owned()
-                            } else if list.len() <= 3 {
-                                list.join(", ")
-                            } else {
-                                format!("{} selected", list.len())
-                            };
-                            ui.label(egui::RichText::new(s).weak());
-                        });
-                        clicked
-                    };
-                    let mut want: Option<PickerKind> = None;
-                    ui.horizontal(|ui| {
-                        ui.label("location:");
-                        if ui.small_button("Edit").clicked() {
-                            want = Some(PickerKind::Systems);
-                        }
-                        let total = ru.regions.len() + ru.constellations.len() + ru.systems.len();
-                        let s = if total == 0 { "any".to_owned() } else { format!("{total} selected") };
-                        ui.label(egui::RichText::new(s).weak());
-                    });
-                    if row(ui, "channels:", &ru.channels, "any") {
-                        want = Some(PickerKind::Channels);
-                    }
-                    if row(ui, "ships:", &ru.ships, "any") {
-                        want = Some(PickerKind::Ships);
-                    }
-                    if row(ui, "characters:", &ru.characters, "any enabled") {
-                        want = Some(PickerKind::Characters);
-                    }
-                    if let Some(kind) = want {
-                        open_picker = Some((kind, i));
-                    }
-                }
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("then:");
-                    changed |= ui.checkbox(&mut ru.suppress, "suppress").changed();
-                    if !ru.suppress {
-                        changed |= ui.checkbox(&mut ru.system_notification, "notify").changed();
-                        changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
-                        changed |= ui.checkbox(&mut ru.push, "push").changed();
-                        ui.label("sound");
-                        changed |= sound_picker(ui, ("alert_rule", i), true, &mut ru.sound);
-                        ui.label("severity");
-                        egui::ComboBox::from_id_salt(("rsevover", i))
-                            .selected_text(match ru.severity_override {
-                                None => "keep".to_owned(),
-                                Some(s) => format!("{s:?}"),
-                            })
-                            .show_ui(ui, |ui| {
-                                changed |= ui
-                                    .selectable_value(&mut ru.severity_override, None, "keep")
-                                    .changed();
-                                for lvl in [Info, Warning, Danger, Critical] {
-                                    changed |= ui
-                                        .selectable_value(
-                                            &mut ru.severity_override,
-                                            Some(lvl),
-                                            format!("{lvl:?}"),
-                                        )
-                                        .changed();
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.settings.alerts.rules[idx].name)
+                                    .desired_width(240.0),
+                            )
+                            .changed();
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .button(format!("{}  Delete", ic::TRASH))
+                                    .on_hover_text("Delete rule")
+                                    .clicked()
+                                {
+                                    remove = Some(idx);
                                 }
-                            })
-                            .response
-                            .on_hover_text(
-                                "Override the alert's severity (sound + colour). Leave 'keep' \
-                                 to use the event's own severity. Set Info to show it silently.",
-                            );
+                            },
+                        );
+                    });
+                    ui.add_space(6.0);
+                    let (c, want) = Self::alert_rule_config(
+                        ui,
+                        &mut self.settings.alerts.rules[idx],
+                        idx,
+                    );
+                    changed |= c;
+                    if let Some(kind) = want {
+                        open_picker = Some((kind, idx));
                     }
-                    ui.label("cooldown");
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut ru.cooldown_secs).range(0..=3600).suffix("s"))
-                        .changed();
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Recent matches").strong());
+                    ui.add_space(4.0);
+                    self.rule_feed_ui(ui, sel_id);
                 });
-            });
-        }
+        });
+
         if let Some(i) = remove {
+            let removed_id = self.settings.alerts.rules.get(i).map(|r| r.id);
             self.settings.alerts.rules.remove(i);
+            if self.alert_selected_rule == removed_id {
+                self.alert_selected_rule = self.settings.alerts.rules.first().map(|r| r.id);
+            }
             changed = true;
         }
         if let Some(i) = move_up {
@@ -11969,6 +12489,15 @@ impl SpaiApp {
         if let Some(i) = move_down {
             self.settings.alerts.rules.swap(i, i + 1);
             changed = true;
+        }
+        if let Some((from, to)) = dnd {
+            let len = self.settings.alerts.rules.len();
+            if from != to && from < len && to < len {
+                let item = self.settings.alerts.rules.remove(from);
+                let dst = if from < to { to - 1 } else { to };
+                self.settings.alerts.rules.insert(dst, item);
+                changed = true;
+            }
         }
         if changed {
             self.needs_save = true;
@@ -12607,12 +13136,12 @@ impl SpaiApp {
                     ui.label("Fit preview site").on_hover_text("Where the fit window's \"Open in\" button sends a loss");
                     ui.horizontal_wrapped(|ui| {
                         for (id, label) in FIT_SITES {
-                            if ui.selectable_label(self.settings.fit_site == *id, *label).clicked() {
+                            if selectable_chip(ui, self.settings.fit_site == *id, *label).clicked() {
                                 self.settings.fit_site = (*id).to_owned();
                                 changed = true;
                             }
                         }
-                        if ui.selectable_label(self.settings.fit_site.is_empty(), "Ask each time").clicked() {
+                        if selectable_chip(ui, self.settings.fit_site.is_empty(), "Ask each time").clicked() {
                             self.settings.fit_site.clear();
                             changed = true;
                         }
@@ -12643,9 +13172,6 @@ impl SpaiApp {
                     changed |= ui
                         .checkbox(&mut self.settings.alert_enabled, "Enable intel alerts")
                         .on_hover_text("Master switch. Configure what fires in the Alerts tab.")
-                        .changed();
-                    changed |= ui
-                        .checkbox(&mut self.settings.alert_combat, "Combat alerts (under attack / scrambled)")
                         .changed();
                     changed |= ui
                         .checkbox(&mut self.settings.alert_only_undocked, "Only alert while undocked")
@@ -12714,6 +13240,27 @@ impl SpaiApp {
                     ui.label(
                         egui::RichText::new("Alert rules live in the Alerts tab.").weak(),
                     );
+
+                    ui.separator();
+
+                    ui.label(egui::RichText::new("Battle reports").strong());
+                    if ui
+                        .checkbox(
+                            &mut self.settings.battles_enabled,
+                            "Enable battle report generation",
+                        )
+                        .on_hover_text(
+                            "Turn off to stop all battle-report clustering and computation. \
+                             Gate-camp warnings and the kill feed keep working.",
+                        )
+                        .changed()
+                    {
+                        self.battles_enabled_shared.store(
+                            self.settings.battles_enabled,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        changed = true;
+                    }
 
                     ui.separator();
 
@@ -12858,6 +13405,7 @@ struct AlertRuntime {
     cooldown: std::collections::HashMap<i64, i64>,
     alerted: std::collections::HashMap<u64, i64>,
     fired_ui: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>,
+    matched_ui: Vec<(crate::intel::IntelReport, crate::settings::Severity, u64, bool)>,
 }
 
 struct AlertEngine {
@@ -13085,6 +13633,20 @@ impl AlertEngine {
         let locations: std::collections::HashMap<String, (i64, bool)> =
             player.lock().unwrap().locations.clone();
 
+        // Clear the alert-window snooze when any tracked character undocks (docked -> undocked),
+        // then refresh the docked snapshot used to detect that edge.
+        {
+            let mut st = self.alert_shared.lock().unwrap();
+            if st.snooze
+                && locations
+                    .iter()
+                    .any(|(name, (_, docked))| !docked && st.docked_prev.get(name).copied() == Some(true))
+            {
+                st.snooze = false;
+            }
+            st.docked_prev = locations.iter().map(|(k, (_, d))| (k.clone(), *d)).collect();
+        }
+
         let char_systems = |chars: &[String]| -> Vec<i64> {
             locations
                 .iter()
@@ -13102,6 +13664,7 @@ impl AlertEngine {
 
         struct Fire {
             id: u64,
+            rule_id: u64,
             sys_id: i64,
             title: String,
             text: String,
@@ -13147,6 +13710,10 @@ impl AlertEngine {
                 }
                 let Some((ru, jumps)) = chosen else { continue };
                 if ru.suppress {
+                    rt.matched_ui.push((r.clone(), sev, ru.id, true));
+                    // Dedup suppressed killmails, which are otherwise re-seen every tick within
+                    // their window (non-killmails are gated by the fresh/last_alert_time check).
+                    rt.alerted.insert(r.id, now);
                     continue;
                 }
                 let sev = ru.severity_override.unwrap_or(sev);
@@ -13197,6 +13764,7 @@ impl AlertEngine {
                 let body = format!("{text}{pilots_line}\n{} · {}", r.reporter, r.channel);
                 fired.push(Fire {
                     id: r.id,
+                    rule_id: ru.id,
                     sys_id,
                     title,
                     text,
@@ -13221,6 +13789,7 @@ impl AlertEngine {
             rt.cooldown.insert(f.sys_id, now);
             rt.alerted.insert(f.id, now);
             rt.fired_ui.push((f.report.clone(), f.sev, f.win));
+            rt.matched_ui.push((f.report.clone(), f.sev, f.rule_id, false));
         }
         drop(rt);
         if fired.iter().any(|f| f.win) {
@@ -13236,8 +13805,11 @@ impl AlertEngine {
             if n > 100 {
                 st.feed.drain(0..n - 100);
             }
-            st.secs = secs;
-            st.focus_pending = true;
+            // Snooze suppresses the popup window only; feed, overlay, sound and push still run.
+            if !st.snooze {
+                st.secs = secs;
+                st.focus_pending = true;
+            }
             drop(st);
             crate::ipc::send_shared(
                 &self.overlay_stdin,
@@ -14248,6 +14820,85 @@ fn fit_chars(width: f32) -> usize {
     (width / 7.5).floor().max(3.0) as usize
 }
 
+/// A filled presence/status dot. `size` is the font size of the phosphor CIRCLE glyph it replaces;
+/// the painted diameter matches that glyph's ~0.72em footprint so inline spacing is unchanged.
+fn status_dot(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
+    let d = size * 0.72;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), d / 2.0, color);
+}
+
+/// A selectable chip whose border is drawn in every state, so hovering doesn't pop a border in and
+/// nudge the row. egui's selectable_label hides the frame when inactive+unselected (Button::selectable
+/// sets frame_when_inactive(selected)); a plain Button keeps frame_when_inactive on by default, giving
+/// a stable box across idle/hover/selected.
+fn selectable_chip<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    ui.add(egui::Button::new(text).selected(selected))
+}
+
+/// One Jabber tab as a single bordered box enclosing an optional presence dot, the name, an unread
+/// marker, and a close X (no separators between tabs). Selected tabs get a filled box; unselected
+/// keep just the border. Returns `(select_clicked, close_clicked)`.
+fn jabber_tab_box(
+    ui: &mut egui::Ui,
+    selected: bool,
+    unread: bool,
+    dot: Option<egui::Color32>,
+    closable: bool,
+    label: egui::RichText,
+) -> (bool, bool) {
+    let (fill, stroke) = if selected {
+        (
+            ui.visuals().selection.bg_fill,
+            egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
+        )
+    } else {
+        (egui::Color32::TRANSPARENT, ui.visuals().widgets.inactive.bg_stroke)
+    };
+    let mut select = false;
+    let mut close = false;
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            if let Some(c) = dot {
+                status_dot(ui, c, 9.0);
+            }
+            if ui
+                .add(egui::Label::new(label).selectable(false).sense(egui::Sense::click()))
+                .clicked()
+            {
+                select = true;
+            }
+            if unread {
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                        .color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C))
+                        .size(8.0),
+                );
+            }
+            if closable
+                && ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).small())
+                            .frame(false),
+                    )
+                    .on_hover_text("Close")
+                    .clicked()
+            {
+                close = true;
+            }
+        });
+    (select, close)
+}
+
 #[derive(Default)]
 struct DscanShare {
     uploading: bool,
@@ -14817,12 +15468,40 @@ pub(crate) fn geometry_update(
     }
 }
 
+/// Seed size (never position) into an overlay viewport's per-frame builder.
+///
+/// Overlay viewports (alert + fleet ping) share this one rule so they can't drift apart: NEVER feed
+/// the live saved position into the per-frame builder. egui diffs the `ViewportBuilder` every frame,
+/// so a per-frame `with_position` issues a reposition command every frame; the render callback then
+/// reads the window's actual `outer_rect` (off by WM rounding / decoration), persists it, and it is
+/// fed back next frame, oscillating the window between two spots until the values converge. That is
+/// the exact bug that regressed the alert window when only ping was fixed. Position is restored ONCE
+/// on show via `ViewportCommand::OuterPosition` in the render callback instead. This helper takes no
+/// position argument, so there is structurally no way to seed a live position through it.
+///
+/// Non-Windows seeds the saved size so no frame re-applies the default; Windows starts at the default
+/// size and restores the saved size via command on show (same reason position is command-only there).
+fn seed_overlay_size(
+    b: egui::ViewportBuilder,
+    size: Option<(f32, f32)>,
+    default: [f32; 2],
+) -> egui::ViewportBuilder {
+    #[cfg(not(target_os = "windows"))]
+    {
+        b.with_inner_size(size.map_or(default, |(w, h)| [w, h]))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = size;
+        b.with_inner_size(default)
+    }
+}
+
 pub(crate) fn ping_viewport_builder(
     on_top: bool,
     pos: Option<(f32, f32)>,
     size: Option<(f32, f32)>,
 ) -> egui::ViewportBuilder {
-    #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
         .with_title("EVE Spai \u{2014} Fleet ping")
@@ -14835,20 +15514,8 @@ pub(crate) fn ping_viewport_builder(
         } else {
             egui::WindowLevel::Normal
         });
-    // See alert_viewport_builder: on Windows the live saved geometry is applied by the on-show
-    // settle re-assert, not the per-frame builder (which would oscillate); non-Windows seeds it here.
-    #[cfg(not(target_os = "windows"))]
-    {
-        b = b.with_inner_size(size.map_or([520.0, 320.0], |(w, h)| [w, h]));
-        if let Some((x, y)) = pos {
-            b = b.with_position([x, y]);
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (pos, size);
-        b = b.with_inner_size([520.0, 320.0]);
-    }
+    let _ = pos; // position is command-only on show; see seed_overlay_size
+    b = seed_overlay_size(b, size, [520.0, 320.0]);
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
@@ -14886,7 +15553,6 @@ pub(crate) fn alert_viewport_builder(
     pos: Option<(f32, f32)>,
     size: Option<(f32, f32)>,
 ) -> egui::ViewportBuilder {
-    #[allow(unused_mut)]
     let mut b = egui::ViewportBuilder::default()
         .with_icon(app_icon())
         .with_title("EVE Spai \u{2014} alerts")
@@ -14913,21 +15579,8 @@ pub(crate) fn alert_viewport_builder(
         // swapchain buys nothing there and crashes the GPU driver when dragged across monitors.
         .with_transparent(!cfg!(target_os = "windows"))
         .with_mouse_passthrough(true);
-    // Seed saved geometry into the builder on non-Windows so no frame re-applies the default. On
-    // Windows the geometry is restored by the on-show settle re-assert (a ViewportCommand) instead:
-    // feeding the live saved position into the per-frame builder there fights egui's builder-diff
-    // and makes the window oscillate between two locations while open.
-    #[cfg(not(target_os = "windows"))]
-    {
-        b = b
-            .with_position(pos.map_or([80.0, 80.0], |(x, y)| [x, y]))
-            .with_inner_size(size.map_or([360.0, 240.0], |(w, h)| [w, h]));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (pos, size);
-        b = b.with_inner_size([360.0, 240.0]);
-    }
+    let _ = pos; // position is command-only on show; see seed_overlay_size
+    b = seed_overlay_size(b, size, [360.0, 240.0]);
     #[cfg(target_os = "linux")]
     {
         b = b.with_window_type(egui::X11WindowType::Utility);
@@ -14985,6 +15638,7 @@ pub(crate) fn build_alert_viewport_cb(
         let win_size = st.win_size;
         let secs = st.secs;
         let pinned_in = st.pinned;
+        let snooze_in = st.snooze;
         let mut level_applied = st.level_applied;
         let mut level_at = st.level_at;
         let mut geom_at = st.geom_at;
@@ -15046,6 +15700,7 @@ pub(crate) fn build_alert_viewport_cb(
         let mut hovered = false;
         let mut dismiss = false;
         let mut pinned = pinned_in;
+        let mut snooze = snooze_in;
         let mut moved: Option<(f32, f32)> = None;
         let mut moved_size: Option<(f32, f32)> = None;
         let mut clicks: Vec<IntelClick> = Vec::new();
@@ -15093,6 +15748,16 @@ pub(crate) fn build_alert_viewport_cb(
                                 .clicked()
                             {
                                 pinned = !pinned;
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(egui_phosphor::regular::ALARM)
+                                        .selected(snooze),
+                                )
+                                .on_hover_text("Snooze until I undock (keeps collecting intel)")
+                                .clicked()
+                            {
+                                snooze = !snooze;
                             }
                             buttons_left = ui.min_rect().left();
                         },
@@ -15223,6 +15888,7 @@ pub(crate) fn build_alert_viewport_cb(
             st.secs = (st.secs - dt).max(0.0);
         }
         st.pinned = pinned;
+        st.snooze = snooze;
         st.level_applied = level_applied;
         st.level_at = level_at;
         st.geom_at = geom_at;
@@ -15391,16 +16057,14 @@ pub(crate) struct AlertWindowState {
     /// Explicitly dismissed by the user. On Linux this unmaps the otherwise always-mapped window;
     /// cleared when a new alert makes it active again.
     pub(crate) dismissed: bool,
+    /// Suppress the alert window from auto-opening. Intel is still collected. Cleared when any
+    /// tracked character transitions docked -> undocked (see `docked_prev`).
+    pub(crate) snooze: bool,
+    /// Last-seen docked state per character, for detecting the undock edge that clears `snooze`.
+    pub(crate) docked_prev: std::collections::HashMap<String, bool>,
 }
 
 pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowState>>;
-
-#[derive(Clone, Copy, PartialEq, Default)]
-enum RosterSort {
-    #[default]
-    Value,
-    Hull,
-}
 
 #[derive(Clone, Copy, PartialEq)]
 struct BattleHover {
@@ -15408,19 +16072,14 @@ struct BattleHover {
     kill_id: Option<i64>,
 }
 
-struct BattleDetailCache {
-    kid: i64,
-    sig: (usize, i64, u64),
-    battle: crate::battle::Battle,
-    inv: crate::battle::Involvement,
-    rosters: Vec<Vec<crate::battle::Participant>>,
-}
-
 struct LoadedReport {
     title: String,
     battle: crate::battle::Battle,
     inv: crate::battle::Involvement,
     rosters: Vec<Vec<crate::battle::Participant>>,
+    sorted: Vec<Vec<crate::battle::Participant>>,
+    condensed_rows: Vec<Vec<crate::brview::CondensedRow>>,
+    sorted_for: Option<(RosterSort, bool)>,
     hover: Option<BattleHover>,
 }
 
@@ -15430,20 +16089,18 @@ fn battle_detail(
     type_names: &std::collections::HashMap<i64, String>,
     inv: &crate::battle::Involvement,
     rosters: &[Vec<crate::battle::Participant>],
+    condensed_rows: &[Vec<crate::brview::CondensedRow>],
     condensed: bool,
-    sort: RosterSort,
-    ship_sizes: &std::collections::HashMap<i64, crate::settings::ShipSize>,
     prev_hover: Option<BattleHover>,
 ) -> (Option<i64>, Option<BattleHover>) {
     use egui_phosphor::regular as icon;
     use std::collections::HashSet;
     let mut open_system: Option<i64> = None;
-    let killed: HashSet<i64> =
-        prev_hover.and_then(|h| inv.killed.get(&h.char_id).cloned()).unwrap_or_default();
-    let border_set: HashSet<i64> = prev_hover
+    // Borrow (never clone) the hover-highlight sets: this runs every frame while a row is hovered.
+    let killed: Option<&HashSet<i64>> = prev_hover.and_then(|h| inv.killed.get(&h.char_id));
+    let border_set: Option<&HashSet<i64>> = prev_hover
         .and_then(|h| h.kill_id)
-        .and_then(|kid| inv.attackers.get(&kid).cloned())
-        .unwrap_or_default();
+        .and_then(|kid| inv.attackers.get(&kid));
     let new_hover = std::cell::Cell::new(None);
     let span_min = ((b.end - b.start) / 60).max(0);
     ui.horizontal_wrapped(|ui| {
@@ -15533,48 +16190,10 @@ fn battle_detail(
                                 ui.set_width(SIDE_W - 16.0);
                                 let row_w = SIDE_W - 16.0;
                                 if condensed {
-                                    let mut order: Vec<i64> = Vec::new();
-                                    let mut agg: std::collections::HashMap<i64, (u32, u32, f64, f64)> =
-                                        std::collections::HashMap::new();
-                                    for p in roster.iter() {
-                                        let e = agg.entry(p.ship).or_insert_with(|| {
-                                            order.push(p.ship);
-                                            (0, 0, 0.0, 0.0)
-                                        });
-                                        e.0 += 1;
-                                        if let Some(l) = &p.lost {
-                                            e.1 += 1;
-                                            e.2 += l.value;
-                                            e.3 += l.pod_value;
-                                        }
-                                    }
-                                    order.sort_by(|a, b| {
-                                        let (ta, tb) = (agg[a], agg[b]);
-                                        let (va, vb) = (ta.2 + ta.3, tb.2 + tb.3);
-                                        match sort {
-                                            RosterSort::Value => vb
-                                                .total_cmp(&va)
-                                                .then(tb.1.cmp(&ta.1))
-                                                .then(tb.0.cmp(&ta.0)),
-                                            RosterSort::Hull => {
-                                                let sa = ship_sizes
-                                                    .get(a)
-                                                    .copied()
-                                                    .unwrap_or(crate::settings::ShipSize::Other);
-                                                let sb = ship_sizes
-                                                    .get(b)
-                                                    .copied()
-                                                    .unwrap_or(crate::settings::ShipSize::Other);
-                                                sb.cmp(&sa).then_with(|| vb.total_cmp(&va))
-                                            }
-                                        }
-                                        .then_with(|| name_of(*a).cmp(&name_of(*b)))
-                                    });
-                                    for ship in &order {
-                                        let (total, lost, ship_isk, pod_isk) = agg[ship];
+                                    for r in &condensed_rows[i] {
                                         let resp = condensed_row(
-                                            ui, row_w, *ship, total, lost, ship_isk, pod_isk,
-                                            &name_of, red,
+                                            ui, row_w, r.ship, r.total, r.lost, r.ship_isk,
+                                            r.pod_isk, &name_of, red,
                                         );
                                         if resp.hovered() {
                                             let hl = egui::Color32::from_rgba_unmultiplied(
@@ -15588,38 +16207,20 @@ fn battle_detail(
                                     }
                                     return;
                                 }
-                                let mut rows: Vec<&crate::battle::Participant> = roster.iter().collect();
-                                if matches!(sort, RosterSort::Hull) {
-                                    let val = |p: &crate::battle::Participant| {
-                                        p.lost.as_ref().map_or(0.0, |l| l.value + l.pod_value)
-                                    };
-                                    rows.sort_by(|a, b| {
-                                        let sa = ship_sizes
-                                            .get(&a.ship)
-                                            .copied()
-                                            .unwrap_or(crate::settings::ShipSize::Other);
-                                        let sb = ship_sizes
-                                            .get(&b.ship)
-                                            .copied()
-                                            .unwrap_or(crate::settings::ShipSize::Other);
-                                        sb.cmp(&sa)
-                                            .then(a.ship.cmp(&b.ship))
-                                            .then_with(|| val(b).total_cmp(&val(a)))
-                                            .then(a.pilot.cmp(&b.pilot))
-                                    });
-                                }
-                                for p in rows.into_iter().take(MAX_ROWS) {
+                                // `roster` is already sorted for the active sort by the worker.
+                                for p in roster.iter().take(MAX_ROWS) {
                                     let row_kill = p.lost.as_ref().map(|l| l.kill_id);
                                     let is_hovered = p.char_id != 0
                                         && prev_hover.map_or(false, |h| h.char_id == p.char_id && h.kill_id == row_kill);
                                     let highlight = if is_hovered {
                                         ShipHighlight::Hovered
-                                    } else if p.char_id != 0 && killed.contains(&p.char_id) {
+                                    } else if p.char_id != 0 && killed.is_some_and(|s| s.contains(&p.char_id)) {
                                         ShipHighlight::Assist
                                     } else {
                                         ShipHighlight::None
                                     };
-                                    let border = p.char_id != 0 && border_set.contains(&p.char_id);
+                                    let border =
+                                        p.char_id != 0 && border_set.is_some_and(|s| s.contains(&p.char_id));
                                     let resp = ship_row(
                                         ui, row_w, &p.party, p.ship, &p.pilot, &name_of,
                                         p.lost.as_ref(), red, highlight, border,

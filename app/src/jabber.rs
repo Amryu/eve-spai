@@ -24,6 +24,72 @@ pub fn has_password(jid: &str) -> bool {
     load_password(jid).is_some()
 }
 
+/// Reject a malformed JID before we try to connect. `None` means it's a usable `user@domain`.
+pub fn jid_format_error(jid: &str) -> Option<String> {
+    use xmpp::jid::BareJid;
+    let t = jid.trim();
+    if t.is_empty() {
+        return Some("Enter your Jabber address".to_owned());
+    }
+    match t.parse::<BareJid>() {
+        Ok(j) if j.node().is_none() => {
+            Some("Address needs a username, like name@server.com".to_owned())
+        }
+        Ok(_) => None,
+        Err(_) => Some("Not a valid address (use name@server.com)".to_owned()),
+    }
+}
+
+enum Preflight {
+    Ok,
+    BadAuth,
+    Unreachable(String),
+    Other(String),
+}
+
+/// One authentication round-trip using the same connector as the live session, so we can tell wrong
+/// credentials from an unreachable server before handing off to the auto-reconnecting agent (which
+/// silently retries every error forever).
+async fn preflight(
+    jid: xmpp::jid::Jid,
+    node: String,
+    password: String,
+    dns: xmpp::tokio_xmpp::connect::DnsConfig,
+) -> Preflight {
+    use sasl::common::Credentials;
+    use xmpp::tokio_xmpp::client_login;
+    use xmpp::tokio_xmpp::connect::{ServerConnector, StartTlsServerConnector};
+    use xmpp::tokio_xmpp::parsers::ns;
+    use xmpp::tokio_xmpp::xmlstream::Timeouts;
+
+    let connector = StartTlsServerConnector(dns);
+    let (stream, cb) = match connector.connect(&jid, ns::JABBER_CLIENT, Timeouts::default()).await {
+        Ok(v) => v,
+        Err(e) => return classify(e),
+    };
+    let (features, stream) = match stream.recv_features().await {
+        Ok(v) => v,
+        Err(e) => return classify(e.into()),
+    };
+    let creds = Credentials::default()
+        .with_username(node.as_str())
+        .with_password(password.as_str())
+        .with_channel_binding(cb);
+    match client_login(stream, features.sasl_mechanisms, creds).await {
+        Ok(_) => Preflight::Ok,
+        Err(e) => classify(e),
+    }
+}
+
+fn classify(e: xmpp::tokio_xmpp::Error) -> Preflight {
+    use xmpp::tokio_xmpp::Error;
+    match e {
+        Error::Auth(_) => Preflight::BadAuth,
+        Error::Io(_) | Error::Connection(_) | Error::Addr(_) => Preflight::Unreachable(e.to_string()),
+        other => Preflight::Other(other.to_string()),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ChatMsg {
     pub from: String,
@@ -99,6 +165,12 @@ pub struct JabberState {
     pub running: bool,
     pub connected: bool,
     pub status: String,
+    /// A terminal failure (bad credentials, invalid address, unreachable). The connection stopped
+    /// and won't retry; the UI drops back to the login form and shows this.
+    pub fatal: Option<String>,
+    /// Set once the session reaches `Online`. The chats view waits for this so a failed connect
+    /// never flashes it; a later transient drop keeps it set (auto-reconnect handles the blip).
+    pub ever_online: bool,
     pub roster: std::collections::BTreeMap<String, Contact>,
     pub presences: std::collections::BTreeMap<String, (Presence, String)>,
     pub rooms: std::collections::BTreeSet<String>,
@@ -245,17 +317,28 @@ async fn run(
     use xmpp::tokio_xmpp::connect::{DnsConfig, StartTlsServerConnector};
     use xmpp::{ClientBuilder, ClientFeature, ClientType};
 
-    let bare: BareJid = match jid.parse() {
-        Ok(j) => j,
-        Err(e) => {
-            let mut s = state.lock().unwrap();
-            s.status = format!("Invalid JID: {e}");
-            s.running = false;
+    let fail = |state: &SharedJabber, msg: String| {
+        let mut s = state.lock().unwrap();
+        s.status = msg.clone();
+        s.fatal = Some(msg);
+        s.connected = false;
+        s.running = false;
+    };
+
+    let bare: BareJid = match jid.parse::<BareJid>() {
+        Ok(j) if j.node().is_some() => j,
+        _ => {
+            fail(&state, jid_format_error(&jid).unwrap_or_else(|| "Invalid address".to_owned()));
             return;
         }
     };
-    state.lock().unwrap().running = true;
-    state.lock().unwrap().status = "Connecting…".to_owned();
+    {
+        let mut s = state.lock().unwrap();
+        s.running = true;
+        s.fatal = None;
+        s.ever_online = false;
+        s.status = "Connecting…".to_owned();
+    }
     ctx.request_repaint();
     eprintln!(
         "[jabber] connecting jid={bare} server={}",
@@ -264,11 +347,38 @@ async fn run(
 
     // Connect to the configured server directly (the JID domain usually has no SRV
     // record); fall back to SRV from the JID domain when no server is set.
-    let dns = if server.trim().is_empty() {
-        DnsConfig::srv_default_client(bare.domain().as_str())
-    } else {
-        DnsConfig::NoSrv { host: server.trim().to_owned(), port: 5222, resolver: None }
+    let make_dns = || {
+        if server.trim().is_empty() {
+            DnsConfig::srv_default_client(bare.domain().as_str())
+        } else {
+            DnsConfig::NoSrv { host: server.trim().to_owned(), port: 5222, resolver: None }
+        }
     };
+
+    // A wrong password would otherwise loop forever on "Connecting…": the agent retries every error
+    // silently. Probe auth once first and surface a specific reason.
+    let node = bare.node().unwrap().as_str().to_owned();
+    match preflight(bare.clone().into(), node, password.clone(), make_dns()).await {
+        Preflight::Ok => {}
+        Preflight::BadAuth => {
+            fail(&state, "Login failed. Check your username and password.".to_owned());
+            ctx.request_repaint();
+            return;
+        }
+        Preflight::Unreachable(e) => {
+            eprintln!("[jabber] preflight unreachable: {e}");
+            fail(&state, "Can't reach the server. Check the server address and your connection.".to_owned());
+            ctx.request_repaint();
+            return;
+        }
+        Preflight::Other(e) => {
+            fail(&state, format!("Couldn't connect: {e}"));
+            ctx.request_repaint();
+            return;
+        }
+    }
+
+    let dns = make_dns();
     let mut agent =
         ClientBuilder::new_with_connector(bare.clone(), &password, StartTlsServerConnector(dns))
             .set_client(ClientType::Bot, "EVE Spai")
@@ -408,6 +518,7 @@ fn handle_event(
             eprintln!("[jabber] online");
             let mut s = state.lock().unwrap();
             s.connected = true;
+            s.ever_online = true;
             s.status = "Connected".to_owned();
         }
         Event::Disconnected(e) => {
@@ -532,4 +643,24 @@ fn handle_event(
         _ => {}
     }
     urgent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jid_format_error;
+
+    #[test]
+    fn valid_bare_jids_pass() {
+        assert!(jid_format_error("MyCharacter@goonfleet.com").is_none());
+        assert!(jid_format_error("  name@server.com  ").is_none());
+    }
+
+    #[test]
+    fn malformed_jids_are_rejected() {
+        assert!(jid_format_error("").is_some());
+        assert!(jid_format_error("goonfleet.com").is_some()); // no username
+        assert!(jid_format_error("name@").is_some());
+        assert!(jid_format_error("no spaces@server.com").is_some());
+        assert!(jid_format_error("@server.com").is_some());
+    }
 }
