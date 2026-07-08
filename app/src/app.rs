@@ -1309,7 +1309,7 @@ impl SpaiApp {
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true,
-            &affil,
+            &affil, false, &mut None,
             ) {
                 click = Some(c);
             }
@@ -1400,6 +1400,7 @@ impl SpaiApp {
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true, &affil,
+            false, &mut None,
             ) {
                 click = Some(c);
             }
@@ -3517,7 +3518,7 @@ impl SpaiApp {
                             intel_row(
                                 ui, r, now, stale, from_you, &systems, &status, &ship_details,
                                 &ship_roles, &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
-                            &affil,
+                            &affil, false, &mut None,
                             )
                         });
                         if let Some(a) = inner.inner {
@@ -3673,7 +3674,7 @@ impl SpaiApp {
                 intel_row(
                     ui, r, now, stale, from_you, &systems, &status, &ship_details, &ship_roles,
                     &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
-                &affil,
+                &affil, false, &mut None,
                 )
             });
             if let Some(a) = inner.inner {
@@ -6479,6 +6480,7 @@ impl SpaiApp {
             win_size: self.settings.alerts.window_size,
             ping_win_pos: self.settings.fleet_ping_window_pos,
             ping_win_size: self.settings.fleet_ping_window_size,
+            compact: self.settings.alerts.compact_mode,
         }
     }
 
@@ -6505,6 +6507,7 @@ impl SpaiApp {
             cfg.win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             cfg.ping_win_pos.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
             cfg.ping_win_size.map(|(x, y)| (x.to_bits(), y.to_bits())).hash(&mut h);
+            cfg.compact.hash(&mut h);
             h.finish()
         };
         if Some(config_hash) != self.config_sent_hash {
@@ -6587,7 +6590,7 @@ impl SpaiApp {
             let systems = self.systems.clone();
             let player_sys = self.player_system();
 
-            let (_active, just_opened, clicks, verdicts, moved, moved_size) = {
+            let (_active, just_opened, clicks, verdicts, moved, moved_size, compact_toggle) = {
                 let mut st = self.alert_shared.lock().unwrap();
                 st.enabled = feature;
                 if st.verdict_explained && !self.settings.verdict_explained {
@@ -6596,6 +6599,7 @@ impl SpaiApp {
                 }
                 st.verdict_explained = self.settings.verdict_explained;
                 st.on_top_level = on_top;
+                st.compact = self.settings.alerts.compact_mode;
                 st.win_pos = self.settings.alerts.window_pos;
                 st.win_size = self.settings.alerts.window_size;
                 st.feed = feed;
@@ -6620,8 +6624,14 @@ impl SpaiApp {
                 let verdicts = std::mem::take(&mut st.verdict_out);
                 let moved = st.moved.take();
                 let moved_size = st.moved_size.take();
-                (active, just_opened, clicks, verdicts, moved, moved_size)
+                let compact_toggle = st.compact_toggle.take();
+                (active, just_opened, clicks, verdicts, moved, moved_size, compact_toggle)
             };
+
+            if let Some(v) = compact_toggle {
+                self.settings.alerts.compact_mode = v;
+                self.needs_save = true;
+            }
 
             for click in clicks {
                 self.act_on_intel_click(click, ctx);
@@ -11011,7 +11021,7 @@ impl SpaiApp {
                         ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
                         &ship_details, &ship_roles, &resolved_pilots, &uncertain, &sys_last_ship,
                         &kc, sev, false,
-                    &affil,
+                    &affil, false, &mut None,
                     ) {
                         intel_click = Some(c);
                     }
@@ -12441,13 +12451,18 @@ impl SpaiApp {
                                         );
                                         let label =
                                             if name.is_empty() { "(unnamed rule)" } else { &name };
+                                        // Truncate to the space left of the reorder buttons so a
+                                        // long name doesn't stretch the card past the panel.
+                                        let name_w = (ui.available_width() - 54.0).max(40.0);
+                                        let shown = truncate_to(label, fit_chars(name_w));
                                         let txt = if enabled {
-                                            egui::RichText::new(label)
+                                            egui::RichText::new(&shown)
                                         } else {
-                                            egui::RichText::new(label).weak().strikethrough()
+                                            egui::RichText::new(&shown).weak().strikethrough()
                                         };
                                         if ui
                                             .add(egui::Button::selectable(selected, txt))
+                                            .on_hover_text(label)
                                             .clicked()
                                         {
                                             self.alert_selected_rule = Some(id);
@@ -13272,6 +13287,10 @@ impl SpaiApp {
                                     changed |= ui.selectable_value(&mut a.on_top, OnTop::Never, "Never").changed();
                                 });
                         });
+                        changed |= ui
+                            .checkbox(&mut a.compact_mode, "Compact alert window")
+                            .on_hover_text("Tighter rows and title bar. Hover cards pop out in their own window.")
+                            .changed();
                         ui.label(egui::RichText::new("Sounds (preset: off/info/warning/danger/critical/beep/chime, or a file path)").weak());
                         for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
                             if a.sounds.len() <= i {
@@ -14285,6 +14304,10 @@ impl eframe::App for SpaiApp {
                     }
                     crate::ipc::OverlayToMain::PingMoved { pos, size } => {
                         self.persist_ping_geometry(pos, size)
+                    }
+                    crate::ipc::OverlayToMain::CompactToggle(v) => {
+                        self.settings.alerts.compact_mode = v;
+                        self.needs_save = true;
                     }
                     crate::ipc::OverlayToMain::Hello => {}
                 }
@@ -15730,6 +15753,8 @@ pub(crate) fn alert_viewport_builder(
         .with_visible(!cfg!(target_os = "windows"))
         .with_decorations(false)
         .with_resizable(true)
+        // Floor so the title-bar controls and resize grip always fit, even in compact mode.
+        .with_min_inner_size([200.0, 90.0])
         .with_taskbar(false)
         // A normal managed top-level (kept above, off the taskbar). On KWin/Wayland the reliable
         // lever to keep it visible while the main window is minimized is a KWin window rule forcing
@@ -15747,6 +15772,45 @@ pub(crate) fn alert_viewport_builder(
         b = b.with_window_type(egui::X11WindowType::Utility);
     }
     b
+}
+
+/// Render a compact-mode hover card. Used both for the off-screen sizing pass (to create the popup
+/// window at its final size) and for the actual paint in the `alert_tip` viewport.
+fn render_tip_content(
+    ui: &mut egui::Ui,
+    content: &PendingTip,
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
+) {
+    match content {
+        PendingTip::Text(t) => {
+            ui.label(t);
+        }
+        PendingTip::System(s) => system_hover(ui, systems, status, s),
+        PendingTip::Ship(d, roles) => ship_hover(ui, d, roles),
+        PendingTip::Identity {
+            alliance,
+            alliance_name,
+            corp,
+            corp_name,
+            char_id,
+            char_name,
+            note,
+        } => {
+            tooltip_identity(
+                ui,
+                *alliance,
+                alliance_name.clone(),
+                *corp,
+                corp_name.clone(),
+                *char_id,
+                char_name.clone(),
+            );
+            if let Some(n) = note {
+                ui.label(egui::RichText::new(n).weak());
+            }
+        }
+    }
 }
 
 #[allow(deprecated)]
@@ -15782,7 +15846,7 @@ pub(crate) fn build_alert_viewport_cb(
         let just_opened = !st.open;
         st.open = true;
         let on_top = st.on_top_level;
-        let focus = std::mem::take(&mut st.focus_pending);
+        std::mem::take(&mut st.focus_pending);
         let feed = st.feed.clone();
         let from_you_pre = st.from_you.clone();
         let systems = st.systems.clone();
@@ -15800,6 +15864,7 @@ pub(crate) fn build_alert_viewport_cb(
         let secs = st.secs;
         let pinned_in = st.pinned;
         let snooze_in = st.snooze;
+        let compact = st.compact;
         let mut level_applied = st.level_applied;
         let mut level_at = st.level_at;
         let mut geom_at = st.geom_at;
@@ -15812,11 +15877,8 @@ pub(crate) fn build_alert_viewport_cb(
         drop(st);
         let mut verdict_out_new: Vec<(String, bool)> = Vec::new();
 
-        // A new alert: bring the window forward once — Windows only (a focus request on
-        // Linux/X11 steals focus from the game, winit#1160, which the user doesn't want).
-        if focus && cfg!(target_os = "windows") {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
+        // Overlays request foreground only (via WindowLevel::AlwaysOnTop, a SWP_NOACTIVATE raise);
+        // never take keyboard focus, so a new alert can't steal it from the game.
         // Re-assert the saved geometry for a short settle after (re)open. On Windows the window is
         // shown from hidden here and a single restore command races that map, so keep re-sending
         // until it sticks; on Linux the one-shot on open is enough.
@@ -15844,8 +15906,12 @@ pub(crate) fn build_alert_viewport_cb(
             level_applied = Some(on_top);
             level_at = Some(std::time::Instant::now());
         }
-        let due =
-            level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
+        // Windows only: the overlay window starts hidden and races the map, so re-assert
+        // visibility/level periodically until it sticks. Off Windows this periodic re-raise of the
+        // always-on-top window makes KWin/X11 replay a focus/raise-denied "invalid action" sound
+        // whenever another app (not EVE) is focused; the on-change asserts above already cover Linux.
+        let due = cfg!(target_os = "windows")
+            && level_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(800));
         if due {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
@@ -15864,15 +15930,21 @@ pub(crate) fn build_alert_viewport_cb(
         let mut snooze = snooze_in;
         let mut moved: Option<(f32, f32)> = None;
         let mut moved_size: Option<(f32, f32)> = None;
+        let mut compact_toggle: Option<bool> = None;
+        let mut tip: Option<(egui::Pos2, PendingTip)> = None;
         let mut clicks: Vec<IntelClick> = Vec::new();
         let now_ts = chrono::Utc::now().timestamp();
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(0x12, 0x14, 0x18))
-                    .inner_margin(8),
+                    .inner_margin(if compact { 3 } else { 8 }),
             )
             .show(&ctx, |ui| {
+                if compact {
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
+                    ui.spacing_mut().button_padding = egui::vec2(4.0, 1.0);
+                }
                 let mut buttons_left = f32::INFINITY;
                 let row = ui.horizontal(|ui| {
                     ui.label(
@@ -15884,7 +15956,11 @@ pub(crate) fn build_alert_viewport_cb(
                     );
                     ui.label(
                         egui::RichText::new(if secs.is_finite() {
-                            format!("{:.0}s", secs)
+                            if compact {
+                                fmt_age_compact(secs as i64)
+                            } else {
+                                format!("{:.0}s", secs)
+                            }
                         } else {
                             "\u{221E}".to_owned()
                         })
@@ -15920,6 +15996,14 @@ pub(crate) fn build_alert_viewport_cb(
                             {
                                 snooze = !snooze;
                             }
+                            let (ticon, thint) = if compact {
+                                (egui_phosphor::regular::ARROWS_OUT, "Expand")
+                            } else {
+                                (egui_phosphor::regular::ARROWS_IN, "Compact mode")
+                            };
+                            if ui.button(ticon).on_hover_text(thint).clicked() {
+                                compact_toggle = Some(!compact);
+                            }
                             buttons_left = ui.min_rect().left();
                         },
                     );
@@ -15936,6 +16020,9 @@ pub(crate) fn build_alert_viewport_cb(
                 }
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    if compact {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                    }
                     if let (Some(kills), Some(affil)) = (&kills, &affil) {
                         for (i, (r, sev)) in feed.iter().enumerate().rev() {
                             let from_you = if i < from_you_pre.len() {
@@ -15951,7 +16038,7 @@ pub(crate) fn build_alert_viewport_cb(
                                 ui, r, now_ts, false, from_you, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots,
                                 &uncertain, &last_ship,
-                                kills, *sev, false, affil,
+                                kills, *sev, false, affil, compact, &mut tip,
                             ) {
                                 match c {
                                     IntelClick::PilotVerdict(name) => verdict_pending = Some(name),
@@ -16033,6 +16120,83 @@ pub(crate) fn build_alert_viewport_cb(
             dismiss = true;
         }
 
+        // Compact-mode hover cards render in their own opaque popup window so they can extend past
+        // the small alert window. Shown only on the frames a widget is hovered; egui tears the
+        // window down on the first frame we don't show it (pointer left the widget).
+        if compact {
+            if let Some((anchor, content)) = tip {
+                let origin = ctx
+                    .input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)))
+                    .or(win_pos)
+                    .unwrap_or((0.0, 0.0));
+                let gx = origin.0 + anchor.x + 12.0;
+                let gy = origin.1 + anchor.y + 18.0;
+                let tip_systems = systems.clone();
+                let tip_status = status.clone();
+                const TIP_MAXW: f32 = 360.0;
+                const TIP_MARGIN: f32 = 6.0;
+                // Measure the card off-screen (invisible sizing pass) so the window is created at its
+                // final size. Creating it at a placeholder size and resizing afterward makes the WM
+                // visibly animate the resize.
+                let measured = {
+                    // `invisible` (not `sizing_pass`): a sizing pass reports minimum sizes that
+                    // under-measure the real paint and clip the card. This lays out exactly as the
+                    // real render, just off-screen and unpainted.
+                    let mut mui = egui::Ui::new(
+                        ctx.clone(),
+                        egui::Id::new("alert_tip_measure"),
+                        egui::UiBuilder::new().invisible().max_rect(egui::Rect::from_min_size(
+                            egui::pos2(-1.0e6, -1.0e6),
+                            egui::vec2(TIP_MAXW, 1.0e5),
+                        )),
+                    );
+                    mui.set_max_width(TIP_MAXW);
+                    render_tip_content(&mut mui, &content, &tip_systems, &tip_status);
+                    mui.min_rect().size()
+                };
+                // Window inner area = content + 2*margin + 2*stroke; add a couple px so the real
+                // (narrower) render doesn't wrap one extra line and clip. Under-padding here was why
+                // tips came out too small.
+                let pad = TIP_MARGIN * 2.0 + 2.0 + 3.0;
+                let win_w = (measured.x + pad).min(TIP_MAXW + pad);
+                let win_h = measured.y + pad;
+                ctx.show_viewport_deferred(
+                    egui::ViewportId::from_hash_of("alert_tip"),
+                    egui::ViewportBuilder::default()
+                        .with_decorations(false)
+                        .with_resizable(false)
+                        .with_taskbar(false)
+                        .with_active(false)
+                        .with_transparent(false)
+                        .with_mouse_passthrough(true)
+                        .with_window_level(if on_top {
+                            egui::WindowLevel::AlwaysOnTop
+                        } else {
+                            egui::WindowLevel::Normal
+                        })
+                        .with_position([gx, gy])
+                        .with_inner_size([win_w, win_h]),
+                    move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
+                        let ctx = ui.ctx().clone();
+                        egui::CentralPanel::default()
+                            .frame(
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgb(0x12, 0x14, 0x18))
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        egui::Color32::from_rgb(0x33, 0x38, 0x40),
+                                    ))
+                                    .inner_margin(TIP_MARGIN as i8),
+                            )
+                            .show(&ctx, |ui| {
+                                ui.set_max_width(TIP_MAXW);
+                                render_tip_content(ui, &content, &tip_systems, &tip_status);
+                            });
+                    },
+                );
+            }
+        }
+
         let dt = ctx.input(|i| i.unstable_dt).min(2.0);
         let ms = if hovered { 100 } else { 1000 };
         ctx.request_repaint_after(std::time::Duration::from_millis(ms));
@@ -16050,6 +16214,11 @@ pub(crate) fn build_alert_viewport_cb(
         }
         st.pinned = pinned;
         st.snooze = snooze;
+        // Edge event, not state: only write on an actual toggle. A blind write every render frame
+        // would clobber a pending Some with None before the (independently paced) drainer sees it.
+        if compact_toggle.is_some() {
+            st.compact_toggle = compact_toggle;
+        }
         st.level_applied = level_applied;
         st.level_at = level_at;
         st.geom_at = geom_at;
@@ -16114,9 +16283,9 @@ pub(crate) fn build_ping_viewport_cb(
             st.level_applied = Some(on_top);
             st.level_at = Some(std::time::Instant::now());
         }
-        if std::mem::take(&mut st.raise) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
+        // A new ping requests foreground via WindowLevel above (SWP_NOACTIVATE raise); it never
+        // takes keyboard focus, so it can't steal it from the game. Clear the flag either way.
+        std::mem::take(&mut st.raise);
         let pings = st.windows.clone();
         let systems = st.systems.clone();
         let doctrine_url = st.doctrine_url.clone();
@@ -16181,6 +16350,23 @@ pub(crate) fn build_ping_viewport_cb(
     })
 }
 
+/// Hover content recorded in compact mode, re-rendered in the separate `alert_tip` popup
+/// viewport so it can extend past the small alert window.
+pub(crate) enum PendingTip {
+    Text(String),
+    System(crate::intel::DetectedSystem),
+    Ship(crate::store::ShipDetails, Vec<(&'static str, &'static str)>),
+    Identity {
+        alliance: Option<i64>,
+        alliance_name: Option<String>,
+        corp: Option<i64>,
+        corp_name: Option<String>,
+        char_id: Option<i64>,
+        char_name: Option<String>,
+        note: Option<String>,
+    },
+}
+
 #[derive(Default)]
 pub(crate) struct AlertWindowState {
     pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
@@ -16197,6 +16383,8 @@ pub(crate) struct AlertWindowState {
     pub(crate) applied_passthrough: Option<bool>,
     pub(crate) enabled: bool,
     pub(crate) on_top_level: bool,
+    pub(crate) compact: bool,
+    pub(crate) compact_toggle: Option<bool>,
     pub(crate) win_pos: Option<(f32, f32)>,
     pub(crate) win_size: Option<(f32, f32)>,
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
@@ -17025,6 +17213,18 @@ fn fmt_age(secs: i64) -> String {
     }
 }
 
+/// Narrow age for compact mode: seconds under a minute, then minutes-only, then hours-only.
+fn fmt_age_compact(secs: i64) -> String {
+    let s = secs.max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h", s / 3600)
+    }
+}
+
 fn resize_grip(ui: &mut egui::Ui) {
     const SZ: f32 = 18.0;
     let corner = ui.max_rect().right_bottom();
@@ -17034,9 +17234,14 @@ fn resize_grip(ui: &mut egui::Ui) {
     let col = if hot {
         ui.visuals().strong_text_color()
     } else {
-        ui.visuals().weak_text_color()
+        // Brighter than weak text so the grip reads on the dark fill even in a tiny compact window.
+        egui::Color32::from_rgb(0x8a, 0x92, 0x9c)
     };
-    let painter = ui.painter();
+    // Paint on the foreground layer so scroll content / scrollbars can't cover the grip.
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        ui.id().with("resize_grip_paint"),
+    ));
     let br = corner - egui::vec2(3.0, 3.0);
     for i in 0..3 {
         let o = 4.0 * (i as f32 + 1.0);
@@ -17202,6 +17407,8 @@ fn intel_row(
     sev: crate::settings::Severity,
     show_reporter: bool,
     affil: &crate::affiliation::SharedAffil,
+    compact: bool,
+    tip: &mut Option<(egui::Pos2, PendingTip)>,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
@@ -17241,7 +17448,11 @@ fn intel_row(
     let mut clicked: Option<IntelClick> = None;
     let mut consumed = false;
     let resp = egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::symmetric(8, 4))
+        .inner_margin(if compact {
+            egui::Margin::symmetric(5, 1)
+        } else {
+            egui::Margin::symmetric(8, 4)
+        })
         .fill(card_fill)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -17271,18 +17482,43 @@ fn intel_row(
                         }
                     });
                     let body = if r.text.trim().is_empty() { "(no message text)" } else { &r.text };
-                    ui.label(body);
+                    ui.add(egui::Label::new(body).wrap());
                 });
                 return;
             }
             let mut render = |ui: &mut egui::Ui| {
-                ui.spacing_mut().interact_size.y = 28.0;
-                ui.spacing_mut().button_padding.y = 2.0;
-                ui.label(egui::RichText::new(type_icon).color(icon_color)).on_hover_text(&msg);
-                ui.label(
-                    egui::RichText::new(format!("{:>7}", fmt_age(age))).monospace().weak(),
-                )
-                .on_hover_text(&msg);
+                ui.spacing_mut().interact_size.y = if compact { 16.0 } else { 28.0 };
+                ui.spacing_mut().button_padding.y = if compact { 1.0 } else { 2.0 };
+                if compact {
+                    // x = gap between chips on a line; y = gap between wrapped lines.
+                    ui.spacing_mut().item_spacing = egui::vec2(4.0, 1.0);
+                }
+                // All chips render as filled Buttons, not raw Frames. A Frame sizes its fill to the
+                // content height, which floats taller than the button-height siblings and clips the
+                // icon; a Button is bounded to interact_size.y so every chip is the same height.
+                let chip = |ui: &mut egui::Ui, text: egui::RichText, fill: egui::Color32| {
+                    ui.add(egui::Button::new(text).fill(fill).sense(egui::Sense::hover()))
+                };
+                let badge_isz = if compact { 16.0 } else { 24.0 };
+                let pilot_isz = if compact { 16.0 } else { 20.0 };
+                let age_txt = if compact {
+                    format!("{:>4}", fmt_age_compact(age))
+                } else {
+                    format!("{:>7}", fmt_age(age))
+                };
+                let r1 = ui.label(egui::RichText::new(type_icon).color(icon_color));
+                let r2 = ui.label(egui::RichText::new(age_txt).monospace().weak());
+                if compact {
+                    if r1.hovered() {
+                        *tip = Some((r1.rect.right_top(), PendingTip::Text(msg.clone())));
+                    }
+                    if r2.hovered() {
+                        *tip = Some((r2.rect.right_top(), PendingTip::Text(msg.clone())));
+                    }
+                } else {
+                    r1.on_hover_text(&msg);
+                    r2.on_hover_text(&msg);
+                }
                 let jtxt = match from_you {
                     Some(0) => "here".to_owned(),
                     Some(j) => format!("{j}j"),
@@ -17304,9 +17540,14 @@ fn intel_row(
                         (dim.g() as u16 * 45 / 100 + 0x10) as u8,
                         (dim.b() as u16 * 45 / 100 + 0x10) as u8,
                     );
-                    let panel = ui
-                        .add(egui::Button::new(text).fill(fill))
-                        .on_hover_ui(|ui| system_hover(ui, systems, status, s));
+                    let panel = ui.add(egui::Button::new(text).fill(fill));
+                    if compact {
+                        if panel.hovered() {
+                            *tip = Some((panel.rect.right_top(), PendingTip::System(s.clone())));
+                        }
+                    } else {
+                        panel.clone().on_hover_ui(|ui| system_hover(ui, systems, status, s));
+                    }
                     if panel.clicked() {
                         clicked = Some(IntelClick::System(s.id));
                     }
@@ -17330,58 +17571,42 @@ fn intel_row(
                         } else {
                             icon::PLANET
                         };
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2f, 0x6d, 0x7d)))
-                            .inner_margin(egui::Margin::symmetric(7, 3))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{cicon} {label}  {dist}"))
-                                        .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
-                                        .strong(),
-                                );
-                            })
-                            .response
-                            .on_hover_text(format!("Death {dist} from {cname}"));
+                        chip(
+                            ui,
+                            egui::RichText::new(format!("{cicon} {label}  {dist}"))
+                                .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                                .strong(),
+                            egui::Color32::from_rgb(0x10, 0x32, 0x3a),
+                        )
+                        .on_hover_text(format!("Death {dist} from {cname}"));
                     }
                 }
 
                 if let Some(n) = r.count {
-                    egui::Frame::new()
+                    // Render like the system chips (a Button), not a raw Frame. A Frame sizes its
+                    // fill to content height, which floats taller than the button-height siblings;
+                    // a Button is bounded to interact_size.y so it matches every other chip.
+                    ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("{} {n}", icon::USERS))
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        )
                         .fill(red)
-                        .inner_margin(egui::Margin::symmetric(6, 1))
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} {n}", icon::USERS))
-                                    .color(egui::Color32::WHITE)
-                                    .strong()
-                                    .size(16.0),
-                            );
-                        })
-                        .response
-                        .on_hover_text("hostiles");
+                        .sense(egui::Sense::hover()),
+                    )
+                    .on_hover_text("hostiles");
                 }
 
                 if let Some(isk) = r.isk.filter(|_| !is_zkill) {
-                    egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(0x4a, 0x3d, 0x10))
-                        .inner_margin(egui::Margin::symmetric(6, 1))
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} {}",
-                                    icon::COINS,
-                                    crate::intel::format_isk(isk)
-                                ))
-                                .color(egui::Color32::from_rgb(0xff, 0xd9, 0x6b))
-                                .strong(),
-                            );
-                        })
-                        .response
-                        .on_hover_text("ISK posted");
+                    chip(
+                        ui,
+                        egui::RichText::new(format!("{} {}", icon::COINS, crate::intel::format_isk(isk)))
+                            .color(egui::Color32::from_rgb(0xff, 0xd9, 0x6b))
+                            .strong(),
+                        egui::Color32::from_rgb(0x4a, 0x3d, 0x10),
+                    )
+                    .on_hover_text("ISK posted");
                 }
 
                 for (name, dist) in &r.structures {
@@ -17391,28 +17616,21 @@ fn intel_row(
                     };
                     let col = egui::Color32::from_rgb(0xc4, 0xb5, 0xfd);
                     if let Some(tid) = crate::intel::structure_type_id(name) {
-                        let url = eve_type_render_url(tid, 24.0);
-                        let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0));
+                        let url = eve_type_render_url(tid, badge_isz);
+                        let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(badge_isz));
                         ui.add(egui::Button::image_and_text(img, egui::RichText::new(text).color(col).strong()))
                             .on_hover_text("Structure");
                         continue;
                     }
-                    egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(0x2e, 0x24, 0x4a))
-                        .inner_margin(egui::Margin::symmetric(6, 1))
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} {text}", icon::CASTLE_TURRET))
-                                    .color(col)
-                                    .strong(),
-                            );
-                        })
-                        .response
-                        .on_hover_text(match dist {
-                            Some(d) => format!("{name}, {d} off"),
-                            None => name.clone(),
-                        });
+                    chip(
+                        ui,
+                        egui::RichText::new(format!("{} {text}", icon::CASTLE_TURRET)).color(col).strong(),
+                        egui::Color32::from_rgb(0x2e, 0x24, 0x4a),
+                    )
+                    .on_hover_text(match dist {
+                        Some(d) => format!("{name}, {d} off"),
+                        None => name.clone(),
+                    });
                 }
 
                 for cel in &r.celestials {
@@ -17425,35 +17643,25 @@ fn intel_row(
                     } else {
                         icon::PLANET
                     };
-                    egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(0x10, 0x32, 0x3a))
-                        .inner_margin(egui::Margin::symmetric(6, 1))
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{cicon} {cel}"))
-                                    .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
-                                    .strong(),
-                            );
-                        })
-                        .response
-                        .on_hover_text(format!("{cel} (celestial)"));
+                    chip(
+                        ui,
+                        egui::RichText::new(format!("{cicon} {cel}"))
+                            .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                            .strong(),
+                        egui::Color32::from_rgb(0x10, 0x32, 0x3a),
+                    )
+                    .on_hover_text(format!("{cel} (celestial)"));
                 }
 
                 if let Some(probes) = r.probes {
-                    egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(0x10, 0x3a, 0x40))
-                        .inner_margin(egui::Margin::symmetric(6, 1))
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} {probes}", icon::MAGNIFYING_GLASS))
-                                    .color(egui::Color32::from_rgb(0x7d, 0xd3, 0xde))
-                                    .strong(),
-                            );
-                        })
-                        .response
-                        .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
+                    chip(
+                        ui,
+                        egui::RichText::new(format!("{} {probes}", icon::MAGNIFYING_GLASS))
+                            .color(egui::Color32::from_rgb(0x7d, 0xd3, 0xde))
+                            .strong(),
+                        egui::Color32::from_rgb(0x10, 0x3a, 0x40),
+                    )
+                    .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
                 }
 
                 let nothing_else = r.count.is_none()
@@ -17493,30 +17701,74 @@ fn intel_row(
                         residual = residual.replace(&s.name.to_lowercase(), " ");
                     }
                     if residual.chars().any(|c| c.is_alphanumeric()) {
-                        ui.label(egui::RichText::new(r.text.trim()).weak());
+                        ui.add(egui::Label::new(egui::RichText::new(r.text.trim()).weak()).wrap());
                     }
                 }
 
-                let ship_panel = |ui: &mut egui::Ui, sh: &crate::intel::DetectedShip| -> Option<IntelClick> {
+                let ship_panel = |ui: &mut egui::Ui,
+                                  sh: &crate::intel::DetectedShip,
+                                  tip: &mut Option<(egui::Pos2, PendingTip)>|
+                 -> Option<IntelClick> {
                     let url = if crate::intel::structure_name_by_type(sh.id).is_some() {
-                        eve_type_render_url(sh.id, 24.0)
+                        eve_type_render_url(sh.id, badge_isz)
                     } else {
-                        eve_type_icon_url(sh.id, 24.0)
+                        eve_type_icon_url(sh.id, badge_isz)
                     };
-                    let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(24.0));
+                    let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(badge_isz));
                     let mut panel =
                         ui.add(egui::Button::image_and_text(img, egui::RichText::new(&sh.name).strong()));
                     if let Some(d) = ship_details.get(&sh.id) {
                         let roles = ship_roles.get(&sh.id).map(|v| v.as_slice()).unwrap_or(&[]);
-                        panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
+                        if compact {
+                            if panel.hovered() {
+                                *tip = Some((
+                                    panel.rect.right_top(),
+                                    PendingTip::Ship(d.clone(), roles.to_vec()),
+                                ));
+                            }
+                        } else {
+                            panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
+                        }
                     }
                     panel.clicked().then_some(IntelClick::Ship(sh.id))
                 };
                 if !is_zkill {
                     for sh in &r.ships {
-                        if let Some(c) = ship_panel(ui, sh) {
+                        if let Some(c) = ship_panel(ui, sh, tip) {
                             clicked = Some(c);
                         }
+                    }
+                    for amb in &r.ambiguous_ships {
+                        let amber = crate::theme::standing::WARNING;
+                        let names = amb
+                            .candidates
+                            .iter()
+                            .map(|(_, n)| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" or ");
+                        let btn = egui::Button::new(
+                            egui::RichText::new(format!("{}?", amb.abbrev)).color(amber).strong(),
+                        )
+                        .stroke(egui::Stroke::new(1.0, amber));
+                        let (resp, _) = egui::containers::menu::MenuButton::from_button(btn).ui(ui, |ui| {
+                            ui.label(egui::RichText::new("Ambiguous abbreviation, could be:").weak());
+                            for (id, name) in &amb.candidates {
+                                if *id == 0 {
+                                    ui.label(name);
+                                    continue;
+                                }
+                                let img = egui::Image::new(eve_type_icon_url(*id, 20.0))
+                                    .fit_to_exact_size(egui::Vec2::splat(20.0));
+                                if ui
+                                    .add(egui::Button::image_and_text(img, egui::RichText::new(name)))
+                                    .clicked()
+                                {
+                                    clicked = Some(IntelClick::Ship(*id));
+                                    ui.close();
+                                }
+                            }
+                        });
+                        resp.on_hover_text(format!("Could be: {names}"));
                     }
                 }
 
@@ -17526,16 +17778,13 @@ fn intel_row(
                 }
 
                 let tackled_badge = |ui: &mut egui::Ui, label: String| {
-                    egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(0x5a, 0x18, 0x18))
-                        .inner_margin(4)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(label)
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(0xff, 0x8a, 0x8a)),
-                            );
-                        });
+                    chip(
+                        ui,
+                        egui::RichText::new(label)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xff, 0x8a, 0x8a)),
+                        egui::Color32::from_rgb(0x5a, 0x18, 0x18),
+                    );
                 };
                 for target in &r.tackled_targets {
                     tackled_badge(ui, format!("{target}  TACKLED"));
@@ -17559,15 +17808,15 @@ fn intel_row(
                     });
                     let is_uncertain = uncertain.contains(&name.to_lowercase());
                     let amber = egui::Color32::from_rgb(0xfb, 0xbf, 0x24);
-                    let sz = egui::Vec2::splat(20.0);
+                    let sz = egui::Vec2::splat(pilot_isz);
                     let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);
                     let resp = if let Some(cid) = char_id {
-                        let mut atoms = egui::Atoms::new(img(eve_portrait_url(cid, 20.0)));
+                        let mut atoms = egui::Atoms::new(img(eve_portrait_url(cid, pilot_isz)));
                         if let Some(co) = aff.as_ref().and_then(|a| a.corp) {
-                            atoms.push_left(img(eve_corp_logo_url(co, 20.0)));
+                            atoms.push_left(img(eve_corp_logo_url(co, pilot_isz)));
                         }
                         if let Some(al) = aff.as_ref().and_then(|a| a.alliance) {
-                            atoms.push_left(img(eve_alliance_logo_url(al, 20.0)));
+                            atoms.push_left(img(eve_alliance_logo_url(al, pilot_isz)));
                         }
                         atoms.push_right(egui::RichText::new(name));
                         if is_uncertain {
@@ -17585,25 +17834,41 @@ fn intel_row(
                     let alliance_id = aff.as_ref().and_then(|a| a.alliance);
                     let corp_name = aff.as_ref().and_then(|a| a.corp_name.clone());
                     let alliance_name = aff.as_ref().and_then(|a| a.alliance_name.clone());
-                    let resp = resp.on_hover_ui(|ui| {
-                        tooltip_identity(
-                            ui,
-                            alliance_id,
-                            alliance_name.clone(),
-                            corp_id,
-                            corp_name.clone(),
-                            char_id,
-                            Some(name.to_string()),
-                        );
-                        ui.label(
-                            egui::RichText::new(if is_uncertain {
-                                "Looks inactive - click to mark real or hide"
-                            } else {
-                                "Click to look up"
-                            })
-                            .weak(),
-                        );
-                    });
+                    let hint = if is_uncertain {
+                        "Looks inactive - click to mark real or hide"
+                    } else {
+                        "Click to look up"
+                    };
+                    let resp = if compact {
+                        if resp.hovered() {
+                            *tip = Some((
+                                resp.rect.right_top(),
+                                PendingTip::Identity {
+                                    alliance: alliance_id,
+                                    alliance_name: alliance_name.clone(),
+                                    corp: corp_id,
+                                    corp_name: corp_name.clone(),
+                                    char_id,
+                                    char_name: Some(name.to_string()),
+                                    note: Some(hint.to_string()),
+                                },
+                            ));
+                        }
+                        resp
+                    } else {
+                        resp.on_hover_ui(|ui| {
+                            tooltip_identity(
+                                ui,
+                                alliance_id,
+                                alliance_name.clone(),
+                                corp_id,
+                                corp_name.clone(),
+                                char_id,
+                                Some(name.to_string()),
+                            );
+                            ui.label(egui::RichText::new(hint).weak());
+                        })
+                    };
                     if resp.clicked() {
                         clicked = Some(if is_uncertain {
                             IntelClick::PilotVerdict(name.clone())
@@ -17649,9 +17914,9 @@ fn intel_row(
                                 .wrap_mode(egui::TextWrapMode::Extend),
                         );
                         for (id, ship) in seen {
-                            let url = eve_type_icon_url(id, 24.0);
+                            let url = eve_type_icon_url(id, badge_isz);
                             let img = egui::Image::new(url)
-                                .fit_to_exact_size(egui::Vec2::splat(24.0));
+                                .fit_to_exact_size(egui::Vec2::splat(badge_isz));
                             let mut panel = ui.add(egui::Button::image_and_text(
                                 img,
                                 egui::RichText::new(&ship).strong(),
@@ -17659,7 +17924,16 @@ fn intel_row(
                             if let Some(d) = ship_details.get(&id) {
                                 let roles =
                                     ship_roles.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
-                                panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
+                                if compact {
+                                    if panel.hovered() {
+                                        *tip = Some((
+                                            panel.rect.right_top(),
+                                            PendingTip::Ship(d.clone(), roles.to_vec()),
+                                        ));
+                                    }
+                                } else {
+                                    panel = panel.on_hover_ui(|ui| ship_hover(ui, d, roles));
+                                }
                             }
                             if panel.clicked() {
                                 clicked = Some(IntelClick::Ship(id));
@@ -17674,12 +17948,15 @@ fn intel_row(
                     } else {
                         format!("{} {g} gate", icon::SIGN_IN)
                     };
-                    ui.label(egui::RichText::new(label).color(accent).strong());
+                    ui.add(
+                        egui::Button::new(egui::RichText::new(label).color(accent).strong())
+                            .sense(egui::Sense::hover()),
+                    );
                 }
 
                 for (name, id) in &r.alliances {
-                    let url = eve_alliance_logo_url(id, 20.0);
-                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::vec2(20.0, 20.0)))
+                    let url = eve_alliance_logo_url(id, pilot_isz);
+                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(pilot_isz)))
                         .on_hover_text(name);
                 }
 
@@ -17692,7 +17969,7 @@ fn intel_row(
                                 .and_then(|id| kills.lock().unwrap().get(&id).cloned().flatten());
                             {
                                 if let Some(inf) = &info {
-                                    let sz = egui::Vec2::splat(20.0);
+                                    let sz = egui::Vec2::splat(pilot_isz);
                                     let img = |url: String| {
                                         egui::Image::new(url).fit_to_exact_size(sz)
                                     };
@@ -17700,11 +17977,12 @@ fn intel_row(
                                                  alliance: Option<i64>,
                                                  corp: Option<i64>,
                                                  character: Option<i64>,
-                                                 title: &str| {
+                                                 title: &str,
+                                                 tip: &mut Option<(egui::Pos2, PendingTip)>| {
                                         let parts: Vec<String> = [
-                                            alliance.map(|a| eve_alliance_logo_url(a, 20.0)),
-                                            corp.map(|c| eve_corp_logo_url(c, 20.0)),
-                                            character.map(|c| eve_portrait_url(c, 20.0)),
+                                            alliance.map(|a| eve_alliance_logo_url(a, pilot_isz)),
+                                            corp.map(|c| eve_corp_logo_url(c, pilot_isz)),
+                                            character.map(|c| eve_portrait_url(c, pilot_isz)),
                                         ]
                                         .into_iter()
                                         .flatten()
@@ -17718,23 +17996,55 @@ fn intel_row(
                                             .map(|c| format!("https://zkillboard.com/character/{c}/"))
                                             .or_else(|| corp.map(|c| format!("https://zkillboard.com/corporation/{c}/")))
                                             .or_else(|| alliance.map(|a| format!("https://zkillboard.com/alliance/{a}/")));
-                                        let resp = ui.add(egui::Button::new(atoms)).on_hover_ui(|ui| {
-                                            ui.strong(title);
-                                            let info = character.and_then(|c| {
-                                                let mut a = affil.lock().unwrap();
-                                                a.want(c);
-                                                a.get(c)
+                                        let resp = ui.add(egui::Button::new(atoms));
+                                        if compact {
+                                            if resp.hovered() {
+                                                let info = character.and_then(|c| {
+                                                    let mut a = affil.lock().unwrap();
+                                                    a.want(c);
+                                                    a.get(c)
+                                                });
+                                                *tip = Some((
+                                                    resp.rect.right_top(),
+                                                    PendingTip::Identity {
+                                                        alliance: info
+                                                            .as_ref()
+                                                            .and_then(|i| i.alliance)
+                                                            .or(alliance),
+                                                        alliance_name: info
+                                                            .as_ref()
+                                                            .and_then(|i| i.alliance_name.clone()),
+                                                        corp: info.as_ref().and_then(|i| i.corp).or(corp),
+                                                        corp_name: info
+                                                            .as_ref()
+                                                            .and_then(|i| i.corp_name.clone()),
+                                                        char_id: character,
+                                                        char_name: info
+                                                            .as_ref()
+                                                            .and_then(|i| i.char_name.clone()),
+                                                        note: Some(title.to_string()),
+                                                    },
+                                                ));
+                                            }
+                                        } else {
+                                            resp.clone().on_hover_ui(|ui| {
+                                                ui.strong(title);
+                                                let info = character.and_then(|c| {
+                                                    let mut a = affil.lock().unwrap();
+                                                    a.want(c);
+                                                    a.get(c)
+                                                });
+                                                tooltip_identity(
+                                                    ui,
+                                                    info.as_ref().and_then(|i| i.alliance).or(alliance),
+                                                    info.as_ref().and_then(|i| i.alliance_name.clone()),
+                                                    info.as_ref().and_then(|i| i.corp).or(corp),
+                                                    info.as_ref().and_then(|i| i.corp_name.clone()),
+                                                    character,
+                                                    info.as_ref().and_then(|i| i.char_name.clone()),
+                                                );
                                             });
-                                            tooltip_identity(
-                                                ui,
-                                                info.as_ref().and_then(|i| i.alliance).or(alliance),
-                                                info.as_ref().and_then(|i| i.alliance_name.clone()),
-                                                info.as_ref().and_then(|i| i.corp).or(corp),
-                                                info.as_ref().and_then(|i| i.corp_name.clone()),
-                                                character,
-                                                info.as_ref().and_then(|i| i.char_name.clone()),
-                                            );
-                                        });
+                                        }
                                         if resp.clicked() {
                                             if let Some(url) = zkill {
                                                 let _ = open::that(url);
@@ -17753,6 +18063,7 @@ fn intel_row(
                                             inf.final_blow_corp,
                                             inf.final_blow_char,
                                             "Attacker (final blow). Click for zKill.",
+                                            tip,
                                         );
                                         if inf.attacker_count > 0 {
                                             let (tag, hover) = if inf.attacker_count == 1 {
@@ -17780,10 +18091,11 @@ fn intel_row(
                                         inf.victim_corp,
                                         inf.victim_char,
                                         "Victim. Click for zKill.",
+                                        tip,
                                     );
                                 }
                                 for sh in &r.ships {
-                                    if let Some(c) = ship_panel(ui, sh) {
+                                    if let Some(c) = ship_panel(ui, sh, tip) {
                                         clicked = Some(c);
                                     }
                                 }

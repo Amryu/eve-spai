@@ -1,5 +1,16 @@
 use std::collections::HashMap;
 
+/// Abbreviations that map to more than one real hull. These are intentionally left unresolved and
+/// surfaced as an informational badge (the candidates) rather than guessed. Keys are lowercase.
+pub const AMBIGUOUS: &[(&str, &[&str])] =
+    &[("sfi", &["Scythe Fleet Issue", "Stabber Fleet Issue"])];
+
+/// The candidate hull names for an ambiguous abbreviation, if `token` is one.
+pub fn ambiguous_candidates(token: &str) -> Option<&'static [&'static str]> {
+    let lc = token.to_lowercase();
+    AMBIGUOUS.iter().find(|(k, _)| *k == lc).map(|(_, v)| *v)
+}
+
 const NICKNAMES: &[(&str, &str)] = &[
     ("kiki", "Kikimora"),
     ("ceno", "Cenotaph"),

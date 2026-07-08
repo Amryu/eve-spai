@@ -13,6 +13,7 @@ pub enum OverlayToMain {
     Verdict { name: String, hidden: bool },
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
     PingMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
+    CompactToggle(bool),
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
@@ -51,6 +52,8 @@ pub struct OverlayConfig {
     pub ping_win_pos: Option<(f32, f32)>,
     #[serde(default)]
     pub ping_win_size: Option<(f32, f32)>,
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
@@ -290,6 +293,7 @@ mod tests {
             win_size: Some((360.0, 240.0)),
             ping_win_pos: Some((30.0, 40.0)),
             ping_win_size: Some((520.0, 320.0)),
+            compact: true,
         });
         let mut buf: Vec<u8> = Vec::new();
         send(&mut buf, &msg).unwrap();
@@ -304,6 +308,7 @@ mod tests {
                 assert_eq!(c.window_timeout, 12.0);
                 assert_eq!(c.win_pos, Some((10.0, 20.0)));
                 assert_eq!(c.win_size, Some((360.0, 240.0)));
+                assert!(c.compact);
             }
             other => panic!("wrong variant: {other:?}"),
         }

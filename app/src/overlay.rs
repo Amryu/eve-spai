@@ -290,6 +290,7 @@ impl Overlay {
                             st.enabled = c.alert_enabled;
                             st.win_pos = c.win_pos;
                             st.win_size = c.win_size;
+                            st.compact = c.compact;
                         }
                         *alert_on_top.lock().unwrap() = c.alert_on_top;
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("fleet_ping_window"));
@@ -331,13 +332,14 @@ impl eframe::App for Overlay {
         self.ping_shared.lock().unwrap().eve_focused = self.eve_focused;
 
         {
-            let (clicks, verdicts, moved, moved_size) = {
+            let (clicks, verdicts, moved, moved_size, compact_toggle) = {
                 let mut st = self.alert_shared.lock().unwrap();
                 (
                     std::mem::take(&mut st.clicks),
                     std::mem::take(&mut st.verdict_out),
                     st.moved.take(),
                     st.moved_size.take(),
+                    st.compact_toggle.take(),
                 )
             };
             let pos = moved.filter(|p| Some(*p) != self.alert_pos_sent);
@@ -357,7 +359,12 @@ impl eframe::App for Overlay {
                     other => to_main.push(other),
                 }
             }
-            if !to_main.is_empty() || !verdicts.is_empty() || pos.is_some() || size.is_some() {
+            if !to_main.is_empty()
+                || !verdicts.is_empty()
+                || pos.is_some()
+                || size.is_some()
+                || compact_toggle.is_some()
+            {
                 let mut out = std::io::stdout().lock();
                 for c in to_main {
                     let _ = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::Click(c));
@@ -367,6 +374,9 @@ impl eframe::App for Overlay {
                         &mut out,
                         &crate::ipc::OverlayToMain::Verdict { name, hidden },
                     );
+                }
+                if let Some(v) = compact_toggle {
+                    let _ = crate::ipc::send(&mut out, &crate::ipc::OverlayToMain::CompactToggle(v));
                 }
                 if pos.is_some() || size.is_some() {
                     let _ = crate::ipc::send(

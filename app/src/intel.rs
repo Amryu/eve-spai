@@ -15,6 +15,14 @@ pub struct DetectedShip {
     pub name: String,
 }
 
+/// An ambiguous ship abbreviation (e.g. "SFI") and the hulls it could mean. Shown as an
+/// informational badge; `candidates` carry the resolved type id (0 if the SDE lacks it) for icons.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AmbiguousShip {
+    pub abbrev: String,
+    pub candidates: Vec<(i64, String)>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Movement {
     pub from: String,
@@ -59,6 +67,11 @@ pub struct IntelReport {
     pub text: String,
     pub systems: Vec<DetectedSystem>,
     pub ships: Vec<DetectedShip>,
+    /// Ambiguous ship abbreviations seen in the text (e.g. "SFI" = Scythe/Stabber Fleet Issue).
+    /// Shown as an informational badge listing the candidates; cleared when an amending message
+    /// names the full ship. See `crate::shipnames::ambiguous_candidates`.
+    #[serde(default)]
+    pub ambiguous_ships: Vec<AmbiguousShip>,
     pub classes: Vec<String>,
     pub pilots: Vec<String>,
     pub count: Option<u32>,
@@ -297,6 +310,7 @@ impl IntelState {
                     prev.ships.push(sh.clone());
                 }
             }
+            merge_ambiguous_ships(&mut prev.ambiguous_ships, &new.ambiguous_ships, &prev.ships);
             for c in &new.classes {
                 if !prev.classes.iter().any(|x| x.eq_ignore_ascii_case(c)) {
                     prev.classes.push(c.clone());
@@ -462,6 +476,7 @@ fn merge_report_into(dst: &mut IntelReport, src: &IntelReport) {
             dst.ships.push(sh.clone());
         }
     }
+    merge_ambiguous_ships(&mut dst.ambiguous_ships, &src.ambiguous_ships, &dst.ships);
     for c in &src.classes {
         if !dst.classes.iter().any(|x| x.eq_ignore_ascii_case(c)) {
             dst.classes.push(c.clone());
@@ -709,6 +724,7 @@ pub fn is_pilot_stopword(w: &str) -> bool {
         return lw.split_whitespace().all(is_pilot_stopword);
     }
     PILOT_STOP.contains(&lw.as_str())
+        || crate::shipnames::ambiguous_candidates(&lw).is_some()
         || SHIP_CLASSES.iter().any(|(k, _)| *k == lw.as_str())
         || matches!(
             lw.as_str(),
@@ -1166,6 +1182,37 @@ fn is_name_suffix(t: &str) -> bool {
         || (t.starts_with('-')
             && matches!(t.len(), 2..=4)
             && t[1..].chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// True when `bare` appears in `source` as "bare'" (trailing apostrophe) immediately followed by
+/// another name-part word, i.e. it is the first half of an apostrophe name like "Jennifer' Thyron".
+/// tokenize() strips the apostrophe, so without this the bare prefix leaks as a separate pilot while
+/// the full two-word name is also detected.
+fn apostrophe_name_prefix(source: &str, bare: &str) -> bool {
+    let words: Vec<&str> = source.split_whitespace().collect();
+    let want = format!("{bare}'");
+    for (i, w) in words.iter().enumerate() {
+        if w.eq_ignore_ascii_case(&want) {
+            if let Some(next) = words.get(i + 1) {
+                let core = next.trim_matches(|c: char| ",.;:!?\"()".contains(c));
+                if name_part(core) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Union `src` ambiguous abbreviations into `dst`, then drop any that a now-present ship resolves
+/// (a later message naming the full hull removes the badge).
+fn merge_ambiguous_ships(dst: &mut Vec<AmbiguousShip>, src: &[AmbiguousShip], ships: &[DetectedShip]) {
+    for a in src {
+        if !dst.iter().any(|x| x.abbrev.eq_ignore_ascii_case(&a.abbrev)) {
+            dst.push(a.clone());
+        }
+    }
+    dst.retain(|a| !a.candidates.iter().any(|(_, name)| ships.iter().any(|s| s.name.eq_ignore_ascii_case(name))));
 }
 
 fn extract_pilots(text: &str) -> Vec<String> {
@@ -2124,6 +2171,7 @@ pub fn analyze_ctx(
             && !is_pilot_stopword(t)
             && !ship_index.contains_key(&t.to_lowercase())
             && resolve(systems, t).is_none()
+            && !apostrophe_name_prefix(text, t)
             && !pilots.iter().any(|p| p.eq_ignore_ascii_case(t))
         {
             pilots.push((*t).to_owned());
@@ -2208,6 +2256,7 @@ pub fn analyze_ctx(
             && ship_index.get(&lc).is_none()
             && resolve(systems, t).is_none()
             && !crate::wormholes::is_wh_code(t)
+            && !apostrophe_name_prefix(text, t)
             && !pilots.iter().any(|p| p.split_whitespace().any(|w| w.eq_ignore_ascii_case(t)))
         {
             pilots.push((*t).to_owned());
@@ -2677,6 +2726,32 @@ pub fn analyze_ctx(
     let ess_ctx = lower_tokens.iter().any(|t| t == "ess" && !pilot_tokens.contains(t));
     let isk = parse_isk(text, ess_ctx);
     let structures = detect_structures(text);
+    // Ambiguous ship abbreviations (e.g. "SFI"): surface as a badge unless a candidate hull is
+    // already named in this same message.
+    let ambiguous_ships: Vec<AmbiguousShip> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<AmbiguousShip> = Vec::new();
+        for t in &tokens {
+            let Some(cands) = crate::shipnames::ambiguous_candidates(t) else { continue };
+            if !seen.insert(t.to_lowercase()) {
+                continue;
+            }
+            let resolved_here =
+                cands.iter().any(|c| ships.iter().any(|s| s.name.eq_ignore_ascii_case(c)));
+            if resolved_here {
+                continue;
+            }
+            let candidates = cands
+                .iter()
+                .map(|c| match ship_of(&c.to_lowercase(), ship_index) {
+                    Some((id, name)) => (*id, name.clone()),
+                    None => (0, (*c).to_owned()),
+                })
+                .collect();
+            out.push(AmbiguousShip { abbrev: t.to_uppercase(), candidates });
+        }
+        out
+    };
     let mut report = IntelReport {
         id: 0,
         probes,
@@ -2687,6 +2762,7 @@ pub fn analyze_ctx(
         pilots,
         systems: detected,
         ships,
+        ambiguous_ships,
         classes,
         count,
         count_extra: total_count,
@@ -3897,6 +3973,52 @@ mod tests {
         assert_eq!(pilots, vec!["Ruston Shackleford".to_string()], "raw pilots={:?}", r.pilots);
         assert_eq!(sysd, vec!["B-3QPD".to_string()]);
         assert!(gates.is_empty(), "gates={gates:?}");
+    }
+
+    #[test]
+    fn apostrophe_name_does_not_leak_bare_first_word() {
+        // "Jennifer' Thyron" is one pilot; tokenizing strips the ' so a bare "Jennifer" used to
+        // leak as a separate candidate (and survive because it matches a real EVE name via ESI).
+        let s = systems();
+        let text = "Biggi Harry Jae-ha Jennifer' Thyron Talon Karrdex";
+        let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "Woosi");
+        assert!(
+            !r.pilots.iter().any(|p| p.eq_ignore_ascii_case("Jennifer")),
+            "bare Jennifer leaked: {:?}",
+            r.pilots
+        );
+        assert!(
+            r.pilots.iter().any(|p| p.to_lowercase().contains("jennifer' thyron")),
+            "full run missing: {:?}",
+            r.pilots
+        );
+    }
+
+    #[test]
+    fn sfi_is_ambiguous_ship_not_pilot() {
+        let s = systems();
+        let ships =
+            ships_with(&[("Scythe Fleet Issue", 17812), ("Stabber Fleet Issue", 17726)]);
+        let r = analyze("SFI in Rancer", &s, &ships, &noknown(), 1, "ch", "x");
+        assert!(esi_resolve(&r.pilots, &[]).is_empty(), "SFI as pilot: {:?}", r.pilots);
+        assert!(r.ships.is_empty(), "SFI resolved to a hull: {:?}", r.ships);
+        assert_eq!(r.ambiguous_ships.len(), 1, "ambiguous: {:?}", r.ambiguous_ships);
+        assert_eq!(r.ambiguous_ships[0].abbrev, "SFI");
+        assert_eq!(r.ambiguous_ships[0].candidates.len(), 2);
+    }
+
+    #[test]
+    fn amending_full_name_clears_ambiguous_badge() {
+        let mut dst = vec![AmbiguousShip {
+            abbrev: "SFI".to_owned(),
+            candidates: vec![
+                (17812, "Scythe Fleet Issue".to_owned()),
+                (17726, "Stabber Fleet Issue".to_owned()),
+            ],
+        }];
+        let ships = vec![DetectedShip { id: 17726, name: "Stabber Fleet Issue".to_owned() }];
+        merge_ambiguous_ships(&mut dst, &[], &ships);
+        assert!(dst.is_empty(), "badge should clear once a hull is named: {dst:?}");
     }
 
     #[test]

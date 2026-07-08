@@ -344,6 +344,7 @@ pub struct AlertSettings {
     pub pushover_user: String,
     pub rules: Vec<AlertRule>,
     pub seeded: bool,
+    pub compact_mode: bool,
 }
 
 impl Default for AlertSettings {
@@ -364,6 +365,7 @@ impl Default for AlertSettings {
             pushover_user: String::new(),
             rules: vec![default_rule()],
             seeded: true,
+            compact_mode: false,
         }
     }
 }
