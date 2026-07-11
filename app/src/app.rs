@@ -16160,22 +16160,34 @@ pub(crate) fn build_alert_viewport_cb(
                 let pad = TIP_MARGIN * 2.0 + 2.0 + 3.0;
                 let win_w = (measured.x + pad).min(TIP_MAXW + pad);
                 let win_h = measured.y + pad;
+                #[allow(unused_mut)]
+                let mut tip_builder = egui::ViewportBuilder::default()
+                    .with_decorations(false)
+                    .with_resizable(false)
+                    .with_taskbar(false)
+                    .with_active(false)
+                    .with_transparent(false)
+                    .with_mouse_passthrough(true)
+                    .with_window_level(if on_top {
+                        egui::WindowLevel::AlwaysOnTop
+                    } else {
+                        egui::WindowLevel::Normal
+                    })
+                    .with_position([gx, gy])
+                    .with_inner_size([win_w, win_h]);
+                // The tip maps/unmaps on every hover, and on X11 the WM focuses each newly-mapped
+                // MANAGED window regardless of the active hint, stealing focus from the game. Make it
+                // unmanaged (override-redirect) with the Tooltip type: no focus, no taskbar entry, no
+                // restacking. with_active(false) above is what keeps it from activating on Windows/macOS.
+                #[cfg(target_os = "linux")]
+                {
+                    tip_builder = tip_builder
+                        .with_window_type(egui::X11WindowType::Tooltip)
+                        .with_override_redirect(true);
+                }
                 ctx.show_viewport_deferred(
                     egui::ViewportId::from_hash_of("alert_tip"),
-                    egui::ViewportBuilder::default()
-                        .with_decorations(false)
-                        .with_resizable(false)
-                        .with_taskbar(false)
-                        .with_active(false)
-                        .with_transparent(false)
-                        .with_mouse_passthrough(true)
-                        .with_window_level(if on_top {
-                            egui::WindowLevel::AlwaysOnTop
-                        } else {
-                            egui::WindowLevel::Normal
-                        })
-                        .with_position([gx, gy])
-                        .with_inner_size([win_w, win_h]),
+                    tip_builder,
                     move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
                         let ctx = ui.ctx().clone();
                         egui::CentralPanel::default()
@@ -16216,7 +16228,11 @@ pub(crate) fn build_alert_viewport_cb(
         st.snooze = snooze;
         // Edge event, not state: only write on an actual toggle. A blind write every render frame
         // would clobber a pending Some with None before the (independently paced) drainer sees it.
-        if compact_toggle.is_some() {
+        // Apply the new value to st.compact HERE so the overlay flips immediately; the round-trip to
+        // main is only for persistence. On Windows the main loop is paused while minimized, so
+        // waiting for main to echo the setting back via Config never happens.
+        if let Some(v) = compact_toggle {
+            st.compact = v;
             st.compact_toggle = compact_toggle;
         }
         st.level_applied = level_applied;
