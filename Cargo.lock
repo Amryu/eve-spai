@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "br-core"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "serde",
@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "eve-spai"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "arboard",
