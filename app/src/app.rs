@@ -398,6 +398,9 @@ pub struct SpaiApp {
     /// Fleet-ping history is paginated: render the newest N, load 50 more on scroll to bottom.
     jabber_pings_visible: usize,
     ping_rules_open: bool,
+    /// Comma-separated edit buffer for `jabber_mention_keywords`, so a half-typed "a," survives the
+    /// round trip through the Vec.
+    mention_input: String,
     session_start: i64,
     eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     eve_focus_checked: Option<std::time::Instant>,
@@ -543,6 +546,10 @@ pub struct SpaiApp {
         std::collections::HashMap<(crate::map::MapView, bool), Vec<crate::store::MapSystem>>,
     map_focus: Option<i64>,
     map_selected: Option<i64>,
+    /// Which system the pointer has been resting on, and since when: the tooltip waits this out.
+    map_hover_since: Option<(i64, std::time::Instant)>,
+    /// Mean colour of a sov logo, by image URL, so the map dot can take the holder's colour.
+    logo_avg: std::collections::HashMap<String, egui::Color32>,
     route_destination: Option<i64>,
     map_search: String,
     map_search_sel: usize,
@@ -928,6 +935,7 @@ impl SpaiApp {
             jabber_pw_input: String::new(),
             jabber_pings_visible: 50,
             ping_rules_open: false,
+            mention_input: String::new(),
             session_start: chrono::Utc::now().timestamp(),
             eve_focused,
             eve_focus_checked: None,
@@ -1072,6 +1080,8 @@ impl SpaiApp {
             map_draw_cache: std::collections::HashMap::new(),
             map_focus: None,
             map_selected: None,
+            map_hover_since: None,
+            logo_avg: std::collections::HashMap::new(),
             route_destination: None,
             map_search: String::new(),
             map_search_sel: 0,
@@ -1457,6 +1467,21 @@ impl SpaiApp {
         format!("{input}@{domain}")
     }
 
+    /// What counts as being named in a room: the Jabber username, plus whatever the user added.
+    fn mention_names(&self) -> Vec<String> {
+        let node = self.settings.jabber_jid.split('@').next().unwrap_or_default().trim();
+        std::iter::once(node.to_owned())
+            .chain(self.settings.jabber_mention_keywords.iter().cloned())
+            .filter(|n| !n.trim().is_empty())
+            .collect()
+    }
+
+    fn jabber_mark_read(&self, jid: &str) {
+        let mut st = self.jabber.lock().unwrap();
+        st.unread.remove(jid);
+        st.mentions.remove(jid);
+    }
+
     fn jabber_is_muted(&self, key: &str) -> bool {
         self.settings
             .jabber_muted
@@ -1496,6 +1521,9 @@ impl SpaiApp {
             st.notify_cfg.sound_enabled = self.settings.jabber_sound_enabled;
             st.notify_cfg.ping_sound = self.settings.jabber_ping_sound.clone();
             st.notify_cfg.msg_sound = self.settings.jabber_msg_sound.clone();
+            st.notify_cfg.mention_sound = self.settings.jabber_mention_sound.clone();
+            st.notify_cfg.mention_names = self.mention_names();
+            st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
             st.notify_cfg.muted = self.settings.jabber_muted.clone();
             std::mem::take(&mut st.notify)
@@ -1567,8 +1595,46 @@ impl SpaiApp {
                     ui.label("Default ping sound");
                     changed |= sound_picker(ui, "jabber_ping", false, &mut self.settings.jabber_ping_sound);
                     ui.end_row();
+                    ui.label("Mention sound");
+                    changed |= sound_picker(ui, "jabber_mention", false, &mut self.settings.jabber_mention_sound);
+                    ui.end_row();
                     ui.label("");
                     ui.label(egui::RichText::new("presets: horn · chime · beep · sweep · info · warning · danger · critical · off, or a file path").weak().small());
+                    ui.end_row();
+                    ui.label("Mention words");
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.mention_input)
+                                .hint_text("extra words, comma separated"),
+                        )
+                        .changed()
+                    {
+                        self.settings.jabber_mention_keywords = self
+                            .mention_input
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|w| !w.is_empty())
+                            .map(str::to_owned)
+                            .collect();
+                        changed = true;
+                    }
+                    ui.end_row();
+                    ui.label("");
+                    let me = self.settings.jabber_jid.split('@').next().unwrap_or_default();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "your name \"{me}\" always counts as a mention"
+                        ))
+                        .weak(),
+                    );
+                    ui.end_row();
+                    ui.label("");
+                    changed |= ui
+                        .checkbox(
+                            &mut self.settings.jabber_mention_ignores_mute,
+                            "Mentions notify even in muted chats",
+                        )
+                        .changed();
                     ui.end_row();
                     ui.label("Doctrine link");
                     changed |= ui
@@ -1880,7 +1946,7 @@ impl SpaiApp {
                         self.jabber_dm_error.clear();
                         self.settings.jabber_closed_dms.retain(|j| j != &jid);
                         self.needs_save = true;
-                        self.jabber.lock().unwrap().unread.remove(&jid);
+                        self.jabber_mark_read(&jid);
                         if !self.jabber_tabs.iter().any(|t| t == &jid) {
                             self.jabber_tabs.push(jid.clone());
                         }
@@ -2069,7 +2135,7 @@ impl SpaiApp {
             return;
         }
 
-        let (connected, status, convos, sel_msgs, pings, rooms, dm_keys, unread, pings_unread) = {
+        let (connected, status, convos, sel_msgs, pings, rooms, dm_keys, unread, mentions, pings_unread) = {
             let st = self.jabber.lock().unwrap();
             let mut set: std::collections::BTreeMap<String, Convo> =
                 std::collections::BTreeMap::new();
@@ -2115,7 +2181,8 @@ impl SpaiApp {
                 .cloned()
                 .collect();
             let unread = st.unread.clone();
-            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, dm_keys, unread, st.pings_unread)
+            let mentions = st.mentions.clone();
+            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, dm_keys, unread, mentions, st.pings_unread)
         };
 
         // Reconcile the open-conversation tabs from joined rooms + DM history. An incoming
@@ -2139,6 +2206,12 @@ impl SpaiApp {
             let room_set: std::collections::HashSet<String> =
                 rooms.iter().map(|(r, _)| r.clone()).collect();
             for (rjid, _) in &rooms {
+                // A room we were put into by the server (bookmark, invite, force-join) is only known
+                // to this session; persist it so we rejoin it ourselves next time.
+                if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
+                    self.settings.jabber_rooms.push(rjid.clone());
+                    save = true;
+                }
                 if !closed_rooms.contains(rjid) && !self.jabber_tabs.iter().any(|t| t == rjid) {
                     self.jabber_tabs.push(rjid.clone());
                 }
@@ -2210,6 +2283,7 @@ impl SpaiApp {
                     .on_hover_text("Ping alert rules")
                     .clicked()
                 {
+                    self.mention_input = self.settings.jabber_mention_keywords.join(", ");
                     self.ping_rules_open = true;
                 }
             });
@@ -2408,7 +2482,7 @@ impl SpaiApp {
                                     self.jabber_tabs.push(c.jid.clone());
                                 }
                                 self.jabber_chat = Some(c.jid.clone());
-                                self.jabber.lock().unwrap().unread.remove(&c.jid);
+                                self.jabber_mark_read(&c.jid);
                             }
                         }
                     }
@@ -2440,6 +2514,7 @@ impl SpaiApp {
                     jid: String,
                     is_room: bool,
                     is_unread: bool,
+                    is_mention: bool,
                     lead: TabLead,
                     label: String,
                 }
@@ -2474,6 +2549,7 @@ impl SpaiApp {
                         ui,
                         self.jabber_chat.is_none(),
                         pings_unread,
+                        false,
                         TabLead::Icon(egui_phosphor::regular::MEGAPHONE),
                         false,
                         &pings_label,
@@ -2501,7 +2577,8 @@ impl SpaiApp {
                                 let (pr, pg, pb) = pres.color();
                                 TabLead::Dot(egui::Color32::from_rgb(pr, pg, pb))
                             };
-                            TabInfo { jid: jid.clone(), is_room, is_unread, lead, label }
+                            let is_mention = mentions.contains(jid);
+                            TabInfo { jid: jid.clone(), is_room, is_unread, is_mention, lead, label }
                         })
                         .collect();
 
@@ -2555,6 +2632,7 @@ impl SpaiApp {
                             ui,
                             self.jabber_chat.as_deref() == Some(t.jid.as_str()),
                             t.is_unread,
+                            t.is_mention,
                             t.lead,
                             true,
                             lbl,
@@ -2632,7 +2710,7 @@ impl SpaiApp {
                     match &target {
                         None => self.jabber.lock().unwrap().pings_unread = false,
                         Some(jid) => {
-                            self.jabber.lock().unwrap().unread.remove(jid);
+                            self.jabber_mark_read(jid);
                         }
                     }
                     self.jabber_chat = target;
@@ -2768,6 +2846,7 @@ impl SpaiApp {
                                 let accent = ui.visuals().hyperlink_color;
                                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
                                 let now = chrono::Utc::now().timestamp();
+                                let names = self.mention_names();
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 let mut hist_drawn = false;
                                 let mut prev_sender: Option<String> = None;
@@ -2795,32 +2874,47 @@ impl SpaiApp {
                                                 .size(9.5),
                                         );
                                     }
-                                    ui.horizontal_wrapped(|ui| {
-                                        if !grouped {
-                                            if m.outgoing {
-                                                ui.label(
-                                                    egui::RichText::new("me:").color(me_col).strong(),
-                                                );
-                                            } else {
-                                                let n = m.from.split('@').next().unwrap_or(&m.from);
-                                                let lbl = egui::Label::new(
-                                                    egui::RichText::new(format!("{n}:"))
-                                                        .strong()
-                                                        .color(accent),
-                                                );
-                                                let resp = if is_room {
-                                                    ui.add(lbl.sense(egui::Sense::click()))
-                                                        .on_hover_text("Message")
+                                    let mut row = |ui: &mut egui::Ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            if !grouped {
+                                                if m.outgoing {
+                                                    ui.label(
+                                                        egui::RichText::new("me:")
+                                                            .color(me_col)
+                                                            .strong(),
+                                                    );
                                                 } else {
-                                                    ui.add(lbl)
-                                                };
-                                                if resp.clicked() {
-                                                    dm_click = Some(n.to_owned());
+                                                    let n =
+                                                        m.from.split('@').next().unwrap_or(&m.from);
+                                                    let lbl = egui::Label::new(
+                                                        egui::RichText::new(format!("{n}:"))
+                                                            .strong()
+                                                            .color(accent),
+                                                    );
+                                                    let resp = if is_room {
+                                                        ui.add(lbl.sense(egui::Sense::click()))
+                                                            .on_hover_text("Message")
+                                                    } else {
+                                                        ui.add(lbl)
+                                                    };
+                                                    if resp.clicked() {
+                                                        dm_click = Some(n.to_owned());
+                                                    }
                                                 }
                                             }
-                                        }
-                                        render_message_body(ui, &m.body);
-                                    });
+                                            render_message_body(ui, &m.body);
+                                        });
+                                    };
+                                    let mentioned = !m.outgoing
+                                        && crate::jabber::mention_hit(&m.body, &names);
+                                    if mentioned {
+                                        egui::Frame::new()
+                                            .fill(MENTION_BG)
+                                            .inner_margin(egui::Margin::symmetric(4, 2))
+                                            .show(ui, &mut row);
+                                    } else {
+                                        row(ui);
+                                    }
                                     prev_sender = Some(sender);
                                     prev_time = m.time;
                                 }
@@ -2872,7 +2966,7 @@ impl SpaiApp {
                         });
                         if let Some(nick) = dm_click {
                             let dm = self.full_user_jid(&nick);
-                            self.jabber.lock().unwrap().unread.remove(&dm);
+                            self.jabber_mark_read(&dm);
                             self.settings.jabber_closed_dms.retain(|j| j != &dm);
                             if !self.jabber_tabs.iter().any(|t| t == &dm) {
                                 self.jabber_tabs.push(dm.clone());
@@ -2997,53 +3091,57 @@ impl SpaiApp {
         }
     }
 
+    /// The live hole graph. Built from `wh_cache`, not `wh_overlay`: the overlay drops high-degree
+    /// hubs to keep the map readable, which is exactly what would remove Thera from a route.
+    fn wh_adjacency(&self) -> std::collections::HashMap<i64, Vec<i64>> {
+        let mut adj: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+        for w in &self.wh_cache {
+            if let Some(b) = w.dest_system_id {
+                adj.entry(w.system_id).or_default().push(b);
+                adj.entry(b).or_default().push(w.system_id);
+            }
+        }
+        adj
+    }
+
     fn wh_route_waypoints(&self, from: i64, dest: i64) -> Option<Vec<i64>> {
-        use std::collections::{HashMap, HashSet, VecDeque};
         let geo = self.systems.as_ref()?;
-        let mut wh_adj: HashMap<i64, Vec<i64>> = HashMap::new();
-        for &(a, b) in &self.wh_overlay.direct {
-            wh_adj.entry(a).or_default().push(b);
-            wh_adj.entry(b).or_default().push(a);
+        wh_route_waypoints(geo, &self.wh_adjacency(), from, dest)
+    }
+
+    /// The hole collapsed. Drop it, then re-route: any plan that was going through it is now wrong.
+    fn kill_wormhole(&mut self, id: i64) {
+        if let Some(store) = self.store.as_ref() {
+            store.kill_wormhole(id);
         }
-        for &(a, b, _) in &self.wh_overlay.chains {
-            wh_adj.entry(a).or_default().push(b);
-            wh_adj.entry(b).or_default().push(a);
+        self.wh_reloaded = None; // bypass the reload debounce, the map must not show it again
+        self.reload_wormholes();
+        self.replan_routes();
+    }
+
+    /// `crossed_jspace` covers the case where the step passed through systems the k-space map cannot
+    /// place, which can only have happened through a hole.
+    fn leg_kind(&self, a: i64, b: i64, crossed_jspace: bool) -> Leg {
+        let Some(g) = self.systems.as_ref() else { return Leg::Gate };
+        if crossed_jspace || g.is_hole_step(a, b) {
+            Leg::Hole
+        } else if g.is_bridge(a, b) {
+            Leg::Bridge
+        } else {
+            Leg::Gate
         }
-        let mut prev: HashMap<i64, (i64, bool)> = HashMap::new();
-        let mut visited: HashSet<i64> = HashSet::from([from]);
-        let mut q: VecDeque<i64> = VecDeque::from([from]);
-        let mut found = from == dest;
-        while let Some(u) = q.pop_front() {
-            if u == dest {
-                found = true;
-                break;
+    }
+
+    /// Re-run every route that could depend on the hole graph: the planned map route, and the
+    /// destination we last pushed to the client.
+    fn replan_routes(&mut self) {
+        self.plan_route();
+        if let Some(dest) = self.route_destination {
+            if self.active_character != "No character" {
+                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                self.set_destination_esi(cid, self.active_character.clone(), dest);
             }
-            for &v in geo.neighbors(u) {
-                if visited.insert(v) {
-                    prev.insert(v, (u, false));
-                    q.push_back(v);
-                }
-            }
-            for &v in wh_adj.get(&u).into_iter().flatten() {
-                if visited.insert(v) {
-                    prev.insert(v, (u, true));
-                    q.push_back(v);
-                }
-            }
         }
-        if !found {
-            return None;
-        }
-        let mut waypoints = vec![dest];
-        let mut cur = dest;
-        while let Some(&(p, via_wh)) = prev.get(&cur) {
-            if via_wh {
-                waypoints.push(p);
-            }
-            cur = p;
-        }
-        waypoints.reverse();
-        Some(waypoints)
     }
 
     fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
@@ -3906,7 +4004,7 @@ impl SpaiApp {
                         PilotTab::Solo => &report.solo,
                         _ => &report.losses,
                     };
-                    self.km_list(ui, list, report.loading);
+                    self.km_list(ui, list, report.loading, true);
                 }
                 Some(crate::lookup::LookupState::Failed(e)) => {
                     ui.label(egui::RichText::new(e).weak());
@@ -6111,7 +6209,15 @@ impl SpaiApp {
         }
     }
 
-    fn km_list(&mut self, ui: &mut egui::Ui, list: &[crate::lookup::Loss], loading: bool) {
+    /// `show_system` is off for a list already scoped to one system, where naming it on every row is
+    /// just noise.
+    fn km_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        list: &[crate::lookup::Loss],
+        loading: bool,
+        show_system: bool,
+    ) {
         if list.is_empty() {
             let msg = if loading { "Loading\u{2026}" } else { "Nothing in this category." };
             ui.label(egui::RichText::new(msg).weak());
@@ -6141,22 +6247,6 @@ impl SpaiApp {
                             .sense(egui::Sense::click()),
                     );
                     let ship = det.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".to_owned());
-                    let name =
-                        ui.add(egui::Label::new(egui::RichText::new(ship).strong()).sense(egui::Sense::click()));
-                    if img.on_hover_text("Show fit").clicked() || name.clicked() {
-                        clicked = Some(l.clone());
-                    }
-                    if let Some(sys) = self.systems.as_ref().and_then(|g| g.info_of(l.system_id)) {
-                        ui.label(egui::RichText::new(&sys.name).weak());
-                    }
-                    if l.value > 0.0 {
-                        let isk = if l.value >= 1e9 {
-                            format!("{:.1}B", l.value / 1e9)
-                        } else {
-                            format!("{:.0}M", l.value / 1e6)
-                        };
-                        ui.label(isk);
-                    }
                     let age = now - l.time;
                     let age_s = if age < 3600 {
                         format!("{}m", age / 60)
@@ -6165,9 +6255,42 @@ impl SpaiApp {
                     } else {
                         format!("{}d", age / 86_400)
                     };
-                    ui.label(egui::RichText::new(age_s).weak());
-                    if ui.button("\u{2197}").on_hover_text("Open on zKillboard").clicked() {
-                        let _ = open::that(format!("https://zkillboard.com/kill/{}/", l.killmail_id));
+                    // The fixed-width tail is laid out from the right, so the ship name gets whatever
+                    // is left and truncates. Left to itself, a long name sets the row's minimum width
+                    // and drags the whole side panel wider as the list loads.
+                    let mut hit = img.on_hover_text("Show fit").clicked();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("\u{2197}").on_hover_text("Open on zKillboard").clicked() {
+                            let _ =
+                                open::that(format!("https://zkillboard.com/kill/{}/", l.killmail_id));
+                        }
+                        ui.label(egui::RichText::new(age_s).weak());
+                        if l.value > 0.0 {
+                            let isk = if l.value >= 1e9 {
+                                format!("{:.1}B", l.value / 1e9)
+                            } else {
+                                format!("{:.0}M", l.value / 1e6)
+                            };
+                            ui.label(isk);
+                        }
+                        if show_system {
+                            if let Some(sys) =
+                                self.systems.as_ref().and_then(|g| g.info_of(l.system_id))
+                            {
+                                ui.label(egui::RichText::new(&sys.name).weak());
+                            }
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let name = ui.add(
+                                egui::Label::new(egui::RichText::new(&ship).strong())
+                                    .truncate()
+                                    .sense(egui::Sense::click()),
+                            );
+                            hit |= name.on_hover_text(&ship).clicked();
+                        });
+                    });
+                    if hit {
+                        clicked = Some(l.clone());
                     }
                 });
             }
@@ -6196,9 +6319,9 @@ impl SpaiApp {
         });
         ui.separator();
         match self.pilot_tab {
-            PilotTab::Kills => return self.km_list(ui, &report.kills, report.loading),
-            PilotTab::Solo => return self.km_list(ui, &report.solo, report.loading),
-            PilotTab::Losses => return self.km_list(ui, &report.losses, report.loading),
+            PilotTab::Kills => return self.km_list(ui, &report.kills, report.loading, true),
+            PilotTab::Solo => return self.km_list(ui, &report.solo, report.loading, true),
+            PilotTab::Losses => return self.km_list(ui, &report.losses, report.loading, true),
             PilotTab::Overview => {}
         }
         ui.horizontal(|ui| {
@@ -7023,12 +7146,16 @@ impl SpaiApp {
 
         if resp.clicked() {
             if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
-                if let Some(id) = nearest_system(click, &pos, 10.0) {
-                    if self.map_mode == MapMode::JumpPlan {
-                        self.jump_click_edit(id);
-                    } else {
-                        self.dock_system(id);
+                match nearest_system(click, &pos, 10.0) {
+                    Some(id) => {
+                        self.map_selected = (self.map_selected != Some(id)).then_some(id);
+                        if self.map_mode == MapMode::JumpPlan {
+                            self.jump_click_edit(id);
+                        } else {
+                            self.dock_system(id);
+                        }
                     }
+                    None => self.map_selected = None,
                 }
             }
         }
@@ -7047,20 +7174,88 @@ impl SpaiApp {
             if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
                 ui.label(egui::RichText::new(&info.name).strong());
             }
-            let has_char = self.active_character != "No character";
-            let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-            let cname = self.active_character.clone();
-            ui.add_enabled_ui(has_char, |ui| {
-                if ui.button("Set Destination").clicked() {
-                    self.set_destination_esi(cid.clone(), cname.clone(), sid);
-                    self.route_destination = Some(sid);
+            // In travel mode the map edits the planned route, not the client: sending a waypoint to
+            // the game from a planning view is not what the click looks like it does.
+            if self.map_mode == MapMode::Travel {
+                if ui.button("Set as Start").clicked() {
+                    self.travel_set(TravelEnd::Start, sid);
+                    ui.close();
+                }
+                if ui.button("Set as Destination").clicked() {
+                    self.travel_set(TravelEnd::Dest, sid);
                     ui.close();
                 }
                 if ui.button("Add Waypoint").clicked() {
-                    crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, false);
+                    if !self.travel_waypoints.contains(&sid) {
+                        self.travel_waypoints.push(sid);
+                    }
+                    self.travel_avoid.retain(|&a| a != sid);
+                    self.plan_route();
                     ui.close();
                 }
-            });
+                let planned = self.travel_route.is_some() || self.travel_start.is_some();
+                if planned && ui.button("Clear Route").clicked() {
+                    self.clear_travel();
+                    ui.close();
+                }
+            } else {
+                let has_char = self.active_character != "No character";
+                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                let cname = self.active_character.clone();
+                ui.add_enabled_ui(has_char, |ui| {
+                    if ui.button("Set Destination").clicked() {
+                        self.set_destination_esi(cid.clone(), cname.clone(), sid);
+                        self.route_destination = Some(sid);
+                        ui.close();
+                    }
+                    if ui.button("Add Waypoint").clicked() {
+                        crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, false);
+                        ui.close();
+                    }
+                });
+                if self.route_destination.is_some() && ui.button("Clear Route").clicked() {
+                    self.route_destination = None;
+                    ui.close();
+                }
+            }
+            let holes: Vec<(i64, String)> = self
+                .wh_cache
+                .iter()
+                .filter(|w| w.system_id == sid || w.dest_system_id == Some(sid))
+                .map(|w| {
+                    let far = if w.system_id == sid { w.dest_system_id } else { Some(w.system_id) };
+                    let dest = far
+                        .and_then(|d| self.systems.as_ref().and_then(|g| g.info_of(d)))
+                        .map(|i| i.name.clone())
+                        .unwrap_or_else(|| w.dest.label().to_owned());
+                    let sig = w.signature.clone().unwrap_or_default();
+                    let label =
+                        if sig.is_empty() { dest } else { format!("{sig} \u{2192} {dest}") };
+                    (w.id, label)
+                })
+                .collect();
+            if !holes.is_empty() {
+                ui.separator();
+                if holes.len() == 1 {
+                    if ui
+                        .button(format!("Mark hole dead ({})", holes[0].1))
+                        .on_hover_text("Drop this hole from the map and from routing")
+                        .clicked()
+                    {
+                        self.kill_wormhole(holes[0].0);
+                        ui.close();
+                    }
+                } else {
+                    ui.menu_button("Mark hole dead", |ui| {
+                        for (id, label) in &holes {
+                            if ui.button(label).clicked() {
+                                self.kill_wormhole(*id);
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            }
             ui.separator();
             if ui.button("Plan Jump Route From Here").clicked() {
                 self.jump_plan_from = Some(sid);
@@ -7157,60 +7352,138 @@ impl SpaiApp {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-        let dot = (0.5 * self.map_zoom).clamp(0.7, 7.0);
-        let label_off = (self.map_zoom / 8.0).clamp(0.35, 1.0);
+        let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
+        let ov = self.map_overlays;
+        let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
+        let show_sys_labels = zoomed;
+        let cull = rect.expand(8.0);
 
-        if self.map_overlays.sov != SovMode::Off {
-            let mut edge_len: Vec<f32> = Vec::new();
-            if let Some(graph) = &self.systems {
-                for s in self.map_draw.iter().take(600) {
-                    let p1 = pos[&s.id];
-                    for &n in graph.neighbors(s.id) {
-                        if s.id < n {
-                            if let Some(p2) = pos.get(&n) {
-                                edge_len.push(p1.distance(*p2));
-                            }
-                        }
+        // The row above a dot reads: wormhole/camp icons, name, sov upgrade icons, all centred on the
+        // dot as one block. It is laid out here, once, because the pieces draw in different passes:
+        // the upgrade icons on the right need the width of everything to their left, and all of them
+        // need to know whether the name survived culling.
+        const NAME_FONT: f32 = 13.0;
+        const NAME_GAP: f32 = 4.0;
+        let name_font = egui::FontId::proportional(NAME_FONT);
+        // Icons track the dot, so they neither float away from a tiny dot nor crowd a fat one.
+        let icon_h = (dot * 1.6 + 8.0).clamp(11.0, 20.0);
+        let icon_w = icon_h + 3.0;
+        let icon_font = egui::FontId::proportional(icon_h);
+
+        let mut lead_icons: std::collections::HashMap<i64, Vec<(&str, egui::Color32)>> =
+            std::collections::HashMap::new();
+        if ov.wormholes {
+            let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
+            for sid in &self.wh_overlay.jspace_holes {
+                lead_icons
+                    .entry(*sid)
+                    .or_default()
+                    .push((egui_phosphor::regular::SPIRAL, wh_col));
+            }
+        }
+        if ov.camps {
+            let now = chrono::Utc::now().timestamp();
+            if now - self.camped_cache_at >= 2 {
+                self.camped_cache = self.camps.lock().unwrap().camped(now);
+                self.camped_cache_at = now;
+            }
+            for (id, level) in &self.camped_cache {
+                lead_icons
+                    .entry(*id)
+                    .or_default()
+                    .push((egui_phosphor::regular::CAMPFIRE, camp_color(*level)));
+            }
+        }
+
+        let mut upgrade_icons: std::collections::HashMap<i64, Vec<String>> =
+            std::collections::HashMap::new();
+        if ov.upgrades && zoomed {
+            let mut by_name: std::collections::HashMap<String, Vec<&str>> =
+                std::collections::HashMap::new();
+            for u in &self.settings.sov_upgrades {
+                by_name.entry(u.system.to_lowercase()).or_default().push(u.upgrade.as_str());
+            }
+            let kinds = self.upgrade_kinds;
+            for s in &self.map_draw {
+                if let Some(ups) = by_name.get(&s.name.to_lowercase()) {
+                    let parts: Vec<String> = ups
+                        .iter()
+                        .flat_map(|u| split_upgrade_label(u))
+                        .filter(|up| kinds[upgrade_kind(up) as usize])
+                        .take(6)
+                        .map(str::to_owned)
+                        .collect();
+                    if !parts.is_empty() {
+                        upgrade_icons.insert(s.id, parts);
                     }
                 }
             }
-            let terr = if edge_len.is_empty() {
-                (dot * 6.0).max(dot * 3.0) * 0.72
-            } else {
-                let mid = edge_len.len() / 2;
-                edge_len.select_nth_unstable_by(mid, |a, b| {
-                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                edge_len[mid].max(dot * 3.0) * 0.72
-            };
-            let region = |c: egui::Color32| {
-                egui::Color32::from_rgb(
-                    (c.r() as f32 * 0.5) as u8,
-                    (c.g() as f32 * 0.5) as u8,
-                    (c.b() as f32 * 0.5) as u8,
-                )
-            };
-            let status = self.system_status.lock().unwrap();
+        }
+
+        let mut label_at: std::collections::HashMap<i64, LabelRow> =
+            std::collections::HashMap::new();
+        {
+            let mut placed: Vec<egui::Rect> = Vec::new();
             for s in &self.map_draw {
-                let Some(f) = status.get(&s.id) else { continue };
-                if f.sov_alliance.is_none() {
+                let p = pos[&s.id];
+                if !cull.contains(p) {
                     continue;
                 }
-                let Some(name) = f.sov.as_deref() else { continue };
-                let col = match self.map_overlays.sov {
-                    SovMode::Alliance => self.alliance_paint(name),
-                    SovMode::Coalition => self
-                        .settings
-                        .coalitions
-                        .iter()
-                        .find(|c| c.alliances.iter().any(|a| a.eq_ignore_ascii_case(name)))
-                        .map(Self::coalition_paint)
-                        .unwrap_or(egui::Color32::from_rgb(0x60, 0x60, 0x60)),
-                    SovMode::Off => continue,
+                let lead = lead_icons.get(&s.id).map_or(0, Vec::len) as f32;
+                let right = upgrade_icons.get(&s.id).map_or(0, Vec::len) as f32;
+                if lead == 0.0 && right == 0.0 && !show_sys_labels {
+                    continue;
+                }
+                // Clear of the dot, and of the halos that ring it when there is no name to sit under.
+                let baseline = p.y - dot - if show_sys_labels { 2.0 } else { 8.0 };
+                let mut name_w = if show_sys_labels {
+                    painter
+                        .layout_no_wrap(s.name.clone(), name_font.clone(), egui::Color32::WHITE)
+                        .size()
+                        .x
+                } else {
+                    0.0
                 };
-                painter.circle_filled(pos[&s.id], terr, region(col));
+                let lay = |name_w: f32| {
+                    let name_span = if name_w > 0.0 { name_w + NAME_GAP } else { 0.0 };
+                    let total = (lead + right) * icon_w + name_span;
+                    let left = p.x - total / 2.0;
+                    let name_x = left + lead * icon_w;
+                    let rect = egui::Rect::from_min_max(
+                        egui::pos2(left, baseline - icon_h),
+                        egui::pos2(left + total, baseline),
+                    );
+                    LabelRow {
+                        lead_x: left,
+                        name_x,
+                        icons_x: name_x + name_span,
+                        baseline,
+                        name_shown: name_w > 0.0,
+                        rect,
+                    }
+                };
+                if name_w > 0.0 && placed.iter().any(|r| r.expand(2.0).intersects(lay(name_w).rect))
+                {
+                    // No room for the name. The icons stay, and re-centre on the dot as if the name
+                    // had never been there.
+                    name_w = 0.0;
+                }
+                let row = lay(name_w);
+                if row.name_shown {
+                    placed.push(row.rect);
+                }
+                label_at.insert(s.id, row);
             }
         }
+        let mut activity_heat: std::collections::HashMap<i64, egui::Color32> =
+            std::collections::HashMap::new();
+        // Zoomed out, only the busy systems are worth a number; a quiet system shows nothing at all.
+        let act_floor: u32 = match self.map_zoom {
+            z if z >= 12.0 => 1,
+            z if z >= 6.0 => 3,
+            z if z >= 3.0 => 10,
+            _ => 25,
+        };
 
         if let Some(up) = &self.map_highlight_upgrade {
             let upl = up.to_lowercase();
@@ -7314,17 +7587,6 @@ impl SpaiApp {
                     );
                 }
             }
-            for sid in &self.wh_overlay.jspace_holes {
-                if let Some(p) = pos.get(sid) {
-                    painter.text(
-                        *p + egui::vec2(0.0, -dot - 6.0),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::SPIRAL,
-                        egui::FontId::proportional(12.0),
-                        wh_col,
-                    );
-                }
-            }
             if self.map_overlays.thera {
                 let conns: Vec<&crate::store::MapSystem> = self
                     .wh_overlay
@@ -7389,20 +7651,8 @@ impl SpaiApp {
             }
         }
 
-        let ov = self.map_overlays;
-        let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         if ov.adm || ov.activity != ActivityMode::Off || ov.upgrades {
             let status = self.system_status.lock().unwrap();
-            let mut upgrades_by_system: std::collections::HashMap<String, Vec<&str>> =
-                std::collections::HashMap::new();
-            if ov.upgrades {
-                for u in &self.settings.sov_upgrades {
-                    upgrades_by_system
-                        .entry(u.system.to_lowercase())
-                        .or_default()
-                        .push(u.upgrade.as_str());
-                }
-            }
             for s in &self.map_draw {
                 let p = pos[&s.id];
                 if let Some(f) = status.get(&s.id) {
@@ -7420,50 +7670,53 @@ impl SpaiApp {
                     }
                     if ov.activity != ActivityMode::Off {
                         let v = ov.activity.value(f);
-                        if v > 0 {
-                            let heat = (v as f32 / ov.activity.scale()).min(1.0);
-                            let col =
-                                egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30);
-                            painter.circle_filled(p, dot + 3.0 + heat * 6.0, col.gamma_multiply(0.32));
+                        if v >= act_floor {
+                            activity_heat.insert(s.id, activity_color(v, ov.activity.scale()));
+                            // Zoomed out there is no room for a number under every dot; the dot
+                            // itself carries the heat instead (see the dot loop).
+                            if show_sys_labels {
+                                painter.text(
+                                    p + egui::vec2(0.0, dot + 3.0),
+                                    egui::Align2::CENTER_TOP,
+                                    compact_count(v),
+                                    egui::FontId::proportional(12.0),
+                                    activity_color(v, ov.activity.scale()),
+                                );
+                            }
                         }
                     }
                 }
-                if ov.upgrades && zoomed {
-                    if let Some(ups) = upgrades_by_system.get(&s.name.to_lowercase()) {
-                        let ukinds = self.upgrade_kinds;
-                        let parts: Vec<&str> = ups
-                            .iter()
-                            .flat_map(|u| split_upgrade_label(u))
-                            .filter(|up| ukinds[upgrade_kind(up) as usize])
-                            .collect();
-                        for (k, up) in parts.iter().take(6).enumerate() {
-                            let ip = p
-                                + egui::vec2(dot + 4.0 + k as f32 * 20.0, -(dot + 9.0) * label_off);
-                            if ip.x + 20.0 > rect.right() || ip.y - 20.0 < rect.top() || !rect.contains(ip) {
-                                continue;
+                if let (Some(ups), Some(row)) =
+                    (upgrade_icons.get(&s.id), label_at.get(&s.id))
+                {
+                    for (k, up) in ups.iter().enumerate() {
+                        let ip = egui::pos2(row.icons_x + k as f32 * icon_w, row.baseline);
+                        if ip.x + icon_w > rect.right()
+                            || ip.y - icon_h < rect.top()
+                            || !rect.contains(ip)
+                        {
+                            continue;
+                        }
+                        let (kind, level) = upgrade_info(up);
+                        let lcol = level_color(level);
+                        match kind {
+                            UpgradeIcon::Glyph(g) => {
+                                painter.text(
+                                    ip,
+                                    egui::Align2::LEFT_BOTTOM,
+                                    g,
+                                    icon_font.clone(),
+                                    lcol,
+                                );
                             }
-                            let (kind, level) = upgrade_info(up);
-                            let lcol = level_color(level);
-                            match kind {
-                                UpgradeIcon::Glyph(g) => {
-                                    painter.text(
-                                        ip,
-                                        egui::Align2::LEFT_BOTTOM,
-                                        g,
-                                        egui::FontId::proportional(16.0),
-                                        lcol,
-                                    );
-                                }
-                                UpgradeIcon::Mineral(tid) => {
-                                    let sz = 19.0;
-                                    let rect = egui::Rect::from_min_size(
-                                        egui::pos2(ip.x, ip.y - sz),
-                                        egui::Vec2::splat(sz),
-                                    );
-                                    let url = eve_type_icon_url(tid, sz);
-                                    ui.put(rect, egui::Image::new(url)).on_hover_text(*up);
-                                    painter.circle_filled(rect.right_top(), 3.0, lcol);
-                                }
+                            UpgradeIcon::Mineral(tid) => {
+                                let r = egui::Rect::from_min_size(
+                                    egui::pos2(ip.x, ip.y - icon_h),
+                                    egui::Vec2::splat(icon_h),
+                                );
+                                ui.put(r, egui::Image::new(eve_type_icon_url(tid, icon_h)))
+                                    .on_hover_text(up);
+                                painter.circle_filled(r.right_top(), 3.0, lcol);
                             }
                         }
                     }
@@ -7472,53 +7725,57 @@ impl SpaiApp {
         }
 
         let mut reached_dest = false;
-        if let (Some(dest), Some(ps), Some(graph)) =
-            (self.route_destination, player_sys, self.systems.as_ref())
-        {
+        if let (Some(dest), Some(ps)) = (self.route_destination, player_sys) {
             if ps == dest {
                 reached_dest = true;
-            } else if let Some(route) = graph.path(ps, dest) {
-                let phase = (ui.input(|i| i.time) * 28.0) as f32;
-                let route_col = egui::Color32::from_rgb(0x4F, 0xC3, 0xF7);
-                for w in route.windows(2) {
-                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
-                        dashed_flow(&painter, *p1, *p2, route_col, phase);
+            } else {
+                // Drawing the client's own idea of the route would trace the long k-space path a
+                // hole route deliberately skips, so this walks the same graph the waypoints came from.
+                let holes = if self.settings.route_via_wormholes {
+                    self.wh_adjacency()
+                } else {
+                    std::collections::HashMap::new()
+                };
+                let route = self
+                    .systems
+                    .as_ref()
+                    .and_then(|g| g.route_with(ps, dest, true, true, &holes, |_| true));
+                if let Some(route) = route {
+                    let phase = (ui.input(|i| i.time) * 28.0) as f32;
+                    // A J-space leg has no place on the map, so the hop is drawn between the k-space
+                    // systems on either side of the hole.
+                    let mut last: Option<(i64, egui::Pos2)> = None;
+                    let mut jumped_hole = false;
+                    for &id in &route {
+                        let Some(&p) = pos.get(&id) else {
+                            jumped_hole = true;
+                            continue;
+                        };
+                        if let Some((prev_id, prev_p)) = last {
+                            let col = self.leg_kind(prev_id, id, jumped_hole).color();
+                            dashed_flow(&painter, prev_p, p, col, phase);
+                        }
+                        last = Some((id, p));
+                        jumped_hole = false;
                     }
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
                 }
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
             }
         }
         if reached_dest {
             self.route_destination = None;
         }
 
+        // The campfire itself rides the label row (see `lead_icons`); only its glow stays on the dot.
         if self.map_overlays.camps {
-            let now = chrono::Utc::now().timestamp();
-            if now - self.camped_cache_at >= 2 {
-                self.camped_cache = self.camps.lock().unwrap().camped(now);
-                self.camped_cache_at = now;
-            }
-            let font = egui::FontId::proportional(15.0);
             for (id, level) in &self.camped_cache {
                 if let Some(p) = pos.get(id) {
-                    let col = match level {
-                        crate::camp::CampLevel::Likely => egui::Color32::from_rgb(0xEF, 0x44, 0x44),
-                        crate::camp::CampLevel::Possible => egui::Color32::from_rgb(0xFF, 0xA7, 0x26),
-                        crate::camp::CampLevel::Flag => egui::Color32::from_rgb(0xFF, 0xD5, 0x4F),
-                    };
                     let glow = match level {
                         crate::camp::CampLevel::Likely => 0.30,
                         crate::camp::CampLevel::Possible => 0.20,
                         crate::camp::CampLevel::Flag => 0.12,
                     };
-                    painter.circle_filled(*p, dot + 7.0, col.gamma_multiply(glow));
-                    painter.text(
-                        *p + egui::vec2(0.0, -11.0),
-                        egui::Align2::CENTER_CENTER,
-                        egui_phosphor::regular::CAMPFIRE,
-                        font.clone(),
-                        col,
-                    );
+                    painter.circle_filled(*p, dot + 7.0, camp_color(*level).gamma_multiply(glow));
                 }
             }
         }
@@ -7542,10 +7799,32 @@ impl SpaiApp {
                 }
             }
             if let Some(route) = &self.travel_route {
-                for w in route.windows(2) {
-                    if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
-                        painter.line_segment([*p1, *p2], egui::Stroke::new(2.5, cyan));
+                // A leg through J-space has no position on the k-space map, so it is drawn as one
+                // dashed hop between the k-space systems on either side of the hole.
+                let mut last: Option<(i64, egui::Pos2)> = None;
+                let mut jumped_hole = false;
+                for &id in route {
+                    let Some(&p) = pos.get(&id) else {
+                        jumped_hole = true;
+                        continue;
+                    };
+                    if let Some((prev_id, prev_p)) = last {
+                        match self.leg_kind(prev_id, id, jumped_hole) {
+                            Leg::Gate => {
+                                painter.line_segment([prev_p, p], egui::Stroke::new(2.5, cyan));
+                            }
+                            kind => {
+                                painter.extend(egui::Shape::dashed_line(
+                                    &[prev_p, p],
+                                    egui::Stroke::new(2.5, kind.color()),
+                                    7.0,
+                                    5.0,
+                                ));
+                            }
+                        }
                     }
+                    last = Some((id, p));
+                    jumped_hole = false;
                 }
             }
             let mark = |p: egui::Pos2, color: egui::Color32| {
@@ -7638,7 +7917,9 @@ impl SpaiApp {
             .input(|i| i.pointer.hover_pos())
             .filter(|_| resp.hovered())
             .and_then(|p| nearest_system(p, &pos, 8.0));
-        if let (true, Some(h_id)) = (self.map_overlays.jump_range, hovered_id) {
+        // A selected system keeps its hover effects; hovering something else takes over.
+        let focus_id = hovered_id.or(self.map_selected);
+        if let (true, Some(h_id)) = (self.map_overlays.jump_range, focus_id) {
             if let Some(real_h) = self.map_systems.iter().find(|s| s.id == h_id) {
                 let hp = pos[&h_id];
                 let band_color = [
@@ -7668,13 +7949,26 @@ impl SpaiApp {
                     let d = crate::map::ly_distance(real_h, &self.map_systems[i]);
                     if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
                         let col = band_color.get(b).copied().unwrap_or(band_color[2]);
-                        painter.circle_filled(pos[&s.id], dot + 4.0, col.gamma_multiply(0.30));
+                        painter.circle_filled(pos[&s.id], dot + 4.0, col.gamma_multiply(0.70));
                     }
                 }
             }
         }
 
-        if let Some(h_id) = hovered_id {
+        if self.map_hover_since.map(|(id, _)| id) != hovered_id {
+            self.map_hover_since = hovered_id.map(|id| (id, std::time::Instant::now()));
+        }
+        let dwelled = self.map_hover_since.is_some_and(|(_, since)| {
+            let waited = since.elapsed();
+            if waited < MAP_TIP_DELAY {
+                // Nothing else will redraw while the pointer sits still, so ask for the frame that
+                // brings the tooltip up.
+                ui.ctx().request_repaint_after(MAP_TIP_DELAY - waited);
+                return false;
+            }
+            true
+        });
+        if let Some(h_id) = hovered_id.filter(|_| dwelled) {
             if let Some(ptr) = ui.ctx().pointer_hover_pos() {
                 egui::Area::new(ui.id().with("map_hover_tip"))
                     .order(egui::Order::Tooltip)
@@ -7709,15 +8003,46 @@ impl SpaiApp {
         };
         let blink = (ui.input(|i| i.time) as f32 * 6.0).sin().abs();
         let mut any_fresh = false;
-        let show_sys_labels =
-            matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
-        let mut placed_labels: Vec<egui::Rect> = Vec::new();
+        // The holder's colour rides the dot at every zoom; the logo only appears once the dots are
+        // big enough to hang one on, below which a logo per system is unreadable clutter.
+        let icon_px = (dot * 2.6).floor();
+        let sov_art = self.sov_art(ui.ctx());
+        let show_icons = icon_px >= 10.0;
         for s in &self.map_draw {
             let p = pos[&s.id];
             if !cull.contains(p) {
                 continue;
             }
-            painter.circle_filled(p, dot, security_color(s.security));
+            let art = sov_art.get(&s.id);
+            // Zoomed out the dot is the only thing left to say it with, so heat outranks the
+            // holder's colour there; zoomed in the number below the dot carries it instead.
+            let dot_col = activity_heat
+                .get(&s.id)
+                .copied()
+                .filter(|_| !show_sys_labels)
+                .or_else(|| art.and_then(|a| a.dot))
+                .unwrap_or_else(|| security_color(s.security));
+            painter.circle_filled(p, dot, dot_col);
+            if let Some(a) = art.filter(|_| show_icons) {
+                // Drawn through the map's clipped painter, not `Image::paint_at`, which would paint
+                // into the panel layer and spill the logo over the side bars.
+                let hint = egui::SizeHint::Size {
+                    width: 64,
+                    height: 64,
+                    maintain_aspect_ratio: true,
+                };
+                if let Ok(egui::load::TexturePoll::Ready { texture }) =
+                    ui.ctx().try_load_texture(&a.icon, egui::TextureOptions::LINEAR, hint)
+                {
+                    let r = egui::Rect::from_center_size(p, egui::vec2(icon_px, icon_px));
+                    painter.image(
+                        texture.id,
+                        r,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+            }
             if self.settings.bookmarks.contains(&s.id) {
                 painter.circle_stroke(
                     p,
@@ -7760,19 +8085,37 @@ impl SpaiApp {
             if self.map_selected == Some(s.id) {
                 painter.circle_stroke(p, dot + 6.0, egui::Stroke::new(2.5, egui::Color32::WHITE));
             }
-            if show_sys_labels && rect.contains(p) {
-                let anchor = p + egui::vec2(dot + 4.0, -2.0 * label_off);
-                let approx = egui::Rect::from_min_size(
-                    anchor,
-                    egui::vec2(s.name.len() as f32 * 7.0, 14.0),
-                );
-                if !placed_labels.iter().any(|r| r.expand(2.0).intersects(approx)) {
-                    placed_labels.push(approx);
+            if let Some(row) = label_at.get(&s.id).filter(|_| rect.contains(p)) {
+                // The icons always draw: dropping one would silently hide a camp or a hole. Only the
+                // name is culled, and when it is, the row re-centres without it.
+                if let Some(icons) = lead_icons.get(&s.id) {
+                    for (k, (glyph, col)) in icons.iter().enumerate() {
+                        painter.text(
+                            egui::pos2(row.lead_x + k as f32 * icon_w, row.baseline),
+                            egui::Align2::LEFT_BOTTOM,
+                            *glyph,
+                            icon_font.clone(),
+                            *col,
+                        );
+                    }
+                }
+                if row.name_shown {
+                    let at = egui::pos2(row.name_x, row.baseline);
+                    // Outlined, so the name survives whatever it lands on: halos, sov icons, routes.
+                    for off in OUTLINE {
+                        painter.text(
+                            at + off,
+                            egui::Align2::LEFT_BOTTOM,
+                            &s.name,
+                            name_font.clone(),
+                            egui::Color32::BLACK,
+                        );
+                    }
                     painter.text(
-                        anchor,
-                        egui::Align2::LEFT_CENTER,
+                        at,
+                        egui::Align2::LEFT_BOTTOM,
                         &s.name,
-                        egui::FontId::proportional(13.0),
+                        name_font.clone(),
                         ui.visuals().text_color(),
                     );
                 }
@@ -8104,15 +8447,21 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.jump_range, format!("{}  Jump range (hover)", icon::CROSSHAIR_SIMPLE));
         ui.separator();
         ui.checkbox(&mut self.map_overlays.wormholes, format!("{}  Wormhole connections", icon::SPIRAL));
-        ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
-        ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
+        if self.map_overlays.wormholes {
+            ui.indent("wh_hubs", |ui| {
+                ui.checkbox(&mut self.map_overlays.thera, format!("{}  Thera", icon::PLANET));
+                ui.checkbox(&mut self.map_overlays.turnur, format!("{}  Turnur", icon::PLANET));
+            });
+        }
         ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
         if ui
             .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
-            .on_hover_text("Set Destination adds a waypoint at each hole entrance")
+            .on_hover_text("Routes and Set Destination use scanned holes, with a waypoint at each hole entrance")
             .changed()
         {
             self.needs_save = true;
+            // Toggling this changes what the current destination should be, so re-send it.
+            self.replan_routes();
         }
         if self.map_overlays.upgrades {
             ui.separator();
@@ -8206,7 +8555,6 @@ impl SpaiApp {
 
     fn map_system_tooltip(&self, ui: &mut egui::Ui, id: i64) {
         ui.set_max_width(270.0);
-        ui.set_opacity(if self.map_overlays.jump_range { 0.40 } else { 0.82 });
         let status = self.system_status.lock().unwrap();
         let flags = status.get(&id).cloned().unwrap_or_default();
         if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(id)) {
@@ -8810,6 +9158,39 @@ impl SpaiApp {
         self.travel_ingame_dest = next;
     }
 
+    fn travel_set(&mut self, end: TravelEnd, id: i64) {
+        let name = self
+            .systems
+            .as_ref()
+            .and_then(|g| g.info_of(id))
+            .map(|i| i.name.clone())
+            .unwrap_or_default();
+        match end {
+            TravelEnd::Start => {
+                self.travel_start = Some(id);
+                self.travel_start_q = name;
+            }
+            TravelEnd::Dest => {
+                self.travel_end = Some(id);
+                self.travel_end_q = name;
+            }
+        }
+        self.travel_waypoints.retain(|&w| w != id);
+        self.travel_avoid.retain(|&a| a != id);
+        self.plan_route();
+    }
+
+    fn clear_travel(&mut self) {
+        self.travel_start = None;
+        self.travel_end = None;
+        self.travel_start_q.clear();
+        self.travel_end_q.clear();
+        self.travel_waypoints.clear();
+        self.travel_avoid.clear();
+        self.travel_route = None;
+        self.travel_direct_route = None;
+    }
+
     fn travel_input_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -8887,26 +9268,34 @@ impl SpaiApp {
                     }
                 }
             }
-            let sec_ok = geo2
-                .info_of(sys)
-                .map(|i| {
-                    if i.security >= 0.45 {
-                        sec[0]
-                    } else if i.security > 0.0 {
-                        sec[1]
-                    } else {
-                        sec[2]
-                    }
-                })
-                .unwrap_or(true);
+            // J-space has no security band to prefer, so the hisec/lowsec/null switches don't apply:
+            // filtering Thera out as "null" would silently defeat routing through it.
+            let sec_ok = crate::geo::is_wormhole_system(sys)
+                || geo2
+                    .info_of(sys)
+                    .map(|i| {
+                        if i.security >= 0.45 {
+                            sec[0]
+                        } else if i.security > 0.0 {
+                            sec[1]
+                        } else {
+                            sec[2]
+                        }
+                    })
+                    .unwrap_or(true);
             let activity_ok =
                 max_kills == 0 || status.get(&sys).map(|f| metric.value(f)).unwrap_or(0) <= max_kills;
             sec_ok && activity_ok
         };
+        let holes = if self.settings.route_via_wormholes {
+            self.wh_adjacency()
+        } else {
+            std::collections::HashMap::new()
+        };
         let mut route = vec![s];
         let mut ok = true;
         for leg in points.windows(2) {
-            match geo.route(leg[0], leg[1], regional, bridges, &allowed) {
+            match geo.route_with(leg[0], leg[1], regional, bridges, &holes, allowed) {
                 Some(seg) => route.extend(seg.into_iter().skip(1)),
                 None => {
                     ok = false;
@@ -9280,10 +9669,13 @@ impl SpaiApp {
             if resp.changed() {
                 *sel = 0;
             }
-            if !suggestions.is_empty() && resp.has_focus() {
-                let focused = true;
+            // A singleline TextEdit surrenders focus the instant Enter is pressed, so by now
+            // `has_focus` is already false. The key itself is still in the queue, so the accept has
+            // to hang off `lost_focus` or Enter would never pick the highlighted suggestion.
+            let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if !suggestions.is_empty() && (resp.has_focus() || entered) {
                 let n = suggestions.len();
-                if focused {
+                if resp.has_focus() {
                     let (down, up) = ui.input(|i| {
                         (i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowUp))
                     });
@@ -9293,31 +9685,31 @@ impl SpaiApp {
                     if up {
                         *sel = sel.saturating_sub(1);
                     }
-                }
-                let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
-                let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
-                let width = resp.rect.width();
-                egui::Area::new(ui.id().with(("travel_sugg", hint)))
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(below)
-                    .constrain(true)
-                    .show(ui.ctx(), |ui| {
-                        ui.set_min_width(width);
-                        ui.set_max_width(width);
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
-                                let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
-                                let rr = ui.selectable_label(i == *sel, row);
-                                if rr.hovered() && moving {
-                                    *sel = i;
+                    let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+                    let below = resp.rect.left_bottom() + egui::vec2(0.0, 2.0);
+                    let width = resp.rect.width();
+                    egui::Area::new(ui.id().with(("travel_sugg", hint)))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(below)
+                        .constrain(true)
+                        .show(ui.ctx(), |ui| {
+                            ui.set_min_width(width);
+                            ui.set_max_width(width);
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                for (i, (id, name, sec, c, r)) in suggestions.iter().enumerate() {
+                                    let row = format!("{name}    {sec:.1}\n{c} \u{2022} {r}");
+                                    let rr = ui.selectable_label(i == *sel, row);
+                                    if rr.hovered() && moving {
+                                        *sel = i;
+                                    }
+                                    if rr.clicked() {
+                                        pick = Some(*id);
+                                    }
                                 }
-                                if rr.clicked() {
-                                    pick = Some(*id);
-                                }
-                            }
+                            });
                         });
-                    });
-                if focused && pick.is_none() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                }
+                if entered && pick.is_none() {
                     pick = suggestions.get((*sel).min(n - 1)).map(|x| x.0);
                 }
             }
@@ -9351,6 +9743,16 @@ impl SpaiApp {
             self.travel_wp_sugg_key = self.travel_wp_q.clone();
         }
         let wp_suggestions = self.travel_wp_sugg.clone();
+        // An empty From means "where I am". Skipped while a field is focused, so it cannot overwrite
+        // a box the user has just cleared to type into.
+        if self.travel_start.is_none()
+            && self.travel_start_q.trim().is_empty()
+            && ui.memory(|m| m.focused()).is_none()
+        {
+            if let Some(me) = self.player_system() {
+                self.travel_set(TravelEnd::Start, me);
+            }
+        }
         let mut wp_pick: Option<i64> = None;
         let mut set_dest = false;
         let name_id = |id: i64| -> (i64, String) {
@@ -9369,12 +9771,24 @@ impl SpaiApp {
         let mut remove_avoid: Option<i64> = None;
         let summary = self.travel_route.as_ref().map(|r| {
             let planned = r.len().saturating_sub(1);
-            match self.travel_direct_route.as_ref().map(|d| d.len().saturating_sub(1)) {
+            let holes = self
+                .systems
+                .as_ref()
+                .map(|g| r.windows(2).filter(|w| g.is_hole_step(w[0], w[1])).count())
+                .unwrap_or(0);
+            let mut s = match self.travel_direct_route.as_ref().map(|d| d.len().saturating_sub(1)) {
                 Some(direct) if planned > direct => {
                     format!("{planned} jumps \u{2022} direct {direct} (+{})", planned - direct)
                 }
                 _ => format!("{planned} jumps"),
+            };
+            if holes > 0 {
+                s.push_str(&format!(" \u{2022} {holes} via wormhole"));
+                if holes > 1 {
+                    s.push('s');
+                }
             }
+            s
         });
         let mut clear = false;
         let mut start_pick: Option<i64> = None;
@@ -9565,14 +9979,7 @@ impl SpaiApp {
             self.plan_route();
         }
         if clear {
-            self.travel_start = None;
-            self.travel_end = None;
-            self.travel_start_q.clear();
-            self.travel_end_q.clear();
-            self.travel_waypoints.clear();
-            self.travel_avoid.clear();
-            self.travel_route = None;
-            self.travel_direct_route = None;
+            self.clear_travel();
         }
         if self.travel_live {
             let now_t = ui.input(|i| i.time);
@@ -10406,6 +10813,78 @@ impl SpaiApp {
         }
     }
 
+    /// Mean colour of an already-decoded logo. `None` while the image is still loading, so the dot
+    /// keeps its security colour until the logo arrives and is then recoloured.
+    fn logo_avg_color(&mut self, ctx: &egui::Context, url: &str) -> Option<egui::Color32> {
+        if let Some(c) = self.logo_avg.get(url) {
+            return Some(*c);
+        }
+        let hint = egui::SizeHint::Size { width: 32, height: 32, maintain_aspect_ratio: true };
+        let egui::load::ImagePoll::Ready { image } = ctx.try_load_image(url, hint).ok()? else {
+            return None;
+        };
+        let col = mean_logo_color(&image)?;
+        self.logo_avg.insert(url.to_owned(), col);
+        Some(col)
+    }
+
+    /// Per-system dot colour and icon for whoever holds the system: the alliance logo and its mean
+    /// colour under player sov, the faction logo (at any security) with the dot left alone for NPCs.
+    /// One fixed logo size, so zooming does not churn the URL cache; the icon is scaled when drawn.
+    fn sov_art(&mut self, ctx: &egui::Context) -> std::collections::HashMap<i64, SovArt> {
+        const LOGO_PX: f32 = 64.0;
+        if self.map_overlays.sov == SovMode::Off {
+            return std::collections::HashMap::new();
+        }
+        let holders: Vec<(i64, Option<i64>, Option<i64>, Option<String>)> = {
+            let status = self.system_status.lock().unwrap();
+            self.map_draw
+                .iter()
+                .filter_map(|s| {
+                    let f = status.get(&s.id)?;
+                    (f.sov_alliance.is_some() || f.sov_faction.is_some()).then(|| {
+                        (s.id, f.sov_alliance, f.sov_faction, f.sov.clone())
+                    })
+                })
+                .collect()
+        };
+        let coalition = self.map_overlays.sov == SovMode::Coalition;
+        let mut out = std::collections::HashMap::new();
+        for (id, alliance, faction, holder) in holders {
+            let art = match (alliance, faction) {
+                (Some(aid), _) => {
+                    let url = eve_alliance_logo_url(aid, LOGO_PX);
+                    let dot = match holder {
+                        // By coalition, the coalition's own colour says more than the logo's mean.
+                        Some(name) if coalition => Some(self.coalition_color_of(&name)),
+                        // A colour the user picked for this alliance outranks the logo's mean.
+                        Some(name) => self
+                            .alliance_color_of(&name)
+                            .or_else(|| self.logo_avg_color(ctx, &url)),
+                        None => self.logo_avg_color(ctx, &url),
+                    };
+                    SovArt { icon: url, dot }
+                }
+                (None, Some(fid)) => match crate::factions::corporation_id(fid) {
+                    Some(cid) => SovArt { icon: eve_corp_logo_url(cid, LOGO_PX), dot: None },
+                    None => continue,
+                },
+                _ => continue,
+            };
+            out.insert(id, art);
+        }
+        out
+    }
+
+    fn coalition_color_of(&self, alliance: &str) -> egui::Color32 {
+        self.settings
+            .coalitions
+            .iter()
+            .find(|c| c.alliances.iter().any(|a| a.eq_ignore_ascii_case(alliance)))
+            .map(Self::coalition_paint)
+            .unwrap_or(egui::Color32::from_rgb(0x60, 0x60, 0x60))
+    }
+
     fn focus_map_on_select(&mut self, id: i64) {
         if matches!(self.map_view, crate::map::MapView::Region(_)) {
             if let Some(r) = self.store.as_ref().and_then(|s| s.region_of_system(id)) {
@@ -10990,7 +11469,7 @@ impl SpaiApp {
             egui::ScrollArea::vertical().id_salt("syskills").max_height(280.0).show(ui, |ui| {
                 match feed.lock().unwrap().clone() {
                     crate::lookup::LookupState::Done(report) => {
-                        self.km_list(ui, &report.kills, report.loading);
+                        self.km_list(ui, &report.kills, report.loading, false);
                     }
                     crate::lookup::LookupState::Failed(e) => {
                         ui.label(egui::RichText::new(e).weak());
@@ -11096,14 +11575,15 @@ impl SpaiApp {
         }
     }
 
-    fn alliance_paint(&self, name: &str) -> egui::Color32 {
+    /// Only a colour the user actually set. No name-hashed fallback: on the map the logo's own mean
+    /// colour is a better guess than a random hue.
+    fn alliance_color_of(&self, name: &str) -> Option<egui::Color32> {
         self.settings
             .alliances
             .iter()
             .find(|a| a.name.eq_ignore_ascii_case(name))
             .and_then(|a| a.color)
             .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
-            .unwrap_or_else(|| name_color(name))
     }
 
     fn coalition_paint(c: &crate::settings::Coalition) -> egui::Color32 {
@@ -14881,6 +15361,72 @@ fn render_message_body(ui: &mut egui::Ui, body: &str) {
     }
 }
 
+/// Shortest gate+wormhole path, reported as the waypoints the player must set: the near side of every
+/// hole they have to jump, then the destination. Gates between two waypoints the game routes itself.
+fn wh_route_waypoints(
+    geo: &crate::geo::Systems,
+    wh_adj: &std::collections::HashMap<i64, Vec<i64>>,
+    from: i64,
+    dest: i64,
+) -> Option<Vec<i64>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut prev: HashMap<i64, (i64, bool)> = HashMap::new();
+    let mut visited: HashSet<i64> = HashSet::from([from]);
+    let mut q: VecDeque<i64> = VecDeque::from([from]);
+    let mut found = from == dest;
+    while let Some(u) = q.pop_front() {
+        if u == dest {
+            found = true;
+            break;
+        }
+        let gates = geo.neighbors(u).iter().map(|v| (*v, false));
+        let holes = wh_adj.get(&u).into_iter().flatten().map(|v| (*v, true));
+        for (v, via_wh) in gates.chain(holes) {
+            if v != dest && crate::geo::is_no_transit(v) {
+                continue;
+            }
+            if visited.insert(v) {
+                prev.insert(v, (u, via_wh));
+                q.push_back(v);
+            }
+        }
+    }
+    if !found {
+        return None;
+    }
+    // Walk the path back out. `prev[cur] = (p, via_wh)` describes the step INTO `cur`, so the flag
+    // belongs to `cur`, not to `p`.
+    let mut path: Vec<(i64, bool)> = Vec::new();
+    let mut cur = dest;
+    while let Some(&(p, via_wh)) = prev.get(&cur) {
+        path.push((cur, via_wh));
+        cur = p;
+    }
+    path.push((cur, false)); // `from`, reached by nothing
+    path.reverse();
+
+    // The client cannot route through a hole, so every hole jump needs a waypoint on BOTH sides:
+    // one to fly to, and one to pick the route up again from after jumping. Between two waypoints
+    // the game routes by gates, which is exactly right for the gate legs.
+    let mut waypoints: Vec<i64> = Vec::new();
+    for w in path.windows(2) {
+        let (a, (b, via_hole)) = (w[0].0, w[1]);
+        if via_hole {
+            waypoints.push(a);
+            waypoints.push(b);
+        }
+    }
+    waypoints.push(dest);
+    // J-space cannot hold a waypoint (the client will not route to it), and there is no point
+    // waypointing the system we are already sitting in.
+    waypoints.retain(|&s| !crate::geo::is_wormhole_system(s));
+    waypoints.dedup();
+    if waypoints.first() == Some(&from) {
+        waypoints.remove(0);
+    }
+    Some(waypoints)
+}
+
 fn valid_bare_jid(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() || s.contains(char::is_whitespace) {
@@ -14936,7 +15482,24 @@ const TAB_PAD_X: f32 = 8.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_LEAD_W: f32 = 16.0;
 const TAB_CLOSE_W: f32 = 16.0;
+/// The eight offsets that make a 1px outline around map text.
+const OUTLINE: [egui::Vec2; 8] = [
+    egui::vec2(-1.0, -1.0),
+    egui::vec2(0.0, -1.0),
+    egui::vec2(1.0, -1.0),
+    egui::vec2(-1.0, 0.0),
+    egui::vec2(1.0, 0.0),
+    egui::vec2(-1.0, 1.0),
+    egui::vec2(0.0, 1.0),
+    egui::vec2(1.0, 1.0),
+];
+
+/// How long the pointer must rest on a system before the map tooltip appears.
+const MAP_TIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
 const UNREAD_RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x4C, 0x4C);
+/// Backdrop for a chat line that named us. Alpha-blended so it reads on both themes.
+const MENTION_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x38, 0x14, 0x14, 0x50);
 
 #[derive(Clone, Copy)]
 enum TabLead {
@@ -14998,6 +15561,7 @@ fn jabber_tab_box(
     ui: &mut egui::Ui,
     selected: bool,
     unread: bool,
+    mention: bool,
     lead: TabLead,
     closable: bool,
     label: &str,
@@ -15054,6 +15618,21 @@ fn jabber_tab_box(
     let galley = painter.layout_no_wrap(label.to_owned(), body, text_color);
     painter.galley(egui::pos2(x, cy - galley.size().y / 2.0), galley, text_color);
 
+    // An unread mention gets an "@" where an ordinary unread tab gets a dot.
+    let mark = |at: egui::Pos2| {
+        if mention {
+            painter.text(
+                at,
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::AT,
+                egui::FontId::proportional(14.0),
+                UNREAD_RED,
+            );
+        } else {
+            painter.circle_filled(at, 4.0, UNREAD_RED);
+        }
+    };
+
     let mut select = resp.clicked();
     let mut close = false;
     let slot_cx = rect.right() - TAB_PAD_X - TAB_CLOSE_W / 2.0;
@@ -15075,10 +15654,10 @@ fn jabber_tab_box(
                 select = false;
             }
         } else if unread {
-            painter.circle_filled(close_rect.center(), 4.0, UNREAD_RED);
+            mark(close_rect.center());
         }
     } else if unread {
-        painter.circle_filled(egui::pos2(slot_cx, cy), 4.0, UNREAD_RED);
+        mark(egui::pos2(slot_cx, cy));
     }
     (select, close)
 }
@@ -15391,6 +15970,84 @@ fn eve_corp_logo_url(id: impl std::fmt::Display, px: f32) -> String {
 
 fn eve_alliance_logo_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/alliances/{id}/logo?size={}", eve_img_size(px))
+}
+
+#[derive(Clone, Copy)]
+enum TravelEnd {
+    Start,
+    Dest,
+}
+
+/// How a route gets from one system to the next. Each kind draws in its own colour, so a glance at
+/// the line says whether you are taking a gate, a bridge, or a hole.
+#[derive(Clone, Copy, PartialEq)]
+enum Leg {
+    Gate,
+    Bridge,
+    Hole,
+}
+
+impl Leg {
+    fn color(self) -> egui::Color32 {
+        match self {
+            Leg::Gate => egui::Color32::from_rgb(0x4F, 0xC3, 0xF7),
+            Leg::Bridge => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
+            Leg::Hole => egui::Color32::from_rgb(0xB0, 0x7C, 0xE8),
+        }
+    }
+}
+
+/// Where the pieces of a system's label row go, decided in one pass so the parts that draw later
+/// agree with the parts that drew earlier.
+struct LabelRow {
+    lead_x: f32,
+    name_x: f32,
+    icons_x: f32,
+    baseline: f32,
+    name_shown: bool,
+    rect: egui::Rect,
+}
+
+/// What the system dot borrows from its sov holder.
+struct SovArt {
+    icon: String,
+    /// Only player sov recolours the dot; NPC systems keep their security colour.
+    dot: Option<egui::Color32>,
+}
+
+/// Mean of a logo's opaque pixels, pushed to stay legible and distinguishable against the map's dark
+/// background. Averaging a multi-hued logo pulls it toward grey, so the mean's own hue is kept but
+/// its saturation is pushed back up; without that, every alliance ends up the same murky slate.
+fn mean_logo_color(img: &egui::ColorImage) -> Option<egui::Color32> {
+    const SATURATION_BOOST: f32 = 2.4;
+    const MIN_VALUE: f32 = 130.0;
+
+    let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+    for px in img.pixels.iter() {
+        if px.a() < 128 {
+            continue;
+        }
+        r += px.r() as u64;
+        g += px.g() as u64;
+        b += px.b() as u64;
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    let (r, g, b) = ((r / n) as f32, (g / n) as f32, (b / n) as f32);
+
+    // Saturation is the gap between each channel and the darkest one; widening that gap saturates
+    // the colour while leaving its hue and brightest channel alone. A true grey has no gap and so
+    // stays grey, which is right: there is no hue in it to recover.
+    let lo = r.min(g).min(b);
+    let sat = |v: f32| (lo + (v - lo) * SATURATION_BOOST).clamp(0.0, 255.0);
+    let (r, g, b) = (sat(r), sat(g), sat(b));
+
+    // Then lift a dark logo into view, keeping the ratios (and so the hue) intact.
+    let lift = (MIN_VALUE / r.max(g).max(b).max(1.0)).max(1.0);
+    let c = |v: f32| (v * lift).min(255.0) as u8;
+    Some(egui::Color32::from_rgb(c(r), c(g), c(b)))
 }
 
 fn eve_type_icon_url(id: impl std::fmt::Display, px: f32) -> String {
@@ -18751,6 +19408,29 @@ fn name_color(name: &str) -> egui::Color32 {
     alliance_color(coalition_hash(name))
 }
 
+/// Activity counts (NPC kills especially) run into the thousands, and a four-digit number under a
+/// map dot is unreadable, so anything three digits or longer is abbreviated.
+fn compact_count(v: u32) -> String {
+    if v < 100 {
+        v.to_string()
+    } else {
+        format!("{:.1}k", v as f32 / 1000.0)
+    }
+}
+
+fn camp_color(level: crate::camp::CampLevel) -> egui::Color32 {
+    match level {
+        crate::camp::CampLevel::Likely => egui::Color32::from_rgb(0xEF, 0x44, 0x44),
+        crate::camp::CampLevel::Possible => egui::Color32::from_rgb(0xFF, 0xA7, 0x26),
+        crate::camp::CampLevel::Flag => egui::Color32::from_rgb(0xFF, 0xD5, 0x4F),
+    }
+}
+
+fn activity_color(v: u32, scale: f32) -> egui::Color32 {
+    let heat = (v as f32 / scale).min(1.0);
+    egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30)
+}
+
 fn security_color(security: f64) -> egui::Color32 {
     const COLORS: [(u8, u8, u8); 11] = [
         (0xB0, 0x3A, 0x9A),
@@ -18924,5 +19604,197 @@ mod op_channel_tests {
         assert_eq!(op_key("get to OP 9 now").as_deref(), Some("op9"));
         assert_eq!(op_key("stop shooting"), None);
         assert_eq!(op_key("no channel here"), None);
+    }
+}
+
+#[cfg(test)]
+mod activity_label_tests {
+    use super::compact_count;
+
+    #[test]
+    fn small_counts_stay_exact() {
+        assert_eq!(compact_count(0), "0");
+        assert_eq!(compact_count(7), "7");
+        assert_eq!(compact_count(99), "99");
+    }
+
+    #[test]
+    fn three_digits_and_up_abbreviate() {
+        assert_eq!(compact_count(100), "0.1k");
+        assert_eq!(compact_count(234), "0.2k");
+        assert_eq!(compact_count(1_234), "1.2k");
+        assert_eq!(compact_count(23_400), "23.4k");
+    }
+}
+
+#[cfg(test)]
+mod sov_art_tests {
+    use super::*;
+
+    fn img(px: &[egui::Color32]) -> egui::ColorImage {
+        egui::ColorImage::new([px.len(), 1], px.to_vec())
+    }
+
+    #[test]
+    fn mean_ignores_transparent_padding() {
+        let clear = egui::Color32::from_rgba_unmultiplied(0xFF, 0x00, 0x00, 0x00);
+        let blue = egui::Color32::from_rgb(0x00, 0x00, 0xC0);
+        // The red is fully transparent logo padding, so only the blue counts.
+        let c = mean_logo_color(&img(&[clear, blue, clear])).unwrap();
+        assert_eq!((c.r(), c.g()), (0, 0));
+        assert!(c.b() > 0xA0, "b={}", c.b());
+    }
+
+    #[test]
+    fn mean_lifts_a_dark_logo_into_view() {
+        let dark = egui::Color32::from_rgb(0x10, 0x10, 0x20);
+        let c = mean_logo_color(&img(&[dark])).unwrap();
+        assert!(c.b() >= 100, "a near-black logo must not yield a near-black dot: {c:?}");
+    }
+
+    /// Two logos whose averages are both muddy but differently tinted must not collapse to the same
+    /// grey, or every alliance looks alike on the map.
+    #[test]
+    fn a_washed_out_mean_comes_back_saturated() {
+        let muddy_red = mean_logo_color(&img(&[egui::Color32::from_rgb(0x70, 0x5A, 0x5A)])).unwrap();
+        let muddy_blue = mean_logo_color(&img(&[egui::Color32::from_rgb(0x5A, 0x5A, 0x70)])).unwrap();
+
+        let spread = |c: egui::Color32| {
+            let (r, g, b) = (c.r() as i32, c.g() as i32, c.b() as i32);
+            r.max(g).max(b) - r.min(g).min(b)
+        };
+        assert!(spread(muddy_red) > 40, "still grey: {muddy_red:?}");
+        assert!(spread(muddy_blue) > 40, "still grey: {muddy_blue:?}");
+        // Hue is preserved: the reddish one stays reddish, the bluish one bluish.
+        assert!(muddy_red.r() > muddy_red.b());
+        assert!(muddy_blue.b() > muddy_blue.r());
+    }
+
+    #[test]
+    fn a_genuinely_grey_logo_is_left_grey() {
+        // No hue to recover, so boosting must not invent one.
+        let c = mean_logo_color(&img(&[egui::Color32::from_rgb(0x80, 0x80, 0x80)])).unwrap();
+        assert_eq!((c.r(), c.g()), (c.b(), c.b()));
+    }
+
+    #[test]
+    fn a_fully_transparent_logo_has_no_mean() {
+        let clear = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 0);
+        assert!(mean_logo_color(&img(&[clear])).is_none());
+    }
+
+    #[test]
+    fn npc_factions_resolve_to_a_logo_corp() {
+        use crate::factions::corporation_id;
+        assert_eq!(corporation_id(500_010), Some(1_000_127)); // Guristas, holds Venal
+        assert_eq!(corporation_id(500_019), Some(1_000_162)); // Sansha, holds Stain
+        assert_eq!(corporation_id(1234), None);
+    }
+}
+
+#[cfg(test)]
+mod wh_route_tests {
+    use super::*;
+    use crate::geo::{SystemInfo, Systems, ZARZAKH};
+    use std::collections::HashMap;
+
+    const THERA: i64 = 31_000_005;
+
+    /// Two gate islands, 6 gates apart the long way, with Thera reachable by a hole from each.
+    fn systems() -> Systems {
+        let mk = |id: i64| SystemInfo {
+            id,
+            name: format!("S{id}"),
+            security: 0.0,
+            constellation: String::new(),
+            region: String::new(),
+            faction: String::new(),
+        };
+        let ids = [1, 2, 3, 4, 5, 6, 7, THERA, ZARZAKH];
+        let by_name: HashMap<String, SystemInfo> =
+            ids.into_iter().map(|id| (format!("s{id}"), mk(id))).collect();
+        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (a, b) in [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)] {
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+        }
+        Systems::new(by_name, adj)
+    }
+
+    fn holes(edges: &[(i64, i64)]) -> HashMap<i64, Vec<i64>> {
+        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        for &(a, b) in edges {
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+        }
+        adj
+    }
+
+    #[test]
+    fn both_sides_of_a_hole_get_a_waypoint() {
+        let g = systems();
+        // 1 -gate- 2 =hole= Thera =hole= 6 -gate- 7. The client cannot route through the hole, so it
+        // needs 2 (fly here, jump) and 6 (resume here), and Thera itself can hold no waypoint.
+        let wp = wh_route_waypoints(&g, &holes(&[(2, THERA), (6, THERA)]), 1, 7).unwrap();
+        assert_eq!(wp, vec![2, 6, 7]);
+    }
+
+    #[test]
+    fn the_system_we_are_in_is_not_a_waypoint() {
+        let g = systems();
+        // Standing on the hole already: nothing to fly to, just jump and carry on.
+        let wp = wh_route_waypoints(&g, &holes(&[(1, THERA), (6, THERA)]), 1, 7).unwrap();
+        assert_eq!(wp, vec![6, 7]);
+    }
+
+    #[test]
+    fn map_route_runs_through_the_hole() {
+        let g = systems();
+        let h = holes(&[(1, THERA), (7, THERA)]);
+        let route = g.route_with(1, 7, true, true, &h, |_| true).unwrap();
+        assert_eq!(route, vec![1, THERA, 7]);
+        assert!(g.is_hole_step(1, THERA) && g.is_hole_step(THERA, 7));
+        assert!(!g.is_hole_step(1, 2));
+        // Without the holes the same trip is all six gates.
+        assert_eq!(g.route(1, 7, true, true, |_| true).unwrap().len() - 1, 6);
+    }
+
+    #[test]
+    fn a_thera_hub_with_many_holes_still_routes() {
+        let g = systems();
+        // The map overlay drops a j-space hub above degree 6. Routing must not.
+        let h = holes(&[
+            (2, THERA),
+            (3, THERA),
+            (4, THERA),
+            (5, THERA),
+            (6, THERA),
+            (7, THERA),
+        ]);
+        assert_eq!(wh_route_waypoints(&g, &h, 1, 7).unwrap(), vec![2, 7]);
+    }
+
+    #[test]
+    fn gates_win_when_the_hole_is_no_shortcut() {
+        let g = systems();
+        // 1 -> 2 -> 3 is pure gates, so no waypoints beyond the destination.
+        assert_eq!(wh_route_waypoints(&g, &holes(&[(1, THERA), (5, THERA)]), 1, 3).unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn no_route_without_a_connecting_hole() {
+        let g = systems();
+        assert_eq!(wh_route_waypoints(&g, &holes(&[(1, THERA)]), 1, 99), None);
+    }
+
+    #[test]
+    fn zarzakh_is_not_a_shortcut() {
+        let g = systems();
+        // A hole into Zarzakh does not let a route continue out of its far gate.
+        let h = holes(&[(1, ZARZAKH), (ZARZAKH, 7)]);
+        assert_eq!(wh_route_waypoints(&g, &h, 1, 7).unwrap(), vec![7]);
+        // Zarzakh as the destination is still fine.
+        assert_eq!(wh_route_waypoints(&g, &h, 1, ZARZAKH).unwrap(), vec![ZARZAKH]);
+        assert_eq!(g.route_with(1, 7, true, true, &h, |_| true).unwrap().len() - 1, 6);
     }
 }

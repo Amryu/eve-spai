@@ -109,6 +109,13 @@ pub struct Settings {
     pub jabber_msg_sound: String,
     #[serde(default = "default_ping_sound")]
     pub jabber_ping_sound: String,
+    #[serde(default = "default_mention_sound")]
+    pub jabber_mention_sound: String,
+    /// Extra words that count as a mention. The Jabber username always counts.
+    #[serde(default)]
+    pub jabber_mention_keywords: Vec<String>,
+    #[serde(default = "default_true")]
+    pub jabber_mention_ignores_mute: bool,
     #[serde(default = "default_true")]
     pub jabber_sound_enabled: bool,
     #[serde(default)]
@@ -552,6 +559,9 @@ fn default_msg_sound() -> String {
 fn default_ping_sound() -> String {
     "horn".to_owned()
 }
+fn default_mention_sound() -> String {
+    "warning".to_owned()
+}
 fn default_alert_jumps() -> u32 {
     5
 }
@@ -629,6 +639,9 @@ impl Default for Settings {
             jabber_muted: std::collections::BTreeMap::new(),
             jabber_msg_sound: default_msg_sound(),
             jabber_ping_sound: default_ping_sound(),
+            jabber_mention_sound: default_mention_sound(),
+            jabber_mention_keywords: Vec::new(),
+            jabber_mention_ignores_mute: true,
             jabber_sound_enabled: true,
             jabber_contacts: Vec::new(),
             jabber_closed_dms: Vec::new(),

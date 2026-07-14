@@ -155,8 +155,28 @@ pub struct JabberNotifyCfg {
     pub sound_enabled: bool,
     pub ping_sound: String,
     pub msg_sound: String,
+    pub mention_sound: String,
+    pub mention_names: Vec<String>,
+    pub mention_ignores_mute: bool,
     pub ping_rules: Vec<crate::settings::PingRule>,
     pub muted: std::collections::BTreeMap<String, i64>,
+}
+
+/// A mention is any of `names` appearing in the body as a whole word (or whole phrase), so "seb"
+/// hits "@seb", "seb:" and "hey seb." but not "sebastian".
+pub fn mention_hit(body: &str, names: &[String]) -> bool {
+    let body = body.to_lowercase();
+    let free = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    names.iter().any(|name| {
+        let name = name.trim().to_lowercase();
+        if name.is_empty() {
+            return false;
+        }
+        body.match_indices(&name).any(|(at, _)| {
+            free(body[..at].chars().next_back())
+                && free(body[at + name.len()..].chars().next())
+        })
+    })
 }
 
 #[derive(Default)]
@@ -178,6 +198,8 @@ pub struct JabberState {
     pub pings_unread: bool,
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     pub unread: std::collections::BTreeSet<String>,
+    /// Conversations carrying an unread message that named us.
+    pub mentions: std::collections::BTreeSet<String>,
     pub pings: Vec<Ping>,
     pub notify_cfg: JabberNotifyCfg,
 }
@@ -188,8 +210,13 @@ fn is_muted(muted: &std::collections::BTreeMap<String, i64>, key: &str) -> bool 
         .is_some_and(|&until| until == i64::MAX || chrono::Utc::now().timestamp() < until)
 }
 
-fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Ping>) {
-    if is_muted(&cfg.muted, key) {
+fn fire_arrival_notification(
+    cfg: &JabberNotifyCfg,
+    key: &str,
+    ping: Option<&Ping>,
+    mention: Option<&ChatMsg>,
+) {
+    if is_muted(&cfg.muted, key) && !(mention.is_some() && cfg.mention_ignores_mute) {
         return;
     }
     let (suppress, notify, sound, prio) = match ping {
@@ -203,6 +230,8 @@ fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Pin
             None if cfg.ping_rules.is_empty() => (false, true, cfg.ping_sound.clone(), 1u8),
             None => return,
         },
+        // Prio 1 so a mention breaks through the cooldown gate that ordinary chat traffic sits behind.
+        None if mention.is_some() => (false, true, cfg.mention_sound.clone(), 1u8),
         None => (false, true, cfg.msg_sound.clone(), 0u8),
     };
     if suppress || !notify {
@@ -210,6 +239,10 @@ fn fire_arrival_notification(cfg: &JabberNotifyCfg, key: &str, ping: Option<&Pin
     }
     if cfg.sound_enabled && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
         crate::sound::play_prio(&sound, prio);
+    }
+    if let Some(m) = mention {
+        let room = key.split('@').next().unwrap_or(key);
+        crate::app::notify_os(&format!("Mentioned in {room}"), &format!("{}: {}", m.from, m.body));
     }
     if let Some(Ping::Fleet { fc, doctrine, .. }) = ping.filter(|p| p.is_fleet_call()) {
         let body = match doctrine {
@@ -236,14 +269,31 @@ pub fn spawn(
     ctx: egui::Context,
 ) -> CmdSender {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let cmds = tx.clone();
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
             state.lock().unwrap().status = "Failed to start runtime".to_owned();
             return;
         };
-        rt.block_on(run(jid, password, server, rooms, resolve, state, ping_shared, rx, ctx));
+        rt.block_on(run(jid, password, server, rooms, resolve, state, ping_shared, rx, cmds, ctx));
     });
     tx
+}
+
+/// The room a MUC invite points at: XEP-0045 mediated invites carry the room as the stanza sender,
+/// XEP-0249 direct invites name it in the `jid` attribute.
+fn invited_room(msg: &xmpp::parsers::message::Message) -> Option<String> {
+    const MUC_USER: &str = "http://jabber.org/protocol/muc#user";
+    const DIRECT: &str = "jabber:x:conference";
+    msg.payloads.iter().find_map(|p| {
+        if p.is("x", MUC_USER) && p.has_child("invite", MUC_USER) {
+            msg.from.as_ref().map(|f| f.to_bare().to_string())
+        } else if p.is("x", DIRECT) {
+            p.attr("jid").map(str::to_owned)
+        } else {
+            None
+        }
+    })
 }
 
 fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Context, ping: &Ping) {
@@ -273,13 +323,16 @@ fn push_msg(
     key: &str,
     msg: ChatMsg,
     mark_unread: bool,
+    check_mention: bool,
     store: Option<&crate::store::Store>,
 ) {
     if let Some(s) = store {
         s.add_chat(key, &msg.from, &msg.body, msg.time, msg.outgoing);
     }
-    let fire_cfg = {
+    let fire = {
         let mut s = state.lock().unwrap();
+        let mention = check_mention && mention_hit(&msg.body, &s.notify_cfg.mention_names);
+        let mentioned = mention.then(|| msg.clone());
         let conv = s.chats.entry(key.to_owned()).or_default();
         conv.push(msg);
         let n = conv.len();
@@ -288,14 +341,17 @@ fn push_msg(
         }
         if mark_unread {
             s.unread.insert(key.to_owned());
+            if mention {
+                s.mentions.insert(key.to_owned());
+            }
             s.notify.push((key.to_owned(), false));
-            Some(s.notify_cfg.clone())
+            Some((s.notify_cfg.clone(), mentioned))
         } else {
             None
         }
     };
-    if let Some(cfg) = fire_cfg {
-        fire_arrival_notification(&cfg, key, None);
+    if let Some((cfg, mentioned)) = fire {
+        fire_arrival_notification(&cfg, key, None, mentioned.as_ref());
     }
 }
 
@@ -309,6 +365,7 @@ async fn run(
     state: SharedJabber,
     ping_shared: crate::app::SharedPingWindow,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    cmds: CmdSender,
     ctx: egui::Context,
 ) {
     use xmpp::jid::BareJid;
@@ -379,11 +436,19 @@ async fn run(
     }
 
     let dns = make_dns();
-    let mut agent =
+    let mut builder =
         ClientBuilder::new_with_connector(bare.clone(), &password, StartTlsServerConnector(dns))
             .set_client(ClientType::Bot, "EVE Spai")
             .enable_feature(ClientFeature::ContactList)
-            .build();
+            // Advertises bookmarks2+notify, so rooms the server adds us to arrive live instead of
+            // only on the next connect.
+            .enable_feature(ClientFeature::JoinRooms);
+    // Without this the library joins every room as its default nick, "xmpp-rs", which is what the
+    // whole channel sees.
+    if let Ok(nick) = bare.node().unwrap().as_str().parse::<xmpp::jid::ResourcePart>() {
+        builder = builder.set_default_nick(&nick);
+    }
+    let mut agent = builder.build();
 
     let store = crate::store::Store::open().ok();
 
@@ -415,7 +480,7 @@ async fn run(
                 let mut urgent = false;
                 let mut background = false;
                 for event in events {
-                    if handle_event(event, &state, resolve.as_ref(), &ping_shared, &ctx, store.as_ref()) {
+                    if handle_event(event, &state, resolve.as_ref(), &ping_shared, &cmds, &ctx, store.as_ref()) {
                         urgent = true;
                     } else {
                         background = true;
@@ -438,6 +503,7 @@ async fn run(
                             &state,
                             &to,
                             ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true },
+                            false,
                             false,
                             store.as_ref(),
                         );
@@ -501,6 +567,7 @@ fn handle_event(
     state: &SharedJabber,
     resolve: &(dyn Fn(&str) -> Option<i64> + Send + Sync),
     ping_shared: &crate::app::SharedPingWindow,
+    cmds: &CmdSender,
     ctx: &egui::Context,
     store: Option<&crate::store::Store>,
 ) -> bool {
@@ -511,6 +578,7 @@ fn handle_event(
             | Event::ContactAdded(_)
             | Event::ContactChanged(_)
             | Event::ContactRemoved(_)
+            | Event::Message(_)
     );
     let now = chrono::Utc::now().timestamp();
     match event {
@@ -602,7 +670,7 @@ fn handle_event(
                         }
                     };
                     if let Some((cfg, ping)) = fire {
-                        fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping));
+                        fire_arrival_notification(&cfg, PING_FEED_KEY, Some(&ping), None);
                         if crate::pings::ping_alerts(&cfg.ping_rules, &ping) {
                             push_ping_window(ping_shared, ctx, &ping);
                         }
@@ -614,8 +682,17 @@ fn handle_event(
                 &key,
                 ChatMsg { from: key.clone(), body, time: stamp, outgoing: false },
                 !delayed,
+                false,
                 store,
             );
+        }
+        // The library handles bookmarks but not invites, so an invite is joined by hand. Both flavours
+        // are idempotent on the agent side (a redundant join is warned about and dropped).
+        Event::Message(msg) => {
+            if let Some(room) = invited_room(&msg) {
+                eprintln!("[jabber] invited to room: {room}");
+                let _ = cmds.send(Cmd::JoinRoom { room });
+            }
         }
         Event::RoomJoined(room) => {
             eprintln!("[jabber] room joined: {room}");
@@ -632,11 +709,16 @@ fn handle_event(
                 .first()
                 .map(|d| d.stamp.0.timestamp())
                 .unwrap_or(now);
+            let room = room.to_string();
+            // A room the server force-joined us into never raised RoomJoined; without this it is not
+            // in `rooms` and the UI files it under DMs.
+            state.lock().unwrap().rooms.insert(room.clone());
             push_msg(
                 state,
-                &room.to_string(),
+                &room,
                 ChatMsg { from: nick.to_string(), body, time: stamp, outgoing: false },
                 !delayed,
+                true,
                 store,
             );
         }
@@ -647,7 +729,69 @@ fn handle_event(
 
 #[cfg(test)]
 mod tests {
-    use super::jid_format_error;
+    use super::{invited_room, jid_format_error, mention_hit};
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn mention_matches_whole_words_any_case() {
+        let n = names(&["seb"]);
+        assert!(mention_hit("seb can you tackle", &n));
+        assert!(mention_hit("Seb?", &n));
+        assert!(mention_hit("ping @seb pls", &n));
+        assert!(mention_hit("hey seb.", &n));
+        assert!(mention_hit("seb", &n));
+    }
+
+    #[test]
+    fn mention_ignores_substrings_and_empties() {
+        let n = names(&["seb"]);
+        assert!(!mention_hit("sebastian is here", &n));
+        assert!(!mention_hit("unsebbed", &n));
+        assert!(!mention_hit("nothing here", &n));
+        assert!(!mention_hit("seb", &names(&[])));
+        assert!(!mention_hit("seb", &names(&["   "])));
+    }
+
+    #[test]
+    fn mention_matches_multi_word_keywords() {
+        let n = names(&["home defense", "goon"]);
+        assert!(mention_hit("HOME DEFENSE needed in 1DQ", &n));
+        assert!(mention_hit("any goon around?", &n));
+        assert!(!mention_hit("home defence", &n));
+    }
+
+    #[test]
+    fn mediated_invite_room_is_the_sender() {
+        let msg: xmpp::parsers::message::Message = r#"<message xmlns='jabber:client' from='ops@conference.goonfleet.com' to='me@goonfleet.com'><x xmlns='http://jabber.org/protocol/muc#user'><invite from='fc@goonfleet.com'/></x></message>"#
+            .parse::<xmpp::minidom::Element>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(invited_room(&msg).as_deref(), Some("ops@conference.goonfleet.com"));
+    }
+
+    #[test]
+    fn direct_invite_room_is_the_jid_attr() {
+        let msg: xmpp::parsers::message::Message = r#"<message xmlns='jabber:client' from='fc@goonfleet.com' to='me@goonfleet.com'><x xmlns='jabber:x:conference' jid='ops@conference.goonfleet.com'/></message>"#
+            .parse::<xmpp::minidom::Element>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(invited_room(&msg).as_deref(), Some("ops@conference.goonfleet.com"));
+    }
+
+    #[test]
+    fn plain_message_is_not_an_invite() {
+        let msg: xmpp::parsers::message::Message = r#"<message xmlns='jabber:client' from='fc@goonfleet.com' to='me@goonfleet.com'><body>hi</body></message>"#
+            .parse::<xmpp::minidom::Element>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(invited_room(&msg), None);
+    }
 
     #[test]
     fn valid_bare_jids_pass() {

@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS wormholes (
     reported_at     INTEGER NOT NULL,
     explicit_expiry INTEGER,
     source          TEXT NOT NULL,
-    updated_at      INTEGER NOT NULL
+    updated_at      INTEGER NOT NULL,
+    dead            INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS kill_intel (
     killmail_id  INTEGER PRIMARY KEY,
@@ -254,6 +255,7 @@ impl Store {
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN z2d REAL", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_signature TEXT", []);
         let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dest_wh_type TEXT", []);
+        let _ = conn.execute("ALTER TABLE wormholes ADD COLUMN dead INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE pilot_activity ADD COLUMN last_corp_change INTEGER", []);
         let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_name TEXT", []);
         let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_dist REAL", []);
@@ -1183,10 +1185,16 @@ impl Store {
             .ok()
     }
 
+    /// A hole the user has marked dead stays in the table (an EVE-Scout resync would otherwise just
+    /// re-add it) but is invisible to everything downstream: overlay, routing, waypoints.
+    pub fn kill_wormhole(&self, id: i64) {
+        let _ = self.conn.execute("UPDATE wormholes SET dead = 1 WHERE id = ?1", params![id]);
+    }
+
     pub fn wormholes(&self) -> Vec<crate::wormholes::Wormhole> {
         let mut out = Vec::new();
         if let Ok(mut stmt) =
-            self.conn.prepare(&format!("SELECT {} FROM wormholes", Self::WH_COLS))
+            self.conn.prepare(&format!("SELECT {} FROM wormholes WHERE dead = 0", Self::WH_COLS))
         {
             if let Ok(rows) = stmt.query_map([], Self::row_to_wormhole) {
                 out.extend(rows.flatten());
@@ -1600,6 +1608,43 @@ mod tests {
             sys_cache: std::cell::RefCell::new(None),
             place_cache: std::cell::RefCell::new(None),
         }
+    }
+
+    fn a_hole(system_id: i64, sig: &str) -> crate::wormholes::Wormhole {
+        use crate::wormholes::{DestClass, Source, Wormhole};
+        Wormhole {
+            id: 0,
+            system_id,
+            signature: Some(sig.to_owned()),
+            wh_type: None,
+            dest: DestClass::Thera,
+            dest_system_id: Some(31_000_005),
+            dest_signature: None,
+            dest_wh_type: None,
+            size: None,
+            is_drifter: false,
+            reported_at: 1_700_000_000,
+            explicit_expiry: None,
+            source: Source::EveScout,
+            updated_at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn a_dead_hole_stays_dead_through_a_resync() {
+        let s = mem_store();
+        let hole = a_hole(30_000_142, "ABC-123");
+        let id = s.upsert_wormhole(&hole);
+        assert_eq!(s.wormholes().len(), 1);
+
+        s.kill_wormhole(id);
+        assert!(s.wormholes().is_empty(), "a dead hole must not reach the map or the router");
+
+        // EVE-Scout still lists it, so the next sync upserts the same hole. It must not come back.
+        let mut again = a_hole(30_000_142, "ABC-123");
+        again.updated_at = 1_700_009_999;
+        assert_eq!(s.upsert_wormhole(&again), id, "the resync must land on the same row");
+        assert!(s.wormholes().is_empty(), "a resync resurrected a hole the user killed");
     }
 
     #[test]

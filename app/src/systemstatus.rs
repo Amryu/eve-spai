@@ -19,6 +19,8 @@ pub struct SysFlags {
     pub fw: Option<String>,
     pub sov: Option<String>,
     pub sov_alliance: Option<i64>,
+    /// NPC sovereignty: set instead of `sov_alliance` in NPC null.
+    pub sov_faction: Option<i64>,
     pub adm: Option<f64>,
     pub ship_kills: u32,
     pub pod_kills: u32,
@@ -142,6 +144,7 @@ fn fetch(
                 let e = map.entry(s.system_id).or_default();
                 e.sov = Some(h);
                 e.sov_alliance = s.alliance_id;
+                e.sov_faction = s.alliance_id.is_none().then_some(s.faction_id).flatten();
             }
         }
     }

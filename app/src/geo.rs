@@ -14,6 +14,14 @@ pub fn is_wormhole_system(id: i64) -> bool {
     (31_000_000..32_000_000).contains(&id)
 }
 
+pub const ZARZAKH: i64 = 30_100_000;
+
+/// Zarzakh's gates only put you back where you came from, so it is never a way through: a route may
+/// end there or start there, never pass through it.
+pub fn is_no_transit(id: i64) -> bool {
+    id == ZARZAKH
+}
+
 pub struct Systems {
     by_name: HashMap<String, SystemInfo>,
     by_id: HashMap<i64, SystemInfo>,
@@ -159,16 +167,15 @@ impl Systems {
                 if n == to {
                     return Some(dist + 1);
                 }
+                if is_no_transit(n) {
+                    continue;
+                }
                 if visited.insert(n) {
                     queue.push_back((n, dist + 1));
                 }
             }
         }
         None
-    }
-
-    pub fn path(&self, from: i64, to: i64) -> Option<Vec<i64>> {
-        self.route(from, to, true, true, |_| true)
     }
 
     pub fn route(
@@ -179,6 +186,20 @@ impl Systems {
         allow_jump_bridges: bool,
         allowed: impl Fn(i64) -> bool,
     ) -> Option<Vec<i64>> {
+        self.route_with(from, to, allow_regional_gates, allow_jump_bridges, &HashMap::new(), allowed)
+    }
+
+    /// `holes` are extra bidirectional edges (scanned wormholes) laid over the gate graph. They are
+    /// exempt from the regional-gate and jump-bridge switches, which only describe gate travel.
+    pub fn route_with(
+        &self,
+        from: i64,
+        to: i64,
+        allow_regional_gates: bool,
+        allow_jump_bridges: bool,
+        holes: &HashMap<i64, Vec<i64>>,
+        allowed: impl Fn(i64) -> bool,
+    ) -> Option<Vec<i64>> {
         if from == to {
             return Some(vec![from]);
         }
@@ -186,18 +207,22 @@ impl Systems {
         let mut visited: HashSet<i64> = HashSet::from([from]);
         let mut queue: VecDeque<i64> = VecDeque::from([from]);
         while let Some(sys) = queue.pop_front() {
-            for &n in self.adjacency.get(&sys).into_iter().flatten() {
-                let is_gate = self.gate_adjacency.get(&sys).is_some_and(|g| g.contains(&n));
-                if is_gate {
-                    let cross_region =
-                        self.info_of(sys).map(|i| &i.region) != self.info_of(n).map(|i| &i.region);
-                    if cross_region && !allow_regional_gates {
+            let gates = self.adjacency.get(&sys).into_iter().flatten().map(|n| (*n, false));
+            let holes = holes.get(&sys).into_iter().flatten().map(|n| (*n, true));
+            for (n, via_hole) in gates.chain(holes) {
+                if !via_hole {
+                    let is_gate = self.gate_adjacency.get(&sys).is_some_and(|g| g.contains(&n));
+                    if is_gate {
+                        let cross_region = self.info_of(sys).map(|i| &i.region)
+                            != self.info_of(n).map(|i| &i.region);
+                        if cross_region && !allow_regional_gates {
+                            continue;
+                        }
+                    } else if !allow_jump_bridges {
                         continue;
                     }
-                } else if !allow_jump_bridges {
-                    continue;
                 }
-                if n != to && !allowed(n) {
+                if n != to && (!allowed(n) || is_no_transit(n)) {
                     continue;
                 }
                 if visited.insert(n) {
@@ -217,6 +242,11 @@ impl Systems {
             }
         }
         None
+    }
+
+    /// True when the step from `a` to `b` is not a gate or bridge, i.e. it can only be a wormhole.
+    pub fn is_hole_step(&self, a: i64, b: i64) -> bool {
+        !self.adjacency.get(&a).is_some_and(|v| v.contains(&b))
     }
 }
 
@@ -299,12 +329,57 @@ mod tests {
         assert_eq!(g.route(2, 2, true, true, |_| true), Some(vec![2]));
     }
 
+    /// A -- Zarzakh -- B, plus a long way round A -- C -- D -- B.
+    fn zarzakh_graph() -> Systems {
+        let mk = |id: i64| SystemInfo {
+            id,
+            name: format!("S{id}"),
+            security: 0.0,
+            constellation: String::new(),
+            region: String::new(),
+            faction: String::new(),
+        };
+        let by_name: HashMap<String, SystemInfo> =
+            [("a", 1), ("z", ZARZAKH), ("b", 2), ("c", 3), ("d", 4)]
+                .into_iter()
+                .map(|(k, id)| (k.to_string(), mk(id)))
+                .collect();
+        let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (a, b) in [(1, ZARZAKH), (ZARZAKH, 2), (1, 3), (3, 4), (4, 2)] {
+            adj.entry(a).or_default().push(b);
+            adj.entry(b).or_default().push(a);
+        }
+        Systems::new(by_name, adj)
+    }
+
     #[test]
-    fn path_matches_unconstrained_route() {
+    fn zarzakh_is_never_a_way_through() {
+        let g = zarzakh_graph();
+        assert_eq!(g.route(1, 2, true, true, |_| true), Some(vec![1, 3, 4, 2]));
+        assert_eq!(g.jumps(1, 2, 10), Some(3));
+    }
+
+    #[test]
+    fn zarzakh_still_works_as_an_endpoint() {
+        let g = zarzakh_graph();
+        assert_eq!(g.route(1, ZARZAKH, true, true, |_| true), Some(vec![1, ZARZAKH]));
+        assert_eq!(g.route(ZARZAKH, 1, true, true, |_| true), Some(vec![ZARZAKH, 1]));
+        assert_eq!(g.jumps(1, ZARZAKH, 10), Some(1));
+        assert_eq!(g.jumps(ZARZAKH, 2, 10), Some(1));
+    }
+
+    #[test]
+    fn no_transit_only_blocks_zarzakh() {
+        assert!(is_no_transit(ZARZAKH));
+        assert!(!is_no_transit(30_000_142));
+        assert!(!is_no_transit(31_000_005));
+    }
+
+    #[test]
+    fn unconstrained_route_walks_the_line() {
         let g = line_graph();
-        assert_eq!(g.path(1, 4), g.route(1, 4, true, true, |_| true));
-        assert_eq!(g.path(1, 4), Some(vec![1, 2, 3, 4]));
-        assert_eq!(g.path(2, 2), Some(vec![2]));
-        assert_eq!(g.path(1, 99), None);
+        assert_eq!(g.route(1, 4, true, true, |_| true), Some(vec![1, 2, 3, 4]));
+        assert_eq!(g.route(2, 2, true, true, |_| true), Some(vec![2]));
+        assert_eq!(g.route(1, 99, true, true, |_| true), None);
     }
 }
