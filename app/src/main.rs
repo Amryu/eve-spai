@@ -91,6 +91,22 @@ pub fn base_native_options(mut viewport: egui::ViewportBuilder) -> eframe::Nativ
     native_options
 }
 
+/// The outgoing process only releases the lock when it exits, which happens a moment after it spawns
+/// us, so a relaunch waits for it instead of reporting "already running" and quitting.
+fn acquire_single_instance_lock_waiting(restarted: bool) -> bool {
+    if !restarted {
+        return acquire_single_instance_lock();
+    }
+    for _ in 0..40 {
+        if acquire_single_instance_lock() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    eprintln!("[main] the previous instance did not exit; not starting");
+    false
+}
+
 fn acquire_single_instance_lock() -> bool {
     let path = match store::data_dir() {
         Ok(dir) => {
@@ -126,7 +142,9 @@ fn main() -> eframe::Result<()> {
         return overlay::run_overlay();
     }
 
-    if !acquire_single_instance_lock() {
+    // A relaunch after an update races the old process, which holds the lock until it exits.
+    let restarted = std::env::args().any(|a| a == update::RESTART_FLAG);
+    if !acquire_single_instance_lock_waiting(restarted) {
         if instance::signal_raise() {
             eprintln!("another instance is running; asked it to raise its window");
         } else {
@@ -160,9 +178,18 @@ fn main() -> eframe::Result<()> {
     }
     let native_options = base_native_options(viewport);
 
-    eframe::run_native(
+    let res = eframe::run_native(
         "EVE Spai",
         native_options,
         Box::new(|cc| Ok(Box::new(app::SpaiApp::new(cc)))),
-    )
+    );
+
+    // Only now is the single-instance lock actually free, so this is the one place a restart can
+    // hand over cleanly.
+    if update::restart_requested() {
+        if let Err(e) = update::relaunch() {
+            eprintln!("[main] restart failed: {e}");
+        }
+    }
+    res
 }

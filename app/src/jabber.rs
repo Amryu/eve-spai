@@ -156,6 +156,9 @@ pub struct JabberNotifyCfg {
     pub ping_sound: String,
     pub msg_sound: String,
     pub mention_sound: String,
+    pub ping_volume: f32,
+    pub msg_volume: f32,
+    pub mention_volume: f32,
     pub mention_names: Vec<String>,
     pub mention_ignores_mute: bool,
     pub ping_rules: Vec<crate::settings::PingRule>,
@@ -219,26 +222,31 @@ fn fire_arrival_notification(
     if is_muted(&cfg.muted, key) && !(mention.is_some() && cfg.mention_ignores_mute) {
         return;
     }
-    let (suppress, notify, sound, prio) = match ping {
+    let (suppress, notify, sound, prio, volume) = match ping {
         Some(p) => match crate::pings::match_ping_rule(&cfg.ping_rules, p) {
             Some(r) => (
                 r.suppress,
                 r.notify,
                 if r.sound.is_empty() { cfg.ping_sound.clone() } else { r.sound.clone() },
                 1u8,
+                r.volume.unwrap_or(cfg.ping_volume),
             ),
-            None if cfg.ping_rules.is_empty() => (false, true, cfg.ping_sound.clone(), 1u8),
+            None if cfg.ping_rules.is_empty() => {
+                (false, true, cfg.ping_sound.clone(), 1u8, cfg.ping_volume)
+            }
             None => return,
         },
         // Prio 1 so a mention breaks through the cooldown gate that ordinary chat traffic sits behind.
-        None if mention.is_some() => (false, true, cfg.mention_sound.clone(), 1u8),
-        None => (false, true, cfg.msg_sound.clone(), 0u8),
+        None if mention.is_some() => {
+            (false, true, cfg.mention_sound.clone(), 1u8, cfg.mention_volume)
+        }
+        None => (false, true, cfg.msg_sound.clone(), 0u8, cfg.msg_volume),
     };
     if suppress || !notify {
         return;
     }
     if cfg.sound_enabled && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
-        crate::sound::play_prio(&sound, prio);
+        crate::sound::play_prio(&sound, prio, volume);
     }
     if let Some(m) = mention {
         let room = key.split('@').next().unwrap_or(key);

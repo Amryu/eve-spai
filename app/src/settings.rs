@@ -111,6 +111,12 @@ pub struct Settings {
     pub jabber_ping_sound: String,
     #[serde(default = "default_mention_sound")]
     pub jabber_mention_sound: String,
+    #[serde(default = "default_volume")]
+    pub jabber_msg_volume: f32,
+    #[serde(default = "default_volume")]
+    pub jabber_ping_volume: f32,
+    #[serde(default = "default_volume")]
+    pub jabber_mention_volume: f32,
     /// Extra words that count as a mention. The Jabber username always counts.
     #[serde(default)]
     pub jabber_mention_keywords: Vec<String>,
@@ -195,6 +201,9 @@ pub struct PingRule {
     pub keyword: String,
     #[serde(default = "default_ping_sound")]
     pub sound: String,
+    /// Per-rule sound volume; `None` uses the global fleet-ping volume.
+    #[serde(default)]
+    pub volume: Option<f32>,
     #[serde(default = "default_true")]
     pub notify: bool,
     #[serde(default)]
@@ -216,6 +225,7 @@ impl Default for PingRule {
             formup: String::new(),
             keyword: String::new(),
             sound: default_ping_sound(),
+            volume: None,
             notify: true,
             suppress: false,
             push: false,
@@ -239,7 +249,7 @@ pub struct AlertRule {
     #[serde(default)]
     pub channels: Vec<String>,
     pub max_jumps: Option<u32>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub count_bridges: bool,
     pub min_count: Option<u32>,
     pub require: Vec<String>,
@@ -254,6 +264,9 @@ pub struct AlertRule {
     pub custom_window: bool,
     pub push: bool,
     pub sound: String,
+    /// Per-rule sound volume; `None` uses the global intel-alert volume.
+    #[serde(default)]
+    pub volume: Option<f32>,
     pub cooldown_secs: i64,
     #[serde(skip)]
     pub expanded: bool,
@@ -271,7 +284,7 @@ impl Default for AlertRule {
             regions: Vec::new(),
             channels: Vec::new(),
             max_jumps: None,
-            count_bridges: true,
+            count_bridges: false,
             min_count: None,
             require: Vec::new(),
             characters: Vec::new(),
@@ -282,6 +295,7 @@ impl Default for AlertRule {
             custom_window: true,
             push: false,
             sound: String::new(),
+            volume: None,
             cooldown_secs: 60,
             expanded: false,
         }
@@ -342,6 +356,8 @@ pub fn default_ping_rules() -> Vec<PingRule> {
 #[serde(default)]
 pub struct AlertSettings {
     pub sounds: Vec<String>,
+    #[serde(default = "default_volume")]
+    pub alert_volume: f32,
     pub window_pos: Option<(f32, f32)>,
     pub window_size: Option<(f32, f32)>,
     pub window_timeout: f32,
@@ -363,6 +379,7 @@ impl Default for AlertSettings {
                 "danger".to_owned(),
                 "critical".to_owned(),
             ],
+            alert_volume: 1.0,
             window_pos: None,
             window_size: None,
             window_timeout: 30.0,
@@ -553,6 +570,9 @@ fn default_battle_break() -> i64 {
 fn default_true() -> bool {
     true
 }
+fn default_volume() -> f32 {
+    1.0
+}
 fn default_msg_sound() -> String {
     "chime".to_owned()
 }
@@ -640,6 +660,9 @@ impl Default for Settings {
             jabber_msg_sound: default_msg_sound(),
             jabber_ping_sound: default_ping_sound(),
             jabber_mention_sound: default_mention_sound(),
+            jabber_msg_volume: 1.0,
+            jabber_ping_volume: 1.0,
+            jabber_mention_volume: 1.0,
             jabber_mention_keywords: Vec::new(),
             jabber_mention_ignores_mute: true,
             jabber_sound_enabled: true,

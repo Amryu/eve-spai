@@ -60,7 +60,7 @@ fn preset(name: &str) -> Option<Tone> {
 static GATE: std::sync::Mutex<Option<(std::time::Instant, u8)>> = std::sync::Mutex::new(None);
 const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
-pub fn play_prio(spec: &str, prio: u8) {
+pub fn play_prio(spec: &str, prio: u8, volume: f32) {
     let s = spec.trim();
     if s.is_empty() || s.eq_ignore_ascii_case("off") {
         return;
@@ -73,7 +73,7 @@ pub fn play_prio(spec: &str, prio: u8) {
         }
         *g = Some((now, prio));
     }
-    play(spec);
+    play(spec, volume);
 }
 
 fn gate_allows(
@@ -87,34 +87,53 @@ fn gate_allows(
     }
 }
 
-pub fn play(spec: &str) {
+pub fn play(spec: &str, volume: f32) {
     let spec = spec.trim();
     if spec.is_empty() || spec.eq_ignore_ascii_case("off") {
         return;
     }
-    let path = if Path::new(spec).is_file() {
-        PathBuf::from(spec)
-    } else if let Some(tone) = preset(spec) {
-        match ensure_tone(spec, &tone) {
-            Some(p) => p,
+    let volume = volume.clamp(0.0, 1.0);
+    if volume < 0.005 {
+        return;
+    }
+    // Volume is applied by baking it into a WAV, which works everywhere including Windows PlaySoundW
+    // (no per-sound gain): presets are synthesized at the target amplitude, and a custom WAV file is
+    // rescaled sample-by-sample (no decoder dependency). A custom file we can't rescale in place
+    // (mp3/ogg/flac, or an exotic WAV format) falls back to the player's own volume flag, honoured
+    // on macOS/PulseAudio and full-volume on Windows.
+    let (path, file_volume) = if Path::new(spec).is_file() {
+        match scaled_wav_file(spec, volume) {
+            Some(p) => (p, 1.0),
+            None => (PathBuf::from(spec), volume),
+        }
+    } else if let Some(mut tone) = preset(spec) {
+        tone.amp *= volume;
+        match ensure_tone(spec, volume, &tone) {
+            Some(p) => (p, 1.0),
             None => return,
         }
     } else {
         return;
     };
-    std::thread::spawn(move || play_file(&path));
+    std::thread::spawn(move || play_file(&path, file_volume));
 }
 
-fn play_file(path: &Path) {
+fn play_file(path: &Path, volume: f32) {
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("afplay").arg(path).status();
+        let mut cmd = Command::new("afplay");
+        if volume < 0.999 {
+            cmd.arg("-v").arg(format!("{volume:.3}"));
+        }
+        let _ = cmd.arg(path).status();
     }
     #[cfg(target_os = "windows")]
     {
         // winmm PlaySound — the canonical Windows WAV playback. Avoids PowerShell's startup
         // latency, console-window flash, and System.Media.SoundPlayer quirks, all of which
-        // made the previous shell-out unreliable.
+        // made the previous shell-out unreliable. It has no per-sound volume: presets bake gain
+        // into the WAV, user files play at full (the `volume` arg only applies to files here).
+        let _ = volume;
         use std::os::windows::ffi::OsStrExt;
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
         #[link(name = "winmm")]
@@ -129,24 +148,119 @@ fn play_file(path: &Path) {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let played =
-            Command::new("paplay").arg(path).status().map(|s| s.success()).unwrap_or(false);
+        // paplay --volume is a linear 0..=65536 scale (65536 = 100%). aplay has no volume knob.
+        let vol = (volume.clamp(0.0, 1.0) * 65536.0).round() as u32;
+        let played = Command::new("paplay")
+            .arg(format!("--volume={vol}"))
+            .arg(path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         if !played {
             let _ = Command::new("aplay").arg("-q").arg(path).status();
         }
     }
 }
 
-fn ensure_tone(name: &str, tone: &Tone) -> Option<PathBuf> {
+fn ensure_tone(name: &str, volume: f32, tone: &Tone) -> Option<PathBuf> {
     let dir = std::env::temp_dir().join("eve-spai-sounds");
     let _ = std::fs::create_dir_all(&dir);
-    // Version the file name so changes to the synth regenerate it.
-    let path = dir.join(format!("{name}-v5.wav"));
+    // Version the file name so changes to the synth regenerate it; the volume bucket (in percent)
+    // keys the baked gain so different volumes don't collide on one cached file.
+    let pct = (volume * 100.0).round() as u32;
+    let path = dir.join(format!("{name}-v5-{pct}.wav"));
     if path.is_file() {
         return Some(path);
     }
     std::fs::write(&path, wav(tone)).ok()?;
     Some(path)
+}
+
+/// Bake `volume` into a copy of a custom WAV file and cache it, returning the temp path. Returns
+/// `None` for a non-WAV file, an unsupported WAV encoding, or at (near) full volume where scaling
+/// is pointless — the caller then plays the original with the player's own volume flag.
+fn scaled_wav_file(spec: &str, volume: f32) -> Option<PathBuf> {
+    if volume > 0.999 {
+        return None;
+    }
+    if !spec.to_ascii_lowercase().ends_with(".wav") {
+        return None;
+    }
+    let meta = std::fs::metadata(spec).ok()?;
+    // Cache key = path + size + mtime + volume bucket, so an edited source or a new volume misses.
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    spec.hash(&mut h);
+    meta.len().hash(&mut h);
+    mtime.hash(&mut h);
+    ((volume * 100.0).round() as u32).hash(&mut h);
+    let dir = std::env::temp_dir().join("eve-spai-sounds");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("custom-{:016x}.wav", h.finish()));
+    if path.is_file() {
+        return Some(path);
+    }
+    let bytes = std::fs::read(spec).ok()?;
+    let scaled = scale_wav(&bytes, volume)?;
+    std::fs::write(&path, scaled).ok()?;
+    Some(path)
+}
+
+/// Multiply every PCM sample in a WAV by `volume` in place, preserving all headers/chunks. Handles
+/// 16-bit int and 32-bit float samples (incl. WAVE_FORMAT_EXTENSIBLE 16-bit); returns `None` for
+/// anything else so the caller can fall back.
+fn scale_wav(bytes: &[u8], volume: f32) -> Option<Vec<u8>> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut fmt_tag = 0u16;
+    let mut bits = 0u16;
+    let mut data: Option<(usize, usize)> = None;
+    let mut pos = 12usize;
+    while pos + 8 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().ok()?) as usize;
+        let body = pos + 8;
+        let end = body.checked_add(size)?;
+        if end > bytes.len() {
+            break;
+        }
+        match &bytes[pos..pos + 4] {
+            b"fmt " if size >= 16 => {
+                fmt_tag = u16::from_le_bytes(bytes[body..body + 2].try_into().ok()?);
+                bits = u16::from_le_bytes(bytes[body + 14..body + 16].try_into().ok()?);
+            }
+            b"data" => data = Some((body, end)),
+            _ => {}
+        }
+        pos = end + (size & 1); // chunks are word-aligned: skip the pad byte after an odd size
+    }
+    let (ds, de) = data?;
+    let v = volume.clamp(0.0, 1.0);
+    let mut out = bytes.to_vec();
+    // 1 = PCM, 3 = IEEE float, 0xFFFE = EXTENSIBLE (treated as PCM for the 16-bit case).
+    match (fmt_tag, bits) {
+        (1, 16) | (0xFFFE, 16) => {
+            for s in out[ds..de].chunks_exact_mut(2) {
+                let scaled = i16::from_le_bytes([s[0], s[1]]) as f32 * v;
+                let scaled = scaled.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                s.copy_from_slice(&scaled.to_le_bytes());
+            }
+        }
+        (3, 32) => {
+            for s in out[ds..de].chunks_exact_mut(4) {
+                let scaled = f32::from_le_bytes([s[0], s[1], s[2], s[3]]) * v;
+                s.copy_from_slice(&scaled.to_le_bytes());
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
 }
 
 fn wav(tone: &Tone) -> Vec<u8> {
@@ -221,6 +335,24 @@ mod tests {
         assert!(peak > 20_000, "peak={peak}");
         let clipped = samples.iter().filter(|s| s.unsigned_abs() >= 32_760).count();
         assert!(clipped < samples.len() / 20, "too much clipping: {clipped}/{}", samples.len());
+    }
+
+    #[test]
+    fn scale_wav_halves_16bit_pcm_and_keeps_headers() {
+        let src = wav(&preset("horn").unwrap());
+        let scaled = scale_wav(&src, 0.5).expect("16-bit PCM should scale");
+        assert_eq!(scaled.len(), src.len(), "headers/size preserved");
+        assert_eq!(&scaled[..44], &src[..44], "fmt/data headers untouched");
+        let peak = |b: &[u8]| {
+            b[44..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs() as i32).max().unwrap()
+        };
+        let (a, b) = (peak(&src), peak(&scaled));
+        assert!((b as f32 / a as f32 - 0.5).abs() < 0.02, "peak roughly halved: {a} -> {b}");
+    }
+
+    #[test]
+    fn scale_wav_rejects_non_wav() {
+        assert!(scale_wav(b"not a wav file at all!!", 0.5).is_none());
     }
 
     #[test]

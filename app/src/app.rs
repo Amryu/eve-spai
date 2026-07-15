@@ -398,6 +398,8 @@ pub struct SpaiApp {
     /// Fleet-ping history is paginated: render the newest N, load 50 more on scroll to bottom.
     jabber_pings_visible: usize,
     ping_rules_open: bool,
+    /// Index of the fleet-ping rule whose config dialog is open, or `None`. Only one opens at a time.
+    ping_rule_editing: Option<usize>,
     /// Comma-separated edit buffer for `jabber_mention_keywords`, so a half-typed "a," survives the
     /// round trip through the Vec.
     mention_input: String,
@@ -406,7 +408,7 @@ pub struct SpaiApp {
     eve_focus_checked: Option<std::time::Instant>,
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     update: crate::update::SharedUpdate,
-    update_checked: bool,
+    update_checked_at: Option<std::time::Instant>,
     update_dismissed: bool,
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
@@ -935,13 +937,14 @@ impl SpaiApp {
             jabber_pw_input: String::new(),
             jabber_pings_visible: 50,
             ping_rules_open: false,
+            ping_rule_editing: None,
             mention_input: String::new(),
             session_start: chrono::Utc::now().timestamp(),
             eve_focused,
             eve_focus_checked: None,
             ship_index: None,
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
-            update_checked: false,
+            update_checked_at: None,
             update_dismissed: false,
             kill_cache,
             kill_tx,
@@ -1522,6 +1525,9 @@ impl SpaiApp {
             st.notify_cfg.ping_sound = self.settings.jabber_ping_sound.clone();
             st.notify_cfg.msg_sound = self.settings.jabber_msg_sound.clone();
             st.notify_cfg.mention_sound = self.settings.jabber_mention_sound.clone();
+            st.notify_cfg.ping_volume = self.settings.jabber_ping_volume;
+            st.notify_cfg.msg_volume = self.settings.jabber_msg_volume;
+            st.notify_cfg.mention_volume = self.settings.jabber_mention_volume;
             st.notify_cfg.mention_names = self.mention_names();
             st.notify_cfg.mention_ignores_mute = self.settings.jabber_mention_ignores_mute;
             st.notify_cfg.ping_rules = self.settings.jabber_ping_rules.clone();
@@ -1577,26 +1583,39 @@ impl SpaiApp {
         if !self.ping_rules_open {
             return;
         }
-        let mut open = true;
         let mut changed = false;
-        egui::Window::new("Jabber alerts")
-            .collapsible(false)
-            .open(&mut open)
-            .default_width(520.0)
-            .show(ctx, |ui| {
+        let keep = Self::dialog_viewport(
+            ctx,
+            "jabber_alerts_window",
+            "EVE Spai - Jabber alerts",
+            [540.0, 620.0],
+            |ui| {
+              egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("snd").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                     changed |= ui
                         .checkbox(&mut self.settings.jabber_sound_enabled, "Notification sounds")
                         .changed();
                     ui.end_row();
+                    let msg_vol = self.settings.jabber_msg_volume;
+                    let ping_vol = self.settings.jabber_ping_volume;
+                    let mention_vol = self.settings.jabber_mention_volume;
                     ui.label("Message sound");
-                    changed |= sound_picker(ui, "jabber_msg", false, &mut self.settings.jabber_msg_sound);
+                    changed |= sound_picker(ui, "jabber_msg", false, &mut self.settings.jabber_msg_sound, msg_vol);
+                    ui.end_row();
+                    ui.label("Message volume");
+                    changed |= volume_slider(ui, &mut self.settings.jabber_msg_volume);
                     ui.end_row();
                     ui.label("Default ping sound");
-                    changed |= sound_picker(ui, "jabber_ping", false, &mut self.settings.jabber_ping_sound);
+                    changed |= sound_picker(ui, "jabber_ping", false, &mut self.settings.jabber_ping_sound, ping_vol);
+                    ui.end_row();
+                    ui.label("Fleet ping volume");
+                    changed |= volume_slider(ui, &mut self.settings.jabber_ping_volume);
                     ui.end_row();
                     ui.label("Mention sound");
-                    changed |= sound_picker(ui, "jabber_mention", false, &mut self.settings.jabber_mention_sound);
+                    changed |= sound_picker(ui, "jabber_mention", false, &mut self.settings.jabber_mention_sound, mention_vol);
+                    ui.end_row();
+                    ui.label("Mention volume");
+                    changed |= volume_slider(ui, &mut self.settings.jabber_mention_volume);
                     ui.end_row();
                     ui.label("");
                     ui.label(egui::RichText::new("presets: horn · chime · beep · sweep · info · warning · danger · critical · off, or a file path").weak().small());
@@ -1691,107 +1710,177 @@ impl SpaiApp {
                 let mut remove: Option<usize> = None;
                 let mut move_up: Option<usize> = None;
                 let mut move_down: Option<usize> = None;
+                let mut edit: Option<usize> = None;
                 let n = self.settings.jabber_ping_rules.len();
+                use egui_phosphor::regular as ic;
                 for (i, r) in self.settings.jabber_ping_rules.iter_mut().enumerate() {
                     ui.push_id(i, |ui| {
-                        ui.group(|ui| {
-                            use egui_phosphor::regular as ic;
-                            ui.horizontal(|ui| {
-                                changed |= ui.checkbox(&mut r.enabled, "").changed();
-                                let tog = if r.expanded { ic::CARET_DOWN } else { ic::CARET_RIGHT };
-                                if ui.button(tog).on_hover_text("Expand / collapse").clicked() {
-                                    r.expanded = !r.expanded;
-                                }
-                                if r.expanded {
-                                    changed |= ui
-                                        .add(egui::TextEdit::singleline(&mut r.name).desired_width(200.0))
-                                        .changed();
-                                } else {
-                                    let nm = if r.name.is_empty() { "(unnamed rule)" } else { &r.name };
-                                    let txt = if r.enabled {
-                                        egui::RichText::new(nm).strong()
-                                    } else {
-                                        egui::RichText::new(nm).weak().strikethrough()
-                                    };
-                                    if ui.add(egui::Label::new(txt).sense(egui::Sense::click())).clicked() {
-                                        r.expanded = true;
-                                    }
-                                }
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.button(ic::X).on_hover_text("Delete").clicked() {
-                                        remove = Some(i);
-                                    }
-                                    if i + 1 < n && ui.button(ic::ARROW_DOWN).on_hover_text("Move down").clicked() {
-                                        move_down = Some(i);
-                                    }
-                                    if i > 0 && ui.button(ic::ARROW_UP).on_hover_text("Move up").clicked() {
-                                        move_up = Some(i);
-                                    }
-                                });
-                            });
-                            if !r.expanded {
-                                return;
+                        ui.horizontal(|ui| {
+                            changed |= ui.checkbox(&mut r.enabled, "").changed();
+                            let nm = if r.name.is_empty() { "(unnamed rule)" } else { &r.name };
+                            let txt = if r.enabled {
+                                egui::RichText::new(nm).strong()
+                            } else {
+                                egui::RichText::new(nm).weak().strikethrough()
+                            };
+                            if ui
+                                .add(egui::Label::new(txt).sense(egui::Sense::click()))
+                                .on_hover_text("Edit rule")
+                                .clicked()
+                            {
+                                edit = Some(i);
                             }
-                            egui::Grid::new("rule").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-                                let wide = 230.0;
-                                ui.label("FC");
-                                changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).hint_text("any").desired_width(wide)).changed();
-                                ui.end_row();
-                                ui.label("PAP type");
-                                changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text("any  (strategic / peacetime)").desired_width(wide)).changed();
-                                ui.end_row();
-                                ui.label("Doctrine");
-                                changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).hint_text("any").desired_width(wide)).changed();
-                                ui.end_row();
-                                ui.label("Form-up");
-                                changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).hint_text("any").desired_width(wide)).changed();
-                                ui.end_row();
-                                ui.label("Keyword");
-                                changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).hint_text("any").desired_width(wide)).changed();
-                                ui.end_row();
-                            });
-                            ui.horizontal(|ui| {
-                                changed |= ui
-                                    .checkbox(&mut r.suppress, "Suppress")
-                                    .on_hover_text("Ignore matching pings: no sound, no highlight, no push")
-                                    .changed();
-                                if r.suppress {
-                                    r.notify = false;
-                                    r.push = false;
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(ic::X).on_hover_text("Delete").clicked() {
+                                    remove = Some(i);
                                 }
-                                ui.add_enabled_ui(!r.suppress, |ui| {
-                                    changed |= ui.checkbox(&mut r.notify, "Notify").changed();
-                                    changed |= ui.checkbox(&mut r.push, "Push").changed();
-                                });
-                            });
-                            ui.add_enabled_ui(!r.suppress && r.notify, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label("Sound");
-                                    changed |= sound_picker(ui, ("ping_rule", i), true, &mut r.sound);
-                                });
+                                if i + 1 < n && ui.button(ic::ARROW_DOWN).on_hover_text("Move down").clicked() {
+                                    move_down = Some(i);
+                                }
+                                if i > 0 && ui.button(ic::ARROW_UP).on_hover_text("Move up").clicked() {
+                                    move_up = Some(i);
+                                }
+                                if ui.button(ic::PENCIL_SIMPLE).on_hover_text("Edit rule").clicked() {
+                                    edit = Some(i);
+                                }
                             });
                         });
                     });
                 }
+                // A structural change invalidates the editor's index; close it rather than risk
+                // editing the wrong rule.
                 if let Some(i) = remove {
                     self.settings.jabber_ping_rules.remove(i);
+                    self.ping_rule_editing = None;
                     changed = true;
                 }
                 if let Some(i) = move_up {
                     self.settings.jabber_ping_rules.swap(i, i - 1);
+                    self.ping_rule_editing = None;
                     changed = true;
                 }
                 if let Some(i) = move_down {
                     self.settings.jabber_ping_rules.swap(i, i + 1);
+                    self.ping_rule_editing = None;
                     changed = true;
+                }
+                if let Some(i) = edit {
+                    self.ping_rule_editing = Some(i);
                 }
                 ui.separator();
                 if ui.button("+ Add rule").clicked() {
                     self.settings.jabber_ping_rules.push(crate::settings::PingRule::default());
+                    self.ping_rule_editing = Some(self.settings.jabber_ping_rules.len() - 1);
                     changed = true;
                 }
-            });
-        self.ping_rules_open = open;
+              });
+            },
+        );
+        if !keep {
+            self.ping_rules_open = false;
+            self.ping_rule_editing = None;
+        }
+        if changed {
+            self.needs_save = true;
+        }
+        self.ping_rule_editor(ctx);
+    }
+
+    /// Config dialog for a single fleet-ping rule, opened on top of the Jabber alerts window. Only
+    /// one is open at a time (`ping_rule_editing`).
+    fn ping_rule_editor(&mut self, ctx: &egui::Context) {
+        let Some(i) = self.ping_rule_editing else { return };
+        if i >= self.settings.jabber_ping_rules.len() {
+            self.ping_rule_editing = None;
+            return;
+        }
+        let mut changed = false;
+        let global_ping_vol = self.settings.jabber_ping_volume;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "ping_rule_editor",
+            "EVE Spai - Fleet ping rule",
+            [420.0, 460.0],
+            |ui| {
+              // Scope the rule borrow so the "Done" button below can touch `self.ping_rule_editing`.
+              {
+                let r = &mut self.settings.jabber_ping_rules[i];
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut r.name).desired_width(240.0))
+                        .changed();
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Match on (blank = any). A ping must match every filled field.")
+                        .weak(),
+                );
+                egui::Grid::new("rule").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                    let wide = 250.0;
+                    ui.label("FC");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.fc).hint_text("any").desired_width(wide)).changed();
+                    ui.end_row();
+                    ui.label("PAP type");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.pap).hint_text("any  (strategic / peacetime)").desired_width(wide)).changed();
+                    ui.end_row();
+                    ui.label("Doctrine");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.doctrine).hint_text("any").desired_width(wide)).changed();
+                    ui.end_row();
+                    ui.label("Form-up");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.formup).hint_text("any").desired_width(wide)).changed();
+                    ui.end_row();
+                    ui.label("Keyword");
+                    changed |= ui.add(egui::TextEdit::singleline(&mut r.keyword).hint_text("any").desired_width(wide)).changed();
+                    ui.end_row();
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .checkbox(&mut r.suppress, "Suppress")
+                        .on_hover_text("Ignore matching pings: no sound, no highlight, no push")
+                        .changed();
+                    if r.suppress {
+                        r.notify = false;
+                        r.push = false;
+                    }
+                    ui.add_enabled_ui(!r.suppress, |ui| {
+                        changed |= ui.checkbox(&mut r.notify, "Notify").changed();
+                        changed |= ui.checkbox(&mut r.push, "Push").changed();
+                    });
+                });
+                ui.add_enabled_ui(!r.suppress && r.notify, |ui| {
+                    let eff_vol = r.volume.unwrap_or(global_ping_vol);
+                    ui.horizontal(|ui| {
+                        ui.label("Sound");
+                        changed |= sound_picker(ui, ("ping_rule", i), true, &mut r.sound, eff_vol);
+                    });
+                    ui.horizontal(|ui| {
+                        let mut custom = r.volume.is_some();
+                        if ui
+                            .checkbox(&mut custom, "Custom volume")
+                            .on_hover_text("Override the global fleet-ping volume for this rule")
+                            .changed()
+                        {
+                            r.volume = if custom { Some(global_ping_vol) } else { None };
+                            changed = true;
+                        }
+                        if let Some(v) = r.volume.as_mut() {
+                            changed |= volume_slider(ui, v);
+                        }
+                    });
+                });
+              }
+                ui.add_space(8.0);
+                ui.separator();
+                if ui.button("Done").clicked() {
+                    self.ping_rule_editing = None;
+                }
+            },
+        );
+        if !keep {
+            self.ping_rule_editing = None;
+        }
         if changed {
             self.needs_save = true;
         }
@@ -7350,7 +7439,11 @@ impl SpaiApp {
         });
 
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+        // In overlay mode the transparent viewport frame already supplies the opacity-scaled
+        // backdrop; an opaque canvas rect here would mask it and keep the overlay solid.
+        if !self.map_overlay_mode {
+            painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+        }
 
         let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
         let ov = self.map_overlays;
@@ -7434,8 +7527,8 @@ impl SpaiApp {
                 if lead == 0.0 && right == 0.0 && !show_sys_labels {
                     continue;
                 }
-                // Clear of the dot, and of the halos that ring it when there is no name to sit under.
-                let baseline = p.y - dot - if show_sys_labels { 2.0 } else { 8.0 };
+                // Extra lift without a name, to clear the halos that ring the bare dot.
+                let mid_y = p.y - dot - if show_sys_labels { 2.0 } else { 8.0 } - icon_h / 2.0;
                 let mut name_w = if show_sys_labels {
                     painter
                         .layout_no_wrap(s.name.clone(), name_font.clone(), egui::Color32::WHITE)
@@ -7450,14 +7543,14 @@ impl SpaiApp {
                     let left = p.x - total / 2.0;
                     let name_x = left + lead * icon_w;
                     let rect = egui::Rect::from_min_max(
-                        egui::pos2(left, baseline - icon_h),
-                        egui::pos2(left + total, baseline),
+                        egui::pos2(left, mid_y - icon_h / 2.0),
+                        egui::pos2(left + total, mid_y + icon_h / 2.0),
                     );
                     LabelRow {
                         lead_x: left,
                         name_x,
                         icons_x: name_x + name_span,
-                        baseline,
+                        mid_y,
                         name_shown: name_w > 0.0,
                         rect,
                     }
@@ -7690,9 +7783,9 @@ impl SpaiApp {
                     (upgrade_icons.get(&s.id), label_at.get(&s.id))
                 {
                     for (k, up) in ups.iter().enumerate() {
-                        let ip = egui::pos2(row.icons_x + k as f32 * icon_w, row.baseline);
+                        let ip = egui::pos2(row.icons_x + k as f32 * icon_w, row.mid_y);
                         if ip.x + icon_w > rect.right()
-                            || ip.y - icon_h < rect.top()
+                            || ip.y - icon_h / 2.0 < rect.top()
                             || !rect.contains(ip)
                         {
                             continue;
@@ -7703,7 +7796,7 @@ impl SpaiApp {
                             UpgradeIcon::Glyph(g) => {
                                 painter.text(
                                     ip,
-                                    egui::Align2::LEFT_BOTTOM,
+                                    egui::Align2::LEFT_CENTER,
                                     g,
                                     icon_font.clone(),
                                     lcol,
@@ -7711,7 +7804,7 @@ impl SpaiApp {
                             }
                             UpgradeIcon::Mineral(tid) => {
                                 let r = egui::Rect::from_min_size(
-                                    egui::pos2(ip.x, ip.y - icon_h),
+                                    egui::pos2(ip.x, ip.y - icon_h / 2.0),
                                     egui::Vec2::splat(icon_h),
                                 );
                                 ui.put(r, egui::Image::new(eve_type_icon_url(tid, icon_h)))
@@ -8091,8 +8184,8 @@ impl SpaiApp {
                 if let Some(icons) = lead_icons.get(&s.id) {
                     for (k, (glyph, col)) in icons.iter().enumerate() {
                         painter.text(
-                            egui::pos2(row.lead_x + k as f32 * icon_w, row.baseline),
-                            egui::Align2::LEFT_BOTTOM,
+                            egui::pos2(row.lead_x + k as f32 * icon_w, row.mid_y),
+                            egui::Align2::LEFT_CENTER,
                             *glyph,
                             icon_font.clone(),
                             *col,
@@ -8100,12 +8193,12 @@ impl SpaiApp {
                     }
                 }
                 if row.name_shown {
-                    let at = egui::pos2(row.name_x, row.baseline);
+                    let at = egui::pos2(row.name_x, row.mid_y);
                     // Outlined, so the name survives whatever it lands on: halos, sov icons, routes.
                     for off in OUTLINE {
                         painter.text(
                             at + off,
-                            egui::Align2::LEFT_BOTTOM,
+                            egui::Align2::LEFT_CENTER,
                             &s.name,
                             name_font.clone(),
                             egui::Color32::BLACK,
@@ -8113,7 +8206,7 @@ impl SpaiApp {
                     }
                     painter.text(
                         at,
-                        egui::Align2::LEFT_BOTTOM,
+                        egui::Align2::LEFT_CENTER,
                         &s.name,
                         name_font.clone(),
                         ui.visuals().text_color(),
@@ -8673,7 +8766,7 @@ impl SpaiApp {
                         ui.label("Opacity");
                         if ui
                             .add(
-                                egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.3..=1.0)
+                                egui::Slider::new(&mut self.settings.map_overlay_opacity, 0.2..=1.0)
                                     .show_value(false),
                             )
                             .changed()
@@ -9316,7 +9409,7 @@ impl SpaiApp {
                         self.travel_changed = newsys;
                         self.travel_changed_at = Some(chrono::Utc::now().timestamp());
                         if much_longer {
-                            crate::sound::play_prio("danger", 2);
+                            crate::sound::play_prio("danger", 2, 1.0);
                         }
                     }
                 }
@@ -10067,7 +10160,7 @@ impl SpaiApp {
             None => {}
             Some(prev) => {
                 if current.iter().any(|s| !prev.contains(s)) {
-                    crate::sound::play_prio("danger", 2);
+                    crate::sound::play_prio("danger", 2, 1.0);
                     self.flash_until = ctx.input(|i| i.time) + 0.8;
                     ctx.request_repaint();
                 }
@@ -11910,6 +12003,37 @@ impl SpaiApp {
         }
     }
 
+    fn poll_update_check(&mut self, ctx: &egui::Context) {
+        let first = self.update_checked_at.is_none();
+        let due = self
+            .update_checked_at
+            .is_none_or(|t| t.elapsed() >= crate::update::CHECK_EVERY);
+        if !due {
+            return;
+        }
+        // A download already finished or is running: leave it be, the dialog owns the flow now.
+        {
+            let st = self.update.lock().unwrap();
+            if st.installing || st.done {
+                return;
+            }
+        }
+        self.update_checked_at = Some(std::time::Instant::now());
+        if first {
+            crate::update::cleanup_old();
+        } else {
+            // "Ask me again later" means later, and an hour is later.
+            self.update_dismissed = false;
+        }
+        crate::update::spawn_check(
+            self.update.clone(),
+            self.settings.update_skip_version.clone(),
+            ctx.clone(),
+        );
+        // Nothing else is guaranteed to wake the app in an hour's time.
+        ctx.request_repaint_after(crate::update::CHECK_EVERY);
+    }
+
     fn update_dialog(&mut self, ctx: &egui::Context) {
         let st = self.update.lock().unwrap().clone();
         let Some(av) = st.available.clone() else { return };
@@ -11918,16 +12042,23 @@ impl SpaiApp {
         }
         let mut close = false;
         let mut start_install = false;
+        let mut restart = false;
         egui::Window::new(format!("{}  Update available", egui_phosphor::regular::DOWNLOAD_SIMPLE))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
             .show(ctx, |ui| {
                 if st.done {
-                    ui.label(format!("Updated to v{}. Restart EVE Spai to apply.", av.version));
-                    if ui.button("OK").clicked() {
-                        close = true;
-                    }
+                    ui.label(format!("Updated to v{}. It applies on restart.", av.version));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Restart now").clicked() {
+                            restart = true;
+                        }
+                        if ui.button("Later").clicked() {
+                            close = true;
+                        }
+                    });
                     return;
                 }
                 if st.installing {
@@ -11985,6 +12116,12 @@ impl SpaiApp {
                     close = true;
                 }
             }
+        }
+        if restart {
+            // Closing runs `on_exit` (settings persisted, overlay child shut down) and only then is
+            // the single-instance lock free, so main.rs does the relaunch after the loop returns.
+            crate::update::request_restart();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if close {
             self.update.lock().unwrap().available = None;
@@ -12368,7 +12505,11 @@ impl SpaiApp {
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             for pack in crate::packs::PACKS {
-                                if ui.button(format!("Apply {}", pack.name)).clicked() {
+                                let selected = self.settings.configuration_pack == pack.name;
+                                if ui
+                                    .add(egui::Button::new(format!("Apply {}", pack.name)).selected(selected))
+                                    .clicked()
+                                {
                                     for ch in pack.channels {
                                         if !self
                                             .settings
@@ -12420,6 +12561,16 @@ impl SpaiApp {
                             "Paste your alliance's iHub sov-upgrade data for the map overlay \
                              (cyno jammers, Ansiblex enablement, …).",
                         );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "The data lives in a formatted list linked inside the alliance \
+                                     forum post, not on the forum page itself. Open the post, follow \
+                                     that link, and copy the list.",
+                                )
+                                .weak(),
+                            );
+                        });
                         ui.add_space(4.0);
                         if ui.button("Configure sov upgrades…").clicked() {
                             self.sov_upgrades_open = true;
@@ -12530,6 +12681,7 @@ impl SpaiApp {
                 ui.add_space(10.0);
                 ui.separator();
                 ui.horizontal(|ui| {
+                    let mut step_changed = false;
                     if ui.button("Skip setup").clicked() {
                         close = true;
                     }
@@ -12540,11 +12692,20 @@ impl SpaiApp {
                             }
                         } else if ui.button("Next").clicked() {
                             idx += 1;
+                            step_changed = true;
                         }
                         if idx > 0 && ui.button("Back").clicked() {
                             idx -= 1;
+                            step_changed = true;
                         }
                     });
+                    // Leaving a step closes any config dialog it opened, so it does not
+                    // linger over the next step.
+                    if step_changed || finish || close {
+                        self.intel_channels_open = false;
+                        self.jump_bridges_open = false;
+                        self.sov_upgrades_open = false;
+                    }
                 });
             });
         self.wizard_step = idx.min(last) as u8;
@@ -12701,6 +12862,7 @@ impl SpaiApp {
         ui: &mut egui::Ui,
         ru: &mut crate::settings::AlertRule,
         i: usize,
+        global_volume: f32,
     ) -> (bool, Option<crate::pickers::PickerKind>) {
         use crate::settings::Severity::*;
         let mut changed = false;
@@ -12812,7 +12974,8 @@ impl SpaiApp {
                 changed |= ui.checkbox(&mut ru.custom_window, "window").changed();
                 changed |= ui.checkbox(&mut ru.push, "push").changed();
                 ui.label("sound");
-                changed |= sound_picker(ui, ("alert_rule", i), true, &mut ru.sound);
+                let eff_vol = ru.volume.unwrap_or(global_volume);
+                changed |= sound_picker(ui, ("alert_rule", i), true, &mut ru.sound, eff_vol);
                 ui.label("severity");
                 egui::ComboBox::from_id_salt(("rsevover", i))
                     .selected_text(match ru.severity_override {
@@ -12838,6 +13001,18 @@ impl SpaiApp {
                         "Override the alert's severity (sound + colour). Leave 'keep' \
                          to use the event's own severity. Set Info to show it silently.",
                     );
+                let mut custom = ru.volume.is_some();
+                if ui
+                    .checkbox(&mut custom, "custom volume")
+                    .on_hover_text("Override the global intel-alert volume for this rule")
+                    .changed()
+                {
+                    ru.volume = if custom { Some(global_volume) } else { None };
+                    changed = true;
+                }
+                if let Some(v) = ru.volume.as_mut() {
+                    changed |= volume_slider(ui, v);
+                }
             }
             ui.label("cooldown");
             changed |= ui
@@ -13017,10 +13192,12 @@ impl SpaiApp {
                         );
                     });
                     ui.add_space(6.0);
+                    let global_volume = self.settings.alerts.alert_volume;
                     let (c, want) = Self::alert_rule_config(
                         ui,
                         &mut self.settings.alerts.rules[idx],
                         idx,
+                        global_volume,
                     );
                     changed |= c;
                     if let Some(kind) = want {
@@ -13451,9 +13628,10 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Paste sov-upgrade data (one per line).").weak());
                     ui.label(egui::RichText::new(egui_phosphor::regular::QUESTION).weak()).on_hover_text(
-                        "Imperium members: copy the sov-upgrade list from the alliance tool and \
-                         paste it here. The first system matched on each line is used; the rest \
-                         of the line becomes the upgrade label.",
+                        "Imperium members: open the forum topic, then follow the link inside it to \
+                         the formatted upgrade list and copy THAT. The forum page itself is not the \
+                         paste. The first system matched on each line is used; the rest of the line \
+                         becomes the upgrade label.",
                     );
                     ui.hyperlink_to(
                         "Equinox upgrades",
@@ -13772,6 +13950,17 @@ impl SpaiApp {
                             .on_hover_text("Tighter rows and title bar. Hover cards pop out in their own window.")
                             .changed();
                         ui.label(egui::RichText::new("Sounds (preset: off/info/warning/danger/critical/beep/chime, or a file path)").weak());
+                        ui.horizontal(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(64.0, ui.spacing().interact_size.y),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Volume");
+                                },
+                            );
+                            changed |= volume_slider(ui, &mut a.alert_volume);
+                        });
+                        let alert_vol = a.alert_volume;
                         for (i, lbl) in ["Info", "Warning", "Danger", "Critical"].iter().enumerate() {
                             if a.sounds.len() <= i {
                                 a.sounds.resize(i + 1, "off".to_owned());
@@ -13784,7 +13973,7 @@ impl SpaiApp {
                                         ui.label(*lbl);
                                     },
                                 );
-                                changed |= sound_picker(ui, ("severity_sound", i), false, &mut a.sounds[i]);
+                                changed |= sound_picker(ui, ("severity_sound", i), false, &mut a.sounds[i], alert_vol);
                             });
                         }
                         changed |= ui
@@ -14237,6 +14426,7 @@ impl AlertEngine {
             report: crate::intel::IntelReport,
             sev: crate::settings::Severity,
             sound: String,
+            volume: f32,
             sys: bool,
             win: bool,
             push: bool,
@@ -14287,6 +14477,7 @@ impl AlertEngine {
                 } else {
                     ru.sound.clone()
                 };
+                let volume = ru.volume.unwrap_or(acfg.alert_volume);
                 let (sys, win, push, cd) =
                     (ru.system_notification, ru.custom_window, ru.push, ru.cooldown_secs);
                 let sys_id = r.primary_system().map_or(0, |s| s.id);
@@ -14337,6 +14528,7 @@ impl AlertEngine {
                     report: r.clone(),
                     sev,
                     sound,
+                    volume,
                     sys,
                     win,
                     push,
@@ -14401,7 +14593,7 @@ impl AlertEngine {
                 notify(f.title.clone(), f.body.clone());
             }
             if !f.sound.is_empty() && !f.sound.eq_ignore_ascii_case("off") {
-                crate::sound::play_prio(&f.sound, f.sev as u8);
+                crate::sound::play_prio(&f.sound, f.sev as u8, f.volume);
             }
             if f.push && acfg.push_enabled {
                 crate::push::pushover(&acfg.pushover_token, &acfg.pushover_user, &f.text);
@@ -14833,15 +15025,7 @@ impl eframe::App for SpaiApp {
         self.maybe_start_jabber(&ctx);
         self.load_persisted_kills();
         self.reload_wormholes();
-        if !self.update_checked {
-            self.update_checked = true;
-            crate::update::cleanup_old();
-            crate::update::spawn_check(
-                self.update.clone(),
-                self.settings.update_skip_version.clone(),
-                ctx.clone(),
-            );
-        }
+        self.poll_update_check(&ctx);
         self.update_dialog(&ctx);
         if !self.wizard_checked {
             self.wizard_checked = true;
@@ -15248,10 +15432,17 @@ impl WhOverlay {
         const MAX_CHAINS: usize = 60;
         const MAX_HUB_DEGREE: usize = 6;
 
+        use crate::wormholes::DestClass;
+        // Turnur is itself K-space, so a hole to it is a K→K edge the is_jspace test below misses.
+        let notable_dest =
+            |d: DestClass| matches!(d, DestClass::Wspace | DestClass::Thera | DestClass::Turnur);
         let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut jspace_holes: HashSet<i64> = HashSet::new();
         for w in whs {
             let a = w.system_id;
+            if is_kspace(a) && notable_dest(w.dest) {
+                jspace_holes.insert(a);
+            }
             if let Some(b) = w.dest_system_id {
                 adj.entry(a).or_default().push(b);
                 adj.entry(b).or_default().push(a);
@@ -15261,10 +15452,6 @@ impl WhOverlay {
                 if is_kspace(b) && is_jspace(a) {
                     jspace_holes.insert(b);
                 }
-            } else if is_kspace(a)
-                && matches!(w.dest, crate::wormholes::DestClass::Wspace)
-            {
-                jspace_holes.insert(a);
             }
         }
         let degree: HashMap<i64, usize> =
@@ -16003,7 +16190,8 @@ struct LabelRow {
     lead_x: f32,
     name_x: f32,
     icons_x: f32,
-    baseline: f32,
+    /// Vertical centre; row parts draw `*_CENTER` on this y so differing-height name and icons align.
+    mid_y: f32,
     name_shown: bool,
     rect: egui::Rect,
 }
@@ -16502,7 +16690,10 @@ pub(crate) fn build_alert_viewport_cb(
         }
         let just_opened = !st.open;
         st.open = true;
-        let on_top = st.on_top_level;
+        // A pinned window is held open "until closed", so keep it unconditionally on top —
+        // otherwise Smart on-top can drop it to a normal level and the EVE client covers it,
+        // which reads as the pin "not staying visible" and the window being unmovable.
+        let on_top = st.on_top_level || st.pinned;
         std::mem::take(&mut st.focus_pending);
         let feed = st.feed.clone();
         let from_you_pre = st.from_you.clone();
@@ -17949,11 +18140,24 @@ fn uncertain_set(
     resolved.keys().filter(|n| cache.is_uncertain(n)).map(|n| n.to_lowercase()).collect()
 }
 
+/// A 0..=100% volume slider. Returns true when the value changed.
+fn volume_slider(ui: &mut egui::Ui, value: &mut f32) -> bool {
+    ui.add(
+        egui::Slider::new(value, 0.0..=1.0)
+            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+            .custom_parser(|s| {
+                s.trim().trim_end_matches('%').trim().parse::<f64>().ok().map(|p| p / 100.0)
+            }),
+    )
+    .changed()
+}
+
 fn sound_picker(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash,
     allow_default: bool,
     value: &mut String,
+    volume: f32,
 ) -> bool {
     use egui_phosphor::regular as icon;
     let mut changed = false;
@@ -17990,7 +18194,7 @@ fn sound_picker(
                         changed = true;
                     }
                     if ui.small_button(icon::PLAY).on_hover_text("Preview").clicked() {
-                        crate::sound::play(p);
+                        crate::sound::play(p, volume);
                     }
                 });
             }
@@ -18005,7 +18209,7 @@ fn sound_picker(
             }
         });
         if ui.button(icon::PLAY).on_hover_text("Test").clicked() {
-            crate::sound::play(value);
+            crate::sound::play(value, volume);
         }
     });
     changed

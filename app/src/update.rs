@@ -1,7 +1,33 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const REPO: &str = "Amryu/eve-spai";
+
+/// How often the app looks for a new release while it is running.
+pub const CHECK_EVERY: Duration = Duration::from_secs(3600);
+
+/// Passed to the relaunched process so it knows to wait for the old one's single-instance lock to
+/// come free instead of assuming another copy is already up and bailing out.
+pub const RESTART_FLAG: &str = "--restarted";
+
+static RESTART: AtomicBool = AtomicBool::new(false);
+
+/// Restart on the way out rather than here: the single-instance lock is held for the life of the
+/// process, so a new copy can only come up once this one is gone.
+pub fn request_restart() {
+    RESTART.store(true, Ordering::SeqCst);
+}
+
+pub fn restart_requested() -> bool {
+    RESTART.load(Ordering::SeqCst)
+}
+
+pub fn relaunch() -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    std::process::Command::new(exe).arg(RESTART_FLAG).spawn()?;
+    Ok(())
+}
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")

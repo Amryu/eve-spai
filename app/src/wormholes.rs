@@ -312,6 +312,11 @@ impl Wormhole {
     }
 
     pub fn dedup_key(&self) -> String {
+        // One Thera and one Turnur hole per system: key on system+dest so an intel report and the
+        // EVE-Scout entry for the same connection (differing signatures) don't split into two rows.
+        if matches!(self.dest, DestClass::Thera | DestClass::Turnur) {
+            return format!("{}|{}", self.system_id, self.dest.code());
+        }
         // Normalise the signature to its scan id (the 3-char prefix before the dash),
         // stripping brackets/spaces — so a seeded "ABC-123" and an intel "[ABC]" match.
         let sig_id = self.signature.as_deref().map(|s| {
@@ -404,11 +409,14 @@ pub fn spawn_scout(ctx: egui::Context) {
             if let Some(sigs) = fetch_scout(&client) {
                 if let Ok(store) = crate::store::Store::open() {
                     let now = chrono::Utc::now().timestamp();
+                    let mut keep = std::collections::HashSet::new();
                     for s in &sigs {
                         if let Some(wh) = scout_to_wormhole(s, now) {
-                            store.upsert_wormhole(&wh);
+                            keep.insert(store.upsert_wormhole(&wh));
                         }
                     }
+                    store.retire_missing_evescout(&keep);
+                    store.collapse_special_holes();
                     store.prune_wormholes(now);
                     ctx.request_repaint();
                 }

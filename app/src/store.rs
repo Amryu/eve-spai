@@ -1118,22 +1118,28 @@ impl Store {
     }
 
     fn upsert_wormhole_locked(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
-        if let Some(sig) = incoming.signature.as_deref().filter(|s| !s.is_empty()) {
-            if let Some(mut near) = self.wormhole_where(
-                "system_id=?1 AND signature=?2",
-                params![incoming.system_id, sig],
-            ) {
-                near.merge_from(incoming);
-                self.write_wormhole(&near);
-                return near.id;
-            }
-            if let Some(mut owner) = self.wormhole_where(
-                "dest_system_id=?1 AND dest_signature=?2",
-                params![incoming.system_id, sig],
-            ) {
-                owner.confirm_far(incoming);
-                self.write_wormhole(&owner);
-                return owner.id;
+        use crate::wormholes::DestClass;
+        // Signature-matching an intel report and the EVE-Scout entry for one Thera/Turnur connection
+        // splits them (signatures differ); their system+dest dedup key collapses them instead.
+        let special = matches!(incoming.dest, DestClass::Thera | DestClass::Turnur);
+        if !special {
+            if let Some(sig) = incoming.signature.as_deref().filter(|s| !s.is_empty()) {
+                if let Some(mut near) = self.wormhole_where(
+                    "system_id=?1 AND signature=?2",
+                    params![incoming.system_id, sig],
+                ) {
+                    near.merge_from(incoming);
+                    self.write_wormhole(&near);
+                    return near.id;
+                }
+                if let Some(mut owner) = self.wormhole_where(
+                    "dest_system_id=?1 AND dest_signature=?2",
+                    params![incoming.system_id, sig],
+                ) {
+                    owner.confirm_far(incoming);
+                    self.write_wormhole(&owner);
+                    return owner.id;
+                }
             }
         }
         let key = incoming.dedup_key();
@@ -1189,6 +1195,73 @@ impl Store {
     /// re-add it) but is invisible to everything downstream: overlay, routing, waypoints.
     pub fn kill_wormhole(&self, id: i64) {
         let _ = self.conn.execute("UPDATE wormholes SET dead = 1 WHERE id = ?1", params![id]);
+    }
+
+    /// Collapse Thera/Turnur duplicates to one row per system. EVE-Scout's row survives (best facts),
+    /// but if any duplicate was dead the survivor stays dead: an intel/manual kill wins over
+    /// EVE-Scout's lag. Legacy rows predate the system+dest dedup key, so this repairs their key too.
+    pub fn collapse_special_holes(&self) {
+        for code in ["thera", "turnur"] {
+            let systems: Vec<i64> = match self.conn.prepare(
+                "SELECT system_id FROM wormholes WHERE dest_class = ?1 GROUP BY system_id HAVING COUNT(*) > 1",
+            ) {
+                Ok(mut stmt) => match stmt.query_map(params![code], |r| r.get::<_, i64>(0)) {
+                    Ok(rows) => rows.flatten().collect(),
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+            for sys in systems {
+                let rows: Vec<(i64, bool, bool, i64)> = match self.conn.prepare(
+                    "SELECT id, dead, source = 'eve-scout', updated_at FROM wormholes
+                     WHERE dest_class = ?1 AND system_id = ?2",
+                ) {
+                    Ok(mut stmt) => match stmt.query_map(params![code, sys], |r| {
+                        Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? != 0, r.get(3)?))
+                    }) {
+                        Ok(rows) => rows.flatten().collect(),
+                        Err(_) => continue,
+                    },
+                    Err(_) => continue,
+                };
+                if rows.len() < 2 {
+                    continue;
+                }
+                let any_dead = rows.iter().any(|r| r.1);
+                let survivor = rows.iter().max_by_key(|r| (r.2, r.3)).map(|r| r.0).unwrap();
+                for r in &rows {
+                    if r.0 != survivor {
+                        let _ = self.conn.execute("DELETE FROM wormholes WHERE id = ?1", params![r.0]);
+                    }
+                }
+                let _ = self.conn.execute(
+                    "UPDATE wormholes SET dead = ?1, dedup = ?2 WHERE id = ?3",
+                    params![any_dead as i64, format!("{sys}|{code}"), survivor],
+                );
+            }
+        }
+    }
+
+    /// Delete EVE-Scout holes absent from its latest fetch (`keep` = ids just upserted): the source
+    /// of truth dropped them. Deleted, not dead-marked, so a genuine re-scan re-adds cleanly.
+    pub fn retire_missing_evescout(&self, keep: &std::collections::HashSet<i64>) {
+        let live: Vec<i64> = {
+            let mut stmt = match self.conn.prepare("SELECT id FROM wormholes WHERE source = 'eve-scout'")
+            {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0));
+            match rows {
+                Ok(rows) => rows.flatten().collect(),
+                Err(_) => return,
+            }
+        };
+        for id in live {
+            if !keep.contains(&id) {
+                let _ = self.conn.execute("DELETE FROM wormholes WHERE id = ?1", params![id]);
+            }
+        }
     }
 
     pub fn wormholes(&self) -> Vec<crate::wormholes::Wormhole> {
@@ -1628,6 +1701,88 @@ mod tests {
             source: Source::EveScout,
             updated_at: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn one_thera_hole_per_system_across_sources() {
+        use crate::wormholes::Source;
+        let s = mem_store();
+        let scout = a_hole(30_000_142, "ABC-123");
+        let mut intel = a_hole(30_000_142, "XYZ-999");
+        intel.source = Source::Intel;
+        let id = s.upsert_wormhole(&scout);
+        assert_eq!(s.upsert_wormhole(&intel), id, "the two must collapse into one row");
+        assert_eq!(s.wormholes().len(), 1, "a system may hold only one Thera hole");
+    }
+
+    fn insert_raw_hole(s: &Store, dedup: &str, system_id: i64, source: &str, dead: bool) -> i64 {
+        s.conn
+            .execute(
+                "INSERT INTO wormholes(dedup, system_id, dest_class, dest_system_id, is_drifter,
+                    reported_at, source, updated_at, dead)
+                 VALUES(?1,?2,'thera',31000005,0,1700000000,?3,1700000000,?4)",
+                params![dedup, system_id, source, dead as i64],
+            )
+            .unwrap();
+        s.conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn collapse_removes_a_stale_duplicate_keeping_evescout() {
+        let s = mem_store();
+        let scout = insert_raw_hole(&s, "30000142|thera", 30_000_142, "eve-scout", false);
+        let _intel = insert_raw_hole(&s, "30000142|sig:XYZ", 30_000_142, "intel", false);
+        assert_eq!(s.wormholes().len(), 2);
+
+        s.collapse_special_holes();
+        let live = s.wormholes();
+        assert_eq!(live.len(), 1, "one hole per system after collapse");
+        assert_eq!(live[0].id, scout, "the EVE-Scout row is the survivor");
+    }
+
+    #[test]
+    fn collapse_keeps_dead_when_intel_killed_a_duplicate() {
+        let s = mem_store();
+        // EVE-Scout still lists it (lag), but intel marked its duplicate dead.
+        insert_raw_hole(&s, "30000142|thera", 30_000_142, "eve-scout", false);
+        insert_raw_hole(&s, "30000142|sig:XYZ", 30_000_142, "intel", true);
+
+        s.collapse_special_holes();
+        assert!(
+            s.wormholes().is_empty(),
+            "an intel dead report wins over EVE-Scout's stale live entry"
+        );
+        // And the surviving row is still there, just dead: a resync must not revive it.
+        let mut again = a_hole(30_000_142, "ABC-123");
+        again.updated_at = 1_700_100_000;
+        s.upsert_wormhole(&again);
+        assert!(s.wormholes().is_empty(), "resync revived an intel-killed hole");
+    }
+
+    #[test]
+    fn holes_dropped_from_evescout_are_retired() {
+        use std::collections::HashSet;
+        let s = mem_store();
+        let a = s.upsert_wormhole(&a_hole(30_000_142, "AAA-1"));
+        let b = s.upsert_wormhole(&a_hole(30_002_659, "BBB-2"));
+
+        s.retire_missing_evescout(&HashSet::from([a]));
+        let live: Vec<i64> = s.wormholes().iter().map(|w| w.system_id).collect();
+        assert_eq!(live, vec![30_000_142], "a hole gone from Scout must be dropped");
+        let _ = b;
+    }
+
+    #[test]
+    fn retire_leaves_intel_holes_alone() {
+        use crate::wormholes::Source;
+        use std::collections::HashSet;
+        let s = mem_store();
+        let mut intel = a_hole(30_000_142, "AAA-1");
+        intel.source = Source::Intel;
+        s.upsert_wormhole(&intel);
+        // A fetch that lists nothing must not touch a hole EVE-Scout never sourced.
+        s.retire_missing_evescout(&HashSet::new());
+        assert_eq!(s.wormholes().len(), 1, "intel holes are not Scout's to retire");
     }
 
     #[test]
