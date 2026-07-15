@@ -242,6 +242,18 @@ pub struct Store {
 }
 
 impl Store {
+    /// A trivial write, to catch a database that opened read-only (e.g. a read-only file or folder)
+    /// where reads succeed but nothing persists. `open` alone can miss this: SQLite defers the error
+    /// to the first write.
+    pub fn write_probe(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO kv(key, value) VALUES('write_probe', '1')
+             ON CONFLICT(key) DO UPDATE SET value = '1'",
+            [],
+        )?;
+        Ok(())
+    }
+
     pub fn open() -> Result<Self> {
         let dir = data_dir()?;
         std::fs::create_dir_all(&dir)?;
@@ -1701,6 +1713,30 @@ mod tests {
             source: Source::EveScout,
             updated_at: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn write_probe_succeeds_on_a_writable_db() {
+        let s = mem_store();
+        assert!(s.write_probe().is_ok());
+    }
+
+    #[test]
+    fn write_probe_fails_when_read_only() {
+        let dir = std::env::temp_dir().join(format!("eve-spai-ro-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ro.db");
+        Connection::open(&path).unwrap().execute_batch(SCHEMA).unwrap();
+        let ro = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+        let s = Store {
+            conn: ro,
+            path: path.clone(),
+            sys_cache: std::cell::RefCell::new(None),
+            place_cache: std::cell::RefCell::new(None),
+        };
+        assert!(s.write_probe().is_err(), "a read-only DB must fail the probe");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

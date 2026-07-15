@@ -14,4 +14,6 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# Unwind, not abort: a panic on a background thread (the log watcher parsing an odd chat line, a
+# sound/jabber worker) must not take the whole app down, and catch_unwind only works under unwind.
+panic = "unwind"

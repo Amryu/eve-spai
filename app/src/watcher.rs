@@ -157,10 +157,21 @@ fn scan(
                 }
                 let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
                 let context = last_system.get(&meta.channel).map(|(id, _, _)| *id);
-                let mut report = intel::analyze_ctx(
-                    &m.text, systems, ships, &known, received, &meta.channel, &m.author, context,
-                    &regions, &denied,
-                );
+                // The parser is pure (no shared locks), so catching a panic here leaves `st` intact
+                // and just drops the offending line, instead of aborting the whole app.
+                let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    intel::analyze_ctx(
+                        &m.text, systems, ships, &known, received, &meta.channel, &m.author, context,
+                        &regions, &denied,
+                    )
+                }));
+                let mut report = match parsed {
+                    Ok(r) => r,
+                    Err(_) => {
+                        eprintln!("[watcher] parser panicked on line, skipping: {:?}", m.text);
+                        continue;
+                    }
+                };
 
                 if !report.pilots.is_empty() {
                     let mut cache = pilots.lock().unwrap();

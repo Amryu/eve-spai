@@ -1,3 +1,112 @@
+/// A launcher entry the installer offers (`.desktop` on Linux, a Start Menu `.lnk` on Windows).
+/// `None` = the platform has no such concept (macOS ships as a bundle), so don't offer it.
+pub fn menu_entry_exists() -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(linux_menu_path().is_file())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Some(windows_menu_path().is_some_and(|p| p.is_file()))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+pub fn menu_entry_label() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Start Menu entry"
+    } else {
+        "application menu entry"
+    }
+}
+
+/// Create the launcher entry, pointing at the running binary. Mirrors what the install scripts do so
+/// a user who skipped it there (or ran the binary directly) can add it from the setup wizard.
+pub fn create_menu_entry() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let exe = std::env::current_exe()?;
+        let path = linux_menu_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        if let Some(base) = directories::BaseDirs::new() {
+            let icondir = base.data_dir().join("icons/hicolor/256x256/apps");
+            if std::fs::create_dir_all(&icondir).is_ok() {
+                let _ = std::fs::write(
+                    icondir.join("eve-spai.png"),
+                    include_bytes!("../../assets/eve-spai.png"),
+                );
+            }
+        }
+        std::fs::write(
+            &path,
+            format!(
+                "[Desktop Entry]\nType=Application\nName=EVE Spai\n\
+                 Comment=EVE Online intel tool\nExec={}\nIcon=eve-spai\n\
+                 Terminal=false\nCategories=Game;\n",
+                exe.display()
+            ),
+        )?;
+        if let Some(dir) = path.parent() {
+            let _ = std::process::Command::new("update-desktop-database").arg(dir).status();
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let exe = std::env::current_exe()?;
+        let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let ico = dir.join("eve-spai.ico");
+        let _ = std::fs::write(&ico, include_bytes!("../../assets/eve-spai.ico"));
+        let lnk = windows_menu_path()
+            .ok_or_else(|| std::io::Error::other("no Start Menu folder"))?;
+        if let Some(parent) = lnk.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Building a .lnk needs the IShellLink COM interface; WScript.Shell wraps it, and shelling
+        // out to it avoids a COM dependency for this one-shot action (same approach as install.ps1).
+        let script = format!(
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');\
+             $s.TargetPath='{exe}';$s.WorkingDirectory='{dir}';\
+             $s.Description='EVE Online intel tool';\
+             if(Test-Path '{ico}'){{$s.IconLocation='{ico}'}};$s.Save()",
+            lnk = lnk.display(),
+            exe = exe.display(),
+            dir = dir.display(),
+            ico = ico.display(),
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("could not create the shortcut"))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_menu_path() -> std::path::PathBuf {
+    directories::BaseDirs::new()
+        .map(|b| b.data_dir().join("applications").join("eve-spai.desktop"))
+        .unwrap_or_else(|| std::path::PathBuf::from("eve-spai.desktop"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_menu_path() -> Option<std::path::PathBuf> {
+    directories::BaseDirs::new()
+        .map(|b| b.config_dir().join(r"Microsoft\Windows\Start Menu\Programs\EVE Spai.lnk"))
+}
+
 pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -82,6 +191,33 @@ fn macos_agent_path() -> std::path::PathBuf {
     directories::BaseDirs::new()
         .map(|b| b.home_dir().join("Library/LaunchAgents/com.evespai.app.plist"))
         .unwrap_or_else(|| std::path::PathBuf::from("com.evespai.app.plist"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_menu_entry_writes_a_desktop_file() {
+        let tmp = std::env::temp_dir().join(format!("eve-spai-menu-test-{}", std::process::id()));
+        let prev = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &tmp);
+
+        assert_eq!(menu_entry_exists(), Some(false), "no entry in a fresh data dir");
+        create_menu_entry().unwrap();
+        assert_eq!(menu_entry_exists(), Some(true), "entry present after create");
+
+        let desktop = std::fs::read_to_string(linux_menu_path()).unwrap();
+        assert!(desktop.contains("Name=EVE Spai"));
+        assert!(desktop.contains("Exec="));
+        assert!(tmp.join("icons/hicolor/256x256/apps/eve-spai.png").is_file());
+
+        match prev {
+            Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 
 #[cfg(target_os = "linux")]

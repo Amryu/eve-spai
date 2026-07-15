@@ -410,6 +410,9 @@ pub struct SpaiApp {
     update: crate::update::SharedUpdate,
     update_checked_at: Option<std::time::Instant>,
     update_dismissed: bool,
+    /// Set when the database can't be opened or written; drives a one-time warning.
+    store_error: Option<String>,
+    store_warn_dismissed: bool,
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
     lookup_input: String,
@@ -421,6 +424,8 @@ pub struct SpaiApp {
     wizard_open: bool,
     wizard_step: u8,
     wizard_checked: bool,
+    /// Result of the wizard's create-shortcut action: None = not tried, Some(Ok) = done.
+    wizard_shortcut: Option<Result<(), String>>,
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
     raise_reset_top: bool,
@@ -608,7 +613,17 @@ impl SpaiApp {
 
         crate::instance::start_control_listener(cc.egui_ctx.clone());
 
-        let store = Store::open().map_err(|e| eprintln!("store: {e:#}")).ok();
+        let (store, store_error) = match Store::open() {
+            Ok(s) => match s.write_probe() {
+                Ok(()) => (Some(s), None),
+                // Opened read-only (file perms), so reads work but nothing persists.
+                Err(e) => (Some(s), Some(format!("the database is not writable ({e})"))),
+            },
+            Err(e) => {
+                eprintln!("store: {e:#}");
+                (None, Some(format!("{e:#}")))
+            }
+        };
         let mut settings = store
             .as_ref()
             .and_then(|s| s.load_settings())
@@ -946,6 +961,8 @@ impl SpaiApp {
             update: std::sync::Arc::new(std::sync::Mutex::new(crate::update::UpdateState::default())),
             update_checked_at: None,
             update_dismissed: false,
+            store_error,
+            store_warn_dismissed: false,
             kill_cache,
             kill_tx,
             lookup_input: String::new(),
@@ -956,6 +973,7 @@ impl SpaiApp {
             intel_heights: std::collections::HashMap::new(),
             wizard_open: false,
             wizard_step: 0,
+            wizard_shortcut: None,
             wizard_checked: false,
             tray: crate::tray::spawn(cc.egui_ctx.clone()),
             really_exit: false,
@@ -12028,6 +12046,7 @@ impl SpaiApp {
         crate::update::spawn_check(
             self.update.clone(),
             self.settings.update_skip_version.clone(),
+            false,
             ctx.clone(),
         );
         // Nothing else is guaranteed to wake the app in an hour's time.
@@ -12101,12 +12120,18 @@ impl SpaiApp {
                     self.update.lock().unwrap().installing = true;
                     let (upd, url, ctx2) = (self.update.clone(), url.clone(), ctx.clone());
                     std::thread::spawn(move || {
-                        let res = crate::update::download_and_replace(&url);
+                        // In a machine-wide install the exe dir needs elevation to overwrite, so hand
+                        // the swap to an admin helper (UAC prompt); otherwise do it in-process.
+                        let res = if crate::update::update_needs_admin() {
+                            crate::update::elevated_update(&url)
+                        } else {
+                            crate::update::download_and_replace(&url)
+                        };
                         let mut s = upd.lock().unwrap();
                         s.installing = false;
                         match res {
                             Ok(()) => s.done = true,
-                            Err(e) => s.error = Some(e.to_string()),
+                            Err(e) => s.error = Some(format!("{e:#}")),
                         }
                         ctx2.request_repaint();
                     });
@@ -12126,6 +12151,82 @@ impl SpaiApp {
         if close {
             self.update.lock().unwrap().available = None;
         }
+    }
+
+    /// Feedback for a manual "Check for updates": a spinner, then either "you're on the latest" or a
+    /// connection error. The automatic hourly check never reaches here (it doesn't set these flags),
+    /// and a found update is handled by `update_dialog` instead.
+    fn update_check_dialog(&mut self, ctx: &egui::Context) {
+        let st = self.update.lock().unwrap().clone();
+        let show = st.checking || st.up_to_date || st.check_failed.is_some();
+        if !show || st.available.is_some() {
+            return;
+        }
+        let mut close = false;
+        egui::Window::new(format!("{}  Check for updates", egui_phosphor::regular::ARROWS_CLOCKWISE))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
+            .show(ctx, |ui| {
+                if st.checking {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Checking for updates…");
+                    });
+                    return;
+                }
+                if let Some(e) = &st.check_failed {
+                    ui.colored_label(
+                        crate::theme::standing::WARNING,
+                        format!("Couldn't check for updates: {e}"),
+                    );
+                } else {
+                    ui.label(format!(
+                        "You're on the latest version (v{}).",
+                        crate::update::current()
+                    ));
+                }
+                ui.add_space(6.0);
+                if ui.button("OK").clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            let mut s = self.update.lock().unwrap();
+            s.up_to_date = false;
+            s.check_failed = None;
+        }
+    }
+
+    /// The database couldn't be opened, usually a permissions problem, so intel/settings won't
+    /// persist. Surface it once so a broken install isn't silently running degraded.
+    fn store_warning_dialog(&mut self, ctx: &egui::Context) {
+        let Some(err) = self.store_error.clone() else { return };
+        if self.store_warn_dismissed {
+            return;
+        }
+        egui::Window::new(format!("{}  Storage problem", egui_phosphor::regular::WARNING))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label("EVE Spai can't read or write its database, so settings and intel history won't be saved this session.");
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(&err).weak().small());
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This is usually a file-permission issue on the data folder. Check that your \
+                         user can write to it, or reinstall to a writable location.",
+                    )
+                    .small(),
+                );
+                ui.add_space(8.0);
+                if ui.button("Continue anyway").clicked() {
+                    self.store_warn_dismissed = true;
+                }
+            });
     }
 
     fn poll_dscan_clipboard(&mut self) {
@@ -12402,6 +12503,7 @@ impl SpaiApp {
 
         #[derive(Clone, Copy, PartialEq)]
         enum S {
+            Shortcut,
             Welcome,
             Logs,
             Channels,
@@ -12411,7 +12513,12 @@ impl SpaiApp {
             Character,
             Theme,
         }
-        let mut steps = vec![S::Welcome, S::Logs, S::Channels];
+        let mut steps = Vec::new();
+        // Offer a launcher entry first, but only when the installer didn't already make one.
+        if matches!(crate::tray::menu_entry_exists(), Some(false)) {
+            steps.push(S::Shortcut);
+        }
+        steps.extend([S::Welcome, S::Logs, S::Channels]);
         if self.settings.configuration_pack == "The Imperium" {
             steps.extend([S::JumpBridges, S::SovUpgrades, S::Jabber]);
         }
@@ -12434,6 +12541,39 @@ impl SpaiApp {
                 ui.separator();
                 ui.add_space(4.0);
                 match cur {
+                    S::Shortcut => {
+                        let kind = crate::tray::menu_entry_label();
+                        ui.heading(format!("{}  Add a shortcut", icon::ROCKET_LAUNCH));
+                        ui.label(format!(
+                            "EVE Spai has no {kind} yet, so it only launches from where the \
+                             binary lives. Add one to start it like any other app.",
+                        ));
+                        ui.add_space(6.0);
+                        match &self.wizard_shortcut {
+                            Some(Ok(())) => {
+                                ui.label(
+                                    egui::RichText::new(format!("{}  Shortcut created", icon::CHECK_CIRCLE))
+                                        .color(crate::theme::standing::FRIENDLY),
+                                );
+                            }
+                            _ => {
+                                if ui
+                                    .button(format!("{}  Create {kind}", icon::PLUS))
+                                    .clicked()
+                                {
+                                    self.wizard_shortcut =
+                                        Some(crate::tray::create_menu_entry().map_err(|e| e.to_string()));
+                                }
+                                if let Some(Err(e)) = &self.wizard_shortcut {
+                                    ui.label(
+                                        egui::RichText::new(format!("Couldn't create it: {e}"))
+                                            .color(crate::theme::standing::WARNING)
+                                            .small(),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     S::Welcome => {
                         ui.heading("Welcome to EVE Spai");
                         ui.label(
@@ -13862,6 +14002,7 @@ impl SpaiApp {
                             crate::update::spawn_check(
                                 self.update.clone(),
                                 String::new(),
+                                true,
                                 ui.ctx().clone(),
                             );
                         }
@@ -15027,6 +15168,8 @@ impl eframe::App for SpaiApp {
         self.reload_wormholes();
         self.poll_update_check(&ctx);
         self.update_dialog(&ctx);
+        self.update_check_dialog(&ctx);
+        self.store_warning_dialog(&ctx);
         if !self.wizard_checked {
             self.wizard_checked = true;
             self.wizard_open = !self.settings.wizard_done;

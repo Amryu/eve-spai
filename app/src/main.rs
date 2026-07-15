@@ -134,12 +134,56 @@ fn acquire_single_instance_lock() -> bool {
     }
 }
 
+/// Append panics to `<data_dir>/crash.log`. A release build has no console (`windows_subsystem =
+/// "windows"`), so the default stderr hook is invisible; this is the only record of a crash.
+fn install_panic_logger() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(dir) = store::data_dir() {
+            use std::io::Write;
+            if let Ok(mut f) =
+                std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log"))
+            {
+                let loc = info.location().map(|l| l.to_string()).unwrap_or_default();
+                let msg = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+                let _ = writeln!(
+                    f,
+                    "{} v{} [{thread}] {loc}: {msg}",
+                    chrono::Utc::now().to_rfc3339(),
+                    env!("CARGO_PKG_VERSION"),
+                );
+            }
+        }
+        default(info);
+    }));
+}
+
 fn main() -> eframe::Result<()> {
+    install_panic_logger();
+
     // Re-exec into the overlay child when launched with the hidden flag, before any main-window
     // setup runs. The child must ALWAYS start (it is spawned by the main), so the single-instance
     // guard below is skipped for it.
     if std::env::args().any(|a| a == "--overlay") {
         return overlay::run_overlay();
+    }
+
+    // The elevated helper: swap the binary with admin rights, then exit. No window, no lock. Its exit
+    // code tells the parent whether the swap landed.
+    if let Some(url) = update::apply_update_arg() {
+        match update::download_and_replace(&url) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!("[update] elevated swap failed: {e:#}");
+                std::process::exit(1);
+            }
+        }
     }
 
     // A relaunch after an update races the old process, which holds the lock until it exits.
