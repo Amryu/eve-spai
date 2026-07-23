@@ -76,6 +76,24 @@ pub fn play_prio(spec: &str, prio: u8, volume: f32) {
     play(spec, volume);
 }
 
+/// delve911 priority alert: play the "critical" tone, but rate-limited so a burst of messages only
+/// alerts once. The gate is refreshed on EVERY message, so it re-arms only after 5 minutes of quiet
+/// (the next message after a lull alerts again). Independent of the global 2s gate.
+pub fn play_delve911_critical() {
+    const DELVE911_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+    static GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let should_play = {
+        let mut g = GATE.lock().unwrap();
+        let now = std::time::Instant::now();
+        let play = g.map_or(true, |last| now.duration_since(last) >= DELVE911_COOLDOWN);
+        *g = Some(now); // reset the timer on every message
+        play
+    };
+    if should_play {
+        play("critical", 1.0);
+    }
+}
+
 fn gate_allows(
     state: Option<(std::time::Instant, u8)>,
     now: std::time::Instant,

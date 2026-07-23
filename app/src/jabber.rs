@@ -234,6 +234,11 @@ fn fire_arrival_notification(
             None if cfg.ping_rules.is_empty() => {
                 (false, true, cfg.ping_sound.clone(), 1u8, cfg.ping_volume)
             }
+            // A fleet CALL must still alert even if the FC's rules don't match it — otherwise a
+            // real fleet ping goes silent whenever any (non-matching) rule exists. This was the bug.
+            None if p.is_fleet_call() => {
+                (false, true, cfg.ping_sound.clone(), 1u8, cfg.ping_volume)
+            }
             None => return,
         },
         // Prio 1 so a mention breaks through the cooldown gate that ordinary chat traffic sits behind.
@@ -397,6 +402,8 @@ async fn run(
             return;
         }
     };
+    // Our own MUC nick (default = the JID username), used to recognise our reflected room messages.
+    let my_nick = bare.node().map(|n| n.to_string()).unwrap_or_default();
     {
         let mut s = state.lock().unwrap();
         s.running = true;
@@ -488,7 +495,7 @@ async fn run(
                 let mut urgent = false;
                 let mut background = false;
                 for event in events {
-                    if handle_event(event, &state, resolve.as_ref(), &ping_shared, &cmds, &ctx, store.as_ref()) {
+                    if handle_event(event, &state, resolve.as_ref(), &ping_shared, &cmds, &ctx, store.as_ref(), &my_nick) {
                         urgent = true;
                     } else {
                         background = true;
@@ -570,6 +577,7 @@ fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_event(
     event: xmpp::Event,
     state: &SharedJabber,
@@ -578,6 +586,7 @@ fn handle_event(
     cmds: &CmdSender,
     ctx: &egui::Context,
     store: Option<&crate::store::Store>,
+    my_nick: &str,
 ) -> bool {
     use xmpp::Event;
     let urgent = !matches!(
@@ -721,14 +730,28 @@ fn handle_event(
             // A room the server force-joined us into never raised RoomJoined; without this it is not
             // in `rooms` and the UI files it under DMs.
             state.lock().unwrap().rooms.insert(room.clone());
+            // Our own reflected message (MUC echoes it back under our nick): store it but never
+            // notify/sound for it.
+            let own = nick.eq_ignore_ascii_case(my_nick);
             push_msg(
                 state,
                 &room,
-                ChatMsg { from: nick.to_string(), body, time: stamp, outgoing: false },
-                !delayed,
-                true,
+                ChatMsg { from: nick.to_string(), body, time: stamp, outgoing: own },
+                !delayed && !own,
+                !own,
                 store,
             );
+            // delve911 is a priority channel: a "critical" sound, rate-limited so a burst alerts
+            // once (the 5-min gate resets on every message, re-arming only after 5 min of quiet).
+            if !delayed && !own {
+                let local = room.split('@').next().unwrap_or(&room);
+                if local.eq_ignore_ascii_case("delve911") {
+                    let sound_on = state.lock().unwrap().notify_cfg.sound_enabled;
+                    if sound_on {
+                        crate::sound::play_delve911_critical();
+                    }
+                }
+            }
         }
         _ => {}
     }

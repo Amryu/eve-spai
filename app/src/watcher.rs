@@ -19,6 +19,7 @@ fn revival_refresh(current_until: Option<i64>, triggered: bool, now: i64) -> Opt
     (already || triggered).then_some(now + REVIVAL_TTL_SECS)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     chat_dir: PathBuf,
     channels: Vec<String>,
@@ -29,10 +30,14 @@ pub fn spawn(
     sightings: crate::intel::SharedSightings,
     activity: crate::activity::SharedActivity,
     revivals: SharedRevivals,
+    rescue: Arc<Mutex<crate::rescue::RescueState>>,
+    rescue_channel: String,
+    ship_groups: Arc<HashMap<String, String>>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
         let channels: Vec<String> = channels.iter().map(|c| c.to_lowercase()).collect();
+        let rescue_channel = rescue_channel.to_lowercase();
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
         let mut file_sigs: HashMap<PathBuf, (u64, i64)> = HashMap::new();
         let mut last_system: HashMap<String, (i64, String, Vec<String>)> = HashMap::new();
@@ -52,6 +57,9 @@ pub fn spawn(
                 &sightings,
                 &activity,
                 &revivals,
+                &rescue,
+                &rescue_channel,
+                &ship_groups,
                 &ctx,
                 &mut processed,
                 &mut file_sigs,
@@ -76,6 +84,9 @@ fn scan(
     sightings: &crate::intel::SharedSightings,
     activity: &crate::activity::SharedActivity,
     revivals: &SharedRevivals,
+    rescue: &Mutex<crate::rescue::RescueState>,
+    rescue_channel: &str,
+    ship_groups: &HashMap<String, String>,
     ctx: &egui::Context,
     processed: &mut HashMap<PathBuf, usize>,
     file_sigs: &mut HashMap<PathBuf, (u64, i64)>,
@@ -120,7 +131,56 @@ fn scan(
         let Some((meta, messages)) = crate::chatlog::read(&path) else {
             continue;
         };
-        if !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
+        let is_rescue =
+            !rescue_channel.is_empty() && meta.channel.eq_ignore_ascii_case(rescue_channel);
+        if !is_rescue && !channels.is_empty() && !channels.contains(&meta.channel.to_lowercase()) {
+            continue;
+        }
+        if is_rescue {
+            let start = processed
+                .get(&path)
+                .copied()
+                .unwrap_or_else(|| messages.len().saturating_sub(FIRST_SIGHT_BACKLOG));
+            if messages.len() > start {
+                let now = chrono::Utc::now().timestamp();
+                let mut events = Vec::new();
+                {
+                    // Brief intel lock only for cross-channel line dedup; released before the
+                    // rescue lock so lock order stays intel -> rescue, never the reverse.
+                    let mut st = state.lock().unwrap();
+                    for m in &messages[start..] {
+                        if m.author.eq_ignore_ascii_case("EVE System") {
+                            continue;
+                        }
+                        if st.duplicate_line(&meta.channel, &m.timestamp, &m.author, &m.text) {
+                            continue;
+                        }
+                        let received = intel::parse_eve_time(&m.timestamp).unwrap_or(now);
+                        let (author, text) = (m.author.clone(), m.text.clone());
+                        // Pure parser under catch_unwind: a bad line drops one event, never the app.
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            crate::rescue::parse_event(&author, &text, received, systems, ship_groups)
+                        })) {
+                            Ok(ev) => events.push(ev),
+                            Err(_) => {
+                                eprintln!("[watcher] rescue parser panicked, skipping: {:?}", m.text)
+                            }
+                        }
+                    }
+                }
+                if !events.is_empty() {
+                    let mut r = rescue.lock().unwrap();
+                    for ev in events {
+                        r.push_event(ev);
+                    }
+                    drop(r);
+                    any_new = true;
+                }
+            }
+            if let Some(sig) = sig {
+                file_sigs.insert(path.clone(), sig);
+            }
+            processed.insert(path, messages.len());
             continue;
         }
         let regions = channel_regions

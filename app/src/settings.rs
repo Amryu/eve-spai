@@ -167,6 +167,44 @@ pub struct Settings {
     pub fleet_ping_window_pos: Option<(f32, f32)>,
     #[serde(default)]
     pub fleet_ping_window_size: Option<(f32, f32)>,
+
+    // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
+    #[serde(default)]
+    pub fc_rescue_enabled: bool,
+    #[serde(default = "default_rescue_channel")]
+    pub rescue_channel: String,
+    #[serde(default = "default_rescue_staging")]
+    pub rescue_staging_system: String,
+    /// System ids that host a friendly cyno generator (ESI can't enumerate these).
+    #[serde(default)]
+    pub cyno_generators: Vec<i64>,
+    #[serde(default = "default_rescue_doctrines", deserialize_with = "de_rescue_doctrines")]
+    pub rescue_doctrines: Vec<RescueDoctrine>,
+    #[serde(default = "default_rescue_op_channel")]
+    pub rescue_op_channel: u8,
+    #[serde(default)]
+    pub rescue_doctrine: String,
+    #[serde(default = "default_rescue_template")]
+    pub rescue_ping_template: String,
+    /// skirmish_commanders room JID: where the FC posts `!bping <group>` ping requests and watches
+    /// the responses. coord/fc/all are directorbot ping GROUPS, not separate rooms.
+    #[serde(default)]
+    pub rescue_skirmish_jid: String,
+    /// XMPP room JID for the delve911 conference, so the FC can respond from the rescue window.
+    #[serde(default)]
+    pub rescue_delve911_jid: String,
+    #[serde(default = "default_siege_secs")]
+    pub rescue_siege_secs: u32,
+    #[serde(default = "default_panic_secs")]
+    pub rescue_panic_secs: u32,
+    #[serde(default)]
+    pub rescue_window_pos: Option<(f32, f32)>,
+    #[serde(default)]
+    pub rescue_window_size: Option<(f32, f32)>,
+    #[serde(default = "default_rescue_col_ops")]
+    pub rescue_col_ops_w: f32,
+    #[serde(default = "default_rescue_col_mid")]
+    pub rescue_col_mid_w: f32,
 }
 
 fn default_jabber_server() -> String {
@@ -596,6 +634,86 @@ pub struct JumpBridge {
     pub to: String,
 }
 
+/// A rescue doctrine: the short `name` shown in the selector, and the full `description` line that
+/// goes into the ping's "Doctrine:" field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RescueDoctrine {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Accept both the old form (a list of plain name strings) and the new `{name, description}` form,
+/// so a config saved before descriptions existed still loads instead of resetting all settings.
+fn de_rescue_doctrines<'de, D>(d: D) -> Result<Vec<RescueDoctrine>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneDoctrine {
+        Name(String),
+        Full(RescueDoctrine),
+    }
+    let items = Vec::<OneDoctrine>::deserialize(d)?;
+    Ok(items
+        .into_iter()
+        .map(|o| match o {
+            OneDoctrine::Name(name) => RescueDoctrine { name, description: String::new() },
+            OneDoctrine::Full(r) => r,
+        })
+        .collect())
+}
+
+fn default_rescue_channel() -> String {
+    "delve911".to_owned()
+}
+fn default_rescue_staging() -> String {
+    "C-J6MT".to_owned()
+}
+fn default_rescue_doctrines() -> Vec<RescueDoctrine> {
+    let d = |name: &str, description: &str| RescueDoctrine {
+        name: name.to_owned(),
+        description: description.to_owned(),
+    };
+    vec![
+        d("FNIs", "Hammer Fleet (FNI) (Boosters > Ferox Navy Issue > Basilisk > Support)"),
+        d("Svipuls", "Svipul (Boosters > Kirin/Scalpel > Svipul > Else)"),
+        d("Harpy", "Harpy Fleet (Boosters > Kirin/Scalpel > Harpy > Else)"),
+        d("Flycatchers", "Flycatchers (Boosters > Kirin/Scalpel > Flycatcher > Else)"),
+    ]
+}
+fn default_rescue_op_channel() -> u8 {
+    1
+}
+fn default_rescue_template() -> String {
+    "CAP Save - Get In!\n\
+     Give me a titan on standby in {staging}\n\
+     \n\
+     FC Name: {fc}\n\
+     Formup Location: {staging}\n\
+     PAP Type: Strategic\n\
+     Comms: Op {op} {mumble}\n\
+     Doctrine: {doctrine}"
+        .to_owned()
+}
+// Siege / Triage / Industrial Core cycle = 300s (5 min): the capital can't move or be
+// remote-repped until it ends. PANIC = the Rorqual Pulse Activated Nexus Invulnerability Core,
+// which holds invuln 4 min at base up to 6 min with Invulnerability Core Operation; default to a
+// 5-min middle and let the FC dial it after asking the pilot.
+fn default_siege_secs() -> u32 {
+    300
+}
+fn default_panic_secs() -> u32 {
+    300
+}
+fn default_rescue_col_ops() -> f32 {
+    300.0
+}
+fn default_rescue_col_mid() -> f32 {
+    320.0
+}
+
 fn default_client_id() -> String {
     crate::auth::DEFAULT_CLIENT_ID.to_owned()
 }
@@ -688,6 +806,22 @@ impl Default for Settings {
             fleet_ping_window_pos: None,
             fleet_ping_window_size: None,
             work_throttle: WorkThrottle::default(),
+            fc_rescue_enabled: false,
+            rescue_channel: default_rescue_channel(),
+            rescue_staging_system: default_rescue_staging(),
+            cyno_generators: Vec::new(),
+            rescue_doctrines: default_rescue_doctrines(),
+            rescue_op_channel: default_rescue_op_channel(),
+            rescue_doctrine: "FNIs".to_owned(),
+            rescue_ping_template: default_rescue_template(),
+            rescue_skirmish_jid: String::new(),
+            rescue_delve911_jid: String::new(),
+            rescue_siege_secs: default_siege_secs(),
+            rescue_panic_secs: default_panic_secs(),
+            rescue_window_pos: None,
+            rescue_window_size: None,
+            rescue_col_ops_w: default_rescue_col_ops(),
+            rescue_col_mid_w: default_rescue_col_mid(),
         }
     }
 }
@@ -1078,6 +1212,22 @@ mod window_geometry_tests {
         assert!(!s.main_window_maximized);
         assert_eq!(s.fleet_ping_window_pos, None);
         assert_eq!(s.fleet_ping_window_size, None);
+    }
+
+    #[test]
+    fn legacy_string_doctrines_still_parse() {
+        // A config saved before doctrine descriptions existed must NOT fail the whole Settings
+        // parse (which would reset every setting). Old form = list of plain name strings.
+        let json = r#"{"rescue_doctrines":["Harpy","FNI","Flycatcher"],"jabber_jid":"a@b"}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.jabber_jid, "a@b");
+        assert_eq!(s.rescue_doctrines.len(), 3);
+        assert_eq!(s.rescue_doctrines[0].name, "Harpy");
+        assert_eq!(s.rescue_doctrines[0].description, "");
+        // New object form still parses too.
+        let json2 = r#"{"rescue_doctrines":[{"name":"FNIs","description":"Hammer Fleet"}]}"#;
+        let s2: Settings = serde_json::from_str(json2).unwrap();
+        assert_eq!(s2.rescue_doctrines[0].description, "Hammer Fleet");
     }
 
     #[test]

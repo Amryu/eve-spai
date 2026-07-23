@@ -95,6 +95,28 @@ struct MapOverlays {
     thera: bool,
     turnur: bool,
     camps: bool,
+    #[serde(default)]
+    cyno_gen: bool,
+}
+
+impl MapOverlays {
+    /// Rescue-mode view: strip everything except ANSI bridges and the cyno-gen layer. Staging and
+    /// the capital system are drawn by a dedicated pass, not by these toggles.
+    fn rescue_preset(self) -> Self {
+        Self {
+            sov: SovMode::Off,
+            bridges: true,
+            activity: ActivityMode::Off,
+            adm: false,
+            upgrades: false,
+            jump_range: false,
+            wormholes: false,
+            thera: false,
+            turnur: false,
+            camps: false,
+            cyno_gen: self.cyno_gen,
+        }
+    }
 }
 
 impl Default for MapOverlays {
@@ -110,6 +132,7 @@ impl Default for MapOverlays {
             thera: false,
             turnur: true,
             camps: true,
+            cyno_gen: false,
         }
     }
 }
@@ -181,6 +204,7 @@ impl MapMode {
                 MapMode::Standard | MapMode::JumpPlan => ActivityMode::Off,
                 _ => ActivityMode::ShipKills,
             },
+            cyno_gen: false,
         }
     }
 }
@@ -599,6 +623,25 @@ pub struct SpaiApp {
     activity: crate::activity::SharedActivity,
     sightings: crate::intel::SharedSightings,
     revivals: crate::watcher::SharedRevivals,
+    rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
+    /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
+    rescue_feed_cursor: u64,
+    rescue_window_open: bool,
+    /// Set once the saved geometry has been applied to the rescue viewport after opening. Prevents
+    /// re-asserting position/size every frame (which fights the user dragging/resizing the window).
+    rescue_geom_applied: bool,
+    /// Fleet poller handle guard: `true` once `spawn_fleet_poller` has been started.
+    fleet_poller_started: bool,
+    rescue_cyno_input: String,
+    rescue_doctrine_input: String,
+    rescue_doctrines_open: bool,
+    cyno_generators_open: bool,
+    /// Pre-flight op-channel + doctrine dialog, shown before the main rescue window.
+    rescue_setup_open: bool,
+    /// Set true to arm rescue mode (a delve911 ping arrived); the banner offers 1-click entry.
+    rescue_armed: bool,
+    /// (capital system, cyno-gen count) the cached nearest-cyno result was computed for.
+    rescue_cyno_calc_for: Option<(i64, usize)>,
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     ship_roles_cache: std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
     type_names: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>,
@@ -1144,6 +1187,18 @@ impl SpaiApp {
             activity,
             sightings,
             revivals,
+            rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
+            rescue_feed_cursor: 0,
+            rescue_window_open: false,
+            rescue_geom_applied: false,
+            fleet_poller_started: false,
+            rescue_cyno_input: String::new(),
+            rescue_doctrine_input: String::new(),
+            rescue_doctrines_open: false,
+            cyno_generators_open: false,
+            rescue_setup_open: false,
+            rescue_armed: false,
+            rescue_cyno_calc_for: None,
         }
     }
 
@@ -2393,6 +2448,14 @@ impl SpaiApp {
                     self.mention_input = self.settings.jabber_mention_keywords.join(", ");
                     self.ping_rules_open = true;
                 }
+                if self.settings.fc_rescue_enabled
+                    && ui
+                        .button(egui_phosphor::regular::WARNING_OCTAGON)
+                        .on_hover_text("Open capital rescue (cap save)")
+                        .clicked()
+                {
+                    self.enter_rescue_mode(true);
+                }
             });
         });
         if presence_changed {
@@ -3009,7 +3072,7 @@ impl SpaiApp {
                                                     }
                                                 }
                                             }
-                                            render_message_body(ui, &m.body);
+                                            render_message_body(ui, condense_attention_list(&m.body).as_ref());
                                         });
                                     };
                                     let mentioned = !m.outgoing
@@ -3518,9 +3581,30 @@ impl SpaiApp {
             ctx.clone(),
         );
 
+        // Seed the rescue selectors from persisted settings before the poller/window read them.
+        {
+            let mut r = self.rescue.lock().unwrap();
+            r.op_channel = self.settings.rescue_op_channel.clamp(1, 12);
+            if r.doctrine.is_empty() {
+                r.doctrine = self.settings.rescue_doctrine.clone();
+            }
+        }
+
         if let Some(dir) = self.chat_dir.clone() {
             let ships = std::sync::Arc::new(store.ship_index());
             self.ship_index = Some(ships.clone());
+            let rescue_channel = if self.settings.fc_rescue_enabled {
+                self.settings.rescue_channel.clone()
+            } else {
+                String::new()
+            };
+            // SDE ship name (lowercased) -> group, so a ping naming a specific hull resolves to a
+            // capital class (e.g. "Phoenix Navy Issue" -> Dreadnought).
+            let ship_groups: std::collections::HashMap<String, String> = store
+                .all_ships()
+                .into_iter()
+                .map(|(_, name, group)| (name.to_lowercase(), group))
+                .collect();
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
@@ -3531,12 +3615,790 @@ impl SpaiApp {
                 self.sightings.clone(),
                 self.activity.clone(),
                 self.revivals.clone(),
+                self.rescue.clone(),
+                rescue_channel,
+                std::sync::Arc::new(ship_groups),
                 ctx.clone(),
             );
         }
 
+        // Fleet-composition poller (FC rescue only). Runs idle until Rescue Mode is active.
+        if self.settings.fc_rescue_enabled && !self.fleet_poller_started {
+            let ship_types: std::collections::HashMap<i64, (String, String)> =
+                store.all_ships().into_iter().map(|(id, name, group)| (id, (name, group))).collect();
+            crate::esi::spawn_fleet_poller(
+                self.settings.sso_client_id.clone(),
+                self.player.clone(),
+                self.rescue.clone(),
+                std::sync::Arc::new(ship_types),
+                ctx.clone(),
+            );
+            self.fleet_poller_started = true;
+        }
+
         // Combat-event alerts (warp scrambled / under attack) are disabled for now: the game-log
         // watcher is not spawned, so no combat events reach the alert log or OS notifications.
+    }
+
+    /// Move newly-parsed delve911 ping events into the fleet-ping feed exactly once each.
+    /// Runs on the UI thread so it can take the jabber lock (the watcher only writes `rescue`).
+    fn drain_rescue_feed(&mut self, ctx: &egui::Context) {
+        let mut fresh: Vec<crate::rescue::RescueEvent> = Vec::new();
+        {
+            let r = self.rescue.lock().unwrap();
+            for ev in &r.events {
+                if ev.seq > self.rescue_feed_cursor && ev.is_ping {
+                    fresh.push(ev.clone());
+                }
+                self.rescue_feed_cursor = self.rescue_feed_cursor.max(ev.seq);
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        let mut arrived = false;
+        {
+            let mut j = self.jabber.lock().unwrap();
+            for ev in &fresh {
+                let mut text = String::from("delve911");
+                if let Some(sys) = &ev.system_name {
+                    text.push_str(" — ");
+                    text.push_str(sys);
+                }
+                if let Some(pilot) = &ev.pilot {
+                    text.push_str(&format!(" — {pilot} tackled"));
+                }
+                if let Some(cyno) = &ev.cyno {
+                    text.push_str(&format!(" (cyno {cyno})"));
+                }
+                if ev.system_name.is_none() && ev.pilot.is_none() {
+                    text = format!("delve911: {}", ev.raw);
+                }
+                j.pings.push(crate::pings::Ping::Plain {
+                    timestamp: ev.received,
+                    text,
+                    sender: Some(ev.author.clone()),
+                    target: Some("delve911".to_owned()),
+                    raw: ev.raw.clone(),
+                });
+                arrived = true;
+            }
+            let n = j.pings.len();
+            if n > 2000 {
+                j.pings.drain(0..n - 2000);
+            }
+            if arrived {
+                j.pings_unread = true;
+                j.notify.push((crate::jabber::PING_FEED_KEY.to_owned(), true));
+            }
+        }
+        if arrived {
+            // Arm rescue mode: the banner/top-bar button offers 1-click entry (no auto-hijack).
+            self.rescue_armed = true;
+            ctx.request_repaint();
+        }
+    }
+
+    /// FC-only rescue settings. Returns true if anything changed (caller sets needs_save).
+    fn rescue_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.heading("FC / Rescue (delve911)");
+        ui.label(
+            egui::RichText::new(
+                "Capital-rescue coordination for fleet commanders. Off by default.",
+            )
+            .weak(),
+        );
+        changed |= ui
+            .checkbox(
+                &mut self.settings.fc_rescue_enabled,
+                "Enable delve911 Rescue Mode (FC only)",
+            )
+            .changed();
+        if !self.settings.fc_rescue_enabled {
+            return changed;
+        }
+        ui.add_space(4.0);
+        egui::Grid::new("rescue_settings_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("delve911 channel");
+            changed |= ui
+                .add(egui::TextEdit::singleline(&mut self.settings.rescue_channel).desired_width(220.0))
+                .changed();
+            ui.end_row();
+            ui.label("Home staging system");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.settings.rescue_staging_system)
+                        .desired_width(220.0),
+                )
+                .changed();
+            ui.end_row();
+            ui.label("skirmish_commanders JID");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.settings.rescue_skirmish_jid)
+                        .hint_text("empty = skirmish_commanders@conference.goonfleet.com")
+                        .desired_width(280.0),
+                )
+                .changed();
+            ui.end_row();
+            ui.label("delve911 room JID");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.settings.rescue_delve911_jid)
+                        .hint_text("empty = delve911@conference.goonfleet.com")
+                        .desired_width(280.0),
+                )
+                .changed();
+            ui.end_row();
+            ui.label("Default siege secs");
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.settings.rescue_siege_secs).range(0..=600))
+                .changed();
+            ui.end_row();
+            ui.label("Default PANIC secs");
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.settings.rescue_panic_secs).range(0..=1200))
+                .changed();
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.label("Ping template");
+        ui.label(
+            egui::RichText::new(
+                "Placeholders: {fc} {pilot} {system} {cyno} {anom} {op} {mumble} {doctrine} {staging}",
+            )
+            .weak(),
+        );
+        changed |= ui
+            .add(
+                egui::TextEdit::multiline(&mut self.settings.rescue_ping_template)
+                    .desired_rows(5)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed();
+
+        ui.add_space(6.0);
+        if ui.button(format!("{}  Configure doctrines…", egui_phosphor::regular::LIST_BULLETS)).clicked() {
+            self.rescue_doctrines_open = true;
+        }
+        changed
+    }
+
+    /// Enter or leave Rescue Mode. Entering opens the always-on-top window directly (ready to watch
+    /// delve911); op/doctrine are reachable via the header "edit" button. Leaving clears everything.
+    fn enter_rescue_mode(&mut self, on: bool) {
+        {
+            let mut r = self.rescue.lock().unwrap();
+            r.active = on;
+            r.claimed = false;
+            r.pending_ping.clear();
+            r.panic_input.clear();
+            r.snowflakes.clear();
+            if !on {
+                r.test_mode = false;
+            }
+        }
+        self.rescue_armed = false;
+        if on {
+            self.rescue_window_open = true;
+            self.rescue_geom_applied = false; // apply saved geometry once on this open
+        } else {
+            self.rescue_setup_open = false;
+            self.rescue_window_open = false;
+        }
+    }
+
+    /// Recompute the nearest cyno-generator route only when the capital system or the configured
+    /// generator set changes (BFS can sweep the map, so never do it every frame).
+    fn update_nearest_cyno(&mut self) {
+        let Some(systems) = self.systems.clone() else { return };
+        let (cap, gens) = {
+            let r = self.rescue.lock().unwrap();
+            (r.capital_system, self.settings.cyno_generators.clone())
+        };
+        let Some(cap) = cap else {
+            if self.rescue_cyno_calc_for.is_some() {
+                self.rescue.lock().unwrap().nearest_cyno = None;
+                self.rescue_cyno_calc_for = None;
+            }
+            return;
+        };
+        let key = (cap, gens.len());
+        if self.rescue_cyno_calc_for == Some(key) {
+            return;
+        }
+        let info = crate::rescue::nearest_cyno(&systems, cap, &gens);
+        self.rescue.lock().unwrap().nearest_cyno = info;
+        self.rescue_cyno_calc_for = Some(key);
+    }
+
+    /// Build the ready-to-send ping text from the template and current rescue state. `{doctrine}`
+    /// expands to the selected doctrine's full description line.
+    fn build_rescue_ping(&self) -> String {
+        let r = self.rescue.lock().unwrap();
+        let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
+        let pilot = r.capital_pilot.clone().unwrap_or_else(|| "?".into());
+        let cyno = r.cyno_pilot.clone().unwrap_or_else(|| "?".into());
+        let anom = r.anomaly.clone().unwrap_or_else(|| "?".into());
+        let op = r.op_channel.to_string();
+        let doctrine = self
+            .settings
+            .rescue_doctrines
+            .iter()
+            .find(|d| d.name == r.doctrine)
+            .map(|d| if d.description.is_empty() { d.name.clone() } else { d.description.clone() })
+            .unwrap_or_else(|| if r.doctrine.is_empty() { "?".into() } else { r.doctrine.clone() });
+        let staging = self.settings.rescue_staging_system.clone();
+        let fc = if self.active_character.is_empty() { "?".into() } else { self.active_character.clone() };
+        let mumble = op_comms_url(r.op_channel);
+        self.settings
+            .rescue_ping_template
+            .replace("{system}", &sys)
+            .replace("{pilot}", &pilot)
+            .replace("{cyno}", &cyno)
+            .replace("{anom}", &anom)
+            .replace("{op}", &op)
+            .replace("{doctrine}", &doctrine)
+            .replace("{staging}", &staging)
+            .replace("{fc}", &fc)
+            .replace("{mumble}", &mumble)
+    }
+
+    #[allow(deprecated)]
+    fn show_rescue_window(&mut self, ctx: &egui::Context) {
+        if !self.rescue_window_open {
+            return;
+        }
+        let mut keep = true;
+        let mut builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
+            .with_title("EVE Spai - Rescue")
+            .with_min_inner_size([560.0, 400.0])
+            .with_window_level(egui::WindowLevel::AlwaysOnTop);
+        // Apply the saved size/position ONLY on the first frame after opening. Re-applying every
+        // frame would fight the user dragging/resizing the window (a move/resize feedback loop).
+        if !self.rescue_geom_applied {
+            let size = self.settings.rescue_window_size.unwrap_or((960.0, 720.0));
+            builder = builder.with_inner_size([size.0, size.1]);
+            if let Some((x, y)) = self.settings.rescue_window_pos {
+                builder = builder.with_position([x, y]);
+            }
+            self.rescue_geom_applied = true;
+        }
+        let mut new_geom: Option<((f32, f32), Option<(f32, f32)>)> = None;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("rescue_window"),
+            builder,
+            |ctx, _class| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    // Tight catch_unwind around the panel body: a UI panic skips one frame and
+                    // recovers next tick rather than taking down the whole app mid-rescue.
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.rescue_window_body(ui);
+                    }));
+                    if res.is_err() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xE0, 0x50, 0x50),
+                            "Rescue panel hit an error this frame, recovering…",
+                        );
+                    }
+                });
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                // Capture this window's own geometry so it persists across restarts.
+                let sz = ctx.content_rect().size();
+                let pos = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)));
+                if sz.x > 100.0 && sz.y > 100.0 {
+                    new_geom = Some(((sz.x, sz.y), pos));
+                }
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    keep = false;
+                }
+            },
+        );
+        if let Some((sz, pos)) = new_geom {
+            if geometry_update(self.settings.rescue_window_size, sz, 2.0).is_some() {
+                self.settings.rescue_window_size = Some(sz);
+                self.needs_save = true;
+            }
+            if let Some(p) = pos.and_then(|p| geometry_update(self.settings.rescue_window_pos, p, 1.0)) {
+                self.settings.rescue_window_pos = Some(p);
+                self.needs_save = true;
+            }
+        }
+        if !keep {
+            self.rescue_window_open = false;
+        }
+    }
+
+    /// Pre-flight dialog: pick op channel + doctrine, then start the rescue window. Also reopened
+    /// via the window's "edit" button.
+    fn show_rescue_setup(&mut self, ctx: &egui::Context) {
+        if !self.rescue_setup_open {
+            return;
+        }
+        let doctrines = self.settings.rescue_doctrines.clone();
+        // The window is already open; this dialog only edits op/doctrine and persists on close.
+        let keep = Self::dialog_viewport(
+            ctx,
+            "rescue_setup_window",
+            "EVE Spai - Rescue setup",
+            [340.0, 240.0],
+            |ui| {
+                ui.add_space(6.0);
+                ui.label("Set the op channel and doctrine, then start the rescue.");
+                ui.add_space(8.0);
+                let mut r = self.rescue.lock().unwrap();
+                egui::Grid::new("rescue_setup_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label("Op channel");
+                    egui::ComboBox::from_id_salt("setup_op")
+                        .selected_text(r.op_channel.to_string())
+                        .show_ui(ui, |ui| {
+                            // Op 8 command comms does not exist.
+                            for n in (1u8..=12).filter(|n| *n != 8) {
+                                ui.selectable_value(&mut r.op_channel, n, n.to_string());
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Doctrine");
+                    let cur = r.doctrine.clone();
+                    egui::ComboBox::from_id_salt("setup_doc")
+                        .selected_text(if cur.is_empty() { "—".into() } else { cur })
+                        .show_ui(ui, |ui| {
+                            for d in &doctrines {
+                                ui.selectable_value(&mut r.doctrine, d.name.clone(), &d.name);
+                            }
+                        });
+                    ui.end_row();
+                });
+                drop(r);
+            },
+        );
+        if !keep {
+            self.rescue_setup_open = false;
+            self.rescue_window_open = true;
+            let (op, doc) = {
+                let r = self.rescue.lock().unwrap();
+                (r.op_channel, r.doctrine.clone())
+            };
+            self.settings.rescue_op_channel = op;
+            self.settings.rescue_doctrine = doc;
+            self.needs_save = true;
+        }
+    }
+
+    /// Last `n` messages of a jabber room/conversation as (sender, body, outgoing), oldest first.
+    fn jabber_room_tail(&self, jid: &str, n: usize) -> Vec<(String, String, bool)> {
+        if jid.is_empty() {
+            return Vec::new();
+        }
+        let j = self.jabber.lock().unwrap();
+        j.chats
+            .get(jid)
+            .map(|msgs| {
+                let start = msgs.len().saturating_sub(n);
+                msgs[start..]
+                    .iter()
+                    .map(|m| {
+                        let who = m.from.split('/').next_back().unwrap_or(&m.from).to_string();
+                        (who, m.body.clone(), m.outgoing)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn rescue_window_body(&mut self, ui: &mut egui::Ui) {
+        // Clone what the columns need so the render closure never borrows `self` (it holds the
+        // rescue lock). Deferred self-mutations go through flags applied after the lock drops.
+        let ping = self.build_rescue_ping();
+        let systems = self.systems.clone();
+        // Empty -> goonfleet defaults (the rooms the app already joins).
+        let goon = |cfg: &str, default: &str| {
+            if cfg.trim().is_empty() { default.to_string() } else { cfg.trim().to_string() }
+        };
+        let skirmish_jid =
+            goon(&self.settings.rescue_skirmish_jid, "skirmish_commanders@conference.goonfleet.com");
+        let delve911_jid =
+            goon(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com");
+        let skirmish_msgs = self.jabber_room_tail(&skirmish_jid, 60);
+        let delve911_msgs = self.jabber_room_tail(&delve911_jid, 60);
+        let tx = self.jabber_tx.clone();
+        let ops_w = self.settings.rescue_col_ops_w.clamp(180.0, 640.0);
+        let mid_w = self.settings.rescue_col_mid_w.clamp(180.0, 720.0);
+        let mut new_ops_w = ops_w;
+        let mut new_mid_w = mid_w;
+        let mut open_setup = false;
+        let mut exit = false;
+        let mut clear_dscan = false;
+
+        egui::Panel::bottom("rescue_exit_bar")
+            .exact_size(40.0)
+            .show_inside(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Exit rescue mode").clicked() {
+                        exit = true;
+                    }
+                    let mut rr = self.rescue.lock().unwrap();
+                    if rr.claimed {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0x50, 0xC0, 0x60),
+                            format!("{}  Rescue claimed — pings enabled", egui_phosphor::regular::CHECK_CIRCLE),
+                        );
+                    } else if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(format!(
+                                "{}  Start save (claim)",
+                                egui_phosphor::regular::WARNING_OCTAGON
+                            ))
+                            .strong(),
+                        ))
+                        .on_hover_text("Claim this rescue to enable ping sending")
+                        .clicked()
+                    {
+                        rr.claimed = true;
+                    }
+                });
+            });
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+            let mut r = self.rescue.lock().unwrap();
+            let test_mode = r.test_mode;
+
+            // --- Top strip: capital summary, always full-width ---
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(egui_phosphor::regular::WARNING_OCTAGON.to_string());
+                let pilot = r.capital_pilot.clone().unwrap_or_else(|| "unknown".into());
+                let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
+                ui.heading(egui::RichText::new(pilot).strong());
+                ui.label("in");
+                ui.heading(egui::RichText::new(sys).strong());
+                if let Some(class) = r.cap_class {
+                    ui.label(format!("[{}]", class.label()));
+                }
+                if r.fleet.stale {
+                    ui.colored_label(egui::Color32::from_rgb(0xE0, 0xA0, 0x30), "· stale");
+                }
+            });
+            // Only render the cyno/anomaly line when there's something to show (avoids an empty gap).
+            if r.cyno_pilot.is_some() || r.anomaly.is_some() {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(cyno) = &r.cyno_pilot {
+                        ui.label(format!("cyno: {cyno}"));
+                    }
+                    if let Some(anom) = &r.anomaly {
+                        ui.label(format!("· @ {anom}"));
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                let doc = if r.doctrine.is_empty() { "—" } else { r.doctrine.as_str() };
+                ui.label(egui::RichText::new(format!("Op {} · {}", r.op_channel, doc)).strong());
+                if ui.small_button("edit").clicked() {
+                    open_setup = true;
+                }
+                if ui
+                    .button(format!("{}  Command comms", egui_phosphor::regular::HEADSET))
+                    .on_hover_text("Open Command comms (Command Sector Alpha) for this op")
+                    .clicked()
+                {
+                    let _ = open::that(command_mumble_url(r.op_channel));
+                }
+                if test_mode {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0x40, 0xB0, 0xF0),
+                        format!("{}  TEST — sending disabled", egui_phosphor::regular::FLASK),
+                    );
+                }
+            });
+            ui.separator();
+
+            // ================= LEFT: operations (resizable) =================
+            let ops_resp = egui::Panel::left("rescue_ops_panel")
+                .resizable(true)
+                .default_size(ops_w)
+                .size_range(180.0..=640.0)
+                .show_inside(ui, |ui| {
+                    rescue_checklist_ui(ui, &mut *r);
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
+                        if ui.small_button("↻").on_hover_text("Regenerate from template").clicked() {
+                            r.pending_ping = ping.clone();
+                            r.ping_built_for = Some((r.op_channel, r.doctrine.clone()));
+                        }
+                    });
+                    // Regenerate from the template on first show and whenever op channel or doctrine
+                    // changes (discards manual edits, as intended).
+                    let ping_key = (r.op_channel, r.doctrine.clone());
+                    if r.pending_ping.is_empty() || r.ping_built_for.as_ref() != Some(&ping_key) {
+                        r.pending_ping = ping.clone();
+                        r.ping_built_for = Some(ping_key);
+                    }
+                    ui.add(
+                        egui::TextEdit::multiline(&mut r.pending_ping)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+                            if let Ok(mut clip) = arboard::Clipboard::new() {
+                                let _ = clip.set_text(r.pending_ping.clone());
+                            }
+                        }
+                        // coord/fc/all are directorbot ping GROUPS: prefix "!bping <group>" onto the
+                        // ping and post it to skirmish_commanders. Blocked until the rescue is
+                        // claimed/started (prevents accidental sends) and off in test mode.
+                        let can_send = r.claimed && !test_mode && !skirmish_jid.is_empty();
+                        for group in ["coord", "fc", "all"] {
+                            if ui
+                                .add_enabled(can_send, egui::Button::new(format!("Ping {group}")))
+                                .clicked()
+                            {
+                                if let Some(tx) = &tx {
+                                    let _ = tx.send(crate::jabber::Cmd::SendRoom {
+                                        room: skirmish_jid.clone(),
+                                        body: format!("!bping {group}\n\n{}", r.pending_ping),
+                                    });
+                                }
+                            }
+                        }
+                    });
+                    if !r.claimed {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xE0, 0xA0, 0x30),
+                            "Claim the rescue (bottom) to enable pings",
+                        );
+                    }
+                });
+            new_ops_w = ops_resp.response.rect.width();
+
+            // ================= MIDDLE: situational (resizable) =================
+            let mid_resp = egui::Panel::left("rescue_mid_panel")
+                .resizable(true)
+                .default_size(mid_w)
+                .size_range(180.0..=720.0)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("rescue_mid")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                    // PANIC timer.
+                    rescue_timers_ui(ui, &mut *r);
+                    ui.add_space(6.0);
+                    ui.separator();
+                    // Nearest cyno readout.
+                    match &r.nearest_cyno {
+                        None => {
+                            ui.label("Cyno gen: none configured");
+                        }
+                        Some(c) if c.in_system => {
+                            ui.colored_label(egui::Color32::from_rgb(0x50, 0xC0, 0x60), "Cyno gen: in-system");
+                        }
+                        Some(c) if c.reachable => {
+                            ui.label(format!("Cyno gen: {} jumps → {}", c.jumps, c.dest_name));
+                            if c.via_bridge {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(0xE0, 0x70, 0x30),
+                                    format!("{}  via jump bridge (blockade risk)", egui_phosphor::regular::WARNING),
+                                );
+                            }
+                        }
+                        Some(_) => {
+                            ui.colored_label(egui::Color32::from_rgb(0xE0, 0x50, 0x50), "Cyno gen: no route");
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.separator();
+
+                    // Fleet composition.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Fleet").strong());
+                        if r.fleet.updated > 0 {
+                            let age = (chrono::Utc::now().timestamp() - r.fleet.updated).max(0);
+                            ui.label(egui::RichText::new(format!("· {age}s ago")).weak());
+                        }
+                    });
+                    if r.fleet.members.is_empty() {
+                        ui.label(egui::RichText::new("no ESI fleet data").weak());
+                    } else {
+                        egui::Grid::new("rescue_comp").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                            for (role, n) in &r.fleet.counts {
+                                ui.label(role.label());
+                                ui.label(n.to_string());
+                                ui.end_row();
+                            }
+                        });
+                    }
+
+                    // Snowflakes (sticky: a flagged pilot stays listed even after re-shipping/podding).
+                    let snowflakes: Vec<(String, String, String, bool)> = r
+                        .fleet
+                        .members
+                        .iter()
+                        .filter_map(|m| {
+                            let tag = r.snowflakes.get(&m.character_id)?;
+                            let sys = systems
+                                .as_ref()
+                                .and_then(|g| g.info_of(m.system_id).map(|i| i.name.clone()))
+                                .unwrap_or_default();
+                            let podded = m.ship.eq_ignore_ascii_case("Capsule");
+                            Some((format!("{tag}: {}", m.name), m.ship.clone(), sys, podded))
+                        })
+                        .collect();
+                    if !snowflakes.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Snowflakes").strong());
+                        for (who, ship, sys, podded) in snowflakes {
+                            let loc = if sys.is_empty() { String::new() } else { format!("  @ {sys}") };
+                            let color = if podded {
+                                egui::Color32::from_rgb(0xE0, 0x50, 0x50)
+                            } else {
+                                egui::Color32::from_rgb(0xF0, 0xC0, 0x40)
+                            };
+                            let ship = if podded { format!("{ship} !PODDED") } else { ship };
+                            ui.colored_label(color, format!("{who}  ({ship}){loc}"));
+                        }
+                    }
+
+                    // On-grid d-scan.
+                    if let Some(dscan) = &r.dscan {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("On grid (d-scan)").strong());
+                            if ui.small_button("clear").clicked() {
+                                clear_dscan = true;
+                            }
+                        });
+                        egui::Grid::new("rescue_dscan").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                            for (name, n) in dscan.iter().take(20) {
+                                ui.label(name);
+                                ui.label(n.to_string());
+                                ui.end_row();
+                            }
+                        });
+                    }
+
+                        });
+                });
+            new_mid_w = mid_resp.response.rect.width();
+
+            // ================= RIGHT: chat (delve911 | skirmish tabs, reply pinned bottom) =======
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 0)))
+                .show_inside(ui, |ui| {
+                // Reply box pinned at the bottom; targets the currently selected tab's room.
+                egui::Panel::bottom("rescue_chat_reply").show_inside(ui, |ui| {
+                    let (room, room_set) = if r.chat_tab == 1 {
+                        (skirmish_jid.clone(), !skirmish_jid.is_empty())
+                    } else {
+                        (delve911_jid.clone(), !delve911_jid.is_empty())
+                    };
+                    ui.add_space(2.0);
+                    if test_mode {
+                        ui.label(egui::RichText::new("(reply disabled while testing)").weak());
+                    } else if !room_set {
+                        ui.label(egui::RichText::new("set this room's JID in settings to reply").weak());
+                    }
+                    ui.horizontal(|ui| {
+                        let clicked = ui.button("Send").clicked();
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut r.delve911_reply)
+                                .hint_text("respond…")
+                                .margin(egui::Margin::same(2))
+                                .desired_width(ui.available_width()),
+                        );
+                        let enter =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let can_send = !test_mode && room_set && !r.delve911_reply.trim().is_empty();
+                        if (enter || clicked) && can_send {
+                            if let Some(tx) = &tx {
+                                let _ = tx.send(crate::jabber::Cmd::SendRoom {
+                                    room,
+                                    body: r.delve911_reply.clone(),
+                                });
+                            }
+                            r.delve911_reply.clear();
+                        }
+                    });
+                });
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+                    // Tab row: exactly two 50%-width tabs regardless of label length.
+                    ui.columns(2, |c| {
+                        let w0 = c[0].available_width();
+                        if c[0]
+                            .add_sized([w0, 22.0], egui::Button::selectable(r.chat_tab == 0, "delve911"))
+                            .clicked()
+                        {
+                            r.chat_tab = 0;
+                        }
+                        let w1 = c[1].available_width();
+                        if c[1]
+                            .add_sized([w1, 22.0], egui::Button::selectable(r.chat_tab == 1, "skirmish"))
+                            .clicked()
+                        {
+                            r.chat_tab = 1;
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("rescue_chat")
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            if r.chat_tab == 1 {
+                                if skirmish_msgs.is_empty() {
+                                    ui.label(egui::RichText::new("(no messages)").weak());
+                                }
+                                for (who, body, _outgoing) in &skirmish_msgs {
+                                    rescue_chat_line(ui, who, body);
+                                }
+                            } else {
+                                if delve911_msgs.is_empty() {
+                                    ui.label(egui::RichText::new("(no messages)").weak());
+                                }
+                                for (who, body, _outgoing) in &delve911_msgs {
+                                    rescue_chat_line(ui, who, body);
+                                }
+                            }
+                        });
+                });
+            });
+
+            if clear_dscan {
+                r.dscan = None;
+            }
+        });
+
+        // Persist column widths once a resize drag ends (avoids a write storm mid-drag).
+        if !ui.ctx().input(|i| i.pointer.any_down())
+            && ((new_ops_w - self.settings.rescue_col_ops_w).abs() > 1.0
+                || (new_mid_w - self.settings.rescue_col_mid_w).abs() > 1.0)
+        {
+            self.settings.rescue_col_ops_w = new_ops_w;
+            self.settings.rescue_col_mid_w = new_mid_w;
+            self.needs_save = true;
+        }
+
+        if open_setup {
+            self.rescue_setup_open = true;
+        }
+        if exit {
+            self.enter_rescue_mode(false);
+        }
+
+        // Persist op/doctrine so the next rescue starts where we left off.
+        let (op, doc) = {
+            let r = self.rescue.lock().unwrap();
+            (r.op_channel, r.doctrine.clone())
+        };
+        if op != self.settings.rescue_op_channel || doc != self.settings.rescue_doctrine {
+            self.settings.rescue_op_channel = op;
+            self.settings.rescue_doctrine = doc;
+            self.needs_save = true;
+        }
     }
 
     fn intel_view(&mut self, ui: &mut egui::Ui) {
@@ -7464,7 +8326,15 @@ impl SpaiApp {
         }
 
         let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
-        let ov = self.map_overlays;
+        // Rescue mode strips overlays down to bridges + cyno-gen without touching the user's saved
+        // toggles. `ov` is the effective set used for all gating below (no early returns follow).
+        let rescue_active =
+            self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active;
+        let ov = if rescue_active {
+            self.map_overlays.rescue_preset()
+        } else {
+            self.map_overlays
+        };
         let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         let show_sys_labels = zoomed;
         let cull = rect.expand(8.0);
@@ -7645,7 +8515,7 @@ impl SpaiApp {
                 }
             }
         }
-        if self.map_overlays.bridges {
+        if ov.bridges {
             let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
             for &(a, c) in &bridges {
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
@@ -7656,12 +8526,12 @@ impl SpaiApp {
             }
         }
 
-        if self.map_overlays.wormholes {
+        if ov.wormholes {
             let wh_col = egui::Color32::from_rgb(0x4D, 0xD0, 0xC4);
             let chain_col = egui::Color32::from_rgb(0xB0, 0x7C, 0xE8);
             const TURNUR: i64 = 30_002_086;
             for &(a, b) in &self.wh_overlay.direct {
-                if !self.map_overlays.turnur && (a == TURNUR || b == TURNUR) {
+                if !ov.turnur && (a == TURNUR || b == TURNUR) {
                     continue;
                 }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
@@ -7669,7 +8539,7 @@ impl SpaiApp {
                 }
             }
             for &(a, b, hops) in &self.wh_overlay.chains {
-                if !self.map_overlays.turnur && (a == TURNUR || b == TURNUR) {
+                if !ov.turnur && (a == TURNUR || b == TURNUR) {
                     continue;
                 }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&b)) {
@@ -7698,7 +8568,7 @@ impl SpaiApp {
                     );
                 }
             }
-            if self.map_overlays.thera {
+            if ov.thera {
                 let conns: Vec<&crate::store::MapSystem> = self
                     .wh_overlay
                     .thera_conns
@@ -7747,7 +8617,7 @@ impl SpaiApp {
                         egui::FontId::proportional(12.0), tcol);
                 }
             }
-            if self.map_overlays.turnur {
+            if ov.turnur {
                 if let Some(tp) = pos.get(&TURNUR).copied() {
                     let col = egui::Color32::from_rgb(0xE0, 0xA8, 0x4C);
                     painter.circle_stroke(tp, dot + 6.0, egui::Stroke::new(2.0, col));
@@ -7878,7 +8748,7 @@ impl SpaiApp {
         }
 
         // The campfire itself rides the label row (see `lead_icons`); only its glow stays on the dot.
-        if self.map_overlays.camps {
+        if ov.camps {
             for (id, level) in &self.camped_cache {
                 if let Some(p) = pos.get(id) {
                     let glow = match level {
@@ -8030,7 +8900,7 @@ impl SpaiApp {
             .and_then(|p| nearest_system(p, &pos, 8.0));
         // A selected system keeps its hover effects; hovering something else takes over.
         let focus_id = hovered_id.or(self.map_selected);
-        if let (true, Some(h_id)) = (self.map_overlays.jump_range, focus_id) {
+        if let (true, Some(h_id)) = (ov.jump_range, focus_id) {
             if let Some(real_h) = self.map_systems.iter().find(|s| s.id == h_id) {
                 let hp = pos[&h_id];
                 let band_color = [
@@ -8265,6 +9135,54 @@ impl SpaiApp {
                 painter.text(c, egui::Align2::CENTER_CENTER, name, font.clone(), egui::Color32::from_gray(220));
             }
         }
+
+        // Cyno-generator layer + rescue highlights. Isolated in catch_unwind so a stale id can't
+        // crash the map mid-rescue. Cyno markers show whenever the layer is on; staging/capital
+        // rings only in rescue mode.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if ov.cyno_gen {
+                let cyan = egui::Color32::from_rgb(0x3A, 0xC8, 0xE0);
+                for id in &self.settings.cyno_generators {
+                    if let Some(p) = pos.get(id) {
+                        painter.circle_stroke(*p, dot + 5.0, egui::Stroke::new(2.0, cyan));
+                        painter.circle_filled(*p, 2.0, cyan);
+                    }
+                }
+            }
+            if rescue_active {
+                if let Some(sid) = self.systems.as_ref().and_then(|g| {
+                    g.lookup(&self.settings.rescue_staging_system).map(|i| i.id)
+                }) {
+                    if let Some(p) = pos.get(&sid) {
+                        let gold = egui::Color32::from_rgb(0xF0, 0xC0, 0x40);
+                        painter.circle_stroke(*p, dot + 9.0, egui::Stroke::new(2.5, gold));
+                        painter.text(
+                            *p + egui::vec2(0.0, -(dot + 14.0)),
+                            egui::Align2::CENTER_BOTTOM,
+                            "STAGING",
+                            egui::FontId::proportional(12.0),
+                            gold,
+                        );
+                    }
+                }
+                let cap = self.rescue.lock().unwrap().capital_system;
+                if let Some(cap) = cap {
+                    if let Some(p) = pos.get(&cap) {
+                        let red = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
+                        let a = (0.4 + 0.5 * blink).min(1.0);
+                        painter.circle_filled(*p, dot + 7.0, red.gamma_multiply(a));
+                        painter.circle_stroke(*p, dot + 9.0, egui::Stroke::new(3.0, red));
+                        painter.text(
+                            *p + egui::vec2(0.0, -(dot + 14.0)),
+                            egui::Align2::CENTER_BOTTOM,
+                            "CAPITAL",
+                            egui::FontId::proportional(12.0),
+                            red,
+                        );
+                    }
+                }
+            }
+        }));
 
         self.map_chrome(ui, rect);
     }
@@ -8546,6 +9464,7 @@ impl SpaiApp {
         ui.separator();
         ui.checkbox(&mut self.map_overlays.adm, format!("{}  ADM", icon::SHIELD_CHECK));
         ui.checkbox(&mut self.map_overlays.bridges, format!("{}  Jump bridges", icon::ARROWS_LEFT_RIGHT));
+        ui.checkbox(&mut self.map_overlays.cyno_gen, format!("{}  Cyno generators", icon::CROSSHAIR_SIMPLE));
         ui.checkbox(&mut self.map_overlays.upgrades, format!("{}  Sov upgrades", icon::MAP_PIN_LINE));
         if self.map_overlays.upgrades {
             ui.indent("upgrade_kinds", |ui| {
@@ -8594,6 +9513,26 @@ impl SpaiApp {
                 ui.colored_label(level_color(2), "2");
                 ui.colored_label(level_color(3), "3\u{2013}5");
             });
+        }
+
+        if self.settings.fc_rescue_enabled {
+            ui.separator();
+            let active = self.rescue.lock().unwrap().active;
+            ui.label(egui::RichText::new("delve911 rescue").strong());
+            if ui.button(format!("{}  Open delve911 feed", icon::CHAT_CENTERED_DOTS)).clicked() {
+                self.view = nav::View::Jabber;
+                self.jabber_chat = None;
+            }
+            let label = if active { "Exit rescue mode" } else { "Enter rescue mode" };
+            let btn = egui::Button::new(format!("{}  {label}", icon::WARNING_OCTAGON));
+            let btn = if self.rescue_armed && !active {
+                btn.fill(egui::Color32::from_rgb(0x80, 0x30, 0x30))
+            } else {
+                btn
+            };
+            if ui.add(btn).clicked() {
+                self.enter_rescue_mode(!active);
+            }
         }
     }
 
@@ -12252,6 +13191,14 @@ impl SpaiApp {
         }
         self.dscan_seen_hash = h;
         if let Some(n) = crate::dscan::looks_like_dscan(&text) {
+            // During a rescue, also capture the dscan breakdown onto the rescue state so the FC
+            // sees what is on grid without leaving the window.
+            if self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active {
+                let parsed = crate::rescue::parse_raw_dscan(&text);
+                if !parsed.is_empty() {
+                    self.rescue.lock().unwrap().dscan = Some(parsed);
+                }
+            }
             self.dscan_prompt = Some((text, n, PasteKind::Dscan));
         } else if let Some(n) = crate::dscan::looks_like_local(&text) {
             self.dscan_prompt = Some((text, n, PasteKind::Local));
@@ -13886,6 +14833,159 @@ impl SpaiApp {
         }
     }
 
+    fn rescue_doctrines_window(&mut self, ctx: &egui::Context) {
+        if !self.rescue_doctrines_open {
+            return;
+        }
+        let mut changed = false;
+        let keep = Self::dialog_viewport(
+            ctx,
+            "rescue_doctrines_window",
+            "EVE Spai - Rescue doctrines",
+            [360.0, 420.0],
+            |ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Name is shown in the selector; description is the ping's \"Doctrine:\" line.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rescue_doctrine_input)
+                            .hint_text("New doctrine name")
+                            .desired_width(180.0),
+                    );
+                    if ui.button("Add").clicked() {
+                        let name = self.rescue_doctrine_input.trim().to_string();
+                        if !name.is_empty()
+                            && !self.settings.rescue_doctrines.iter().any(|d| d.name == name)
+                        {
+                            self.settings.rescue_doctrines.push(crate::settings::RescueDoctrine {
+                                name,
+                                description: String::new(),
+                            });
+                            self.rescue_doctrine_input.clear();
+                            changed = true;
+                        }
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let mut remove: Option<usize> = None;
+                    for (i, d) in self.settings.rescue_doctrines.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut d.name)
+                                        .desired_width(120.0)
+                                        .hint_text("name"),
+                                )
+                                .changed();
+                            if ui.button("Remove").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut d.description)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("ping Doctrine: line"),
+                            )
+                            .changed();
+                        ui.add_space(4.0);
+                    }
+                    if let Some(i) = remove {
+                        self.settings.rescue_doctrines.remove(i);
+                        changed = true;
+                    }
+                });
+            },
+        );
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.rescue_doctrines_open = false;
+        }
+    }
+
+    fn cyno_generators_window(&mut self, ctx: &egui::Context) {
+        if !self.cyno_generators_open {
+            return;
+        }
+        let mut changed = false;
+        let systems = self.systems.clone();
+        let keep = Self::dialog_viewport(
+            ctx,
+            "cyno_generators_window",
+            "EVE Spai - Cyno generators",
+            [380.0, 460.0],
+            |ui| {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Systems with a friendly cyno generator. ESI can't list these, so add them \
+                         by name. Shown as the Cyno generators map layer.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rescue_cyno_input)
+                            .hint_text("Add system by name")
+                            .desired_width(200.0),
+                    );
+                    let can_add = systems.is_some();
+                    if ui.add_enabled(can_add, egui::Button::new("Add")).clicked() {
+                        if let Some(s) = &systems {
+                            let tok = self.rescue_cyno_input.trim();
+                            if let Some(info) = s.lookup(tok).or_else(|| s.lookup_prefix(tok)) {
+                                if !self.settings.cyno_generators.contains(&info.id) {
+                                    self.settings.cyno_generators.push(info.id);
+                                    changed = true;
+                                }
+                                self.rescue_cyno_input.clear();
+                            }
+                        }
+                    }
+                });
+                if systems.is_none() {
+                    ui.label(egui::RichText::new("(map data still loading…)").weak());
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let mut remove: Option<usize> = None;
+                    for (i, id) in self.settings.cyno_generators.iter().enumerate() {
+                        let name = systems
+                            .as_ref()
+                            .and_then(|s| s.info_of(*id).map(|inf| inf.name.clone()))
+                            .unwrap_or_else(|| format!("#{id}"));
+                        ui.horizontal(|ui| {
+                            ui.label(name);
+                            if ui.button("Remove").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        self.settings.cyno_generators.remove(i);
+                        changed = true;
+                    }
+                });
+            },
+        );
+        if changed {
+            self.needs_save = true;
+        }
+        if !keep {
+            self.cyno_generators_open = false;
+        }
+    }
+
     fn settings_view(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let mut new_theme: Option<Theme> = None;
@@ -14236,6 +15336,13 @@ impl SpaiApp {
                             .collect();
                         self.coalitions_open = true;
                     }
+                    if ui.button("Configure cyno generators…").clicked() {
+                        self.cyno_generators_open = true;
+                    }
+                    ui.add_space(12.0);
+                    ui.separator();
+                    changed |= self.rescue_settings_section(ui);
+
                     ui.add_space(12.0);
                     ui.separator();
                     ui.heading("About");
@@ -15127,6 +16234,10 @@ impl eframe::App for SpaiApp {
             }
         }
 
+        if self.settings.fc_rescue_enabled {
+            self.drain_rescue_feed(&ctx);
+        }
+
         let cur_sys = self.player_system().unwrap_or(0);
         self.player_sys_shared.store(cur_sys, std::sync::atomic::Ordering::Relaxed);
         if crate::geo::is_wormhole_system(cur_sys) {
@@ -15233,6 +16344,13 @@ impl eframe::App for SpaiApp {
         self.char_popout_windows(&ctx);
         if self.jabber_popped {
             self.show_jabber_viewport(&ctx);
+        }
+        self.cyno_generators_window(&ctx);
+        if self.settings.fc_rescue_enabled {
+            self.rescue_doctrines_window(&ctx);
+            self.show_rescue_setup(&ctx);
+            self.update_nearest_cyno();
+            self.show_rescue_window(&ctx);
         }
 
         // Remember the main window's location + size across restarts. Skip the first passes, where
@@ -17845,6 +18963,260 @@ fn route_item_row(
         });
     }
     act
+}
+
+/// Direct Mumble deep-link for a command-comms channel (op 1-12). Channels 9-12 carry a "- SC"
+/// suffix. Used as the fallback when no short link is known (op 8).
+fn command_mumble_url(ch: u8) -> String {
+    let ch = ch.clamp(1, 12);
+    let chan = if ch >= 9 {
+        format!("Command%20{ch}%20-%20SC")
+    } else {
+        format!("Command%20{ch}")
+    };
+    format!(
+        "mumble://mumble.goonfleet.com/Ops/Command%20Sector%20Alpha/{chan}?title=Goonfleet&version=1.2.0"
+    )
+}
+
+/// Goonfleet gnf.lt short link for an op channel's command comms (op 8 has none yet).
+fn op_comms_short_link(ch: u8) -> Option<&'static str> {
+    Some(match ch {
+        1 => "https://gnf.lt/dYehZh9.html",
+        2 => "https://gnf.lt/vLwgoyY.html",
+        3 => "https://gnf.lt/NOH1FNH.html",
+        4 => "https://gnf.lt/2eMgwE2.html",
+        5 => "https://gnf.lt/SwVWcXS.html",
+        6 => "https://gnf.lt/bO9WiWH.html",
+        7 => "https://gnf.lt/EGcAES9.html",
+        9 => "https://gnf.lt/vEALwCF.html",
+        10 => "https://gnf.lt/1oh4Y6V.html",
+        11 => "https://gnf.lt/sBIoA65.html",
+        12 => "https://gnf.lt/jzTuUij.html",
+        _ => return None,
+    })
+}
+
+/// Comms link for an op channel: the verified gnf.lt short link, else the direct mumble:// URL.
+fn op_comms_url(ch: u8) -> String {
+    op_comms_short_link(ch).map(|s| s.to_owned()).unwrap_or_else(|| command_mumble_url(ch))
+}
+
+/// Cosmetic: the ping bot replies "… requests the attention of: a, b, c, …" with huge name lists.
+/// Collapse the trailing comma-separated list to "[n users]" for DISPLAY only. Mention detection
+/// runs on the raw body elsewhere, so a mention still highlights/counts.
+fn condense_attention_list(body: &str) -> std::borrow::Cow<'_, str> {
+    const MARKER: &str = "requests the attention of:";
+    let lower = body.to_ascii_lowercase();
+    if let Some(pos) = lower.find(MARKER) {
+        let after = pos + MARKER.len();
+        let list = body[after..].trim();
+        if !list.is_empty() {
+            let n = list.split(',').filter(|s| !s.trim().is_empty()).count();
+            let unit = if n == 1 { "user" } else { "users" };
+            return std::borrow::Cow::Owned(format!("{} [{n} {unit}]", body[..after].trim_end()));
+        }
+    }
+    std::borrow::Cow::Borrowed(body)
+}
+
+/// One chat line, jabber-style: the sender's name in its per-name colour, then the message body.
+fn rescue_chat_line(ui: &mut egui::Ui, who: &str, body: &str) {
+    let body = condense_attention_list(body);
+    ui.horizontal_wrapped(|ui| {
+        let spacing = ui.spacing().item_spacing.x;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(egui::RichText::new(format!("{who}:")).color(name_color(who)).strong());
+        ui.label(body.as_ref());
+        ui.spacing_mut().item_spacing.x = spacing;
+    });
+}
+
+// ---- Rescue timers section ----
+
+fn rescue_fmt_mmss(secs: i64) -> String {
+    let s = secs.max(0);
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Parse "M:SS" / "MM:SS" (or a plain integer as seconds). None if malformed.
+fn parse_mmss(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    match s.split_once(':') {
+        Some((m, sec)) => {
+            let m: i64 = m.trim().parse().ok()?;
+            let sec: i64 = sec.trim().parse().ok()?;
+            if !(0..60).contains(&sec) || m < 0 {
+                return None;
+            }
+            Some(m * 60 + sec)
+        }
+        None => s.parse::<i64>().ok().filter(|v| *v >= 0),
+    }
+}
+
+/// Single PANIC timer. `input` is the persistent mm:ss text buffer (typed "5:30" directly).
+fn rescue_timers_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
+    const RUN_OK: egui::Color32 = egui::Color32::from_rgb(0x3F, 0xC3, 0x80);
+    const RUN_WARN: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xA5, 0x1E);
+    const ALARM: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x3B, 0x2E);
+    const ALARM_DIM: egui::Color32 = egui::Color32::from_rgb(0x5A, 0x16, 0x12);
+
+    // Up/Down nudge PANIC ±5s, but only when not typing in the mm:ss field.
+    let typing = ui.ctx().memory(|m| m.focused().is_some());
+    let (up, down) = ui.input(|i| {
+        (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown))
+    });
+    if !typing && (up || down) {
+        r.panic.adjust(if up { 5 } else { -5 });
+        if !r.panic.is_set() {
+            r.panic_input = rescue_fmt_mmss(r.panic.current());
+        }
+    }
+
+    let running = r.panic.is_set();
+    let secs = r.panic.current();
+    let elapsed = running && secs == 0;
+    let blink_on = (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0;
+    let color = if elapsed {
+        if blink_on { ALARM } else { ALARM_DIM }
+    } else if secs <= 30 {
+        RUN_WARN
+    } else {
+        RUN_OK
+    };
+
+    egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("PANIC").strong().size(18.0));
+            if running {
+                // Plain label, never a button: no hover border on a value you can't click.
+                ui.label(
+                    egui::RichText::new(rescue_fmt_mmss(secs)).monospace().size(28.0).color(color),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Reset").clicked() {
+                        r.panic.reset();
+                        r.panic_input = rescue_fmt_mmss(0);
+                    }
+                    if ui.button("+5s").clicked() {
+                        r.panic.adjust(5);
+                    }
+                    if ui.button("-5s").clicked() {
+                        r.panic.adjust(-5);
+                    }
+                });
+            } else {
+                if r.panic_input.is_empty() {
+                    r.panic_input = rescue_fmt_mmss(r.panic.current());
+                }
+                // Type "5:30" directly; Start on the same row.
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut r.panic_input)
+                        .font(egui::FontId::monospace(22.0))
+                        .desired_width(64.0)
+                        .hint_text("m:ss"),
+                );
+                if resp.changed() {
+                    if let Some(s) = parse_mmss(&r.panic_input) {
+                        r.panic.set_value(s);
+                    }
+                }
+                if ui.button("Start").clicked() {
+                    r.panic.start_now();
+                }
+            }
+        });
+    });
+
+    if running {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    }
+}
+
+// ---- Rescue checklist section ----
+
+const CHK_OK: egui::Color32 = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+const CHK_WARN: egui::Color32 = egui::Color32::from_rgb(0xE0, 0xA4, 0x3A);
+const CHK_PENDING: egui::Color32 = egui::Color32::from_rgb(0x9A, 0xA3, 0xA8);
+
+#[derive(Clone, Copy, PartialEq)]
+enum ChkStatus {
+    Ok,
+    Attention,
+    Pending,
+}
+
+impl ChkStatus {
+    fn glyph(self) -> &'static str {
+        match self {
+            ChkStatus::Ok => egui_phosphor::regular::CHECK_CIRCLE,
+            ChkStatus::Attention => egui_phosphor::regular::WARNING,
+            ChkStatus::Pending => egui_phosphor::regular::QUESTION,
+        }
+    }
+    fn color(self) -> egui::Color32 {
+        match self {
+            ChkStatus::Ok => CHK_OK,
+            ChkStatus::Attention => CHK_WARN,
+            ChkStatus::Pending => CHK_PENDING,
+        }
+    }
+}
+
+fn chk_auto_row(ui: &mut egui::Ui, status: ChkStatus, label: &str) {
+    ui.horizontal(|ui| {
+        ui.colored_label(status.color(), status.glyph());
+        if status == ChkStatus::Attention {
+            ui.colored_label(status.color(), label);
+        } else {
+            ui.label(label);
+        }
+    });
+}
+
+fn chk_ok_or_warn(satisfied: bool) -> ChkStatus {
+    if satisfied { ChkStatus::Ok } else { ChkStatus::Attention }
+}
+
+fn chk_reminder(ui: &mut egui::Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.colored_label(CHK_WARN, egui_phosphor::regular::WARNING);
+        ui.colored_label(CHK_WARN, text);
+    });
+}
+
+/// Entirely ESI-auto-detected. When the signal isn't available yet (no fleet data) the item shows
+/// as Pending (grey "?"), never a manual checkbox.
+fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
+    use crate::rescue::ShipRole;
+
+    let comp_known = !r.fleet.members.is_empty();
+    let pending_if = |known: bool, status: ChkStatus| if known { status } else { ChkStatus::Pending };
+
+    ui.label(egui::RichText::new("CHECKLIST").strong().color(CHK_PENDING));
+    ui.add_space(2.0);
+    chk_auto_row(ui, if r.fleet.fleet_id.is_some() { ChkStatus::Ok } else { ChkStatus::Pending }, "Fleet created");
+    chk_auto_row(ui, pending_if(comp_known, chk_ok_or_warn(r.fleet.is_registered)), "Advert up");
+    chk_auto_row(ui, pending_if(comp_known, chk_ok_or_warn(r.fleet.has_role(ShipRole::Titan))), "Titan in fleet");
+    let cap_known = comp_known && r.capital_pilot.is_some();
+    let cap_ok = r.capital_pilot.as_deref().is_some_and(|n| r.fleet.has_pilot(n));
+    chk_auto_row(ui, pending_if(cap_known, chk_ok_or_warn(cap_ok)), "Capital pilot in fleet");
+    let cyno_known = comp_known && r.cyno_pilot.is_some();
+    let cyno_ok = r.cyno_pilot.as_deref().is_some_and(|n| r.fleet.has_pilot(n));
+    chk_auto_row(ui, pending_if(cyno_known, chk_ok_or_warn(cyno_ok)), "Cyno char in fleet");
+
+    if !r.panic.is_set() {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+        chk_reminder(ui, "Ask for PANIC timer");
+        chk_reminder(ui, "Ask for what's on grid (attacking it)");
+    }
 }
 
 fn ontop_pin(ctx: &egui::Context, id: &str) {

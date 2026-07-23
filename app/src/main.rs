@@ -40,6 +40,7 @@ mod pings;
 mod procstat;
 mod push;
 mod rats;
+mod rescue;
 mod sde;
 mod settings;
 mod shipnames;

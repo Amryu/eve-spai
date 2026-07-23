@@ -27,6 +27,7 @@ pub const DEFAULT_SCOPES: &[&str] = &[
     "esi-ui.write_waypoint.v1",
     "esi-fittings.write_fittings.v1",
     "esi-skills.read_skills.v1",
+    "esi-fleets.read_fleet.v1",
 ];
 
 #[derive(Clone, Debug, Default)]

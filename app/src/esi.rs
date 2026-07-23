@@ -229,6 +229,211 @@ pub fn save_fitting(
     });
 }
 
+const FLEET_POLL: Duration = Duration::from_secs(7);
+
+/// id -> (ship name, SDE group name), preloaded once so the poller does no SQLite per member.
+pub type ShipTypeMap = Arc<std::collections::HashMap<i64, (String, String)>>;
+
+fn esi_client() -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .ok()
+}
+
+fn fleet_id_for(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    name: &str,
+) -> Option<i64> {
+    let character = store.character_by_name(name)?;
+    let token = current_access_token(store, client_id, character.id, character.expires_at)?;
+    #[derive(Deserialize)]
+    struct Fleet {
+        fleet_id: i64,
+    }
+    // 404 = not in a fleet; error_for_status turns it into None instead of a JSON parse error.
+    let fleet: Fleet = client
+        .get(format!("{LOCATION_URL}/{}/fleet/", character.id))
+        .bearer_auth(&token)
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()?;
+    Some(fleet.fleet_id)
+}
+
+#[derive(Deserialize)]
+struct RawMember {
+    character_id: i64,
+    #[serde(default)]
+    ship_type_id: i64,
+    #[serde(default)]
+    solar_system_id: i64,
+}
+
+fn fleet_members_raw(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    boss_id: i64,
+    boss_expires: i64,
+    fleet_id: i64,
+) -> Option<Vec<RawMember>> {
+    let token = current_access_token(store, client_id, boss_id, boss_expires)?;
+    client
+        .get(format!("https://esi.evetech.net/latest/fleets/{fleet_id}/members/"))
+        .bearer_auth(&token)
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()
+}
+
+/// GET /fleets/{id}/ -> is_registered (fleet advertised). Defaults false on any failure.
+fn fleet_is_registered(
+    client: &reqwest::blocking::Client,
+    store: &Store,
+    client_id: &str,
+    boss_id: i64,
+    boss_expires: i64,
+    fleet_id: i64,
+) -> bool {
+    #[derive(Deserialize)]
+    struct FleetInfo {
+        #[serde(default)]
+        is_registered: bool,
+    }
+    let Some(token) = current_access_token(store, client_id, boss_id, boss_expires) else {
+        return false;
+    };
+    client
+        .get(format!("https://esi.evetech.net/latest/fleets/{fleet_id}/"))
+        .bearer_auth(&token)
+        .send()
+        .ok()
+        .and_then(|r| r.error_for_status().ok())
+        .and_then(|r| r.json::<FleetInfo>().ok())
+        .map(|f| f.is_registered)
+        .unwrap_or(false)
+}
+
+fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> std::collections::HashMap<i64, String> {
+    #[derive(Deserialize)]
+    struct Named {
+        id: i64,
+        name: String,
+    }
+    if ids.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    client
+        .post("https://esi.evetech.net/latest/universe/names/?datasource=tranquility")
+        .json(ids)
+        .send()
+        .ok()
+        .and_then(|r| r.error_for_status().ok())
+        .and_then(|r| r.json::<Vec<Named>>().ok())
+        .map(|v| v.into_iter().map(|n| (n.id, n.name)).collect())
+        .unwrap_or_default()
+}
+
+/// Poll the FC's fleet composition while Rescue Mode is active and write it into `RescueState`.
+/// Every network path degrades to keeping the previous snapshot (marked stale); it never panics.
+pub fn spawn_fleet_poller(
+    client_id: String,
+    player: SharedPlayer,
+    rescue: Arc<Mutex<crate::rescue::RescueState>>,
+    ship_types: ShipTypeMap,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        let Some(client) = esi_client() else { return };
+        loop {
+            std::thread::sleep(FLEET_POLL);
+            // Poll whenever rescue is active, INCLUDING test mode (test only disables sending, so
+            // the FC still sees their real fleet composition). Skip only when inactive.
+            if !rescue.lock().unwrap().active {
+                continue;
+            }
+            let Ok(store) = Store::open() else { continue };
+            let want = player.lock().unwrap().active_name.clone();
+            // Try the active character first, then any other, so the FC's boss character is found.
+            let mut chars = store.list_characters();
+            chars.sort_by_key(|c| c.name != want);
+
+            let mut built: Option<crate::rescue::FleetSnapshot> = None;
+            for ch in &chars {
+                let Some(fleet_id) = fleet_id_for(&client, &store, &client_id, &ch.name) else {
+                    continue;
+                };
+                let Some(raw) =
+                    fleet_members_raw(&client, &store, &client_id, ch.id, ch.expires_at, fleet_id)
+                else {
+                    // In a fleet but not the boss (members endpoint 403) — try another character.
+                    continue;
+                };
+                let ids: Vec<i64> = raw.iter().map(|m| m.character_id).collect();
+                let names = resolve_names(&client, &ids);
+                let now = chrono::Utc::now().timestamp();
+                let members = raw
+                    .into_iter()
+                    .map(|m| {
+                        let (ship, group) = ship_types
+                            .get(&m.ship_type_id)
+                            .cloned()
+                            .unwrap_or_else(|| (String::new(), String::new()));
+                        let role = crate::rescue::classify(&group);
+                        crate::rescue::FleetMember {
+                            character_id: m.character_id,
+                            name: names.get(&m.character_id).cloned().unwrap_or_default(),
+                            ship_type_id: m.ship_type_id,
+                            ship,
+                            group,
+                            role,
+                            system_id: m.solar_system_id,
+                        }
+                    })
+                    .collect();
+                let mut snap = crate::rescue::FleetSnapshot::build(Some(fleet_id), members, now);
+                snap.is_registered =
+                    fleet_is_registered(&client, &store, &client_id, ch.id, ch.expires_at, fleet_id);
+                built = Some(snap);
+                break;
+            }
+
+            {
+                let mut r = rescue.lock().unwrap();
+                match built {
+                    Some(snap) => {
+                        // Update sticky snowflakes from the FRESH ship types (handles re-ships), but
+                        // never remove an existing one — a podded titan pilot stays flagged.
+                        let cap = r.capital_pilot.as_deref().map(|s| s.to_lowercase());
+                        let cyno = r.cyno_pilot.as_deref().map(|s| s.to_lowercase());
+                        for m in &snap.members {
+                            if let Some(tag) =
+                                crate::rescue::snowflake_tag(m, cap.as_deref(), cyno.as_deref())
+                            {
+                                r.snowflakes.entry(m.character_id).or_insert_with(|| tag.to_string());
+                            }
+                        }
+                        r.fleet = snap;
+                    }
+                    // Keep the last good composition on screen, flag it as stale.
+                    None => r.fleet.stale = true,
+                }
+            }
+            ctx.request_repaint();
+        }
+    });
+}
+
 fn refresh_lock(id: i64) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<std::sync::Mutex<()>>>>,
