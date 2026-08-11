@@ -177,7 +177,69 @@ CREATE TABLE IF NOT EXISTS pilot_verdict (
     name_lc TEXT PRIMARY KEY,
     hidden  INTEGER NOT NULL
 );
+-- Which EVE account a character sits on, needed to copy the account-wide settings file
+-- (core_user_<accountId>.dat). EVE records this nowhere on disk, so it is learned. `source` ranks
+-- the mechanisms and a weaker one never overwrites a stronger one: 'client' is exact (read off a
+-- running quick-start client's argv), 'mtime' is inferred, 'manual' is the user's own word.
+CREATE TABLE IF NOT EXISTS char_accounts (
+    character_id INTEGER PRIMARY KEY,
+    account_id   INTEGER NOT NULL,
+    source       TEXT NOT NULL,
+    seen_at      INTEGER NOT NULL
+);
+-- Names for characters that own a settings file but are not authenticated here, so the settings
+-- copy UI can list them by name instead of by id.
+CREATE TABLE IF NOT EXISTS char_names (
+    character_id INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    fetched_at   INTEGER NOT NULL
+);
 ";
+
+/// How a character-to-account association was established, most trustworthy last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssocSource {
+    /// Inferred from settings files written together, so it can be wrong.
+    Mtime,
+    /// Read off a running client's argv. Exact, but only quick-start launches carry it.
+    Client,
+    /// Assigned by the user.
+    Manual,
+}
+
+impl AssocSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssocSource::Mtime => "mtime",
+            AssocSource::Client => "client",
+            AssocSource::Manual => "manual",
+        }
+    }
+
+    pub fn rank(self) -> u8 {
+        match self {
+            AssocSource::Mtime => 1,
+            AssocSource::Client => 2,
+            AssocSource::Manual => 3,
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "manual" => AssocSource::Manual,
+            "client" => AssocSource::Client,
+            _ => AssocSource::Mtime,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AssocSource::Mtime => "detected from settings file timestamps, may be wrong",
+            AssocSource::Client => "read from a running EVE client",
+            AssocSource::Manual => "set by you",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ShipDetails {
@@ -1549,6 +1611,82 @@ impl Store {
             .flatten()
     }
 
+    /// Records an association unless a more trustworthy one is already stored, so a guess can
+    /// never quietly replace the user's manual assignment or an exact read off a live client.
+    pub fn set_char_account(&self, character_id: i64, account_id: i64, source: AssocSource) {
+        let existing: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT account_id, source FROM char_accounts WHERE character_id = ?1",
+                params![character_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        if let Some((have_account, have_source)) = existing {
+            let have = AssocSource::from_str(&have_source);
+            if have.rank() > source.rank() || (have.rank() == source.rank() && have_account == account_id)
+            {
+                return;
+            }
+        }
+        let _ = self.conn.execute(
+            "INSERT INTO char_accounts (character_id, account_id, source, seen_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(character_id) DO UPDATE SET
+                 account_id = excluded.account_id,
+                 source     = excluded.source,
+                 seen_at    = excluded.seen_at",
+            params![character_id, account_id, source.as_str(), chrono::Utc::now().timestamp()],
+        );
+    }
+
+    pub fn char_accounts(&self) -> std::collections::HashMap<i64, (i64, AssocSource)> {
+        let mut out = std::collections::HashMap::new();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT character_id, account_id, source FROM char_accounts")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            }) {
+                for (c, a, s) in rows.flatten() {
+                    out.insert(c, (a, AssocSource::from_str(&s)));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn clear_char_account(&self, character_id: i64) {
+        let _ = self
+            .conn
+            .execute("DELETE FROM char_accounts WHERE character_id = ?1", params![character_id]);
+    }
+
+    pub fn set_char_name(&self, character_id: i64, name: &str) {
+        let _ = self.conn.execute(
+            "INSERT INTO char_names (character_id, name, fetched_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(character_id) DO UPDATE SET name = excluded.name,
+                                                     fetched_at = excluded.fetched_at",
+            params![character_id, name, chrono::Utc::now().timestamp()],
+        );
+    }
+
+    pub fn char_names(&self) -> std::collections::HashMap<i64, String> {
+        let mut out = std::collections::HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT character_id, name FROM char_names") {
+            if let Ok(rows) =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
     pub fn remove_character(&self, id: i64) -> Result<()> {
         let _ = crate::tokens::delete(id);
         self.kv_delete(&format!("access:{id}"));
@@ -1713,6 +1851,40 @@ mod tests {
             source: Source::EveScout,
             updated_at: 1_700_000_000,
         }
+    }
+
+    #[test]
+    fn char_account_ranking_protects_stronger_sources() {
+        use super::AssocSource::{Client, Manual, Mtime};
+        let s = mem_store();
+
+        s.set_char_account(1, 100, Mtime);
+        assert_eq!(s.char_accounts().get(&1), Some(&(100, Mtime)));
+
+        // A guess never overrides a live client read, nor the user's own assignment.
+        s.set_char_account(1, 200, Client);
+        assert_eq!(s.char_accounts().get(&1), Some(&(200, Client)));
+        s.set_char_account(1, 300, Mtime);
+        assert_eq!(s.char_accounts().get(&1), Some(&(200, Client)));
+        s.set_char_account(1, 400, Manual);
+        assert_eq!(s.char_accounts().get(&1), Some(&(400, Manual)));
+        s.set_char_account(1, 500, Client);
+        assert_eq!(s.char_accounts().get(&1), Some(&(400, Manual)));
+
+        // Same source may correct itself, e.g. the character was moved to another account.
+        s.set_char_account(1, 600, Manual);
+        assert_eq!(s.char_accounts().get(&1), Some(&(600, Manual)));
+
+        s.clear_char_account(1);
+        assert!(s.char_accounts().get(&1).is_none());
+    }
+
+    #[test]
+    fn char_names_roundtrip() {
+        let s = mem_store();
+        s.set_char_name(2124486313, "0 The Fool");
+        s.set_char_name(2124486313, "Renamed");
+        assert_eq!(s.char_names().get(&2124486313).map(String::as_str), Some("Renamed"));
     }
 
     #[test]

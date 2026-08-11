@@ -229,11 +229,14 @@ pub fn save_fitting(
     });
 }
 
+#[cfg(feature = "fc-rescue")]
 const FLEET_POLL: Duration = Duration::from_secs(7);
 
 /// id -> (ship name, SDE group name), preloaded once so the poller does no SQLite per member.
+#[cfg(feature = "fc-rescue")]
 pub type ShipTypeMap = Arc<std::collections::HashMap<i64, (String, String)>>;
 
+#[cfg(feature = "fc-rescue")]
 fn esi_client() -> Option<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
@@ -242,6 +245,7 @@ fn esi_client() -> Option<reqwest::blocking::Client> {
         .ok()
 }
 
+#[cfg(feature = "fc-rescue")]
 fn fleet_id_for(
     client: &reqwest::blocking::Client,
     store: &Store,
@@ -267,6 +271,7 @@ fn fleet_id_for(
     Some(fleet.fleet_id)
 }
 
+#[cfg(feature = "fc-rescue")]
 #[derive(Deserialize)]
 struct RawMember {
     character_id: i64,
@@ -276,6 +281,7 @@ struct RawMember {
     solar_system_id: i64,
 }
 
+#[cfg(feature = "fc-rescue")]
 fn fleet_members_raw(
     client: &reqwest::blocking::Client,
     store: &Store,
@@ -297,6 +303,7 @@ fn fleet_members_raw(
 }
 
 /// GET /fleets/{id}/ -> is_registered (fleet advertised). Defaults false on any failure.
+#[cfg(feature = "fc-rescue")]
 fn fleet_is_registered(
     client: &reqwest::blocking::Client,
     store: &Store,
@@ -324,6 +331,7 @@ fn fleet_is_registered(
         .unwrap_or(false)
 }
 
+#[cfg(feature = "fc-rescue")]
 fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> std::collections::HashMap<i64, String> {
     #[derive(Deserialize)]
     struct Named {
@@ -346,6 +354,7 @@ fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> std::collec
 
 /// Poll the FC's fleet composition while Rescue Mode is active and write it into `RescueState`.
 /// Every network path degrades to keeping the previous snapshot (marked stale); it never panics.
+#[cfg(feature = "fc-rescue")]
 pub fn spawn_fleet_poller(
     client_id: String,
     player: SharedPlayer,

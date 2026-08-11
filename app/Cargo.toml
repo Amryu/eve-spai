@@ -9,6 +9,14 @@ description = "EVE Spai — a lean EVE Online intel tool"
 name = "eve-spai"
 path = "src/main.rs"
 
+[features]
+default = []
+# FC-only delve911 capital-rescue mode. Off by default: it is Imperium-specific and useless
+# without the delve911 MUC, so a stock build compiles none of it. Build with
+# `cargo build --release --features fc-rescue`. CI's cross-check passes --all-features so the
+# gated code and its tests keep compiling.
+fc-rescue = []
+
 # Embed the Windows application icon into the .exe (build.rs). winresource is pure Rust and
 # compiles on every host; build.rs only invokes it for a Windows *target*, so non-Windows builds
 # are unaffected.

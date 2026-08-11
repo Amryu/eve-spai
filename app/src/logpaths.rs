@@ -5,7 +5,7 @@ fn home() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn steam_libraries(home: &std::path::Path) -> Vec<PathBuf> {
+pub(crate) fn steam_libraries(home: &std::path::Path) -> Vec<PathBuf> {
     vec![
         home.join(".steam/steam"),
         home.join(".local/share/Steam"),
@@ -61,8 +61,6 @@ pub fn chat_logs_dir(configured: &str) -> Option<PathBuf> {
         .find(|d| d.is_dir())
 }
 
-// Only used by the combat-event watcher, which is disabled for now; kept for re-enabling.
-#[allow(dead_code)]
 pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
     let configured = configured.trim();
     if !configured.is_empty() {

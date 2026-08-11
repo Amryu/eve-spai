@@ -99,9 +99,27 @@ struct MapOverlays {
     cyno_gen: bool,
 }
 
+/// delve911 covers a titan bridge out of staging. Past this the fleet can't be dropped on the
+/// target at all, which changes the answer from "form up" to "sorry".
+/// Titan base jump range is 3.0 ly (live SDE), doubled by Jump Drive Calibration V.
+#[cfg(feature = "fc-rescue")]
+const DELVE911_RANGE_LY: f64 = 6.0;
+
+/// Target sits outside titan range of staging: how far out, and the best jump-off system.
+#[cfg(feature = "fc-rescue")]
+struct RangeWarning {
+    ly_from_staging: f64,
+    closest_name: String,
+    /// Route from the jump-off system to the target. `None` = no route within the search cap.
+    ansi_jumps: Option<u32>,
+    gate_jumps: Option<u32>,
+    ly_to_target: f64,
+}
+
 impl MapOverlays {
-    /// Rescue-mode view: strip everything except ANSI bridges and the cyno-gen layer. Staging and
-    /// the capital system are drawn by a dedicated pass, not by these toggles.
+    /// Rescue-mode view: strip everything except ANSI bridges, the cyno-gen layer and jump range.
+    /// Staging and the capital system are drawn by a dedicated pass, not by these toggles.
+    #[cfg(feature = "fc-rescue")]
     fn rescue_preset(self) -> Self {
         Self {
             sov: SovMode::Off,
@@ -109,7 +127,8 @@ impl MapOverlays {
             activity: ActivityMode::Off,
             adm: false,
             upgrades: false,
-            jump_range: false,
+            // Kept: judging a titan's reach from staging is the whole point of the map in a rescue.
+            jump_range: self.jump_range,
             wormholes: false,
             thera: false,
             turnur: false,
@@ -239,6 +258,15 @@ enum RightDockTab {
     System,
 }
 
+/// Which list the Jabber left sidebar shows: everyone (Directory), starred people (Contacts), or
+/// MUC rooms (Channels).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JabberPane {
+    Directory,
+    Contacts,
+    Channels,
+}
+
 #[derive(Default)]
 struct SystemInfoOut {
     nav: Option<i64>,
@@ -309,6 +337,9 @@ pub struct SpaiApp {
     sde_status: SharedStatus,
     auth_status: SharedAuth,
     characters: Vec<CharacterRow>,
+    copy_settings: crate::copysettings::CopyState,
+    eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>>,
+    eve_settings_path: std::sync::Arc<std::sync::Mutex<String>>,
     intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
     watcher_started: bool,
     chat_dir: Option<std::path::PathBuf>,
@@ -414,7 +445,9 @@ pub struct SpaiApp {
     jabber_contact_search: String,
     jabber_dm_input: String,
     jabber_dm_error: String,
-    jabber_show_directory: bool,
+    jabber_pane: JabberPane,
+    /// Channel JIDs whose MOTD is expanded (full text) in the Channels list.
+    jabber_motd_expanded: std::collections::HashSet<String>,
     jabber_collapsed: std::collections::HashSet<String>,
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
@@ -623,25 +656,50 @@ pub struct SpaiApp {
     activity: crate::activity::SharedActivity,
     sightings: crate::intel::SharedSightings,
     revivals: crate::watcher::SharedRevivals,
+    #[cfg(feature = "fc-rescue")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
+    #[cfg(feature = "fc-rescue")]
     rescue_feed_cursor: u64,
+    /// SDE ship name (lowercased) -> group, shared with the chat-log watcher so the jabber ingest
+    /// can resolve a hull named in a ping without rebuilding the map.
+    #[cfg(feature = "fc-rescue")]
+    ship_groups: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
+    /// Timestamp of the newest delve911 jabber message already parsed into `rescue`.
+    #[cfg(feature = "fc-rescue")]
+    delve911_cursor: i64,
+    /// Every system's 3D position, for the titan-range check. Loaded once with the SDE.
+    #[cfg(feature = "fc-rescue")]
+    map_coords: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
+    /// (staging, target) the cached range check was computed for.
+    #[cfg(feature = "fc-rescue")]
+    rescue_range_for: Option<(i64, i64)>,
+    /// Set when the target sits outside titan range of staging.
+    #[cfg(feature = "fc-rescue")]
+    rescue_range: Option<RangeWarning>,
+    #[cfg(feature = "fc-rescue")]
     rescue_window_open: bool,
+    /// System last pushed to ESI as the auto-destination while the rescue window is open. Reset when
+    /// the window closes so reopening re-applies, and tracked so a static ping isn't re-pushed each frame.
+    #[cfg(feature = "fc-rescue")]
+    rescue_dest_set: Option<i64>,
     /// Set once the saved geometry has been applied to the rescue viewport after opening. Prevents
     /// re-asserting position/size every frame (which fights the user dragging/resizing the window).
+    #[cfg(feature = "fc-rescue")]
     rescue_geom_applied: bool,
     /// Fleet poller handle guard: `true` once `spawn_fleet_poller` has been started.
+    #[cfg(feature = "fc-rescue")]
     fleet_poller_started: bool,
+    /// Cyno-generator list editing. Not rescue-gated: the generator map overlay is useful on its own.
     rescue_cyno_input: String,
+    #[cfg(feature = "fc-rescue")]
     rescue_doctrine_input: String,
+    #[cfg(feature = "fc-rescue")]
     rescue_doctrines_open: bool,
     cyno_generators_open: bool,
-    /// Pre-flight op-channel + doctrine dialog, shown before the main rescue window.
-    rescue_setup_open: bool,
     /// Set true to arm rescue mode (a delve911 ping arrived); the banner offers 1-click entry.
+    #[cfg(feature = "fc-rescue")]
     rescue_armed: bool,
-    /// (capital system, cyno-gen count) the cached nearest-cyno result was computed for.
-    rescue_cyno_calc_for: Option<(i64, usize)>,
     ship_cache: std::cell::RefCell<std::collections::HashMap<i64, Option<crate::store::ShipDetails>>>,
     ship_roles_cache: std::cell::RefCell<std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>>,
     type_names: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>,
@@ -727,6 +785,16 @@ impl SpaiApp {
             crate::esi::spawn_location_poller(cid, player.clone(), cc.egui_ctx.clone());
         }
 
+        let eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let eve_settings_path: std::sync::Arc<std::sync::Mutex<String>> =
+            std::sync::Arc::new(std::sync::Mutex::new(settings.eve_settings_dir.clone()));
+        crate::eveproc::spawn_poller(
+            eve_clients.clone(),
+            eve_settings_path.clone(),
+            cc.egui_ctx.clone(),
+        );
+
         let loaded_pings: Vec<crate::pings::Ping> = store
             .as_ref()
             .map(|s| {
@@ -767,6 +835,8 @@ impl SpaiApp {
         let jabber = std::sync::Arc::new(std::sync::Mutex::new(crate::jabber::JabberState {
             pings: loaded_pings,
             chats: loaded_chats,
+            rooms_inaccessible: settings.jabber_inaccessible_rooms.iter().cloned().collect(),
+            room_subjects: settings.jabber_room_subjects.clone(),
             ..Default::default()
         }));
 
@@ -887,6 +957,9 @@ impl SpaiApp {
             sde_status,
             auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
             characters,
+            copy_settings: Default::default(),
+            eve_clients,
+            eve_settings_path,
             intel_state,
             watcher_started: false,
             chat_dir: None,
@@ -988,7 +1061,8 @@ impl SpaiApp {
             jabber_contact_search: String::new(),
             jabber_dm_input: String::new(),
             jabber_dm_error: String::new(),
-            jabber_show_directory: true,
+            jabber_pane: JabberPane::Directory,
+            jabber_motd_expanded: std::collections::HashSet::new(),
             jabber_collapsed: std::collections::HashSet::new(),
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
@@ -1187,18 +1261,36 @@ impl SpaiApp {
             activity,
             sightings,
             revivals,
+            #[cfg(feature = "fc-rescue")]
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
+            #[cfg(feature = "fc-rescue")]
             rescue_feed_cursor: 0,
+            #[cfg(feature = "fc-rescue")]
+            ship_groups: None,
+            #[cfg(feature = "fc-rescue")]
+            delve911_cursor: 0,
+            #[cfg(feature = "fc-rescue")]
+            map_coords: None,
+            #[cfg(feature = "fc-rescue")]
+            rescue_range_for: None,
+            #[cfg(feature = "fc-rescue")]
+            rescue_range: None,
+            #[cfg(feature = "fc-rescue")]
             rescue_window_open: false,
+            #[cfg(feature = "fc-rescue")]
+            rescue_dest_set: None,
+            #[cfg(feature = "fc-rescue")]
             rescue_geom_applied: false,
+            #[cfg(feature = "fc-rescue")]
             fleet_poller_started: false,
             rescue_cyno_input: String::new(),
+            #[cfg(feature = "fc-rescue")]
             rescue_doctrine_input: String::new(),
+            #[cfg(feature = "fc-rescue")]
             rescue_doctrines_open: false,
             cyno_generators_open: false,
-            rescue_setup_open: false,
+            #[cfg(feature = "fc-rescue")]
             rescue_armed: false,
-            rescue_cyno_calc_for: None,
         }
     }
 
@@ -2183,6 +2275,214 @@ impl SpaiApp {
         self.jabber_ui(ui);
     }
 
+    /// Left-sidebar Channels pane: every known MUC room as a row with its MOTD preview. Rooms we
+    /// were kicked from show struck-through but stay clickable, since history lives in `chats`.
+    fn jabber_channels_list_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        channels: &[ChannelRow],
+        connected: bool,
+        search: &str,
+    ) {
+        let mut open: Option<String> = None;
+        let mut toggle_motd: Option<String> = None;
+        let mut join: Option<String> = None;
+        // MUC service to browse: an explicit setting, else the domain of a room we already know.
+        let service = if !self.settings.jabber_muc_domain.trim().is_empty() {
+            self.settings.jabber_muc_domain.trim().to_owned()
+        } else {
+            channels
+                .iter()
+                .find_map(|c| c.jid.split('@').nth(1))
+                .unwrap_or("")
+                .to_owned()
+        };
+        let (dir_state, dir_rooms, dir_pending) = {
+            let st = self.jabber.lock().unwrap();
+            (st.room_directory_state.clone(), st.room_directory.clone(), st.room_directory_pending)
+        };
+        ui.horizontal(|ui| {
+            let can_browse = connected && !service.is_empty();
+            let browsing = dir_state == crate::jabber::DirState::Loading;
+            let label = if browsing { "Browsing…" } else { "Browse server rooms" };
+            let btn = ui.add_enabled(can_browse && !browsing, egui::Button::new(label));
+            let btn = if service.is_empty() {
+                btn.on_disabled_hover_text("No MUC service known. Set one in Jabber settings or join a room first.")
+            } else if !connected {
+                btn.on_disabled_hover_text("Connect to Jabber first.")
+            } else {
+                btn.on_hover_text(format!("List every room on {service}"))
+            };
+            if btn.clicked() {
+                if let Some(tx) = &self.jabber_tx {
+                    let _ = tx.send(crate::jabber::Cmd::DiscoRooms { service: service.clone() });
+                }
+            }
+        });
+        if let crate::jabber::DirState::Error(e) = &dir_state {
+            ui.colored_label(crate::theme::standing::WARNING, e);
+        }
+        ui.separator();
+        let known: std::collections::HashSet<&str> =
+            channels.iter().map(|c| c.jid.as_str()).collect();
+        egui::ScrollArea::vertical().id_salt("channels").auto_shrink([false, false]).show(ui, |ui| {
+            let w = &mut ui.visuals_mut().widgets;
+            w.inactive.bg_stroke = egui::Stroke::NONE;
+            w.hovered.bg_stroke = egui::Stroke::NONE;
+            w.active.bg_stroke = egui::Stroke::NONE;
+            let shown: Vec<&ChannelRow> = channels
+                .iter()
+                .filter(|c| {
+                    search.is_empty()
+                        || c.name.to_lowercase().contains(search)
+                        || c.jid.to_lowercase().contains(search)
+                })
+                .collect();
+            let accent = ui.visuals().hyperlink_color;
+            if shown.is_empty() {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("No channels. Join a room or browse the server.").weak());
+            }
+            for c in shown {
+                let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
+                let struck = c.inaccessible && connected;
+                let fit = fit_chars(ui.available_width() - 34.0 - if c.unread { 16.0 } else { 0.0 });
+                let mut name = egui::RichText::new(truncate_to(&c.name, fit));
+                if struck {
+                    name = name.strikethrough();
+                }
+                name = if c.unread { name.strong() } else if struck { name.weak() } else { name };
+                let row = ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).color(accent));
+                    let clicked = ui.selectable_label(sel, name).clicked();
+                    if c.unread {
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                .color(UNREAD_RED)
+                                .size(8.0),
+                        );
+                    }
+                    clicked
+                });
+                // MOTD indented under the name. Default body size (weak), never a small font.
+                // Collapsed: first two lines, each ellipsized to the real pixel width. Expanded
+                // (click to toggle): the full subject, wrapped. Clicking any MOTD line toggles it.
+                if !c.motd.trim().is_empty() {
+                    let expanded = self.jabber_motd_expanded.contains(&c.jid);
+                    let motd_clicked = ui
+                        .horizontal(|ui| {
+                            ui.add_space(20.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                let mut hit = false;
+                                if expanded {
+                                    let r = ui.add(
+                                        egui::Label::new(egui::RichText::new(c.motd.trim()).weak())
+                                            .wrap()
+                                            .sense(egui::Sense::click()),
+                                    );
+                                    hit |= r.clicked();
+                                } else {
+                                    for line in motd_preview(&c.motd).iter().filter(|l| !l.is_empty()) {
+                                        let r = ui.add(
+                                            egui::Label::new(egui::RichText::new(line).weak())
+                                                .truncate()
+                                                .sense(egui::Sense::click()),
+                                        );
+                                        hit |= r.clicked();
+                                    }
+                                }
+                                hit
+                            })
+                            .inner
+                        })
+                        .inner;
+                    if motd_clicked {
+                        toggle_motd = Some(c.jid.clone());
+                    }
+                }
+                let tip = if c.inaccessible {
+                    format!("{}, you're no longer in this channel (history only)", c.jid)
+                } else {
+                    c.jid.clone()
+                };
+                row.response.on_hover_text(tip);
+                if row.inner {
+                    open = Some(c.jid.clone());
+                }
+                ui.add_space(3.0);
+            }
+            // Server room-browse results (disco#items). Rooms already known are skipped; the rest
+            // get a Join button. Filtered by the same search box.
+            // Only rooms whose access probe confirmed they're joinable, and that we don't already have.
+            let dir_shown: Vec<&crate::jabber::RoomListing> = dir_rooms
+                .iter()
+                .filter(|r| r.access == crate::jabber::RoomAccess::Open)
+                .filter(|r| !known.contains(r.jid.as_str()))
+                .filter(|r| {
+                    search.is_empty()
+                        || r.name.to_lowercase().contains(search)
+                        || r.jid.to_lowercase().contains(search)
+                })
+                .collect();
+            if dir_state == crate::jabber::DirState::Ready {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!("Available rooms ({})", dir_shown.len())).strong(),
+                );
+                if dir_pending > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("Checking access… ({dir_pending} left)")).weak(),
+                    );
+                } else if dir_shown.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("No joinable rooms to add.").weak());
+                }
+                for r in dir_shown {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).color(accent));
+                        ui.add(
+                            egui::Label::new(truncate_to(&r.name, fit_chars(ui.available_width() - 70.0)))
+                                .truncate(),
+                        )
+                        .on_hover_text(r.jid.as_str());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Join").clicked() {
+                                join = Some(r.jid.clone());
+                            }
+                        });
+                    });
+                    ui.add_space(2.0);
+                }
+            }
+        });
+        if let Some(jid) = join {
+            if let Some(tx) = &self.jabber_tx {
+                let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: jid.clone() });
+            }
+            if !self.settings.jabber_rooms.iter().any(|r| r == &jid) {
+                self.settings.jabber_rooms.push(jid.clone());
+                self.needs_save = true;
+            }
+            self.settings.jabber_closed_rooms.retain(|j| j != &jid);
+            open = Some(jid);
+        }
+        if let Some(jid) = toggle_motd {
+            if !self.jabber_motd_expanded.remove(&jid) {
+                self.jabber_motd_expanded.insert(jid);
+            }
+        }
+        if let Some(jid) = open {
+            self.settings.jabber_closed_rooms.retain(|j| j != &jid);
+            if !self.jabber_tabs.iter().any(|t| t == &jid) {
+                self.jabber_tabs.push(jid.clone());
+            }
+            self.jabber_mark_read(&jid);
+            self.jabber_chat = Some(jid);
+        }
+    }
+
     fn jabber_ui(&mut self, ui: &mut egui::Ui) {
         let (fatal_set, ever_online) = {
             let s = self.jabber.lock().unwrap();
@@ -2297,7 +2597,31 @@ impl SpaiApp {
             return;
         }
 
-        let (connected, status, convos, sel_msgs, pings, rooms, dm_keys, unread, mentions, pings_unread) = {
+        // The open conversation is being looked at, so its own incoming messages must not raise an
+        // unread or mention marker. Clear it every focused frame, before reading the marker sets
+        // below (activation via click also clears once, but later messages would re-mark it).
+        if ui.ctx().input(|i| i.focused) {
+            if let Some(active) = self.jabber_chat.clone() {
+                self.jabber_mark_read(&active);
+            }
+        }
+
+        let (
+            connected,
+            status,
+            convos,
+            sel_msgs,
+            pings,
+            rooms,
+            dm_keys,
+            unread,
+            mentions,
+            pings_unread,
+            channels,
+            sel_accessible,
+            inaccessible_list,
+            subjects_snapshot,
+        ) = {
             let st = self.jabber.lock().unwrap();
             let mut set: std::collections::BTreeMap<String, Convo> =
                 std::collections::BTreeMap::new();
@@ -2344,8 +2668,59 @@ impl SpaiApp {
                 .collect();
             let unread = st.unread.clone();
             let mentions = st.mentions.clone();
-            (st.connected, st.status.clone(), convos, sel_msgs, st.pings.clone(), rooms, dm_keys, unread, mentions, st.pings_unread)
+            // Channels list = every known room (persisted + currently joined + kicked), so a room
+            // stays listed after we're removed from it. History lives in `chats` regardless.
+            let mut known: std::collections::BTreeSet<&String> = std::collections::BTreeSet::new();
+            known.extend(self.settings.jabber_rooms.iter());
+            known.extend(st.rooms.iter());
+            known.extend(st.rooms_inaccessible.iter());
+            known.remove(&crate::jabber::PING_FEED_KEY.to_owned());
+            let mut channels: Vec<ChannelRow> = known
+                .into_iter()
+                .map(|jid| ChannelRow {
+                    jid: jid.clone(),
+                    name: jid.split('@').next().unwrap_or(jid).to_owned(),
+                    unread: st.unread.contains(jid),
+                    inaccessible: st.rooms_inaccessible.contains(jid),
+                    motd: st.room_subjects.get(jid).cloned().unwrap_or_default(),
+                })
+                .collect();
+            channels.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            // The open conversation is a kicked room -> disable its composer (history only).
+            let sel_accessible = self
+                .jabber_chat
+                .as_ref()
+                .map(|j| !st.rooms_inaccessible.contains(j))
+                .unwrap_or(true);
+            let inaccessible_list: Vec<String> = st.rooms_inaccessible.iter().cloned().collect();
+            let subjects_snapshot = st.room_subjects.clone();
+            (
+                st.connected,
+                st.status.clone(),
+                convos,
+                sel_msgs,
+                st.pings.clone(),
+                rooms,
+                dm_keys,
+                unread,
+                mentions,
+                st.pings_unread,
+                channels,
+                sel_accessible,
+                inaccessible_list,
+                subjects_snapshot,
+            )
         };
+        // Mirror the live MOTD + kicked-room state into settings so history-only channels keep
+        // their strike-through and last-known MOTD across restarts.
+        if self.settings.jabber_inaccessible_rooms != inaccessible_list {
+            self.settings.jabber_inaccessible_rooms = inaccessible_list;
+            self.needs_save = true;
+        }
+        if self.settings.jabber_room_subjects != subjects_snapshot {
+            self.settings.jabber_room_subjects = subjects_snapshot;
+            self.needs_save = true;
+        }
 
         // Reconcile the open-conversation tabs from joined rooms + DM history. An incoming
         // message (present in `unread`) reopens a conversation whose tab was closed.
@@ -2431,6 +2806,7 @@ impl SpaiApp {
             } else {
                 status_dot(ui, crate::theme::standing::WARNING, 10.0);
                 ui.label(egui::RichText::new(status.as_str()).weak());
+                self.jabber_retry_button(ui);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Disconnect").clicked() {
@@ -2448,6 +2824,7 @@ impl SpaiApp {
                     self.mention_input = self.settings.jabber_mention_keywords.join(", ");
                     self.ping_rules_open = true;
                 }
+                #[cfg(feature = "fc-rescue")]
                 if self.settings.fc_rescue_enabled
                     && ui
                         .button(egui_phosphor::regular::WARNING_OCTAGON)
@@ -2493,22 +2870,31 @@ impl SpaiApp {
                     self.settings.jabber_contacts.iter().cloned().collect();
                 let dir_unread = convos.iter().any(|c| c.unread);
                 let con_unread = convos.iter().any(|c| c.unread && contacts.contains(&c.jid));
+                let chan_unread = channels.iter().any(|c| c.unread);
+                let unread_dot = |ui: &mut egui::Ui| {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(UNREAD_RED).size(8.0));
+                };
                 ui.horizontal(|ui| {
-                    let dir = selectable_chip(ui, self.jabber_show_directory, "Directory");
+                    let dir = selectable_chip(ui, self.jabber_pane == JabberPane::Directory, "Directory");
                     if dir_unread {
-                        ui.scope(|ui| {
-                            ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).size(8.0));
-                        });
+                        ui.scope(|ui| unread_dot(ui));
                     }
                     if dir.clicked() {
-                        self.jabber_show_directory = true;
+                        self.jabber_pane = JabberPane::Directory;
                     }
-                    let con = selectable_chip(ui, !self.jabber_show_directory, "Contacts");
+                    let con = selectable_chip(ui, self.jabber_pane == JabberPane::Contacts, "Contacts");
                     if con_unread {
-                        ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(egui::Color32::from_rgb(0xE0, 0x4C, 0x4C)).size(8.0));
+                        unread_dot(ui);
                     }
                     if con.clicked() {
-                        self.jabber_show_directory = false;
+                        self.jabber_pane = JabberPane::Contacts;
+                    }
+                    let chan = selectable_chip(ui, self.jabber_pane == JabberPane::Channels, "Channels");
+                    if chan_unread {
+                        unread_dot(ui);
+                    }
+                    if chan.clicked() {
+                        self.jabber_pane = JabberPane::Channels;
                     }
                 });
                 ui.add_sized(
@@ -2516,7 +2902,10 @@ impl SpaiApp {
                     egui::TextEdit::singleline(&mut self.jabber_contact_search).hint_text("Search"),
                 );
                 let search = self.jabber_contact_search.to_lowercase();
-                let show_dir = self.jabber_show_directory;
+                if self.jabber_pane == JabberPane::Channels {
+                    self.jabber_channels_list_ui(ui, &channels, connected, &search);
+                } else {
+                let show_dir = self.jabber_pane == JabberPane::Directory;
                 let shown: Vec<&Convo> = convos
                     .iter()
                     .filter(|c| show_dir || contacts.contains(&c.jid))
@@ -2667,6 +3056,7 @@ impl SpaiApp {
                     }
                     self.needs_save = true;
                 }
+                }
             });
         egui::Panel::top("jabber_tab_bar")
             .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
@@ -2733,7 +3123,7 @@ impl SpaiApp {
                         .jabber_tabs
                         .iter()
                         .map(|jid| {
-                            let is_room = rooms.iter().any(|(r, _)| r == jid);
+                            let is_room = channels.iter().any(|c| &c.jid == jid);
                             let is_unread = unread.contains(jid);
                             let label = short_chip(jid.split('@').next().unwrap_or(jid));
                             let lead = if is_room {
@@ -2898,6 +3288,36 @@ impl SpaiApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
                 match self.jabber_chat.clone() {
                     None => {
+                        // Rescue destination shortcuts: one per recent delve911 rescue ping, so you can
+                        // route to any of the last few reported systems without opening the rescue
+                        // window. Sourced from the rescue events, each using that ping's own system.
+                        #[cfg(feature = "fc-rescue")]
+                        {
+                        let recent = self.rescue_recent_dests(3);
+                        let mut set_rescue_dest: Option<i64> = None;
+                        if !recent.is_empty() {
+                            ui.label(egui::RichText::new(format!(
+                                "{}  Rescue",
+                                egui_phosphor::regular::WARNING_OCTAGON
+                            )).strong());
+                            for (sid, name) in &recent {
+                                let name = if name.is_empty() { "?" } else { name.as_str() };
+                                if ui
+                                    .button(format!(
+                                        "{}  Set Destination: {name}",
+                                        egui_phosphor::regular::MAP_PIN_LINE
+                                    ))
+                                    .clicked()
+                                {
+                                    set_rescue_dest = Some(*sid);
+                                }
+                            }
+                            ui.separator();
+                        }
+                        if let Some(sid) = set_rescue_dest {
+                            self.rescue_push_destination(sid);
+                        }
+                        }
                         let hl: Vec<bool> =
                             pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
                         let doctrine_url = self.settings.doctrine_url.clone();
@@ -2930,7 +3350,7 @@ impl SpaiApp {
                     Some(jid) => {
                         self.jabber_pings_visible = 50;
                         use egui_phosphor::regular as icon;
-                        let is_room = rooms.iter().any(|(r, _)| r == &jid);
+                        let is_room = channels.iter().any(|c| c.jid == jid);
                         let muted = self.jabber_is_muted(&jid);
                         ui.horizontal(|ui| {
                             let name = jid.split('@').next().unwrap_or(&jid);
@@ -3089,6 +3509,15 @@ impl SpaiApp {
                                     prev_time = m.time;
                                 }
                             });
+                        if is_room && !sel_accessible {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "You're no longer in this channel, history only.",
+                                )
+                                .weak(),
+                            );
+                        } else {
                         ui.horizontal_top(|ui| {
                             let shift_enter = egui::KeyboardShortcut::new(
                                 egui::Modifiers::SHIFT,
@@ -3134,6 +3563,7 @@ impl SpaiApp {
                                 }
                             }
                         });
+                        }
                         if let Some(nick) = dm_click {
                             let dm = self.full_user_jid(&nick);
                             self.jabber_mark_read(&dm);
@@ -3312,6 +3742,35 @@ impl SpaiApp {
                 self.set_destination_esi(cid, self.active_character.clone(), dest);
             }
         }
+    }
+
+    /// Push the rescue capital's system to the active character as an ESI autopilot destination.
+    /// Used both by the auto-set while the rescue window is open and the manual "Set Destination"
+    /// button (which works even with the window closed). No-op without an active character.
+    /// The most recent `n` rescue pings that resolved a system, newest first, as (system_id, name).
+    /// Each is a real delve911 ping, so its system is exactly what that ping reported.
+    #[cfg(feature = "fc-rescue")]
+    fn rescue_recent_dests(&self, n: usize) -> Vec<(i64, String)> {
+        let r = self.rescue.lock().unwrap();
+        r.events
+            .iter()
+            .rev()
+            .filter_map(|e| match (e.is_ping, e.system_id) {
+                (true, Some(id)) => Some((id, e.system_name.clone().unwrap_or_default())),
+                _ => None,
+            })
+            .take(n)
+            .collect()
+    }
+
+    #[cfg(feature = "fc-rescue")]
+    fn rescue_push_destination(&mut self, sid: i64) {
+        if self.active_character == "No character" {
+            return; // nothing to route; leave rescue_dest_set unset so auto-set retries once a char is active
+        }
+        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+        self.set_destination_esi(cid, self.active_character.clone(), sid);
+        self.rescue_dest_set = Some(sid);
     }
 
     fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
@@ -3582,6 +4041,7 @@ impl SpaiApp {
         );
 
         // Seed the rescue selectors from persisted settings before the poller/window read them.
+        #[cfg(feature = "fc-rescue")]
         {
             let mut r = self.rescue.lock().unwrap();
             r.op_channel = self.settings.rescue_op_channel.clamp(1, 12);
@@ -3590,21 +4050,40 @@ impl SpaiApp {
             }
         }
 
+        // SDE ship name (lowercased) -> group, so a ping naming a specific hull resolves to a
+        // capital class (e.g. "Phoenix Navy Issue" -> Dreadnought). Built outside the chat-log
+        // branch: the jabber delve911 ingest needs it even with no EVE log directory configured.
+        let ship_groups = std::sync::Arc::new(
+            store
+                .all_ships()
+                .into_iter()
+                .map(|(_, name, group)| (name.to_lowercase(), group))
+                .collect::<std::collections::HashMap<String, String>>(),
+        );
+        #[cfg(feature = "fc-rescue")]
+        {
+            self.ship_groups = Some(ship_groups.clone());
+            if self.map_coords.is_none() {
+                self.map_coords = Some(std::sync::Arc::new(store.all_map_systems()));
+            }
+        }
+
         if let Some(dir) = self.chat_dir.clone() {
             let ships = std::sync::Arc::new(store.ship_index());
             self.ship_index = Some(ships.clone());
+            #[cfg(feature = "fc-rescue")]
             let rescue_channel = if self.settings.fc_rescue_enabled {
                 self.settings.rescue_channel.clone()
             } else {
                 String::new()
             };
-            // SDE ship name (lowercased) -> group, so a ping naming a specific hull resolves to a
-            // capital class (e.g. "Phoenix Navy Issue" -> Dreadnought).
-            let ship_groups: std::collections::HashMap<String, String> = store
-                .all_ships()
-                .into_iter()
-                .map(|(_, name, group)| (name.to_lowercase(), group))
-                .collect();
+            #[cfg(not(feature = "fc-rescue"))]
+            let rescue_channel = String::new();
+            // Built as a local because `#[cfg]` can't be applied to a call argument.
+            #[cfg(feature = "fc-rescue")]
+            let rescue_handle = self.rescue.clone();
+            #[cfg(not(feature = "fc-rescue"))]
+            let rescue_handle = ();
             crate::watcher::spawn(
                 dir,
                 self.settings.intel_channels.clone(),
@@ -3615,14 +4094,15 @@ impl SpaiApp {
                 self.sightings.clone(),
                 self.activity.clone(),
                 self.revivals.clone(),
-                self.rescue.clone(),
+                rescue_handle,
                 rescue_channel,
-                std::sync::Arc::new(ship_groups),
+                ship_groups,
                 ctx.clone(),
             );
         }
 
         // Fleet-composition poller (FC rescue only). Runs idle until Rescue Mode is active.
+        #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled && !self.fleet_poller_started {
             let ship_types: std::collections::HashMap<i64, (String, String)> =
                 store.all_ships().into_iter().map(|(id, name, group)| (id, (name, group))).collect();
@@ -3640,8 +4120,61 @@ impl SpaiApp {
         // watcher is not spawned, so no combat events reach the alert log or OS notifications.
     }
 
+    /// Parse new delve911 XMPP messages into rescue events. The in-game chat-log watcher covers the
+    /// EVE channel of the same name; the real pings come through the MUC, so both feed `rescue`.
+    #[cfg(feature = "fc-rescue")]
+    fn ingest_delve911_jabber(&mut self) {
+        if !self.settings.fc_rescue_enabled {
+            return;
+        }
+        let (Some(systems), Some(ships)) = (self.systems.clone(), self.ship_groups.clone()) else {
+            return;
+        };
+        let jid =
+            goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com");
+        if jid.is_empty() {
+            return;
+        }
+
+        let fresh: Vec<(String, String, i64)> = {
+            let j = self.jabber.lock().unwrap();
+            let Some(msgs) = j.chats.get(&jid) else { return };
+            // First sight: start two minutes back, so restarting replays the ping that just landed
+            // without replaying days of loaded history.
+            if self.delve911_cursor == 0 {
+                self.delve911_cursor = chrono::Utc::now().timestamp() - 120;
+            }
+            msgs.iter()
+                .filter(|m| m.time > self.delve911_cursor && !m.outgoing)
+                // The room bot echoes every ping back as a multi-kilobyte attention roll-call.
+                .filter(|m| !is_ping_bot(&m.from) && !m.body.contains("requests the attention of"))
+                .map(|m| (m.from.clone(), m.body.clone(), m.time))
+                .collect()
+        };
+        if fresh.is_empty() {
+            return;
+        }
+
+        let mut events = Vec::new();
+        for (from, body, time) in fresh {
+            self.delve911_cursor = self.delve911_cursor.max(time);
+            // Pure parser under catch_unwind: a bad line drops one event, never the app.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::rescue::parse_event(&from, &body, time, &systems, &ships)
+            })) {
+                Ok(ev) => events.push(ev),
+                Err(_) => eprintln!("[rescue] parser panicked on delve911 message, skipping"),
+            }
+        }
+        let mut r = self.rescue.lock().unwrap();
+        for ev in events {
+            r.push_event(ev);
+        }
+    }
+
     /// Move newly-parsed delve911 ping events into the fleet-ping feed exactly once each.
     /// Runs on the UI thread so it can take the jabber lock (the watcher only writes `rescue`).
+    #[cfg(feature = "fc-rescue")]
     fn drain_rescue_feed(&mut self, ctx: &egui::Context) {
         let mut fresh: Vec<crate::rescue::RescueEvent> = Vec::new();
         {
@@ -3700,6 +4233,7 @@ impl SpaiApp {
     }
 
     /// FC-only rescue settings. Returns true if anything changed (caller sets needs_save).
+    #[cfg(feature = "fc-rescue")]
     fn rescue_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.heading("FC / Rescue (delve911)");
@@ -3751,16 +4285,6 @@ impl SpaiApp {
                 )
                 .changed();
             ui.end_row();
-            ui.label("Default siege secs");
-            changed |= ui
-                .add(egui::DragValue::new(&mut self.settings.rescue_siege_secs).range(0..=600))
-                .changed();
-            ui.end_row();
-            ui.label("Default PANIC secs");
-            changed |= ui
-                .add(egui::DragValue::new(&mut self.settings.rescue_panic_secs).range(0..=1200))
-                .changed();
-            ui.end_row();
         });
         ui.add_space(4.0);
         ui.label("Ping template");
@@ -3785,17 +4309,20 @@ impl SpaiApp {
         changed
     }
 
-    /// Enter or leave Rescue Mode. Entering opens the always-on-top window directly (ready to watch
-    /// delve911); op/doctrine are reachable via the header "edit" button. Leaving clears everything.
+    /// Enter or leave Rescue Mode. Entering opens the always-on-top window directly, ready to watch
+    /// delve911, with the newest unresolved ping selected. Leaving clears everything.
+    #[cfg(feature = "fc-rescue")]
     fn enter_rescue_mode(&mut self, on: bool) {
         {
             let mut r = self.rescue.lock().unwrap();
             r.active = on;
-            r.claimed = false;
             r.pending_ping.clear();
-            r.panic_input.clear();
+            r.ping_edited = false;
             r.snowflakes.clear();
-            if !on {
+            if on {
+                r.select_newest();
+            } else {
+                r.selected_ping = None;
                 r.test_mode = false;
             }
         }
@@ -3803,38 +4330,78 @@ impl SpaiApp {
         if on {
             self.rescue_window_open = true;
             self.rescue_geom_applied = false; // apply saved geometry once on this open
+            // Seed the jump-range focus on staging, once, so the rings are up before the FC touches
+            // the map. Hovering overrides it per frame and a click replaces it; neither is fought.
+            if let Some(id) = self
+                .systems
+                .as_ref()
+                .and_then(|g| g.lookup(&self.settings.rescue_staging_system).map(|i| i.id))
+            {
+                self.map_selected = Some(id);
+            }
         } else {
-            self.rescue_setup_open = false;
             self.rescue_window_open = false;
         }
     }
 
-    /// Recompute the nearest cyno-generator route only when the capital system or the configured
-    /// generator set changes (BFS can sweep the map, so never do it every frame).
-    fn update_nearest_cyno(&mut self) {
-        let Some(systems) = self.systems.clone() else { return };
-        let (cap, gens) = {
-            let r = self.rescue.lock().unwrap();
-            (r.capital_system, self.settings.cyno_generators.clone())
-        };
-        let Some(cap) = cap else {
-            if self.rescue_cyno_calc_for.is_some() {
-                self.rescue.lock().unwrap().nearest_cyno = None;
-                self.rescue_cyno_calc_for = None;
-            }
+    /// Recompute the titan-range check only when staging or the target changes: it scans every
+    /// system for the nearest in-range jump-off point, which is far too much for every frame.
+    #[cfg(feature = "fc-rescue")]
+    fn update_rescue_range(&mut self) {
+        let target = self.rescue.lock().unwrap().capital_system;
+        let (Some(systems), Some(coords), Some(target)) =
+            (self.systems.clone(), self.map_coords.clone(), target)
+        else {
+            self.rescue_range = None;
+            self.rescue_range_for = None;
             return;
         };
-        let key = (cap, gens.len());
-        if self.rescue_cyno_calc_for == Some(key) {
+        let Some(staging) =
+            systems.lookup(&self.settings.rescue_staging_system).map(|i| i.id)
+        else {
+            self.rescue_range = None;
+            self.rescue_range_for = None;
+            return;
+        };
+        if self.rescue_range_for == Some((staging, target)) {
             return;
         }
-        let info = crate::rescue::nearest_cyno(&systems, cap, &gens);
-        self.rescue.lock().unwrap().nearest_cyno = info;
-        self.rescue_cyno_calc_for = Some(key);
+        self.rescue_range_for = Some((staging, target));
+        self.rescue_range = None;
+
+        let at = |id: i64| coords.iter().find(|s| s.id == id);
+        let (Some(stage_pos), Some(target_pos)) = (at(staging), at(target)) else { return };
+        let ly_from_staging = crate::map::ly_distance(stage_pos, target_pos);
+        if ly_from_staging <= DELVE911_RANGE_LY {
+            return;
+        }
+
+        // Best jump-off point: of everything a titan can reach from staging, whichever sits
+        // closest to the target.
+        let Some(hop) = coords
+            .iter()
+            .filter(|s| s.id != target)
+            .filter(|s| crate::map::ly_distance(stage_pos, s) <= DELVE911_RANGE_LY)
+            .min_by(|a, b| {
+                crate::map::ly_distance(a, target_pos)
+                    .total_cmp(&crate::map::ly_distance(b, target_pos))
+            })
+        else {
+            return;
+        };
+        const MAX_JUMPS: u32 = 40;
+        self.rescue_range = Some(RangeWarning {
+            ly_from_staging,
+            closest_name: hop.name.clone(),
+            ansi_jumps: systems.jumps(hop.id, target, MAX_JUMPS),
+            gate_jumps: systems.jumps_gates_only(hop.id, target, MAX_JUMPS),
+            ly_to_target: crate::map::ly_distance(hop, target_pos),
+        });
     }
 
     /// Build the ready-to-send ping text from the template and current rescue state. `{doctrine}`
     /// expands to the selected doctrine's full description line.
+    #[cfg(feature = "fc-rescue")]
     fn build_rescue_ping(&self) -> String {
         let r = self.rescue.lock().unwrap();
         let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
@@ -3866,9 +4433,20 @@ impl SpaiApp {
     }
 
     #[allow(deprecated)]
+    #[cfg(feature = "fc-rescue")]
     fn show_rescue_window(&mut self, ctx: &egui::Context) {
         if !self.rescue_window_open {
+            // Re-apply on the next open (and don't fight the user's own autopilot while closed).
+            self.rescue_dest_set = None;
             return;
+        }
+        // Auto-set the ping's system as the ESI destination while the window is open, re-applying
+        // only when the reported system changes (never every frame).
+        let cap = self.rescue.lock().unwrap().capital_system;
+        if let Some(sid) = cap {
+            if self.rescue_dest_set != Some(sid) {
+                self.rescue_push_destination(sid);
+            }
         }
         let mut keep = true;
         let mut builder = egui::ViewportBuilder::default()
@@ -3931,64 +4509,53 @@ impl SpaiApp {
         }
     }
 
-    /// Pre-flight dialog: pick op channel + doctrine, then start the rescue window. Also reopened
-    /// via the window's "edit" button.
-    fn show_rescue_setup(&mut self, ctx: &egui::Context) {
-        if !self.rescue_setup_open {
+    /// (connected, status text, seconds until the next automatic retry, a worker thread is alive).
+    fn jabber_conn(&self) -> (bool, String, Option<i64>, bool) {
+        let s = self.jabber.lock().unwrap();
+        let retry_in = s
+            .retry_at
+            .map(|t| t.saturating_duration_since(std::time::Instant::now()).as_secs() as i64);
+        (s.connected, s.status.clone(), retry_in, s.running)
+    }
+
+    /// Retry a lost XMPP connection: skip the backoff when a worker is still alive, otherwise clear
+    /// the fatal error so `maybe_start_jabber` spawns a fresh one.
+    fn jabber_retry(&mut self) {
+        if self.jabber.lock().unwrap().running {
+            if let Some(tx) = &self.jabber_tx {
+                let _ = tx.send(crate::jabber::Cmd::RetryNow);
+            }
             return;
         }
-        let doctrines = self.settings.rescue_doctrines.clone();
-        // The window is already open; this dialog only edits op/doctrine and persists on close.
-        let keep = Self::dialog_viewport(
-            ctx,
-            "rescue_setup_window",
-            "EVE Spai - Rescue setup",
-            [340.0, 240.0],
-            |ui| {
-                ui.add_space(6.0);
-                ui.label("Set the op channel and doctrine, then start the rescue.");
-                ui.add_space(8.0);
-                let mut r = self.rescue.lock().unwrap();
-                egui::Grid::new("rescue_setup_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
-                    ui.label("Op channel");
-                    egui::ComboBox::from_id_salt("setup_op")
-                        .selected_text(r.op_channel.to_string())
-                        .show_ui(ui, |ui| {
-                            // Op 8 command comms does not exist.
-                            for n in (1u8..=12).filter(|n| *n != 8) {
-                                ui.selectable_value(&mut r.op_channel, n, n.to_string());
-                            }
-                        });
-                    ui.end_row();
-                    ui.label("Doctrine");
-                    let cur = r.doctrine.clone();
-                    egui::ComboBox::from_id_salt("setup_doc")
-                        .selected_text(if cur.is_empty() { "—".into() } else { cur })
-                        .show_ui(ui, |ui| {
-                            for d in &doctrines {
-                                ui.selectable_value(&mut r.doctrine, d.name.clone(), &d.name);
-                            }
-                        });
-                    ui.end_row();
-                });
-                drop(r);
-            },
-        );
-        if !keep {
-            self.rescue_setup_open = false;
-            self.rescue_window_open = true;
-            let (op, doc) = {
-                let r = self.rescue.lock().unwrap();
-                (r.op_channel, r.doctrine.clone())
-            };
-            self.settings.rescue_op_channel = op;
-            self.settings.rescue_doctrine = doc;
-            self.needs_save = true;
+        {
+            let mut s = self.jabber.lock().unwrap();
+            s.fatal = None;
+            s.status = "Connecting…".to_owned();
+        }
+        self.settings.jabber_enabled = true;
+        self.needs_save = true;
+    }
+
+    fn jabber_retry_button(&mut self, ui: &mut egui::Ui) {
+        let (_, _, retry_in, _) = self.jabber_conn();
+        if ui
+            .button(format!("{}  Retry now", egui_phosphor::regular::ARROWS_CLOCKWISE))
+            .clicked()
+        {
+            self.jabber_retry();
+        }
+        if let Some(secs) = retry_in.filter(|s| *s > 0) {
+            ui.label(
+                egui::RichText::new(format!("retrying in {}:{:02}", secs / 60, secs % 60)).weak(),
+            );
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
         }
     }
 
-    /// Last `n` messages of a jabber room/conversation as (sender, body, outgoing), oldest first.
-    fn jabber_room_tail(&self, jid: &str, n: usize) -> Vec<(String, String, bool)> {
+    /// Last `n` messages of a jabber room/conversation as (sender, body, outgoing, time), oldest
+    /// first. Only the rescue window reads this today.
+    #[cfg(feature = "fc-rescue")]
+    fn jabber_room_tail(&self, jid: &str, n: usize) -> Vec<(String, String, bool, i64)> {
         if jid.is_empty() {
             return Vec::new();
         }
@@ -4001,36 +4568,55 @@ impl SpaiApp {
                     .iter()
                     .map(|m| {
                         let who = m.from.split('/').next_back().unwrap_or(&m.from).to_string();
-                        (who, m.body.clone(), m.outgoing)
+                        (who, m.body.clone(), m.outgoing, m.time)
                     })
                     .collect()
             })
             .unwrap_or_default()
     }
 
+    #[cfg(feature = "fc-rescue")]
     fn rescue_window_body(&mut self, ui: &mut egui::Ui) {
         // Clone what the columns need so the render closure never borrows `self` (it holds the
         // rescue lock). Deferred self-mutations go through flags applied after the lock drops.
         let ping = self.build_rescue_ping();
-        let systems = self.systems.clone();
-        // Empty -> goonfleet defaults (the rooms the app already joins).
-        let goon = |cfg: &str, default: &str| {
-            if cfg.trim().is_empty() { default.to_string() } else { cfg.trim().to_string() }
-        };
-        let skirmish_jid =
-            goon(&self.settings.rescue_skirmish_jid, "skirmish_commanders@conference.goonfleet.com");
+        let skirmish_jid = goon_jid(
+            &self.settings.rescue_skirmish_jid,
+            "skirmish_commanders@conference.goonfleet.com",
+        );
         let delve911_jid =
-            goon(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com");
+            goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com");
         let skirmish_msgs = self.jabber_room_tail(&skirmish_jid, 60);
         let delve911_msgs = self.jabber_room_tail(&delve911_jid, 60);
         let tx = self.jabber_tx.clone();
         let ops_w = self.settings.rescue_col_ops_w.clamp(180.0, 640.0);
-        let mid_w = self.settings.rescue_col_mid_w.clamp(180.0, 720.0);
         let mut new_ops_w = ops_w;
-        let mut new_mid_w = mid_w;
-        let mut open_setup = false;
+        let doctrines = self.settings.rescue_doctrines.clone();
+        let (jab_connected, jab_status, jab_retry_in, _) = self.jabber_conn();
+        let mut retry_click = false;
         let mut exit = false;
-        let mut clear_dscan = false;
+        let mut set_dest: Option<i64> = None;
+        let has_char = self.active_character != "No character";
+        let range_warning = self.rescue_range.as_ref().map(|w| {
+            let jumps = |n: Option<u32>, unit: &str| match n {
+                Some(j) => format!("{j} {unit}"),
+                None => format!("no {unit} route"),
+            };
+            (
+                format!(
+                    "{}  OUT OF TITAN RANGE — {:.1} ly from staging",
+                    egui_phosphor::regular::WARNING,
+                    w.ly_from_staging
+                ),
+                format!(
+                    "Closest reachable: {}  →  {} · {} · {:.1} ly",
+                    w.closest_name,
+                    jumps(w.ansi_jumps, "Ansiblex jumps"),
+                    jumps(w.gate_jumps, "stargate jumps"),
+                    w.ly_to_target
+                ),
+            )
+        });
 
         egui::Panel::bottom("rescue_exit_bar")
             .exact_size(40.0)
@@ -4040,33 +4626,73 @@ impl SpaiApp {
                     if ui.button("Exit rescue mode").clicked() {
                         exit = true;
                     }
-                    let mut rr = self.rescue.lock().unwrap();
-                    if rr.claimed {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(0x50, 0xC0, 0x60),
-                            format!("{}  Rescue claimed — pings enabled", egui_phosphor::regular::CHECK_CIRCLE),
-                        );
-                    } else if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new(format!(
-                                "{}  Start save (claim)",
-                                egui_phosphor::regular::WARNING_OCTAGON
-                            ))
-                            .strong(),
-                        ))
-                        .on_hover_text("Claim this rescue to enable ping sending")
-                        .clicked()
-                    {
-                        rr.claimed = true;
-                    }
                 });
             });
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut r = self.rescue.lock().unwrap();
             let test_mode = r.test_mode;
 
-            // --- Top strip: capital summary, always full-width ---
-            ui.horizontal_wrapped(|ui| {
+            // Nothing sent from this window can leave the machine while XMPP is down, and an empty
+            // chat pane looks identical to a quiet channel, so say so loudly.
+            if !jab_connected {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
+                        format!(
+                            "{}  Jabber disconnected — pings cannot be sent. {jab_status}",
+                            egui_phosphor::regular::PLUGS
+                        ),
+                    );
+                    if ui.button("Retry now").clicked() {
+                        retry_click = true;
+                    }
+                    if let Some(secs) = jab_retry_in.filter(|s| *s > 0) {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "retrying in {}:{:02}",
+                                secs / 60,
+                                secs % 60
+                            ))
+                            .weak(),
+                        );
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                    }
+                });
+                ui.separator();
+            }
+
+            // The five most recent unresolved pings, right-aligned in the title bar, newest at the
+            // far right. Picking one drives everything below it: the summary line, the ping
+            // template, the checklist and the ESI destination.
+            let listed: Vec<(u64, String, String, String, i64)> = r
+                .recent_pings(5)
+                .into_iter()
+                .map(|e| {
+                    (
+                        e.seq,
+                        // Chips stay narrow so five fit next to the summary; the rest is on hover.
+                        e.pilot
+                            .clone()
+                            .or_else(|| e.system_name.clone())
+                            .unwrap_or_else(|| "?".into()),
+                        e.system_name.clone().unwrap_or_else(|| "?".into()),
+                        e.cyno.clone().unwrap_or_else(|| "?".into()),
+                        e.received,
+                    )
+                })
+                .collect();
+            let selected = r.selected_ping;
+            let op_channel = r.op_channel;
+            let actions_done: std::collections::HashSet<u64> = listed
+                .iter()
+                .map(|(seq, ..)| *seq)
+                .filter(|seq| r.actions(*seq).done(op_channel))
+                .collect();
+            let mut pick: Option<u64> = None;
+            let mut resolve: Option<u64> = None;
+
+            // --- Title bar: capital summary left, ping chips right ---
+            ui.horizontal(|ui| {
                 ui.heading(egui_phosphor::regular::WARNING_OCTAGON.to_string());
                 let pilot = r.capital_pilot.clone().unwrap_or_else(|| "unknown".into());
                 let sys = r.capital_system_name.clone().unwrap_or_else(|| "?".into());
@@ -4079,7 +4705,94 @@ impl SpaiApp {
                 if r.fleet.stale {
                     ui.colored_label(egui::Color32::from_rgb(0xE0, 0xA0, 0x30), "· stale");
                 }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if listed.is_empty() {
+                        ui.label(egui::RichText::new("No delve911 pings yet").weak());
+                        return;
+                    }
+                    let now = chrono::Utc::now().timestamp();
+                    // Newest first: in a right-to-left layout the first widget lands furthest right.
+                    for (i, (seq, chip, sys, cyno, received)) in listed.iter().enumerate() {
+                        if ui
+                            .small_button(egui_phosphor::regular::CHECK)
+                            .on_hover_text("Resolved, dismiss this ping")
+                            .clicked()
+                        {
+                            resolve = Some(*seq);
+                        }
+                        let age = (now - received).max(0);
+                        let age = if age < 60 {
+                            format!("{age}s")
+                        } else if age < 3600 {
+                            format!("{}m", age / 60)
+                        } else {
+                            format!("{}h", age / 3600)
+                        };
+                        let mut text = egui::RichText::new(chip);
+                        if i == 0 {
+                            text = text.strong().color(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E));
+                        }
+                        let btn = egui::Button::selectable(selected == Some(*seq), text);
+                        // Same pulse as the buttons: this ping still needs coord/comms/invite.
+                        let btn = match pulse_fill(ui, !actions_done.contains(seq)) {
+                            Some(c) => btn.fill(c),
+                            None => btn,
+                        };
+                        let tip = if actions_done.contains(seq) {
+                            format!("{sys}  ·  cyno {cyno}  ·  {age} ago")
+                        } else {
+                            format!("{sys}  ·  cyno {cyno}  ·  {age} ago\nAction outstanding")
+                        };
+                        if ui.add(btn).on_hover_text(tip).clicked() {
+                            pick = Some(*seq);
+                        }
+                        ui.add_space(8.0);
+                    }
+                });
             });
+            if let Some(seq) = pick {
+                r.select_ping(seq);
+            }
+            if let Some(seq) = resolve {
+                r.resolve_ping(seq);
+            }
+            // The destination is auto-pushed when the selected ping changes, but never re-asserted,
+            // so this is the way back after routing somewhere else mid-rescue. Routes to the
+            // casualty's system, not staging.
+            ui.horizontal(|ui| {
+                let target = r.capital_system.zip(r.capital_system_name.clone());
+                let label = match &target {
+                    Some((_, name)) => {
+                        format!("{}  Set Destination: {name}", egui_phosphor::regular::MAP_PIN_LINE)
+                    }
+                    None => format!("{}  Set Destination", egui_phosphor::regular::MAP_PIN_LINE),
+                };
+                let resp = ui.add_enabled(
+                    target.is_some() && has_char,
+                    egui::Button::new(label),
+                );
+                let resp = if target.is_none() {
+                    resp.on_disabled_hover_text("This ping has no system to route to")
+                } else if !has_char {
+                    resp.on_disabled_hover_text("No active character to route")
+                } else {
+                    resp.on_hover_text("Route this character to the tackled capital")
+                };
+                if resp.clicked() {
+                    set_dest = target.map(|(id, _)| id);
+                }
+            });
+            // Only rendered in the rare out-of-range case, and wrapped so a long system name can't
+            // widen the window or push the chat panel around.
+            if let Some((headline, detail)) = &range_warning {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(0xE0, 0x3B, 0x2E), headline);
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E), detail);
+                });
+            }
             // Only render the cyno/anomaly line when there's something to show (avoids an empty gap).
             if r.cyno_pilot.is_some() || r.anomaly.is_some() {
                 ui.horizontal_wrapped(|ui| {
@@ -4091,26 +4804,12 @@ impl SpaiApp {
                     }
                 });
             }
-            ui.horizontal(|ui| {
-                let doc = if r.doctrine.is_empty() { "—" } else { r.doctrine.as_str() };
-                ui.label(egui::RichText::new(format!("Op {} · {}", r.op_channel, doc)).strong());
-                if ui.small_button("edit").clicked() {
-                    open_setup = true;
-                }
-                if ui
-                    .button(format!("{}  Command comms", egui_phosphor::regular::HEADSET))
-                    .on_hover_text("Open Command comms (Command Sector Alpha) for this op")
-                    .clicked()
-                {
-                    let _ = open::that(command_mumble_url(r.op_channel));
-                }
-                if test_mode {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0x40, 0xB0, 0xF0),
-                        format!("{}  TEST — sending disabled", egui_phosphor::regular::FLASK),
-                    );
-                }
-            });
+            if test_mode {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x40, 0xB0, 0xF0),
+                    format!("{}  TEST — sending disabled", egui_phosphor::regular::FLASK),
+                );
+            }
             ui.separator();
 
             // ================= LEFT: operations (resizable) =================
@@ -4119,6 +4818,22 @@ impl SpaiApp {
                 .default_size(ops_w)
                 .size_range(180.0..=640.0)
                 .show_inside(ui, |ui| {
+                    // Scrolled, and auto_shrink off on the vertical axis: without this the column's
+                    // content sets a minimum height on the whole window, so a short window pushes
+                    // the chat panel off the bottom instead of clipping this column.
+                    egui::ScrollArea::vertical()
+                        .id_salt("rescue_ops")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                    // Actions outstanding for the ping being worked; the buttons pulse until done.
+                    let sel_seq = r.selected_ping;
+                    let op_now = r.op_channel;
+                    let acts = sel_seq.map(|s| r.actions(s)).unwrap_or_default();
+                    let cmd_pending = sel_seq.is_some() && acts.command_comms_op != Some(op_now);
+                    let coord_pending = sel_seq.is_some() && !acts.coord_pinged;
+                    let invite_pending = sel_seq.is_some() && acts.invited_op != Some(op_now);
+                    let (mut mark_cmd, mut mark_coord, mut mark_invite) = (false, false, false);
+
                     rescue_checklist_ui(ui, &mut *r);
                     ui.add_space(6.0);
                     ui.separator();
@@ -4126,21 +4841,79 @@ impl SpaiApp {
                         ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
                         if ui.small_button("↻").on_hover_text("Regenerate from template").clicked() {
                             r.pending_ping = ping.clone();
-                            r.ping_built_for = Some((r.op_channel, r.doctrine.clone()));
+                            r.ping_built_for =
+                                Some((r.op_channel, r.doctrine.clone(), r.selected_ping));
+                            r.ping_edited = false;
                         }
                     });
-                    // Regenerate from the template on first show and whenever op channel or doctrine
-                    // changes (discards manual edits, as intended).
-                    let ping_key = (r.op_channel, r.doctrine.clone());
-                    if r.pending_ping.is_empty() || r.ping_built_for.as_ref() != Some(&ping_key) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Op");
+                        egui::ComboBox::from_id_salt("rescue_op")
+                            .width(56.0)
+                            .selected_text(r.op_channel.to_string())
+                            .show_ui(ui, |ui| {
+                                // Op 8 command comms does not exist.
+                                for n in (1u8..=12).filter(|n| *n != 8) {
+                                    ui.selectable_value(&mut r.op_channel, n, n.to_string());
+                                }
+                            });
+                        ui.label("Doctrine");
+                        let cur = r.doctrine.clone();
+                        egui::ComboBox::from_id_salt("rescue_doc")
+                            .width(150.0)
+                            .selected_text(if cur.is_empty() { "—".into() } else { cur })
+                            .show_ui(ui, |ui| {
+                                for d in &doctrines {
+                                    ui.selectable_value(&mut r.doctrine, d.name.clone(), &d.name);
+                                }
+                            });
+                    });
+                    {
+                        let btn = egui::Button::new(format!(
+                            "{}  Command Comms",
+                            egui_phosphor::regular::HEADSET
+                        ));
+                        let btn = match pulse_fill(ui, cmd_pending) {
+                            Some(c) => btn.fill(c),
+                            None => btn,
+                        };
+                        if ui
+                            .add_sized([ui.available_width(), 24.0], btn)
+                            .on_hover_text("Open Command comms (Command Sector Alpha) for this op")
+                            .clicked()
+                        {
+                            let _ = open::that(command_mumble_url(op_now));
+                            mark_cmd = true;
+                        }
+                    }
+                    // Rebuild from the template on first show and on an op/doctrine change, but not
+                    // once the FC has typed into the box: the combos sit right above it, so silently
+                    // discarding their edit is too easy to trigger. "↻" still forces a rebuild.
+                    let ping_key = (r.op_channel, r.doctrine.clone(), r.selected_ping);
+                    let switched_ping = r
+                        .ping_built_for
+                        .as_ref()
+                        .is_some_and(|(_, _, seq)| *seq != r.selected_ping);
+                    let stale = r.ping_built_for.as_ref() != Some(&ping_key);
+                    // A different ping means different pilot/system/cyno, so rebuild even over a
+                    // hand-edited draft: sending the previous casualty's details would be worse.
+                    if r.pending_ping.is_empty() || switched_ping || (stale && !r.ping_edited) {
                         r.pending_ping = ping.clone();
                         r.ping_built_for = Some(ping_key);
+                        if switched_ping {
+                            r.ping_edited = false;
+                        }
                     }
-                    ui.add(
-                        egui::TextEdit::multiline(&mut r.pending_ping)
-                            .desired_rows(3)
-                            .desired_width(f32::INFINITY),
-                    );
+                    if ui
+                        .add(
+                            egui::TextEdit::multiline(&mut r.pending_ping)
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY),
+                        )
+                        .changed()
+                    {
+                        r.ping_edited = true;
+                    }
                     ui.horizontal_wrapped(|ui| {
                         if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
                             if let Ok(mut clip) = arboard::Clipboard::new() {
@@ -4148,142 +4921,86 @@ impl SpaiApp {
                             }
                         }
                         // coord/fc/all are directorbot ping GROUPS: prefix "!bping <group>" onto the
-                        // ping and post it to skirmish_commanders. Blocked until the rescue is
-                        // claimed/started (prevents accidental sends) and off in test mode.
-                        let can_send = r.claimed && !test_mode && !skirmish_jid.is_empty();
+                        // ping and post it to skirmish_commanders. Off in test mode.
+                        let can_send = !test_mode && !skirmish_jid.is_empty() && jab_connected;
                         for group in ["coord", "fc", "all"] {
-                            if ui
-                                .add_enabled(can_send, egui::Button::new(format!("Ping {group}")))
-                                .clicked()
-                            {
+                            let btn = egui::Button::new(format!("Ping {group}"));
+                            let btn = match pulse_fill(ui, coord_pending && group == "coord") {
+                                Some(c) => btn.fill(c),
+                                None => btn,
+                            };
+                            if ui.add_enabled(can_send, btn).clicked() {
                                 if let Some(tx) = &tx {
                                     let _ = tx.send(crate::jabber::Cmd::SendRoom {
                                         room: skirmish_jid.clone(),
                                         body: format!("!bping {group}\n\n{}", r.pending_ping),
                                     });
                                 }
+                                if group == "coord" {
+                                    mark_coord = true;
+                                }
                             }
                         }
                     });
-                    if !r.claimed {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(0xE0, 0xA0, 0x30),
-                            "Claim the rescue (bottom) to enable pings",
-                        );
+
+                    // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
+                    // their delve911 nick so it reads as a direct call-out in the channel.
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label(egui::RichText::new("Comms invite").strong());
+                    match rescue_comms_invite(r.ping_author.as_deref(), r.op_channel) {
+                        None => {
+                            ui.label(
+                                egui::RichText::new("No ping author to invite").weak(),
+                            );
+                        }
+                        Some(msg) => {
+                            egui::Frame::group(ui.style())
+                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(egui::RichText::new(&msg).monospace());
+                                });
+                            let can_invite =
+                                !test_mode && jab_connected && !delve911_jid.is_empty();
+                            let btn = egui::Button::new(format!(
+                                "{}  Invite to Op {op_now} comms",
+                                egui_phosphor::regular::HEADSET
+                            ));
+                            let btn = match pulse_fill(ui, invite_pending) {
+                                Some(c) => btn.fill(c),
+                                None => btn,
+                            };
+                            if ui
+                                .add_enabled(can_invite, btn)
+                                .on_hover_text("Post this in delve911")
+                                .clicked()
+                            {
+                                if let Some(tx) = &tx {
+                                    let _ = tx.send(crate::jabber::Cmd::SendRoom {
+                                        room: delve911_jid.clone(),
+                                        body: msg,
+                                    });
+                                }
+                                mark_invite = true;
+                            }
+                        }
                     }
+
+                    if let Some(seq) = sel_seq {
+                        if mark_cmd {
+                            r.actions_mut(seq).command_comms_op = Some(op_now);
+                        }
+                        if mark_coord {
+                            r.actions_mut(seq).coord_pinged = true;
+                        }
+                        if mark_invite {
+                            r.actions_mut(seq).invited_op = Some(op_now);
+                        }
+                    }
+                        });
                 });
             new_ops_w = ops_resp.response.rect.width();
-
-            // ================= MIDDLE: situational (resizable) =================
-            let mid_resp = egui::Panel::left("rescue_mid_panel")
-                .resizable(true)
-                .default_size(mid_w)
-                .size_range(180.0..=720.0)
-                .show_inside(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("rescue_mid")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                    // PANIC timer.
-                    rescue_timers_ui(ui, &mut *r);
-                    ui.add_space(6.0);
-                    ui.separator();
-                    // Nearest cyno readout.
-                    match &r.nearest_cyno {
-                        None => {
-                            ui.label("Cyno gen: none configured");
-                        }
-                        Some(c) if c.in_system => {
-                            ui.colored_label(egui::Color32::from_rgb(0x50, 0xC0, 0x60), "Cyno gen: in-system");
-                        }
-                        Some(c) if c.reachable => {
-                            ui.label(format!("Cyno gen: {} jumps → {}", c.jumps, c.dest_name));
-                            if c.via_bridge {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(0xE0, 0x70, 0x30),
-                                    format!("{}  via jump bridge (blockade risk)", egui_phosphor::regular::WARNING),
-                                );
-                            }
-                        }
-                        Some(_) => {
-                            ui.colored_label(egui::Color32::from_rgb(0xE0, 0x50, 0x50), "Cyno gen: no route");
-                        }
-                    }
-                    ui.add_space(6.0);
-                    ui.separator();
-
-                    // Fleet composition.
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Fleet").strong());
-                        if r.fleet.updated > 0 {
-                            let age = (chrono::Utc::now().timestamp() - r.fleet.updated).max(0);
-                            ui.label(egui::RichText::new(format!("· {age}s ago")).weak());
-                        }
-                    });
-                    if r.fleet.members.is_empty() {
-                        ui.label(egui::RichText::new("no ESI fleet data").weak());
-                    } else {
-                        egui::Grid::new("rescue_comp").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-                            for (role, n) in &r.fleet.counts {
-                                ui.label(role.label());
-                                ui.label(n.to_string());
-                                ui.end_row();
-                            }
-                        });
-                    }
-
-                    // Snowflakes (sticky: a flagged pilot stays listed even after re-shipping/podding).
-                    let snowflakes: Vec<(String, String, String, bool)> = r
-                        .fleet
-                        .members
-                        .iter()
-                        .filter_map(|m| {
-                            let tag = r.snowflakes.get(&m.character_id)?;
-                            let sys = systems
-                                .as_ref()
-                                .and_then(|g| g.info_of(m.system_id).map(|i| i.name.clone()))
-                                .unwrap_or_default();
-                            let podded = m.ship.eq_ignore_ascii_case("Capsule");
-                            Some((format!("{tag}: {}", m.name), m.ship.clone(), sys, podded))
-                        })
-                        .collect();
-                    if !snowflakes.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("Snowflakes").strong());
-                        for (who, ship, sys, podded) in snowflakes {
-                            let loc = if sys.is_empty() { String::new() } else { format!("  @ {sys}") };
-                            let color = if podded {
-                                egui::Color32::from_rgb(0xE0, 0x50, 0x50)
-                            } else {
-                                egui::Color32::from_rgb(0xF0, 0xC0, 0x40)
-                            };
-                            let ship = if podded { format!("{ship} !PODDED") } else { ship };
-                            ui.colored_label(color, format!("{who}  ({ship}){loc}"));
-                        }
-                    }
-
-                    // On-grid d-scan.
-                    if let Some(dscan) = &r.dscan {
-                        ui.add_space(4.0);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("On grid (d-scan)").strong());
-                            if ui.small_button("clear").clicked() {
-                                clear_dscan = true;
-                            }
-                        });
-                        egui::Grid::new("rescue_dscan").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-                            for (name, n) in dscan.iter().take(20) {
-                                ui.label(name);
-                                ui.label(n.to_string());
-                                ui.end_row();
-                            }
-                        });
-                    }
-
-                        });
-                });
-            new_mid_w = mid_resp.response.rect.width();
 
             // ================= RIGHT: chat (delve911 | skirmish tabs, reply pinned bottom) =======
             egui::CentralPanel::default()
@@ -4312,7 +5029,8 @@ impl SpaiApp {
                         );
                         let enter =
                             resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let can_send = !test_mode && room_set && !r.delve911_reply.trim().is_empty();
+                        let can_send =
+                            !test_mode && room_set && jab_connected && !r.delve911_reply.trim().is_empty();
                         if (enter || clicked) && can_send {
                             if let Some(tx) = &tx {
                                 let _ = tx.send(crate::jabber::Cmd::SendRoom {
@@ -4343,47 +5061,48 @@ impl SpaiApp {
                         }
                     });
                     ui.separator();
+                    // Don't snap to the bottom while the pointer is held, so a drag-select isn't wiped
+                    // by an incoming message (parity with the main chat).
+                    let selecting = ui.input(|i| i.pointer.any_down());
                     egui::ScrollArea::vertical()
                         .id_salt("rescue_chat")
                         .auto_shrink([false, false])
-                        .stick_to_bottom(true)
+                        .stick_to_bottom(!selecting)
                         .show(ui, |ui| {
                             if r.chat_tab == 1 {
                                 if skirmish_msgs.is_empty() {
                                     ui.label(egui::RichText::new("(no messages)").weak());
                                 }
-                                for (who, body, _outgoing) in &skirmish_msgs {
-                                    rescue_chat_line(ui, who, body);
+                                for (who, body, _outgoing, time) in &skirmish_msgs {
+                                    rescue_chat_line(ui, who, body, *time);
                                 }
                             } else {
                                 if delve911_msgs.is_empty() {
                                     ui.label(egui::RichText::new("(no messages)").weak());
                                 }
-                                for (who, body, _outgoing) in &delve911_msgs {
-                                    rescue_chat_line(ui, who, body);
+                                for (who, body, _outgoing, time) in &delve911_msgs {
+                                    rescue_chat_line(ui, who, body, *time);
                                 }
                             }
                         });
                 });
             });
 
-            if clear_dscan {
-                r.dscan = None;
-            }
         });
 
-        // Persist column widths once a resize drag ends (avoids a write storm mid-drag).
+        // Persist the ops column width once a resize drag ends (avoids a write storm mid-drag).
         if !ui.ctx().input(|i| i.pointer.any_down())
-            && ((new_ops_w - self.settings.rescue_col_ops_w).abs() > 1.0
-                || (new_mid_w - self.settings.rescue_col_mid_w).abs() > 1.0)
+            && (new_ops_w - self.settings.rescue_col_ops_w).abs() > 1.0
         {
             self.settings.rescue_col_ops_w = new_ops_w;
-            self.settings.rescue_col_mid_w = new_mid_w;
             self.needs_save = true;
         }
 
-        if open_setup {
-            self.rescue_setup_open = true;
+        if retry_click {
+            self.jabber_retry();
+        }
+        if let Some(sid) = set_dest {
+            self.rescue_push_destination(sid);
         }
         if exit {
             self.enter_rescue_mode(false);
@@ -7013,6 +7732,42 @@ impl SpaiApp {
     fn characters_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
 
+        ui.horizontal(|ui| {
+            if selectable_chip(ui, !self.copy_settings.active, "Characters").clicked() {
+                self.copy_settings.active = false;
+            }
+            if selectable_chip(ui, self.copy_settings.active, "Copy settings")
+                .on_hover_text("Copy one character's EVE settings onto other characters")
+                .clicked()
+            {
+                self.copy_settings.active = true;
+                self.copy_settings.invalidate();
+            }
+        });
+        ui.add_space(8.0);
+
+        if self.copy_settings.active {
+            let configured = self.settings.eve_settings_dir.clone();
+            let logs = self.settings.eve_logs_dir.clone();
+            let clients = self.eve_clients.clone();
+            if let Some(store) = self.store.as_ref() {
+                crate::copysettings::ui(
+                    &mut self.copy_settings,
+                    ui,
+                    store,
+                    &configured,
+                    &logs,
+                    &clients,
+                );
+            } else {
+                ui.colored_label(
+                    crate::theme::standing::WARNING,
+                    "No database, cannot copy settings.",
+                );
+            }
+            return;
+        }
+
         match self.auth_status.lock().unwrap().clone() {
             AuthStatus::Waiting(msg) => {
                 ui.horizontal(|ui| {
@@ -8326,15 +9081,20 @@ impl SpaiApp {
         }
 
         let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
-        // Rescue mode strips overlays down to bridges + cyno-gen without touching the user's saved
-        // toggles. `ov` is the effective set used for all gating below (no early returns follow).
+        // Rescue mode strips overlays down to bridges + cyno-gen + jump range without touching the
+        // user's saved toggles. `ov` is the effective set used for all gating below (no early
+        // returns follow).
+        #[cfg(feature = "fc-rescue")]
         let rescue_active =
             self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active;
+        #[cfg(feature = "fc-rescue")]
         let ov = if rescue_active {
             self.map_overlays.rescue_preset()
         } else {
             self.map_overlays
         };
+        #[cfg(not(feature = "fc-rescue"))]
+        let ov = self.map_overlays;
         let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         let show_sys_labels = zoomed;
         let cull = rect.expand(8.0);
@@ -9149,6 +9909,7 @@ impl SpaiApp {
                     }
                 }
             }
+            #[cfg(feature = "fc-rescue")]
             if rescue_active {
                 if let Some(sid) = self.systems.as_ref().and_then(|g| {
                     g.lookup(&self.settings.rescue_staging_system).map(|i| i.id)
@@ -9515,6 +10276,7 @@ impl SpaiApp {
             });
         }
 
+        #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled {
             ui.separator();
             let active = self.rescue.lock().unwrap().active;
@@ -12191,13 +12953,19 @@ impl SpaiApp {
             nav::WIDTH_COLLAPSED
         };
         let badge = self.jabber_has_unread();
+        // Only once a session has worked: before that the Jabber page shows its own login state.
+        let jabber_down = {
+            let s = self.jabber.lock().unwrap();
+            s.ever_online && !s.connected
+        };
         egui::Panel::left("nav_rail")
             .resizable(false)
             .exact_size(width)
             .show_inside(ui, |ui| {
                 let mut expanded = self.settings.nav_expanded;
                 let badged: &[nav::View] = if badge { &[nav::View::Jabber] } else { &[] };
-                let selected = nav::rail(ui, self.view, &mut expanded, badged);
+                let warned: &[nav::View] = if jabber_down { &[nav::View::Jabber] } else { &[] };
+                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned);
                 if selected != self.view {
                     self.view = selected;
                 }
@@ -13193,6 +13961,7 @@ impl SpaiApp {
         if let Some(n) = crate::dscan::looks_like_dscan(&text) {
             // During a rescue, also capture the dscan breakdown onto the rescue state so the FC
             // sees what is on grid without leaving the window.
+            #[cfg(feature = "fc-rescue")]
             if self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active {
                 let parsed = crate::rescue::parse_raw_dscan(&text);
                 if !parsed.is_empty() {
@@ -13588,10 +14357,13 @@ impl SpaiApp {
                     }
                     S::Channels => {
                         ui.heading(format!("{}  Intel channels", icon::BROADCAST));
-                        ui.label("Apply your coalition's preset channels, or add them manually.");
+                        ui.label("Apply the Imperium preset channels, or add them manually.");
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
-                            for pack in crate::packs::PACKS {
+                            // Packs with no channels exist only for battle-report coalition
+                            // tagging; an "Apply" button for them would do nothing.
+                            for pack in crate::packs::PACKS.iter().filter(|p| !p.channels.is_empty())
+                            {
                                 let selected = self.settings.configuration_pack == pack.name;
                                 if ui
                                     .add(egui::Button::new(format!("Apply {}", pack.name)).selected(selected))
@@ -14833,6 +15605,7 @@ impl SpaiApp {
         }
     }
 
+    #[cfg(feature = "fc-rescue")]
     fn rescue_doctrines_window(&mut self, ctx: &egui::Context) {
         if !self.rescue_doctrines_open {
             return;
@@ -15138,13 +15911,24 @@ impl SpaiApp {
                                 .hint_text(logs_hint),
                         )
                         .changed();
-                    ui.label("EVE settings directory");
-                    changed |= ui
+                    let settings_hint = crate::charsettings::settings_root("")
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "auto-detect".to_owned());
+                    ui.label("EVE settings directory")
+                        .on_hover_text("Used by Characters > Copy settings");
+                    if ui
                         .add(
                             egui::TextEdit::singleline(&mut self.settings.eve_settings_dir)
-                                .hint_text("auto-detect"),
+                                .hint_text(settings_hint),
                         )
-                        .changed();
+                        .changed()
+                    {
+                        changed = true;
+                        if let Ok(mut slot) = self.eve_settings_path.lock() {
+                            slot.clone_from(&self.settings.eve_settings_dir);
+                        }
+                        self.copy_settings.invalidate();
+                    }
 
                     ui.separator();
 
@@ -15261,9 +16045,9 @@ impl SpaiApp {
 
                     ui.label(egui::RichText::new("Configuration packs").strong());
                     ui.label(
-                        egui::RichText::new("Apply a coalition's preset intel channels.").weak(),
+                        egui::RichText::new("Apply the Imperium preset intel channels.").weak(),
                     );
-                    for pack in crate::packs::PACKS {
+                    for pack in crate::packs::PACKS.iter().filter(|p| !p.channels.is_empty()) {
                         ui.horizontal(|ui| {
                             if ui.button(format!("Apply {}", pack.name)).clicked() {
                                 for ch in pack.channels {
@@ -15339,9 +16123,12 @@ impl SpaiApp {
                     if ui.button("Configure cyno generators…").clicked() {
                         self.cyno_generators_open = true;
                     }
-                    ui.add_space(12.0);
-                    ui.separator();
-                    changed |= self.rescue_settings_section(ui);
+                    #[cfg(feature = "fc-rescue")]
+                    {
+                        ui.add_space(12.0);
+                        ui.separator();
+                        changed |= self.rescue_settings_section(ui);
+                    }
 
                     ui.add_space(12.0);
                     ui.separator();
@@ -16234,7 +17021,9 @@ impl eframe::App for SpaiApp {
             }
         }
 
+        #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled {
+            self.ingest_delve911_jabber();
             self.drain_rescue_feed(&ctx);
         }
 
@@ -16346,10 +17135,10 @@ impl eframe::App for SpaiApp {
             self.show_jabber_viewport(&ctx);
         }
         self.cyno_generators_window(&ctx);
+        #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled {
             self.rescue_doctrines_window(&ctx);
-            self.show_rescue_setup(&ctx);
-            self.update_nearest_cyno();
+            self.update_rescue_range();
             self.show_rescue_window(&ctx);
         }
 
@@ -16772,6 +17561,25 @@ struct Convo {
     group: String,
     presence: crate::jabber::Presence,
     status_text: String,
+}
+
+struct ChannelRow {
+    jid: String,
+    name: String,
+    unread: bool,
+    /// Left/kicked while online: struck-through, history-only.
+    inaccessible: bool,
+    /// Full room MOTD (MUC subject); collapsed to two lines in the list, expandable on click.
+    motd: String,
+}
+
+/// First two non-empty-trimmed lines of a room MOTD (MUC subject) for the collapsed list preview.
+fn motd_preview(subject: &str) -> [String; 2] {
+    let mut lines = subject.lines().map(str::trim).filter(|l| !l.is_empty());
+    [
+        lines.next().unwrap_or_default().to_owned(),
+        lines.next().unwrap_or_default().to_owned(),
+    ]
 }
 
 fn eve_time_label(ts: i64, now: i64) -> String {
@@ -18966,7 +19774,9 @@ fn route_item_row(
 }
 
 /// Direct Mumble deep-link for a command-comms channel (op 1-12). Channels 9-12 carry a "- SC"
-/// suffix. Used as the fallback when no short link is known (op 8).
+/// suffix. Opened locally by the rescue window's Command Comms button; never posted, because a
+/// `mumble://` URL is dead on clients with no protocol handler.
+#[cfg(feature = "fc-rescue")]
 fn command_mumble_url(ch: u8) -> String {
     let ch = ch.clamp(1, 12);
     let chan = if ch >= 9 {
@@ -18979,7 +19789,9 @@ fn command_mumble_url(ch: u8) -> String {
     )
 }
 
-/// Goonfleet gnf.lt short link for an op channel's command comms (op 8 has none yet).
+/// Goonfleet gnf.lt short link for an op channel's REGULAR comms (op 8 has none yet). Verified to
+/// redirect to `mumble://.../Ops/Op Channels/OP <n> - ...`, not Command Sector Alpha.
+#[cfg(feature = "fc-rescue")]
 fn op_comms_short_link(ch: u8) -> Option<&'static str> {
     Some(match ch {
         1 => "https://gnf.lt/dYehZh9.html",
@@ -18997,9 +19809,12 @@ fn op_comms_short_link(ch: u8) -> Option<&'static str> {
     })
 }
 
-/// Comms link for an op channel: the verified gnf.lt short link, else the direct mumble:// URL.
+/// Comms link for anything we POST. Always the gnf.lt short link, never a raw `mumble://` URL:
+/// those silently fail on clients and OSes that have no handler registered. Empty when the op has
+/// no short link (only op 8, which the op picker doesn't offer).
+#[cfg(feature = "fc-rescue")]
 fn op_comms_url(ch: u8) -> String {
-    op_comms_short_link(ch).map(|s| s.to_owned()).unwrap_or_else(|| command_mumble_url(ch))
+    op_comms_short_link(ch).unwrap_or_default().to_owned()
 }
 
 /// Cosmetic: the ping bot replies "… requests the attention of: a, b, c, …" with huge name lists.
@@ -19021,129 +19836,74 @@ fn condense_attention_list(body: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// One chat line, jabber-style: the sender's name in its per-name colour, then the message body.
-fn rescue_chat_line(ui: &mut egui::Ui, who: &str, body: &str) {
+#[cfg(feature = "fc-rescue")]
+fn rescue_chat_line(ui: &mut egui::Ui, who: &str, body: &str, time: i64) {
     let body = condense_attention_list(body);
     ui.horizontal_wrapped(|ui| {
         let spacing = ui.spacing().item_spacing.x;
         ui.spacing_mut().item_spacing.x = 4.0;
+        // Inline, and deliberately the Body style rather than a smaller or monospace one: the row
+        // already contains body text, so reusing it cannot grow the line height. EVE time is UTC.
+        if let Some(t) = chrono::DateTime::from_timestamp(time, 0) {
+            ui.label(
+                egui::RichText::new(t.format("%H:%M").to_string())
+                    .color(ui.visuals().weak_text_color()),
+            );
+        }
         ui.label(egui::RichText::new(format!("{who}:")).color(name_color(who)).strong());
-        ui.label(body.as_ref());
+        // Same body renderer as the main chat: URLs become clickable links, text stays selectable.
+        render_message_body(ui, body.as_ref());
         ui.spacing_mut().item_spacing.x = spacing;
     });
 }
 
-// ---- Rescue timers section ----
-
-fn rescue_fmt_mmss(secs: i64) -> String {
-    let s = secs.max(0);
-    format!("{}:{:02}", s / 60, s % 60)
+/// The directorbot posts under a per-room nick ("DelveBot" in delve911) and echoes every ping back.
+/// Matched exactly, not by a "bot" suffix, so a pilot named like a bot still gets rescued.
+#[cfg(feature = "fc-rescue")]
+fn is_ping_bot(nick: &str) -> bool {
+    ["delvebot", "directorbot"].contains(&nick.to_ascii_lowercase().as_str())
 }
 
-/// Parse "M:SS" / "MM:SS" (or a plain integer as seconds). None if malformed.
-fn parse_mmss(s: &str) -> Option<i64> {
-    let s = s.trim();
-    if s.is_empty() {
+/// Soft amber pulse marking an action the FC hasn't taken yet on the current ping. `None` once
+/// done, so the button falls back to its normal styling.
+#[cfg(feature = "fc-rescue")]
+fn pulse_fill(ui: &egui::Ui, pending: bool) -> Option<egui::Color32> {
+    if !pending {
         return None;
     }
-    match s.split_once(':') {
-        Some((m, sec)) => {
-            let m: i64 = m.trim().parse().ok()?;
-            let sec: i64 = sec.trim().parse().ok()?;
-            if !(0..60).contains(&sec) || m < 0 {
-                return None;
-            }
-            Some(m * 60 + sec)
-        }
-        None => s.parse::<i64>().ok().filter(|v| *v >= 0),
-    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    let k = 0.5 + 0.5 * (ui.input(|i| i.time) * 2.2).sin();
+    Some(egui::Color32::from_rgba_unmultiplied(0xE6, 0xA5, 0x1E, (36.0 + 76.0 * k) as u8))
 }
 
-/// Single PANIC timer. `input` is the persistent mm:ss text buffer (typed "5:30" directly).
-fn rescue_timers_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
-    const RUN_OK: egui::Color32 = egui::Color32::from_rgb(0x3F, 0xC3, 0x80);
-    const RUN_WARN: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xA5, 0x1E);
-    const ALARM: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x3B, 0x2E);
-    const ALARM_DIM: egui::Color32 = egui::Color32::from_rgb(0x5A, 0x16, 0x12);
+/// "<nick>: Join OP <n> Comms <link>" for the delve911 channel. Deliberately the op's regular
+/// comms, never Command Sector Alpha, so the rescued pilot lands where the fleet is.
+///
+/// The link ends the message with nothing after it: a trailing `)` (or any punctuation) gets
+/// swallowed into the URL by the receiving client's auto-linker and breaks the link.
+#[cfg(feature = "fc-rescue")]
+fn rescue_comms_invite(author: Option<&str>, op: u8) -> Option<String> {
+    let author = author.map(str::trim).filter(|a| !a.is_empty())?;
+    let link = op_comms_short_link(op)?;
+    Some(format!("{author}: Join OP {op} Comms {link}"))
+}
 
-    // Up/Down nudge PANIC ±5s, but only when not typing in the mm:ss field.
-    let typing = ui.ctx().memory(|m| m.focused().is_some());
-    let (up, down) = ui.input(|i| {
-        (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown))
-    });
-    if !typing && (up || down) {
-        r.panic.adjust(if up { 5 } else { -5 });
-        if !r.panic.is_set() {
-            r.panic_input = rescue_fmt_mmss(r.panic.current());
-        }
-    }
-
-    let running = r.panic.is_set();
-    let secs = r.panic.current();
-    let elapsed = running && secs == 0;
-    let blink_on = (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0;
-    let color = if elapsed {
-        if blink_on { ALARM } else { ALARM_DIM }
-    } else if secs <= 30 {
-        RUN_WARN
-    } else {
-        RUN_OK
-    };
-
-    egui::Frame::group(ui.style()).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("PANIC").strong().size(18.0));
-            if running {
-                // Plain label, never a button: no hover border on a value you can't click.
-                ui.label(
-                    egui::RichText::new(rescue_fmt_mmss(secs)).monospace().size(28.0).color(color),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Reset").clicked() {
-                        r.panic.reset();
-                        r.panic_input = rescue_fmt_mmss(0);
-                    }
-                    if ui.button("+5s").clicked() {
-                        r.panic.adjust(5);
-                    }
-                    if ui.button("-5s").clicked() {
-                        r.panic.adjust(-5);
-                    }
-                });
-            } else {
-                if r.panic_input.is_empty() {
-                    r.panic_input = rescue_fmt_mmss(r.panic.current());
-                }
-                // Type "5:30" directly; Start on the same row.
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut r.panic_input)
-                        .font(egui::FontId::monospace(22.0))
-                        .desired_width(64.0)
-                        .hint_text("m:ss"),
-                );
-                if resp.changed() {
-                    if let Some(s) = parse_mmss(&r.panic_input) {
-                        r.panic.set_value(s);
-                    }
-                }
-                if ui.button("Start").clicked() {
-                    r.panic.start_now();
-                }
-            }
-        });
-    });
-
-    if running {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-    }
+/// Empty setting -> the goonfleet default room the app already joins.
+#[cfg(feature = "fc-rescue")]
+fn goon_jid(cfg: &str, default: &str) -> String {
+    if cfg.trim().is_empty() { default.to_string() } else { cfg.trim().to_string() }
 }
 
 // ---- Rescue checklist section ----
 
+#[cfg(feature = "fc-rescue")]
 const CHK_OK: egui::Color32 = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+#[cfg(feature = "fc-rescue")]
 const CHK_WARN: egui::Color32 = egui::Color32::from_rgb(0xE0, 0xA4, 0x3A);
+#[cfg(feature = "fc-rescue")]
 const CHK_PENDING: egui::Color32 = egui::Color32::from_rgb(0x9A, 0xA3, 0xA8);
 
+#[cfg(feature = "fc-rescue")]
 #[derive(Clone, Copy, PartialEq)]
 enum ChkStatus {
     Ok,
@@ -19151,6 +19911,7 @@ enum ChkStatus {
     Pending,
 }
 
+#[cfg(feature = "fc-rescue")]
 impl ChkStatus {
     fn glyph(self) -> &'static str {
         match self {
@@ -19168,6 +19929,7 @@ impl ChkStatus {
     }
 }
 
+#[cfg(feature = "fc-rescue")]
 fn chk_auto_row(ui: &mut egui::Ui, status: ChkStatus, label: &str) {
     ui.horizontal(|ui| {
         ui.colored_label(status.color(), status.glyph());
@@ -19179,10 +19941,12 @@ fn chk_auto_row(ui: &mut egui::Ui, status: ChkStatus, label: &str) {
     });
 }
 
+#[cfg(feature = "fc-rescue")]
 fn chk_ok_or_warn(satisfied: bool) -> ChkStatus {
     if satisfied { ChkStatus::Ok } else { ChkStatus::Attention }
 }
 
+#[cfg(feature = "fc-rescue")]
 fn chk_reminder(ui: &mut egui::Ui, text: &str) {
     ui.horizontal(|ui| {
         ui.colored_label(CHK_WARN, egui_phosphor::regular::WARNING);
@@ -19192,6 +19956,7 @@ fn chk_reminder(ui: &mut egui::Ui, text: &str) {
 
 /// Entirely ESI-auto-detected. When the signal isn't available yet (no fleet data) the item shows
 /// as Pending (grey "?"), never a manual checkbox.
+#[cfg(feature = "fc-rescue")]
 fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
     use crate::rescue::ShipRole;
 
@@ -19210,13 +19975,13 @@ fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
     let cyno_ok = r.cyno_pilot.as_deref().is_some_and(|n| r.fleet.has_pilot(n));
     chk_auto_row(ui, pending_if(cyno_known, chk_ok_or_warn(cyno_ok)), "Cyno char in fleet");
 
-    if !r.panic.is_set() {
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(2.0);
-        chk_reminder(ui, "Ask for PANIC timer");
-        chk_reminder(ui, "Ask for what's on grid (attacking it)");
-    }
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(2.0);
+    chk_reminder(ui, "Tell pilot to siege red AND boosts down");
+    chk_reminder(ui, "Ask about his cyno status");
+    chk_reminder(ui, "Ask for PANIC timer");
+    chk_reminder(ui, "Ask for what's on grid (attacking it)");
 }
 
 fn ontop_pin(ctx: &egui::Context, id: &str) {
@@ -21312,6 +22077,27 @@ mod kill_noise_tests {
 }
 
 #[cfg(test)]
+mod motd_preview_tests {
+    use super::*;
+
+    #[test]
+    fn takes_first_two_nonempty_lines_trimmed() {
+        let s = "  Delve intel  \n\n  neuts in Querious  \n third line";
+        assert_eq!(motd_preview(s), ["Delve intel".to_owned(), "neuts in Querious".to_owned()]);
+    }
+
+    #[test]
+    fn single_line_leaves_second_empty() {
+        assert_eq!(motd_preview("Formups here"), ["Formups here".to_owned(), String::new()]);
+    }
+
+    #[test]
+    fn empty_subject_is_two_empty_lines() {
+        assert_eq!(motd_preview("   \n  "), [String::new(), String::new()]);
+    }
+}
+
+#[cfg(test)]
 mod op_channel_tests {
     use super::*;
 
@@ -21515,5 +22301,36 @@ mod wh_route_tests {
         // Zarzakh as the destination is still fine.
         assert_eq!(wh_route_waypoints(&g, &h, 1, ZARZAKH).unwrap(), vec![ZARZAKH]);
         assert_eq!(g.route_with(1, 7, true, true, &h, |_| true).unwrap().len() - 1, 6);
+    }
+}
+
+#[cfg(feature = "fc-rescue")]
+#[cfg(test)]
+mod comms_link_tests {
+    use super::*;
+
+    /// Anything posted to a channel must carry a gnf.lt link. A raw `mumble://` URL is silently
+    /// dead on clients/OSes with no protocol handler, and it would point at Command Sector Alpha.
+    #[test]
+    fn posted_comms_links_are_gnf_lt() {
+        for op in (1u8..=12).filter(|n| *n != 8) {
+            let url = op_comms_url(op);
+            assert!(url.starts_with("https://gnf.lt/"), "op {op} posted link: {url}");
+
+            let invite = rescue_comms_invite(Some("ajunta_thor"), op).unwrap();
+            assert!(invite.contains("https://gnf.lt/"), "op {op} invite: {invite}");
+            assert!(!invite.contains("mumble://"), "op {op} invite: {invite}");
+            assert_eq!(invite, format!("ajunta_thor: Join OP {op} Comms {url}"));
+            // Nothing may follow the URL, or the receiving client links the punctuation too.
+            assert!(invite.ends_with(&url), "op {op} invite: {invite}");
+        }
+    }
+
+    #[test]
+    fn invite_needs_an_author_and_a_link() {
+        assert!(rescue_comms_invite(None, 11).is_none());
+        assert!(rescue_comms_invite(Some("  "), 11).is_none());
+        // Op 8 has no short link, so it must not fall back to a command-comms mumble URL.
+        assert!(rescue_comms_invite(Some("someone"), 8).is_none());
     }
 }

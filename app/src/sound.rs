@@ -13,17 +13,23 @@ struct Tone {
     amp: f32,
     harmonics: &'static [f32],
     detune: f32,
+    /// Soft-clip amount. A real horn's air column saturates rather than staying a clean sum of
+    /// sines; driving the waveform into tanh does the same, which raises average power (a pure
+    /// harmonic stack has a high crest factor, so it measures loud but sounds quiet) and adds the
+    /// rasp that makes it read as an alarm. 0 leaves the waveform alone.
+    drive: f32,
 }
 
 const BLIP: &[f32] = &[1.0, 0.3];
 const BRASS: &[f32] = &[1.0, 0.8, 0.6, 0.45, 0.32, 0.22, 0.15, 0.1];
 
 pub const PRESETS: &[&str] =
-    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn"];
+    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "siren"];
 
 fn preset(name: &str) -> Option<Tone> {
     let s = |f0: f32, f1: f32, ms: u32| Seg { f0, f1, ms };
-    let blip = |segs: Vec<Seg>, amp: f32| Tone { segs, amp, harmonics: BLIP, detune: 0.0 };
+    let blip =
+        |segs: Vec<Seg>, amp: f32| Tone { segs, amp, harmonics: BLIP, detune: 0.0, drive: 0.0 };
     Some(match name {
         "info" => blip(vec![s(740.0, 880.0, 90)], 0.22),
         "warning" => blip(vec![s(784.0, 784.0, 110), s(0.0, 0.0, 50), s(988.0, 988.0, 120)], 0.26),
@@ -52,6 +58,27 @@ fn preset(name: &str) -> Option<Tone> {
             amp: 0.9,
             harmonics: BRASS,
             detune: 9.0,
+            drive: 0.0,
+        },
+        // Scramble siren for delve911: three rising sweeps, the last climbing higher and held
+        // longer. Rising pitch is what reads as "go now" rather than "something happened"; `sweep`
+        // is the same gesture once, quietly, which is a notification, not a callout.
+        #[cfg(feature = "fc-rescue")]
+        "siren" => Tone {
+            segs: vec![
+                s(420.0, 1250.0, 420),
+                s(0.0, 0.0, 80),
+                s(420.0, 1250.0, 420),
+                s(0.0, 0.0, 80),
+                s(420.0, 1400.0, 560),
+            ],
+            // Drive is applied before `amp`, so this scales linearly: 0.315 lands the siren's RMS
+            // on `critical`, the loudest of the alert tones. Undriven it would need a far higher
+            // amp to be heard, and would peak-clip getting there.
+            amp: 0.315,
+            harmonics: BRASS,
+            detune: 5.0,
+            drive: 3.0,
         },
         _ => return None,
     })
@@ -76,10 +103,13 @@ pub fn play_prio(spec: &str, prio: u8, volume: f32) {
     play(spec, volume);
 }
 
-/// delve911 priority alert: play the "critical" tone, but rate-limited so a burst of messages only
+/// delve911 priority alert: a rising scramble siren, distinct from every other alert so a
+/// rapid-response callout is recognisable without looking. Level-matched to the other alert tones,
+/// so it stands out by being different rather than louder. Rate-limited so a burst of messages only
 /// alerts once. The gate is refreshed on EVERY message, so it re-arms only after 5 minutes of quiet
 /// (the next message after a lull alerts again). Independent of the global 2s gate.
-pub fn play_delve911_critical() {
+#[cfg(feature = "fc-rescue")]
+pub fn play_delve911_alert() {
     const DELVE911_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
     static GATE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     let should_play = {
@@ -90,7 +120,7 @@ pub fn play_delve911_critical() {
         play
     };
     if should_play {
-        play("critical", 1.0);
+        play("siren", 1.0);
     }
 }
 
@@ -186,7 +216,7 @@ fn ensure_tone(name: &str, volume: f32, tone: &Tone) -> Option<PathBuf> {
     // Version the file name so changes to the synth regenerate it; the volume bucket (in percent)
     // keys the baked gain so different volumes don't collide on one cached file.
     let pct = (volume * 100.0).round() as u32;
-    let path = dir.join(format!("{name}-v5-{pct}.wav"));
+    let path = dir.join(format!("{name}-v6-{pct}.wav"));
     if path.is_file() {
         return Some(path);
     }
@@ -283,8 +313,12 @@ fn scale_wav(bytes: &[u8], volume: f32) -> Option<Vec<u8>> {
 
 fn wav(tone: &Tone) -> Vec<u8> {
     const RATE: u32 = 44_100;
-    let Tone { segs, amp, harmonics, detune } = tone;
-    let (amp, detune) = (*amp, *detune);
+    /// Longest fade in or out, in samples. The envelope is 10% of a segment, which is right for a
+    /// 100 ms blip but turns the tail of a 1.5 s horn blast into an audible decay.
+    const MAX_FADE: usize = RATE as usize * 30 / 1000;
+    let Tone { segs, amp, harmonics, detune, drive } = tone;
+    let (amp, detune, drive) = (*amp, *detune, *drive);
+    let drive_norm = if drive > 0.0 { drive.tanh() } else { 1.0 };
     let hsum: f32 = harmonics.iter().sum::<f32>().max(1e-3);
     let norm = hsum * if detune != 0.0 { 1.2 } else { 1.0 };
     let ratio = 2f32.powf(detune / 1200.0);
@@ -310,8 +344,13 @@ fn wav(tone: &Tone) -> Vec<u8> {
                     v += 0.7 * w * phd[h].sin();
                 }
             }
-            let env = (frac.min(1.0 - frac) * 10.0).clamp(0.0, 1.0);
-            let v = v / norm * amp * env;
+            let fade = (n / 10).min(MAX_FADE).max(1);
+            let env = (i.min(n.saturating_sub(i).saturating_sub(1)) as f32 / fade as f32).min(1.0);
+            let mut v = v / norm;
+            if drive > 0.0 {
+                v = (v * drive).tanh() / drive_norm;
+            }
+            let v = v * amp * env;
             samples.push((v.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
         }
     }
@@ -353,6 +392,84 @@ mod tests {
         assert!(peak > 20_000, "peak={peak}");
         let clipped = samples.iter().filter(|s| s.unsigned_abs() >= 32_760).count();
         assert!(clipped < samples.len() / 20, "too much clipping: {clipped}/{}", samples.len());
+    }
+
+    fn rms(samples: &[i16]) -> f64 {
+        let voiced: Vec<i16> = samples.iter().copied().filter(|s| *s != 0).collect();
+        (voiced.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / voiced.len().max(1) as f64).sqrt()
+    }
+
+    fn render(name: &str) -> Vec<i16> {
+        wav(&preset(name).unwrap())[44..]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect()
+    }
+
+    #[cfg(feature = "fc-rescue")]
+    #[test]
+    fn siren_is_three_rising_sweeps() {
+        let tone = preset("siren").unwrap();
+        let voiced: Vec<&Seg> = tone.segs.iter().filter(|s| s.f0 > 0.0).collect();
+        assert_eq!(voiced.len(), 3, "three sweeps");
+        for seg in &voiced {
+            assert!(seg.f1 > seg.f0, "a scramble siren rises: {} -> {}", seg.f0, seg.f1);
+        }
+        let last = voiced.last().unwrap();
+        assert!(last.f1 >= voiced[0].f1, "the last sweep should climb at least as high");
+        assert!(last.ms > voiced[0].ms, "the last sweep should be held longer");
+
+        let samples = render("siren");
+        let clipped = samples.iter().filter(|s| s.unsigned_abs() >= 32_760).count();
+        assert!(clipped < samples.len() / 20, "too much clipping: {clipped}/{}", samples.len());
+
+        // Gaps must be silent, or the three sweeps smear into one.
+        let rate = 44_100usize;
+        let mut at = 0usize;
+        for seg in &tone.segs {
+            let n = rate * seg.ms as usize / 1000;
+            if seg.f0 <= 0.0 {
+                assert!(samples[at..at + n].iter().all(|s| *s == 0), "gap at {at} is not silent");
+            }
+            at += n;
+        }
+    }
+
+    /// The delve911 callout has to stand out by being different, not by being louder than
+    /// everything else. It was 3.6x the other presets before this was pinned down.
+    #[cfg(feature = "fc-rescue")]
+    #[test]
+    fn siren_loudness_matches_the_alert_tones() {
+        let siren = rms(&render("siren"));
+        let critical = rms(&render("critical"));
+        assert!(
+            (siren / critical - 1.0).abs() < 0.15,
+            "siren rms {siren:.0} should track critical {critical:.0}"
+        );
+        for other in ["info", "warning", "danger", "beep", "chime", "sweep"] {
+            assert!(siren >= rms(&render(other)), "siren should not be quieter than {other}");
+        }
+    }
+
+    #[test]
+    fn long_segments_do_not_fade_out_early() {
+        // A 10%-of-segment fade turned the tail of a long tone into an audible decay; the fade is
+        // capped so a held note ends by stopping, not by dying away.
+        let held = Tone {
+            segs: vec![Seg { f0: 440.0, f1: 440.0, ms: 1500 }],
+            amp: 0.9,
+            harmonics: BRASS,
+            detune: 0.0,
+            drive: 0.0,
+        };
+        let bytes = wav(&held);
+        let s: Vec<i16> =
+            bytes[44..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        let rate = 44_100usize;
+        // 100 ms ending 40 ms before the cutoff, against the middle of the note.
+        let tail = &s[s.len() - rate * 140 / 1000..s.len() - rate * 40 / 1000];
+        let mid = &s[s.len() / 2..s.len() / 2 + rate / 10];
+        assert!(rms(tail) > rms(mid) * 0.95, "tail {:.0} vs mid {:.0}", rms(tail), rms(mid));
     }
 
     #[test]

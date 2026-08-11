@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::pings::Ping;
 
@@ -148,7 +149,34 @@ pub enum Cmd {
     JoinRoom { room: String },
     LeaveRoom { room: String },
     SetPresence { show: Presence, status: String },
+    /// Browse the rooms a MUC service advertises (disco#items to the service JID).
+    DiscoRooms { service: String },
+    /// Probe one room's join policy (disco#info to the room JID).
+    DiscoRoomInfo { room: String },
+    /// Skip the remaining reconnect backoff and try again now.
+    RetryNow,
 }
+
+/// Reconnect backoff in seconds: fast at first, then settle at five minutes.
+const RECONNECT_BACKOFF: &[u64] = &[2, 5, 10, 20, 30, 60, 120, 300];
+/// Silence after which we probe the server with a XEP-0199 self-ping.
+const PROBE_IDLE: Duration = Duration::from_secs(25);
+/// Silence after which the session counts as dead, probe answered or not.
+const DEAD_AFTER: Duration = Duration::from_secs(60);
+
+/// Why a connected session ended.
+enum SessionEnd {
+    /// The user turned Jabber off.
+    Disabled,
+    /// Connection lost; the reason is shown while backing off.
+    Dropped(String),
+}
+
+/// Iq ids matched when their results come back on `Event::Iq`.
+const DISCO_ROOMS_ID: &str = "spai-disco-rooms";
+const DISCO_ROOM_INFO_ID: &str = "spai-room-info";
+/// Cap on how many rooms we access-probe per browse, so a huge service can't flood the server.
+const DISCO_INFO_CAP: usize = 500;
 
 #[derive(Clone, Default)]
 pub struct JabberNotifyCfg {
@@ -182,12 +210,45 @@ pub fn mention_hit(body: &str, names: &[String]) -> bool {
     })
 }
 
+/// Progress of a MUC service room-browse (disco#items).
+#[derive(Default, Clone, PartialEq)]
+pub enum DirState {
+    #[default]
+    Idle,
+    Loading,
+    Ready,
+    Error(String),
+}
+
+/// Whether the browsing user can join a listed room. Determined by a per-room disco#info: a room
+/// is `Restricted` when it advertises `muc_membersonly` or `muc_passwordprotected`. `Unknown` until
+/// its probe returns; the UI only offers rooms confirmed `Open`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RoomAccess {
+    Unknown,
+    Open,
+    Restricted,
+}
+
+#[derive(Clone)]
+pub struct RoomListing {
+    pub jid: String,
+    pub name: String,
+    pub access: RoomAccess,
+}
+
 #[derive(Default)]
 pub struct JabberState {
     pub enabled: bool,
     pub running: bool,
     pub connected: bool,
     pub status: String,
+    /// A connection attempt is pending: the session dropped and we are backing off.
+    pub reconnecting: bool,
+    /// Consecutive failed attempts since the last successful login.
+    pub attempt: u32,
+    /// When the next automatic attempt fires, for the countdown next to the retry button.
+    pub retry_at: Option<Instant>,
     /// A terminal failure (bad credentials, invalid address, unreachable). The connection stopped
     /// and won't retry; the UI drops back to the login form and shows this.
     pub fatal: Option<String>,
@@ -197,6 +258,16 @@ pub struct JabberState {
     pub roster: std::collections::BTreeMap<String, Contact>,
     pub presences: std::collections::BTreeMap<String, (Presence, String)>,
     pub rooms: std::collections::BTreeSet<String>,
+    /// Rooms we were joined to and then left/kicked while online. Rendered struck-through in the
+    /// channel list; a clean connection drop fires no RoomLeft, so a full outage never lands here.
+    pub rooms_inaccessible: std::collections::BTreeSet<String>,
+    /// Room MOTD (MUC subject) keyed by room bare JID, last-known value.
+    pub room_subjects: std::collections::BTreeMap<String, String>,
+    /// disco#items browse of the MUC service, with per-room join access.
+    pub room_directory: Vec<RoomListing>,
+    pub room_directory_state: DirState,
+    /// Rooms whose access probe (disco#info) is still outstanding.
+    pub room_directory_pending: usize,
     pub notify: Vec<(String, bool)>,
     pub pings_unread: bool,
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
@@ -219,6 +290,7 @@ fn fire_arrival_notification(
     ping: Option<&Ping>,
     mention: Option<&ChatMsg>,
 ) {
+    let fleet_call = ping.is_some_and(|p| p.is_fleet_call());
     if is_muted(&cfg.muted, key) && !(mention.is_some() && cfg.mention_ignores_mute) {
         return;
     }
@@ -251,7 +323,13 @@ fn fire_arrival_notification(
         return;
     }
     if cfg.sound_enabled && !sound.is_empty() && !sound.eq_ignore_ascii_case("off") {
-        crate::sound::play_prio(&sound, prio, volume);
+        if fleet_call {
+            // Settings already allowed this fleet ping (not muted, not suppressed, sound on). Play it
+            // directly, bypassing the 2s burst cooldown so a preceding sound can never swallow it.
+            crate::sound::play(&sound, volume);
+        } else {
+            crate::sound::play_prio(&sound, prio, volume);
+        }
     }
     if let Some(m) = mention {
         let room = key.split('@').next().unwrap_or(key);
@@ -382,10 +460,22 @@ async fn run(
     ctx: egui::Context,
 ) {
     use xmpp::jid::BareJid;
-    use xmpp::message::send::MessageSettings;
-    use xmpp::muc::room::{JoinRoomSettings, LeaveRoomSettings, RoomMessageSettings};
     use xmpp::tokio_xmpp::connect::{DnsConfig, StartTlsServerConnector};
     use xmpp::{ClientBuilder, ClientFeature, ClientType};
+
+    // `running` gates respawning in maybe_start_jabber. The xmpp crate panics outright on a closed
+    // non-reconnecting stream, so clear it from Drop: an unwind out of this thread then leaves the
+    // app able to start a fresh worker instead of wedging forever.
+    struct RunGuard(SharedJabber);
+    impl Drop for RunGuard {
+        fn drop(&mut self) {
+            let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            s.running = false;
+            s.connected = false;
+            s.reconnecting = false;
+            s.retry_at = None;
+        }
+    }
 
     let fail = |state: &SharedJabber, msg: String| {
         let mut s = state.lock().unwrap();
@@ -411,6 +501,7 @@ async fn run(
         s.ever_online = false;
         s.status = "Connecting…".to_owned();
     }
+    let _guard = RunGuard(state.clone());
     ctx.request_repaint();
     eprintln!(
         "[jabber] connecting jid={bare} server={}",
@@ -427,87 +518,247 @@ async fn run(
         }
     };
 
-    // A wrong password would otherwise loop forever on "Connecting…": the agent retries every error
-    // silently. Probe auth once first and surface a specific reason.
     let node = bare.node().unwrap().as_str().to_owned();
-    match preflight(bare.clone().into(), node, password.clone(), make_dns()).await {
-        Preflight::Ok => {}
-        Preflight::BadAuth => {
-            fail(&state, "Login failed. Check your username and password.".to_owned());
-            ctx.request_repaint();
-            return;
-        }
-        Preflight::Unreachable(e) => {
-            eprintln!("[jabber] preflight unreachable: {e}");
-            fail(&state, "Can't reach the server. Check the server address and your connection.".to_owned());
-            ctx.request_repaint();
-            return;
-        }
-        Preflight::Other(e) => {
-            fail(&state, format!("Couldn't connect: {e}"));
-            ctx.request_repaint();
-            return;
-        }
-    }
-
-    let dns = make_dns();
-    let mut builder =
-        ClientBuilder::new_with_connector(bare.clone(), &password, StartTlsServerConnector(dns))
-            .set_client(ClientType::Bot, "EVE Spai")
-            .enable_feature(ClientFeature::ContactList)
-            // Advertises bookmarks2+notify, so rooms the server adds us to arrive live instead of
-            // only on the next connect.
-            .enable_feature(ClientFeature::JoinRooms);
-    // Without this the library joins every room as its default nick, "xmpp-rs", which is what the
-    // whole channel sees.
-    if let Ok(nick) = bare.node().unwrap().as_str().parse::<xmpp::jid::ResourcePart>() {
-        builder = builder.set_default_nick(&nick);
-    }
-    let mut agent = builder.build();
-
     let store = crate::store::Store::open().ok();
+    // Rooms to (re)join on every fresh stream. A reconnect starts in no rooms, so without this the
+    // client sits online and silent.
+    let mut joined: std::collections::BTreeSet<String> = initial_rooms.into_iter().collect();
+    // Join/leave commands seen during a session, applied to `joined` once it ends.
+    let mut joined_edits: Vec<(String, bool)> = Vec::new();
+    let mut attempt = 0usize;
 
-    // tokio-xmpp reconnects transparently, so we simply process events until the user
-    // disables Jabber. An *empty* event batch is normal (a stanza that produced no
-    // high-level event, e.g. the roster reply) — it does NOT mean the stream ended,
-    // so we must not tear the connection down on it.
-    let mut was_connected = false;
     loop {
         if !state.lock().unwrap().enabled {
-            let _ = agent.disconnect().await;
-            break;
+            return;
         }
-        // (Re)join the persisted rooms on every fresh connection — the initial connect AND after a
-        // transparent reconnect (e.g. the XMPP server restarting). Resetting on the disconnect→connect
-        // edge is what makes the client actually recover: an `Online` without a rejoin leaves us
-        // connected but in no rooms, so no intel/pings arrive.
-        let connected = state.lock().unwrap().connected;
-        if connected && !was_connected {
-            for r in &initial_rooms {
-                if let Ok(room) = r.parse::<BareJid>() {
-                    agent.join_room(JoinRoomSettings::new(room)).await;
+        {
+            let mut s = state.lock().unwrap();
+            s.retry_at = None;
+            s.reconnecting = attempt > 0;
+            s.status =
+                if attempt > 0 { "Reconnecting…".to_owned() } else { "Connecting…".to_owned() };
+        }
+        ctx.request_repaint();
+
+        // A wrong password would otherwise loop forever on "Connecting…": the agent retries every
+        // error silently. Probe auth first and surface a specific reason.
+        let problem = match preflight(
+            bare.clone().into(),
+            node.clone(),
+            password.clone(),
+            make_dns(),
+        )
+        .await
+        {
+            Preflight::Ok => None,
+            Preflight::BadAuth => {
+                fail(&state, "Login failed. Check your username and password.".to_owned());
+                ctx.request_repaint();
+                return;
+            }
+            Preflight::Unreachable(e) => {
+                eprintln!("[jabber] preflight unreachable: {e}");
+                Some("Can't reach the server.".to_owned())
+            }
+            Preflight::Other(e) => Some(format!("Couldn't connect: {e}")),
+        };
+
+        let reason = match problem {
+            // A server we have never reached is a setup mistake, not an outage: say so instead of
+            // retrying silently behind a spinner.
+            Some(msg) if !state.lock().unwrap().ever_online => {
+                fail(&state, msg);
+                ctx.request_repaint();
+                return;
+            }
+            Some(msg) => msg,
+            None => {
+                let dns = make_dns();
+                let mut builder = ClientBuilder::new_with_connector(
+                    bare.clone(),
+                    &password,
+                    StartTlsServerConnector(dns),
+                )
+                .set_client(ClientType::Bot, "EVE Spai")
+                .enable_feature(ClientFeature::ContactList)
+                // Advertises bookmarks2+notify, so rooms the server adds us to arrive live instead
+                // of only on the next connect.
+                .enable_feature(ClientFeature::JoinRooms)
+                // Defaults are 300s/300s, which hides a dead TCP for up to ten minutes. The library
+                // pings on the soft timeout, so this doubles as the keepalive interval.
+                .set_timeouts(xmpp::tokio_xmpp::xmlstream::Timeouts {
+                    read_timeout: Duration::from_secs(30),
+                    response_timeout: Duration::from_secs(20),
+                });
+                // Without this the library joins every room as its default nick, "xmpp-rs", which is
+                // what the whole channel sees.
+                if let Ok(nick) = bare.node().unwrap().as_str().parse::<xmpp::jid::ResourcePart>() {
+                    builder = builder.set_default_nick(&nick);
+                }
+                let mut agent = builder.build();
+
+                let end = session(
+                    &mut agent,
+                    &bare,
+                    &state,
+                    resolve.as_ref(),
+                    &ping_shared,
+                    &mut rx,
+                    &cmds,
+                    &ctx,
+                    store.as_ref(),
+                    &my_nick,
+                    &joined,
+                    &mut joined_edits,
+                )
+                .await;
+
+                // Dropping the agent only detaches tokio-xmpp's worker, whose reconnector then
+                // redials forever in the background. Shut it down before building the next one.
+                let _ = tokio::time::timeout(Duration::from_secs(5), agent.disconnect()).await;
+
+                for (room, join) in joined_edits.drain(..) {
+                    if join {
+                        joined.insert(room);
+                    } else {
+                        joined.remove(&room);
+                    }
+                }
+
+                match end {
+                    SessionEnd::Disabled => return,
+                    SessionEnd::Dropped(msg) => msg,
+                }
+            }
+        };
+
+        let saw_online = {
+            let mut s = state.lock().unwrap();
+            let was = s.connected;
+            s.connected = false;
+            was
+        };
+        if saw_online {
+            attempt = 0;
+        }
+        if !state.lock().unwrap().enabled {
+            return;
+        }
+
+        let delay = RECONNECT_BACKOFF[attempt.min(RECONNECT_BACKOFF.len() - 1)];
+        attempt += 1;
+        {
+            let mut s = state.lock().unwrap();
+            s.reconnecting = true;
+            s.attempt = attempt as u32;
+            s.status = reason;
+            s.retry_at = Some(Instant::now() + Duration::from_secs(delay));
+        }
+        ctx.request_repaint();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(delay);
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => break,
+                _ = tick.tick() => {
+                    if !state.lock().unwrap().enabled {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+                Some(cmd) = rx.recv() => {
+                    if matches!(cmd, Cmd::RetryNow) {
+                        break;
+                    }
                 }
             }
         }
-        was_connected = connected;
+    }
+}
+
+/// One connected session. Returns when the user disables Jabber or the stream goes quiet.
+#[allow(clippy::too_many_arguments)]
+async fn session(
+    agent: &mut xmpp::Agent,
+    bare: &xmpp::jid::BareJid,
+    state: &SharedJabber,
+    resolve: &(dyn Fn(&str) -> Option<i64> + Send + Sync),
+    ping_shared: &crate::app::SharedPingWindow,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    cmds: &CmdSender,
+    ctx: &egui::Context,
+    store: Option<&crate::store::Store>,
+    my_nick: &str,
+    joined: &std::collections::BTreeSet<String>,
+    joined_edits: &mut Vec<(String, bool)>,
+) -> SessionEnd {
+    use xmpp::jid::BareJid;
+    use xmpp::message::send::MessageSettings;
+    use xmpp::muc::room::{JoinRoomSettings, LeaveRoomSettings, RoomMessageSettings};
+
+    let mut last_inbound = Instant::now();
+    let mut probe_sent = false;
+    let mut online_once = false;
+    let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+
+    loop {
+        if !state.lock().unwrap().enabled {
+            return SessionEnd::Disabled;
+        }
         tokio::select! {
+            // An *empty* event batch is normal (a stanza that produced no high-level event, e.g. the
+            // roster reply); it does NOT mean the stream ended.
             events = agent.wait_for_events() => {
+                last_inbound = Instant::now();
+                probe_sent = false;
                 let mut urgent = false;
                 let mut background = false;
+                let mut came_online = false;
                 for event in events {
-                    if handle_event(event, &state, resolve.as_ref(), &ping_shared, &cmds, &ctx, store.as_ref(), &my_nick) {
+                    if handle_event(event, state, resolve, ping_shared, cmds, ctx, store, my_nick, &mut came_online) {
                         urgent = true;
                     } else {
                         background = true;
                     }
                 }
+                if came_online {
+                    online_once = true;
+                    for r in joined {
+                        if let Ok(room) = r.parse::<BareJid>() {
+                            agent.join_room(JoinRoomSettings::new(room)).await;
+                        }
+                    }
+                }
+                if online_once && !state.lock().unwrap().connected {
+                    return SessionEnd::Dropped("Disconnected by the server.".to_owned());
+                }
                 if urgent {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    ctx.request_repaint_after(Duration::from_millis(100));
                 } else if background {
-                    ctx.request_repaint_after(std::time::Duration::from_secs(2));
+                    ctx.request_repaint_after(Duration::from_secs(2));
+                }
+            }
+            // tokio-xmpp swallows its own suspend/reconnect, so a dropped stream is invisible at this
+            // layer. Watch for silence instead and drive the reconnect ourselves.
+            _ = watchdog.tick() => {
+                let idle = last_inbound.elapsed();
+                if idle >= DEAD_AFTER {
+                    return SessionEnd::Dropped("Connection lost.".to_owned());
+                }
+                if idle >= PROBE_IDLE && !probe_sent {
+                    use xmpp::parsers::{iq::Iq, ping::Ping as XmppPing};
+                    // XEP-0199 ping to the server itself: any reply, result or error, proves the
+                    // stream is alive, and an IQ get must be answered.
+                    if let Ok(to) = bare.domain().as_str().parse::<xmpp::jid::Jid>() {
+                        let iq = Iq::from_get("spai-keepalive", XmppPing).with_to(to);
+                        let _ = agent.send_stanza(iq).await;
+                    }
+                    probe_sent = true;
                 }
             }
             Some(cmd) = rx.recv() => match cmd {
+
                 Cmd::Send { to, body } => {
                     if let Ok(recipient) = to.parse::<BareJid>() {
                         agent
@@ -520,7 +771,7 @@ async fn run(
                             ChatMsg { from: "me".to_owned(), body, time: now, outgoing: true },
                             false,
                             false,
-                            store.as_ref(),
+                            store,
                         );
                         ctx.request_repaint();
                     }
@@ -534,11 +785,13 @@ async fn run(
                 Cmd::JoinRoom { room } => {
                     if let Ok(r) = room.parse::<BareJid>() {
                         agent.join_room(JoinRoomSettings::new(r)).await;
+                        joined_edits.push((room, true));
                     }
                 }
                 Cmd::LeaveRoom { room } => {
                     if let Ok(r) = room.parse::<BareJid>() {
                         agent.leave_room(LeaveRoomSettings::new(r)).await;
+                        joined_edits.push((room, false));
                     }
                 }
                 Cmd::SetPresence { show, status } => {
@@ -557,10 +810,44 @@ async fn run(
                     }
                     let _ = agent.send_stanza(pres).await;
                 }
+                Cmd::DiscoRooms { service } => {
+                    use xmpp::parsers::disco::DiscoItemsQuery;
+                    use xmpp::parsers::iq::Iq;
+                    match service.parse::<xmpp::jid::Jid>() {
+                        Ok(to) => {
+                            {
+                                let mut s = state.lock().unwrap();
+                                s.room_directory.clear();
+                                s.room_directory_state = DirState::Loading;
+                            }
+                            let iq = Iq::from_get(
+                                DISCO_ROOMS_ID,
+                                DiscoItemsQuery { node: None, rsm: None },
+                            )
+                            .with_to(to);
+                            let _ = agent.send_stanza(iq).await;
+                            ctx.request_repaint();
+                        }
+                        Err(_) => {
+                            state.lock().unwrap().room_directory_state =
+                                DirState::Error(format!("Bad MUC address: {service}"));
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+                Cmd::DiscoRoomInfo { room } => {
+                    use xmpp::parsers::disco::DiscoInfoQuery;
+                    use xmpp::parsers::iq::Iq;
+                    if let Ok(to) = room.parse::<xmpp::jid::Jid>() {
+                        let iq = Iq::from_get(DISCO_ROOM_INFO_ID, DiscoInfoQuery { node: None })
+                            .with_to(to);
+                        let _ = agent.send_stanza(iq).await;
+                    }
+                }
+                Cmd::RetryNow => {}
             },
         }
     }
-    state.lock().unwrap().running = false;
 }
 
 fn presence_from(p: &xmpp::parsers::presence::Presence) -> Presence {
@@ -587,6 +874,7 @@ fn handle_event(
     ctx: &egui::Context,
     store: Option<&crate::store::Store>,
     my_nick: &str,
+    came_online: &mut bool,
 ) -> bool {
     use xmpp::Event;
     let urgent = !matches!(
@@ -601,6 +889,7 @@ fn handle_event(
     match event {
         Event::Online => {
             eprintln!("[jabber] online");
+            *came_online = true;
             let mut s = state.lock().unwrap();
             s.connected = true;
             s.ever_online = true;
@@ -713,11 +1002,95 @@ fn handle_event(
         }
         Event::RoomJoined(room) => {
             eprintln!("[jabber] room joined: {room}");
-            state.lock().unwrap().rooms.insert(room.to_string());
+            let mut s = state.lock().unwrap();
+            let room = room.to_string();
+            s.rooms_inaccessible.remove(&room);
+            s.rooms.insert(room);
         }
         Event::RoomLeft(room) => {
             eprintln!("[jabber] room left: {room}");
-            state.lock().unwrap().rooms.remove(&room.to_string());
+            let mut s = state.lock().unwrap();
+            let room = room.to_string();
+            s.rooms.remove(&room);
+            // Left/kicked while online: keep it in the channel list, struck-through, history intact.
+            s.rooms_inaccessible.insert(room);
+        }
+        Event::RoomSubject(room, _who, subject, _) => {
+            if !subject.trim().is_empty() {
+                state.lock().unwrap().room_subjects.insert(room.to_string(), subject);
+            }
+        }
+        Event::Iq(iq) => {
+            use xmpp::parsers::disco::{DiscoInfoResult, DiscoItemsResult};
+            use xmpp::parsers::iq::{IqHeader, IqPayload};
+            let (IqHeader { id, from, .. }, data) = iq.split();
+            if id == DISCO_ROOMS_ID {
+                match data {
+                    IqPayload::Result(Some(payload)) => match DiscoItemsResult::try_from(payload) {
+                        Ok(res) => {
+                            let mut rooms: Vec<RoomListing> = res
+                                .items
+                                .into_iter()
+                                .map(|it| {
+                                    let jid = it.jid.to_string();
+                                    let name = it.name.unwrap_or_else(|| {
+                                        jid.split('@').next().unwrap_or(&jid).to_owned()
+                                    });
+                                    RoomListing { jid, name, access: RoomAccess::Unknown }
+                                })
+                                .collect();
+                            rooms.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                            // Probe each room's join policy; only confirmed-open rooms are offered.
+                            let probe: Vec<String> =
+                                rooms.iter().take(DISCO_INFO_CAP).map(|r| r.jid.clone()).collect();
+                            {
+                                let mut s = state.lock().unwrap();
+                                s.room_directory_pending = probe.len();
+                                s.room_directory = rooms;
+                                s.room_directory_state = DirState::Ready;
+                            }
+                            for room in probe {
+                                let _ = cmds.send(Cmd::DiscoRoomInfo { room });
+                            }
+                        }
+                        Err(e) => {
+                            state.lock().unwrap().room_directory_state =
+                                DirState::Error(format!("Bad reply: {e}"));
+                        }
+                    },
+                    IqPayload::Error(err) => {
+                        state.lock().unwrap().room_directory_state =
+                            DirState::Error(format!("Server refused the room list: {err:?}"));
+                    }
+                    _ => {}
+                }
+            } else if id == DISCO_ROOM_INFO_ID {
+                // Match the probe to its room by the responder JID; a restricted room advertises
+                // muc_membersonly or muc_passwordprotected (or errors out entirely).
+                let room = from.map(|f| f.to_bare().to_string());
+                let access = match &data {
+                    IqPayload::Result(Some(payload)) => {
+                        match DiscoInfoResult::try_from(payload.clone()) {
+                            Ok(info) => {
+                                let restricted = info.features.contains("muc_membersonly")
+                                    || info.features.contains("muc_passwordprotected");
+                                if restricted { RoomAccess::Restricted } else { RoomAccess::Open }
+                            }
+                            Err(_) => RoomAccess::Restricted,
+                        }
+                    }
+                    _ => RoomAccess::Restricted,
+                };
+                if let Some(room) = room {
+                    let mut s = state.lock().unwrap();
+                    if let Some(r) = s.room_directory.iter_mut().find(|r| r.jid == room) {
+                        if r.access == RoomAccess::Unknown {
+                            r.access = access;
+                            s.room_directory_pending = s.room_directory_pending.saturating_sub(1);
+                        }
+                    }
+                }
+            }
         }
         Event::RoomMessage(_, room, nick, body, time_info) => {
             let delayed = !time_info.delays.is_empty();
@@ -729,7 +1102,11 @@ fn handle_event(
             let room = room.to_string();
             // A room the server force-joined us into never raised RoomJoined; without this it is not
             // in `rooms` and the UI files it under DMs.
-            state.lock().unwrap().rooms.insert(room.clone());
+            {
+                let mut s = state.lock().unwrap();
+                s.rooms_inaccessible.remove(&room);
+                s.rooms.insert(room.clone());
+            }
             // Our own reflected message (MUC echoes it back under our nick): store it but never
             // notify/sound for it.
             let own = nick.eq_ignore_ascii_case(my_nick);
@@ -741,14 +1118,16 @@ fn handle_event(
                 !own,
                 store,
             );
-            // delve911 is a priority channel: a "critical" sound, rate-limited so a burst alerts
-            // once (the 5-min gate resets on every message, re-arming only after 5 min of quiet).
+            // delve911 is a priority channel: its own ship-horn sound, rate-limited so a burst
+            // alerts once (the 5-min gate resets on every message, re-arming only after 5 min of
+            // quiet).
+            #[cfg(feature = "fc-rescue")]
             if !delayed && !own {
                 let local = room.split('@').next().unwrap_or(&room);
                 if local.eq_ignore_ascii_case("delve911") {
                     let sound_on = state.lock().unwrap().notify_cfg.sound_enabled;
                     if sound_on {
-                        crate::sound::play_delve911_critical();
+                        crate::sound::play_delve911_alert();
                     }
                 }
             }

@@ -19,6 +19,15 @@ It uses only EVE's public static data.
   `cargo test` does NOT rebuild the `eve-spai` binary. Run `cargo build` before
   relaunching the app, or you will run a stale binary and "fixes" will look like they
   did nothing.
+- **`fc-rescue` is an opt-in Cargo feature, off by default.** It gates the whole FC-only
+  delve911 capital-rescue mode (`app/src/rescue.rs`, the rescue window, the ESI fleet
+  poller, the delve911 sound). Published releases are built WITHOUT it; build your own
+  with `cargo build --release --features fc-rescue`. A bare `cargo test` therefore skips
+  its tests, so use `cargo test --features fc-rescue` when touching that code, and note
+  that CI's `cross-check` passes `--all-features` so the gated code keeps compiling.
+  The `Settings` rescue fields are deliberately NOT gated: settings are rewritten
+  wholesale on save, so a feature-off build must still round-trip a feature-on config
+  instead of silently dropping every `rescue_*` key.
 - The version lives once in the root `Cargo.toml` `[workspace.package]`; `app` inherits
   it (user-agent strings track it via `env!("CARGO_PKG_VERSION")`).
 - **Bumping a version means starting a GitHub build run.** It is NOT enough to edit the

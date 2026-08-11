@@ -31,21 +31,17 @@ pub const PACKS: &[ConfigPack] = &[
             99010877,
         ],
     },
+    // The app ships Imperium presets only, so these two carry no channels: the ids are kept
+    // solely so `coalition_of` still names these sides in battle reports. A pack with no
+    // channels is deliberately hidden from the "Apply preset" pickers.
     ConfigPack {
         name: "The Initiative.",
-        channels: &[
-            "I. Ftn Intel",
-            "I. OR Intel",
-            "I. Aridia Intel",
-            "I. Curse Intel",
-            "I. Poch Intel",
-            "I. C Ring Intel",
-        ],
+        channels: &[],
         member_alliance_ids: &[1900696668],
     },
     ConfigPack {
         name: "Winter Coalition",
-        channels: &["wc.Venal+Br+Te"],
+        channels: &[],
         member_alliance_ids: &[
             99002685, 741557221, 99001317, 99010281, 99012770, 99005274, 99012040,
             99013231, 99013216, 154104258, 99010896, 99013539, 99013456, 99013759,

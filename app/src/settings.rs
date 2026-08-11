@@ -130,6 +130,12 @@ pub struct Settings {
     pub jabber_closed_dms: Vec<String>,
     #[serde(default)]
     pub jabber_closed_rooms: Vec<String>,
+    /// Rooms left/kicked while online, kept struck-through in the channel list across restarts.
+    #[serde(default)]
+    pub jabber_inaccessible_rooms: Vec<String>,
+    /// Last-known room MOTD (MUC subject) per room JID, so history-only channels still show it.
+    #[serde(default)]
+    pub jabber_room_subjects: std::collections::BTreeMap<String, String>,
     // None = ask on first room-tab close; Some(true) = leave; Some(false) = keep joined, hide tab.
     #[serde(default)]
     pub jabber_close_room_leaves: Option<bool>,
@@ -193,10 +199,6 @@ pub struct Settings {
     /// XMPP room JID for the delve911 conference, so the FC can respond from the rescue window.
     #[serde(default)]
     pub rescue_delve911_jid: String,
-    #[serde(default = "default_siege_secs")]
-    pub rescue_siege_secs: u32,
-    #[serde(default = "default_panic_secs")]
-    pub rescue_panic_secs: u32,
     #[serde(default)]
     pub rescue_window_pos: Option<(f32, f32)>,
     #[serde(default)]
@@ -516,8 +518,9 @@ pub struct AllianceConfig {
 }
 
 pub fn default_coalitions() -> Vec<Coalition> {
-    // shifts often, so edit/reset in Settings to keep it current. Alliance names
-    // must match the sov holder name exactly (some end with a period).
+    // Imperium only. Add other coalitions in Settings; membership shifts often, so edit/reset
+    // there to keep it current. Alliance names must match the sov holder name exactly (some end
+    // with a period).
     let coal = |name: &str, members: &[&str]| Coalition {
         name: name.to_owned(),
         alliances: members.iter().map(|s| s.to_string()).collect(),
@@ -528,12 +531,6 @@ pub fn default_coalitions() -> Vec<Coalition> {
             "The Imperium",
             &["Goonswarm Federation", "Tactical Narcotics Team", "The Bastion", "Get Off My Lawn"],
         ),
-        coal(
-            "Winter Coalition",
-            &["Fraternity.", "Northern Coalition.", "Solyaris Chtonium"],
-        ),
-        coal("The Initiative", &["The Initiative.", "Initiative Mercenaries"]),
-        coal("PanFam", &["Pandemic Legion", "Pandemic Horde"]),
     ]
 }
 
@@ -701,12 +698,6 @@ fn default_rescue_template() -> String {
 // remote-repped until it ends. PANIC = the Rorqual Pulse Activated Nexus Invulnerability Core,
 // which holds invuln 4 min at base up to 6 min with Invulnerability Core Operation; default to a
 // 5-min middle and let the FC dial it after asking the pilot.
-fn default_siege_secs() -> u32 {
-    300
-}
-fn default_panic_secs() -> u32 {
-    300
-}
 fn default_rescue_col_ops() -> f32 {
     300.0
 }
@@ -787,6 +778,8 @@ impl Default for Settings {
             jabber_contacts: Vec::new(),
             jabber_closed_dms: Vec::new(),
             jabber_closed_rooms: Vec::new(),
+            jabber_inaccessible_rooms: Vec::new(),
+            jabber_room_subjects: std::collections::BTreeMap::new(),
             jabber_close_room_leaves: None,
             jabber_ping_bot: String::new(),
             jabber_ping_groups: Vec::new(),
@@ -816,8 +809,6 @@ impl Default for Settings {
             rescue_ping_template: default_rescue_template(),
             rescue_skirmish_jid: String::new(),
             rescue_delve911_jid: String::new(),
-            rescue_siege_secs: default_siege_secs(),
-            rescue_panic_secs: default_panic_secs(),
             rescue_window_pos: None,
             rescue_window_size: None,
             rescue_col_ops_w: default_rescue_col_ops(),

@@ -1,11 +1,13 @@
 //! Range/fuel/fatigue match the live game mechanics (verified against the EVE University wiki
 //! and the official Jump Activation Cooldown article):
 //!   range  = base × (1 + 0.20 × JDC)
-//!   fuel   = Σ ly × isotopes/ly × (1 − 0.10 × JFC)     (caps 1000, JF 3100, black ops 400)
+//!   fuel   = Σ ly × isotopes/ly × (1 − 0.10 × JFC) × (1 − role_fuel)
 //!   d'     = ly × (1 − role_reduction)                 (black ops 0.75, JF/rorqual 0.90)
 //!   fatigue(blue)    = max(prev, 10) × (1 + d'),  capped at 300 min (5 h)
 //!   cooldown(red)    = max(prev_fatigue / 10, 1 + d'), capped at 30 min
 //! Per-hull fuel is the standard class value (a specific Titan can differ).
+//! Base range and fuel come from the live SDE `jumpDriveRange` / `jumpDriveConsumptionAmount`
+//! attributes, NOT the Phoebe-era 2014 values: those were restored in later patches.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -17,17 +19,20 @@ pub struct ShipClass {
     pub name: &'static str,
     pub base_ly: f64,
     pub fuel_per_ly: f64,
+    /// Hull skill bonus on top of JFC (jump freighters 10%/level = 50% at V).
+    pub fuel_role_reduction: f64,
     pub fatigue_role_reduction: f64,
 }
 
-// Fuel = base isotopes/ly (capitals 1000, jump freighters 3100, black ops 400); range base is
-// half the JDC-V max (×2 at level V). Fatigue role bonus reduces effective distance: black ops
-// 75%, jump freighters / rorquals 90%, other capitals none.
+// base_ly / fuel_per_ly are the hull attributes before skills; JDC V doubles the range, JFC V
+// halves the fuel. Fatigue role bonus reduces effective distance: black ops 75%, jump freighters
+// / rorquals 90%, other capitals none. Rorqual sits last so saved routes keep their class index.
 pub const SHIP_CLASSES: &[ShipClass] = &[
-    ShipClass { name: "Capital (Dread / Carrier / FAX / Rorqual)", base_ly: 2.5, fuel_per_ly: 1000.0, fatigue_role_reduction: 0.0 },
-    ShipClass { name: "Supercarrier / Titan", base_ly: 1.75, fuel_per_ly: 1000.0, fatigue_role_reduction: 0.0 },
-    ShipClass { name: "Black Ops", base_ly: 4.0, fuel_per_ly: 400.0, fatigue_role_reduction: 0.75 },
-    ShipClass { name: "Jump Freighter", base_ly: 5.0, fuel_per_ly: 3100.0, fatigue_role_reduction: 0.9 },
+    ShipClass { name: "Capital (Dread / Carrier / FAX)", base_ly: 3.5, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
+    ShipClass { name: "Supercarrier / Titan", base_ly: 3.0, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
+    ShipClass { name: "Black Ops", base_ly: 4.0, fuel_per_ly: 700.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.75 },
+    ShipClass { name: "Jump Freighter", base_ly: 5.0, fuel_per_ly: 9400.0, fuel_role_reduction: 0.5, fatigue_role_reduction: 0.9 },
+    ShipClass { name: "Rorqual", base_ly: 5.0, fuel_per_ly: 4000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.9 },
 ];
 
 pub fn max_range_ly(class: &ShipClass, jdc: u32) -> f64 {
@@ -191,7 +196,7 @@ pub fn route_cost(systems: &[MapSystem], path: &[i64], class: &ShipClass, jfc: u
         let (Some(a), Some(b)) = (idx.get(&w[0]), idx.get(&w[1])) else { continue };
         let ly = ly_distance(a, b);
         total_ly += ly;
-        fuel += ly * class.fuel_per_ly * fuel_mult;
+        fuel += ly * class.fuel_per_ly * fuel_mult * (1.0 - class.fuel_role_reduction);
         let d_eff = ly * (1.0 - class.fatigue_role_reduction);
         total_delay += (fatigue / 10.0).max(1.0 + d_eff).min(30.0);
         fatigue = fatigue.max(10.0) * (1.0 + d_eff);
@@ -229,10 +234,20 @@ mod tests {
         let c = route_cost(&s, &[1, 2], &SHIP_CLASSES[0], 5);
         assert!((c.final_fatigue_min - 60.0).abs() < 0.01, "fatigue {}", c.final_fatigue_min);
         assert!((c.total_delay_min - 6.0).abs() < 0.01, "delay {}", c.total_delay_min);
-        assert!((c.fuel - 2500.0).abs() < 0.5, "fuel {}", c.fuel);
+        assert!((c.fuel - 7500.0).abs() < 0.5, "fuel {}", c.fuel);
 
         let bo = route_cost(&s, &[1, 2], &SHIP_CLASSES[2], 5);
         assert!((bo.final_fatigue_min - 22.5).abs() < 0.01, "bo fatigue {}", bo.final_fatigue_min);
+        assert!((bo.fuel - 1750.0).abs() < 0.5, "bo fuel {}", bo.fuel);
+
+        let jf = route_cost(&s, &[1, 2], &SHIP_CLASSES[3], 5);
+        assert!((jf.fuel - 11750.0).abs() < 0.5, "jf fuel {}", jf.fuel);
+    }
+
+    #[test]
+    fn maxed_ranges_match_game() {
+        let maxed: Vec<f64> = SHIP_CLASSES.iter().map(|c| max_range_ly(c, 5)).collect();
+        assert_eq!(maxed, vec![7.0, 6.0, 8.0, 10.0, 10.0]);
     }
 
     #[test]

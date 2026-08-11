@@ -66,7 +66,13 @@ pub const WIDTH_EXPANDED: f32 = 196.0;
 
 const ROW_HEIGHT: f32 = 38.0;
 
-pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[View]) -> View {
+pub fn rail(
+    ui: &mut egui::Ui,
+    current: View,
+    expanded: &mut bool,
+    badges: &[View],
+    warns: &[View],
+) -> View {
     let mut selected = current;
     let accent = ui.visuals().hyperlink_color;
     let weak = ui.visuals().weak_text_color();
@@ -107,7 +113,15 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[Vie
     ui.add_space(8.0);
 
     for &v in View::primary() {
-        if nav_item(ui, v.icon(), v.label(), v == selected, *expanded, badges.contains(&v)) {
+        if nav_item(
+            ui,
+            v.icon(),
+            v.label(),
+            v == selected,
+            *expanded,
+            badges.contains(&v),
+            warns.contains(&v),
+        ) {
             selected = v;
         }
         ui.add_space(4.0);
@@ -115,7 +129,8 @@ pub fn rail(ui: &mut egui::Ui, current: View, expanded: &mut bool, badges: &[Vie
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.add_space(10.0);
-        if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded, false) {
+        if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded, false, false)
+        {
             selected = View::Settings;
         }
         ui.add_space(8.0);
@@ -136,6 +151,7 @@ fn nav_item(
     active: bool,
     expanded: bool,
     badge: bool,
+    warn: bool,
 ) -> bool {
     let accent = ui.visuals().hyperlink_color;
     let normal = ui.visuals().text_color();
@@ -190,12 +206,20 @@ fn nav_item(
         );
     }
 
+    let icon_pos = if expanded { egui::pos2(rect.left() + 22.0, cy) } else { rect.center() };
     if badge {
-        let icon_pos = if expanded { egui::pos2(rect.left() + 22.0, cy) } else { rect.center() };
         painter.circle_filled(
             icon_pos + egui::vec2(9.0, -8.0),
             4.0,
             egui::Color32::from_rgb(0xE0, 0x4C, 0x4C),
+        );
+    }
+    // Amber, below the unread badge: the connection is down, which is not the same as new messages.
+    if warn {
+        painter.circle_filled(
+            icon_pos + egui::vec2(9.0, 8.0),
+            4.0,
+            egui::Color32::from_rgb(0xE6, 0xA5, 0x1E),
         );
     }
 

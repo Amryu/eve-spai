@@ -1,14 +1,13 @@
 //! delve911 capital-rescue support: parsing emergency pings, fleet-composition
-//! classification, rescue timers and the shared `RescueState`.
+//! classification and the shared `RescueState`.
 //!
 //! Everything here is pure logic with no shared locks or I/O, so the watcher can run
 //! `parse_event` under `catch_unwind` and a malformed line drops one event instead of
 //! taking down the app. `RescueState` lives behind an `Arc<Mutex<..>>` on the app and is
 //! the single source of truth for the feature.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 use crate::geo::Systems;
 
@@ -24,7 +23,8 @@ const STOPWORDS: &[&str] = &[
     "bping", "all", "rescue", "help", "tackled", "tackle", "pointed", "point", "bubbled",
     "scrammed", "scrambled", "cyno", "cynod", "in", "at", "on", "is", "has", "the", "a", "and",
     "needs", "need", "capital", "cap", "caps", "dread", "dreads", "dreadnought", "carrier",
-    "carriers", "fax", "super", "supers", "titan", "titans", "moon", "anom", "anomaly", "site",
+    "carriers", "fax", "super", "supers", "titan", "titans", "rorq", "rorqs", "rorqual",
+    "rorquals", "moon", "anom", "anomaly", "site",
     "gate", "sitting", "hostiles", "hostile", "please", "warp", "ratting", "station", "structure",
     "keepstar", "fortizar", "astrahus", "tackling", "primary", "hero", "get", "we", "here",
 ];
@@ -70,86 +70,6 @@ impl CapClass {
             CapClass::Titan => "Titan",
         }
     }
-
-    /// Suggested (siege, panic) timer seconds when the ping named a capital type.
-    /// `None` for a leg that type does not have, so the FC dials it manually.
-    /// Siege/Triage/Industrial Core cycle = 300s. PANIC = the Rorqual invulnerability core,
-    /// 4-6 min by skill; default the middle (300s). Only the Rorqual actually has PANIC.
-    pub fn preset_timers(self) -> (Option<u32>, Option<u32>) {
-        match self {
-            CapClass::Rorqual => (Some(300), Some(300)),
-            CapClass::Dread => (Some(300), None),
-            CapClass::Fax => (Some(300), None),
-            CapClass::Carrier => (None, None),
-            CapClass::Super => (None, None),
-            CapClass::Titan => (None, None),
-        }
-    }
-}
-
-/// A manually-set countdown. Runtime only (never serialized). Counts down once `start` is called.
-#[derive(Clone, Debug, Default)]
-pub struct Timer {
-    started: bool,
-    remaining: i64,
-    deadline: Option<Instant>,
-}
-
-impl Timer {
-    pub fn is_set(&self) -> bool {
-        self.started
-    }
-
-    /// Seconds left right now (0 once elapsed). When not started, the pending value.
-    /// Ceil so a freshly-started 300s reads 5:00, not 4:59, and adjustments stay whole-second.
-    pub fn current(&self) -> i64 {
-        match self.deadline {
-            Some(d) => d.saturating_duration_since(Instant::now()).as_secs_f64().ceil() as i64,
-            None => self.remaining.max(0),
-        }
-    }
-
-    pub fn start(&mut self, secs: i64) {
-        let s = secs.max(0);
-        self.remaining = s;
-        self.deadline = Some(Instant::now() + Duration::from_secs(s as u64));
-        self.started = true;
-    }
-
-    /// Set the pending value without starting the countdown (ignored once running).
-    pub fn set_value(&mut self, secs: i64) {
-        if self.deadline.is_none() {
-            self.remaining = secs.max(0);
-        }
-    }
-
-    /// Begin counting down from the current pending value.
-    pub fn start_now(&mut self) {
-        self.start(self.current());
-    }
-
-    /// Nudge by ±delta seconds. While running, shift the deadline directly (exact, no re-flooring
-    /// that would eat a second per press); while stopped, change the pending value.
-    pub fn adjust(&mut self, delta: i64) {
-        match self.deadline {
-            Some(d) => {
-                self.deadline = Some(if delta >= 0 {
-                    d + Duration::from_secs(delta as u64)
-                } else {
-                    let sub = Duration::from_secs((-delta) as u64);
-                    let now = Instant::now();
-                    if d > now + sub { d - sub } else { now }
-                });
-            }
-            None => {
-                self.remaining = (self.remaining + delta).max(0);
-            }
-        }
-    }
-
-    pub fn reset(&mut self) {
-        *self = Timer::default();
-    }
 }
 
 /// Fleet role bucket derived from a ship's SDE group. `Ord` puts capitals first for display.
@@ -174,6 +94,7 @@ pub enum ShipRole {
 }
 
 impl ShipRole {
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             ShipRole::Titan => "Titans",
@@ -253,10 +174,12 @@ pub struct FleetMember {
     pub name: String,
     #[allow(dead_code)]
     pub ship_type_id: i64,
+    #[allow(dead_code)]
     pub ship: String,
     #[allow(dead_code)]
     pub group: String,
     pub role: ShipRole,
+    #[allow(dead_code)]
     pub system_id: i64,
 }
 
@@ -268,6 +191,7 @@ pub struct FleetSnapshot {
     pub members: Vec<FleetMember>,
     pub counts: BTreeMap<ShipRole, u32>,
     /// Unix seconds of the last successful build. 0 = never populated.
+    #[allow(dead_code)]
     pub updated: i64,
     /// True when the most recent poll failed and this is stale data kept on screen.
     pub stale: bool,
@@ -300,24 +224,24 @@ impl FleetSnapshot {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct CynoInfo {
-    pub in_system: bool,
-    pub reachable: bool,
-    pub jumps: u32,
-    #[allow(dead_code)]
-    pub dest_id: i64,
-    pub dest_name: String,
-    /// True when the shortest path uses a jump bridge (blockade risk).
-    pub via_bridge: bool,
+/// Per-ping record of the three actions the FC is expected to take. Comms actions remember WHICH
+/// op they were done for, so changing the op channel re-arms them.
+#[derive(Default, Clone, Copy)]
+pub struct PingActions {
+    pub command_comms_op: Option<u8>,
+    pub coord_pinged: bool,
+    pub invited_op: Option<u8>,
+}
+
+impl PingActions {
+    pub fn done(&self, op: u8) -> bool {
+        self.coord_pinged && self.command_comms_op == Some(op) && self.invited_op == Some(op)
+    }
 }
 
 #[derive(Default)]
 pub struct RescueState {
     pub active: bool,
-    /// The FC has claimed this rescue / manually started the save. Ping sending is BLOCKED until
-    /// this is set, so a ping can never go out by accident before the FC commits.
-    pub claimed: bool,
     /// Test scenario loaded. While true the fleet poller is paused (so injected data isn't
     /// overwritten) and ALL ping sending is hard-disabled in the UI. Nothing ever leaves the app.
     pub test_mode: bool,
@@ -328,28 +252,34 @@ pub struct RescueState {
     pub cyno_pilot: Option<String>,
     pub anomaly: Option<String>,
     pub cap_class: Option<CapClass>,
+    /// delve911 nick that raised the selected ping, used to call them into comms.
+    pub ping_author: Option<String>,
+    /// `seq` of the ping being worked. The capital_* fields above are its details.
+    pub selected_ping: Option<u64>,
+    /// `seq` of pings the FC dismissed; they drop out of the recent-pings list.
+    pub resolved: HashSet<u64>,
+    /// Which of the expected actions have been taken, per ping `seq`.
+    pub actions: HashMap<u64, PingActions>,
+    #[allow(dead_code)]
     pub dscan: Option<Vec<(String, u32)>>,
     pub op_channel: u8,
     pub doctrine: String,
     /// The editable outgoing ping. Empty until first shown, then filled from the template and
     /// freely edited by the FC before sending.
     pub pending_ping: String,
-    /// (op_channel, doctrine) the `pending_ping` was last generated for. When op/doctrine change,
-    /// the ping is regenerated from the template (discarding manual edits, as intended).
-    pub ping_built_for: Option<(u8, String)>,
+    /// (op_channel, doctrine, selected ping) the `pending_ping` was last generated for.
+    pub ping_built_for: Option<(u8, String, Option<u64>)>,
+    /// The FC has typed into `pending_ping`, so an op/doctrine change must not clobber it.
+    pub ping_edited: bool,
     /// Draft reply typed into the chat view, sent to the selected tab's room.
     pub delve911_reply: String,
     /// Selected chat tab: 0 = delve911, 1 = skirmish_commanders.
     pub chat_tab: u8,
-    /// mm:ss text buffer for the PANIC timer while stopped (so typing isn't clobbered each frame).
-    pub panic_input: String,
-    pub siege: Timer,
-    pub panic: Timer,
     pub fleet: FleetSnapshot,
-    pub nearest_cyno: Option<CynoInfo>,
     /// Sticky snowflakes: character_id -> reason tag. Once flagged (capital/cyno/titan/recon) a
     /// pilot STAYS flagged for the session even if they re-ship to a pod, so the FC keeps tracking
     /// them. Keyed by character_id (survives ship changes).
+    #[allow(dead_code)]
     pub snowflakes: HashMap<i64, String>,
 }
 
@@ -377,49 +307,84 @@ pub fn snowflake_tag(
 impl RescueState {
     /// Append an event, capping the ring so history never grows unbounded.
     pub fn push_event(&mut self, ev: RescueEvent) {
-        if ev.is_ping {
-            if let Some(id) = ev.system_id {
-                self.capital_system = Some(id);
-                self.capital_system_name = ev.system_name.clone();
-            }
-            if ev.pilot.is_some() {
-                self.capital_pilot = ev.pilot.clone();
-            }
-            if ev.cyno.is_some() {
-                self.cyno_pilot = ev.cyno.clone();
-            }
-            if ev.anomaly.is_some() {
-                self.anomaly = ev.anomaly.clone();
-            }
-            if let Some(class) = ev.cap_class {
-                let newly = self.cap_class != Some(class);
-                self.cap_class = Some(class);
-                if newly {
-                    self.apply_presets(class);
-                }
-            }
+        // Pilots routinely submit the same ping twice a second apart, which clears the chat store's
+        // UNIQUE(jid, time, sender, body) guard.
+        if self.events.iter().rev().take(4).any(|p| {
+            p.author == ev.author && p.raw == ev.raw && (ev.received - p.received).abs() <= 5
+        }) {
+            return;
         }
+        let fresh_ping = ev.is_ping;
         self.events.push(ev);
         if self.events.len() > EVENTS_CAP {
             let drop = self.events.len() - EVENTS_CAP;
             self.events.drain(0..drop);
         }
+        // A new ping never steals focus from the one being worked; it just joins the list.
+        if fresh_ping && self.selected_ping.is_none() {
+            self.select_newest();
+        }
     }
 
-    /// Apply capital-type timer presets (only ones the type actually has), leaving unset timers
-    /// alone so the FC can still dial them. Called once when a class is first known.
-    pub fn apply_presets(&mut self, class: CapClass) {
-        let (siege, panic) = class.preset_timers();
-        if let Some(s) = siege {
-            if !self.siege.is_set() {
-                self.siege.adjust(s as i64 - self.siege.current());
-            }
+    /// Most recent unresolved pings, newest first, capped at `n`.
+    pub fn recent_pings(&self, n: usize) -> Vec<&RescueEvent> {
+        self.events
+            .iter()
+            .rev()
+            .filter(|e| e.is_ping && !self.resolved.contains(&e.seq))
+            .take(n)
+            .collect()
+    }
+
+    pub fn select_ping(&mut self, seq: u64) {
+        self.selected_ping = Some(seq);
+        self.apply_selection();
+    }
+
+    /// Dismiss a ping. If it was the one being worked, fall through to the next newest.
+    pub fn resolve_ping(&mut self, seq: u64) {
+        self.resolved.insert(seq);
+        if self.selected_ping == Some(seq) {
+            self.select_newest();
         }
-        if let Some(p) = panic {
-            if !self.panic.is_set() {
-                self.panic.adjust(p as i64 - self.panic.current());
-            }
-        }
+    }
+
+    pub fn actions(&self, seq: u64) -> PingActions {
+        self.actions.get(&seq).copied().unwrap_or_default()
+    }
+
+    pub fn actions_mut(&mut self, seq: u64) -> &mut PingActions {
+        self.actions.entry(seq).or_default()
+    }
+
+    pub fn select_newest(&mut self) {
+        self.selected_ping = self.recent_pings(1).first().map(|e| e.seq);
+        self.apply_selection();
+    }
+
+    /// Copy the selected ping's details into the fields the ping template and checklist read.
+    fn apply_selection(&mut self) {
+        let picked = self
+            .selected_ping
+            .and_then(|seq| self.events.iter().find(|e| e.seq == seq))
+            .cloned();
+        let Some(ev) = picked else {
+            self.ping_author = None;
+            self.capital_system = None;
+            self.capital_system_name = None;
+            self.capital_pilot = None;
+            self.cyno_pilot = None;
+            self.anomaly = None;
+            self.cap_class = None;
+            return;
+        };
+        self.ping_author = Some(ev.author);
+        self.capital_system = ev.system_id;
+        self.capital_system_name = ev.system_name;
+        self.capital_pilot = ev.pilot;
+        self.cyno_pilot = ev.cyno;
+        self.anomaly = ev.anomaly;
+        self.cap_class = ev.cap_class;
     }
 }
 
@@ -463,7 +428,10 @@ fn leading_name(seg: &str) -> Option<String> {
 fn detect_system(text: &str, systems: &Systems) -> Option<(i64, String)> {
     // Prefer nullsec-style tokens (a dash or digit), which almost never collide with prose.
     for pass in 0..2 {
-        for raw in text.split(|c: char| c.is_whitespace() || c == ',') {
+        // Split on anything that can't be part of a system name (keep '-', which nullsec names use).
+        // This peels off decorations like `*`, `:`, `/`, `()` even when glued on with no space, so
+        // "System:C-J6MT", "*C-J6MT*" and "C-J6MT*gate" all still resolve.
+        for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
             let tok = clean_token(raw);
             if tok.len() < 2 {
                 continue;
@@ -547,6 +515,219 @@ fn detect_cap_class(text_lc: &str, ships: &HashMap<String, String>) -> Option<Ca
     }
 }
 
+/// Which template field a `label:` introduces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Pilot,
+    Cyno,
+    System,
+    Anomaly,
+    Ignore,
+}
+
+/// Normalised label key: cut at the first `(` to drop the template's own hints, then keep only
+/// letters. `Location In System (Anomaly or Moon)`, `Location In System :` and the real typo
+/// `Location I  n System` all collapse to `locationinsystem`.
+fn label_key(raw: &str) -> String {
+    raw.split('(')
+        .next()
+        .unwrap_or(raw)
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Order matters: `locationinsystem` contains both "location" and "system", and `cynopilot`
+/// contains both "cyno" and "pilot".
+fn classify_label(key: &str) -> Option<Field> {
+    if key.len() < 3 || key.len() > 48 {
+        return None;
+    }
+    if key.contains("cyno") {
+        return Some(if key.contains("inhib") { Field::Ignore } else { Field::Cyno });
+    }
+    if key.starts_with("sys") {
+        return Some(Field::System);
+    }
+    if key.contains("location") || key.contains("anomaly") || key.contains("moon") {
+        return Some(Field::Anomaly);
+    }
+    if key.contains("system") {
+        return Some(Field::System);
+    }
+    if key.contains("name") || key.contains("pilot") {
+        return Some(Field::Pilot);
+    }
+    if key.contains("panic") {
+        return Some(Field::Ignore);
+    }
+    None
+}
+
+#[derive(Default)]
+struct Labeled {
+    pilot: Option<String>,
+    cyno: Option<String>,
+    system: Option<String>,
+    anomaly: Option<String>,
+    hits: usize,
+}
+
+/// Pull `Label: value` pairs out of the delve911 ping template. Values run to end of line or to
+/// the next label on the same line (real pings glue two fields onto one line).
+fn scan_labels(body: &str) -> Labeled {
+    let mut out = Labeled::default();
+    for line in body.lines() {
+        let mut marks: Vec<(Field, usize)> = Vec::new();
+        let mut cursor = 0usize;
+        for (i, c) in line.char_indices() {
+            if (c != ':' && c != ';') || i < cursor {
+                continue;
+            }
+            if let Some(field) = classify_label(&label_key(&line[cursor..i])) {
+                marks.push((field, i + c.len_utf8()));
+                cursor = i + c.len_utf8();
+            }
+        }
+        for (n, (field, start)) in marks.iter().enumerate() {
+            // A following label's text is still part of this slice; each field's own cleaner
+            // discards it (a system token survives, prose does not).
+            let end = marks.get(n + 1).map(|(_, s)| *s).unwrap_or(line.len());
+            let raw = line[*start..end].trim().trim_end_matches([':', ';']);
+            if *field != Field::Ignore {
+                out.hits += 1;
+            }
+            let slot = match field {
+                Field::Pilot => &mut out.pilot,
+                Field::Cyno => &mut out.cyno,
+                Field::System => &mut out.system,
+                Field::Anomaly => &mut out.anomaly,
+                Field::Ignore => continue,
+            };
+            let value = match field {
+                Field::Pilot | Field::Cyno => ping_name(raw),
+                Field::Anomaly => clean_anomaly(raw),
+                _ => (!raw.is_empty()).then(|| raw.to_string()),
+            };
+            if slot.is_none() {
+                *slot = value;
+            }
+        }
+    }
+    out
+}
+
+/// Looser than `dscan::is_valid_char_name`, which caps the last word at 12 chars and so rejects
+/// real pilots like `umakedasammich`. The label already anchors the value, so no stop-word pass.
+fn ping_name(raw: &str) -> Option<String> {
+    let s = raw
+        .split('(')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if !(3..=37).contains(&s.len()) || !(1..=3).contains(&s.split_whitespace().count()) {
+        return None;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '\'' | '-' | '.'))
+        .then(|| s.to_string())
+}
+
+/// Anomaly values are often a pasted probe-scanner row, tab separated with columns we don't want.
+fn clean_anomaly(raw: &str) -> Option<String> {
+    let noise = |f: &str| {
+        let l = f.to_ascii_lowercase();
+        l == "cosmic anomaly"
+            || l == "cosmic signature"
+            || l == "ore site"
+            || l.ends_with('%')
+            || l.ends_with(" au")
+            || l.ends_with(" m")
+            || l.ends_with(" km")
+    };
+    let kept: Vec<&str> =
+        raw.split('\t').map(str::trim).filter(|f| !f.is_empty() && !noise(f)).collect();
+    let out = if kept.is_empty() { raw.trim().to_string() } else { kept.join(" ") };
+    (out.len() >= 3).then_some(out)
+}
+
+/// Second chance for a labelled system that didn't resolve: pilots drop the hyphen (`GDHNK`) or
+/// glue digits on (`UM-SCG44`). Hyphen insertion only commits when exactly one candidate resolves.
+fn repair_system(text: &str, systems: &Systems) -> Option<(i64, String)> {
+    for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+        let tok = clean_token(raw);
+        if !(4..=8).contains(&tok.len()) {
+            continue;
+        }
+        if tok.contains('-') {
+            let trimmed = tok.trim_end_matches(|c: char| c.is_ascii_digit());
+            if trimmed.len() >= 4 && trimmed != tok {
+                if let Some(info) = systems.lookup(trimmed) {
+                    return Some((info.id, info.name.clone()));
+                }
+            }
+            continue;
+        }
+        if tok.len() > 6 || !tok.chars().all(|c| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        let mut hit = None;
+        for cut in 1..tok.len() {
+            let cand = format!("{}-{}", &tok[..cut], &tok[cut..]);
+            if let Some(info) = systems.lookup(&cand) {
+                if hit.is_some() {
+                    hit = None;
+                    break;
+                }
+                hit = Some((info.id, info.name.clone()));
+            }
+        }
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    None
+}
+
+/// Blank out every SDE hull name, byte-for-byte, so the prose fallback can't read a ship as a
+/// pilot ("Rorqual Tackled" -> pilot "Rorqual", "Phoenix navy issue" -> pilot "navy issue").
+fn mask_ships(body: &str, ships: &HashMap<String, String>) -> String {
+    let lc = body.to_ascii_lowercase();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in lc.char_indices() {
+        if c.is_whitespace() {
+            if let Some(s) = start.take() {
+                spans.push((s, i));
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, lc.len()));
+    }
+
+    let mut out = body.as_bytes().to_vec();
+    let mut a = 0usize;
+    while a < spans.len() {
+        let mut step = 1;
+        for len in (1..=4.min(spans.len() - a)).rev() {
+            let (lo, hi) = (spans[a].0, spans[a + len - 1].1);
+            let cand = lc[lo..hi].trim_matches(|c: char| !c.is_alphanumeric());
+            if cand.len() >= 3 && ships.contains_key(cand) {
+                out[lo..hi].fill(b' ');
+                step = len;
+                break;
+            }
+        }
+        a += step;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| body.to_string())
+}
+
 fn detect_anomaly(text: &str) -> Option<String> {
     // Parenthetical first, then "at <...>"/"moon <...>".
     if let (Some(a), Some(b)) = (text.find('('), text.find(')')) {
@@ -603,15 +784,31 @@ pub fn parse_event(
     let (body, has_bping) = strip_bping(trimmed);
     let body_lc = body.to_ascii_lowercase();
 
-    let system = detect_system(body, systems);
+    let labels = scan_labels(body);
     let tackle = first_tackle_split(&body_lc);
 
-    let pilot = tackle.and_then(|pos| trailing_name(&body[..pos]));
-    let cyno = body_lc.find("cyno").and_then(|pos| leading_name(&body[pos + "cyno".len()..]));
-    let anomaly = detect_anomaly(body);
-    let cap_class = detect_cap_class(&body_lc, ships);
+    let mut system = labels
+        .system
+        .as_deref()
+        .and_then(|v| detect_system(v, systems).or_else(|| repair_system(v, systems)));
+    if system.is_none() {
+        system = detect_system(body, systems);
+    }
 
-    let is_ping = has_bping || (system.is_some() && tackle.is_some());
+    let (mut pilot, mut cyno, mut anomaly) = (labels.pilot, labels.cyno, labels.anomaly);
+    if labels.hits == 0 {
+        // Prose ping. Mask hulls first or the ship word becomes the pilot.
+        let masked = mask_ships(body, ships);
+        pilot = tackle.and_then(|pos| trailing_name(&masked[..pos]));
+        cyno = body_lc.find("cyno").and_then(|pos| {
+            leading_name(&masked[pos + "cyno".len()..])
+                .or_else(|| trailing_name(&masked[..pos]))
+        });
+        anomaly = detect_anomaly(body);
+    }
+
+    let cap_class = detect_cap_class(&body_lc, ships);
+    let is_ping = has_bping || labels.hits >= 2 || (system.is_some() && tackle.is_some());
 
     RescueEvent {
         seq: next_seq(),
@@ -646,71 +843,6 @@ pub fn parse_raw_dscan(text: &str) -> Vec<(String, u32)> {
     let mut out: Vec<(String, u32)> = counts.into_iter().collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
-}
-
-/// Nearest cyno-generator system to `from`, searching over gates AND jump bridges. Flags whether
-/// the shortest path uses a bridge (bubble-blockade risk). `None` when no generators configured.
-pub fn nearest_cyno(systems: &Systems, from: i64, cyno_gens: &[i64]) -> Option<CynoInfo> {
-    if cyno_gens.is_empty() {
-        return None;
-    }
-    let targets: HashSet<i64> = cyno_gens.iter().copied().collect();
-    let name_of = |id: i64| systems.info_of(id).map(|i| i.name.clone()).unwrap_or_default();
-    if targets.contains(&from) {
-        return Some(CynoInfo {
-            in_system: true,
-            reachable: true,
-            jumps: 0,
-            dest_id: from,
-            dest_name: name_of(from),
-            via_bridge: false,
-        });
-    }
-    let mut prev: HashMap<i64, i64> = HashMap::new();
-    let mut visited: HashSet<i64> = HashSet::from([from]);
-    let mut queue: VecDeque<i64> = VecDeque::from([from]);
-    while let Some(sys) = queue.pop_front() {
-        for &n in systems.neighbors(sys) {
-            if visited.contains(&n) {
-                continue;
-            }
-            if crate::geo::is_no_transit(n) && !targets.contains(&n) {
-                continue;
-            }
-            prev.insert(n, sys);
-            if targets.contains(&n) {
-                let mut path = vec![n];
-                let mut cur = n;
-                while let Some(&p) = prev.get(&cur) {
-                    path.push(p);
-                    cur = p;
-                    if p == from {
-                        break;
-                    }
-                }
-                path.reverse();
-                let via_bridge = path.windows(2).any(|w| systems.is_bridge(w[0], w[1]));
-                return Some(CynoInfo {
-                    in_system: false,
-                    reachable: true,
-                    jumps: (path.len() - 1) as u32,
-                    dest_id: n,
-                    dest_name: name_of(n),
-                    via_bridge,
-                });
-            }
-            visited.insert(n);
-            queue.push_back(n);
-        }
-    }
-    Some(CynoInfo {
-        in_system: false,
-        reachable: false,
-        jumps: 0,
-        dest_id: 0,
-        dest_name: String::new(),
-        via_bridge: false,
-    })
 }
 
 #[cfg(test)]
@@ -750,6 +882,15 @@ mod tests {
         add("C-J6MT", 30_004_701);
         add("1DQ1-A", 30_004_702);
         add("YZ9-F6", 30_004_703);
+        // Systems named by the real delve911 pings used as parser fixtures below.
+        add("UM-SCG", 30_004_710);
+        add("C8H5-X", 30_004_711);
+        add("L-Z9KJ", 30_004_712);
+        add("Q7-FZ8", 30_004_713);
+        add("EFM-C4", 30_004_714);
+        add("M9-MLR", 30_004_715);
+        add("GD-HNK", 30_004_716);
+        add("AGCP-I", 30_004_717);
         // Gate graph only: C6CZ-6 -- 1DQ1-A -- C-J6MT. YZ9-F6 is reachable only via a bridge, so
         // it must be absent from the gate adjacency and added by add_bridges afterwards.
         adjacency.insert(30_004_700, vec![30_004_702]);
@@ -777,6 +918,16 @@ mod tests {
         assert_eq!(ev.pilot.as_deref(), Some("Ragnar Solberg"));
         assert_eq!(ev.cyno.as_deref(), Some("Scout Alt"));
         assert_eq!(ev.anomaly.as_deref(), Some("Ruins of Enclave"));
+    }
+
+    #[test]
+    fn detects_decorated_system() {
+        let s = test_systems();
+        let id = |t: &str| detect_system(t, &s).map(|(id, _)| id);
+        assert_eq!(id("System:C-J6MT"), Some(30_004_701)); // glued by a colon, no space
+        assert_eq!(id("*C-J6MT*"), Some(30_004_701)); // waypoint stars
+        assert_eq!(id("tackled C-J6MT*gate"), Some(30_004_701)); // glued suffix
+        assert_eq!(id("(1DQ1-A)"), Some(30_004_702)); // parenthesised
     }
 
     #[test]
@@ -819,6 +970,144 @@ mod tests {
         );
     }
 
+    /// All fixtures below are real delve911 pings, verbatim, including their typos and spacing.
+    fn ev(text: &str) -> RescueEvent {
+        parse_event("pilot", text, 1, &test_systems(), &test_ships())
+    }
+
+    #[test]
+    fn parses_canonical_template() {
+        let e = ev("!bping all Rorqual Tackled \n Rorqual Name: Ajunta Thor \n System: UM-SCG \n \
+                    Location In System (Anomaly or Moon): Planet 8 Moon 4 \n \
+                    Name of Cyno (On perch, 300km away): Metal Viper");
+        assert!(e.is_ping);
+        assert_eq!(e.pilot.as_deref(), Some("Ajunta Thor"));
+        assert_eq!(e.system_id, Some(30_004_710));
+        assert_eq!(e.cyno.as_deref(), Some("Metal Viper"));
+        assert_eq!(e.anomaly.as_deref(), Some("Planet 8 Moon 4"));
+        assert_eq!(e.cap_class, Some(CapClass::Rorqual));
+    }
+
+    #[test]
+    fn parses_semicolon_labels() {
+        let e = ev("!bping all Rorqual Tackled  \n Rorqual name;  spiderd58 \n \
+                    Sys Location;   AGCP-I ` \n Cyno Pilot; SpecOps-58  \n Cyno Inhib;");
+        assert_eq!(e.pilot.as_deref(), Some("spiderd58"));
+        assert_eq!(e.system_id, Some(30_004_717));
+        assert_eq!(e.cyno.as_deref(), Some("SpecOps-58"));
+    }
+
+    #[test]
+    fn parses_misspelt_label_and_long_name() {
+        let e = ev("!bping all Rorqual Tackled \n Rorqual Name:  Randon Angus  \n \
+                    System:   L-Z9KJ   \n \
+                    Location I  n System (Anomaly or Moon): TBC-13 Large UGEANITE \n \
+                    Name of Cyno (On perch, 300km away):   umakedasammich");
+        assert_eq!(e.pilot.as_deref(), Some("Randon Angus"));
+        assert_eq!(e.system_id, Some(30_004_712));
+        assert_eq!(e.anomaly.as_deref(), Some("TBC-13 Large UGEANITE"));
+        assert_eq!(e.cyno.as_deref(), Some("umakedasammich"));
+    }
+
+    #[test]
+    fn parses_two_labels_on_one_line() {
+        let e = ev("!bping all Rorqual Tackled  \n Rorqual Name: Legend atenz \n \
+                    System: C8H5-X Location In System (Anomaly or Moon): Large nocxic \n \
+                    Name of Cyno (On perch, 300km away): Dirtylegendo");
+        assert_eq!(e.system_id, Some(30_004_711));
+        assert_eq!(e.anomaly.as_deref(), Some("Large nocxic"));
+        assert_eq!(e.cyno.as_deref(), Some("Dirtylegendo"));
+    }
+
+    #[test]
+    fn empty_system_label_falls_back_to_body() {
+        let e = ev("!bping all Rorqual Tackled \n Rorqual Name: Roast Potatoes \n \
+                    System: Location In System (Anomaly or Moon): M9-MLR HEZORIME \n \n \
+                    Name of Cyno (On perch, 300km away): Kaesong Derpfestor");
+        assert_eq!(e.system_id, Some(30_004_715));
+        assert_eq!(e.pilot.as_deref(), Some("Roast Potatoes"));
+        assert_eq!(e.cyno.as_deref(), Some("Kaesong Derpfestor"));
+    }
+
+    #[test]
+    fn repairs_system_and_cleans_pasted_anomaly() {
+        let e = ev("!bping all Rorqual Tackled  \n Rorqual Name: Max Odious \n \
+                    System: UM-SCG44 Location In System (Anomaly or Moon): \
+                    TXS-339\tCosmic Anomaly\tOre Site\tLarge Hezorime Deposit\t100.0%\t1,185 m \n \
+                    Name of Cyno (On perch, 300km away): Feelthelove");
+        assert_eq!(e.system_id, Some(30_004_710)); // UM-SCG44 -> UM-SCG
+        assert_eq!(e.anomaly.as_deref(), Some("TXS-339 Large Hezorime Deposit"));
+    }
+
+    #[test]
+    fn repairs_missing_hyphen_in_system() {
+        let e = ev("!bping all Rorqual Tackled \n System:  GDHNK \n \
+                    Location In System (Anomaly or Moon): Large Grimeer Deposit \n \
+                    Name of Cyno (On perch, 300km away): Pol Pitran");
+        assert_eq!(e.system_id, Some(30_004_716)); // GDHNK -> GD-HNK
+        assert_eq!(e.cyno.as_deref(), Some("Pol Pitran"));
+    }
+
+    #[test]
+    fn cyno_value_drops_trailing_hint() {
+        let e = ev("!bping all Rorqual Tackled \n Rorqual Name: Melissa Rin \n System: L-Z9KJ \n \
+                    Name of Cyno: Evance Glann (On perch, 300km away):");
+        assert_eq!(e.cyno.as_deref(), Some("Evance Glann"));
+    }
+
+    #[test]
+    fn ignores_panic_and_inhib_labels() {
+        let e = ev("!bping all Rorqual Tackled \n Rorqual Name: Eben Auditore \n \
+                    System:  Q7-FZ8*  \n \
+                    Location In System (Anomaly or Moon): ZXG-740 Large Nocxite Deposit \n \
+                    Name of Cyno (On perch, 300km away): NuoMi CC \n Panic: yes \n \
+                    Is a Cyno Inhib online?:yes");
+        assert_eq!(e.system_id, Some(30_004_713));
+        assert_eq!(e.cyno.as_deref(), Some("NuoMi CC"));
+        assert_eq!(e.pilot.as_deref(), Some("Eben Auditore"));
+    }
+
+    #[test]
+    fn template_without_bping_is_still_a_ping() {
+        let e = ev("Rorqual Tackled \n Rorqual Name: Jaa Mo \n System:  EFM-C4  \n \
+                    Location In System (Anomaly  or Moon): Planet 1 moon 4 \n \
+                    Name of Cyno (On perch, 300km away): High Rankin");
+        assert!(e.is_ping);
+        assert_eq!(e.pilot.as_deref(), Some("Jaa Mo"));
+        assert_eq!(e.system_id, Some(30_004_714));
+    }
+
+    #[test]
+    fn comms_invite_is_addressed_and_regular() {
+        let ev = parse_event(
+            "ajunta_thor",
+            "!bping all Rorqual Tackled \n Rorqual Name: Ajunta Thor \n System: UM-SCG",
+            1,
+            &test_systems(),
+            &test_ships(),
+        );
+        let mut st = RescueState::default();
+        st.push_event(ev);
+        assert_eq!(st.ping_author.as_deref(), Some("ajunta_thor"));
+    }
+
+    #[test]
+    fn hull_word_is_never_the_pilot() {
+        // Prose fallback: the ship must not be read as the capital pilot's name.
+        let e = ev("Rorq bubbled L-Z9KJ planet 9 moon 4");
+        assert!(e.is_ping);
+        assert_eq!(e.system_id, Some(30_004_712));
+        assert_eq!(e.pilot, None);
+
+        let e = ev("!bping all Phoenix navy issue tackled");
+        assert_eq!(e.pilot, None);
+        assert_eq!(e.cap_class, Some(CapClass::Dread));
+
+        let e = ev("!bping all Rorqual Tackled");
+        assert_eq!(e.pilot, None);
+        assert_eq!(e.cap_class, Some(CapClass::Rorqual));
+    }
+
     #[test]
     fn classify_covers_key_groups() {
         assert_eq!(classify("Titan"), ShipRole::Titan);
@@ -835,21 +1124,6 @@ mod tests {
         assert_eq!(classify("Command Ship"), ShipRole::Booster);
         assert_eq!(classify("Command Destroyer"), ShipRole::CommandDest);
         assert_eq!(classify("Assault Frigate"), ShipRole::Dps);
-    }
-
-    #[test]
-    fn timer_counts_down_and_adjusts() {
-        let mut t = Timer::default();
-        assert!(!t.is_set());
-        t.adjust(5);
-        assert_eq!(t.current(), 5);
-        t.adjust(5);
-        assert_eq!(t.current(), 10);
-        t.adjust(-100);
-        assert_eq!(t.current(), 0);
-        t.start(120);
-        assert!(t.is_set());
-        assert!(t.current() <= 120 && t.current() >= 118);
     }
 
     #[test]
@@ -882,23 +1156,5 @@ mod tests {
         let counts = parse_raw_dscan(text);
         assert_eq!(counts[0], ("Megathron".to_string(), 2));
         assert_eq!(counts[1], ("Scimitar".to_string(), 1));
-    }
-
-    #[test]
-    fn nearest_cyno_in_system_and_via_bridge() {
-        let s = test_systems();
-        // Generator sitting in C-J6MT (30_004_701).
-        let gens = vec![30_004_701];
-        // From the generator system itself.
-        let here = nearest_cyno(&s, 30_004_701, &gens).unwrap();
-        assert!(here.in_system);
-        // From C6CZ-6: C6CZ-6 -> 1DQ1-A -> C-J6MT, 2 gate jumps, no bridge.
-        let route = nearest_cyno(&s, 30_004_700, &gens).unwrap();
-        assert!(!route.in_system && route.reachable);
-        assert_eq!(route.jumps, 2);
-        assert!(!route.via_bridge);
-        // From YZ9-F6: only exit is the bridge to C6CZ-6, so the path must flag a bridge.
-        let bridged = nearest_cyno(&s, 30_004_703, &gens).unwrap();
-        assert!(bridged.reachable && bridged.via_bridge);
     }
 }

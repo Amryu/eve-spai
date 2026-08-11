@@ -71,10 +71,12 @@ impl Bounds {
 
 pub const LY_METERS: f64 = 9.460_730_472_580_8e15;
 
-/// Max jump-drive ranges (light-years) at maxed skills (Jump Drive Calibration V).
-/// Capitals share a 5 ly base; Black Ops reach further; Jump Freighters furthest.
+/// Max jump-drive ranges (light-years) at maxed skills (Jump Drive Calibration V, +100%).
+/// Values are the live SDE `jumpDriveRange` doubled: titan/super 3.0, other capitals 3.5,
+/// black ops 4.0, jump freighter and rorqual 5.0.
 pub const JUMP_RANGES: &[(&str, f64)] = &[
-    ("Capital", 5.0),
+    ("Super / Titan", 6.0),
+    ("Capital", 7.0),
     ("Black Ops", 8.0),
     ("Jump Freighter", 10.0),
 ];
