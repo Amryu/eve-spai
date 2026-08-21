@@ -1621,18 +1621,18 @@ impl SpaiApp {
         ));
     }
 
+    /// MUC service to join and browse rooms on: the explicit setting, else `conference.<account
+    /// domain>` (the XMPP convention). Empty only when no account is configured at all.
+    fn muc_domain(&self) -> String {
+        muc_domain_of(&self.settings.jabber_muc_domain, &self.settings.jabber_jid)
+    }
+
     fn full_room_jid(&self, input: &str) -> String {
         let input = input.trim();
         if input.contains('@') {
             return input.to_owned();
         }
-        let domain = if !self.settings.jabber_muc_domain.trim().is_empty() {
-            self.settings.jabber_muc_domain.trim().to_owned()
-        } else {
-            let jid_domain = self.settings.jabber_jid.split('@').nth(1).unwrap_or("");
-            format!("conference.{jid_domain}")
-        };
-        format!("{input}@{domain}")
+        format!("{input}@{}", self.muc_domain())
     }
 
     /// What counts as being named in a room: the Jabber username, plus whatever the user added.
@@ -2287,15 +2287,17 @@ impl SpaiApp {
         let mut open: Option<String> = None;
         let mut toggle_motd: Option<String> = None;
         let mut join: Option<String> = None;
-        // MUC service to browse: an explicit setting, else the domain of a room we already know.
+        // MUC service to browse: an explicit setting, else the domain of a room we already know,
+        // else the convention. Without the last step a user who has joined nothing yet has no known
+        // room to take a domain from, so the one button that finds rooms would sit disabled.
         let service = if !self.settings.jabber_muc_domain.trim().is_empty() {
             self.settings.jabber_muc_domain.trim().to_owned()
         } else {
             channels
                 .iter()
                 .find_map(|c| c.jid.split('@').nth(1))
-                .unwrap_or("")
-                .to_owned()
+                .map(str::to_owned)
+                .unwrap_or_else(|| self.muc_domain())
         };
         let (dir_state, dir_rooms, dir_pending) = {
             let st = self.jabber.lock().unwrap();
@@ -2868,31 +2870,16 @@ impl SpaiApp {
                 ui.separator();
                 let contacts: std::collections::HashSet<String> =
                     self.settings.jabber_contacts.iter().cloned().collect();
-                let dir_unread = convos.iter().any(|c| c.unread);
-                let con_unread = convos.iter().any(|c| c.unread && contacts.contains(&c.jid));
-                let chan_unread = channels.iter().any(|c| c.unread);
-                let unread_dot = |ui: &mut egui::Ui| {
-                    ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(UNREAD_RED).size(8.0));
-                };
                 ui.horizontal(|ui| {
                     let dir = selectable_chip(ui, self.jabber_pane == JabberPane::Directory, "Directory");
-                    if dir_unread {
-                        ui.scope(|ui| unread_dot(ui));
-                    }
                     if dir.clicked() {
                         self.jabber_pane = JabberPane::Directory;
                     }
                     let con = selectable_chip(ui, self.jabber_pane == JabberPane::Contacts, "Contacts");
-                    if con_unread {
-                        unread_dot(ui);
-                    }
                     if con.clicked() {
                         self.jabber_pane = JabberPane::Contacts;
                     }
                     let chan = selectable_chip(ui, self.jabber_pane == JabberPane::Channels, "Channels");
-                    if chan_unread {
-                        unread_dot(ui);
-                    }
                     if chan.clicked() {
                         self.jabber_pane = JabberPane::Channels;
                     }
@@ -17599,24 +17586,74 @@ fn eve_time_label(ts: i64, now: i64) -> String {
 }
 
 fn render_message_body(ui: &mut egui::Ui, body: &str) {
+    render_linked_text(ui, body, false);
+}
+
+/// Trailing sentence punctuation is not part of the URL, and copying it produces a link that fails
+/// when pasted. Brackets and quotes match what `intel::extract_links` already strips.
+fn trim_url_tail(tok: &str) -> &str {
+    tok.trim_end_matches(|c: char| ".,;:!?)]}>\"'".contains(c))
+}
+
+/// Right-click "Copy" for a link. Copying matters because the game client has no browser: a link is
+/// often something to paste into chat or a fleet broadcast, not to open.
+fn link_copy_menu(resp: &egui::Response, url: &str) {
+    resp.context_menu(|ui| {
+        if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+            ui.ctx().copy_text(url.to_owned());
+            ui.close();
+        }
+    });
+}
+
+fn render_link(ui: &mut egui::Ui, url: &str) {
+    let resp = ui.hyperlink_to(url, url);
+    link_copy_menu(&resp, url);
+}
+
+/// Body text with every http(s) URL turned into a link. Emits inline widgets, so the caller must
+/// already be in a `horizontal_wrapped` (or another horizontal layout).
+fn render_linked_text(ui: &mut egui::Ui, body: &str, weak: bool) {
+    let styled = |s: &str| {
+        let t = egui::RichText::new(s);
+        if weak {
+            t.weak()
+        } else {
+            t
+        }
+    };
     let mut rest = body;
     while let Some(rel) = rest.find("http") {
         let after = &rest[rel..];
         if after.starts_with("http://") || after.starts_with("https://") {
             if rel > 0 {
-                ui.label(&rest[..rel]);
+                ui.label(styled(&rest[..rel]));
             }
             let end = after.find(char::is_whitespace).unwrap_or(after.len());
-            let url = &after[..end];
-            ui.hyperlink_to(url, url);
+            let tok = &after[..end];
+            let url = trim_url_tail(tok);
+            render_link(ui, url);
+            if url.len() < tok.len() {
+                ui.label(styled(&tok[url.len()..]));
+            }
             rest = &after[end..];
         } else {
-            ui.label(&rest[..rel + 4]);
+            ui.label(styled(&rest[..rel + 4]));
             rest = &rest[rel + 4..];
         }
     }
     if !rest.is_empty() {
-        ui.label(rest);
+        ui.label(styled(rest));
+    }
+}
+
+/// A ping's free text. Laid out a line at a time: ping bodies are multi-line, and a single wrapped
+/// row would put everything after an embedded newline beside the tall label instead of under it.
+fn render_ping_body(ui: &mut egui::Ui, body: &str, weak: bool) {
+    for line in body.lines() {
+        ui.horizontal_wrapped(|ui| {
+            render_linked_text(ui, line, weak);
+        });
     }
 }
 
@@ -17760,6 +17797,16 @@ const UNREAD_RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x4C, 0x4C);
 /// Backdrop for a chat line that named us. Alpha-blended so it reads on both themes.
 const MENTION_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x38, 0x14, 0x14, 0x50);
 
+fn muc_domain_of(setting: &str, jid: &str) -> String {
+    if !setting.trim().is_empty() {
+        return setting.trim().to_owned();
+    }
+    match jid.split('@').nth(1).unwrap_or("").trim() {
+        "" => String::new(),
+        d => format!("conference.{d}"),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum TabLead {
     Dot(egui::Color32),
@@ -17827,7 +17874,11 @@ fn jabber_tab_box(
 ) -> (bool, bool) {
     let w = jabber_tab_width(ui, closable, unread, label);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TAB_H), egui::Sense::click());
-    let hovered = resp.hovered();
+    // Not `hovered()`: the close X is a second widget inside this rect, so once the pointer reaches
+    // it the tab stops being the hovered widget. On an unselected tab that would drop the X, which
+    // un-hovers it, which draws it again — a flicker every other frame. `contains_pointer` is
+    // geometric and stays true underneath the X.
+    let hovered = resp.contains_pointer();
     let body = egui::TextStyle::Body.resolve(ui.style());
     let (fill, text_color, accent, sep_col, weak_col, strong_col) = {
         let v = ui.visuals();
@@ -20131,7 +20182,8 @@ pub(crate) fn render_ping(
             {
                 open_mumble(link.to_owned());
             }
-            ui.hyperlink_to(icon::LINK, link).on_hover_text(link);
+            let resp = ui.hyperlink_to(icon::LINK, link).on_hover_text(link);
+            link_copy_menu(&resp, link);
         });
     };
     let sys_name = |id: i64| -> String {
@@ -20206,7 +20258,10 @@ pub(crate) fn render_ping(
                             mumble_row(ui, format!("Comms: {channel}"), link);
                         }
                         Comms::Text(t) => {
-                            ui.label(format!("Comms: {t}"));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label("Comms:");
+                                render_linked_text(ui, t, false);
+                            });
                         }
                     }
                 } else if let Some(op) = find_op_channel(description) {
@@ -20238,7 +20293,7 @@ pub(crate) fn render_ping(
                     }
                 });
                 if !description.is_empty() {
-                    ui.label(egui::RichText::new(description).weak());
+                    render_ping_body(ui, description, true);
                 }
                 let from = source.as_deref().unwrap_or("?");
                 let to = target.as_deref().unwrap_or("?");
@@ -20260,7 +20315,7 @@ pub(crate) fn render_ping(
                         ui.label(egui::RichText::new(format!("{ago} ago")).weak());
                     });
                 });
-                ui.label(text);
+                render_ping_body(ui, text, false);
                 // Offer the op channel's cached Mumble link (from earlier well-formed pings).
                 if let Some(chan) = find_op_channel(text) {
                     let key = chan.to_lowercase().replace(' ', "");
@@ -22335,5 +22390,50 @@ mod comms_link_tests {
         assert!(rescue_comms_invite(Some("  "), 11).is_none());
         // Op 8 has no short link, so it must not fall back to a command-comms mumble URL.
         assert!(rescue_comms_invite(Some("someone"), 8).is_none());
+    }
+}
+
+#[cfg(test)]
+mod ping_link_tests {
+    use super::*;
+
+    #[test]
+    fn url_keeps_its_path_but_drops_sentence_punctuation() {
+        assert_eq!(trim_url_tail("https://gnf.lt/abc"), "https://gnf.lt/abc");
+        assert_eq!(trim_url_tail("https://gnf.lt/abc."), "https://gnf.lt/abc");
+        assert_eq!(trim_url_tail("https://gnf.lt/abc)."), "https://gnf.lt/abc");
+        assert_eq!(trim_url_tail("https://zkillboard.com/kill/1/"), "https://zkillboard.com/kill/1/");
+    }
+
+    /// Every branch slices `body` by byte index, so a multibyte ping body must not panic.
+    #[test]
+    fn muc_service_falls_back_to_the_convention() {
+        // No room joined yet: the browse button still has a service to disco.
+        assert_eq!(muc_domain_of("", "pilot@goonfleet.com"), "conference.goonfleet.com");
+        // An explicit setting always wins, and is not double-prefixed.
+        assert_eq!(muc_domain_of(" conference.example.org ", "pilot@goonfleet.com"), "conference.example.org");
+        // Nothing configured at all stays empty, so the button stays disabled with its hint.
+        assert_eq!(muc_domain_of("", ""), "");
+        assert_eq!(muc_domain_of("", "pilot"), "");
+    }
+
+    #[test]
+    fn ping_bodies_render_without_panicking() {
+        let bodies = [
+            "form up now",
+            "https://gnf.lt/abc",
+            "join https://gnf.lt/abc now",
+            "bare http and https words",
+            "Ö https://gnf.lt/ä, ドクトリン https://eve-spai.com/br/x.",
+            "line one https://gnf.lt/a\nline two https://gnf.lt/b\n\ntail",
+            "",
+        ];
+        egui::__run_test_ui(|ui| {
+            for b in bodies {
+                render_ping_body(ui, b, true);
+                render_ping_body(ui, b, false);
+                ui.horizontal_wrapped(|ui| render_message_body(ui, b));
+            }
+        });
     }
 }
