@@ -22250,13 +22250,26 @@ pub(crate) fn intel_row(
                     !crate::intel::is_pilot_stopword(name) && !resolved_pilots.contains_key(name)
                 });
                 if resolving {
+                    use egui::AtomExt as _;
                     let phase = (now as f64 * 2.0) as usize % 3 + 1;
-                    let dots = ".".repeat(phase);
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let row_h = ui.fonts_mut(|f| f.row_height(&font));
+                    // The chip sits in a wrapped flow, so a slot sized for the longest phase keeps
+                    // the animation from resizing it and shoving every later chip sideways.
+                    let slot = ui
+                        .painter()
+                        .layout_no_wrap("...".to_owned(), font, egui::Color32::PLACEHOLDER)
+                        .size()
+                        .x;
+                    let dots = egui::RichText::new(".".repeat(phase))
+                        .weak()
+                        .atom_size(egui::vec2(slot, row_h))
+                        .atom_align(egui::Align2::LEFT_CENTER);
                     ui.add_enabled(
                         false,
-                        egui::Button::new(egui::RichText::new(format!("{} {dots}", icon::USER)).weak()),
+                        egui::Button::new((egui::RichText::new(icon::USER).weak(), dots)),
                     )
-                    .on_hover_text("Resolving pilot…");
+                    .on_disabled_hover_text("Resolving pilot…");
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(450));
                 }
 

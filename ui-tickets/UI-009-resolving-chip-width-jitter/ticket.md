@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `intel_row` |
 | **Wave** | 4 |
 
@@ -32,6 +32,6 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 ## Screenshots
 
-Before: `before/intel_row_torture.png`
+Before: `before/intel_row_torture.png` (NOTE: does not actually show the chip, every torture pilot is resolved; see `review.md`)
 
-After: recorded in `review.md` once fixed.
+After: `after/intel_row_resolving_phases.png`, `after/intel_row_resolving_phases.debug.png`

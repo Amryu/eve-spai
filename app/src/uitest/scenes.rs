@@ -29,6 +29,38 @@ fn intel_scene(name: &'static str, report: crate::intel::IntelReport, width: f32
     })
 }
 
+/// The same mid-resolution card at all three dot phases, stacked. The placeholder chip has to
+/// start and end at the same x in every one of them.
+fn resolving_phases_scene(name: &'static str) -> Scene {
+    let args = IntelArgs::default();
+    Scene::ui(name, [520.0, 520.0], move |ui| {
+        for step in 0..3 {
+            let clock = fixtures::now() + step;
+            let mut tip = None;
+            crate::app::intel_row(
+                ui,
+                &fixtures::intel_resolving(clock),
+                clock,
+                false,
+                None,
+                &args.systems,
+                &args.status,
+                &args.ship_details,
+                &args.ship_roles,
+                &args.resolved_pilots,
+                &args.uncertain,
+                &args.last_ship,
+                &args.kills,
+                crate::settings::Severity::Danger,
+                true,
+                &args.affil,
+                false,
+                &mut tip,
+            );
+        }
+    })
+}
+
 fn ping_scene(name: &'static str, ping: crate::pings::Ping) -> Scene {
     let systems = Some(fixtures::systems());
     Scene::ui(name, [520.0, 320.0], move |ui| {
@@ -114,6 +146,7 @@ pub(crate) fn all() -> Vec<Scene> {
         intel_scene("intel_row_typical", fixtures::intel_typical(), 520.0),
         intel_scene("intel_row_clear", fixtures::intel_clear(), 520.0),
         intel_scene("intel_row_torture", fixtures::intel_torture(), 520.0),
+        resolving_phases_scene("intel_row_resolving_phases"),
         // The feed is resizable, so the same card has to survive a narrow dock too.
         intel_scene("intel_row_torture_narrow", fixtures::intel_torture(), 320.0),
         ping_scene("ping_fleet", fixtures::ping_fleet()),
@@ -191,6 +224,119 @@ fn uitest_screenshots() {
         harness::shot(&mut harness, name);
         harness::shot_debug(&mut harness, name);
     }
+}
+
+/// The resolving placeholder is the only chip whose whole label is the pilot icon plus dots.
+fn resolving_chip(harness: &egui_kittest::Harness<'_>) -> (String, egui::Rect) {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut found = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Button {
+            continue;
+        }
+        let label = n.label().unwrap_or_default();
+        let rest = label.trim_start_matches(egui_phosphor::regular::USER);
+        if rest.is_empty() || !rest.chars().all(|c| c == '.' || c == ' ') {
+            continue;
+        }
+        let b = n.bounding_box().expect("chip has a bounding box");
+        let rect = egui::Rect {
+            min: egui::pos2(b.x0 as f32, b.y0 as f32),
+            max: egui::pos2(b.x1 as f32, b.y1 as f32),
+        };
+        found.push((label, rect));
+    }
+    assert_eq!(found.len(), 1, "expected exactly one resolving chip, got {found:?}");
+    found.remove(0)
+}
+
+/// The chip animates its dots, and it sits in a wrapped flow, so any width it gains with the
+/// phase shifts every chip after it and can bounce one across the line break twice a second.
+#[test]
+fn uitest_intel_row_resolving_chip_holds_its_width() {
+    let mut seen: Vec<(String, egui::Rect)> = Vec::new();
+    // Consecutive seconds hit all three phases, since the phase is `now * 2 % 3`.
+    for step in 0..3 {
+        let clock = fixtures::now() + step;
+        let args = IntelArgs::default();
+        let report = fixtures::intel_resolving(clock);
+        let mut scene = Scene::ui("resolving_probe", [520.0, 520.0], move |ui| {
+            let mut t = None;
+            crate::app::intel_row(
+                ui,
+                &report,
+                clock,
+                false,
+                None,
+                &args.systems,
+                &args.status,
+                &args.ship_details,
+                &args.ship_roles,
+                &args.resolved_pilots,
+                &args.uncertain,
+                &args.last_ship,
+                &args.kills,
+                crate::settings::Severity::Danger,
+                true,
+                &args.affil,
+                false,
+                &mut t,
+            );
+        });
+        let harness = harness::build(&mut scene, false);
+        seen.push(resolving_chip(&harness));
+    }
+
+    let phases: std::collections::BTreeSet<&str> = seen.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(phases.len(), 3, "the three clocks did not produce three phases: {seen:?}");
+    let first = seen[0].1;
+    for (label, rect) in &seen {
+        assert_eq!(*rect, first, "phase {label:?} moved or resized the chip: {seen:?}");
+    }
+}
+
+/// The chip is disabled, so its explanation only reaches the user through the disabled-hover
+/// tooltip. `on_hover_text` on a disabled widget is silently dropped by egui.
+#[test]
+fn uitest_intel_row_resolving_chip_explains_itself_on_hover() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let args = IntelArgs::default();
+    let report = fixtures::intel_resolving(fixtures::now());
+    let mut scene = Scene::ui("resolving_hover_probe", [520.0, 520.0], move |ui| {
+        let mut t = None;
+        crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            None,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            false,
+            &mut t,
+        );
+    });
+    let mut harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label_contains("Resolving pilot").is_none());
+    let at = resolving_chip(&harness).1.center();
+    harness.event(egui::Event::PointerMoved(at));
+    harness.run_steps(3);
+    assert!(
+        harness.query_by_label_contains("Resolving pilot").is_some(),
+        "hovering the resolving chip at {at:?} showed no tooltip"
+    );
 }
 
 /// Compact mode routes tooltips through the `tip` out-param instead of egui, because the alert
