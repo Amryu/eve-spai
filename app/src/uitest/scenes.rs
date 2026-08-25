@@ -77,10 +77,10 @@ fn ping_window_scene(name: &'static str, pings: Vec<crate::pings::Ping>) -> Scen
     })
 }
 
-fn nav_scene(name: &'static str, expanded: bool) -> Scene {
+fn nav_scene(name: &'static str, expanded: bool, height: f32) -> Scene {
     let mut expanded = expanded;
     let width = if expanded { crate::nav::WIDTH_EXPANDED } else { crate::nav::WIDTH_COLLAPSED };
-    Scene::ui(name, [width, 560.0], move |ui| {
+    Scene::ui(name, [width, height], move |ui| {
         crate::nav::rail(ui, View::Intel, &mut expanded, &[View::Alerts], &[View::Jabber]);
     })
 }
@@ -118,8 +118,13 @@ pub(crate) fn all() -> Vec<Scene> {
         intel_scene("intel_row_torture_narrow", fixtures::intel_torture(), 320.0),
         ping_scene("ping_fleet", fixtures::ping_fleet()),
         ping_scene("ping_plain", fixtures::ping_plain()),
-        nav_scene("nav_rail_collapsed", false),
-        nav_scene("nav_rail_expanded", true),
+        nav_scene("nav_rail_collapsed", false, 560.0),
+        nav_scene("nav_rail_expanded", true, 560.0),
+        // 460 is the app's minimum window height (main.rs), where the rail runs out of room for
+        // its own rows and every item still has to stay reachable.
+        nav_scene("nav_rail_collapsed_short", false, 460.0),
+        nav_scene("nav_rail_expanded_short", true, 460.0),
+        nav_scene("nav_rail_expanded_tall", true, 800.0),
     ];
     for (name, view) in [
         ("view_dashboard", View::Dashboard),
@@ -358,6 +363,42 @@ fn uitest_click_at_hits_the_system_chip() {
         got.iter().any(|c| matches!(c, crate::app::IntelClick::System(30_004_759))),
         "clicking the system chip at {at:?} yielded {got:?}"
     );
+}
+
+/// At the app's minimum window height the rail cannot show all ten rows, so the ones below the
+/// fold have to come back on a scroll. Settings is pinned and is checked without scrolling.
+#[test]
+fn uitest_nav_rail_short_reaches_every_item() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let selected = std::rc::Rc::new(std::cell::RefCell::new(View::Intel));
+    let sink = selected.clone();
+    let mut expanded = true;
+    let mut scene = Scene::ui("nav_probe_short", [crate::nav::WIDTH_EXPANDED, 460.0], move |ui| {
+        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[]);
+        *sink.borrow_mut() = got;
+    });
+    let mut harness = harness::build(&mut scene, false);
+
+    harness.get_by_label_contains("Settings").click();
+    harness.run_steps(2);
+    assert_eq!(*selected.borrow(), View::Settings, "Settings is pinned and must always be hittable");
+
+    assert!(
+        harness.query_by_label_contains("Jabber").is_none(),
+        "Jabber sits below the fold at 460px, so it should not be laid out until scrolled to"
+    );
+    harness.event(egui::Event::PointerMoved(egui::pos2(crate::nav::WIDTH_EXPANDED / 2.0, 200.0)));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.run_steps(3);
+    harness.get_by_label_contains("Jabber").click();
+    harness.run_steps(2);
+    assert_eq!(*selected.borrow(), View::Jabber, "scrolling must bring the tail of the list back");
 }
 
 /// Every rail entry must be reachable, and picking one must return it.

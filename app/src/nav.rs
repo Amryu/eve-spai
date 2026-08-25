@@ -65,6 +65,11 @@ pub const WIDTH_COLLAPSED: f32 = 56.0;
 pub const WIDTH_EXPANDED: f32 = 196.0;
 
 const ROW_HEIGHT: f32 = 38.0;
+const ROW_GAP: f32 = 4.0;
+const FOOT_PAD: f32 = 10.0;
+const FOOT_GAP: f32 = 8.0;
+/// What `Ui::separator` reserves in a vertical layout, which egui exposes nowhere.
+const SEPARATOR_H: f32 = 6.0;
 
 pub fn rail(
     ui: &mut egui::Ui,
@@ -112,32 +117,115 @@ pub fn rail(
     ui.separator();
     ui.add_space(8.0);
 
+    let spacing = ui.spacing().item_spacing.y;
+    let list_h = View::primary().len() as f32 * (ROW_HEIGHT + ROW_GAP + spacing);
+    let foot_h = FOOT_PAD + ROW_HEIGHT + FOOT_GAP + SEPARATOR_H + spacing;
+    let avail = ui.available_height();
+
+    if avail >= list_h + foot_h {
+        primary_items(ui, &mut selected, *expanded, badges, warns);
+        pinned_footer(ui, &mut selected, *expanded);
+    } else if avail >= list_h + ROW_HEIGHT {
+        // No room under the list to pin the footer, and bottom_up would walk it back up over the
+        // last nav item, so Settings joins the list as its final row instead.
+        primary_items(ui, &mut selected, *expanded, badges, warns);
+        settings_item(ui, &mut selected, *expanded);
+    } else {
+        // Shorter than the rail's own rows, which the 460px minimum window height allows. The list
+        // scrolls to keep its tail reachable, and the footer holds its strip so Settings is not the
+        // item that falls off the bottom. A solid bar because the default floating one is invisible
+        // until touched, and it is the only hint that the list continues past the fold.
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        egui::ScrollArea::vertical()
+            .max_height((avail - foot_h).max(0.0))
+            .auto_shrink([false, false])
+            .show_viewport(ui, |ui, vp| {
+                scrolled_items(ui, vp, &mut selected, *expanded, badges, warns)
+            });
+        pinned_footer(ui, &mut selected, *expanded);
+    }
+
+    selected
+}
+
+fn primary_items(
+    ui: &mut egui::Ui,
+    selected: &mut View,
+    expanded: bool,
+    badges: &[View],
+    warns: &[View],
+) {
     for &v in View::primary() {
         if nav_item(
             ui,
             v.icon(),
             v.label(),
-            v == selected,
-            *expanded,
+            v == *selected,
+            expanded,
             badges.contains(&v),
             warns.contains(&v),
         ) {
-            selected = v;
+            *selected = v;
         }
-        ui.add_space(4.0);
+        ui.add_space(ROW_GAP);
     }
+}
 
-    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        ui.add_space(10.0);
-        if nav_item(ui, icon::GEAR_SIX, "Settings", selected == View::Settings, *expanded, false, false)
-        {
-            selected = View::Settings;
+/// Lays out only the rows that fit the viewport whole, blank space standing in for the rest. A row
+/// half under the footer would paint clipped and still claim a full-height click rect.
+fn scrolled_items(
+    ui: &mut egui::Ui,
+    viewport: egui::Rect,
+    selected: &mut View,
+    expanded: bool,
+    badges: &[View],
+    warns: &[View],
+) {
+    let items = View::primary();
+    let step = ROW_HEIGHT + ROW_GAP + ui.spacing().item_spacing.y;
+    let first = (viewport.min.y / step).ceil().max(0.0) as usize;
+    let last = (((viewport.max.y - ROW_HEIGHT) / step).floor().max(-1.0) as isize + 1)
+        .clamp(first as isize, items.len() as isize) as usize;
+
+    ui.add_space(first as f32 * step);
+    for &v in &items[first..last] {
+        if nav_item(
+            ui,
+            v.icon(),
+            v.label(),
+            v == *selected,
+            expanded,
+            badges.contains(&v),
+            warns.contains(&v),
+        ) {
+            *selected = v;
         }
-        ui.add_space(8.0);
+        ui.add_space(ROW_GAP);
+    }
+    ui.add_space((items.len() - last) as f32 * step);
+}
+
+fn pinned_footer(ui: &mut egui::Ui, selected: &mut View, expanded: bool) {
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.add_space(FOOT_PAD);
+        settings_item(ui, selected, expanded);
+        ui.add_space(FOOT_GAP);
         ui.separator();
     });
+}
 
-    selected
+fn settings_item(ui: &mut egui::Ui, selected: &mut View, expanded: bool) {
+    if nav_item(
+        ui,
+        icon::GEAR_SIX,
+        "Settings",
+        *selected == View::Settings,
+        expanded,
+        false,
+        false,
+    ) {
+        *selected = View::Settings;
+    }
 }
 
 fn icon_button(ui: &mut egui::Ui, glyph: &str, color: egui::Color32) -> egui::Response {
