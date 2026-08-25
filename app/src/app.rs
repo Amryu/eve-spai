@@ -16390,24 +16390,13 @@ impl SpaiApp {
                         .and_then(|p| p.parent().map(|p| p.display().to_string()))
                         .unwrap_or_else(|| "auto-detect".to_owned());
                     ui.label("EVE chat-log directory");
-                    changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.settings.eve_logs_dir)
-                                .hint_text(logs_hint),
-                        )
-                        .changed();
+                    changed |= dir_picker_row(ui, &logs_hint, &mut self.settings.eve_logs_dir);
                     let settings_hint = crate::charsettings::settings_root("")
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "auto-detect".to_owned());
                     ui.label("EVE settings directory")
                         .on_hover_text("Used by Characters > Copy settings");
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.settings.eve_settings_dir)
-                                .hint_text(settings_hint),
-                        )
-                        .changed()
-                    {
+                    if dir_picker_row(ui, &settings_hint, &mut self.settings.eve_settings_dir) {
                         changed = true;
                         if let Ok(mut slot) = self.eve_settings_path.lock() {
                             slot.clone_from(&self.settings.eve_settings_dir);
@@ -23094,6 +23083,39 @@ fn security_badge(security: f64) -> egui::RichText {
     egui::RichText::new(format!("{sec:.1}"))
         .color(security_color(security))
         .monospace()
+}
+
+fn dir_picker_row(ui: &mut egui::Ui, hint: &str, value: &mut String) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        // Right-to-left so the button reserves its width first and the field claims whatever
+        // is left, instead of a fixed width that clips long EVE paths.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button(format!("{}  Browse…", egui_phosphor::regular::FOLDER_OPEN))
+                .clicked()
+            {
+                let mut dialog = rfd::FileDialog::new();
+                let start = if value.is_empty() { hint } else { value.as_str() };
+                if std::path::Path::new(start).is_dir() {
+                    dialog = dialog.set_directory(start);
+                }
+                if let Some(path) = dialog.pick_folder() {
+                    *value = path.to_string_lossy().into_owned();
+                    changed = true;
+                }
+            }
+            let width = ui.available_width();
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(value)
+                        .desired_width(width)
+                        .hint_text(hint),
+                )
+                .changed();
+        });
+    });
+    changed
 }
 
 fn color_row(ui: &mut egui::Ui, label: &str, rgb: &mut Rgb) -> bool {

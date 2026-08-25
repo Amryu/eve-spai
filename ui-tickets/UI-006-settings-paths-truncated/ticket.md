@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `settings_view` |
 | **Wave** | 3 |
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/view_settings.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/view_settings.png`, `after/view_settings_narrow.png`
