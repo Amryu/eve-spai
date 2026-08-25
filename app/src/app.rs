@@ -1391,6 +1391,26 @@ impl SpaiApp {
         }
     }
 
+    fn kill_intel_range(ui: &mut egui::Ui, jumps: &mut u32) -> egui::Response {
+        ui.add(
+            egui::DragValue::new(jumps)
+                .range(0..=20)
+                .prefix(format!("{}  ", egui_phosphor::regular::CARET_UP_DOWN))
+                .custom_formatter(|n, _| match n as u32 {
+                    0 => "within the intel feed's range".to_owned(),
+                    1 => "within 1 jump".to_owned(),
+                    n => format!("within {n} jumps"),
+                })
+                // The formatter writes words, which the default numeric parser cannot read back.
+                .custom_parser(|s| {
+                    s.chars().filter(char::is_ascii_digit).collect::<String>().parse().ok()
+                }),
+        )
+        .on_hover_text(
+            "How far from you a kill counts as intel. The lowest setting follows the intel feed's own jumps filter.",
+        )
+    }
+
     fn alerts_view(&mut self, ui: &mut egui::Ui) {
         if self.alert_rules_open {
             self.alert_rules_editor(ui);
@@ -1430,18 +1450,10 @@ impl SpaiApp {
             {
                 self.needs_save = true;
             }
-            if self.settings.kill_intel {
-                ui.label("within");
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut self.settings.kill_intel_jumps)
-                            .range(0..=20)
-                            .custom_formatter(|n, _| if n == 0.0 { "feed".to_owned() } else { format!("{n}j") }),
-                    )
-                    .changed()
-                {
-                    self.needs_save = true;
-                }
+            if self.settings.kill_intel
+                && Self::kill_intel_range(ui, &mut self.settings.kill_intel_jumps).changed()
+            {
+                self.needs_save = true;
             }
         });
         if !self.settings.alert_enabled {
@@ -5656,14 +5668,7 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             if self.settings.kill_intel
-                && ui
-                    .add(
-                        egui::DragValue::new(&mut self.settings.kill_intel_jumps)
-                            .range(0..=20)
-                            .custom_formatter(|n, _| if n == 0.0 { "feed".to_owned() } else { format!("{n}j") }),
-                    )
-                    .on_hover_text("Kill-intel range")
-                    .changed()
+                && Self::kill_intel_range(ui, &mut self.settings.kill_intel_jumps).changed()
             {
                 self.needs_save = true;
             }

@@ -19,3 +19,10 @@ The scratch DB is created but never seeded, and `root_chrome`/`root_central` ski
 
 Coverage gaps are tool work, not app defects. They are ticketed here so the backlog is complete,
 but the UI-NNN defects run first: closing those needs no new harness capability.
+
+## Concrete consumers
+
+- **UI-004** fixed two call sites of the kill-intel range control. Only the alerts one is covered by
+  a permanent scene. The intel toolbar site needs `chat_dir` set, or `intel_view` early-returns on
+  its "EVE chat logs not found" branch and the toolbar never draws, so half that fix is verified
+  only by throwaway scenes that no longer exist.
