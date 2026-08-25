@@ -21825,12 +21825,13 @@ pub(crate) fn intel_row(
                     r1.on_hover_text(&msg);
                     r2.on_hover_text(&msg);
                 }
-                let jtxt = match from_you {
-                    Some(0) => "here".to_owned(),
-                    Some(j) => format!("{j}j"),
-                    None => String::new(),
-                };
-                ui.label(egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color));
+                if let Some(j) = from_you {
+                    let jtxt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
+                    // Padded to 4 so "here", "3j" and "12j" share one column down a stack of cards.
+                    ui.label(
+                        egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color),
+                    );
+                }
 
                 let mut seen_sys = std::collections::HashSet::new();
                 for s in &r.systems {
