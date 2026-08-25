@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `alert_cb` |
 | **Wave** | 4 |
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/alert_window_typical.debug.png`, `before/alert_window_typical.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/alert_window_typical.png`, `after/alert_window_typical.debug.png`
