@@ -12,10 +12,10 @@ everything in `review.md`. A fix is not done until a screenshot shows it fixed.
 
 | Ticket | Severity | Region | Wave | Status |
 |---|---|---|---|---|
-| [UI-001 Nav rail separator strikes through the Jabber row](UI-001-nav-rail-separator-strikethrough/) | High | `nav.rs` | 1 | Open |
-| [UI-002 Invisible 34x28 click target on every intel card](UI-002-invisible-jump-label/) | Medium | `intel_row` | 2 | Open |
-| [UI-003 Fleet ping body dimmer than a routine reminder](UI-003-fleet-ping-body-contrast/) | Medium | `render_ping` | 1 | Open |
-| [UI-004 Alerts toolbar reads "zKill intel within feed"](UI-004-drag-value-reads-within-feed/) | Medium | `alerts_view` | 2 | Open |
+| [UI-001 Nav rail separator strikes through the Jabber row](UI-001-nav-rail-separator-strikethrough/) | High | `nav.rs` | 1 | **Fixed** |
+| [UI-002 Invisible 34x28 click target on every intel card](UI-002-invisible-jump-label/) | Medium | `intel_row` | 2 | **Fixed** |
+| [UI-003 Fleet ping body dimmer than a routine reminder](UI-003-fleet-ping-body-contrast/) | Medium | `render_ping` | 1 | **Fixed** |
+| [UI-004 Alerts toolbar reads "zKill intel within feed"](UI-004-drag-value-reads-within-feed/) | Medium | `alerts_view` | 2 | **Fixed** |
 | [UI-005 Battles spinner has no exit path](UI-005-battles-spinner-has-no-exit/) | Medium | `battles_view` | 3 | Open |
 | [UI-006 Settings truncates directory paths](UI-006-settings-paths-truncated/) | Medium | `settings_view` | 3 | Open |
 | [UI-007 Alert title bar cannot be grabbed](UI-007-alert-titlebar-drag-blocked/) | Medium | `alert_cb` | 4 | Open |
@@ -44,6 +44,11 @@ Tool work rather than app defects. Ticketed so the backlog is complete; not sche
 | [GAP-007 Viewport commands dropped](GAP-007-viewport-commands-dropped/) | 12 sites, overlay process | Small / large |
 | [GAP-008 Input kinds undriven](GAP-008-input-kinds-undriven/) | 4 menus, 2 DnD systems | Small / large |
 | [GAP-009 i18n and platform branches](GAP-009-i18n-and-platform/) | CJK overflow, rescue windows | Small / large |
+
+## Branch layout
+
+Each fix is a branch merged back with `--no-ff`, so a single merge commit carries the code, its
+`review.md` and its `after/` screenshots. To back one out: `git revert -m 1 <merge-commit>`.
 
 ## Wave schedule
 
