@@ -411,6 +411,7 @@ pub struct SpaiApp {
     battle_cards_filtered: usize,
     battle_cards_ready: bool,
     battle_cards_out_sig: u64,
+    battle_wait_since: Option<std::time::Instant>,
     battle_detail_out_sig: u64,
     camps: crate::camp::SharedCamps,
     camped_cache: Vec<(i64, crate::camp::CampLevel)>,
@@ -1061,6 +1062,7 @@ impl SpaiApp {
             battle_cards_filtered: 0,
             battle_cards_ready: false,
             battle_cards_out_sig: u64::MAX,
+            battle_wait_since: None,
             battle_detail_out_sig: u64::MAX,
             camps: std::sync::Arc::new(std::sync::Mutex::new(crate::camp::CampState::default())),
             camped_cache: Vec::new(),
@@ -7541,6 +7543,57 @@ impl SpaiApp {
         }
     }
 
+    /// Drawn when the card list is empty and the worker has published nothing current. A spinner is
+    /// only honest while a compute is in flight, so a worker that is off, never started, or wedged
+    /// settles on a message instead of spinning forever.
+    fn battles_wait_note(&self, ui: &mut egui::Ui, waited: std::time::Duration) {
+        fn spin(ui: &mut egui::Ui, msg: String) {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.label(egui::RichText::new(msg).weak());
+            });
+            ui.ctx().request_repaint();
+        }
+        if !self.settings.battles_enabled {
+            ui.label(
+                egui::RichText::new("Battle reports are off. Tick Enabled to compute them.").weak(),
+            );
+            return;
+        }
+        if !self.watcher_started {
+            match self.sde_status.lock().unwrap().clone() {
+                SdeStatus::Downloading(msg) => spin(ui, format!("Waiting for static data: {msg}")),
+                SdeStatus::Failed(err) => {
+                    ui.colored_label(
+                        crate::theme::standing::WARNING,
+                        format!("Battle reports need the static data, which failed: {err}"),
+                    );
+                }
+                _ => {
+                    ui.label(
+                        egui::RichText::new(
+                            "Battle reports have not started. They begin once the static data is \
+                             downloaded.",
+                        )
+                        .weak(),
+                    );
+                }
+            }
+            return;
+        }
+        if waited >= BATTLE_STALL {
+            ui.colored_label(
+                crate::theme::standing::WARNING,
+                format!(
+                    "No battle report after {}s. The background worker is not responding.",
+                    waited.as_secs()
+                ),
+            );
+            return;
+        }
+        spin(ui, "Loading battles…".to_owned());
+    }
+
     fn battles_view(&mut self, ui: &mut egui::Ui) {
         self.my_shared_window(&ui.ctx().clone());
         self.poll_build_from_kill(&ui.ctx().clone());
@@ -8053,14 +8106,16 @@ impl SpaiApp {
         let filtered = self.battle_cards_filtered;
         let ready = self.battle_cards_ready;
         let fresh = self.battle_cards_out_sig == want_sig;
+        let waited = if ready && fresh {
+            self.battle_wait_since = None;
+            std::time::Duration::ZERO
+        } else {
+            self.battle_wait_since.get_or_insert_with(std::time::Instant::now).elapsed()
+        };
 
         if self.battle_cards.is_empty() {
             if !ready || !fresh {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(14.0));
-                    ui.label(egui::RichText::new("Loading battles…").weak());
-                });
-                ui.ctx().request_repaint();
+                self.battles_wait_note(ui, waited);
                 return;
             }
             let msg = if self.show_history && loading {
@@ -18686,6 +18741,9 @@ const OUTLINE: [egui::Vec2; 8] = [
 
 /// How long the pointer must rest on a system before the map tooltip appears.
 const MAP_TIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long the battles view waits on a started worker before calling it stuck rather than slow.
+const BATTLE_STALL: std::time::Duration = std::time::Duration::from_secs(20);
 
 const UNREAD_RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x4C, 0x4C);
 /// Backdrop for a chat line that named us. Alpha-blended so it reads on both themes.
