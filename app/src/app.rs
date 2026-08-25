@@ -21853,7 +21853,7 @@ pub(crate) fn intel_row(
                 });
                 return;
             }
-            let mut render = |ui: &mut egui::Ui| {
+            let render = |ui: &mut egui::Ui| {
                 ui.spacing_mut().interact_size.y = if compact { 16.0 } else { 28.0 };
                 ui.spacing_mut().button_padding.y = if compact { 1.0 } else { 2.0 };
                 if compact {
@@ -22594,19 +22594,21 @@ pub(crate) fn intel_row(
                     ui.label(egui::RichText::new("outdated").italics().weak());
                 }
             };
-            ui.horizontal_wrapped(|ui| {
-                render(ui);
-                if show_reporter && !is_zkill {
-                    ui.label(
+            ui.horizontal_wrapped(render);
+            if show_reporter && !is_zkill {
+                ui.add_space(if compact { 1.0 } else { 3.0 });
+                ui.add(
+                    egui::Label::new(
                         egui::RichText::new(if r.reporter.eq_ignore_ascii_case(&r.channel) {
-                            format!("·  {}", r.reporter)
+                            r.reporter.clone()
                         } else {
-                            format!("·  {} · {}", r.reporter, r.channel)
+                            format!("{} · {}", r.reporter, r.channel)
                         })
                         .weak(),
-                    );
-                }
-            });
+                    )
+                    .wrap(),
+                );
+            }
         })
         .response;
 
