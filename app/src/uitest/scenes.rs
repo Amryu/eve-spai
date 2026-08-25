@@ -404,6 +404,24 @@ fn uitest_nav_rail_short_reaches_every_item() {
     assert_eq!(*selected.borrow(), View::Jabber, "scrolling must bring the tail of the list back");
 }
 
+/// A spinner is a promise that something is happening. Headless starts no worker, which is also
+/// what a user sees with no static data downloaded, so the view has to say why instead of spinning.
+#[test]
+fn uitest_battles_view_settles_without_a_worker() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = view_scene("battles_probe", View::Battles, [1280.0, 800.0]);
+    let mut harness = harness::build(&mut scene, false);
+    assert!(
+        harness.query_by_label_contains("have not started").is_some(),
+        "battles view should state why no report is coming"
+    );
+    assert!(
+        harness.query_by_label_contains("Loading battles").is_none(),
+        "battles view should not spin when no worker was ever started"
+    );
+}
+
 /// Every rail entry must be reachable, and picking one must return it.
 #[test]
 fn uitest_nav_rail_click_selects() {
