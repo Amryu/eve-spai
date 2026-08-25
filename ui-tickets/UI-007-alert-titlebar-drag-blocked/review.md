@@ -60,8 +60,8 @@ gap is now partly closed and the pattern is available to the rest.
 
 | | Before | After |
 |---|---|---|
-| `cargo test --workspace` | 412 passed, 2 ignored (+32) | **413 passed**, 2 ignored (+32) |
-| `cargo test --bin eve-spai uitest` | 13 passed | 14 passed |
+| `cargo test --workspace` | 411 passed, 2 ignored (+32) | **412 passed**, 2 ignored (+32) |
+| `cargo test --bin eve-spai uitest` | 12 passed | 13 passed |
 | Test fails without the fix | n/a | confirmed, at the gap |
 
 ## Screenshots

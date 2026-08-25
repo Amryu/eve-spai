@@ -79,8 +79,8 @@ the agent said so rather than quietly rendering something that looked close enou
 
 | | Before | After |
 |---|---|---|
-| `cargo test --workspace` | 413 passed, 2 ignored (+32) | **415 passed**, 2 ignored (+32) |
-| `cargo test --bin eve-spai uitest` | 14 passed | 16 passed |
+| `cargo test --workspace` | 412 passed, 2 ignored (+32) | **414 passed**, 2 ignored (+32) |
+| `cargo test --bin eve-spai uitest` | 13 passed | 15 passed |
 | Chip width across phases | 39.2 / 42.4 / 45.6 | 46.6 / 46.6 / 46.6 |
 
 `cargo check --workspace --all-targets --all-features`: only the pre-existing warning at
