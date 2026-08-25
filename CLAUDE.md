@@ -161,9 +161,9 @@ The cycle for each ticket, documented in its `review.md` every time:
 
 1. **Ticket** states the symptom, the screenshot that shows it, the file:line cause, severity,
    and how to verify the fix.
-2. **Fix** happens in a git worktree, one agent per ticket. The repo usually carries
-   uncommitted work, so seed the worktree with `git diff HEAD` applied and committed as a base,
-   then the agent's `git diff HEAD` is its fix alone.
+2. **Fix** happens in a git worktree, one agent per ticket: `git worktree add --detach <path>
+   main`, so the agent's `git diff HEAD` is its fix alone. If the tree carries uncommitted work,
+   seed the worktree with `git diff HEAD` applied and committed as a base first.
 3. **Review** the returned patch before applying it. Check it addresses the cause and not the
    symptom, touches only its own region, and adds no comment that restates the code.
 4. **Verify** by applying the patch to the main tree, re-running `uitest`, re-rendering the
@@ -187,6 +187,9 @@ Never squash several tickets into one commit; that is the whole point of the bra
 
 Rules that matter:
 
+- Quote the test count to an agent as a FLOOR, never as an exact number. Told "must be green (11
+  passed)", an agent reads that as "must not change" and skips adding the regression test the
+  ticket most needs. Say that adding tests is welcome and the count going up is the goal.
 - At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI
   lives in `app/src/app.rs`, so pair by region: `intel_row`, `render_ping`, `battles_view`,
   `settings_view`, the alert viewport callback, `nav.rs`. Cross-cutting changes run alone.
