@@ -19,3 +19,12 @@ Assert the command sequence by reading `harness.output()` after a step. Verifyin
 
 Coverage gaps are tool work, not app defects. They are ticketed here so the backlog is complete,
 but the UI-NNN defects run first: closing those needs no new harness capability.
+
+## Partly closed
+
+UI-007 added `uitest_alert_titlebar_has_no_competing_grab_target`, which reads
+`harness.output().viewport_output` for `ViewportCommand::StartDrag` and asserts it fires from four
+points along the alert title bar. The technique works, so asserting the command sequence is now a
+solved problem and the remaining 11 `send_viewport_cmd` sites can follow the same pattern.
+
+Still open: real multi-window behaviour, and the overlay subprocess.
