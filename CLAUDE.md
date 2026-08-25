@@ -171,6 +171,20 @@ The cycle for each ticket, documented in its `review.md` every time:
 5. **Record** all of the above in `review.md`: what changed, what the screenshots show, what was
    rejected and why, and the test counts before and after.
 
+Each fix lands as its own branch, merged back with `--no-ff`:
+
+```bash
+git checkout -b fix/ui-NNN-slug main
+git apply <the agent's patch>        # plus its review.md and after/ screenshots
+git commit
+git checkout main
+git merge --no-ff fix/ui-NNN-slug
+```
+
+One merge commit carries the code, its `review.md` and its `after/` screenshots together, so a fix
+reads like a PR and backs out with `git revert -m 1 <merge-commit>` without disturbing the others.
+Never squash several tickets into one commit; that is the whole point of the branch.
+
 Rules that matter:
 
 - At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI
