@@ -21377,7 +21377,14 @@ pub(crate) fn render_ping(
                     }
                 });
                 if !description.is_empty() {
-                    render_ping_body(ui, description, true);
+                    // The call text has to outrank the metadata labels above it, and the theme
+                    // paints `strong` in the same color as body text, so size is the only lever.
+                    ui.scope(|ui| {
+                        if let Some(f) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
+                            f.size += 1.5;
+                        }
+                        render_ping_body(ui, description, false);
+                    });
                 }
                 let from = source.as_deref().unwrap_or("?");
                 let to = target.as_deref().unwrap_or("?");
