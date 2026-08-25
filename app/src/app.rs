@@ -20011,24 +20011,33 @@ pub(crate) fn build_alert_viewport_cb(
                 }
                 let mut buttons_left = f32::INFINITY;
                 let row = ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{}  Intel alerts",
-                            egui_phosphor::regular::DOTS_SIX
-                        ))
-                        .strong(),
+                    // Selectable labels sense click+drag, and egui hands a drag to the smaller
+                    // widget when one sits inside a bigger drag rect, so a selectable title
+                    // would steal the window drag.
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!(
+                                "{}  Intel alerts",
+                                egui_phosphor::regular::DOTS_SIX
+                            ))
+                            .strong(),
+                        )
+                        .selectable(false),
                     );
-                    ui.label(
-                        egui::RichText::new(if secs.is_finite() {
-                            if compact {
-                                fmt_age_compact(secs as i64)
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(if secs.is_finite() {
+                                if compact {
+                                    fmt_age_compact(secs as i64)
+                                } else {
+                                    format!("{:.0}s", secs)
+                                }
                             } else {
-                                format!("{:.0}s", secs)
-                            }
-                        } else {
-                            "\u{221E}".to_owned()
-                        })
-                        .weak(),
+                                "\u{221E}".to_owned()
+                            })
+                            .weak(),
+                        )
+                        .selectable(false),
                     );
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),

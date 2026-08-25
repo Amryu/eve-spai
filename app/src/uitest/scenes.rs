@@ -439,3 +439,61 @@ fn uitest_nav_rail_click_selects() {
     harness.run_steps(2);
     assert_eq!(*selected.borrow(), View::Battles);
 }
+
+/// Presses at `at`, drags right, and reports whether the window asked the OS to move it.
+fn drags_the_alert_window(harness: &mut egui_kittest::Harness<'_>, at: egui::Pos2) -> bool {
+    let mut started = false;
+    let pump = |harness: &mut egui_kittest::Harness<'_>, started: &mut bool| {
+        harness.run_steps(1);
+        *started |= harness.output().viewport_output.values().any(|v| {
+            v.commands.iter().any(|c| matches!(c, egui::ViewportCommand::StartDrag))
+        });
+    };
+    harness.event(egui::Event::PointerMoved(at));
+    pump(harness, &mut started);
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+    });
+    pump(harness, &mut started);
+    for dx in [4.0, 12.0] {
+        harness.event(egui::Event::PointerMoved(at + egui::vec2(dx, 0.0)));
+        pump(harness, &mut started);
+    }
+    harness.event(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    harness.event(egui::Event::PointerGone);
+    harness.run_steps(2);
+    started
+}
+
+/// The alert window has no OS title bar, so the only way to move it is the drag rect behind its
+/// title row. egui hands a drag to a small widget sitting on a bigger drag rect, so any label in
+/// there that senses click or drag takes the grab and the window stops moving.
+#[test]
+fn uitest_alert_titlebar_has_no_competing_grab_target() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = alert_window_scene("titlebar_drag_probe", vec![fixtures::intel_typical()]);
+    let mut harness = harness::build(&mut scene, false);
+    let title = harness.get_by_label_contains("Intel alerts").rect();
+    let secs = harness.get_by_label("5s").rect();
+    let y = title.center().y;
+    for (what, at) in [
+        ("title text", title.center()),
+        ("gap between the title and the counter", egui::pos2((title.max.x + secs.min.x) / 2.0, y)),
+        ("seconds counter", secs.center()),
+        ("empty stretch of the bar", egui::pos2(250.0, y)),
+    ] {
+        assert!(
+            drags_the_alert_window(&mut harness, at),
+            "dragging the {what} at {at:?} did not start a window drag"
+        );
+    }
+}
