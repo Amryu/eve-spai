@@ -411,7 +411,7 @@ fn uitest_battles_view_settles_without_a_worker() {
     use egui_kittest::kittest::Queryable as _;
 
     let mut scene = view_scene("battles_probe", View::Battles, [1280.0, 800.0]);
-    let mut harness = harness::build(&mut scene, false);
+    let harness = harness::build(&mut scene, false);
     assert!(
         harness.query_by_label_contains("have not started").is_some(),
         "battles view should state why no report is coming"
