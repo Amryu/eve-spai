@@ -139,6 +139,9 @@ pub(crate) fn all() -> Vec<Scene> {
     ] {
         v.push(view_scene(name, view, [1280.0, 800.0]));
     }
+    // 720 is the app's minimum window width (main.rs), where the settings path fields and their
+    // Browse buttons have the least room to share.
+    v.push(view_scene("view_settings_narrow", View::Settings, [720.0, 800.0]));
     v
 }
 
