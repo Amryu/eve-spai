@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `intel_row` |
 | **Wave** | 2 |
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/intel_row_typical.debug.png`, `before/intel_row_torture_narrow.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/intel_row_typical.debug.png`, `after/intel_row_torture_narrow.png`, `after/alert_window_torture.png`
