@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | High |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` (one round rejected) |
 | **Region** | `nav.rs` |
 | **Wave** | 1 |
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/nav_rail_expanded.png`, `before/nav_rail_collapsed.png`, `before/nav_rail_expanded.debug.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/nav_rail_expanded.png`, `after/nav_rail_collapsed.png`, `after/nav_rail_expanded_short.png`, `after/nav_rail_collapsed_short.png`, `after/nav_rail_expanded_tall.png`
