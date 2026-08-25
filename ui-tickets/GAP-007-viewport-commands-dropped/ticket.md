@@ -28,3 +28,11 @@ points along the alert title bar. The technique works, so asserting the command 
 solved problem and the remaining 11 `send_viewport_cmd` sites can follow the same pattern.
 
 Still open: real multi-window behaviour, and the overlay subprocess.
+
+## The harness cannot see the OS frame
+
+It renders viewport contents only, so a decorated window screenshots identically to an undecorated
+one. UI-016 was raised as a defect on exactly this basis and closed as a false positive: the ping
+window keeps the window manager's title bar and close button, which never appear in a render.
+
+Any ticket about window furniture needs `with_decorations` checked in source before it is believed.

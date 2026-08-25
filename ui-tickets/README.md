@@ -27,7 +27,7 @@ everything in `review.md`. A fix is not done until a screenshot shows it fixed.
 | [UI-013 Doctrine row floats in extra air](UI-013-doctrine-row-floats/) | Low | `render_ping` | 6 | Open |
 | [UI-014 Copy button undersized](UI-014-copy-button-undersized/) | Low | `render_ping` | 7 | Open |
 | [UI-015 Near-duplicate celestial on two rows](UI-015-duplicate-celestial-rows/) | Low | `intel_row` | 6 | Open |
-| [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Blocked |
+| [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Closed, not a defect |
 
 ## Harness coverage gaps
 

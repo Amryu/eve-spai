@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Blocked |
+| **Status** | Closed, not a defect, see `review.md` |
 | **Region** | `decision` |
 | **Wave** | n/a |
 
@@ -17,7 +17,9 @@ Both scenes render the real viewport callback, so this is not a fixture crop. Th
 
 ## Notes
 
-BLOCKED: needs a product decision, not a fix. If the ping window is meant to be dismissed by the user or repositioned, it needs chrome. If it is meant to be transient, it does not.
+RESOLVED as a false positive: the ping window keeps the OS frame, the alert window sets with_decorations(false) and must draw its own. Original note follows.
+
+Originally logged as: needs a product decision, not a fix. If the ping window is meant to be dismissed by the user or repositioned, it needs chrome. If it is meant to be transient, it does not.
 
 ## How to verify
 
