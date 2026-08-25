@@ -120,6 +120,65 @@ It uses only EVE's public static data.
   and scratch dirs.
 - Push and publish only when asked.
 
+## Headless UI harness
+
+`app/src/uitest/` renders any UI surface to a PNG without launching the app, and drives
+hover/click through the AccessKit tree. No real profile, no network, no threads, no display
+server. Built on `egui_kittest`, version-locked to egui.
+
+- `cargo test --bin eve-spai uitest` runs layout and interaction assertions. No GPU, ~1.5s.
+- `cargo test --bin eve-spai uitest_screenshots -- --ignored` writes PNGs to `target/uishots/`.
+  Each scene renders twice: plain, and `.debug.png` with egui's interactive-widget overlay.
+- `cargo test --bin eve-spai uitest_census -- --ignored --nocapture` prints per-scene hit-target
+  counts, the smallest target, and a role histogram.
+
+`checks.rs` catches overlapping click targets, overlapping text, horizontally escaped widgets,
+zero-area hit rects, and content wider than its window. It is blind to painted decoration
+(separators, canvas art) because those emit no AccessKit node, so the screenshots stay the
+primary signal and the assertions are the regression gate.
+
+Two traps that silently gut a fixture, both hit once already:
+
+- `intel_row` skips any pilot missing from `resolved_pilots` (app.rs), so unresolved fixture
+  names render nothing at all.
+- `uncertain` is looked up with `name.to_lowercase()`, so entries must be pre-lowercased.
+
+Add a scene by appending to `scenes::all()`. Check the census afterwards: a scene near the
+~12-target chrome baseline is not being inspected in any meaningful sense.
+
+`SpaiApp::build(ctx, headless: true)` skips the image loaders, the control socket, all
+background threads, the tray and the overlay subprocess, and refuses to open a store unless
+`EVE_SPAI_DATA_DIR` is set. Headless also disables the workers that populate views, so
+async-populated views show permanent loading states.
+
+## UI issue workflow
+
+Findings from the harness become tickets under `ui-tickets/`, one folder per ticket:
+`ui-tickets/UI-NNN-slug/` with `ticket.md`, `before/` screenshots, and `review.md`.
+`ui-tickets/README.md` is the index.
+
+The cycle for each ticket, documented in its `review.md` every time:
+
+1. **Ticket** states the symptom, the screenshot that shows it, the file:line cause, severity,
+   and how to verify the fix.
+2. **Fix** happens in a git worktree, one agent per ticket. The repo usually carries
+   uncommitted work, so seed the worktree with `git diff HEAD` applied and committed as a base,
+   then the agent's `git diff HEAD` is its fix alone.
+3. **Review** the returned patch before applying it. Check it addresses the cause and not the
+   symptom, touches only its own region, and adds no comment that restates the code.
+4. **Verify** by applying the patch to the main tree, re-running `uitest`, re-rendering the
+   scene, and looking at the new PNG against `before/`. Save it as `after/`.
+5. **Record** all of the above in `review.md`: what changed, what the screenshots show, what was
+   rejected and why, and the test counts before and after.
+
+Rules that matter:
+
+- At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI
+  lives in `app/src/app.rs`, so pair by region: `intel_row`, `render_ping`, `battles_view`,
+  `settings_view`, the alert viewport callback, `nav.rs`. Cross-cutting changes run alone.
+- Apply patches to the main tree one at a time and re-run the suite between them.
+- A fix is not done until a screenshot shows it fixed.
+
 ## Writing and comments (stop slop)
 
 Applies to prose (replies, PR bodies, commit messages) and to code comments. Adapted from the

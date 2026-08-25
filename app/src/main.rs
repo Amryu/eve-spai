@@ -58,6 +58,8 @@ mod update;
 mod watcher;
 mod wormholes;
 mod zkill;
+#[cfg(test)]
+mod uitest;
 
 pub fn transparency_enabled() -> bool {
     std::env::var_os("EVE_SPAI_OPAQUE").is_none()

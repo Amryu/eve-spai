@@ -147,6 +147,8 @@ pub struct Settings {
     pub jabber_ping_rules: Vec<PingRule>,
     #[serde(default)]
     pub jabber_ping_rules_seeded: bool,
+    #[serde(default, deserialize_with = "de_chat_windows")]
+    pub jabber_popout_windows: Vec<ChatWindowCfg>,
     #[serde(default)]
     pub update_skip_version: String,
     #[serde(default)]
@@ -631,6 +633,40 @@ pub struct JumpBridge {
     pub to: String,
 }
 
+/// One persisted pop-out chat window: which conversations it holds and where it sat.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatWindowCfg {
+    pub id: u64,
+    pub tabs: Vec<String>,
+    /// Empty means "no explicit active tab", i.e. fall back to the first one.
+    pub active: String,
+    pub pos: Option<(f32, f32)>,
+    pub size: Option<(f32, f32)>,
+}
+
+/// Drop unparseable entries rather than failing the whole Settings parse, since one bad entry would
+/// otherwise reset every setting the user has.
+fn de_chat_windows<'de, D>(d: D) -> Result<Vec<ChatWindowCfg>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum MaybeWindow {
+        Good(ChatWindowCfg),
+        Junk(serde::de::IgnoredAny),
+    }
+    let items = Vec::<MaybeWindow>::deserialize(d)?;
+    Ok(items
+        .into_iter()
+        .filter_map(|w| match w {
+            MaybeWindow::Good(c) => Some(c),
+            MaybeWindow::Junk(_) => None,
+        })
+        .collect())
+}
+
 /// A rescue doctrine: the short `name` shown in the selector, and the full `description` line that
 /// goes into the ping's "Doctrine:" field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -785,6 +821,7 @@ impl Default for Settings {
             jabber_ping_groups: Vec::new(),
             jabber_ping_rules: default_ping_rules(),
             jabber_ping_rules_seeded: true,
+            jabber_popout_windows: Vec::new(),
             update_skip_version: String::new(),
             wizard_done: false,
             dscan_autoprompt: true,
@@ -1219,6 +1256,51 @@ mod window_geometry_tests {
         let json2 = r#"{"rescue_doctrines":[{"name":"FNIs","description":"Hammer Fleet"}]}"#;
         let s2: Settings = serde_json::from_str(json2).unwrap();
         assert_eq!(s2.rescue_doctrines[0].description, "Hammer Fleet");
+    }
+
+    #[test]
+    fn chat_window_cfgs_roundtrip() {
+        let s = Settings {
+            jabber_popout_windows: vec![
+                ChatWindowCfg {
+                    id: 7,
+                    tabs: vec!["a@conf.x".to_owned(), "b@x".to_owned()],
+                    active: "b@x".to_owned(),
+                    pos: Some((-1920.0, 40.0)),
+                    size: Some((700.0, 500.0)),
+                },
+                ChatWindowCfg { id: 8, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.jabber_popout_windows, s.jabber_popout_windows);
+    }
+
+    #[test]
+    fn legacy_settings_without_popout_windows_default() {
+        let s: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
+        assert_eq!(s.jabber_jid, "a@b");
+        assert!(s.jabber_popout_windows.is_empty());
+    }
+
+    #[test]
+    fn one_malformed_popout_window_keeps_the_rest() {
+        // A single bad entry must drop only itself: failing the field would fail the whole
+        // Settings parse and reset every setting the user has.
+        let json = r#"{"jabber_jid":"a@b","jabber_popout_windows":[
+            {"id":1,"tabs":["x@y"],"active":"x@y"},
+            {"id":"not-a-number"},
+            42,
+            {"id":2,"tabs":[],"active":"","pos":null,"size":[600.0,400.0]}
+        ]}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.jabber_jid, "a@b");
+        let ids: Vec<u64> = s.jabber_popout_windows.iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(s.jabber_popout_windows[0].tabs, vec!["x@y".to_owned()]);
+        assert_eq!(s.jabber_popout_windows[1].size, Some((600.0, 400.0)));
     }
 
     #[test]

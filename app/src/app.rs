@@ -322,7 +322,7 @@ use crate::theme::{Rgb, Theme};
 pub struct SpaiApp {
     store: Option<Store>,
     settings: Settings,
-    view: View,
+    pub(crate) view: View,
     intel_channels_open: bool,
     jump_bridges_open: bool,
     jb_paste: String,
@@ -435,11 +435,15 @@ pub struct SpaiApp {
     proc_monitor: crate::procstat::Monitor,
     jabber: crate::jabber::SharedJabber,
     jabber_tx: Option<crate::jabber::CmdSender>,
-    jabber_popped: bool,
     jabber_chat: Option<String>,
     jabber_tabs: Vec<String>,
+    /// Extra floating chat windows. `jabber_tabs`/`jabber_chat` stay the main window's storage.
+    jabber_popouts: Vec<ChatWindow>,
+    jabber_tab_drag: Option<TabDrag>,
+    /// Main window's cached (outer, inner) screen rects, for cross-window drop hit-testing.
+    jabber_main_rect: Option<(egui::Rect, egui::Rect)>,
     jabber_join_open: bool,
-    jabber_close_room_prompt: Option<String>,
+    jabber_close_room_prompt: Option<(String, ChatWinKey)>,
     jabber_drafts: std::collections::HashMap<String, String>,
     jabber_room_input: String,
     jabber_contact_search: String,
@@ -486,6 +490,7 @@ pub struct SpaiApp {
     tray: Option<crate::tray::TrayCmd>,
     really_exit: bool,
     raise_reset_top: bool,
+    raise_main: bool,
     overlay: Option<crate::ipc::OverlayLink>,
     config_sent_hash: Option<u64>,
     dscan_clip: Option<arboard::Clipboard>,
@@ -708,21 +713,36 @@ pub struct SpaiApp {
 
 impl SpaiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        crate::theme::install_fonts(&cc.egui_ctx);
+        Self::build(&cc.egui_ctx, false)
+    }
 
-        crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
+    /// `headless` skips every side effect this constructor normally performs: the image loaders,
+    /// the single-instance control socket, opening the store, and all background threads
+    /// (including the tray and the overlay subprocess). Everything that only shapes in-memory
+    /// state still runs, so the resulting app renders the same as a live one.
+    pub(crate) fn build(ctx: &egui::Context, headless: bool) -> Self {
+        crate::theme::install_fonts(ctx);
 
-        crate::instance::start_control_listener(cc.egui_ctx.clone());
+        if !headless {
+            crate::image_cache::install_image_loaders_cached(ctx);
+            crate::instance::start_control_listener(ctx.clone());
+        }
 
-        let (store, store_error) = match Store::open() {
-            Ok(s) => match s.write_probe() {
-                Ok(()) => (Some(s), None),
-                // Opened read-only (file perms), so reads work but nothing persists.
-                Err(e) => (Some(s), Some(format!("the database is not writable ({e})"))),
-            },
-            Err(e) => {
-                eprintln!("store: {e:#}");
-                (None, Some(format!("{e:#}")))
+        // A headless build without the override would open the user's real profile, so it gets
+        // no store at all rather than one pointed at live data.
+        let (store, store_error) = if headless && std::env::var_os("EVE_SPAI_DATA_DIR").is_none() {
+            (None, None)
+        } else {
+            match Store::open() {
+                Ok(s) => match s.write_probe() {
+                    Ok(()) => (Some(s), None),
+                    // Opened read-only (file perms), so reads work but nothing persists.
+                    Err(e) => (Some(s), Some(format!("the database is not writable ({e})"))),
+                },
+                Err(e) => {
+                    eprintln!("store: {e:#}");
+                    (None, Some(format!("{e:#}")))
+                }
             }
         };
         let mut settings = store
@@ -730,7 +750,7 @@ impl SpaiApp {
             .and_then(|s| s.load_settings())
             .unwrap_or_default();
 
-        settings.theme.apply(&cc.egui_ctx);
+        settings.theme.apply(ctx);
 
         let combat_on = settings.alert_combat;
         if !settings.alerts.seeded {
@@ -765,10 +785,12 @@ impl SpaiApp {
             SdeStatus::default()
         };
         let sde_status: SharedStatus = std::sync::Arc::new(std::sync::Mutex::new(initial));
-        crate::wormholes::spawn_scout(cc.egui_ctx.clone());
+        if !headless {
+            crate::wormholes::spawn_scout(ctx.clone());
+        }
         if let Some(store) = &store {
-            if matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
-                sde::spawn_download(store.path().to_path_buf(), sde_status.clone(), cc.egui_ctx.clone());
+            if !headless && matches!(*sde_status.lock().unwrap(), SdeStatus::NotReady) {
+                sde::spawn_download(store.path().to_path_buf(), sde_status.clone(), ctx.clone());
             }
         }
 
@@ -782,18 +804,18 @@ impl SpaiApp {
         if let Some(store) = &store {
             let _ = store;
             let cid = non_empty_or(&settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-            crate::esi::spawn_location_poller(cid, player.clone(), cc.egui_ctx.clone());
+            if !headless {
+                crate::esi::spawn_location_poller(cid, player.clone(), ctx.clone());
+            }
         }
 
         let eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>> =
             std::sync::Arc::new(std::sync::Mutex::new(None));
         let eve_settings_path: std::sync::Arc<std::sync::Mutex<String>> =
             std::sync::Arc::new(std::sync::Mutex::new(settings.eve_settings_dir.clone()));
-        crate::eveproc::spawn_poller(
-            eve_clients.clone(),
-            eve_settings_path.clone(),
-            cc.egui_ctx.clone(),
-        );
+        if !headless {
+            crate::eveproc::spawn_poller(eve_clients.clone(), eve_settings_path.clone(), ctx.clone());
+        }
 
         let loaded_pings: Vec<crate::pings::Ping> = store
             .as_ref()
@@ -842,10 +864,10 @@ impl SpaiApp {
 
         let kill_cache: crate::kills::KillCache =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        let kill_tx = Some(crate::kills::spawn_fetcher(kill_cache.clone(), cc.egui_ctx.clone()));
+        let kill_tx = (!headless).then(|| crate::kills::spawn_fetcher(kill_cache.clone(), ctx.clone()));
         let lookup_cache: crate::charlookup::LookupCache = Default::default();
         let lookup_tx =
-            Some(crate::charlookup::spawn_fetcher(lookup_cache.clone(), cc.egui_ctx.clone()));
+            (!headless).then(|| crate::charlookup::spawn_fetcher(lookup_cache.clone(), ctx.clone()));
 
         let activity: crate::activity::SharedActivity = {
             let mut c = crate::activity::ActivityCache::default();
@@ -854,7 +876,9 @@ impl SpaiApp {
             }
             std::sync::Arc::new(std::sync::Mutex::new(c))
         };
-        crate::activity::spawn(activity.clone(), cc.egui_ctx.clone());
+        if !headless {
+            crate::activity::spawn(activity.clone(), ctx.clone());
+        }
         let sightings: crate::intel::SharedSightings = Default::default();
         let revivals: crate::watcher::SharedRevivals = {
             let now = chrono::Utc::now().timestamp();
@@ -875,7 +899,9 @@ impl SpaiApp {
             std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default()));
         let pilots: crate::pilot::SharedPilots =
             std::sync::Arc::new(std::sync::Mutex::new(crate::pilot::PilotCache::default()));
-        crate::pilot::spawn_resolver(pilots.clone(), cc.egui_ctx.clone());
+        if !headless {
+            crate::pilot::spawn_resolver(pilots.clone(), ctx.clone());
+        }
         let killfeed: crate::zkill::SharedKillFeed =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recent_alerts: crate::gamewatcher::AlertLog =
@@ -888,39 +914,45 @@ impl SpaiApp {
             recent_alerts.clone(),
             chrono::Utc::now().timestamp(),
             alert_shared.clone(),
-            cc.egui_ctx.clone(),
+            ctx.clone(),
             overlay_stdin.clone(),
         ));
         let system_status: crate::systemstatus::SharedStatus =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-        crate::systemstatus::spawn(system_status.clone(), cc.egui_ctx.clone());
+        if !headless {
+            crate::systemstatus::spawn(system_status.clone(), ctx.clone());
+        }
         let affiliations = std::sync::Arc::new(std::sync::Mutex::new(
             crate::affiliation::AffilCache::default(),
         ));
-        crate::affiliation::spawn(affiliations.clone(), cc.egui_ctx.clone());
+        if !headless {
+            crate::affiliation::spawn(affiliations.clone(), ctx.clone());
+        }
         let ping_shared: SharedPingWindow = std::sync::Arc::new(std::sync::Mutex::new(
             PingWindowState { enabled: settings.fleet_ping_window, ..Default::default() },
         ));
-        spawn_alert_daemon(
-            alerts_engine.clone(),
-            intel_state.clone(),
-            pilots.clone(),
-            player.clone(),
-            killfeed.clone(),
-            kill_cache.clone(),
-            system_status.clone(),
-            affiliations.clone(),
-            ping_shared.clone(),
-            cc.egui_ctx.clone(),
-        );
+        if !headless {
+            spawn_alert_daemon(
+                alerts_engine.clone(),
+                intel_state.clone(),
+                pilots.clone(),
+                player.clone(),
+                killfeed.clone(),
+                kill_cache.clone(),
+                system_status.clone(),
+                affiliations.clone(),
+                ping_shared.clone(),
+                ctx.clone(),
+            );
+        }
 
         let eve_focused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let ping_viewport_cb = build_ping_viewport_cb(ping_shared.clone());
         let alert_viewport_cb = build_alert_viewport_cb(alert_shared.clone());
 
-        {
-            let ctx = cc.egui_ctx.clone();
+        if !headless {
+            let ctx = ctx.clone();
             let ping_shared = ping_shared.clone();
             let alert_shared = alert_shared.clone();
             std::thread::spawn(move || loop {
@@ -939,7 +971,8 @@ impl SpaiApp {
             });
         }
 
-        Self {
+        let popouts = popouts_from_cfg(&settings.jabber_popout_windows);
+        let mut app = Self {
             store,
             settings,
             view: View::Dashboard,
@@ -1051,9 +1084,11 @@ impl SpaiApp {
             proc_monitor: crate::procstat::Monitor::new(),
             jabber,
             jabber_tx: None,
-            jabber_popped: false,
             jabber_chat: None,
             jabber_tabs: Vec::new(),
+            jabber_popouts: popouts,
+            jabber_tab_drag: None,
+            jabber_main_rect: None,
             jabber_join_open: false,
             jabber_close_room_prompt: None,
             jabber_drafts: std::collections::HashMap::new(),
@@ -1092,14 +1127,19 @@ impl SpaiApp {
             wizard_step: 0,
             wizard_shortcut: None,
             wizard_checked: false,
-            tray: crate::tray::spawn(cc.egui_ctx.clone()),
+            tray: if headless { None } else { crate::tray::spawn(ctx.clone()) },
             really_exit: false,
             raise_reset_top: false,
-            overlay: match crate::ipc::OverlayLink::start(cc.egui_ctx.clone(), overlay_stdin) {
-                Ok(link) => Some(link),
-                Err(e) => {
-                    eprintln!("[main] overlay failed to start (in-process fallback): {e}");
-                    None
+            raise_main: false,
+            overlay: if headless {
+                None
+            } else {
+                match crate::ipc::OverlayLink::start(ctx.clone(), overlay_stdin) {
+                    Ok(link) => Some(link),
+                    Err(e) => {
+                        eprintln!("[main] overlay failed to start (in-process fallback): {e}");
+                        None
+                    }
                 }
             },
             config_sent_hash: None,
@@ -1291,7 +1331,9 @@ impl SpaiApp {
             cyno_generators_open: false,
             #[cfg(feature = "fc-rescue")]
             rescue_armed: false,
-        }
+        };
+        app.tab_set().normalize();
+        app
     }
 
     fn open_system(&mut self, system_id: i64) {
@@ -2075,22 +2117,76 @@ impl SpaiApp {
         }
     }
 
-    fn remove_jabber_tab(&mut self, jid: &str) {
-        if let Some(idx) = self.jabber_tabs.iter().position(|t| t == jid) {
-            self.jabber_tabs.remove(idx);
-            if self.jabber_chat.as_deref() == Some(jid) {
-                // Focus the left neighbour, falling back to the Fleet pings tab.
-                self.jabber_chat = if idx > 0 { self.jabber_tabs.get(idx - 1).cloned() } else { None };
+    fn tab_set(&mut self) -> TabSet<'_> {
+        TabSet {
+            main: &mut self.jabber_tabs,
+            main_active: &mut self.jabber_chat,
+            popouts: &mut self.jabber_popouts,
+        }
+    }
+
+    fn popout(&self, id: u64) -> Option<&ChatWindow> {
+        self.jabber_popouts.iter().find(|w| w.id == id)
+    }
+
+    fn popout_mut(&mut self, id: u64) -> Option<&mut ChatWindow> {
+        self.jabber_popouts.iter_mut().find(|w| w.id == id)
+    }
+
+    fn win_tabs(&self, win: ChatWinKey) -> &[String] {
+        match win {
+            ChatWinKey::Main => &self.jabber_tabs,
+            ChatWinKey::Popout(id) => self.popout(id).map_or(&[][..], |w| w.tabs.as_slice()),
+        }
+    }
+
+    /// The window's selected conversation. `None` on `Main` is the Fleet pings pseudo-tab; a
+    /// pop-out never has that state.
+    fn win_active(&self, win: ChatWinKey) -> Option<String> {
+        match win {
+            ChatWinKey::Main => self.jabber_chat.clone(),
+            ChatWinKey::Popout(id) => self.popout(id).and_then(|w| w.active.clone()),
+        }
+    }
+
+    fn win_set_active(&mut self, win: ChatWinKey, jid: Option<String>) {
+        match win {
+            ChatWinKey::Main => self.jabber_chat = jid,
+            ChatWinKey::Popout(id) => {
+                if let Some(w) = self.popout_mut(id) {
+                    w.active = jid;
+                }
             }
         }
     }
 
-    fn close_jabber_tab(&mut self, jid: &str, is_room: bool) {
+    /// Select `jid`, opening a tab for it in `prefer` if no window owns it yet. An existing owner
+    /// keeps the conversation and is raised instead, so a jid is never in two windows at once.
+    fn jabber_open(&mut self, jid: &str, prefer: ChatWinKey) {
+        let mut t = self.tab_set();
+        let win = match t.owner(jid) {
+            Some(w) => w,
+            None => {
+                t.attach(jid, prefer, None);
+                prefer
+            }
+        };
+        self.win_set_active(win, Some(jid.to_owned()));
+        if let ChatWinKey::Popout(id) = win {
+            self.focus_window = Some(popout_viewport(id));
+        }
+    }
+
+    fn remove_jabber_tab(&mut self, jid: &str) {
+        self.tab_set().detach(jid);
+    }
+
+    fn close_jabber_tab(&mut self, jid: &str, is_room: bool, win: ChatWinKey) {
         if is_room {
             match self.settings.jabber_close_room_leaves {
                 None => {
                     // First time: ask, then re-run with the saved choice.
-                    self.jabber_close_room_prompt = Some(jid.to_owned());
+                    self.jabber_close_room_prompt = Some((jid.to_owned(), win));
                     return;
                 }
                 Some(true) => {
@@ -2110,6 +2206,137 @@ impl SpaiApp {
         }
         self.needs_save = true;
         self.remove_jabber_tab(jid);
+    }
+
+    /// Tear `jid` off into a brand-new pop-out placed at `at`. Returns the new window's id, or
+    /// `None` when nobody owns the jid or the cap is already reached.
+    fn new_popout(&mut self, jid: &str, at: Option<egui::Pos2>) -> Option<u64> {
+        if self.jabber_popouts.len() >= MAX_POPOUTS {
+            return None;
+        }
+        let id = self.tab_set().detach_to_new(jid, at.map(|p| (p.x, p.y)))?;
+        self.focus_window = Some(popout_viewport(id));
+        Some(id)
+    }
+
+    /// A pop-out closed with the native X: its conversations come back to the main bar, unmarked.
+    /// This must not go through `close_jabber_tab`, which would persist them as closed.
+    fn return_popout_tabs(&mut self, id: u64) {
+        self.tab_set().dissolve(id);
+    }
+
+    /// Mirror the live pop-out windows into settings, only when they actually differ: geometry is
+    /// already gated by `geometry_update`, and writing on every frame would hammer SQLite.
+    fn sync_popout_settings(&mut self) {
+        let want: Vec<crate::settings::ChatWindowCfg> =
+            self.jabber_popouts.iter().map(popout_cfg).collect();
+        if self.settings.jabber_popout_windows != want {
+            self.settings.jabber_popout_windows = want;
+            self.needs_save = true;
+        }
+    }
+
+    /// Should `win` paint a drop-target border? Every window asks this of the shared drag state,
+    /// because the OS pointer grab means only the source window ever sees the pointer.
+    fn jabber_drop_highlight(&self, win: ChatWinKey) -> bool {
+        let Some(d) = &self.jabber_tab_drag else { return false };
+        let Some(at) = d.at else { return false };
+        if d.from == win {
+            return false;
+        }
+        let rect = match win {
+            ChatWinKey::Main => self.jabber_main_rect.map(|(outer, _)| outer),
+            ChatWinKey::Popout(id) => self.popout(id).and_then(|w| w.outer),
+        };
+        rect.is_some_and(|r| r.contains(at))
+    }
+
+    /// One immediate viewport per pop-out chat window, modelled on `char_popout_windows`: ids are
+    /// collected up front and every mutation is applied after the loop.
+    #[allow(deprecated)]
+    fn jabber_popout_windows(&mut self, ctx: &egui::Context, f: &JabberFrame) {
+        if self.jabber_popouts.is_empty() || !f.configured || !f.ever_online {
+            // Skipping the call destroys the viewports, so re-arm the one-shot: when jabber comes
+            // back the windows must reopen where the user left them, not at the default size.
+            for w in self.jabber_popouts.iter_mut() {
+                w.geom_applied = false;
+            }
+            return;
+        }
+        let ids: Vec<u64> = self.jabber_popouts.iter().map(|w| w.id).collect();
+        let mut out: Vec<TabAction> = Vec::new();
+        for id in ids {
+            let Some(w) = self.popout(id) else { continue };
+            let head = w.active.clone().or_else(|| w.tabs.first().cloned()).unwrap_or_default();
+            let head = head.split('@').next().unwrap_or(&head).to_owned();
+            let (pos, size, applied) = (w.pos, w.size, w.geom_applied);
+            let mut builder = egui::ViewportBuilder::default()
+                .with_icon(app_icon())
+                .with_title(format!("EVE Spai - {head}"))
+                .with_min_inner_size([360.0, 260.0]);
+            // Saved geometry is fed to the builder on the first frame only. Re-applying it every
+            // frame would fight the user dragging or resizing the window.
+            if !applied {
+                let sz = size.unwrap_or((520.0, 480.0));
+                builder = builder.with_inner_size([sz.0, sz.1]);
+                if let Some((x, y)) = pos {
+                    builder = builder.with_position([x, y]);
+                }
+                if let Some(w) = self.popout_mut(id) {
+                    w.geom_applied = true;
+                }
+            }
+            let win = ChatWinKey::Popout(id);
+            let vp_id = format!("jabberwin_{id}");
+            let mut keep = true;
+            let mut geom: WinGeom = None;
+            let mut rects: (Option<egui::Rect>, Option<egui::Rect>) = (None, None);
+            let mut focused = false;
+            ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of(&vp_id),
+                builder,
+                |ctx, _class| {
+                    let (visible, inner, outer, foc) = ctx.input(|i| {
+                        let vp = i.viewport();
+                        (vp.visible() != Some(false), vp.inner_rect, vp.outer_rect, i.focused)
+                    });
+                    rects = (outer, inner);
+                    focused = foc;
+                    if visible {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            self.jabber_window_body(ui, win, f, &mut out);
+                        });
+                        self.jabber_close_room_dialog(ctx, win);
+                        // Unique per window: a shared key would re-send WindowLevel every frame.
+                        ontop_pin(ctx, &vp_id);
+                    }
+                    let sz = ctx.content_rect().size();
+                    if sz.x > 100.0 && sz.y > 100.0 {
+                        geom = Some(((sz.x, sz.y), outer.map(|r| (r.min.x, r.min.y))));
+                    }
+                    if ctx.input(|i| i.viewport().close_requested()) {
+                        keep = false;
+                    }
+                },
+            );
+            if let Some(w) = self.popout_mut(id) {
+                w.outer = rects.0;
+                w.inner = rects.1;
+                w.focused = focused;
+                if let Some((sz, pos)) = geom {
+                    if geometry_update(w.size, sz, 2.0).is_some() {
+                        w.size = Some(sz);
+                    }
+                    if let Some(p) = pos.and_then(|p| geometry_update(w.pos, p, 1.0)) {
+                        w.pos = Some(p);
+                    }
+                }
+            }
+            if !keep {
+                out.push(TabAction::CloseWindow(id));
+            }
+        }
+        self.apply_tab_actions(out);
     }
 
     fn jabber_join_dialog(&mut self, ctx: &egui::Context, convos: &[Convo]) {
@@ -2156,10 +2383,7 @@ impl SpaiApp {
                 }
                 self.settings.jabber_closed_rooms.retain(|r| r != &room);
                 self.needs_save = true;
-                if !self.jabber_tabs.iter().any(|t| t == &room) {
-                    self.jabber_tabs.push(room.clone());
-                }
-                self.jabber_chat = Some(room);
+                self.jabber_open(&room, ChatWinKey::Main);
                 close = true;
             }
 
@@ -2201,10 +2425,7 @@ impl SpaiApp {
                         self.settings.jabber_closed_dms.retain(|j| j != &jid);
                         self.needs_save = true;
                         self.jabber_mark_read(&jid);
-                        if !self.jabber_tabs.iter().any(|t| t == &jid) {
-                            self.jabber_tabs.push(jid.clone());
-                        }
-                        self.jabber_chat = Some(jid);
+                        self.jabber_open(&jid, ChatWinKey::Main);
                         close = true;
                     }
                     None => {
@@ -2226,10 +2447,14 @@ impl SpaiApp {
         }
     }
 
-    fn jabber_close_room_dialog(&mut self, ctx: &egui::Context) {
-        let Some(jid) = self.jabber_close_room_prompt.clone() else {
+    /// The "leave or hide?" confirmation, rendered by the window whose close X raised it.
+    fn jabber_close_room_dialog(&mut self, ctx: &egui::Context, owner: ChatWinKey) {
+        let Some((jid, win)) = self.jabber_close_room_prompt.clone() else {
             return;
         };
+        if win != owner {
+            return;
+        }
         let name = jid.split('@').next().unwrap_or(&jid).to_owned();
         let mut open = true;
         let mut dismiss = false;
@@ -2251,12 +2476,12 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     if ui.button("Leave room").clicked() {
                         self.settings.jabber_close_room_leaves = Some(true);
-                        self.close_jabber_tab(&jid, true);
+                        self.close_jabber_tab(&jid, true, win);
                         dismiss = true;
                     }
                     if ui.button("Just hide tab").clicked() {
                         self.settings.jabber_close_room_leaves = Some(false);
-                        self.close_jabber_tab(&jid, true);
+                        self.close_jabber_tab(&jid, true, win);
                         dismiss = true;
                     }
                 });
@@ -2266,13 +2491,9 @@ impl SpaiApp {
         }
     }
 
-    fn jabber_view(&mut self, ui: &mut egui::Ui) {
+    fn jabber_view(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
         ui.add_space(8.0);
-        if self.jabber_popped {
-            ui.label(egui::RichText::new("Jabber is open in a separate window.").weak());
-            return;
-        }
-        self.jabber_ui(ui);
+        self.jabber_ui(ui, f);
     }
 
     /// Left-sidebar Channels pane: every known MUC room as a row with its MOTD preview. Rooms we
@@ -2477,24 +2698,190 @@ impl SpaiApp {
         }
         if let Some(jid) = open {
             self.settings.jabber_closed_rooms.retain(|j| j != &jid);
-            if !self.jabber_tabs.iter().any(|t| t == &jid) {
-                self.jabber_tabs.push(jid.clone());
-            }
             self.jabber_mark_read(&jid);
-            self.jabber_chat = Some(jid);
+            self.jabber_open(&jid, ChatWinKey::Main);
         }
     }
 
-    fn jabber_ui(&mut self, ui: &mut egui::Ui) {
-        let (fatal_set, ever_online) = {
-            let s = self.jabber.lock().unwrap();
-            (s.fatal.is_some(), s.ever_online)
-        };
+    /// One lock, one snapshot of everything a chat window needs to draw itself. Messages are
+    /// fetched per window by `jabber_msgs`, so each one shows its own conversation.
+    fn jabber_frame(&self, focused: bool) -> JabberFrame {
+        let mut st = self.jabber.lock().unwrap();
         let configured = self.settings.jabber_enabled
             && !self.settings.jabber_jid.trim().is_empty()
             && crate::jabber::has_password(self.settings.jabber_jid.trim())
-            && !fatal_set;
-        if !configured {
+            && st.fatal.is_none();
+        let ever_online = st.ever_online;
+        // The open conversation is being looked at, so its own incoming messages must not raise an
+        // unread or mention marker. Clear it every focused frame, before reading the marker sets
+        // below (activation via click also clears once, but later messages would re-mark it).
+        if configured && ever_online {
+            if focused {
+                if let Some(active) = self.jabber_chat.clone() {
+                    st.unread.remove(&active);
+                    st.mentions.remove(&active);
+                }
+            }
+            // Same rule per pop-out, from the focus it recorded last frame: a conversation you are
+            // staring at in a pop-out must not keep an unread dot either.
+            for w in self.jabber_popouts.iter().filter(|w| w.focused) {
+                if let Some(a) = &w.active {
+                    st.unread.remove(a);
+                    st.mentions.remove(a);
+                }
+            }
+        }
+        let st = &*st;
+        let mut set: std::collections::BTreeMap<String, Convo> =
+            std::collections::BTreeMap::new();
+        for (jid, c) in &st.roster {
+            set.entry(jid.clone()).or_insert_with(|| Convo {
+                jid: jid.clone(),
+                name: c.name.clone().unwrap_or_else(|| jid.split('@').next().unwrap_or(jid).to_owned()),
+                unread: false,
+                group: c.groups.first().cloned().unwrap_or_else(|| "Other".to_owned()),
+                presence: c.presence,
+                status_text: c.status_text.clone(),
+            });
+        }
+        for jid in st.chats.keys() {
+            let pres = st.presences.get(jid).map(|(p, _)| *p).unwrap_or_default();
+            set.entry(jid.clone()).or_insert_with(|| Convo {
+                jid: jid.clone(),
+                name: jid.split('@').next().unwrap_or(jid).to_owned(),
+                unread: false,
+                group: "Other".to_owned(),
+                presence: pres,
+                status_text: String::new(),
+            });
+        }
+        for jid in &st.unread {
+            if let Some(e) = set.get_mut(jid) {
+                e.unread = true;
+            }
+        }
+        let convos: Vec<Convo> = set.into_values().collect();
+        let rooms: Vec<String> = st.rooms.iter().cloned().collect();
+        let dm_keys: Vec<String> = st
+            .chats
+            .keys()
+            .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY && valid_bare_jid(k))
+            .cloned()
+            .collect();
+        let unread = st.unread.clone();
+        let mentions = st.mentions.clone();
+        // Channels list = every known room (persisted + currently joined + kicked), so a room
+        // stays listed after we're removed from it. History lives in `chats` regardless.
+        let mut known: std::collections::BTreeSet<&String> = std::collections::BTreeSet::new();
+        known.extend(self.settings.jabber_rooms.iter());
+        known.extend(st.rooms.iter());
+        known.extend(st.rooms_inaccessible.iter());
+        known.remove(&crate::jabber::PING_FEED_KEY.to_owned());
+        let mut channels: Vec<ChannelRow> = known
+            .into_iter()
+            .map(|jid| ChannelRow {
+                jid: jid.clone(),
+                name: jid.split('@').next().unwrap_or(jid).to_owned(),
+                unread: st.unread.contains(jid),
+                inaccessible: st.rooms_inaccessible.contains(jid),
+                motd: st.room_subjects.get(jid).cloned().unwrap_or_default(),
+            })
+            .collect();
+        channels.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        let inaccessible_list: Vec<String> = st.rooms_inaccessible.iter().cloned().collect();
+        let subjects_snapshot = st.room_subjects.clone();
+        JabberFrame {
+            configured,
+            ever_online,
+            connected: st.connected,
+            status: st.status.clone(),
+            convos,
+            pings: st.pings.clone(),
+            rooms,
+            dm_keys,
+            unread,
+            mentions,
+            pings_unread: st.pings_unread,
+            channels,
+            inaccessible: inaccessible_list,
+            subjects: subjects_snapshot,
+        }
+    }
+
+    fn jabber_msgs(&self, jid: &str) -> Vec<crate::jabber::ChatMsg> {
+        self.jabber.lock().unwrap().chats.get(jid).cloned().unwrap_or_default()
+    }
+
+    /// Bring every chat window's tabs in line with the joined rooms and DM history, exactly once
+    /// per frame and before any window renders. Running it per window would let one window re-add
+    /// a tab another one owns.
+    fn jabber_reconcile(&mut self, f: &JabberFrame) {
+        if !f.configured || !f.ever_online {
+            return;
+        }
+        let mut save = false;
+        // An incoming message (present in `unread`) reopens a conversation whose tab was closed.
+        for k in &f.unread {
+            if let Some(p) = self.settings.jabber_closed_dms.iter().position(|j| j == k) {
+                self.settings.jabber_closed_dms.remove(p);
+                save = true;
+            }
+            if let Some(p) = self.settings.jabber_closed_rooms.iter().position(|j| j == k) {
+                self.settings.jabber_closed_rooms.remove(p);
+                save = true;
+            }
+        }
+        let closed_dms: std::collections::HashSet<String> =
+            self.settings.jabber_closed_dms.iter().cloned().collect();
+        let closed_rooms: std::collections::HashSet<String> =
+            self.settings.jabber_closed_rooms.iter().cloned().collect();
+        let room_set: std::collections::HashSet<&String> = f.rooms.iter().collect();
+        // Tabs that are already open stay open unless they were explicitly closed, whichever
+        // window holds them; joined rooms and DMs with history are added on top.
+        let mut want: Vec<String> = self
+            .tab_set()
+            .all_tabs()
+            .into_iter()
+            .filter(|t| {
+                if room_set.contains(t) {
+                    !closed_rooms.contains(t)
+                } else {
+                    !closed_dms.contains(t)
+                }
+            })
+            .collect();
+        for r in &f.rooms {
+            if !closed_rooms.contains(r) && !want.contains(r) {
+                want.push(r.clone());
+            }
+        }
+        for k in &f.dm_keys {
+            if !closed_dms.contains(k) && !want.contains(k) {
+                want.push(k.clone());
+            }
+        }
+        // A room the server put us in (bookmark, invite, force-join) is only known to this
+        // session; persist it so we rejoin it ourselves next time.
+        for rjid in &f.rooms {
+            if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
+                self.settings.jabber_rooms.push(rjid.clone());
+                save = true;
+            }
+        }
+        let mut t = self.tab_set();
+        reconcile_tabs(&mut t, &want);
+        t.normalize();
+        let empty = t.empty_popouts();
+        if !empty.is_empty() {
+            self.jabber_popouts.retain(|w| !empty.contains(&w.id));
+        }
+        if save {
+            self.needs_save = true;
+        }
+    }
+
+    fn jabber_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
+        if !f.configured {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
@@ -2581,7 +2968,7 @@ impl SpaiApp {
             return;
         }
 
-        if !ever_online {
+        if !f.ever_online {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
                 ui.add(egui::Spinner::new().size(28.0));
@@ -2599,187 +2986,21 @@ impl SpaiApp {
             return;
         }
 
-        // The open conversation is being looked at, so its own incoming messages must not raise an
-        // unread or mention marker. Clear it every focused frame, before reading the marker sets
-        // below (activation via click also clears once, but later messages would re-mark it).
-        if ui.ctx().input(|i| i.focused) {
-            if let Some(active) = self.jabber_chat.clone() {
-                self.jabber_mark_read(&active);
-            }
-        }
-
-        let (
-            connected,
-            status,
-            convos,
-            sel_msgs,
-            pings,
-            rooms,
-            dm_keys,
-            unread,
-            mentions,
-            pings_unread,
-            channels,
-            sel_accessible,
-            inaccessible_list,
-            subjects_snapshot,
-        ) = {
-            let st = self.jabber.lock().unwrap();
-            let mut set: std::collections::BTreeMap<String, Convo> =
-                std::collections::BTreeMap::new();
-            for (jid, c) in &st.roster {
-                set.entry(jid.clone()).or_insert_with(|| Convo {
-                    jid: jid.clone(),
-                    name: c.name.clone().unwrap_or_else(|| jid.split('@').next().unwrap_or(jid).to_owned()),
-                    unread: false,
-                    group: c.groups.first().cloned().unwrap_or_else(|| "Other".to_owned()),
-                    presence: c.presence,
-                    status_text: c.status_text.clone(),
-                });
-            }
-            for jid in st.chats.keys() {
-                let pres = st.presences.get(jid).map(|(p, _)| *p).unwrap_or_default();
-                set.entry(jid.clone()).or_insert_with(|| Convo {
-                    jid: jid.clone(),
-                    name: jid.split('@').next().unwrap_or(jid).to_owned(),
-                    unread: false,
-                    group: "Other".to_owned(),
-                    presence: pres,
-                    status_text: String::new(),
-                });
-            }
-            for jid in &st.unread {
-                if let Some(e) = set.get_mut(jid) {
-                    e.unread = true;
-                }
-            }
-            let convos: Vec<Convo> = set.into_values().collect();
-            let sel_msgs = self
-                .jabber_chat
-                .as_ref()
-                .and_then(|j| st.chats.get(j))
-                .cloned()
-                .unwrap_or_default();
-            let rooms: Vec<(String, bool)> =
-                st.rooms.iter().map(|r| (r.clone(), st.unread.contains(r))).collect();
-            let dm_keys: Vec<String> = st
-                .chats
-                .keys()
-                .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY && valid_bare_jid(k))
-                .cloned()
-                .collect();
-            let unread = st.unread.clone();
-            let mentions = st.mentions.clone();
-            // Channels list = every known room (persisted + currently joined + kicked), so a room
-            // stays listed after we're removed from it. History lives in `chats` regardless.
-            let mut known: std::collections::BTreeSet<&String> = std::collections::BTreeSet::new();
-            known.extend(self.settings.jabber_rooms.iter());
-            known.extend(st.rooms.iter());
-            known.extend(st.rooms_inaccessible.iter());
-            known.remove(&crate::jabber::PING_FEED_KEY.to_owned());
-            let mut channels: Vec<ChannelRow> = known
-                .into_iter()
-                .map(|jid| ChannelRow {
-                    jid: jid.clone(),
-                    name: jid.split('@').next().unwrap_or(jid).to_owned(),
-                    unread: st.unread.contains(jid),
-                    inaccessible: st.rooms_inaccessible.contains(jid),
-                    motd: st.room_subjects.get(jid).cloned().unwrap_or_default(),
-                })
-                .collect();
-            channels.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-            // The open conversation is a kicked room -> disable its composer (history only).
-            let sel_accessible = self
-                .jabber_chat
-                .as_ref()
-                .map(|j| !st.rooms_inaccessible.contains(j))
-                .unwrap_or(true);
-            let inaccessible_list: Vec<String> = st.rooms_inaccessible.iter().cloned().collect();
-            let subjects_snapshot = st.room_subjects.clone();
-            (
-                st.connected,
-                st.status.clone(),
-                convos,
-                sel_msgs,
-                st.pings.clone(),
-                rooms,
-                dm_keys,
-                unread,
-                mentions,
-                st.pings_unread,
-                channels,
-                sel_accessible,
-                inaccessible_list,
-                subjects_snapshot,
-            )
-        };
         // Mirror the live MOTD + kicked-room state into settings so history-only channels keep
         // their strike-through and last-known MOTD across restarts.
-        if self.settings.jabber_inaccessible_rooms != inaccessible_list {
-            self.settings.jabber_inaccessible_rooms = inaccessible_list;
+        if self.settings.jabber_inaccessible_rooms != f.inaccessible {
+            self.settings.jabber_inaccessible_rooms = f.inaccessible.clone();
             self.needs_save = true;
         }
-        if self.settings.jabber_room_subjects != subjects_snapshot {
-            self.settings.jabber_room_subjects = subjects_snapshot;
+        if self.settings.jabber_room_subjects != f.subjects {
+            self.settings.jabber_room_subjects = f.subjects.clone();
             self.needs_save = true;
-        }
-
-        // Reconcile the open-conversation tabs from joined rooms + DM history. An incoming
-        // message (present in `unread`) reopens a conversation whose tab was closed.
-        {
-            let mut save = false;
-            for k in &unread {
-                if let Some(p) = self.settings.jabber_closed_dms.iter().position(|j| j == k) {
-                    self.settings.jabber_closed_dms.remove(p);
-                    save = true;
-                }
-                if let Some(p) = self.settings.jabber_closed_rooms.iter().position(|j| j == k) {
-                    self.settings.jabber_closed_rooms.remove(p);
-                    save = true;
-                }
-            }
-            let closed_dms: std::collections::HashSet<String> =
-                self.settings.jabber_closed_dms.iter().cloned().collect();
-            let closed_rooms: std::collections::HashSet<String> =
-                self.settings.jabber_closed_rooms.iter().cloned().collect();
-            let room_set: std::collections::HashSet<String> =
-                rooms.iter().map(|(r, _)| r.clone()).collect();
-            for (rjid, _) in &rooms {
-                // A room we were put into by the server (bookmark, invite, force-join) is only known
-                // to this session; persist it so we rejoin it ourselves next time.
-                if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
-                    self.settings.jabber_rooms.push(rjid.clone());
-                    save = true;
-                }
-                if !closed_rooms.contains(rjid) && !self.jabber_tabs.iter().any(|t| t == rjid) {
-                    self.jabber_tabs.push(rjid.clone());
-                }
-            }
-            for k in &dm_keys {
-                if !closed_dms.contains(k) && !self.jabber_tabs.iter().any(|t| t == k) {
-                    self.jabber_tabs.push(k.clone());
-                }
-            }
-            self.jabber_tabs.retain(|t| {
-                if room_set.contains(t) {
-                    !closed_rooms.contains(t)
-                } else {
-                    !closed_dms.contains(t)
-                }
-            });
-            if let Some(jid) = self.jabber_chat.clone() {
-                if !room_set.contains(&jid) && !self.jabber_tabs.iter().any(|t| t == &jid) {
-                    self.jabber_chat = None;
-                }
-            }
-            if save {
-                self.needs_save = true;
-            }
         }
 
         let mut presence_changed = false;
+        let mut pop_all = false;
         ui.horizontal(|ui| {
-            if connected {
+            if f.connected {
                 use crate::jabber::Presence;
                 let (r, g, b) = self.jabber_my_presence.color();
                 status_dot(ui, egui::Color32::from_rgb(r, g, b), 10.0);
@@ -2807,7 +3028,7 @@ impl SpaiApp {
                 }
             } else {
                 status_dot(ui, crate::theme::standing::WARNING, 10.0);
-                ui.label(egui::RichText::new(status.as_str()).weak());
+                ui.label(egui::RichText::new(f.status.as_str()).weak());
                 self.jabber_retry_button(ui);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2815,8 +3036,15 @@ impl SpaiApp {
                     self.settings.jabber_enabled = false;
                     self.needs_save = true;
                 }
-                if !self.jabber_popped && ui.button("Pop out").clicked() {
-                    self.jabber_popped = true;
+                if ui
+                    .add_enabled(
+                        !self.jabber_tabs.is_empty() && self.jabber_popouts.len() < MAX_POPOUTS,
+                        egui::Button::new(egui_phosphor::regular::ARROW_SQUARE_OUT),
+                    )
+                    .on_hover_text("Pop out all conversations into one window")
+                    .clicked()
+                {
+                    pop_all = true;
                 }
                 if ui
                     .button(egui_phosphor::regular::BELL_RINGING)
@@ -2845,9 +3073,18 @@ impl SpaiApp {
                 });
             }
         }
+        if pop_all {
+            let all: Vec<String> = self.jabber_tabs.clone();
+            if let Some(first) = all.first() {
+                if let Some(id) = self.new_popout(first, None) {
+                    for j in all.iter().skip(1) {
+                        self.tab_set().move_tab(j, ChatWinKey::Popout(id), None);
+                    }
+                }
+            }
+        }
         ui.separator();
 
-        let systems = self.systems.clone();
         egui::Panel::left("jabber_split")
             .resizable(true)
             .default_size(210.0)
@@ -2890,10 +3127,11 @@ impl SpaiApp {
                 );
                 let search = self.jabber_contact_search.to_lowercase();
                 if self.jabber_pane == JabberPane::Channels {
-                    self.jabber_channels_list_ui(ui, &channels, connected, &search);
+                    self.jabber_channels_list_ui(ui, &f.channels, f.connected, &search);
                 } else {
                 let show_dir = self.jabber_pane == JabberPane::Directory;
-                let shown: Vec<&Convo> = convos
+                let shown: Vec<&Convo> = f
+                    .convos
                     .iter()
                     .filter(|c| show_dir || contacts.contains(&c.jid))
                     .filter(|c| {
@@ -3024,10 +3262,7 @@ impl SpaiApp {
                             resp.response.on_hover_text(tip);
                             if resp.inner {
                                 self.settings.jabber_closed_dms.retain(|j| j != &c.jid);
-                                if !self.jabber_tabs.iter().any(|t| t == &c.jid) {
-                                    self.jabber_tabs.push(c.jid.clone());
-                                }
-                                self.jabber_chat = Some(c.jid.clone());
+                                self.jabber_open(&c.jid, ChatWinKey::Main);
                                 self.jabber_mark_read(&c.jid);
                             }
                         }
@@ -3045,544 +3280,786 @@ impl SpaiApp {
                 }
                 }
             });
-        egui::Panel::top("jabber_tab_bar")
-            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
-            .show_inside(ui, |ui| {
-                // Tab strip: Fleet pings (static, left-most) then one tab per open conversation.
-                let mut focus: Option<Option<String>> = None;
-                let mut close_tab: Option<(String, bool)> = None;
-                // Set when a not-currently-visible tab is picked from the dropdown, so it is moved to
-                // the front of the bar (right after Fleet pings) and the rightmost tab overflows.
-                let mut promote: Option<String> = None;
-                // One non-scrolling row: Fleet pings (pinned) + as many chat tabs as fit, the rest in
-                // a right-side overflow dropdown. Widths are estimated from the label galley so we can
-                // decide inclusion without a horizontal scroll area.
-                struct TabInfo {
-                    jid: String,
-                    is_room: bool,
-                    is_unread: bool,
-                    is_mention: bool,
-                    lead: TabLead,
-                    label: String,
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    // The overflow dropdown is a fixed-width pseudo-tab pinned to the right edge;
-                    // tabs fill the space to its left. A boundary tab is ellipsized (rather than
-                    // dropped) when it only partly fits, so the row is packed and the dropdown
-                    // never moves.
-                    const MIN_TAB_W: f32 = 76.0;
-                    let full = ui.available_width();
-                    // Reserve the dropdown's exact width for its widest state (caret + the largest
-                    // possible overflow count) so the badge never grows the button past the edge.
-                    let dd_w = {
-                        let body = egui::TextStyle::Body.resolve(ui.style());
-                        let widest = format!(
-                            "{}  {}",
-                            egui_phosphor::regular::CARET_DOWN,
-                            self.jabber_tabs.len().max(1)
-                        );
-                        let text_w = ui
-                            .painter()
-                            .layout_no_wrap(widest, body, egui::Color32::WHITE)
-                            .size()
-                            .x;
-                        text_w + 2.0 * ui.spacing().button_padding.x + 4.0
-                    };
-                    let tab_area = (full - dd_w).max(0.0);
-
-                    let pings_label = format!("Fleet pings ({})", pings.len());
-                    let (sel, _) = jabber_tab_box(
-                        ui,
-                        self.jabber_chat.is_none(),
-                        pings_unread,
-                        false,
-                        TabLead::Icon(egui_phosphor::regular::MEGAPHONE),
-                        false,
-                        &pings_label,
-                    );
-                    if sel {
-                        focus = Some(None);
-                    }
-                    let mut used = jabber_tab_width(ui, false, pings_unread, &pings_label);
-
-                    let infos: Vec<TabInfo> = self
-                        .jabber_tabs
-                        .iter()
-                        .map(|jid| {
-                            let is_room = channels.iter().any(|c| &c.jid == jid);
-                            let is_unread = unread.contains(jid);
-                            let label = short_chip(jid.split('@').next().unwrap_or(jid));
-                            let lead = if is_room {
-                                TabLead::Icon(egui_phosphor::regular::USERS_THREE)
-                            } else {
-                                let pres = convos
-                                    .iter()
-                                    .find(|c| &c.jid == jid)
-                                    .map(|c| c.presence)
-                                    .unwrap_or_default();
-                                let (pr, pg, pb) = pres.color();
-                                TabLead::Dot(egui::Color32::from_rgb(pr, pg, pb))
-                            };
-                            let is_mention = mentions.contains(jid);
-                            TabInfo { jid: jid.clone(), is_room, is_unread, is_mention, lead, label }
-                        })
-                        .collect();
-
-                    // Plan the visible tabs (with the label actually rendered, possibly ellipsized)
-                    // and collect the rest into the dropdown.
-                    let mut plan: Vec<(&TabInfo, String)> = Vec::new();
-                    let mut overflow: Vec<&TabInfo> = Vec::new();
-                    let mut full_bar = false;
-                    for t in &infos {
-                        if full_bar {
-                            overflow.push(t);
-                            continue;
-                        }
-                        let w = jabber_tab_width(ui, true, t.is_unread, &t.label);
-                        let remaining = tab_area - used;
-                        if w <= remaining {
-                            used += w;
-                            plan.push((t, t.label.clone()));
-                        } else if remaining >= MIN_TAB_W {
-                            let lbl = ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
-                            used += jabber_tab_width(ui, true, t.is_unread, &lbl);
-                            plan.push((t, lbl));
-                            full_bar = true;
-                        } else {
-                            overflow.push(t);
-                            full_bar = true;
-                        }
-                    }
-                    // Guarantee the open conversation stays on the bar: evict trailing tabs until it
-                    // fits, then place it (ellipsized if needed).
-                    if let Some(sel_jid) = self.jabber_chat.clone() {
-                        if !plan.iter().any(|(t, _)| t.jid == sel_jid) {
-                            if let Some(pos) = overflow.iter().position(|t| t.jid == sel_jid) {
-                                while tab_area - used < MIN_TAB_W && !plan.is_empty() {
-                                    let (t, lbl) = plan.pop().unwrap();
-                                    used -= jabber_tab_width(ui, true, t.is_unread, &lbl);
-                                    overflow.insert(0, t);
-                                }
-                                let t = overflow.remove(pos.min(overflow.len().saturating_sub(1)));
-                                let remaining = tab_area - used;
-                                let lbl =
-                                    ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
-                                used += jabber_tab_width(ui, true, t.is_unread, &lbl);
-                                plan.push((t, lbl));
-                            }
-                        }
-                    }
-
-                    for (t, lbl) in &plan {
-                        let (sel, close) = jabber_tab_box(
-                            ui,
-                            self.jabber_chat.as_deref() == Some(t.jid.as_str()),
-                            t.is_unread,
-                            t.is_mention,
-                            t.lead,
-                            true,
-                            lbl,
-                        );
-                        if sel {
-                            focus = Some(Some(t.jid.clone()));
-                        }
-                        if close {
-                            close_tab = Some((t.jid.clone(), t.is_room));
-                        }
-                    }
-
-                    // Pin the dropdown pseudo-tab to the right edge (always shown, static position).
-                    let pad = (full - used - dd_w).max(0.0);
-                    if pad > 0.0 {
-                        ui.add_space(pad);
-                    }
-                    let any_unread = overflow.iter().any(|t| t.is_unread);
-                    let caret = if overflow.is_empty() {
-                        egui_phosphor::regular::CARET_DOWN.to_owned()
-                    } else {
-                        format!("{} {}", egui_phosphor::regular::CARET_DOWN, overflow.len())
-                    };
-                    let caret = if any_unread {
-                        egui::RichText::new(caret).strong()
-                    } else {
-                        egui::RichText::new(caret)
-                    };
-                    let dd_btn = egui::Button::new(caret)
-                        .min_size(egui::vec2(dd_w, TAB_H))
-                        .corner_radius(0.0);
-                    let menu_list: Vec<&TabInfo> =
-                        if overflow.is_empty() { infos.iter().collect() } else { overflow };
-                    egui::containers::menu::MenuButton::from_button(dd_btn).ui(ui, |ui| {
-                        for t in &menu_list {
-                            ui.horizontal(|ui| {
-                                match t.lead {
-                                    TabLead::Dot(c) => status_dot(ui, c, 9.0),
-                                    TabLead::Icon(ic) => {
-                                        ui.label(ic);
-                                    }
-                                }
-                                if ui.selectable_label(false, t.label.as_str()).clicked() {
-                                    focus = Some(Some(t.jid.clone()));
-                                    if !plan.iter().any(|(pt, _)| pt.jid == t.jid) {
-                                        promote = Some(t.jid.clone());
-                                    }
-                                    ui.close();
-                                }
-                                if t.is_unread {
-                                    ui.label(
-                                        egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                            .color(UNREAD_RED)
-                                            .size(8.0),
-                                    );
-                                }
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new(egui_phosphor::regular::X).small(),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .on_hover_text("Close")
-                                    .clicked()
-                                {
-                                    close_tab = Some((t.jid.clone(), t.is_room));
-                                    ui.close();
-                                }
-                            });
-                        }
-                    });
-                });
-                if let Some(target) = focus {
-                    match &target {
-                        None => self.jabber.lock().unwrap().pings_unread = false,
-                        Some(jid) => {
-                            self.jabber_mark_read(jid);
-                        }
-                    }
-                    self.jabber_chat = target;
-                }
-                if let Some((jid, is_room)) = close_tab {
-                    self.close_jabber_tab(&jid, is_room);
-                }
-                if let Some(jid) = promote {
-                    if let Some(pos) = self.jabber_tabs.iter().position(|t| t == &jid) {
-                        let t = self.jabber_tabs.remove(pos);
-                        self.jabber_tabs.insert(0, t);
-                    }
-                }
-            });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-                match self.jabber_chat.clone() {
-                    None => {
-                        // Rescue destination shortcuts: one per recent delve911 rescue ping, so you can
-                        // route to any of the last few reported systems without opening the rescue
-                        // window. Sourced from the rescue events, each using that ping's own system.
-                        #[cfg(feature = "fc-rescue")]
-                        {
-                        let recent = self.rescue_recent_dests(3);
-                        let mut set_rescue_dest: Option<i64> = None;
-                        if !recent.is_empty() {
-                            ui.label(egui::RichText::new(format!(
-                                "{}  Rescue",
-                                egui_phosphor::regular::WARNING_OCTAGON
-                            )).strong());
-                            for (sid, name) in &recent {
-                                let name = if name.is_empty() { "?" } else { name.as_str() };
-                                if ui
-                                    .button(format!(
-                                        "{}  Set Destination: {name}",
-                                        egui_phosphor::regular::MAP_PIN_LINE
-                                    ))
-                                    .clicked()
-                                {
-                                    set_rescue_dest = Some(*sid);
-                                }
-                            }
-                            ui.separator();
-                        }
-                        if let Some(sid) = set_rescue_dest {
-                            self.rescue_push_destination(sid);
-                        }
-                        }
-                        let hl: Vec<bool> =
-                            pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
-                        let doctrine_url = self.settings.doctrine_url.clone();
-                        let op_links = self.settings.op_channel_links.clone();
-                        let visible = self.jabber_pings_visible.min(pings.len());
-                        let out = egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
-                            if pings.is_empty() {
-                                ui.label(egui::RichText::new("No pings yet.").weak());
-                            }
-                            for (i, p) in pings.iter().enumerate().rev().take(visible) {
-                                render_ping(ui, p, &systems, hl[i], &doctrine_url, &op_links);
-                            }
-                            if visible < pings.len() {
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(format!("+{} older", pings.len() - visible))
-                                        .weak(),
-                                );
-                            }
-                        });
-                        // Load the next page once the user scrolls near the bottom of the shown set.
-                        if visible < pings.len()
-                            && out.state.offset.y + out.inner_rect.height()
-                                >= out.content_size.y - 200.0
-                        {
-                            self.jabber_pings_visible = (visible + 50).min(pings.len());
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                    Some(jid) => {
-                        self.jabber_pings_visible = 50;
-                        use egui_phosphor::regular as icon;
-                        let is_room = channels.iter().any(|c| c.jid == jid);
-                        let muted = self.jabber_is_muted(&jid);
-                        ui.horizontal(|ui| {
-                            let name = jid.split('@').next().unwrap_or(&jid);
-                            let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
-                            ui.label(egui::RichText::new(format!("{glyph}  {name}")).strong());
-                            if muted {
-                                ui.label(egui::RichText::new(icon::BELL_SLASH).weak())
-                                    .on_hover_text("Muted");
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if !is_room {
-                                        let is_contact =
-                                            self.settings.jabber_contacts.contains(&jid);
-                                        let col = if is_contact {
-                                            ui.visuals().hyperlink_color
-                                        } else {
-                                            ui.visuals().weak_text_color()
-                                        };
-                                        if ui
-                                            .button(egui::RichText::new(icon::STAR).color(col))
-                                            .on_hover_text(if is_contact {
-                                                "Remove from contacts"
-                                            } else {
-                                                "Add as contact"
-                                            })
-                                            .clicked()
-                                        {
-                                            if is_contact {
-                                                self.settings.jabber_contacts.retain(|j| j != &jid);
-                                            } else {
-                                                self.settings.jabber_contacts.push(jid.clone());
-                                            }
-                                            self.needs_save = true;
-                                        }
-                                    }
-                                    let bell = if muted { icon::BELL_SLASH } else { icon::BELL };
-                                    ui.menu_button(bell, |ui| {
-                                        let now = chrono::Utc::now().timestamp();
-                                        let set = |app: &mut Self, until: i64| {
-                                            app.settings.jabber_muted.insert(jid.clone(), until);
-                                            app.needs_save = true;
-                                        };
-                                        if ui.button("Mute 1 hour").clicked() {
-                                            set(self, now + 3600);
-                                            ui.close();
-                                        }
-                                        if ui.button("Mute 8 hours").clicked() {
-                                            set(self, now + 8 * 3600);
-                                            ui.close();
-                                        }
-                                        if ui.button("Mute until I unmute").clicked() {
-                                            set(self, i64::MAX);
-                                            ui.close();
-                                        }
-                                        if muted && ui.button("Unmute").clicked() {
-                                            self.settings.jabber_muted.remove(&jid);
-                                            self.needs_save = true;
-                                            ui.close();
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text("Mute notifications");
-                                },
-                            );
-                        });
-                        ui.separator();
-                        let composer_h = 32.0;
-                        let session_start = self.session_start;
-                        let mut dm_click: Option<String> = None;
-                        let body_h = ui.available_height();
-                        // Don't snap to the bottom while the pointer is held: that snap on
-                        // every incoming message was wiping out any text selection mid-drag
-                        // (the chat felt unselectable in a busy channel). It resumes on release.
-                        let selecting = ui.input(|i| i.pointer.any_down());
-                        egui::ScrollArea::vertical()
-                            .id_salt("msgs")
-                            .auto_shrink([false, false])
-                            .max_height((body_h - composer_h - 8.0).max(60.0))
-                            .stick_to_bottom(!selecting)
-                            .show(ui, |ui| {
-                                let accent = ui.visuals().hyperlink_color;
-                                let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
-                                let now = chrono::Utc::now().timestamp();
-                                let names = self.mention_names();
-                                ui.spacing_mut().item_spacing.y = 1.0;
-                                let mut hist_drawn = false;
-                                let mut prev_sender: Option<String> = None;
-                                let mut prev_time: i64 = 0;
-                                for m in &sel_msgs {
-                                    if !hist_drawn && m.time >= session_start && m.time > 0 {
-                                        hist_drawn = true;
-                                        prev_sender = None;
-                                        ui.add_space(2.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("— new —").weak().small());
-                                            ui.separator();
-                                        });
-                                    }
-                                    let sender =
-                                        if m.outgoing { "\u{0}me".to_owned() } else { m.from.clone() };
-                                    let grouped = prev_sender.as_deref() == Some(sender.as_str())
-                                        && m.time >= prev_time
-                                        && m.time - prev_time < 300;
-                                    if !grouped {
-                                        ui.add_space(5.0);
-                                        ui.label(
-                                            egui::RichText::new(eve_time_label(m.time, now))
-                                                .weak()
-                                                .size(9.5),
-                                        );
-                                    }
-                                    let mut row = |ui: &mut egui::Ui| {
-                                        ui.horizontal_wrapped(|ui| {
-                                            if !grouped {
-                                                if m.outgoing {
-                                                    ui.label(
-                                                        egui::RichText::new("me:")
-                                                            .color(me_col)
-                                                            .strong(),
-                                                    );
-                                                } else {
-                                                    let n =
-                                                        m.from.split('@').next().unwrap_or(&m.from);
-                                                    let lbl = egui::Label::new(
-                                                        egui::RichText::new(format!("{n}:"))
-                                                            .strong()
-                                                            .color(accent),
-                                                    );
-                                                    let resp = if is_room {
-                                                        ui.add(lbl.sense(egui::Sense::click()))
-                                                            .on_hover_text("Message")
-                                                    } else {
-                                                        ui.add(lbl)
-                                                    };
-                                                    if resp.clicked() {
-                                                        dm_click = Some(n.to_owned());
-                                                    }
-                                                }
-                                            }
-                                            render_message_body(ui, condense_attention_list(&m.body).as_ref());
-                                        });
-                                    };
-                                    let mentioned = !m.outgoing
-                                        && crate::jabber::mention_hit(&m.body, &names);
-                                    if mentioned {
-                                        egui::Frame::new()
-                                            .fill(MENTION_BG)
-                                            .inner_margin(egui::Margin::symmetric(4, 2))
-                                            .show(ui, &mut row);
-                                    } else {
-                                        row(ui);
-                                    }
-                                    prev_sender = Some(sender);
-                                    prev_time = m.time;
-                                }
-                            });
-                        if is_room && !sel_accessible {
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "You're no longer in this channel, history only.",
-                                )
-                                .weak(),
-                            );
-                        } else {
-                        ui.horizontal_top(|ui| {
-                            let shift_enter = egui::KeyboardShortcut::new(
-                                egui::Modifiers::SHIFT,
-                                egui::Key::Enter,
-                            );
-                            let row_h = ui.text_style_height(&egui::TextStyle::Body);
-                            let resp = egui::ScrollArea::vertical()
-                                .id_salt("composer")
-                                .max_height(row_h * 8.0)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::multiline(
-                                            self.jabber_drafts.entry(jid.clone()).or_default(),
-                                        )
-                                        .hint_text("Message (Shift+Enter for a new line)")
-                                        .return_key(shift_enter)
-                                        .desired_rows(2)
-                                        .desired_width(ui.available_width() - 60.0),
-                                    )
-                                })
-                                .inner;
-                            let send = resp.has_focus()
-                                && ui.input(|i| {
-                                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                                });
-                            let draft_empty = self
-                                .jabber_drafts
-                                .get(&jid)
-                                .map_or(true, |d| d.trim().is_empty());
-                            if (ui.button("Send").clicked() || send) && !draft_empty {
-                                let body = self
-                                    .jabber_drafts
-                                    .get_mut(&jid)
-                                    .map(std::mem::take)
-                                    .unwrap_or_default();
-                                if let Some(tx) = &self.jabber_tx {
-                                    let cmd = if is_room {
-                                        crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
-                                    } else {
-                                        crate::jabber::Cmd::Send { to: jid.clone(), body }
-                                    };
-                                    let _ = tx.send(cmd);
-                                }
-                            }
-                        });
-                        }
-                        if let Some(nick) = dm_click {
-                            let dm = self.full_user_jid(&nick);
-                            self.jabber_mark_read(&dm);
-                            self.settings.jabber_closed_dms.retain(|j| j != &dm);
-                            if !self.jabber_tabs.iter().any(|t| t == &dm) {
-                                self.jabber_tabs.push(dm.clone());
-                            }
-                            self.jabber_chat = Some(dm);
-                        }
-                    }
-                }
-            });
-        self.jabber_join_dialog(ui.ctx(), &convos);
-        self.jabber_close_room_dialog(ui.ctx());
+        let mut out: Vec<TabAction> = Vec::new();
+        self.jabber_window_body(ui, ChatWinKey::Main, f, &mut out);
+        self.jabber_join_dialog(ui.ctx(), &f.convos);
+        self.jabber_close_room_dialog(ui.ctx(), ChatWinKey::Main);
+        self.apply_tab_actions(out);
     }
 
-    #[allow(deprecated)]
-    fn show_jabber_viewport(&mut self, ctx: &egui::Context) {
-        let mut keep = true;
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("jabber_window"),
-            egui::ViewportBuilder::default().with_icon(app_icon()).with_title("EVE Spai - Jabber").with_inner_size([720.0, 560.0]),
-            |ctx, _| {
-                egui::CentralPanel::default().show(ctx, |ui| self.jabber_ui(ui));
-                ontop_pin(ctx, "jabber_window");
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    keep = false;
+    /// Tab bar + body for one chat window. No sidebar: that belongs to the Jabber page.
+    fn jabber_window_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        win: ChatWinKey,
+        f: &JabberFrame,
+        out: &mut Vec<TabAction>,
+    ) {
+        let mut bar: Vec<TabAction> = Vec::new();
+        egui::Panel::top(egui::Id::new(("jabber_tab_bar", win)))
+            .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
+            .show_inside(ui, |ui| self.jabber_tab_bar_ui(ui, win, f, &mut bar));
+        // Applied between the bar and the body so a tab click still switches the conversation in
+        // the same frame, as it did when the bar owned this state directly.
+        self.apply_tab_actions(bar);
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.push_id(("jwin", win), |ui| match (win, self.win_active(win)) {
+                (ChatWinKey::Main, None) => self.jabber_pings_ui(ui, f),
+                // A pop-out has no pings feed, and is briefly tabless on the frame its last
+                // conversation moves out, before `jabber_reconcile` prunes the window.
+                (_, None) => {
+                    ui.add_space(12.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("No conversations in this window.").weak());
+                    });
                 }
-            },
-        );
-        if !keep {
-            self.jabber_popped = false;
+                (_, Some(jid)) => self.jabber_conversation_ui(ui, win, &jid, f, out),
+            });
+        });
+        if self.jabber_drop_highlight(win) {
+            ui.painter().rect_stroke(
+                ui.max_rect().shrink(1.0),
+                4.0,
+                egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    fn jabber_tab_bar_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        win: ChatWinKey,
+        f: &JabberFrame,
+        out: &mut Vec<TabAction>,
+    ) {
+        let tabs: Vec<String> = self.win_tabs(win).to_vec();
+        let active = self.win_active(win);
+        let is_main = win == ChatWinKey::Main;
+        // Everything the context menu and the drop maths need, read off `self` before the render
+        // closures so no borrow of `self` has to survive into them.
+        let inner_origin: Option<egui::Pos2> = match win {
+            ChatWinKey::Main => self.jabber_main_rect.map(|(_, inner)| inner.min),
+            ChatWinKey::Popout(id) => self.popout(id).and_then(|w| w.inner).map(|r| r.min),
+        };
+        let own_outer: Option<egui::Rect> = match win {
+            ChatWinKey::Main => self.jabber_main_rect.map(|(outer, _)| outer),
+            ChatWinKey::Popout(id) => self.popout(id).and_then(|w| w.outer),
+        };
+        // Pop-out rects are one frame old, because pop-outs render after the main panel. Windows
+        // do not teleport in 16ms, so a stale rect is good enough to hit-test a drop.
+        let mut drop_rects: Vec<(ChatWinKey, egui::Rect)> = Vec::new();
+        if let Some((outer, _)) = self.jabber_main_rect {
+            drop_rects.push((ChatWinKey::Main, outer));
+        }
+        for w in &self.jabber_popouts {
+            if let Some(r) = w.outer {
+                drop_rects.push((ChatWinKey::Popout(w.id), r));
+            }
+        }
+        // Named after each window's own title bar, so "Move to" is readable with several open.
+        let mut move_targets: Vec<(ChatWinKey, String)> =
+            vec![(ChatWinKey::Main, "Main window".to_owned())];
+        for w in &self.jabber_popouts {
+            let head = w.active.clone().or_else(|| w.tabs.first().cloned()).unwrap_or_default();
+            let head = head.split('@').next().unwrap_or(&head).to_owned();
+            let name = if head.is_empty() { format!("Window {}", w.id) } else { head };
+            move_targets.push((ChatWinKey::Popout(w.id), name));
+        }
+        let can_new = self.jabber_popouts.len() < MAX_POPOUTS;
+        // Tab strip: Fleet pings (static, left-most) then one tab per open conversation.
+        let mut focus: Option<Option<String>> = None;
+        let mut close_tab: Option<(String, bool)> = None;
+        let mut move_to: Option<(String, ChatWinKey)> = None;
+        let mut move_new: Option<String> = None;
+        let mut dragging: Option<(String, Option<egui::Pos2>)> = None;
+        let mut drop: Option<(String, egui::Pos2)> = None;
+        let mut centers: Vec<(String, f32)> = Vec::new();
+        // Set when a not-currently-visible tab is picked from the dropdown, so it is moved to
+        // the front of the bar (right after Fleet pings) and the rightmost tab overflows.
+        let mut promote: Option<String> = None;
+        // One non-scrolling row: Fleet pings (pinned) + as many chat tabs as fit, the rest in
+        // a right-side overflow dropdown. Widths are estimated from the label galley so we can
+        // decide inclusion without a horizontal scroll area.
+        struct TabInfo {
+            jid: String,
+            is_room: bool,
+            is_unread: bool,
+            is_mention: bool,
+            lead: TabLead,
+            label: String,
+        }
+        let bar_rect = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            // The overflow dropdown is a fixed-width pseudo-tab pinned to the right edge;
+            // tabs fill the space to its left. A boundary tab is ellipsized (rather than
+            // dropped) when it only partly fits, so the row is packed and the dropdown
+            // never moves.
+            const MIN_TAB_W: f32 = 96.0;
+            let full = ui.available_width();
+            // Reserve the dropdown's exact width for its widest state (caret + the largest
+            // possible overflow count) so the badge never grows the button past the edge.
+            let dd_w = {
+                let body = egui::TextStyle::Body.resolve(ui.style());
+                let widest = format!(
+                    "{}  {}",
+                    egui_phosphor::regular::CARET_DOWN,
+                    tabs.len().max(1)
+                );
+                let text_w = ui
+                    .painter()
+                    .layout_no_wrap(widest, body, egui::Color32::WHITE)
+                    .size()
+                    .x;
+                text_w + 2.0 * ui.spacing().button_padding.x + 4.0
+            };
+            let tab_area = (full - dd_w).max(0.0);
+
+            let mut used = 0.0;
+            if is_main {
+                let pings_label = format!("Fleet pings ({})", f.pings.len());
+                let hit = jabber_tab_box(
+                    ui,
+                    egui::Id::new(("jtab", win, "\u{0}pings")),
+                    active.is_none(),
+                    f.pings_unread,
+                    false,
+                    TabLead::Icon(egui_phosphor::regular::MEGAPHONE),
+                    false,
+                    false,
+                    &pings_label,
+                );
+                if hit.select {
+                    focus = Some(None);
+                }
+                used = jabber_tab_width(ui, false, f.pings_unread, &pings_label);
+            }
+
+            let infos: Vec<TabInfo> = tabs
+                .iter()
+                .map(|jid| {
+                    let is_room = f.channels.iter().any(|c| &c.jid == jid);
+                    let is_unread = f.unread.contains(jid);
+                    let label = short_chip(jid.split('@').next().unwrap_or(jid));
+                    let lead = if is_room {
+                        TabLead::Icon(egui_phosphor::regular::USERS_THREE)
+                    } else {
+                        let pres = f
+                            .convos
+                            .iter()
+                            .find(|c| &c.jid == jid)
+                            .map(|c| c.presence)
+                            .unwrap_or_default();
+                        let (pr, pg, pb) = pres.color();
+                        TabLead::Dot(egui::Color32::from_rgb(pr, pg, pb))
+                    };
+                    let is_mention = f.mentions.contains(jid);
+                    TabInfo { jid: jid.clone(), is_room, is_unread, is_mention, lead, label }
+                })
+                .collect();
+
+            // Plan the visible tabs (with the label actually rendered, possibly ellipsized)
+            // and collect the rest into the dropdown.
+            let mut plan: Vec<(&TabInfo, String)> = Vec::new();
+            let mut overflow: Vec<&TabInfo> = Vec::new();
+            let mut full_bar = false;
+            for t in &infos {
+                if full_bar {
+                    overflow.push(t);
+                    continue;
+                }
+                let w = jabber_tab_width(ui, true, t.is_unread, &t.label);
+                let remaining = tab_area - used;
+                if w <= remaining {
+                    used += w;
+                    plan.push((t, t.label.clone()));
+                } else if remaining >= MIN_TAB_W {
+                    let lbl = ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
+                    used += jabber_tab_width(ui, true, t.is_unread, &lbl);
+                    plan.push((t, lbl));
+                    full_bar = true;
+                } else {
+                    overflow.push(t);
+                    full_bar = true;
+                }
+            }
+            // Guarantee the open conversation stays on the bar: evict trailing tabs until it
+            // fits, then place it (ellipsized if needed).
+            if let Some(sel_jid) = active.clone() {
+                if !plan.iter().any(|(t, _)| t.jid == sel_jid) {
+                    if let Some(pos) = overflow.iter().position(|t| t.jid == sel_jid) {
+                        while tab_area - used < MIN_TAB_W && !plan.is_empty() {
+                            let (t, lbl) = plan.pop().unwrap();
+                            used -= jabber_tab_width(ui, true, t.is_unread, &lbl);
+                            overflow.insert(0, t);
+                        }
+                        let t = overflow.remove(pos.min(overflow.len().saturating_sub(1)));
+                        let remaining = tab_area - used;
+                        let lbl =
+                            ellipsize_tab_label(ui, true, t.is_unread, &t.label, remaining);
+                        used += jabber_tab_width(ui, true, t.is_unread, &lbl);
+                        plan.push((t, lbl));
+                    }
+                }
+            }
+
+            for (t, lbl) in &plan {
+                let hit = jabber_tab_box(
+                    ui,
+                    egui::Id::new(("jtab", win, t.jid.as_str())),
+                    active.as_deref() == Some(t.jid.as_str()),
+                    t.is_unread,
+                    t.is_mention,
+                    t.lead,
+                    true,
+                    can_new,
+                    lbl,
+                );
+                centers.push((t.jid.clone(), hit.resp.rect.center().x));
+                if hit.select {
+                    focus = Some(Some(t.jid.clone()));
+                }
+                if hit.close {
+                    close_tab = Some((t.jid.clone(), t.is_room));
+                }
+                if hit.popout {
+                    move_new = Some(t.jid.clone());
+                }
+                // Primary button only: a secondary-button drag belongs to the context menu, and
+                // egui would otherwise report it as a tab drag and relocate the tab on release.
+                if hit.resp.drag_started_by(egui::PointerButton::Primary)
+                    || hit.resp.dragged_by(egui::PointerButton::Primary)
+                {
+                    dragging = Some((t.jid.clone(), hit.resp.interact_pointer_pos()));
+                }
+                if hit.resp.drag_stopped_by(egui::PointerButton::Primary) {
+                    if let Some(at) = hit.resp.interact_pointer_pos() {
+                        drop = Some((t.jid.clone(), at));
+                    }
+                }
+                hit.resp.context_menu(|ui| {
+                    if ui
+                        .add_enabled(
+                            can_new,
+                            egui::Button::new(format!(
+                                "{}  Open in new window",
+                                egui_phosphor::regular::ARROW_SQUARE_OUT
+                            )),
+                        )
+                        .clicked()
+                    {
+                        move_new = Some(t.jid.clone());
+                        ui.close();
+                    }
+                    egui::containers::menu::SubMenuButton::new("Move to").ui(ui, |ui| {
+                        for (k, name) in &move_targets {
+                            if ui
+                                .add_enabled(*k != win, egui::Button::new(name.as_str()))
+                                .clicked()
+                            {
+                                move_to = Some((t.jid.clone(), *k));
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        if ui.add_enabled(can_new, egui::Button::new("New window")).clicked() {
+                            move_new = Some(t.jid.clone());
+                            ui.close();
+                        }
+                    });
+                    ui.separator();
+                    if ui
+                        .button(format!("{}  Close", egui_phosphor::regular::X))
+                        .clicked()
+                    {
+                        close_tab = Some((t.jid.clone(), t.is_room));
+                        ui.close();
+                    }
+                });
+            }
+
+            // Pin the dropdown pseudo-tab to the right edge (always shown, static position).
+            let pad = (full - used - dd_w).max(0.0);
+            if pad > 0.0 {
+                ui.add_space(pad);
+            }
+            let any_unread = overflow.iter().any(|t| t.is_unread);
+            let caret = if overflow.is_empty() {
+                egui_phosphor::regular::CARET_DOWN.to_owned()
+            } else {
+                format!("{} {}", egui_phosphor::regular::CARET_DOWN, overflow.len())
+            };
+            let caret = if any_unread {
+                egui::RichText::new(caret).strong()
+            } else {
+                egui::RichText::new(caret)
+            };
+            let dd_btn = egui::Button::new(caret)
+                .min_size(egui::vec2(dd_w, TAB_H))
+                .corner_radius(0.0);
+            let menu_list: Vec<&TabInfo> =
+                if overflow.is_empty() { infos.iter().collect() } else { overflow };
+            egui::containers::menu::MenuButton::from_button(dd_btn).ui(ui, |ui| {
+                for t in &menu_list {
+                    ui.horizontal(|ui| {
+                        match t.lead {
+                            TabLead::Dot(c) => status_dot(ui, c, 9.0),
+                            TabLead::Icon(ic) => {
+                                ui.label(ic);
+                            }
+                        }
+                        if ui.selectable_label(false, t.label.as_str()).clicked() {
+                            focus = Some(Some(t.jid.clone()));
+                            if !plan.iter().any(|(pt, _)| pt.jid == t.jid) {
+                                promote = Some(t.jid.clone());
+                            }
+                            ui.close();
+                        }
+                        if t.is_unread {
+                            ui.label(
+                                egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                                    .color(UNREAD_RED)
+                                    .size(8.0),
+                            );
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(egui_phosphor::regular::X).small(),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Close")
+                            .clicked()
+                        {
+                            close_tab = Some((t.jid.clone(), t.is_room));
+                            ui.close();
+                        }
+                    });
+                }
+            });
+        }).response.rect;
+        if let Some(jid) = focus {
+            out.push(TabAction::Select { win, jid });
+        }
+        if let Some((jid, is_room)) = close_tab {
+            out.push(TabAction::Close { win, jid, is_room });
+        }
+        if let Some(jid) = promote {
+            out.push(TabAction::Promote { win, jid });
+        }
+        if let Some((jid, to)) = move_to {
+            out.push(TabAction::Move { jid, to, index: None });
+        }
+        if let Some(jid) = move_new {
+            out.push(TabAction::MoveToNew { jid, at: None });
+        }
+        if let Some((jid, local)) = dragging {
+            let at = local.zip(inner_origin).map(|(l, o)| o + l.to_vec2());
+            self.jabber_tab_drag = Some(TabDrag { jid, from: win, at, alive: true });
+        }
+        if let Some((jid, local)) = drop {
+            self.jabber_tab_drag = None;
+            let screen = inner_origin.map(|o| o + local.to_vec2());
+            // Without a screen position (Wayland reports no window rect) the gesture degrades to
+            // an in-bar reorder and can never tear a window off, which would otherwise spawn
+            // stray windows at an unknown place.
+            let over_self = bar_rect.contains(local)
+                || screen.is_none()
+                || own_outer.zip(screen).is_some_and(|(r, p)| r.contains(p));
+            let target =
+                if over_self { Some(win) } else { drop_target(&drop_rects, win, screen) };
+            match target {
+                Some(t) if t == win => {
+                    let index = reorder_index(&tabs, &centers, &jid, local.x);
+                    out.push(TabAction::Move { jid, to: win, index: Some(index) });
+                }
+                Some(t) => out.push(TabAction::Move { jid, to: t, index: None }),
+                None => out.push(TabAction::MoveToNew { jid, at: screen }),
+            }
+        }
+    }
+
+    /// The Fleet pings pseudo-tab. Main window only: a pop-out has no pings feed.
+    fn jabber_pings_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
+        // Rescue destination shortcuts: one per recent delve911 rescue ping, so you can
+        // route to any of the last few reported systems without opening the rescue
+        // window. Sourced from the rescue events, each using that ping's own system.
+        #[cfg(feature = "fc-rescue")]
+        {
+        let recent = self.rescue_recent_dests(3);
+        let mut set_rescue_dest: Option<i64> = None;
+        if !recent.is_empty() {
+            ui.label(egui::RichText::new(format!(
+                "{}  Rescue",
+                egui_phosphor::regular::WARNING_OCTAGON
+            )).strong());
+            for (sid, name) in &recent {
+                let name = if name.is_empty() { "?" } else { name.as_str() };
+                if ui
+                    .button(format!(
+                        "{}  Set Destination: {name}",
+                        egui_phosphor::regular::MAP_PIN_LINE
+                    ))
+                    .clicked()
+                {
+                    set_rescue_dest = Some(*sid);
+                }
+            }
+            ui.separator();
+        }
+        if let Some(sid) = set_rescue_dest {
+            self.rescue_push_destination(sid);
+        }
+        }
+        let systems = self.systems.clone();
+        let pings = &f.pings;
+        let hl: Vec<bool> =
+            pings.iter().map(|p| self.matching_ping_rule(p).is_some_and(|r| !r.suppress)).collect();
+        let doctrine_url = self.settings.doctrine_url.clone();
+        let op_links = self.settings.op_channel_links.clone();
+        let visible = self.jabber_pings_visible.min(pings.len());
+        let out = egui::ScrollArea::vertical().id_salt("pings").auto_shrink([false, false]).show(ui, |ui| {
+            if pings.is_empty() {
+                ui.label(egui::RichText::new("No pings yet.").weak());
+            }
+            for (i, p) in pings.iter().enumerate().rev().take(visible) {
+                render_ping(ui, p, &systems, hl[i], &doctrine_url, &op_links);
+            }
+            if visible < pings.len() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!("+{} older", pings.len() - visible))
+                        .weak(),
+                );
+            }
+        });
+        // Load the next page once the user scrolls near the bottom of the shown set.
+        if visible < pings.len()
+            && out.state.offset.y + out.inner_rect.height()
+                >= out.content_size.y - 200.0
+        {
+            self.jabber_pings_visible = (visible + 50).min(pings.len());
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn jabber_conversation_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        win: ChatWinKey,
+        jid: &str,
+        f: &JabberFrame,
+        out: &mut Vec<TabAction>,
+    ) {
+        let jid = jid.to_owned();
+        if win == ChatWinKey::Main {
+            // Main-window pagination only: a pop-out would otherwise reset it every frame.
+            self.jabber_pings_visible = 50;
+        }
+        use egui_phosphor::regular as icon;
+        let is_room = f.channels.iter().any(|c| c.jid == jid);
+        // A kicked room is history only: its composer is disabled.
+        let sel_accessible = f.accessible(&jid);
+        let sel_msgs = self.jabber_msgs(&jid);
+        let muted = self.jabber_is_muted(&jid);
+        ui.horizontal(|ui| {
+            let name = jid.split('@').next().unwrap_or(&jid);
+            let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
+            ui.label(egui::RichText::new(format!("{glyph}  {name}")).strong());
+            if muted {
+                ui.label(egui::RichText::new(icon::BELL_SLASH).weak())
+                    .on_hover_text("Muted");
+            }
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if !is_room {
+                        let is_contact =
+                            self.settings.jabber_contacts.contains(&jid);
+                        let col = if is_contact {
+                            ui.visuals().hyperlink_color
+                        } else {
+                            ui.visuals().weak_text_color()
+                        };
+                        if ui
+                            .button(egui::RichText::new(icon::STAR).color(col))
+                            .on_hover_text(if is_contact {
+                                "Remove from contacts"
+                            } else {
+                                "Add as contact"
+                            })
+                            .clicked()
+                        {
+                            if is_contact {
+                                self.settings.jabber_contacts.retain(|j| j != &jid);
+                            } else {
+                                self.settings.jabber_contacts.push(jid.clone());
+                            }
+                            self.needs_save = true;
+                        }
+                    }
+                    let bell = if muted { icon::BELL_SLASH } else { icon::BELL };
+                    ui.menu_button(bell, |ui| {
+                        let now = chrono::Utc::now().timestamp();
+                        let set = |app: &mut Self, until: i64| {
+                            app.settings.jabber_muted.insert(jid.clone(), until);
+                            app.needs_save = true;
+                        };
+                        if ui.button("Mute 1 hour").clicked() {
+                            set(self, now + 3600);
+                            ui.close();
+                        }
+                        if ui.button("Mute 8 hours").clicked() {
+                            set(self, now + 8 * 3600);
+                            ui.close();
+                        }
+                        if ui.button("Mute until I unmute").clicked() {
+                            set(self, i64::MAX);
+                            ui.close();
+                        }
+                        if muted && ui.button("Unmute").clicked() {
+                            self.settings.jabber_muted.remove(&jid);
+                            self.needs_save = true;
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("Mute notifications");
+                },
+            );
+        });
+        ui.separator();
+        let composer_h = 32.0;
+        let session_start = self.session_start;
+        let mut dm_click: Option<String> = None;
+        let mut msg_mention: Option<String> = None;
+        let mut msg_dm: Option<String> = None;
+        let body_h = ui.available_height();
+        // Don't snap to the bottom while the pointer is held: that snap on
+        // every incoming message was wiping out any text selection mid-drag
+        // (the chat felt unselectable in a busy channel). It resumes on release.
+        let selecting = ui.input(|i| i.pointer.any_down());
+        egui::ScrollArea::vertical()
+            .id_salt("msgs")
+            .auto_shrink([false, false])
+            .max_height((body_h - composer_h - 8.0).max(60.0))
+            .stick_to_bottom(!selecting)
+            .show(ui, |ui| {
+                let accent = ui.visuals().hyperlink_color;
+                let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+                let now = chrono::Utc::now().timestamp();
+                let names = self.mention_names();
+                ui.spacing_mut().item_spacing.y = 1.0;
+                let mut hist_drawn = false;
+                let mut prev_sender: Option<String> = None;
+                let mut prev_time: i64 = 0;
+                for (mi, m) in sel_msgs.iter().enumerate() {
+                    if !hist_drawn && m.time >= session_start && m.time > 0 {
+                        hist_drawn = true;
+                        prev_sender = None;
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("— new —").weak().small());
+                            ui.separator();
+                        });
+                    }
+                    let sender =
+                        if m.outgoing { "\u{0}me".to_owned() } else { m.from.clone() };
+                    let grouped = prev_sender.as_deref() == Some(sender.as_str())
+                        && m.time >= prev_time
+                        && m.time - prev_time < 300;
+                    if !grouped {
+                        ui.add_space(5.0);
+                        ui.label(
+                            egui::RichText::new(eve_time_label(m.time, now))
+                                .weak()
+                                .size(9.5),
+                        );
+                    }
+                    let mentioned = !m.outgoing
+                        && crate::jabber::mention_hit(&m.body, &names);
+                    let act = message_row(
+                        ui,
+                        ui.id().with(("msg", mi)),
+                        mentioned,
+                        MsgActions {
+                            copy: true,
+                            // A kicked room renders no composer, so there is
+                            // nowhere for a mention to land.
+                            mention: !m.outgoing && (!is_room || sel_accessible),
+                            dm: is_room && !m.outgoing,
+                        },
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                if !grouped {
+                                    if m.outgoing {
+                                        ui.label(
+                                            egui::RichText::new("me:")
+                                                .color(me_col)
+                                                .strong(),
+                                        );
+                                    } else {
+                                        let n = m
+                                            .from
+                                            .split('@')
+                                            .next()
+                                            .unwrap_or(&m.from);
+                                        let lbl = egui::Label::new(
+                                            egui::RichText::new(format!("{n}:"))
+                                                .strong()
+                                                .color(accent),
+                                        );
+                                        let resp = if is_room {
+                                            ui.add(lbl.sense(egui::Sense::click()))
+                                                .on_hover_text("Message")
+                                        } else {
+                                            ui.add(lbl)
+                                        };
+                                        if resp.clicked() {
+                                            dm_click = Some(n.to_owned());
+                                        }
+                                    }
+                                }
+                                render_message_body(ui, condense_attention_list(&m.body).as_ref());
+                            });
+                        },
+                    );
+                    if act != MsgRowAction::None {
+                        // Grouped rows draw no nick, so the actions read `from`.
+                        let n = m.from.split('@').next().unwrap_or(&m.from);
+                        match act {
+                            MsgRowAction::Copy => ui.ctx().copy_text(m.body.clone()),
+                            MsgRowAction::Mention => msg_mention = Some(n.to_owned()),
+                            MsgRowAction::GoToDm => msg_dm = Some(n.to_owned()),
+                            MsgRowAction::None => {}
+                        }
+                    }
+                    prev_sender = Some(sender);
+                    prev_time = m.time;
+                }
+            });
+        let mut focus_composer = false;
+        if let Some(nick) = msg_mention {
+            let d = self.jabber_drafts.entry(jid.clone()).or_default();
+            if !d.is_empty() && !d.ends_with(char::is_whitespace) {
+                d.push(' ');
+            }
+            d.push_str(&format!("{nick}: "));
+            focus_composer = true;
+        }
+        if is_room && !sel_accessible {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "You're no longer in this channel, history only.",
+                )
+                .weak(),
+            );
+        } else {
+        ui.horizontal_top(|ui| {
+            let shift_enter = egui::KeyboardShortcut::new(
+                egui::Modifiers::SHIFT,
+                egui::Key::Enter,
+            );
+            let row_h = ui.text_style_height(&egui::TextStyle::Body);
+            let resp = egui::ScrollArea::vertical()
+                .id_salt("composer")
+                .max_height(row_h * 8.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(
+                            self.jabber_drafts.entry(jid.clone()).or_default(),
+                        )
+                        .hint_text("Message (Shift+Enter for a new line)")
+                        .return_key(shift_enter)
+                        .desired_rows(2)
+                        .desired_width(ui.available_width() - 60.0),
+                    )
+                })
+                .inner;
+            if focus_composer {
+                resp.request_focus();
+            }
+            let send = resp.has_focus()
+                && ui.input(|i| {
+                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                });
+            let draft_empty = self
+                .jabber_drafts
+                .get(&jid)
+                .map_or(true, |d| d.trim().is_empty());
+            if (ui.button("Send").clicked() || send) && !draft_empty {
+                let body = self
+                    .jabber_drafts
+                    .get_mut(&jid)
+                    .map(std::mem::take)
+                    .unwrap_or_default();
+                if let Some(tx) = &self.jabber_tx {
+                    let cmd = if is_room {
+                        crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
+                    } else {
+                        crate::jabber::Cmd::Send { to: jid.clone(), body }
+                    };
+                    let _ = tx.send(cmd);
+                }
+            }
+        });
+        }
+        if let Some(nick) = dm_click.or(msg_dm) {
+            out.push(TabAction::Open { jid: self.full_user_jid(&nick), prefer: win });
+        }
+    }
+
+    fn apply_tab_actions(&mut self, actions: Vec<TabAction>) {
+        for a in actions {
+            match a {
+                TabAction::Select { win, jid } => {
+                    match &jid {
+                        None => self.jabber.lock().unwrap().pings_unread = false,
+                        Some(j) => self.jabber_mark_read(j),
+                    }
+                    self.win_set_active(win, jid);
+                }
+                TabAction::Close { win, jid, is_room } => {
+                    self.close_jabber_tab(&jid, is_room, win);
+                }
+                TabAction::Promote { win, jid } => {
+                    let list = match win {
+                        ChatWinKey::Main => Some(&mut self.jabber_tabs),
+                        ChatWinKey::Popout(id) => {
+                            self.jabber_popouts.iter_mut().find(|w| w.id == id).map(|w| &mut w.tabs)
+                        }
+                    };
+                    if let Some(list) = list {
+                        if let Some(pos) = list.iter().position(|t| t == &jid) {
+                            let t = list.remove(pos);
+                            list.insert(0, t);
+                        }
+                    }
+                }
+                TabAction::Open { jid, prefer } => {
+                    self.jabber_mark_read(&jid);
+                    self.settings.jabber_closed_dms.retain(|j| j != &jid);
+                    self.jabber_open(&jid, prefer);
+                }
+                TabAction::Move { jid, to, index } => {
+                    if matches!(to, ChatWinKey::Popout(id) if self.popout(id).is_none()) {
+                        continue;
+                    }
+                    let from = self.tab_set().owner(&jid);
+                    self.tab_set().move_tab(&jid, to, index);
+                    if let ChatWinKey::Popout(id) = to {
+                        if from != Some(to) {
+                            self.focus_window = Some(popout_viewport(id));
+                        }
+                    }
+                }
+                TabAction::MoveToNew { jid, at } => {
+                    self.new_popout(&jid, at);
+                }
+                TabAction::CloseWindow(id) => self.return_popout_tabs(id),
+            }
         }
     }
 
@@ -4451,7 +4928,7 @@ impl SpaiApp {
             }
             self.rescue_geom_applied = true;
         }
-        let mut new_geom: Option<((f32, f32), Option<(f32, f32)>)> = None;
+        let mut new_geom: WinGeom = None;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rescue_window"),
             builder,
@@ -4583,6 +5060,7 @@ impl SpaiApp {
         let mut retry_click = false;
         let mut exit = false;
         let mut set_dest: Option<i64> = None;
+        let mut chat_dm: Option<String> = None;
         let has_char = self.active_character != "No character";
         let range_warning = self.rescue_range.as_ref().map(|w| {
             let jumps = |n: Option<u32>, unit: &str| match n {
@@ -5056,19 +5534,23 @@ impl SpaiApp {
                         .auto_shrink([false, false])
                         .stick_to_bottom(!selecting)
                         .show(ui, |ui| {
-                            if r.chat_tab == 1 {
-                                if skirmish_msgs.is_empty() {
-                                    ui.label(egui::RichText::new("(no messages)").weak());
-                                }
-                                for (who, body, _outgoing, time) in &skirmish_msgs {
-                                    rescue_chat_line(ui, who, body, *time);
-                                }
+                            let hit = if r.chat_tab == 1 {
+                                rescue_chat_feed(ui, &skirmish_msgs, "skirmish")
                             } else {
-                                if delve911_msgs.is_empty() {
-                                    ui.label(egui::RichText::new("(no messages)").weak());
-                                }
-                                for (who, body, _outgoing, time) in &delve911_msgs {
-                                    rescue_chat_line(ui, who, body, *time);
+                                rescue_chat_feed(ui, &delve911_msgs, "delve911")
+                            };
+                            if let Some((act, who, body)) = hit {
+                                match act {
+                                    MsgRowAction::Copy => ui.ctx().copy_text(body),
+                                    MsgRowAction::Mention => {
+                                        let d = &mut r.delve911_reply;
+                                        if !d.is_empty() && !d.ends_with(char::is_whitespace) {
+                                            d.push(' ');
+                                        }
+                                        d.push_str(&format!("{who}: "));
+                                    }
+                                    MsgRowAction::GoToDm => chat_dm = Some(who),
+                                    MsgRowAction::None => {}
                                 }
                             }
                         });
@@ -5093,6 +5575,14 @@ impl SpaiApp {
         }
         if exit {
             self.enter_rescue_mode(false);
+        }
+        if let Some(nick) = chat_dm {
+            let dm = self.full_user_jid(&nick);
+            self.jabber_mark_read(&dm);
+            self.settings.jabber_closed_dms.retain(|j| j != &dm);
+            self.jabber_open(&dm, ChatWinKey::Main);
+            self.view = nav::View::Jabber;
+            self.raise_main = true;
         }
 
         // Persist op/doctrine so the next rescue starts where we left off.
@@ -16960,15 +17450,66 @@ fn spawn_alert_daemon(
     });
 }
 
+impl SpaiApp {
+    /// The window chrome, split out of `App::ui` so the UI harness can render a whole window
+    /// without the poll/side-effect prologue that surrounds it there.
+    pub(crate) fn root_chrome(&mut self, ui: &mut egui::Ui) {
+        self.top_bar(ui);
+        self.status_bar(ui);
+        self.nav_rail(ui);
+    }
+
+    /// The central panel and its dispatch on [`Self::view`]. `jframe` stays a parameter because
+    /// `App::ui` builds it once per frame and reuses it for the popout windows afterwards.
+    pub(crate) fn root_central(&mut self, ui: &mut egui::Ui, jframe: Option<&JabberFrame>) {
+        egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
+            View::Dashboard => self.dashboard_view(ui),
+            View::Map => self.map_view(ui),
+            View::Characters => self.characters_view(ui),
+            View::Intel => self.intel_view(ui),
+            View::Battles => self.battles_view(ui),
+            View::Wormholes => self.wormholes_view(ui),
+            View::Lookup => self.lookup_view(ui),
+            View::Alerts => self.alerts_view(ui),
+            View::Jabber => {
+                if let Some(f) = jframe {
+                    self.jabber_view(ui, f);
+                }
+            }
+            View::Settings => self.settings_view(ui),
+        });
+    }
+}
+
 impl eframe::App for SpaiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // Cached here rather than in the `cumulative_pass_nr() > 30` block below, which would
+        // starve cross-window drop hit-testing for the first 30 frames.
+        self.jabber_main_rect = ctx.input(|i| {
+            let vp = i.viewport();
+            vp.outer_rect.zip(vp.inner_rect)
+        });
+        // Safety net for a drag whose source never saw the release (focus stolen, or the tab
+        // overflowed off the bar mid-drag): a stale drag would pin a highlight on forever. The
+        // source re-arms `alive` each frame it is still dragging, so a drag goes stale one frame
+        // after its window stops reporting it.
+        if let Some(d) = &mut self.jabber_tab_drag {
+            let jid = d.jid.clone();
+            let alive = std::mem::take(&mut d.alive);
+            if !alive || self.tab_set().owner(&jid).is_none() {
+                self.jabber_tab_drag = None;
+            }
+        }
 
         for c in std::mem::take(&mut self.pending_overlay_clicks) {
             self.act_on_intel_click(c, &ctx);
         }
 
-        if crate::instance::take_raise_request() {
+        // `|`, not `||`: short-circuiting would leave `raise_main` set whenever a second-instance
+        // request fired first, raising the window again on a later frame.
+        if crate::instance::take_raise_request() | std::mem::take(&mut self.raise_main) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -17076,22 +17617,18 @@ impl eframe::App for SpaiApp {
         self.os_notify
             .store(self.settings.alert_combat, std::sync::atomic::Ordering::Relaxed);
         self.drain_alerts();
-        self.top_bar(ui);
-        self.status_bar(ui);
-        self.nav_rail(ui);
+        self.root_chrome(ui);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| match self.view {
-            View::Dashboard => self.dashboard_view(ui),
-            View::Map => self.map_view(ui),
-            View::Characters => self.characters_view(ui),
-            View::Intel => self.intel_view(ui),
-            View::Battles => self.battles_view(ui),
-            View::Wormholes => self.wormholes_view(ui),
-            View::Lookup => self.lookup_view(ui),
-            View::Alerts => self.alerts_view(ui),
-            View::Jabber => self.jabber_view(ui),
-            View::Settings => self.settings_view(ui),
-        });
+        // Reconciliation runs once per frame, before any chat window renders: per-window it would
+        // let one window re-add a tab another one owns.
+        let jframe = (self.view == View::Jabber || !self.jabber_popouts.is_empty())
+            .then(|| self.jabber_frame(ctx.input(|i| i.focused)));
+        if let Some(f) = &jframe {
+            self.jabber_reconcile(f);
+        }
+        self.sync_popout_settings();
+
+        self.root_central(ui, jframe.as_ref());
 
         self.intel_channels_window(&ctx);
         self.jump_bridges_window(&ctx);
@@ -17121,8 +17658,8 @@ impl eframe::App for SpaiApp {
             self.show_map_viewport(&ctx);
         }
         self.char_popout_windows(&ctx);
-        if self.jabber_popped {
-            self.show_jabber_viewport(&ctx);
+        if let Some(f) = &jframe {
+            self.jabber_popout_windows(&ctx, f);
         }
         self.cyno_generators_window(&ctx);
         #[cfg(feature = "fc-rescue")]
@@ -17544,6 +18081,363 @@ impl WhOverlay {
     }
 }
 
+/// One frame's worth of Jabber state, snapshotted under a single lock.
+pub(crate) struct JabberFrame {
+    configured: bool,
+    ever_online: bool,
+    connected: bool,
+    status: String,
+    convos: Vec<Convo>,
+    pings: Vec<crate::pings::Ping>,
+    rooms: Vec<String>,
+    dm_keys: Vec<String>,
+    unread: std::collections::BTreeSet<String>,
+    mentions: std::collections::BTreeSet<String>,
+    pings_unread: bool,
+    channels: Vec<ChannelRow>,
+    inaccessible: Vec<String>,
+    subjects: std::collections::BTreeMap<String, String>,
+}
+
+impl JabberFrame {
+    fn accessible(&self, jid: &str) -> bool {
+        !self.inaccessible.iter().any(|r| r == jid)
+    }
+}
+
+/// A tab-bar interaction, collected into a caller-owned list and applied outside the render
+/// closures that produced it.
+enum TabAction {
+    /// `jid: None` is the Fleet pings pseudo-tab, which only the main window has.
+    Select { win: ChatWinKey, jid: Option<String> },
+    Close { win: ChatWinKey, jid: String, is_room: bool },
+    /// Relocate a tab, or reorder it inside its own bar. Routed through `TabSet`, which cannot see
+    /// `Settings`, so a move can never persist the jid as closed.
+    Move { jid: String, to: ChatWinKey, index: Option<usize> },
+    /// Tear a tab off into a fresh pop-out, placed at `at` when the drop point is known.
+    MoveToNew { jid: String, at: Option<egui::Pos2> },
+    /// Move a tab picked from the overflow dropdown to the front of its own bar.
+    Promote { win: ChatWinKey, jid: String },
+    Open { jid: String, prefer: ChatWinKey },
+    /// Native close: the window's tabs come back to the main bar, unmarked.
+    CloseWindow(u64),
+}
+
+/// Which chat window owns a conversation. `Main` is the app's Jabber page; `Popout` carries a
+/// stable window id, never an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ChatWinKey {
+    Main,
+    Popout(u64),
+}
+
+/// One floating chat window: its own tab list, its own active tab, its own geometry.
+#[derive(Clone, Debug, Default)]
+struct ChatWindow {
+    id: u64,
+    tabs: Vec<String>,
+    active: Option<String>,
+    pos: Option<(f32, f32)>,
+    size: Option<(f32, f32)>,
+    /// One-shot: geometry is fed to the viewport builder on the first frame only.
+    geom_applied: bool,
+    /// Screen rects, cached for cross-window drop hit-testing.
+    outer: Option<egui::Rect>,
+    inner: Option<egui::Rect>,
+    /// Last known focus of this viewport, read one frame later by `jabber_frame` so a conversation
+    /// you are staring at in a pop-out clears its unread marker like the main window's does.
+    focused: bool,
+}
+
+/// A tab being dragged, tracked by its source window because the OS gives the pressing window an
+/// implicit pointer grab and the target never sees the pointer.
+struct TabDrag {
+    jid: String,
+    from: ChatWinKey,
+    /// Live pointer position in monitor space, so a non-source window can highlight itself.
+    /// `None` when the source cannot resolve one (Wayland), which also disables tear-off.
+    at: Option<egui::Pos2>,
+    /// Set by the source window every frame the drag is still live. The root cannot judge this
+    /// itself: the OS grants the pressed window an implicit pointer grab, so a drag started in a
+    /// pop-out leaves the root seeing no button held at all.
+    alive: bool,
+}
+
+/// Every chat window's tab list, as one addressable set.
+///
+/// It deliberately cannot see `Settings` or the Jabber command channel, so moving a tab between
+/// windows physically cannot persist a jid as closed or leave a room.
+struct TabSet<'a> {
+    main: &'a mut Vec<String>,
+    main_active: &'a mut Option<String>,
+    popouts: &'a mut Vec<ChatWindow>,
+}
+
+impl TabSet<'_> {
+    fn owner(&self, jid: &str) -> Option<ChatWinKey> {
+        if self.main.iter().any(|t| t == jid) {
+            return Some(ChatWinKey::Main);
+        }
+        self.popouts
+            .iter()
+            .find(|w| w.tabs.iter().any(|t| t == jid))
+            .map(|w| ChatWinKey::Popout(w.id))
+    }
+
+    fn all_tabs(&self) -> Vec<String> {
+        let mut out = self.main.clone();
+        for w in self.popouts.iter() {
+            out.extend(w.tabs.iter().cloned());
+        }
+        out
+    }
+
+    /// Remove `jid` from whichever window holds it, moving that window's active tab to the left
+    /// neighbour. Returns the window it was taken from.
+    fn detach(&mut self, jid: &str) -> Option<ChatWinKey> {
+        if let Some(idx) = self.main.iter().position(|t| t == jid) {
+            self.main.remove(idx);
+            if self.main_active.as_deref() == Some(jid) {
+                // Falls back to the Fleet pings pseudo-tab, which only the main window has.
+                *self.main_active = if idx > 0 { self.main.get(idx - 1).cloned() } else { None };
+            }
+            return Some(ChatWinKey::Main);
+        }
+        for w in self.popouts.iter_mut() {
+            if let Some(idx) = w.tabs.iter().position(|t| t == jid) {
+                w.tabs.remove(idx);
+                if w.active.as_deref() == Some(jid) {
+                    w.active = if idx > 0 { w.tabs.get(idx - 1).cloned() } else { w.tabs.first().cloned() };
+                }
+                return Some(ChatWinKey::Popout(w.id));
+            }
+        }
+        None
+    }
+
+    /// Put `jid` into `to` at `index` (clamped), unless it is already there. Does nothing if the
+    /// target window does not exist.
+    fn attach(&mut self, jid: &str, to: ChatWinKey, index: Option<usize>) {
+        let list = match to {
+            ChatWinKey::Main => Some(&mut *self.main),
+            ChatWinKey::Popout(id) => {
+                self.popouts.iter_mut().find(|w| w.id == id).map(|w| &mut w.tabs)
+            }
+        };
+        let Some(list) = list else { return };
+        if list.iter().any(|t| t == jid) {
+            return;
+        }
+        let at = index.unwrap_or(list.len()).min(list.len());
+        list.insert(at, jid.to_owned());
+        if let ChatWinKey::Popout(id) = to {
+            if let Some(w) = self.popouts.iter_mut().find(|w| w.id == id) {
+                if w.active.is_none() {
+                    w.active = Some(jid.to_owned());
+                }
+            }
+        }
+    }
+
+    fn active_of(&self, win: ChatWinKey) -> Option<&str> {
+        match win {
+            ChatWinKey::Main => self.main_active.as_deref(),
+            ChatWinKey::Popout(id) => {
+                self.popouts.iter().find(|w| w.id == id).and_then(|w| w.active.as_deref())
+            }
+        }
+    }
+
+    fn move_tab(&mut self, jid: &str, to: ChatWinKey, index: Option<usize>) {
+        let Some(from) = self.owner(jid) else { return };
+        let was_active = self.active_of(from) == Some(jid);
+        self.detach(jid);
+        self.attach(jid, to, index);
+        if self.owner(jid) != Some(to) {
+            return;
+        }
+        // A tab dragged to another window brings the view with it, and reordering the tab you are
+        // reading must not deselect it.
+        if was_active || from != to {
+            match to {
+                ChatWinKey::Main => *self.main_active = Some(jid.to_owned()),
+                ChatWinKey::Popout(id) => {
+                    if let Some(w) = self.popouts.iter_mut().find(|w| w.id == id) {
+                        w.active = Some(jid.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Strip cross-window duplicates and pin every active tab to a tab that actually exists.
+    /// Returns whether anything changed.
+    fn normalize(&mut self) -> bool {
+        let mut changed = false;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let before = self.main.len();
+        self.main.retain(|t| seen.insert(t.clone()));
+        changed |= self.main.len() != before;
+        for w in self.popouts.iter_mut() {
+            let before = w.tabs.len();
+            w.tabs.retain(|t| seen.insert(t.clone()));
+            changed |= w.tabs.len() != before;
+        }
+        if let Some(a) = self.main_active.clone() {
+            if !self.main.iter().any(|t| t == &a) {
+                *self.main_active = None;
+                changed = true;
+            }
+        }
+        for w in self.popouts.iter_mut() {
+            let ok = w.active.as_ref().is_some_and(|a| w.tabs.iter().any(|t| t == a));
+            if !ok {
+                let next = w.tabs.first().cloned();
+                changed |= w.active != next;
+                w.active = next;
+            }
+        }
+        changed
+    }
+
+    /// Tear `jid` off into a fresh window, returning its id.
+    ///
+    /// The window is born holding the tab: `jabber_reconcile` prunes empty pop-outs every frame, so
+    /// one observed empty would vanish on the frame it was created.
+    fn detach_to_new(&mut self, jid: &str, pos: Option<(f32, f32)>) -> Option<u64> {
+        self.owner(jid)?;
+        let id = self.fresh_id();
+        self.detach(jid);
+        self.popouts.push(ChatWindow {
+            id,
+            tabs: vec![jid.to_owned()],
+            active: Some(jid.to_owned()),
+            pos,
+            ..Default::default()
+        });
+        Some(id)
+    }
+
+    /// Drop a pop-out and hand its conversations back to the main bar in order, leaving the main
+    /// window's own active tab alone.
+    fn dissolve(&mut self, id: u64) -> bool {
+        let Some(idx) = self.popouts.iter().position(|w| w.id == id) else {
+            return false;
+        };
+        let w = self.popouts.remove(idx);
+        for jid in w.tabs {
+            if !self.main.iter().any(|t| t == &jid) {
+                self.main.push(jid);
+            }
+        }
+        true
+    }
+
+    fn empty_popouts(&self) -> Vec<u64> {
+        self.popouts.iter().filter(|w| w.tabs.is_empty()).map(|w| w.id).collect()
+    }
+
+    fn fresh_id(&self) -> u64 {
+        self.popouts.iter().map(|w| w.id).max().unwrap_or(0) + 1
+    }
+}
+
+/// Bring every window's tabs in line with `want`, the set of conversations that should be open.
+///
+/// Existing owners KEEP their tabs: that is what stops a popped-out conversation being re-added to
+/// the main bar every frame. New jids land in `Main`; jids absent from `want` are dropped wherever
+/// they are.
+fn reconcile_tabs(t: &mut TabSet<'_>, want: &[String]) {
+    let wanted: std::collections::HashSet<&str> = want.iter().map(String::as_str).collect();
+    for jid in t.all_tabs() {
+        if !wanted.contains(jid.as_str()) {
+            t.detach(&jid);
+        }
+    }
+    for jid in want {
+        if t.owner(jid).is_none() {
+            t.attach(jid, ChatWinKey::Main, None);
+        }
+    }
+}
+
+/// A live pop-out window as it is stored in settings.
+fn popout_cfg(w: &ChatWindow) -> crate::settings::ChatWindowCfg {
+    crate::settings::ChatWindowCfg {
+        id: w.id,
+        tabs: w.tabs.clone(),
+        active: w.active.clone().unwrap_or_default(),
+        pos: w.pos,
+        size: w.size,
+    }
+}
+
+/// Restore saved pop-out windows: empty ones and duplicate ids are dropped (two windows sharing an
+/// id would share a viewport), and an unknown or blank active tab falls back to the first one.
+fn popouts_from_cfg(cfgs: &[crate::settings::ChatWindowCfg]) -> Vec<ChatWindow> {
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    cfgs.iter()
+        .filter(|w| !w.tabs.is_empty() && seen.insert(w.id))
+        .take(MAX_POPOUTS)
+        .map(|w| ChatWindow {
+            id: w.id,
+            tabs: w.tabs.clone(),
+            active: Some(w.active.clone())
+                .filter(|a| w.tabs.contains(a))
+                .or_else(|| w.tabs.first().cloned()),
+            pos: w.pos,
+            size: w.size,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Viewport id of a pop-out chat window. One place, so the raise path and the render loop can
+/// never drift apart.
+fn popout_viewport(id: u64) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(format!("jabberwin_{id}"))
+}
+
+/// Which window a tab was dropped on: the smallest rect containing `p`, ignoring the source.
+/// `None` when there is no pointer position or nothing contains it.
+fn drop_target(
+    rects: &[(ChatWinKey, egui::Rect)],
+    src: ChatWinKey,
+    p: Option<egui::Pos2>,
+) -> Option<ChatWinKey> {
+    let p = p?;
+    rects
+        .iter()
+        .filter(|(k, _)| *k != src)
+        .filter(|(_, r)| r.contains(p))
+        .min_by(|a, b| a.1.area().total_cmp(&b.1.area()))
+        .map(|(k, _)| *k)
+}
+
+/// Insertion slot for a tab dropped at `x`, given the horizontal centres of the tabs already there.
+fn insertion_index(centers: &[f32], x: f32) -> usize {
+    centers.iter().take_while(|c| x >= **c).count()
+}
+
+/// Index in `tabs` (with `jid` already removed) that a drop at `x` lands on.
+///
+/// Only the tabs that fit on the bar have centres; the rest are in the overflow dropdown, so the
+/// slot is resolved through the neighbouring jid instead of by counting visible tabs.
+fn reorder_index(tabs: &[String], centers: &[(String, f32)], jid: &str, x: f32) -> usize {
+    let rest: Vec<&String> = tabs.iter().filter(|t| t.as_str() != jid).collect();
+    let others: Vec<&(String, f32)> = centers.iter().filter(|(t, _)| t != jid).collect();
+    let xs: Vec<f32> = others.iter().map(|(_, c)| *c).collect();
+    let k = insertion_index(&xs, x);
+    let at = |j: &str| rest.iter().position(|t| t.as_str() == j);
+    if let Some(o) = others.get(k) {
+        at(&o.0).unwrap_or(rest.len())
+    } else if let Some(last) = others.last() {
+        at(&last.0).map_or(rest.len(), |p| p + 1)
+    } else {
+        0
+    }
+}
+
 struct Convo {
     jid: String,
     name: String,
@@ -17773,11 +18667,17 @@ fn selectable_chip<'a>(
 
 // Compact VSCode-style Jabber tabs: uniform height, flush (no rounded box), a leading room icon or
 // presence dot, the name, and a trailing close X on hover/active.
+/// Immediate child viewports repaint in lockstep with the parent, so the count is capped rather
+/// than letting a busy main window drag an unbounded number of chat windows along at 60 fps.
+const MAX_POPOUTS: usize = 6;
+
 const TAB_H: f32 = 24.0;
 const TAB_PAD_X: f32 = 8.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_LEAD_W: f32 = 16.0;
 const TAB_CLOSE_W: f32 = 16.0;
+/// Width of the trailing "open in new window" slot on a closable tab.
+const TAB_POP_W: f32 = 16.0;
 /// The eight offsets that make a 1px outline around map text.
 const OUTLINE: [egui::Vec2; 8] = [
     egui::vec2(-1.0, -1.0),
@@ -17796,6 +18696,108 @@ const MAP_TIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500)
 const UNREAD_RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x4C, 0x4C);
 /// Backdrop for a chat line that named us. Alpha-blended so it reads on both themes.
 const MENTION_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0x38, 0x14, 0x14, 0x50);
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MsgActions {
+    copy: bool,
+    mention: bool,
+    dm: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum MsgRowAction {
+    None,
+    Copy,
+    Mention,
+    GoToDm,
+}
+
+/// A chat row that brightens on hover and reveals its actions at the top right. `id` must be
+/// stable and unique per message.
+pub(crate) fn message_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    mention_bg: bool,
+    show: MsgActions,
+    content: impl FnOnce(&mut egui::Ui),
+) -> MsgRowAction {
+    let mut frame = egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 1));
+    if mention_bg {
+        frame = frame.fill(MENTION_BG);
+    }
+    let rect = frame
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            content(ui);
+        })
+        .response
+        .rect;
+    let resp = ui.interact(rect, id, egui::Sense::hover());
+    // Not `hovered()`: the action buttons live inside this rect, so reaching one makes the row stop
+    // being the hovered widget, which drops the buttons, which re-hovers the row, a flicker every
+    // other frame. `contains_pointer` is geometric and stays true underneath them.
+    let hot = resp.contains_pointer();
+    if !hot {
+        return MsgRowAction::None;
+    }
+    let txt = ui.visuals().text_color();
+    let tint = egui::Color32::from_rgba_unmultiplied(txt.r(), txt.g(), txt.b(), 26);
+    ui.painter().rect_filled(rect, 3.0, tint);
+
+    let mut acts: Vec<(&str, &str, MsgRowAction)> = Vec::new();
+    if show.copy {
+        acts.push((egui_phosphor::regular::COPY, "Copy message", MsgRowAction::Copy));
+    }
+    if show.mention {
+        acts.push((egui_phosphor::regular::AT, "Mention", MsgRowAction::Mention));
+    }
+    if show.dm {
+        acts.push((egui_phosphor::regular::CHAT_TEARDROP_TEXT, "Go to DM", MsgRowAction::GoToDm));
+    }
+    if acts.is_empty() {
+        return MsgRowAction::None;
+    }
+    // Painted, not `ui.put`: a widget here allocates space, which grows the row the instant it is
+    // hovered, moves the pointer off it, and jitters. `interact` registers a hit area only. Same
+    // reason the tab close X is painted (see `jabber_tab_box`).
+    const SLOT: f32 = 21.0;
+    const PAD: f32 = 3.0;
+    let n = acts.len() as f32;
+    let h = (SLOT).min(rect.height());
+    let strip = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - SLOT * n - PAD * 2.0, rect.top()),
+        egui::vec2(SLOT * n + PAD * 2.0, h),
+    );
+    let painter = ui.painter().clone();
+    // Opaque, or the icons sit unreadably on top of a long message body.
+    painter.rect_filled(strip, 4.0, ui.visuals().panel_fill);
+    let mut out = MsgRowAction::None;
+    for (i, (icon, tip, act)) in acts.iter().enumerate() {
+        let slot = egui::Rect::from_min_size(
+            egui::pos2(strip.left() + PAD + SLOT * i as f32, strip.top()),
+            egui::vec2(SLOT, h),
+        );
+        let r = ui.interact(slot, id.with(("act", i)), egui::Sense::click()).on_hover_text(*tip);
+        let col = if r.hovered() {
+            painter.rect_filled(slot.shrink(1.0), 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.visuals().strong_text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        painter.text(
+            slot.center(),
+            egui::Align2::CENTER_CENTER,
+            *icon,
+            egui::FontId::proportional(14.0),
+            col,
+        );
+        if r.clicked() {
+            out = *act;
+        }
+    }
+    out
+}
 
 fn muc_domain_of(setting: &str, jid: &str) -> String {
     if !setting.trim().is_empty() {
@@ -17821,7 +18823,7 @@ fn jabber_tab_width(ui: &egui::Ui, closable: bool, unread: bool, label: &str) ->
         ui.painter().layout_no_wrap(label.to_owned(), body, egui::Color32::WHITE).size().x;
     let lead_w = TAB_LEAD_W + TAB_GAP;
     let trail_w = if closable {
-        TAB_GAP + TAB_CLOSE_W
+        TAB_GAP + TAB_POP_W + TAB_GAP + TAB_CLOSE_W
     } else if unread {
         TAB_GAP + 10.0
     } else {
@@ -17860,20 +18862,36 @@ fn ellipsize_tab_label(
     "…".to_owned()
 }
 
-/// One compact, flush Jabber tab. Fixed height, optional leading dot/icon, the name, and a trailing
-/// close X shown on hover or when active (its slot otherwise carries the unread marker). Returns
-/// `(select_clicked, close_clicked)`.
+/// What a tab reported this frame. `resp` carries the drag state and hosts the context menu.
+struct TabHit {
+    select: bool,
+    close: bool,
+    popout: bool,
+    resp: egui::Response,
+}
+
+/// One compact, flush Jabber tab. Fixed height, optional leading dot/icon, the name, and, on hover
+/// or when active, trailing "open in new window" and close icons (the close slot otherwise carries
+/// the unread marker).
+#[allow(clippy::too_many_arguments)]
 fn jabber_tab_box(
     ui: &mut egui::Ui,
+    id: egui::Id,
     selected: bool,
     unread: bool,
     mention: bool,
     lead: TabLead,
     closable: bool,
+    // The pop-out slot is reserved whether or not the icon is offered, so reaching the pop-out
+    // cap does not reflow the whole bar.
+    can_popout: bool,
     label: &str,
-) -> (bool, bool) {
+) -> TabHit {
     let w = jabber_tab_width(ui, closable, unread, label);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, TAB_H), egui::Sense::click());
+    // Explicit id, not the auto one: the overflow split reshuffles tab order, and an auto id would
+    // re-bind a tab's interactions (and its close X) to whatever now sits in that slot.
+    let (_, rect) = ui.allocate_space(egui::vec2(w, TAB_H));
+    let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
     // Not `hovered()`: the close X is a second widget inside this rect, so once the pointer reaches
     // it the tab stops being the hovered widget. On an unselected tab that would drop the X, which
     // un-hovers it, which draws it again — a flicker every other frame. `contains_pointer` is
@@ -17945,11 +18963,30 @@ fn jabber_tab_box(
 
     let mut select = resp.clicked();
     let mut close = false;
+    let mut popout = false;
     let slot_cx = rect.right() - TAB_PAD_X - TAB_CLOSE_W / 2.0;
     if closable {
         let close_rect =
             egui::Rect::from_center_size(egui::pos2(slot_cx, cy), egui::vec2(TAB_CLOSE_W, TAB_CLOSE_W));
+        let pop_cx = rect.right() - TAB_PAD_X - TAB_CLOSE_W - TAB_GAP - TAB_POP_W / 2.0;
+        let pop_rect =
+            egui::Rect::from_center_size(egui::pos2(pop_cx, cy), egui::vec2(TAB_POP_W, TAB_POP_W));
         if hovered || selected {
+            if can_popout {
+                let presp = ui.interact(pop_rect, resp.id.with("popout"), egui::Sense::click());
+                let pcol = if presp.hovered() { strong_col } else { weak_col };
+                painter.text(
+                    pop_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::regular::ARROW_SQUARE_OUT,
+                    egui::FontId::proportional(13.0),
+                    pcol,
+                );
+                if presp.on_hover_text("Open in new window").clicked() {
+                    popout = true;
+                    select = false;
+                }
+            }
             let cresp = ui.interact(close_rect, resp.id.with("close"), egui::Sense::click());
             let col = if cresp.hovered() { strong_col } else { weak_col };
             painter.text(
@@ -17959,7 +18996,7 @@ fn jabber_tab_box(
                 egui::FontId::proportional(13.0),
                 col,
             );
-            if cresp.clicked() {
+            if cresp.on_hover_text("Close").clicked() {
                 close = true;
                 select = false;
             }
@@ -17969,7 +19006,7 @@ fn jabber_tab_box(
     } else if unread {
         mark(egui::pos2(slot_cx, cy));
     }
-    (select, close)
+    TabHit { select, close, popout, resp }
 }
 
 #[derive(Default)]
@@ -18369,7 +19406,7 @@ fn eve_type_render_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/types/{id}/render?size={}", eve_img_size(px))
 }
 
-fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable: bool) {
+pub(crate) fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable: bool) {
     use crate::battle::PartyKind;
     let urls = match p.kind {
         PartyKind::Alliance => Some((
@@ -18400,7 +19437,7 @@ fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable
     }
 }
 
-fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
+pub(crate) fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
     if type_id == 0 {
         return;
     }
@@ -18448,7 +19485,7 @@ fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Bat
     });
 }
 
-fn battle_row(
+pub(crate) fn battle_row(
     ui: &mut egui::Ui,
     b: &crate::battle::Battle,
     now: i64,
@@ -18502,13 +19539,13 @@ fn battle_row(
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ShipHighlight {
+pub(crate) enum ShipHighlight {
     None,
     Hovered,
     Assist,
 }
 
-fn ship_row(
+pub(crate) fn ship_row(
     ui: &mut egui::Ui,
     width: f32,
     party: &crate::battle::Party,
@@ -18603,6 +19640,10 @@ pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowSta
 
 /// Decide whether a captured window geometry should replace the stored one: rejects negative
 /// (off-screen) coords and ignores sub-`min_delta` jitter. `None` means "leave the stored value".
+/// Geometry read back from a viewport callback: inner size, plus outer position when the window
+/// manager reports one.
+type WinGeom = Option<((f32, f32), Option<(f32, f32)>)>;
+
 pub(crate) fn geometry_update(
     prev: Option<(f32, f32)>,
     new: (f32, f32),
@@ -18744,7 +19785,7 @@ pub(crate) fn alert_viewport_builder(
 
 /// Render a compact-mode hover card. Used both for the off-screen sizing pass (to create the popup
 /// window at its final size) and for the actual paint in the `alert_tip` viewport.
-fn render_tip_content(
+pub(crate) fn render_tip_content(
     ui: &mut egui::Ui,
     content: &PendingTip,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
@@ -19403,7 +20444,7 @@ pub(crate) struct AlertWindowState {
 pub(crate) type SharedAlertWindow = std::sync::Arc<std::sync::Mutex<AlertWindowState>>;
 
 #[derive(Clone, Copy, PartialEq)]
-struct BattleHover {
+pub(crate) struct BattleHover {
     char_id: i64,
     kill_id: Option<i64>,
 }
@@ -19419,7 +20460,7 @@ struct LoadedReport {
     hover: Option<BattleHover>,
 }
 
-fn battle_detail(
+pub(crate) fn battle_detail(
     ui: &mut egui::Ui,
     b: &crate::battle::Battle,
     type_names: &std::collections::HashMap<i64, String>,
@@ -19585,7 +20626,7 @@ fn battle_detail(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn condensed_row(
+pub(crate) fn condensed_row(
     ui: &mut egui::Ui,
     row_w: f32,
     ship: i64,
@@ -19891,24 +20932,67 @@ fn condense_attention_list(body: &str) -> std::borrow::Cow<'_, str> {
 
 /// One chat line, jabber-style: the sender's name in its per-name colour, then the message body.
 #[cfg(feature = "fc-rescue")]
-fn rescue_chat_line(ui: &mut egui::Ui, who: &str, body: &str, time: i64) {
+fn rescue_chat_line(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    who: &str,
+    body: &str,
+    grouped: bool,
+    show: MsgActions,
+) -> MsgRowAction {
     let body = condense_attention_list(body);
-    ui.horizontal_wrapped(|ui| {
-        let spacing = ui.spacing().item_spacing.x;
-        ui.spacing_mut().item_spacing.x = 4.0;
-        // Inline, and deliberately the Body style rather than a smaller or monospace one: the row
-        // already contains body text, so reusing it cannot grow the line height. EVE time is UTC.
-        if let Some(t) = chrono::DateTime::from_timestamp(time, 0) {
-            ui.label(
-                egui::RichText::new(t.format("%H:%M").to_string())
-                    .color(ui.visuals().weak_text_color()),
-            );
+    message_row(ui, id, false, show, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if !grouped {
+                ui.label(egui::RichText::new(format!("{who}:")).color(name_color(who)).strong());
+            }
+            // Same body renderer as the main chat: URLs become clickable links, text stays selectable.
+            render_message_body(ui, body.as_ref());
+            ui.spacing_mut().item_spacing.x = spacing;
+        });
+    })
+}
+
+/// Consecutive lines from one sender inside five minutes share a header, as on the Jabber page.
+#[cfg(feature = "fc-rescue")]
+fn rescue_grouped(sender: &str, time: i64, prev_sender: Option<&str>, prev_time: i64) -> bool {
+    prev_sender == Some(sender) && time >= prev_time && time - prev_time < 300
+}
+
+/// The rescue window's chat feed. Returns the action the user clicked plus the nick and the raw
+/// body of the message it came from.
+#[cfg(feature = "fc-rescue")]
+fn rescue_chat_feed(
+    ui: &mut egui::Ui,
+    msgs: &[(String, String, bool, i64)],
+    salt: &str,
+) -> Option<(MsgRowAction, String, String)> {
+    if msgs.is_empty() {
+        ui.label(egui::RichText::new("(no messages)").weak());
+        return None;
+    }
+    let now = chrono::Utc::now().timestamp();
+    let mut out = None;
+    let mut prev_sender: Option<String> = None;
+    let mut prev_time = 0i64;
+    for (i, (who, body, outgoing, time)) in msgs.iter().enumerate() {
+        let sender = if *outgoing { "\u{0}me".to_owned() } else { who.clone() };
+        let grouped = rescue_grouped(&sender, *time, prev_sender.as_deref(), prev_time);
+        if !grouped {
+            ui.add_space(5.0);
+            ui.label(egui::RichText::new(eve_time_label(*time, now)).weak().size(9.5));
         }
-        ui.label(egui::RichText::new(format!("{who}:")).color(name_color(who)).strong());
-        // Same body renderer as the main chat: URLs become clickable links, text stays selectable.
-        render_message_body(ui, body.as_ref());
-        ui.spacing_mut().item_spacing.x = spacing;
-    });
+        let show = MsgActions { copy: true, mention: !*outgoing, dm: !*outgoing };
+        let act = rescue_chat_line(ui, ui.id().with((salt, i)), who, body, grouped, show);
+        if act != MsgRowAction::None {
+            out = Some((act, who.clone(), body.clone()));
+        }
+        prev_sender = Some(sender);
+        prev_time = *time;
+    }
+    out
 }
 
 /// The directorbot posts under a per-room nick ("DelveBot" in delve911) and echoes every ping back.
@@ -20011,7 +21095,7 @@ fn chk_reminder(ui: &mut egui::Ui, text: &str) {
 /// Entirely ESI-auto-detected. When the signal isn't available yet (no fleet data) the item shows
 /// as Pending (grey "?"), never a manual checkbox.
 #[cfg(feature = "fc-rescue")]
-fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
+pub(crate) fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
     use crate::rescue::ShipRole;
 
     let comp_known = !r.fleet.members.is_empty();
@@ -20605,7 +21689,7 @@ fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> String {
     }
 }
 
-fn intel_row(
+pub(crate) fn intel_row(
     ui: &mut egui::Ui,
     r: &crate::intel::IntelReport,
     now: i64,
@@ -22433,6 +23517,672 @@ mod ping_link_tests {
                 render_ping_body(ui, b, true);
                 render_ping_body(ui, b, false);
                 ui.horizontal_wrapped(|ui| render_message_body(ui, b));
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod msg_row_tests {
+    use super::*;
+
+    /// Drives a real context with the pointer parked inside the rows, so the hover branch (tint,
+    /// backdrop, action buttons) is exercised and not just the resting one.
+    fn run_hovered(at: egui::Pos2, mut f: impl FnMut(&mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        input.events.push(egui::Event::PointerMoved(at));
+        for _ in 0..2 {
+            let _ = ctx.run_ui(input.clone(), &mut f);
+            input.events.clear();
+        }
+    }
+
+    const BODIES: [&str; 4] =
+        ["form up now", "Ö ドクトリン", "", "attention https://gnf.lt/a ドクトリン"];
+
+    /// Click at `at` and report what the row returned.
+    fn click_row(at: egui::Pos2, show: MsgActions) -> MsgRowAction {
+        let ctx = egui::Context::default();
+        let base = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let mut got = MsgRowAction::None;
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, ..base.clone() };
+            let _ = ctx.run_ui(input, |ui| {
+                let a = message_row(ui, ui.id().with("row"), false, show, |ui| {
+                    ui.label("pilot: form up");
+                });
+                if a != MsgRowAction::None {
+                    got = a;
+                }
+            });
+        };
+        // Two frames before pressing: the row only reports hover once it has been registered for a
+        // frame, and the icons only exist while it is hovered, so they must be laid out before the
+        // press or there is no widget to attribute it to.
+        frame(vec![egui::Event::PointerMoved(at)]);
+        frame(Vec::new());
+        frame(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }]);
+        frame(vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }]);
+        got
+    }
+
+    /// The action icons must not allocate. A widget placed in the row changes the width the body
+    /// wraps into, so hovering silently reflows the text to a different number of lines and the
+    /// list jitters between two row heights. Needs wrapping text: with a single short line a width
+    /// change does not show up as a height change at all.
+    #[test]
+    fn hovering_a_row_does_not_reflow_it() {
+        let heights = |hover: bool| -> Vec<f32> {
+            let ctx = egui::Context::default();
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            if hover {
+                input.events.push(egui::Event::PointerMoved(egui::pos2(120.0, 30.0)));
+            }
+            let show = MsgActions { copy: true, mention: true, dm: true };
+            let body = "form up now in 1DQ we need dps and logi bring your own doctrine ship please";
+            let mut out = Vec::new();
+            // Four passes: hover is reported a frame late, and a reflow needs another to settle.
+            for _ in 0..4 {
+                out.clear();
+                let _ = ctx.run_ui(input.clone(), |ui| {
+                    egui::ScrollArea::vertical().id_salt("m").auto_shrink([false, false]).show(
+                        ui,
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            for i in 0..4 {
+                                let top = ui.cursor().min.y;
+                                message_row(ui, ui.id().with(("row", i)), false, show, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label("pilot:");
+                                        render_message_body(ui, body);
+                                    });
+                                });
+                                out.push(ui.cursor().min.y - top);
+                            }
+                        },
+                    );
+                });
+                input.events.clear();
+            }
+            out
+        };
+        let (resting, hovered) = (heights(false), heights(true));
+        assert_eq!(resting, hovered, "hovering reflowed the rows");
+    }
+
+    /// The icons are painted at hand-computed rects, so a geometry slip would leave them visible
+    /// but unclickable. Sweep the row's right edge rather than hardcoding the layout.
+    #[test]
+    fn clicking_an_action_icon_returns_that_action() {
+        for (show, want) in [
+            (MsgActions { copy: true, mention: false, dm: false }, MsgRowAction::Copy),
+            (MsgActions { copy: false, mention: true, dm: false }, MsgRowAction::Mention),
+            (MsgActions { copy: false, mention: false, dm: true }, MsgRowAction::GoToDm),
+        ] {
+            let hit = (320..400)
+                .map(|x| click_row(egui::pos2(x as f32, 8.0), show))
+                .any(|a| a == want);
+            assert!(hit, "no clickable slot returned {want:?}");
+        }
+        // Three at once: each icon must be reachable, so all three come back over the sweep.
+        let all = MsgActions { copy: true, mention: true, dm: true };
+        for want in [MsgRowAction::Copy, MsgRowAction::Mention, MsgRowAction::GoToDm] {
+            let hit = (320..400)
+                .map(|x| click_row(egui::pos2(x as f32, 8.0), all))
+                .any(|a| a == want);
+            assert!(hit, "{want:?} unreachable when all three icons are shown");
+        }
+    }
+
+    #[test]
+    fn message_rows_render_in_every_state() {
+        let row = |ui: &mut egui::Ui, n: usize, mentioned: bool, grouped: bool, show: MsgActions, body: &str| {
+            let act = message_row(ui, ui.id().with(("row", n)), mentioned, show, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if !grouped {
+                        ui.label("pilot:");
+                    }
+                    render_message_body(ui, body);
+                });
+            });
+            assert_eq!(act, MsgRowAction::None);
+        };
+        let mut states = Vec::new();
+        for mentioned in [false, true] {
+            for grouped in [false, true] {
+                for copy in [false, true] {
+                    for mention in [false, true] {
+                        for dm in [false, true] {
+                            for body in BODIES {
+                                states.push((
+                                    mentioned,
+                                    grouped,
+                                    MsgActions { copy, mention, dm },
+                                    body,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        egui::__run_test_ui(|ui| {
+            for (i, (mentioned, grouped, show, body)) in states.iter().enumerate() {
+                row(ui, i, *mentioned, *grouped, *show, body);
+            }
+        });
+        // One row per pass, drawn under the pointer, so every state also renders its hover branch.
+        for (i, (mentioned, grouped, show, body)) in states.iter().enumerate() {
+            run_hovered(egui::pos2(120.0, 6.0), |ui| {
+                row(ui, i, *mentioned, *grouped, *show, body);
+            });
+        }
+    }
+
+    #[cfg(feature = "fc-rescue")]
+    #[test]
+    fn rescue_grouping_follows_sender_and_gap() {
+        assert!(!rescue_grouped("a", 100, None, 0));
+        assert!(rescue_grouped("a", 200, Some("a"), 100));
+        assert!(!rescue_grouped("a", 500, Some("a"), 100));
+        assert!(!rescue_grouped("b", 200, Some("a"), 100));
+        // A message that arrives out of order must start a fresh header, not fold into the last.
+        assert!(!rescue_grouped("a", 50, Some("a"), 100));
+    }
+
+    #[cfg(feature = "fc-rescue")]
+    #[test]
+    fn rescue_feed_renders_every_grouping_shape() {
+        let msg = |who: &str, body: &str, out: bool, t: i64| {
+            (who.to_owned(), body.to_owned(), out, t)
+        };
+        let now = chrono::Utc::now().timestamp();
+        let feeds: Vec<Vec<(String, String, bool, i64)>> = vec![
+            Vec::new(),
+            vec![msg("Ödin", "Ö ドクトリン", false, now)],
+            vec![msg("Ödin", "one", false, now - 100), msg("Ödin", "two", false, now - 10)],
+            vec![msg("Ödin", "one", false, now - 900), msg("Ödin", "two", false, now)],
+            vec![msg("Ödin", "one", false, now - 10), msg("Bob", "two", true, now)],
+        ];
+        let draw = |ui: &mut egui::Ui| {
+            for (i, f) in feeds.iter().enumerate() {
+                assert!(rescue_chat_feed(ui, f, &format!("feed{i}")).is_none());
+            }
+        };
+        egui::__run_test_ui(draw);
+        // One feed per pass, sampled down the column, so the hover branch renders too.
+        for (i, f) in feeds.iter().enumerate() {
+            for y in [6.0, 20.0, 34.0, 48.0] {
+                run_hovered(egui::pos2(120.0, y), |ui| {
+                    assert!(rescue_chat_feed(ui, f, &format!("feed{i}")).is_none());
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod chat_window_tests {
+    use super::*;
+
+    fn win(id: u64, tabs: &[&str], active: Option<&str>) -> ChatWindow {
+        ChatWindow {
+            id,
+            tabs: tabs.iter().map(|s| (*s).to_owned()).collect(),
+            active: active.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    fn v(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    struct Fix {
+        main: Vec<String>,
+        active: Option<String>,
+        popouts: Vec<ChatWindow>,
+    }
+    impl Fix {
+        fn set(&mut self) -> TabSet<'_> {
+            TabSet {
+                main: &mut self.main,
+                main_active: &mut self.active,
+                popouts: &mut self.popouts,
+            }
+        }
+    }
+
+    fn fix() -> Fix {
+        Fix {
+            main: v(&["a", "b"]),
+            active: Some("b".to_owned()),
+            popouts: vec![win(1, &["c", "d"], Some("d"))],
+        }
+    }
+
+    #[test]
+    fn owner_finds_main_and_popouts() {
+        let mut f = fix();
+        let t = f.set();
+        assert_eq!(t.owner("a"), Some(ChatWinKey::Main));
+        assert_eq!(t.owner("d"), Some(ChatWinKey::Popout(1)));
+        assert_eq!(t.owner("zz"), None);
+    }
+
+    #[test]
+    fn detach_from_main_falls_back_left_then_to_pings() {
+        let mut f = fix();
+        assert_eq!(f.set().detach("b"), Some(ChatWinKey::Main));
+        assert_eq!(f.main, v(&["a"]));
+        assert_eq!(f.active.as_deref(), Some("a"));
+        // Removing the left-most tab leaves the pings pseudo-tab selected.
+        f.active = Some("a".to_owned());
+        f.set().detach("a");
+        assert!(f.main.is_empty());
+        assert_eq!(f.active, None);
+    }
+
+    #[test]
+    fn detach_from_popout_never_yields_the_pings_sentinel() {
+        let mut f = fix();
+        f.popouts[0].active = Some("c".to_owned());
+        assert_eq!(f.set().detach("c"), Some(ChatWinKey::Popout(1)));
+        assert_eq!(f.popouts[0].active.as_deref(), Some("d"));
+        f.set().detach("d");
+        assert!(f.popouts[0].tabs.is_empty());
+        assert_eq!(f.popouts[0].active, None);
+    }
+
+    #[test]
+    fn attach_respects_index_and_is_idempotent() {
+        let mut f = fix();
+        f.set().attach("z", ChatWinKey::Main, Some(1));
+        assert_eq!(f.main, v(&["a", "z", "b"]));
+        f.set().attach("z", ChatWinKey::Main, Some(0));
+        assert_eq!(f.main, v(&["a", "z", "b"]));
+        // Out-of-range index clamps to the end; a missing window is a no-op.
+        f.set().attach("y", ChatWinKey::Main, Some(99));
+        assert_eq!(f.main, v(&["a", "z", "b", "y"]));
+        f.set().attach("q", ChatWinKey::Popout(42), None);
+        assert_eq!(f.set().owner("q"), None);
+    }
+
+    #[test]
+    fn move_tab_between_windows_fixes_both_actives() {
+        let mut f = fix();
+        f.set().move_tab("b", ChatWinKey::Popout(1), Some(0));
+        assert_eq!(f.main, v(&["a"]));
+        assert_eq!(f.active.as_deref(), Some("a"));
+        assert_eq!(f.popouts[0].tabs, v(&["b", "c", "d"]));
+        // Dragging a conversation into a window shows it there.
+        assert_eq!(f.popouts[0].active.as_deref(), Some("b"));
+        // Moving something nobody owns does not invent a tab.
+        f.set().move_tab("nope", ChatWinKey::Main, None);
+        assert_eq!(f.main, v(&["a"]));
+    }
+
+    #[test]
+    fn reordering_within_a_window_keeps_the_selection() {
+        let mut f = Fix {
+            main: v(&["a", "b", "c"]),
+            active: Some("a".to_owned()),
+            popouts: vec![win(1, &["x", "y"], Some("x"))],
+        };
+        // The tab being dragged is the one you are reading; it must stay selected.
+        f.set().move_tab("a", ChatWinKey::Main, Some(2));
+        assert_eq!(f.main, v(&["b", "c", "a"]));
+        assert_eq!(f.active.as_deref(), Some("a"));
+        // Reordering some other tab leaves the selection where it was.
+        f.set().move_tab("c", ChatWinKey::Main, Some(0));
+        assert_eq!(f.main, v(&["c", "b", "a"]));
+        assert_eq!(f.active.as_deref(), Some("a"));
+        f.set().move_tab("y", ChatWinKey::Popout(1), Some(0));
+        assert_eq!(f.popouts[0].tabs, v(&["y", "x"]));
+        assert_eq!(f.popouts[0].active.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn normalize_strips_cross_window_dupes_and_pins_active() {
+        let mut f = Fix {
+            main: v(&["a", "b", "a"]),
+            active: Some("gone".to_owned()),
+            popouts: vec![win(1, &["b", "c"], Some("b")), win(2, &[], Some("x"))],
+        };
+        assert!(f.set().normalize());
+        assert_eq!(f.main, v(&["a", "b"]));
+        assert_eq!(f.popouts[0].tabs, v(&["c"]));
+        assert_eq!(f.active, None);
+        assert_eq!(f.popouts[0].active.as_deref(), Some("c"));
+        assert_eq!(f.popouts[1].active, None);
+        // Idempotent.
+        assert!(!f.set().normalize());
+    }
+
+    #[test]
+    fn empty_popouts_and_fresh_id() {
+        let mut f = Fix {
+            main: Vec::new(),
+            active: None,
+            popouts: vec![win(3, &[], None), win(7, &["a"], Some("a"))],
+        };
+        assert_eq!(f.set().empty_popouts(), vec![3]);
+        assert_eq!(f.set().fresh_id(), 8);
+        let mut empty = Fix { main: Vec::new(), active: None, popouts: Vec::new() };
+        assert_eq!(empty.set().fresh_id(), 1);
+    }
+
+    #[test]
+    fn reconcile_leaves_a_popout_owned_tab_where_it_is() {
+        // Regression guard: reconciliation must not re-add a popped-out conversation to the main
+        // tab bar, which would duplicate it and yank it back every frame.
+        let mut f = fix();
+        let want = v(&["a", "b", "c", "d"]);
+        reconcile_tabs(&mut f.set(), &want);
+        assert_eq!(f.main, v(&["a", "b"]));
+        assert_eq!(f.popouts[0].tabs, v(&["c", "d"]));
+        // And again, unchanged.
+        reconcile_tabs(&mut f.set(), &want);
+        assert_eq!(f.main, v(&["a", "b"]));
+        assert_eq!(f.popouts[0].tabs, v(&["c", "d"]));
+    }
+
+    #[test]
+    fn reconcile_adds_new_jids_to_main_in_order() {
+        let mut f = fix();
+        reconcile_tabs(&mut f.set(), &v(&["a", "b", "c", "d", "e", "f"]));
+        assert_eq!(f.main, v(&["a", "b", "e", "f"]));
+        assert_eq!(f.popouts[0].tabs, v(&["c", "d"]));
+    }
+
+    #[test]
+    fn reconcile_drops_from_any_window() {
+        let mut f = fix();
+        reconcile_tabs(&mut f.set(), &v(&["a", "c"]));
+        assert_eq!(f.main, v(&["a"]));
+        assert_eq!(f.active.as_deref(), Some("a"));
+        assert_eq!(f.popouts[0].tabs, v(&["c"]));
+        assert_eq!(f.popouts[0].active.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn reconcile_with_nothing_wanted_clears_everything() {
+        let mut f = fix();
+        reconcile_tabs(&mut f.set(), &[]);
+        assert!(f.main.is_empty());
+        assert_eq!(f.active, None);
+        assert!(f.popouts[0].tabs.is_empty());
+        assert_eq!(f.set().empty_popouts(), vec![1]);
+    }
+
+    #[test]
+    fn drop_target_picks_the_smallest_containing_rect() {
+        let big = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        let small = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
+        let rects = [(ChatWinKey::Main, big), (ChatWinKey::Popout(1), small)];
+        let p = Some(egui::pos2(15.0, 15.0));
+        assert_eq!(drop_target(&rects, ChatWinKey::Popout(9), p), Some(ChatWinKey::Popout(1)));
+        // The source window is never its own drop target.
+        assert_eq!(drop_target(&rects, ChatWinKey::Popout(1), p), Some(ChatWinKey::Main));
+        assert_eq!(drop_target(&rects, ChatWinKey::Popout(9), None), None);
+        assert_eq!(
+            drop_target(&rects, ChatWinKey::Popout(9), Some(egui::pos2(500.0, 500.0))),
+            None
+        );
+    }
+
+    #[test]
+    fn detach_to_new_never_leaves_an_empty_window() {
+        // A pop-out observed empty even once is pruned by `jabber_reconcile`, so the window must
+        // be born holding its tab.
+        let mut f = fix();
+        let id = f.set().detach_to_new("b", Some((10.0, 20.0))).unwrap();
+        assert_eq!(id, 2);
+        assert_eq!(f.main, v(&["a"]));
+        assert_eq!(f.active.as_deref(), Some("a"));
+        let w = f.popouts.iter().find(|w| w.id == id).unwrap();
+        assert_eq!(w.tabs, v(&["b"]));
+        assert_eq!(w.active.as_deref(), Some("b"));
+        assert_eq!(w.pos, Some((10.0, 20.0)));
+        assert!(f.set().empty_popouts().is_empty());
+        // Nothing owns "zz", so no window is invented for it.
+        assert_eq!(f.set().detach_to_new("zz", None), None);
+        assert_eq!(f.popouts.len(), 2);
+    }
+
+    #[test]
+    fn dissolve_returns_tabs_to_main_and_leaves_its_active_alone() {
+        let mut f = fix();
+        assert!(f.set().dissolve(1));
+        assert_eq!(f.main, v(&["a", "b", "c", "d"]));
+        assert_eq!(f.active.as_deref(), Some("b"));
+        assert!(f.popouts.is_empty());
+        assert!(!f.set().dissolve(1));
+    }
+
+    #[test]
+    fn tearing_off_the_last_tab_of_a_window_leaves_it_prunable() {
+        let mut f = fix();
+        f.set().move_tab("c", ChatWinKey::Main, None);
+        f.set().move_tab("d", ChatWinKey::Main, None);
+        assert_eq!(f.set().empty_popouts(), vec![1]);
+        // A fresh id never reuses the emptied one while it is still listed.
+        assert_eq!(f.set().fresh_id(), 2);
+    }
+
+    #[test]
+    fn popout_settings_round_trip() {
+        let live = [
+            ChatWindow {
+                id: 4,
+                tabs: v(&["a@x", "b@x"]),
+                active: Some("b@x".to_owned()),
+                pos: Some((3.0, 4.0)),
+                size: Some((640.0, 480.0)),
+                // Runtime-only state must not survive, and must not block the round-trip.
+                geom_applied: true,
+                focused: true,
+                outer: Some(egui::Rect::EVERYTHING),
+                inner: Some(egui::Rect::EVERYTHING),
+            },
+            ChatWindow { id: 9, tabs: v(&["c@x"]), ..Default::default() },
+        ];
+        let cfg: Vec<_> = live.iter().map(popout_cfg).collect();
+        let back = popouts_from_cfg(&cfg);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].tabs, live[0].tabs);
+        assert_eq!(back[0].active.as_deref(), Some("b@x"));
+        assert_eq!(back[0].pos, Some((3.0, 4.0)));
+        assert_eq!(back[0].size, Some((640.0, 480.0)));
+        assert!(!back[0].geom_applied);
+        assert!(back[0].outer.is_none());
+        // A window with no explicit active tab lands on its first one.
+        assert_eq!(back[1].active.as_deref(), Some("c@x"));
+        // Stable after one pass: a blank `active` canonicalises to the first tab, and everything
+        // then round-trips unchanged.
+        let cfg2: Vec<_> = back.iter().map(popout_cfg).collect();
+        assert_eq!(cfg2[1].active, "c@x");
+        assert_eq!(popouts_from_cfg(&cfg2).iter().map(popout_cfg).collect::<Vec<_>>(), cfg2);
+    }
+
+    #[test]
+    fn popouts_from_cfg_drops_junk_entries() {
+        use crate::settings::ChatWindowCfg;
+        let cfg = vec![
+            ChatWindowCfg { id: 1, tabs: v(&["a"]), ..Default::default() },
+            // Empty window: nothing to show, and it would be pruned on the first frame anyway.
+            ChatWindowCfg { id: 2, tabs: Vec::new(), ..Default::default() },
+            // Duplicate id: two windows would share one viewport.
+            ChatWindowCfg { id: 1, tabs: v(&["b"]), ..Default::default() },
+            // Active tab this window does not hold.
+            ChatWindowCfg {
+                id: 3,
+                tabs: v(&["c"]),
+                active: "elsewhere".to_owned(),
+                ..Default::default()
+            },
+        ];
+        let out = popouts_from_cfg(&cfg);
+        assert_eq!(out.iter().map(|w| w.id).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(out[1].active.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn popouts_from_cfg_honours_the_cap() {
+        let cfg: Vec<crate::settings::ChatWindowCfg> = (1..=MAX_POPOUTS as u64 + 3)
+            .map(|id| crate::settings::ChatWindowCfg {
+                id,
+                tabs: vec![format!("t{id}")],
+                ..Default::default()
+            })
+            .collect();
+        assert_eq!(popouts_from_cfg(&cfg).len(), MAX_POPOUTS);
+    }
+
+    #[test]
+    fn reorder_index_maps_visible_slots_onto_the_full_tab_list() {
+        let tabs = v(&["a", "b", "c", "d"]);
+        // Only b, c and d fit on the bar; "a" is in the overflow dropdown.
+        let centers =
+            vec![("b".to_owned(), 10.0), ("c".to_owned(), 30.0), ("d".to_owned(), 50.0)];
+        // Dropping "d" left of "b" puts it before "b" in the FULL list, i.e. after "a".
+        assert_eq!(reorder_index(&tabs, &centers, "d", 0.0), 1);
+        // Between c and d -> right before "d"'s old slot, which is the end once "d" is removed.
+        assert_eq!(reorder_index(&tabs, &centers, "d", 40.0), 3);
+        // Past the right edge -> the end.
+        assert_eq!(reorder_index(&tabs, &centers, "b", 999.0), 3);
+        // No other visible tab: nothing to order against.
+        assert_eq!(reorder_index(&tabs, &[("b".to_owned(), 10.0)], "b", 5.0), 0);
+    }
+
+    #[test]
+    fn insertion_index_boundaries() {
+        let centers = [10.0, 30.0, 50.0];
+        assert_eq!(insertion_index(&centers, 0.0), 0);
+        assert_eq!(insertion_index(&centers, 10.0), 1);
+        assert_eq!(insertion_index(&centers, 20.0), 1);
+        assert_eq!(insertion_index(&centers, 49.9), 2);
+        assert_eq!(insertion_index(&centers, 999.0), 3);
+        assert_eq!(insertion_index(&[], 5.0), 0);
+    }
+
+    const TAB_LABELS: [&str; 4] = ["mgmt", "Ö ドクトリン", "", "a-very-long-channel-name"];
+
+    /// Drives a real context with the pointer parked in the bar, so the hovered branch (which is
+    /// the only one that draws the pop-out and close icons) renders too.
+    fn run_tabs(at: egui::Pos2, mut f: impl FnMut(&mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        input.events.push(egui::Event::PointerMoved(at));
+        for _ in 0..2 {
+            let _ = ctx.run_ui(input.clone(), &mut f);
+            input.events.clear();
+        }
+    }
+
+    fn draw_tab_matrix(ui: &mut egui::Ui) {
+        let mut n = 0u32;
+        for label in TAB_LABELS {
+            for selected in [false, true] {
+                for unread in [false, true] {
+                    for mention in [false, true] {
+                        for (closable, can_popout) in
+                            [(false, false), (true, false), (true, true)]
+                        {
+                            for lead in
+                                [TabLead::Dot(egui::Color32::RED), TabLead::Icon("\u{e000}")]
+                            {
+                                n += 1;
+                                let hit = jabber_tab_box(
+                                    ui,
+                                    egui::Id::new(("t", n)),
+                                    selected,
+                                    unread,
+                                    mention,
+                                    lead,
+                                    closable,
+                                    can_popout,
+                                    label,
+                                );
+                                let w = jabber_tab_width(ui, closable, unread, label);
+                                assert!((hit.resp.rect.width() - w).abs() < 0.5);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tab_box_renders_every_state_and_matches_its_measured_width() {
+        egui::__run_test_ui(draw_tab_matrix);
+        // Sweep the row so the hovered branch, and the icons it reveals, are laid out too.
+        for x in [4.0, 40.0, 90.0, 160.0] {
+            run_tabs(egui::pos2(x, 8.0), draw_tab_matrix);
+        }
+    }
+
+    #[test]
+    fn a_closable_tab_reserves_both_trailing_icons() {
+        egui::__run_test_ui(|ui| {
+            for label in TAB_LABELS {
+                let plain = jabber_tab_width(ui, false, false, label);
+                let unread = jabber_tab_width(ui, false, true, label);
+                let closable = jabber_tab_width(ui, true, false, label);
+                assert!(unread > plain);
+                // Close X plus the pop-out slot, both with their leading gap.
+                assert!((closable - plain - (TAB_GAP + TAB_POP_W + TAB_GAP + TAB_CLOSE_W)).abs() < 0.01);
+            }
+        });
+    }
+
+    #[test]
+    fn ellipsized_tabs_stay_inside_the_minimum_width() {
+        // Guards the MIN_TAB_W bump that paid for the pop-out icon: the boundary tab is ellipsized
+        // rather than dropped, so its rendered width must never exceed the budget it was given.
+        egui::__run_test_ui(|ui| {
+            for label in TAB_LABELS {
+                for budget in [96.0f32, 100.0, 140.0, 240.0] {
+                    let lbl = ellipsize_tab_label(ui, true, false, label, budget);
+                    let w = jabber_tab_width(ui, true, false, &lbl);
+                    assert!(w <= budget + 0.01 || lbl == "\u{2026}", "{label:?} {budget} -> {lbl:?} {w}");
+                }
             }
         });
     }

@@ -186,9 +186,15 @@ pub mod standing {
 /// so Latin/icon glyphs keep their existing fonts and metrics; the CJK font is only
 /// consulted for code points the earlier fonts lack. If no CJK font is found we log once
 pub fn install_fonts(ctx: &egui::Context) {
+    install_fonts_opts(ctx, true);
+}
+
+/// `include_cjk = false` skips the system font probe, whose result depends on which fonts the
+/// machine happens to have installed. The UI harness needs layout to be machine-independent.
+pub fn install_fonts_opts(ctx: &egui::Context, include_cjk: bool) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    if let Some(data) = load_cjk_font() {
+    if let Some(data) = include_cjk.then(load_cjk_font).flatten() {
         const NAME: &str = "cjk-fallback";
         fonts.font_data.insert(NAME.to_owned(), std::sync::Arc::new(data));
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {

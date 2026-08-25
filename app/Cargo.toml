@@ -63,6 +63,13 @@ rfd = "0.15"
 # `sync` feature only — operates on std::fs::File, no extra runtime deps.
 fs4 = "1.1.0"
 
+[dev-dependencies]
+# Headless UI harness: renders any egui surface to a PNG and drives hover/click through the
+# AccessKit tree. Version-locked to egui/eframe 0.34. No `snapshot` feature (we inspect the
+# PNGs rather than diff goldens) and no `eframe` feature, which would flip `eframe/wgpu` and
+# change the renderer the Linux/macOS binary is built with.
+egui_kittest = { version = "0.34", features = ["wgpu"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # async-io (not tokio) to match accesskit/zbus in the rest of the tree — avoids
 # forcing zbus into tokio mode (which breaks keyring/notify-rust at runtime).

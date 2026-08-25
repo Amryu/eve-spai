@@ -161,6 +161,11 @@ fn nav_item(
     let width = ui.available_width();
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::click());
+    // The row is painted by hand, so without this it reaches the accessibility tree (and the UI
+    // harness) as an unlabelled clickable rectangle.
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), active, label)
+    });
     let hovered = resp.hovered();
     let painter = ui.painter().clone();
 

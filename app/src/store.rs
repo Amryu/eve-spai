@@ -1759,6 +1759,13 @@ fn migrate_plaintext_tokens(conn: &Connection) {
 }
 
 pub fn data_dir() -> Result<PathBuf> {
+    // Single choke point for every on-disk profile path (the DB, image_cache, esilog, lookup),
+    // so the override redirects all of them at once and tests never touch the real profile.
+    if let Ok(p) = std::env::var("EVE_SPAI_DATA_DIR") {
+        if !p.is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
     let pd = directories::ProjectDirs::from("online", "EveSpai", "eve-spai")
         .ok_or_else(|| anyhow!("could not resolve a data directory"))?;
     Ok(pd.data_dir().to_path_buf())

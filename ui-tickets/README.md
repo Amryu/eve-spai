@@ -1,0 +1,62 @@
+# UI tickets
+
+Findings from the headless UI harness (`app/src/uitest/`). One folder per ticket:
+`ticket.md`, `before/` screenshots, `after/` screenshots once fixed, and `review.md`
+recording the fix and review cycle.
+
+The workflow is written up in `CLAUDE.md` under "UI issue workflow". Short version:
+ticket, fix in a worktree, review the patch, verify by re-rendering the scene, record
+everything in `review.md`. A fix is not done until a screenshot shows it fixed.
+
+## Defects
+
+| Ticket | Severity | Region | Wave | Status |
+|---|---|---|---|---|
+| [UI-001 Nav rail separator strikes through the Jabber row](UI-001-nav-rail-separator-strikethrough/) | High | `nav.rs` | 1 | Open |
+| [UI-002 Invisible 34x28 click target on every intel card](UI-002-invisible-jump-label/) | Medium | `intel_row` | 2 | Open |
+| [UI-003 Fleet ping body dimmer than a routine reminder](UI-003-fleet-ping-body-contrast/) | Medium | `render_ping` | 1 | Open |
+| [UI-004 Alerts toolbar reads "zKill intel within feed"](UI-004-drag-value-reads-within-feed/) | Medium | `alerts_view` | 2 | Open |
+| [UI-005 Battles spinner has no exit path](UI-005-battles-spinner-has-no-exit/) | Medium | `battles_view` | 3 | Open |
+| [UI-006 Settings truncates directory paths](UI-006-settings-paths-truncated/) | Medium | `settings_view` | 3 | Open |
+| [UI-007 Alert title bar cannot be grabbed](UI-007-alert-titlebar-drag-blocked/) | Medium | `alert_cb` | 4 | Open |
+| [UI-008 Sixteen .small() sites on content text](UI-008-small-font-on-content-text/) | Medium | cross-cutting | 8 | Open |
+| [UI-009 Resolving-pilot chip shoves its row](UI-009-resolving-chip-width-jitter/) | Low | `intel_row` | 4 | Open |
+| [UI-010 `uncertain` silently keyed by lowercase](UI-010-uncertain-set-lowercase-contract/) | Low | `intel_row` | 7 | Open |
+| [UI-011 Reporter footer flows inline with badges](UI-011-reporter-footer-inline-with-badges/) | Low | `intel_row` | 5 | Open |
+| [UI-012 Battles toolbar ends on a dangling separator](UI-012-dangling-toolbar-separator/) | Low | `battles_view` | 5 | Open |
+| [UI-013 Doctrine row floats in extra air](UI-013-doctrine-row-floats/) | Low | `render_ping` | 6 | Open |
+| [UI-014 Copy button undersized](UI-014-copy-button-undersized/) | Low | `render_ping` | 7 | Open |
+| [UI-015 Near-duplicate celestial on two rows](UI-015-duplicate-celestial-rows/) | Low | `intel_row` | 6 | Open |
+| [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Blocked |
+
+## Harness coverage gaps
+
+Tool work rather than app defects. Ticketed so the backlog is complete; not scheduled yet.
+
+| Ticket | Blocks | Effort |
+|---|---|---|
+| [GAP-001 28 dialogs unreachable](GAP-001-dialogs-unreachable/) | ~6,000 lines | Medium |
+| [GAP-002 Scratch store is never seeded](GAP-002-seed-the-scratch-store/) | 5 of 9 views | Medium |
+| [GAP-003 Map is painter-only](GAP-003-map-painter-only/) | ~80% of Map pixels | Medium |
+| [GAP-004 Jabber view uncovered](GAP-004-jabber-view-uncovered/) | ~1,200 lines | Small |
+| [GAP-005 Wall clock frozen](GAP-005-wall-clock-frozen/) | 13 sites | Small-medium |
+| [GAP-006 Alert auto-dismiss untested](GAP-006-alert-auto-dismiss-untested/) | overlay click passthrough | Small |
+| [GAP-007 Viewport commands dropped](GAP-007-viewport-commands-dropped/) | 12 sites, overlay process | Small / large |
+| [GAP-008 Input kinds undriven](GAP-008-input-kinds-undriven/) | 4 menus, 2 DnD systems | Small / large |
+| [GAP-009 i18n and platform branches](GAP-009-i18n-and-platform/) | CJK overflow, rescue windows | Small / large |
+
+## Wave schedule
+
+Two agents at most, never two in the same region. Most of the UI is in one file, so the
+pairing is what keeps them from clobbering each other.
+
+| Wave | Tickets | Regions |
+|---|---|---|
+| 1 | UI-001, UI-003 | `nav.rs` + `render_ping` |
+| 2 | UI-002, UI-004 | `intel_row` + `alerts_view` |
+| 3 | UI-005, UI-006 | `battles_view` + `settings_view` |
+| 4 | UI-007, UI-009 | `alert_cb` + `intel_row` |
+| 5 | UI-011, UI-012 | `intel_row` + `battles_view` |
+| 6 | UI-013, UI-015 | `render_ping` + `intel_row` |
+| 7 | UI-014, UI-010 | `render_ping` + `intel_row` |
+| 8 | UI-008 | cross-cutting, runs alone |
