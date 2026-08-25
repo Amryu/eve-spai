@@ -146,6 +146,11 @@ Two traps that silently gut a fixture, both hit once already:
 Add a scene by appending to `scenes::all()`. Check the census afterwards: a scene near the
 ~12-target chrome baseline is not being inspected in any meaningful sense.
 
+Size a scene to its whole subject. A scene that crops what it is meant to show is worse than no
+scene, because it reads as coverage. Two tickets in the first round attached `before/` screenshots
+that did not contain the bug: UI-009's chip never rendered in the scene at all, and UI-011's footer
+sat 350px below the frame. Both were caught by the agent doing the fix, not by the review.
+
 `SpaiApp::build(ctx, headless: true)` skips the image loaders, the control socket, all
 background threads, the tray and the overlay subprocess, and refuses to open a store unless
 `EVE_SPAI_DATA_DIR` is set. Headless also disables the workers that populate views, so

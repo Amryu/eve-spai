@@ -22,7 +22,7 @@ everything in `review.md`. A fix is not done until a screenshot shows it fixed.
 | [UI-008 Sixteen .small() sites on content text](UI-008-small-font-on-content-text/) | Medium | cross-cutting | 8 | Open |
 | [UI-009 Resolving-pilot chip shoves its row](UI-009-resolving-chip-width-jitter/) | Low | `intel_row` | 4 | **Fixed** |
 | [UI-010 `uncertain` silently keyed by lowercase](UI-010-uncertain-set-lowercase-contract/) | Low | `intel_row` | 7 | Open |
-| [UI-011 Reporter footer flows inline with badges](UI-011-reporter-footer-inline-with-badges/) | Low | `intel_row` | 5 | Open |
+| [UI-011 Reporter footer flows inline with badges](UI-011-reporter-footer-inline-with-badges/) | Low | `intel_row` | 5 | **Fixed** |
 | [UI-012 Battles toolbar ends on a dangling separator](UI-012-dangling-toolbar-separator/) | Low | `battles_view` | 5 | Open |
 | [UI-013 Doctrine row floats in extra air](UI-013-doctrine-row-floats/) | Low | `render_ping` | 6 | Open |
 | [UI-014 Copy button undersized](UI-014-copy-button-undersized/) | Low | `render_ping` | 7 | Open |
