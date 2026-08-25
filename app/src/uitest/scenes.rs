@@ -139,6 +139,58 @@ fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The battle detail view, which carries the second wrapping toolbar. Its cache is normally
+/// filled by the brview worker, and headless starts no worker, so the scene seeds the selection
+/// and the cache itself.
+fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    use crate::battle::{Battle, Engagement, Party, PartyKind};
+    harness::scratch_profile();
+    let battle = Battle {
+        engagements: vec![Engagement {
+            kill_id: 1,
+            time: 0,
+            system_id: 30000142,
+            system_name: "Jita".into(),
+            security: 0.9,
+            victim: Party { id: 99, name: "Test Alliance".into(), kind: PartyKind::Alliance },
+            victim_char: 5,
+            victim_pilot: "Victim".into(),
+            victim_ship: 587,
+            attackers: vec![],
+            isk: 1.0,
+            anchored: true,
+        }],
+        start: 0,
+        end: 0,
+        systems: vec![(30000142, "Jita".into(), 0.9)],
+        sides: vec![],
+        kills: 1,
+        isk: 1.0,
+        ambiguous: false,
+        suggested_splits: vec![],
+    };
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Battles;
+            *a.battles.lock().unwrap() = vec![battle.clone()];
+            a.battle_selected = Some(1);
+            a.battle_detail_cache = Some(std::sync::Arc::new(crate::brview::BattleDetail {
+                kid: 1,
+                battle: battle.clone(),
+                inv: Default::default(),
+                rosters: vec![],
+                condensed: vec![],
+                ship_ids: vec![],
+            }));
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
@@ -191,6 +243,11 @@ pub(crate) fn all() -> Vec<Scene> {
     // 720 is the app's minimum window width (main.rs), where the settings path fields and their
     // Browse buttons have the least room to share.
     v.push(view_scene("view_settings_narrow", View::Settings, [720.0, 800.0]));
+    // Both battle toolbars are one wrapping row of groups, so where they break moves with the
+    // window. 720 breaks them into the most rows, which is where a divider is most likely to end
+    // up at a row edge.
+    v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
+    v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
     v
 }
 
@@ -239,6 +296,66 @@ fn uitest_screenshots() {
         let mut harness = harness::build(&mut scene, true);
         harness::shot(&mut harness, name);
         harness::shot_debug(&mut harness, name);
+    }
+}
+
+/// Rects of everything the toolbar puts in the flow. Dividers are painted decoration and emit no
+/// node of their own, so this is what has to sit on either side of one.
+fn content_rects(harness: &egui_kittest::Harness<'_>) -> Vec<egui::Rect> {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut out = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.is_hidden()
+            || !matches!(
+                n.role(),
+                Role::Button
+                    | Role::CheckBox
+                    | Role::ComboBox
+                    | Role::TextInput
+                    | Role::SpinButton
+                    | Role::Label
+                    | Role::Image
+            )
+        {
+            continue;
+        }
+        let Some(b) = n.bounding_box() else { continue };
+        out.push(egui::Rect {
+            min: egui::pos2(b.x0 as f32, b.y0 as f32),
+            max: egui::pos2(b.x1 as f32, b.y1 as f32),
+        });
+    }
+    out
+}
+
+/// A divider is a group boundary, so one at the start or the end of a row divides nothing. The
+/// battles toolbar is a single wrapping row and its break points move with the window, so sweep
+/// the whole range from the app's minimum width up.
+#[test]
+fn uitest_toolbar_dividers_keep_content_on_both_sides() {
+    for w in (720..=1600).step_by(40).map(|w| w as f32) {
+        let mut scene = view_scene("battles_divider_probe", View::Battles, [w, 800.0]);
+        let harness = harness::build(&mut scene, false);
+        let seps = crate::app::painted_toolbar_seps(&harness.ctx);
+        assert!(!seps.is_empty(), "no toolbar divider painted at all at {w}px");
+        let content = content_rects(&harness);
+        for sep in &seps {
+            let row = |r: &&egui::Rect| {
+                let y = r.center().y;
+                sep.top() - 2.0 < y && y < sep.bottom() + 2.0
+            };
+            assert!(
+                content.iter().filter(row).any(|r| r.right() <= sep.left() + 0.5),
+                "divider at {sep:?} starts a row at {w}px"
+            );
+            assert!(
+                content.iter().filter(row).any(|r| r.left() >= sep.right() - 0.5),
+                "divider at {sep:?} ends a row at {w}px"
+            );
+        }
     }
 }
 

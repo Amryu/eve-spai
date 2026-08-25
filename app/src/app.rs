@@ -346,12 +346,12 @@ pub struct SpaiApp {
     intel_query: String,
     intel_max_jumps: u32,
     intel_type: IntelTypeFilter,
-    battles: crate::zkill::SharedBattles,
+    pub(crate) battles: crate::zkill::SharedBattles,
     battle_history: crate::zkill::SharedBattles,
     battle_history_loading: std::sync::Arc<std::sync::atomic::AtomicBool>,
     show_history: bool,
-    battle_selected: Option<i64>,
-    battle_detail_cache: Option<std::sync::Arc<crate::brview::BattleDetail>>,
+    pub(crate) battle_selected: Option<i64>,
+    pub(crate) battle_detail_cache: Option<std::sync::Arc<crate::brview::BattleDetail>>,
     loaded_report: Option<LoadedReport>,
     report_msg: Option<String>,
     build_from_kill: crate::zkill::SharedBuildFromKill,
@@ -7674,7 +7674,7 @@ impl SpaiApp {
                         let mut save_clicked = false;
                         let mut share_clicked = false;
                         let mut mine_clicked = false;
-                        ui.horizontal_wrapped(|ui| {
+                        toolbar(ui, |ui| {
                             if ui
                                 .button(format!("{}  Back to battles", icon::ARROW_LEFT))
                                 .clicked()
@@ -7890,7 +7890,7 @@ impl SpaiApp {
         let mut do_build = false;
         let building =
             matches!(*self.build_from_kill.lock().unwrap(), crate::zkill::BuildFromKill::Loading);
-        ui.horizontal_wrapped(|ui| {
+        toolbar(ui, |ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add(
                 egui::TextEdit::singleline(&mut self.battle_search)
@@ -19508,14 +19508,87 @@ fn side_title(side: &crate::battle::Side) -> String {
         .unwrap_or_else(|| "?".to_owned())
 }
 
+const TOOLBAR_SEP_W: f32 = 10.0;
+
+#[derive(Clone, Default)]
+struct ToolbarSeps {
+    /// Dividers placed but not yet painted, as (rect, row top, reserved shape).
+    pending: Vec<(egui::Rect, f32, egui::layers::ShapeIdx)>,
+    /// Where the content before each divider, and before the flush, ended.
+    ends: Vec<egui::Pos2>,
+}
+
+fn toolbar_seps_id(ui: &egui::Ui) -> egui::Id {
+    ui.id().with("toolbar_seps")
+}
+
+/// A wrapping toolbar row, and the only place the dividers [`toolbar_sep`] deferred get painted.
+fn toolbar<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal_wrapped(|ui| {
+        let r = add(ui);
+        let id = toolbar_seps_id(ui);
+        let mut st: ToolbarSeps = ui.data_mut(|d| d.remove_temp(id).unwrap_or_default());
+        let cursor = ui.cursor();
+        st.ends.push(egui::pos2(cursor.left(), cursor.top()));
+        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        let gap = ui.spacing().item_spacing.x + 0.5;
+        let same_row = ui.spacing().interact_size.y * 0.5;
+        for (rect, top, idx) in &st.pending {
+            let followed = st
+                .ends
+                .iter()
+                .any(|e| (e.y - top).abs() < same_row && e.x > rect.right() + gap);
+            if followed {
+                ui.painter()
+                    .set(*idx, egui::Shape::vline(rect.center().x, rect.y_range(), stroke));
+                #[cfg(test)]
+                record_toolbar_sep(ui, *rect);
+            }
+        }
+        r
+    })
+    .inner
+}
+
+/// Dividers are pure decoration and emit no AccessKit node, so the uitest harness cannot see one
+/// at all. Records what was painted this pass so it can check them anyway.
+#[cfg(test)]
+fn record_toolbar_sep(ui: &egui::Ui, rect: egui::Rect) {
+    let id = egui::Id::new("toolbar_seps_painted");
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.data_mut(|d| {
+        let seen: &mut (u64, Vec<egui::Rect>) = d.get_temp_mut_or_default(id);
+        if seen.0 != pass {
+            *seen = (pass, Vec::new());
+        }
+        seen.1.push(rect);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn painted_toolbar_seps(ctx: &egui::Context) -> Vec<egui::Rect> {
+    let id = egui::Id::new("toolbar_seps_painted");
+    ctx.data(|d| d.get_temp::<(u64, Vec<egui::Rect>)>(id).map(|s| s.1).unwrap_or_default())
+}
+
+/// Group boundary inside a [`toolbar`]. A divider at the start or the end of a row separates
+/// nothing, and the wrap point moves with the window width, so one that would land at a row start
+/// is dropped outright and the rest are painted only once the row is known to continue past them.
 fn toolbar_sep(ui: &mut egui::Ui) {
-    let h = ui.spacing().interact_size.y;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, h), egui::Sense::hover());
-    ui.painter().vline(
-        rect.center().x,
-        rect.y_range(),
-        ui.visuals().widgets.noninteractive.bg_stroke,
-    );
+    let id = toolbar_seps_id(ui);
+    let mut st: ToolbarSeps = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+    let cursor = ui.cursor();
+    st.ends.push(egui::pos2(cursor.left(), cursor.top()));
+    let at_row_start = cursor.left() <= ui.max_rect().left() + 0.5;
+    let would_wrap = ui.available_rect_before_wrap().width() < TOOLBAR_SEP_W;
+    if !at_row_start && !would_wrap {
+        let h = ui.spacing().interact_size.y;
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(TOOLBAR_SEP_W, h), egui::Sense::hover());
+        let idx = ui.painter().add(egui::Shape::Noop);
+        st.pending.push((rect, cursor.top(), idx));
+    }
+    ui.data_mut(|d| d.insert_temp(id, st));
 }
 
 fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Battle) {

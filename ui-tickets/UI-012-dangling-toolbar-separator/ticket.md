@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `battles_view` |
 | **Wave** | 5 |
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/view_battles.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/view_battles.png`, `after/view_battles_narrow.png`, `after/view_battle_detail_narrow.png`
