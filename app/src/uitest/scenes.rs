@@ -3,8 +3,16 @@ use super::harness::{self, Scene};
 use crate::nav::View;
 
 fn intel_scene(name: &'static str, report: crate::intel::IntelReport, width: f32) -> Scene {
+    intel_scene_sized(name, report, [width, 520.0])
+}
+
+fn intel_scene_sized(
+    name: &'static str,
+    report: crate::intel::IntelReport,
+    size: [f32; 2],
+) -> Scene {
     let args = IntelArgs::default();
-    Scene::ui(name, [width, 520.0], move |ui| {
+    Scene::ui(name, size, move |ui| {
         let mut tip = None;
         crate::app::intel_row(
             ui,
@@ -149,6 +157,14 @@ pub(crate) fn all() -> Vec<Scene> {
         resolving_phases_scene("intel_row_resolving_phases"),
         // The feed is resizable, so the same card has to survive a narrow dock too.
         intel_scene("intel_row_torture_narrow", fixtures::intel_torture(), 320.0),
+        // The 520-tall torture scenes cut off below the pilot chips, so the reporter footer is
+        // only visible with room for the whole card.
+        intel_scene_sized("intel_row_torture_full", fixtures::intel_torture(), [520.0, 1000.0]),
+        intel_scene_sized(
+            "intel_row_torture_narrow_full",
+            fixtures::intel_torture(),
+            [320.0, 1400.0],
+        ),
         ping_scene("ping_fleet", fixtures::ping_fleet()),
         ping_scene("ping_plain", fixtures::ping_plain()),
         nav_scene("nav_rail_collapsed", false, 560.0),
@@ -419,6 +435,113 @@ fn uitest_intel_row_hover_shows_tooltip() {
     assert!(
         harness.query_by_label_contains("Click to look up").is_some(),
         "hovering a pilot chip showed no tooltip"
+    );
+}
+
+/// Draws one card and reports its height, so two `show_reporter` settings can be compared.
+fn intel_card_height(name: &'static str, show_reporter: bool) -> f32 {
+    let args = IntelArgs::default();
+    let report = fixtures::intel_typical();
+    let height = std::rc::Rc::new(std::cell::Cell::new(0.0));
+    let sink = height.clone();
+    let mut scene = Scene::ui(name, [520.0, 520.0], move |ui| {
+        let mut t = None;
+        crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            None,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            show_reporter,
+            &args.affil,
+            false,
+            &mut t,
+        );
+        sink.set(ui.min_rect().height());
+    });
+    let _ = harness::build(&mut scene, false);
+    height.get()
+}
+
+/// The reporter and channel are a footer, so they start their own row below every chip instead of
+/// trailing the last badge into the wrapped flow, and they leave no row behind when hidden.
+#[test]
+fn uitest_intel_row_reporter_is_a_footer() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let args = IntelArgs::default();
+    let report = fixtures::intel_typical();
+    let mut scene = Scene::ui("footer_probe", [520.0, 520.0], move |ui| {
+        let mut t = None;
+        crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            None,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            false,
+            &mut t,
+        );
+    });
+    let harness = harness::build(&mut scene, false);
+
+    let rect = |b: egui::accesskit::Rect| egui::Rect {
+        min: egui::pos2(b.x0 as f32, b.y0 as f32),
+        max: egui::pos2(b.x1 as f32, b.y1 as f32),
+    };
+    let mut footer = None;
+    let mut chips: Vec<egui::Rect> = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        let Some(b) = n.bounding_box() else { continue };
+        match n.role() {
+            egui::accesskit::Role::Button => chips.push(rect(b)),
+            egui::accesskit::Role::Label if label.contains("Scout Alpha") => {
+                footer = Some(rect(b))
+            }
+            _ => {}
+        }
+    }
+    let footer = footer.expect("the card drew no reporter footer");
+    assert!(!chips.is_empty(), "the card drew no chips to place the footer under");
+    let lowest = chips.iter().fold(f32::MIN, |acc, r| acc.max(r.max.y));
+    assert!(
+        footer.min.y >= lowest - 0.5,
+        "footer at {footer:?} shares a row with a chip reaching {lowest}"
+    );
+    let leftmost = chips.iter().fold(f32::MAX, |acc, r| acc.min(r.min.x));
+    assert!(
+        footer.min.x <= leftmost + 0.5,
+        "footer at {footer:?} is indented past the leftmost chip at x={leftmost}"
+    );
+
+    let with = intel_card_height("footer_height_on", true);
+    let without = intel_card_height("footer_height_off", false);
+    assert!(
+        without < with - 10.0,
+        "hiding the reporter saved {:.1}px, so a row was left behind (on {with:.1}, off {without:.1})",
+        with - without
     );
 }
 
