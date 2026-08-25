@@ -125,6 +125,25 @@ pub(crate) fn intel_torture() -> IntelReport {
     }
 }
 
+/// Mid-resolution: one pilot already carries a character id, the other is still queued, which is
+/// the only state that draws the "Resolving pilot" placeholder chip. `clock` is the `now` the row
+/// is drawn with, so the age chip reads the same however far the animation phase has advanced.
+pub(crate) fn intel_resolving(clock: i64) -> IntelReport {
+    IntelReport {
+        id: 4,
+        received: clock - 20,
+        channel: "delve.imperium".into(),
+        reporter: "Scout Charlie".into(),
+        text: "1DQ1-A  Muninn  Hostile Pilot  Unresolved Pilot".into(),
+        systems: vec![detected("1DQ1-A")],
+        ships: vec![ship(12_005, "Muninn")],
+        pilots: vec!["Hostile Pilot".into(), "Unresolved Pilot".into()],
+        count: Some(2),
+        count_ships: 1,
+        ..Default::default()
+    }
+}
+
 pub(crate) fn ship_details() -> HashMap<i64, crate::store::ShipDetails> {
     HashMap::new()
 }
