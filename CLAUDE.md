@@ -225,6 +225,10 @@ Record effort honestly even when it is embarrassing. A two-line fix that took tw
   conflict boundary can truncate a test mid-function, which surfaces as an unclosed delimiter rather
   than a quietly dropped assertion.
 - Apply patches one at a time and re-run the suite between them.
+- Measure the test count when you write the brief; never copy it from the previous one. Quoted
+  floors go stale every time a ticket lands, and an agent that finds a higher number has to stop and
+  work out whether it broke something. This has now happened twice in one session, off by 3 both
+  times.
 - Quote the test count to an agent as a FLOOR, never an exact number. Told "must be green (11
   passed)", an agent reads it as "must not change" and skips the regression test the ticket most
   needs.
@@ -271,6 +275,7 @@ Revisions so far:
   cost.
 - Banned `git stash` in worktrees after two concurrent agents swapped each other's `app.rs` through
   the shared stash ref.
+- Measure, do not copy, the test-count floor, after two briefs quoted stale numbers.
 - Added the fresh-worktree recovery route after the obvious repair, `git checkout --` plus reapply,
   was denied by the safety classifier six times running. Recovering by adding rather than discarding
   is both safer and the only thing that actually executes.
