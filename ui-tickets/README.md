@@ -30,6 +30,8 @@ everything in `review.md`. A fix is not done until a screenshot shows it fixed.
 | [UI-017 Work-throttle ComboBox overflows at wide widths](UI-017-combobox-overflows-at-wide-widths/) | Low | `battles_view` | unscheduled | Open |
 | [UI-018 Ping body lines allocate 26px for 15px of ink](UI-018-ping-body-lines-overallocate/) | Low | `render_ping_body` | unscheduled | Open |
 | [UI-019 Audit the remaining small_button call sites](UI-019-small-button-audit/) | Low | various | unscheduled | Open |
+| [UI-023 Dragging a chat tab shows nothing at the cursor](UI-023-tab-drag-needs-cursor-indicator/) | Medium | `jabber_tab_bar_ui` | user | Open |
+| [UI-024 Composer scrolls its own border instead of its contents](UI-024-composer-scrolls-its-border/) | Medium | composer | user | Open |
 | [UI-022 Long chat histories lag, no virtualization plus a per-frame clone](UI-022-chat-history-not-virtualized/) | High | `jabber_conversation_ui` | user | Open |
 | [UI-020 Always-on-top pin floats over popout content](UI-020-ontop-pin-overlaps-content/) | Medium | `ontop_pin` | user | **Fixed** |
 | [UI-021 Composer should grow to 10 rows, drop Send](UI-021-composer-grows-and-drops-send/) | Medium | composer | user | **Fixed** |
