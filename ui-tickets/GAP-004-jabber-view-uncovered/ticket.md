@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Type** | Harness coverage gap |
-| **Status** | Not scheduled |
+| **Status** | Popout surface covered, see `review.md`. In-app view still uncovered. |
 | **Blocks** | ~1,200 lines |
 | **Effort** | Small |
 

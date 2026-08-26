@@ -270,6 +270,32 @@ fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+const POPOUT_ID: u64 = 1;
+
+/// A popped-out chat window: the tab bar, one room's history and the composer, which is what the
+/// pop-out viewport puts in its central panel. `SpaiApp::build` starts no jabber session headless,
+/// so the chat state and the window's tab list are seeded here.
+fn jabber_popout_scene(name: &'static str, size: [f32; 2], active: &str, draft: &str) -> Scene {
+    use crate::app::ChatWinKey;
+    harness::scratch_profile();
+    let (active, draft) = (active.to_owned(), draft.to_owned());
+    let f = fixtures::jabber_frame();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            a.jabber_popouts = vec![fixtures::jabber_popout(POPOUT_ID, &active)];
+            a.jabber_drafts.insert(active.clone(), draft.clone());
+            // Older than the newest messages, so the "new" divider sits inside the history.
+            a.session_start = fixtures::now() - 1_000;
+            a
+        });
+        let mut out = Vec::new();
+        app.jabber_window_body(ui, ChatWinKey::Popout(POPOUT_ID), &f, &mut out);
+    })
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
@@ -339,6 +365,19 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
     // 720 is the app's minimum window width, where the eight-column table has the least room.
     v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
+    // 520x480 is what `jabber_popout_windows` opens a new window at.
+    v.push(jabber_popout_scene("jabber_popout", [520.0, 480.0], fixtures::JABBER_ROOM, ""));
+    v.push(jabber_popout_scene(
+        "jabber_popout_drafting",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        "reshipping, back in two\nbring a second logi\nand a scout for the gate",
+    ));
+    // A DM, which is the branch that draws the contact star and no room controls.
+    v.push(jabber_popout_scene("jabber_popout_dm", [520.0, 480.0], fixtures::JABBER_DM, ""));
+    // 360x260 is the pop-out's minimum inner size, where the tab bar overflows and the composer
+    // and history have the least room.
+    v.push(jabber_popout_scene("jabber_popout_min", [360.0, 260.0], fixtures::JABBER_ROOM, ""));
     v
 }
 
@@ -1262,4 +1301,31 @@ fn uitest_intel_row_marks_uncertain_pilot_from_display_cased_set() {
         ),
         "clicking the uncertain pilot did not open the verdict: {got:?}"
     );
+}
+
+/// A frame with `configured` false renders the login form instead of a chat, and a pop-out whose
+/// tab list never landed renders "No conversations in this window". Both leave a scene that looks
+/// like coverage and inspects nothing, so the pop-out states what it must actually contain.
+#[test]
+fn uitest_jabber_popout_renders_a_conversation() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_popout").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let mut labels = Vec::new();
+    let mut composer = false;
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        composer |= n.role() == egui::accesskit::Role::MultilineTextInput;
+        if n.role() == egui::accesskit::Role::Label {
+            labels.push(n.label().or_else(|| n.value()).unwrap_or_default().to_string());
+        }
+    }
+    assert!(composer, "no composer in the pop-out: {labels:?}");
+    for needle in ["delve.imperium", "in fleet, in position", "— new —"] {
+        assert!(
+            labels.iter().any(|l| l.contains(needle)),
+            "the pop-out drew no {needle:?}: {labels:?}"
+        );
+    }
 }
