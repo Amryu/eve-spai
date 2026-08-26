@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Type** | Harness coverage gap |
-| **Status** | Not scheduled |
+| **Status** | Closed, see `review.md` |
 | **Blocks** | the behaviour that decides whether the overlay blocks game clicks |
 | **Effort** | Small |
 
