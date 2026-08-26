@@ -483,6 +483,8 @@ pub struct SpaiApp {
     lookup_cache: crate::charlookup::LookupCache,
     lookup_tx: Option<crate::charlookup::LookupSender>,
     intel_heights: std::collections::HashMap<u64, f32>,
+    /// Rendered height per chat row, so the history can skip over off-screen ones.
+    jabber_msg_heights: std::collections::HashMap<u64, f32>,
     wizard_open: bool,
     wizard_step: u8,
     wizard_checked: bool,
@@ -1125,6 +1127,7 @@ impl SpaiApp {
             lookup_cache,
             lookup_tx,
             intel_heights: std::collections::HashMap::new(),
+            jabber_msg_heights: std::collections::HashMap::new(),
             wizard_open: false,
             wizard_step: 0,
             wizard_shortcut: None,
@@ -2734,8 +2737,8 @@ impl SpaiApp {
         }
     }
 
-    /// One lock, one snapshot of everything a chat window needs to draw itself. Messages are
-    /// fetched per window by `jabber_msgs`, so each one shows its own conversation.
+    /// One lock, one snapshot of everything a chat window needs to draw itself. Messages stay
+    /// out of it: each window borrows its own conversation under the lock while it draws.
     fn jabber_frame(&self, focused: bool) -> JabberFrame {
         let mut st = self.jabber.lock().unwrap();
         let configured = self.settings.jabber_enabled
@@ -2837,10 +2840,6 @@ impl SpaiApp {
             inaccessible: inaccessible_list,
             subjects: subjects_snapshot,
         }
-    }
-
-    fn jabber_msgs(&self, jid: &str) -> Vec<crate::jabber::ChatMsg> {
-        self.jabber.lock().unwrap().chats.get(jid).cloned().unwrap_or_default()
     }
 
     /// Bring every chat window's tabs in line with the joined rooms and DM history, exactly once
@@ -3820,7 +3819,6 @@ impl SpaiApp {
         let is_room = f.channels.iter().any(|c| c.jid == jid);
         // A kicked room is history only: its composer is disabled.
         let sel_accessible = f.accessible(&jid);
-        let sel_msgs = self.jabber_msgs(&jid);
         let muted = self.jabber_is_muted(&jid);
         ui.horizontal(|ui| {
             let name = jid.split('@').next().unwrap_or(&jid);
@@ -3910,19 +3908,30 @@ impl SpaiApp {
         // every incoming message was wiping out any text selection mid-drag
         // (the chat felt unselectable in a busy channel). It resumes on release.
         let selecting = ui.input(|i| i.pointer.any_down());
+        // Borrowed under the lock instead of cloned. This used to deep-clone the whole
+        // conversation once per frame per open window, and history is capped at 1000.
+        let jabber = self.jabber.clone();
+        let guard = jabber.lock().unwrap();
+        let sel_msgs: &[crate::jabber::ChatMsg] =
+            guard.chats.get(&jid).map_or(&[][..], Vec::as_slice);
         egui::ScrollArea::vertical()
             .id_salt("msgs")
             .auto_shrink([false, false])
             .max_height((body_h - composer_h - 8.0).max(HISTORY_MIN_H))
             .stick_to_bottom(!selecting)
-            .show(ui, |ui| {
+            .show_viewport(ui, |ui, viewport| {
                 let accent = ui.visuals().hyperlink_color;
                 let me_col = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
                 let now = chrono::Utc::now().timestamp();
                 let names = self.mention_names();
                 ui.spacing_mut().item_spacing.y = 1.0;
+                let row_w = ui.available_width();
+                if self.jabber_msg_heights.len() > 8_000 {
+                    self.jabber_msg_heights.clear();
+                }
+                let origin = ui.cursor().top();
                 let mut hist_drawn = false;
-                let mut prev_sender: Option<String> = None;
+                let mut prev_sender: Option<&str> = None;
                 let mut prev_time: i64 = 0;
                 for (mi, m) in sel_msgs.iter().enumerate() {
                     if !hist_drawn && m.time >= session_start && m.time > 0 {
@@ -3934,11 +3943,22 @@ impl SpaiApp {
                             ui.separator();
                         });
                     }
-                    let sender =
-                        if m.outgoing { "\u{0}me".to_owned() } else { m.from.clone() };
-                    let grouped = prev_sender.as_deref() == Some(sender.as_str())
+                    let sender = if m.outgoing { "\u{0}me" } else { m.from.as_str() };
+                    let grouped = prev_sender == Some(sender)
                         && m.time >= prev_time
                         && m.time - prev_time < 300;
+                    prev_sender = Some(sender);
+                    prev_time = m.time;
+                    let key = msg_row_key(m, grouped, row_w);
+                    let top = ui.cursor().top() - origin;
+                    if let Some(h) = self.jabber_msg_heights.get(&key).copied() {
+                        if top + h < viewport.min.y - MSG_OVERDRAW
+                            || top > viewport.max.y + MSG_OVERDRAW
+                        {
+                            ui.add_space(h);
+                            continue;
+                        }
+                    }
                     if !grouped {
                         ui.add_space(5.0);
                         ui.label(
@@ -3949,6 +3969,8 @@ impl SpaiApp {
                     }
                     let mentioned = !m.outgoing
                         && crate::jabber::mention_hit(&m.body, &names);
+                    #[cfg(test)]
+                    record_msg_row_built(ui.ctx());
                     let act = message_row(
                         ui,
                         ui.id().with(("msg", mi)),
@@ -4005,10 +4027,13 @@ impl SpaiApp {
                             MsgRowAction::None => {}
                         }
                     }
-                    prev_sender = Some(sender);
-                    prev_time = m.time;
+                    let h = ui.cursor().top() - origin - top;
+                    if h > 0.0 {
+                        self.jabber_msg_heights.insert(key, h);
+                    }
                 }
             });
+        drop(guard);
         let mut focus_composer = false;
         if let Some(nick) = msg_mention {
             let d = self.jabber_drafts.entry(jid.clone()).or_default();
@@ -18895,6 +18920,46 @@ pub(crate) enum MsgRowAction {
     Copy,
     Mention,
     GoToDm,
+}
+
+/// How far past the visible viewport a chat row is still built. Matches the intel feed's margin,
+/// and covers a wheel step so scrolling does not land on unmeasured rows.
+const MSG_OVERDRAW: f32 = 400.0;
+
+/// Identifies a chat row for the height cache. Position is no use as a key: the 1000-message cap
+/// drains from the front, which shifts every index. Width is in the key because two windows can
+/// show one conversation at different widths, and a row's height is its wrap count.
+fn msg_row_key(m: &crate::jabber::ChatMsg, grouped: bool, width: f32) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    m.from.hash(&mut h);
+    m.body.hash(&mut h);
+    m.time.hash(&mut h);
+    m.outgoing.hash(&mut h);
+    grouped.hash(&mut h);
+    (width as i32).hash(&mut h);
+    h.finish()
+}
+
+/// A skipped row leaves no widget and no AccessKit node behind, so the harness cannot tell a
+/// virtualized history from a fully built one. Counts what the pass actually built.
+#[cfg(test)]
+fn record_msg_row_built(ctx: &egui::Context) {
+    let id = egui::Id::new("jabber_msg_rows_built");
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| {
+        let seen: &mut (u64, usize) = d.get_temp_mut_or_default(id);
+        if seen.0 != pass {
+            *seen = (pass, 0);
+        }
+        seen.1 += 1;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn built_msg_rows(ctx: &egui::Context) -> usize {
+    let id = egui::Id::new("jabber_msg_rows_built");
+    ctx.data(|d| d.get_temp::<(u64, usize)>(id).map_or(0, |s| s.1))
 }
 
 /// A chat row that brightens on hover and reveals its actions at the top right. `id` must be

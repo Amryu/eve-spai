@@ -169,9 +169,14 @@ pub(crate) fn shot(harness: &mut Harness<'_>, name: &str) {
 /// Same render with egui's interactive-widget overlay switched on: every click target gets an
 /// outline, which is the fastest way to see two of them sitting on top of each other.
 pub(crate) fn shot_debug(harness: &mut Harness<'_>, name: &str) {
+    // egui only carries `Style::debug` under `debug_assertions`, so a release test build has no
+    // overlay to switch on. Gated rather than dropped so the suite still compiles in release,
+    // which is the only build worth timing.
+    #[cfg(debug_assertions)]
     harness.ctx.global_style_mut(|s| s.debug.show_interactive_widgets = true);
     harness.run_steps(2);
     shot(harness, &format!("{name}.debug"));
+    #[cfg(debug_assertions)]
     harness.ctx.global_style_mut(|s| s.debug.show_interactive_widgets = false);
     harness.run_steps(2);
 }

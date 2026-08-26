@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | High |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md`. NOTE: this ticket's headline claim was wrong, the clone was ~1.3% not the dominant cost. |
 | **Region** | `jabber_conversation_ui`, `jabber_msgs` |
 | **Reported by** | user |
 | **Effort** | Large, this one is genuinely tricky |
