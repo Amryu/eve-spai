@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | High |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `jumps_from_you`, `intel_row`, the intel toolbar |
 | **Reported by** | user |
 | **Run before** | UI-026, which builds on the same plumbing |

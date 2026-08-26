@@ -13,6 +13,18 @@ pub(crate) fn now() -> i64 {
 }
 
 pub(crate) fn systems() -> Arc<Systems> {
+    Arc::new(build_systems())
+}
+
+/// The same graph with one jump bridge folded in. 1DQ1-A to 7-K5EL is two gates or one bridge, so
+/// the gate-only and bridged answers differ for a pair the other fixtures already use.
+pub(crate) fn systems_bridged() -> Arc<Systems> {
+    let mut s = build_systems();
+    s.add_bridges(&[(30_004_759, 30_003_704)]);
+    Arc::new(s)
+}
+
+fn build_systems() -> Systems {
     let mut by_name = HashMap::new();
     for (id, name, security, region) in [
         (30_004_759_i64, "1DQ1-A", -0.36_f64, "Delve"),
@@ -37,7 +49,7 @@ pub(crate) fn systems() -> Arc<Systems> {
         (30_004_608, vec![30_004_759, 30_003_704]),
         (30_003_704, vec![30_004_608]),
     ]);
-    Arc::new(Systems::new(by_name, adjacency))
+    Systems::new(by_name, adjacency)
 }
 
 fn ship(id: i64, name: &str) -> DetectedShip {
@@ -67,6 +79,23 @@ pub(crate) fn intel_typical() -> IntelReport {
         pilots: vec!["Hostile Pilot".into(), "Second Target".into()],
         count: Some(3),
         count_ships: 3,
+        ..Default::default()
+    }
+}
+
+/// A hostile in 7-K5EL, the far end of the bridge in [`systems_bridged`], with the player in
+/// 1DQ1-A. Its jump chip reads a different number under each setting.
+pub(crate) fn intel_across_the_bridge() -> IntelReport {
+    IntelReport {
+        id: 9,
+        received: now() - 20,
+        channel: "delve.imperium".into(),
+        reporter: "Scout Charlie".into(),
+        text: "7-K5EL  Jackdaw  hostile".into(),
+        systems: vec![detected("7-K5EL")],
+        ships: vec![ship(34_317, "Jackdaw")],
+        count: Some(1),
+        count_ships: 1,
         ..Default::default()
     }
 }
