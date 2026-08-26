@@ -37,7 +37,7 @@ after, and any follow-up tickets it spawned.
 | [UI-027 Chat message bodies allocate 26px for 15px of ink](UI-027-chat-body-lines-overallocate/) | Medium | `render_message_body` | UI-018 | **Fixed** |
 | [UI-028 Rescue chat lines allocate 26px for 15px of ink](UI-028-rescue-chat-line-overallocates/) | Low | `rescue_chat_line` | UI-027 | **Fixed** |
 | [UI-029 The alert overlay cannot show the bridge flag](UI-029-overlay-cannot-flag-bridges/) | Medium | `ipc::AlertMsg` | UI-026 | **Fixed** |
-| [UI-019 Audit the remaining small_button call sites](UI-019-small-button-audit/) | Low | various | unscheduled | Open |
+| [UI-019 Audit the remaining small_button call sites](UI-019-small-button-audit/) | Low | various | unscheduled | **Fixed** |
 | [UI-025 Intel cards count jump bridges regardless of the setting](UI-025-intel-jump-range-ignores-bridge-setting/) | High | `jumps_from_you` | user | **Fixed** |
 | [UI-026 Show when an intel jump range depends on a bridge](UI-026-flag-bridge-dependent-jump-range/) | Medium | `intel_row` | user | **Fixed** |
 | [UI-023 Dragging a chat tab shows nothing at the cursor](UI-023-tab-drag-needs-cursor-indicator/) | Medium | `jabber_tab_bar_ui` | user | **Fixed** |
@@ -45,6 +45,8 @@ after, and any follow-up tickets it spawned.
 | [UI-022 Long chat histories lag, no virtualization plus a per-frame clone](UI-022-chat-history-not-virtualized/) | High | `jabber_conversation_ui` | user | **Fixed** |
 | [UI-020 Always-on-top pin floats over popout content](UI-020-ontop-pin-overlaps-content/) | Medium | `ontop_pin` | user | **Fixed** |
 | [UI-021 Composer should grow to 10 rows, drop Send](UI-021-composer-grows-and-drops-send/) | Medium | composer | user | **Fixed** |
+| [UI-030 Alert rule names truncate in the default panel](UI-030-rule-names-truncate/) | Low | `alert_rules_editor` | UI-019 | Open |
+| [UI-031 Regenerate button uses a bare U+21BB](UI-031-bare-glyph-may-be-tofu/) | Low | `rescue_window_body` | UI-019 | Open |
 | [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Closed, not a defect |
 
 ## Harness coverage gaps

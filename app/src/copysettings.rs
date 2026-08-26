@@ -363,7 +363,7 @@ pub fn ui(
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Set account").clicked() {
+                    if ui.button("Set account").clicked() {
                         toggle_assign = Some(row.id);
                     }
                 });
@@ -408,12 +408,12 @@ pub fn ui(
                                 .hint_text("other account id")
                                 .desired_width(140.0),
                         );
-                        if ui.small_button("Set").clicked() {
+                        if ui.button("Set").clicked() {
                             if let Ok(id) = state.assign_input.trim().parse::<i64>() {
                                 assign = Some((row.id, Some(id)));
                             }
                         }
-                        if row.account.is_some() && ui.small_button("Clear").clicked() {
+                        if row.account.is_some() && ui.button("Clear").clicked() {
                             assign = Some((row.id, None));
                         }
                     });

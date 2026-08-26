@@ -594,6 +594,8 @@ pub(crate) fn all() -> Vec<Scene> {
         fixtures::jabber_state_long,
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
+    v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
+    v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0]));
     v
 }
 
@@ -2911,4 +2913,133 @@ fn uitest_alert_window_pin_survives_the_countdown() {
         !fired.contains(&egui::ViewportCommand::MousePassthrough(true)),
         "the pinned alert window handed clicks back to the game: {fired:?}"
     );
+}
+
+/// The characters list with two rows, which is where `Remove` and `Re-auth` sit. Headless runs no
+/// SSO, so the rows are seeded rather than logged in; the second is missing scopes and has an
+/// expired token, which is the branch that draws `Re-auth`.
+fn characters_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Characters;
+            a.characters = vec![
+                crate::store::CharacterRow {
+                    id: 90_000_001,
+                    name: "Amryu".to_owned(),
+                    expires_at: fixtures::now() + 1_200,
+                    scopes: crate::auth::DEFAULT_SCOPES.join(" "),
+                },
+                crate::store::CharacterRow {
+                    id: 90_000_002,
+                    name: "Scout Alt".to_owned(),
+                    expires_at: fixtures::now() - 60,
+                    scopes: crate::auth::DEFAULT_SCOPES[0].to_owned(),
+                },
+            ];
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+/// The alert rules editor with three rules, which is the only place the reorder arrows and the
+/// four condition `Edit` buttons draw. The editor auto-selects the first rule, so the right pane
+/// renders without seeding a selection.
+fn alert_rules_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Alerts;
+            a.alert_rules_open = true;
+            a.settings.alerts.rules = ["Hostiles near home", "Cyno in Delve", "Quiet hours"]
+                .into_iter()
+                .map(|name| crate::settings::AlertRule {
+                    name: name.to_owned(),
+                    ..Default::default()
+                })
+                .collect();
+            crate::settings::ensure_rule_ids(&mut a.settings.alerts.rules);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+/// Every `Button` in a scene, as (label, rect), in tree order.
+fn button_rects(harness: &egui_kittest::Harness<'_>) -> Vec<(String, egui::Rect)> {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut out = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.is_hidden() || n.role() != Role::Button {
+            continue;
+        }
+        let Some(b) = n.bounding_box() else { continue };
+        out.push((
+            n.label().unwrap_or_default().to_string(),
+            egui::Rect {
+                min: egui::pos2(b.x0 as f32, b.y0 as f32),
+                max: egui::pos2(b.x1 as f32, b.y1 as f32),
+            },
+        ));
+    }
+    out
+}
+
+fn buttons_labelled(
+    harness: &egui_kittest::Harness<'_>,
+    label: &str,
+) -> Vec<(String, egui::Rect)> {
+    button_rects(harness).into_iter().filter(|(l, _)| l == label).collect()
+}
+
+/// UI-019: `Remove` and `Re-auth` carry text labels and sit beside a full-height checkbox, so
+/// `small_button` made them the shortest targets in the view at 17px against its 27px norm.
+#[test]
+fn uitest_character_row_buttons_match_the_view() {
+    let mut scene = characters_rows_scene("character_button_probe", [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let add = buttons_labelled(&harness, "Add character (EVE SSO)")
+        .first()
+        .expect("no Add character button")
+        .1;
+    let mut rows = buttons_labelled(&harness, "Remove");
+    rows.extend(buttons_labelled(&harness, "Re-auth"));
+    assert_eq!(rows.len(), 3, "expected two Remove and one Re-auth: {rows:?}");
+    for (label, r) in rows {
+        assert!(
+            (r.height() - add.height()).abs() < 1.0,
+            "{label} is {:.1}px tall against {:.1}px for Add character",
+            r.height(),
+            add.height()
+        );
+    }
+}
+
+/// UI-019: the four condition `Edit` buttons are labelled controls in a form whose every other
+/// control is floored at `interact_size.y`. The `requires:` chips are the nearest peer.
+#[test]
+fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
+    let mut scene = alert_rules_scene("alert_edit_probe", [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let chip = buttons_labelled(&harness, "bubble").first().expect("no requires chip").1;
+    let edits = buttons_labelled(&harness, "Edit");
+    assert_eq!(edits.len(), 4, "expected four Edit buttons: {edits:?}");
+    for (_, r) in edits {
+        assert!(
+            (r.height() - chip.height()).abs() < 1.0,
+            "Edit is {:.1}px tall against {:.1}px for the bubble chip",
+            r.height(),
+            chip.height()
+        );
+    }
 }

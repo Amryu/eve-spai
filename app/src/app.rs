@@ -336,7 +336,7 @@ pub struct SpaiApp {
     needs_save: bool,
     sde_status: SharedStatus,
     auth_status: SharedAuth,
-    characters: Vec<CharacterRow>,
+    pub(crate) characters: Vec<CharacterRow>,
     copy_settings: crate::copysettings::CopyState,
     eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>>,
     eve_settings_path: std::sync::Arc<std::sync::Mutex<String>>,
@@ -426,7 +426,7 @@ pub struct SpaiApp {
     alerts_engine: std::sync::Arc<AlertEngine>,
     recent_alerts: crate::gamewatcher::AlertLog,
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
-    alert_rules_open: bool,
+    pub(crate) alert_rules_open: bool,
     alert_selected_rule: Option<u64>,
     rule_feeds:
         std::collections::HashMap<u64, Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>>,
@@ -8489,12 +8489,12 @@ impl SpaiApp {
                     .on_hover_text(format!("Re-auth to grant: {}", missing.join(", ")));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Remove").clicked() {
+                    if ui.button("Remove").clicked() {
                         remove = Some(c.id);
                     }
                     if !missing.is_empty()
                         && ui
-                            .small_button("Re-auth")
+                            .button("Re-auth")
                             .on_hover_text("Log in again to grant the new scopes")
                             .clicked()
                     {
@@ -15438,7 +15438,7 @@ impl SpaiApp {
                 let mut clicked = false;
                 ui.horizontal(|ui| {
                     ui.label(label);
-                    if ui.small_button("Edit").clicked() {
+                    if ui.button("Edit").clicked() {
                         clicked = true;
                     }
                     let s = if list.is_empty() {
@@ -15455,7 +15455,7 @@ impl SpaiApp {
             let mut want: Option<PickerKind> = None;
             ui.horizontal(|ui| {
                 ui.label("location:");
-                if ui.small_button("Edit").clicked() {
+                if ui.button("Edit").clicked() {
                     want = Some(PickerKind::Systems);
                 }
                 let total = ru.regions.len() + ru.constellations.len() + ru.systems.len();
@@ -15588,6 +15588,22 @@ impl SpaiApp {
                     .auto_shrink([false, false])
                     .id_salt("alert_rule_list")
                     .show(ui, |ui| {
+                        // Both reorder buttons plus the gaps around them. The name is laid out
+                        // before them, so it has to leave their width free or a long one runs
+                        // under their click rects.
+                        let arrow_w = ui
+                            .painter()
+                            .layout_no_wrap(
+                                ic::ARROW_DOWN.to_owned(),
+                                egui::TextStyle::Button.resolve(ui.style()),
+                                egui::Color32::PLACEHOLDER,
+                            )
+                            .size()
+                            .x;
+                        let reorder_w = 2.0
+                            * (arrow_w
+                                + 2.0 * ui.spacing().button_padding.x
+                                + ui.spacing().item_spacing.x);
                         for i in 0..n_rules {
                             let (id, enabled, name) = {
                                 let r = &self.settings.alerts.rules[i];
@@ -15615,9 +15631,10 @@ impl SpaiApp {
                                         );
                                         let label =
                                             if name.is_empty() { "(unnamed rule)" } else { &name };
-                                        // Truncate to the space left of the reorder buttons so a
-                                        // long name doesn't stretch the card past the panel.
-                                        let name_w = (ui.available_width() - 54.0).max(40.0);
+                                        let name_w = (ui.available_width()
+                                            - reorder_w
+                                            - 2.0 * ui.spacing().button_padding.x)
+                                            .max(40.0);
                                         let shown = truncate_to(label, fit_chars(name_w));
                                         let txt = if enabled {
                                             egui::RichText::new(&shown)
