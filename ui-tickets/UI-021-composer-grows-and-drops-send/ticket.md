@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | the composer row in `jabber_window_body` |
 | **Reported by** | user |
 | **Blocked on** | GAP-004 for visual verification |

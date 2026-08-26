@@ -26,3 +26,10 @@ but the UI-NNN defects run first: closing those needs no new harness capability.
   a permanent scene. The intel toolbar site needs `chat_dir` set, or `intel_view` early-returns on
   its "EVE chat logs not found" branch and the toolbar never draws, so half that fix is verified
   only by throwaway scenes that no longer exist.
+
+## Related checker blind spot
+
+`checks.rs` flags horizontal escape but not vertical, because scrolled content below the fold is
+normal and vertical escape is ambiguous. UI-021 hit the consequence: a composer running off the
+bottom of a small window would not have failed anything. Worth revisiting alongside seeded scenes,
+where a panel's true content height becomes knowable.
