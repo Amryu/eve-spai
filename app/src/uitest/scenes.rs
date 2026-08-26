@@ -206,6 +206,7 @@ pub(crate) fn all() -> Vec<Scene> {
         intel_scene("intel_row_typical", fixtures::intel_typical(), 520.0),
         intel_scene("intel_row_clear", fixtures::intel_clear(), 520.0),
         intel_scene("intel_row_torture", fixtures::intel_torture(), 520.0),
+        intel_scene("intel_row_two_celestials", fixtures::intel_two_celestials(), 520.0),
         resolving_phases_scene("intel_row_resolving_phases"),
         // The feed is resizable, so the same card has to survive a narrow dock too.
         intel_scene("intel_row_torture_narrow", fixtures::intel_torture(), 320.0),
@@ -659,6 +660,54 @@ fn uitest_intel_row_reporter_is_a_footer() {
         without < with - 10.0,
         "hiding the reporter saved {:.1}px, so a row was left behind (on {with:.1}, off {without:.1})",
         with - without
+    );
+}
+
+/// Labels of every chip the card drew.
+fn chip_labels(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut out = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Button || n.is_hidden() {
+            continue;
+        }
+        out.push(n.label().unwrap_or_default().to_string());
+    }
+    out
+}
+
+/// The torture card carries the same moon twice, once from `near_celestial` and once from
+/// `celestials`. One chip has to absorb the other, and it has to be the one with the distance.
+#[test]
+fn uitest_intel_row_folds_the_duplicate_celestial() {
+    let mut scene =
+        intel_scene_sized("celestial_merge_probe", fixtures::intel_torture(), [520.0, 1000.0]);
+    let harness = harness::build(&mut scene, false);
+    let cels: Vec<String> = chip_labels(&harness)
+        .into_iter()
+        .filter(|l| l.contains("Chemical Laboratory"))
+        .collect();
+    assert_eq!(cels.len(), 1, "the card drew the same moon on two chips: {cels:?}");
+    assert!(cels[0].contains("0 km"), "the surviving chip lost the distance: {cels:?}");
+}
+
+/// The other direction, and the expensive one to get wrong: hostiles at a different moon than the
+/// kill must keep their own chip.
+#[test]
+fn uitest_intel_row_keeps_a_second_celestial() {
+    let mut scene =
+        intel_scene("celestial_distinct_probe", fixtures::intel_two_celestials(), 520.0);
+    let harness = harness::build(&mut scene, false);
+    let labels = chip_labels(&harness);
+    assert!(
+        labels.iter().any(|l| l.contains("Moon 6-3") && l.contains("0 km")),
+        "the near-celestial chip is gone: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.contains("Moon 6-4")),
+        "a different moon was suppressed as a duplicate: {labels:?}"
     );
 }
 
