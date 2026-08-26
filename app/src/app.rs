@@ -2276,6 +2276,14 @@ impl SpaiApp {
         rect.is_some_and(|r| r.contains(at))
     }
 
+    /// Puts the app in the state a live tab drag leaves behind, so a scene can render the mid-drag
+    /// look without synthesizing the pointer grab kittest cannot give a painter-only tab.
+    #[cfg(test)]
+    pub(crate) fn seed_tab_drag(&mut self, jid: &str, from: ChatWinKey) {
+        self.jabber_tab_drag =
+            Some(TabDrag { jid: jid.to_owned(), from, at: None, alive: true });
+    }
+
     /// One immediate viewport per pop-out chat window, modelled on `char_popout_windows`: ids are
     /// collected up front and every mutation is applied after the loop.
     #[allow(deprecated)]
@@ -3390,6 +3398,11 @@ impl SpaiApp {
             move_targets.push((ChatWinKey::Popout(w.id), name));
         }
         let can_new = self.jabber_popouts.len() < MAX_POPOUTS;
+        let dragged: Option<String> = self
+            .jabber_tab_drag
+            .as_ref()
+            .filter(|d| d.from == win)
+            .map(|d| d.jid.clone());
         // The pop-out's always-on-top pin rides the right end of this row, so it is in the layout
         // and costs no height of its own. The main window is not its own viewport, so it has none.
         // The id is per window: a shared key would re-send WindowLevel every frame.
@@ -3547,6 +3560,9 @@ impl SpaiApp {
                     lbl,
                 );
                 centers.push((t.jid.clone(), hit.resp.rect.center().x));
+                if dragged.as_deref() == Some(t.jid.as_str()) {
+                    jabber_tab_lifted(ui, hit.resp.rect);
+                }
                 if hit.select {
                     focus = Some(Some(t.jid.clone()));
                 }
@@ -3711,6 +3727,14 @@ impl SpaiApp {
                 }
                 Some(t) => out.push(TabAction::Move { jid, to: t, index: None }),
                 None => out.push(TabAction::MoveToNew { jid, at: screen }),
+            }
+        }
+        // The pointer position local to this window, never `TabDrag.at`: that is monitor-space and
+        // is `None` on Wayland, where the source window can still place a ghost perfectly well.
+        if let Some(d) = self.jabber_tab_drag.as_ref().filter(|d| d.from == win) {
+            if let Some(p) = ui.ctx().pointer_interact_pos() {
+                let head = d.jid.split('@').next().unwrap_or(&d.jid);
+                jabber_drag_ghost(ui, win, &short_chip(head), p);
             }
         }
     }
@@ -18994,6 +19018,55 @@ fn ellipsize_tab_label(
         n -= 1;
     }
     "…".to_owned()
+}
+
+/// The slot a dragged tab came from: veiled and outlined, so the origin stays obvious while the
+/// ghost is off under the pointer.
+fn jabber_tab_lifted(ui: &egui::Ui, rect: egui::Rect) {
+    let v = ui.visuals();
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, v.panel_fill.gamma_multiply(0.7));
+    p.rect_stroke(
+        rect.shrink(1.0),
+        0.0,
+        egui::Stroke::new(1.0, v.selection.stroke.color),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// The chip that follows the pointer while a tab is being dragged, so the gesture is visible where
+/// the user is looking. Painted straight into a foreground layer rather than an `Area`, which would
+/// put a hit target on top of whatever it floats over (UI-020).
+fn jabber_drag_ghost(ui: &egui::Ui, win: ChatWinKey, label: &str, at: egui::Pos2) {
+    const OFFSET: f32 = 14.0;
+    const PAD_Y: f32 = 4.0;
+    let v = ui.visuals();
+    let text_col = v.strong_text_color();
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::TextStyle::Body.resolve(ui.style()),
+        text_col,
+    );
+    let size = galley.size() + egui::vec2(2.0 * TAB_PAD_X, 2.0 * PAD_Y);
+    let bounds = ui.ctx().content_rect();
+    let min = egui::pos2(
+        (at.x + OFFSET).min(bounds.right() - size.x - 2.0),
+        (at.y + OFFSET).min(bounds.bottom() - size.y - 2.0),
+    );
+    let rect = egui::Rect::from_min_size(min, size);
+    let p = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new(("jabber_tab_ghost", win)),
+    ));
+    p.rect_filled(rect, 4.0, v.window_fill);
+    p.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, v.selection.stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    p.galley(egui::pos2(rect.left() + TAB_PAD_X, rect.top() + PAD_Y), galley, text_col);
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
 }
 
 /// What a tab reported this frame. `resp` carries the drag state and hosts the context menu.

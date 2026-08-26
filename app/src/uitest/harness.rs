@@ -80,6 +80,9 @@ pub(crate) struct Scene {
     pub(crate) name: &'static str,
     pub(crate) size: egui::Vec2,
     pub(crate) draw: Draw,
+    /// Pointer to hold over the scene once it has settled, for anything that only exists under a
+    /// cursor. It stays there: egui carries pointer position across passes.
+    pub(crate) pointer: Option<egui::Pos2>,
 }
 
 impl Scene {
@@ -88,7 +91,12 @@ impl Scene {
         size: impl Into<egui::Vec2>,
         f: impl FnMut(&mut egui::Ui) + 'static,
     ) -> Self {
-        Self { name, size: size.into(), draw: Draw::Ui(Box::new(f)) }
+        Self { name, size: size.into(), draw: Draw::Ui(Box::new(f)), pointer: None }
+    }
+
+    pub(crate) fn hovered_at(mut self, pos: impl Into<egui::Pos2>) -> Self {
+        self.pointer = Some(pos.into());
+        self
     }
 
     pub(crate) fn ctx(
@@ -96,7 +104,7 @@ impl Scene {
         size: impl Into<egui::Vec2>,
         f: impl FnMut(&egui::Context) + 'static,
     ) -> Self {
-        Self { name, size: size.into(), draw: Draw::Ctx(Box::new(f)) }
+        Self { name, size: size.into(), draw: Draw::Ctx(Box::new(f)), pointer: None }
     }
 }
 
@@ -117,6 +125,7 @@ pub(crate) fn detached_ui(ctx: &egui::Context) -> egui::Ui {
 /// (lavapipe) adapter on its own and never creates a surface, so no display is involved.
 pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     scratch_profile();
+    let pointer = scene.pointer;
     let mut builder = Harness::builder().with_size(scene.size).with_max_steps(8);
     if gpu {
         builder = builder.wgpu();
@@ -143,6 +152,10 @@ pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     // pass laid out with egui's defaults (phosphor icons as tofu). Force passes until it settles.
     harness.run_steps(2);
     let _ = harness.run_ok();
+    if let Some(p) = pointer {
+        harness.event(egui::Event::PointerMoved(p));
+        harness.run_steps(2);
+    }
     harness
 }
 

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `jabber_tab_bar_ui`, `jabber_tab_box` |
 | **Reported by** | user |
 
