@@ -1542,12 +1542,13 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let mut click: Option<IntelClick> = None;
         for (r, sev) in &feed {
-            let from_you =
-                jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges);
+            let target = r.primary_system().map(|s| s.id);
+            let from_you = jumps_from_you(&systems, player_sys, target, bridges);
+            let via = jump_via(&systems, player_sys, target, bridges, from_you);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
-                ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
+                ui, r, now, false, from_you, via, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true,
             &affil, false, &mut None,
             ) {
@@ -1635,12 +1636,13 @@ impl SpaiApp {
                         .color(crate::theme::standing::NEUTRAL),
                 );
             }
-            let from_you =
-                jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges);
+            let target = r.primary_system().map(|s| s.id);
+            let from_you = jumps_from_you(&systems, player_sys, target, bridges);
+            let via = jump_via(&systems, player_sys, target, bridges, from_you);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
-                ui, r, now, false, from_you, &systems, &status, &ship_details, &ship_roles,
+                ui, r, now, false, from_you, via, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true, &affil,
             false, &mut None,
             ) {
@@ -5886,18 +5888,15 @@ impl SpaiApp {
                             }
                         }
                         let stale = state.is_stale(r) || (now - r.received) > ttl;
-                        let from_you = jumps_from_you(
-                            &systems,
-                            player_sys,
-                            r.primary_system().map(|s| s.id),
-                            bridges,
-                        );
+                        let target = r.primary_system().map(|s| s.id);
+                        let from_you = jumps_from_you(&systems, player_sys, target, bridges);
+                        let via = jump_via(&systems, player_sys, target, bridges, from_you);
                         let sev = severity_of(r, &sev_rules);
                         let kc = self.kill_cache.clone();
                         let affil = self.affiliations.clone();
                         let inner = ui.scope(|ui| {
                             intel_row(
-                                ui, r, now, stale, from_you, &systems, &status, &ship_details,
+                                ui, r, now, stale, from_you, via, &systems, &status, &ship_details,
                                 &ship_roles, &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
                             &affil, false, &mut None,
                             )
@@ -6050,12 +6049,13 @@ impl SpaiApp {
         let status = self.system_status.lock().unwrap();
         for r in reports {
             let stale = state.is_stale(r) || (now - r.received) > ttl;
-            let from_you =
-                jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges);
+            let target = r.primary_system().map(|s| s.id);
+            let from_you = jumps_from_you(&systems, player_sys, target, bridges);
+            let via = jump_via(&systems, player_sys, target, bridges, from_you);
             let sev = severity_of(r, &sev_rules);
             let inner = ui.scope(|ui| {
                 intel_row(
-                    ui, r, now, stale, from_you, &systems, &status, &ship_details, &ship_roles,
+                    ui, r, now, stale, from_you, via, &systems, &status, &ship_details, &ship_roles,
                     &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
                 &affil, false, &mut None,
                 )
@@ -13961,17 +13961,15 @@ impl SpaiApp {
                     ui.label(egui::RichText::new("No recent intel.").weak());
                 }
                 for (i, r) in sys_reports.iter().enumerate() {
-                    let from_you = jumps_from_you(
-                        &self.systems,
-                        player_sys,
-                        r.primary_system().map(|s| s.id),
-                        self.settings.intel_count_bridges,
-                    );
+                    let target = r.primary_system().map(|s| s.id);
+                    let bridges = self.settings.intel_count_bridges;
+                    let from_you = jumps_from_you(&self.systems, player_sys, target, bridges);
+                    let via = jump_via(&self.systems, player_sys, target, bridges, from_you);
                     let sev = severity_of(r, &self.settings.severity);
                     let kc = self.kill_cache.clone();
                     let affil = self.affiliations.clone();
                     if let Some(c) = intel_row(
-                        ui, r, now, stale_flags[i], from_you, &self.systems, &status_snapshot,
+                        ui, r, now, stale_flags[i], from_you, via, &self.systems, &status_snapshot,
                         &ship_details, &ship_roles, &resolved_pilots, &uncertain, &sys_last_ship,
                         &kc, sev, false,
                     &affil, false, &mut None,
@@ -18170,14 +18168,136 @@ fn assign_fracs(
     }
 }
 
-fn jumps_from_you(
+/// How far a BFS walks before it gives up and reports "unreachable".
+pub(crate) const JUMP_SCAN_CAP: u32 = 50;
+
+pub(crate) fn jumps_from_you(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     player_sys: Option<i64>,
     target: Option<i64>,
     use_bridges: bool,
 ) -> Option<u32> {
     let (sys, p, t) = (systems.as_ref()?, player_sys?, target?);
-    if use_bridges { sys.jumps(t, p, 50) } else { sys.jumps_gates_only(t, p, 50) }
+    if use_bridges {
+        sys.jumps(t, p, JUMP_SCAN_CAP)
+    } else {
+        sys.jumps_gates_only(t, p, JUMP_SCAN_CAP)
+    }
+}
+
+/// What a card's jump distance rests on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum JumpVia {
+    /// Gates alone reach the target in the number shown, so it is also what a hostile faces.
+    #[default]
+    Gates,
+    /// A jump bridge cut the trip; the gate answer is this much longer.
+    BridgeShorter(u32),
+    /// Gates do not reach the target at all, so the number only exists because of a bridge.
+    BridgeOnly,
+}
+
+/// Every answer for one graph, one player position and one setting. The graph is held by `Arc`
+/// rather than by address, so a replaced graph cannot be mistaken for the one it reused memory
+/// from.
+struct ViaMemo {
+    systems: std::sync::Arc<crate::geo::Systems>,
+    player: i64,
+    use_bridges: bool,
+    by_target: std::collections::HashMap<i64, (u32, JumpVia)>,
+}
+
+/// Asked only about a number already computed with bridges on, since the gate-only answer is
+/// honest as it stands: a bridge that would merely shorten the player's own trip says nothing
+/// about the contact and would mark most of a home-region feed.
+///
+/// Memoized because a feed redraws up to 250 cards per frame and a gate walk over a map-sized
+/// graph runs into hundreds of microseconds each. Nothing here changes between frames unless the
+/// player moves, the setting flips or the bridge list is edited, and each of those replaces the
+/// key.
+pub(crate) fn jump_via(
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    player_sys: Option<i64>,
+    target: Option<i64>,
+    use_bridges: bool,
+    shown: Option<u32>,
+) -> JumpVia {
+    if !use_bridges {
+        return JumpVia::Gates;
+    }
+    let (Some(sys), Some(p), Some(t), Some(j)) = (systems.as_ref(), player_sys, target, shown)
+    else {
+        return JumpVia::Gates;
+    };
+
+    thread_local! {
+        static MEMO: std::cell::RefCell<Option<ViaMemo>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    MEMO.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let hit = cell.as_ref().is_some_and(|m| {
+            std::sync::Arc::ptr_eq(&m.systems, sys) && m.player == p && m.use_bridges == use_bridges
+        });
+        if !hit {
+            *cell = Some(ViaMemo {
+                systems: sys.clone(),
+                player: p,
+                use_bridges,
+                by_target: std::collections::HashMap::new(),
+            });
+        }
+        let memo = cell.as_mut().expect("just seeded");
+        if let Some(&(had, via)) = memo.by_target.get(&t) {
+            if had == j {
+                return via;
+            }
+        }
+        // Gates can never beat the bridged graph, so a gate walk capped at the shown number either
+        // matches it or proves a bridge is load-bearing. That keeps the common answer inside the
+        // ball the first walk already covered, instead of a second full-cap scan on every card.
+        let via = if sys.jumps_gates_only(t, p, j).is_some() {
+            JumpVia::Gates
+        } else {
+            match sys.jumps_gates_only(t, p, JUMP_SCAN_CAP) {
+                Some(gate) => JumpVia::BridgeShorter(gate),
+                None => JumpVia::BridgeOnly,
+            }
+        };
+        memo.by_target.insert(t, (j, via));
+        via
+    })
+}
+
+/// Colour for a card's jump text, and the marker that follows it when a bridge is in the route.
+/// Alliance purple because jump bridges are alliance infrastructure, and because the row already
+/// spends green on cleared reports and amber and red on threat.
+pub(crate) fn jump_chip_style(via: JumpVia) -> (egui::Color32, Option<String>) {
+    use egui_phosphor::regular as icon;
+    match via {
+        JumpVia::Gates => (crate::theme::standing::CORP, None),
+        JumpVia::BridgeShorter(_) => {
+            (crate::theme::standing::ALLIANCE, Some(icon::ARROWS_LEFT_RIGHT.to_owned()))
+        }
+        JumpVia::BridgeOnly => (
+            crate::theme::standing::ALLIANCE,
+            Some(format!("{} bridge only", icon::ARROWS_LEFT_RIGHT)),
+        ),
+    }
+}
+
+pub(crate) fn jump_chip_tip(via: JumpVia, shown: u32) -> Option<String> {
+    match via {
+        JumpVia::Gates => None,
+        JumpVia::BridgeShorter(gate) => Some(format!(
+            "{shown}j counts your jump bridges, {gate}j by gate. A hostile can't use your \
+             bridges, so {gate}j is how far away they really are."
+        )),
+        JumpVia::BridgeOnly => Some(format!(
+            "Only your jump bridges reach this system, there is no gate route within \
+             {JUMP_SCAN_CAP} jumps. A hostile can't get here the way you would."
+        )),
+    }
 }
 
 fn min_jumps_from(
@@ -20508,18 +20628,16 @@ pub(crate) fn build_alert_viewport_cb(
                     }
                     if let (Some(kills), Some(affil)) = (&kills, &affil) {
                         for (i, (r, sev)) in feed.iter().enumerate().rev() {
+                            let target = r.primary_system().map(|s| s.id);
                             let from_you = if i < from_you_pre.len() {
                                 from_you_pre[i]
                             } else {
-                                jumps_from_you(
-                                    &systems,
-                                    player_sys,
-                                    r.primary_system().map(|s| s.id),
-                                    count_bridges,
-                                )
+                                jumps_from_you(&systems, player_sys, target, count_bridges)
                             };
+                            let via =
+                                jump_via(&systems, player_sys, target, count_bridges, from_you);
                             if let Some(c) = intel_row(
-                                ui, r, now_ts, false, from_you, &systems, &status,
+                                ui, r, now_ts, false, from_you, via, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots,
                                 &uncertain, &last_ship,
                                 kills, *sev, false, affil, compact, &mut tip,
@@ -22203,6 +22321,7 @@ pub(crate) fn intel_row(
     now: i64,
     stale: bool,
     from_you: Option<u32>,
+    via: JumpVia,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
@@ -22223,7 +22342,7 @@ pub(crate) fn intel_row(
     let warn = crate::theme::standing::WARNING;
     let red = crate::theme::standing::HOSTILE;
     let accent = ui.visuals().hyperlink_color;
-    let jumps_color = crate::theme::standing::CORP;
+    let (jumps_color, bridge_mark) = jump_chip_style(via);
 
     let is_zkill = r.killmail && r.channel.eq_ignore_ascii_case("zkill");
     let type_icon = if r.clear {
@@ -22284,6 +22403,9 @@ pub(crate) fn intel_row(
                             }
                             None => {}
                         }
+                        if let (Some(_), Some(mark)) = (from_you, &bridge_mark) {
+                            ui.label(egui::RichText::new(mark).color(jumps_color));
+                        }
                         for s in &r.systems {
                             ui.label(egui::RichText::new(&s.name).strong().color(accent));
                         }
@@ -22329,9 +22451,24 @@ pub(crate) fn intel_row(
                 if let Some(j) = from_you {
                     let jtxt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
                     // Padded to 4 so "here", "3j" and "12j" share one column down a stack of cards.
-                    ui.label(
+                    let jr = ui.label(
                         egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color),
                     );
+                    if let (Some(mark), Some(why)) = (&bridge_mark, jump_chip_tip(via, j)) {
+                        let mr = ui.label(egui::RichText::new(mark).color(jumps_color));
+                        if compact {
+                            if jr.hovered() {
+                                *tip =
+                                    Some((jr.rect.right_top(), PendingTip::Text(why.clone())));
+                            }
+                            if mr.hovered() {
+                                *tip = Some((mr.rect.right_top(), PendingTip::Text(why)));
+                            }
+                        } else {
+                            jr.on_hover_text(&why);
+                            mr.on_hover_text(&why);
+                        }
+                    }
                 }
 
                 let mut seen_sys = std::collections::HashSet::new();

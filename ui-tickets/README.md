@@ -36,9 +36,10 @@ after, and any follow-up tickets it spawned.
 | [UI-018 Ping body lines allocate 26px for 15px of ink](UI-018-ping-body-lines-overallocate/) | Low | `render_ping_body` | unscheduled | **Fixed** |
 | [UI-027 Chat message bodies allocate 26px for 15px of ink](UI-027-chat-body-lines-overallocate/) | Medium | `render_message_body` | UI-018 | **Fixed** |
 | [UI-028 Rescue chat lines allocate 26px for 15px of ink](UI-028-rescue-chat-line-overallocates/) | Low | `rescue_chat_line` | UI-027 | Open |
+| [UI-029 The alert overlay cannot show the bridge flag](UI-029-overlay-cannot-flag-bridges/) | Medium | `ipc::AlertMsg` | UI-026 | Open |
 | [UI-019 Audit the remaining small_button call sites](UI-019-small-button-audit/) | Low | various | unscheduled | Open |
 | [UI-025 Intel cards count jump bridges regardless of the setting](UI-025-intel-jump-range-ignores-bridge-setting/) | High | `jumps_from_you` | user | **Fixed** |
-| [UI-026 Show when an intel jump range depends on a bridge](UI-026-flag-bridge-dependent-jump-range/) | Medium | `intel_row` | user | Open |
+| [UI-026 Show when an intel jump range depends on a bridge](UI-026-flag-bridge-dependent-jump-range/) | Medium | `intel_row` | user | **Fixed** |
 | [UI-023 Dragging a chat tab shows nothing at the cursor](UI-023-tab-drag-needs-cursor-indicator/) | Medium | `jabber_tab_bar_ui` | user | **Fixed** |
 | [UI-024 Composer scrolls its own border instead of its contents](UI-024-composer-scrolls-its-border/) | Medium | composer | user | **Fixed** |
 | [UI-022 Long chat histories lag, no virtualization plus a per-frame clone](UI-022-chat-history-not-virtualized/) | High | `jabber_conversation_ui` | user | **Fixed** |

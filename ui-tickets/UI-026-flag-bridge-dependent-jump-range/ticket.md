@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `intel_row` jump chip |
 | **Reported by** | user |
 | **Depends on** | UI-025 |
