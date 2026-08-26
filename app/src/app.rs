@@ -4031,14 +4031,20 @@ impl SpaiApp {
             egui::Modifiers::SHIFT,
             egui::Key::Enter,
         );
+        // The border belongs outside the scroll area, or the viewport clips it as it scrolls.
+        let mut frame = composer_frame(ui).begin(ui);
+        // `ScrollArea` pads its content clip by `clip_rect_margin`, which now lands outside the
+        // border and lets the next line bleed under it.
+        frame.content_ui.visuals_mut().clip_rect_margin = 0.0;
         let resp = egui::ScrollArea::vertical()
             .id_salt("composer")
-            .max_height(composer_h)
-            .show(ui, |ui| {
+            .max_height(composer_h - COMPOSER_MARGIN.sum().y)
+            .show(&mut frame.content_ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(
                         self.jabber_drafts.entry(jid.clone()).or_default(),
                     )
+                    .frame(egui::Frame::NONE)
                     .hint_text("Message (Shift+Enter for a new line)")
                     .return_key(shift_enter)
                     .desired_rows(COMPOSER_MIN_ROWS as usize)
@@ -4046,6 +4052,12 @@ impl SpaiApp {
                 )
             })
             .inner;
+        frame.frame.stroke = if resp.has_focus() {
+            ui.visuals().selection.stroke
+        } else {
+            ui.style().interact(&resp).bg_stroke
+        };
+        frame.end(ui);
         if focus_composer {
             resp.request_focus();
         }
@@ -18846,8 +18858,19 @@ pub(crate) struct MsgActions {
 const HISTORY_MIN_H: f32 = 60.0;
 const COMPOSER_MIN_ROWS: f32 = 2.0;
 const COMPOSER_MAX_ROWS: f32 = 10.0;
-/// `TextEdit`'s own frame, `Margin::symmetric(4, 2)`.
-const COMPOSER_PAD: egui::Vec2 = egui::vec2(8.0, 4.0);
+/// `TextEdit`'s own default margin, which the composer draws itself.
+const COMPOSER_MARGIN: egui::Margin = egui::Margin::symmetric(4, 2);
+
+/// A text-edit border box for the composer. `TextEdit` folds its stroke into the same margin, so
+/// the inset is subtracted here too and the whole box still measures `COMPOSER_MARGIN` tall.
+fn composer_frame(ui: &egui::Ui) -> egui::Frame {
+    let v = ui.visuals().widgets.inactive;
+    egui::Frame::new()
+        .fill(ui.visuals().text_edit_bg_color())
+        .stroke(v.bg_stroke)
+        .corner_radius(v.corner_radius)
+        .inner_margin(COMPOSER_MARGIN - v.bg_stroke.width.round() as i8)
+}
 
 /// Height the composer wants for `draft`, clamped to 2..=10 rows. Measured off the laid-out
 /// galley because `TextEdit::desired_rows` counts logical rows, so one long wrapped line would
@@ -18855,11 +18878,12 @@ const COMPOSER_PAD: egui::Vec2 = egui::vec2(8.0, 4.0);
 fn composer_height(ui: &egui::Ui, draft: &str, avail_w: f32) -> f32 {
     let row_h = ui.text_style_height(&egui::TextStyle::Body);
     let font_id = egui::TextStyle::Body.resolve(ui.style());
-    let wrap_w = (avail_w - COMPOSER_PAD.x).max(24.0);
+    let wrap_w = (avail_w - COMPOSER_MARGIN.sum().x).max(24.0);
     let galley = ui
         .ctx()
         .fonts_mut(|f| f.layout(draft.to_owned(), font_id, ui.visuals().text_color(), wrap_w));
-    galley.size().y.clamp(row_h * COMPOSER_MIN_ROWS, row_h * COMPOSER_MAX_ROWS) + COMPOSER_PAD.y
+    galley.size().y.clamp(row_h * COMPOSER_MIN_ROWS, row_h * COMPOSER_MAX_ROWS)
+        + COMPOSER_MARGIN.sum().y
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
