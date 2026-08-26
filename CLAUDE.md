@@ -206,7 +206,10 @@ Rules that matter:
   lives in `app/src/app.rs`, so pair by region: `intel_row`, `render_ping`, `battles_view`,
   `settings_view`, the alert viewport callback, `nav.rs`. Cross-cutting changes run alone.
 - Apply patches to the main tree one at a time and re-run the suite between them.
-- A fix is not done until a screenshot shows it fixed.
+- A fix is not done until a screenshot shows it fixed. The exception is an interaction the harness
+  cannot reach cheaply, drag-and-drop being the known one: seed the state and render the result
+  rather than simulating the input, and if even that fights back, land the fix and record what is
+  uncovered. Verification effort is meant to be proportionate, not total.
 
 ## Writing and comments (stop slop)
 

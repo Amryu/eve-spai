@@ -40,7 +40,17 @@ interactive.
 
 ## How to verify
 
-The harness can drive this: `harness.event` with `PointerButton` press, then `PointerMoved`, is how
-`drags_the_alert_window` in `scenes.rs` works, and `uitest_nav_rail_short_reaches_every_item` shows
-the multi-pass pattern. Drag a tab a few px and assert the indicator exists and sits near the
-pointer. Screenshot it mid-drag.
+**Do not overengineer this.** The user has said they would rather give feedback on the drag
+themselves than have effort sunk into simulating it, and GAP-008 already records tab drag-and-drop
+as the hard case: the tab is a painter-only `ui.interact` rect with no queryable AccessKit node.
+
+In order of preference:
+
+1. Seed `jabber_tab_drag` directly and render one frame. The popout scenes already seed private
+   `SpaiApp` fields, so this gets a mid-drag screenshot for almost nothing.
+2. Time-box synthesizing real pointer events. If a press-move-release does not produce a live drag
+   quickly, stop.
+3. Landing with no drag-specific test is acceptable, as long as the report says so plainly.
+
+The rest of the bar is unchanged: full suite green including `--features fc-rescue`, `uitest_layout`
+green, no new warnings, and look at whatever is rendered.
