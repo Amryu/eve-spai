@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `render_ping_body`, shared with the jabber body renderer |
 | **Wave** | unscheduled |
 | **Found by** | UI-013 |
@@ -25,8 +25,8 @@ Same root cause as UI-013. The fix there was
 
 ## Why it was not fixed with UI-013
 
-`render_ping_body` is called by the Fleet arm, the Plain arm, and the jabber body renderer at
-`app.rs:23707`. Changing it reaches well outside UI-013's region and needs its own verification
+`render_ping_body` is called by the Fleet arm, the Plain arm, and a unit test. (WRONG: there is no
+jabber caller, see `review.md`. Chat uses `render_message_body`, filed as UI-027.) Changing it reaches well outside UI-013's region and needs its own verification
 across all three callers.
 
 ## Notes

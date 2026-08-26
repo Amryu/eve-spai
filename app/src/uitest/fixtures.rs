@@ -293,6 +293,22 @@ pub(crate) fn ping_plain() -> crate::pings::Ping {
     }
 }
 
+/// A plain ping whose body runs to several lines, with a link on the middle one. A body line is
+/// the only place `render_ping_body`'s row height is visible, and a link is the one genuinely
+/// interactive thing that can sit on such a line.
+pub(crate) fn ping_plain_multiline() -> crate::pings::Ping {
+    crate::pings::Ping::Plain {
+        timestamp: now() - 30,
+        text: "Sov timer in 68FT-6 at 19:40.\n\
+               Fits and doctrine: https://example.invalid/doctrines\n\
+               Bring a mobile depot, we refit on grid."
+            .into(),
+        sender: Some("Director".into()),
+        target: Some("corp".into()),
+        raw: "raw plain body".into(),
+    }
+}
+
 pub(crate) const JABBER_ROOM: &str = "delve.imperium@conference.goonfleet.com";
 pub(crate) const JABBER_ROOM_QUIET: &str = "corp.chat@conference.goonfleet.com";
 pub(crate) const JABBER_DM: &str = "wingmate@goonfleet.com";
