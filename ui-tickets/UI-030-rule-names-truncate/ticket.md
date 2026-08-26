@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | the alert rule list in `alert_rules_editor` |
 | **Found by** | UI-019 |
 

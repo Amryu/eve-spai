@@ -625,7 +625,9 @@ pub(crate) fn all() -> Vec<Scene> {
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
-    v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0]));
+    v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
+    // UI-030: the rule panel's 180px drag minimum, the least room a rule name ever gets.
+    v.push(alert_rules_scene("view_alert_rules_narrow", [1280.0, 800.0], Some(180.0)));
     // Dialog sizes are the ones each dialog asks for in `dialog_viewport`, so a scene lays out at
     // the width the real window opens at. The three that are plain `egui::Window`s or `Modal`s get
     // room around them instead, since those float rather than fill.
@@ -3146,10 +3148,22 @@ fn characters_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// The alert rules editor with three rules, which is the only place the reorder arrows and the
 /// four condition `Edit` buttons draw. The editor auto-selects the first rule, so the right pane
 /// renders without seeding a selection.
-fn alert_rules_scene(name: &'static str, size: [f32; 2]) -> Scene {
+fn alert_rules_scene(name: &'static str, size: [f32; 2], panel_w: Option<f32>) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
+        // A resizable `Panel` takes its width from persisted state, so pinning that is the only
+        // way to reach the drag minimum with no pointer to drag the separator.
+        if let Some(w) = panel_w {
+            ui.ctx().data_mut(|d| {
+                d.insert_persisted(
+                    egui::Id::new("alert_rules_split"),
+                    egui::PanelState {
+                        rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 100.0)),
+                    },
+                );
+            });
+        }
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = View::Alerts;
@@ -3226,7 +3240,7 @@ fn uitest_character_row_buttons_match_the_view() {
 /// control is floored at `interact_size.y`. The `requires:` chips are the nearest peer.
 #[test]
 fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
-    let mut scene = alert_rules_scene("alert_edit_probe", [1280.0, 800.0]);
+    let mut scene = alert_rules_scene("alert_edit_probe", [1280.0, 800.0], None);
     let harness = harness::build(&mut scene, false);
     let chip = buttons_labelled(&harness, "bubble").first().expect("no requires chip").1;
     let edits = buttons_labelled(&harness, "Edit");
@@ -3266,5 +3280,54 @@ fn uitest_dialog_scenes_render_their_dialog() {
             n.label().or_else(|| n.value()).is_some_and(|t| t.contains(needle))
         });
         assert!(found, "{name} rendered without {needle:?}");
+    }
+}
+
+/// UI-030: the two reorder arrows used to sit in every rule row and reserve 82px of it, which cut
+/// the name to eight characters in the default 240px panel. They now sit under the list, so the
+/// name gets the row. Guards both halves: full names at the default width, and no return of the
+/// overlap UI-019 fixed (the name's click rect running under the arrows').
+#[test]
+fn uitest_alert_rule_names_fit_and_clear_the_arrows() {
+    use egui_phosphor::regular as ic;
+
+    for (scene_name, truncates) in
+        [("view_alert_rules", false), ("view_alert_rules_narrow", true)]
+    {
+        let mut scene = all().into_iter().find(|s| s.name == scene_name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        let font = egui::TextStyle::Button.resolve(&harness.ctx.global_style());
+        let arrows: Vec<egui::Rect> = button_rects(&harness)
+            .into_iter()
+            .filter(|(l, _)| l == ic::ARROW_UP || l == ic::ARROW_DOWN)
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(arrows.len(), 2, "{scene_name}: expected the two reorder arrows");
+
+        for name in ["Hostiles near home", "Cyno in Delve", "Quiet hours"] {
+            let (_, rect) = buttons_labelled(&harness, name)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("{scene_name}: no rule button for {name:?}"));
+            let full = harness.ctx.fonts_mut(|f| {
+                f.layout_no_wrap(name.to_owned(), font.clone(), egui::Color32::PLACEHOLDER).size().x
+            });
+            // A selectable button pads its text, so a rect narrower than the bare galley means the
+            // name was cut.
+            if !truncates {
+                assert!(
+                    rect.width() >= full,
+                    "{scene_name}: {name:?} is {:.1}px wide against {:.1}px of text",
+                    rect.width(),
+                    full
+                );
+            }
+            for a in &arrows {
+                assert!(
+                    !rect.intersects(*a),
+                    "{scene_name}: {name:?} {rect:?} overlaps a reorder arrow {a:?}"
+                );
+            }
+        }
     }
 }

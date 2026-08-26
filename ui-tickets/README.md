@@ -47,7 +47,7 @@ after, and any follow-up tickets it spawned.
 | [UI-021 Composer should grow to 10 rows, drop Send](UI-021-composer-grows-and-drops-send/) | Medium | composer | user | **Fixed** |
 | [UI-033 The always-on-top pin overlays dialog content](UI-033-pin-overlays-dialog-content/) | Medium | `ontop_pin` | GAP-001 | Open |
 | [UI-032 The intel toolbar is too cramped](UI-032-intel-toolbar-too-cramped/) | Medium | `intel_view` | user | **Fixed** |
-| [UI-030 Alert rule names truncate in the default panel](UI-030-rule-names-truncate/) | Low | `alert_rules_editor` | UI-019 | Open |
+| [UI-030 Alert rule names truncate in the default panel](UI-030-rule-names-truncate/) | Low | `alert_rules_editor` | UI-019 | **Fixed** |
 | [UI-031 Regenerate button uses a bare U+21BB](UI-031-bare-glyph-may-be-tofu/) | Low | `rescue_window_body` | UI-019 | Open |
 | [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Closed, not a defect |
 

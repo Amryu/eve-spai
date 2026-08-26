@@ -15586,7 +15586,8 @@ impl SpaiApp {
             egui::RichText::new(
                 "Top rule wins. A matching rule's actions apply (or it suppresses the alert). \
                  Empty condition fields mean \"any\". Jumps are measured from the rule's \
-                 characters (or any enabled character). Drag the handle or use the arrows to reorder.",
+                 characters (or any enabled character). Drag a rule's handle to reorder it, or \
+                 select it and use the arrows under the list.",
             )
             .weak(),
         );
@@ -15605,26 +15606,41 @@ impl SpaiApp {
             .default_size(240.0)
             .size_range(180.0..=400.0)
             .show_inside(ui, |ui| {
+                let sel_idx = self
+                    .alert_selected_rule
+                    .and_then(|id| self.settings.alerts.rules.iter().position(|r| r.id == id));
+                // In the row these reserved 82px of a 240px panel and cut every name to eight
+                // characters; under the list they cost the name nothing.
+                egui::Panel::bottom("alert_rule_reorder").resizable(false).show_inside(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                sel_idx.is_some_and(|i| i > 0),
+                                egui::Button::new(ic::ARROW_UP),
+                            )
+                            .on_hover_text("Move the selected rule up")
+                            .clicked()
+                        {
+                            move_up = sel_idx;
+                        }
+                        if ui
+                            .add_enabled(
+                                sel_idx.is_some_and(|i| i + 1 < n_rules),
+                                egui::Button::new(ic::ARROW_DOWN),
+                            )
+                            .on_hover_text("Move the selected rule down")
+                            .clicked()
+                        {
+                            move_down = sel_idx;
+                        }
+                    });
+                    ui.add_space(4.0);
+                });
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .id_salt("alert_rule_list")
                     .show(ui, |ui| {
-                        // Both reorder buttons plus the gaps around them. The name is laid out
-                        // before them, so it has to leave their width free or a long one runs
-                        // under their click rects.
-                        let arrow_w = ui
-                            .painter()
-                            .layout_no_wrap(
-                                ic::ARROW_DOWN.to_owned(),
-                                egui::TextStyle::Button.resolve(ui.style()),
-                                egui::Color32::PLACEHOLDER,
-                            )
-                            .size()
-                            .x;
-                        let reorder_w = 2.0
-                            * (arrow_w
-                                + 2.0 * ui.spacing().button_padding.x
-                                + ui.spacing().item_spacing.x);
                         for i in 0..n_rules {
                             let (id, enabled, name) = {
                                 let r = &self.settings.alerts.rules[i];
@@ -15652,44 +15668,18 @@ impl SpaiApp {
                                         );
                                         let label =
                                             if name.is_empty() { "(unnamed rule)" } else { &name };
-                                        let name_w = (ui.available_width()
-                                            - reorder_w
-                                            - 2.0 * ui.spacing().button_padding.x)
-                                            .max(40.0);
-                                        let shown = truncate_to(label, fit_chars(name_w));
                                         let txt = if enabled {
-                                            egui::RichText::new(&shown)
+                                            egui::RichText::new(label)
                                         } else {
-                                            egui::RichText::new(&shown).weak().strikethrough()
+                                            egui::RichText::new(label).weak().strikethrough()
                                         };
                                         if ui
-                                            .add(egui::Button::selectable(selected, txt))
+                                            .add(egui::Button::selectable(selected, txt).truncate())
                                             .on_hover_text(label)
                                             .clicked()
                                         {
                                             self.alert_selected_rule = Some(id);
                                         }
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if i + 1 < n_rules
-                                                    && ui
-                                                        .small_button(ic::ARROW_DOWN)
-                                                        .on_hover_text("Move down")
-                                                        .clicked()
-                                                {
-                                                    move_down = Some(i);
-                                                }
-                                                if i > 0
-                                                    && ui
-                                                        .small_button(ic::ARROW_UP)
-                                                        .on_hover_text("Move up")
-                                                        .clicked()
-                                                {
-                                                    move_up = Some(i);
-                                                }
-                                            },
-                                        );
                                     });
                                 },
                             );
