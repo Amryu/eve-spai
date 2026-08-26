@@ -323,6 +323,29 @@ fn jabber_popout_probed(
     })
 }
 
+/// The same pop-out mid-drag: the room tab picked up, the pointer holding it over the history.
+/// The drag state is seeded rather than gestured, because kittest has no way to grab a tab that is
+/// a painter-only `interact` rect with no AccessKit node (GAP-008).
+fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) -> Scene {
+    use crate::app::ChatWinKey;
+    harness::scratch_profile();
+    let f = fixtures::jabber_frame();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            a.jabber_popouts = vec![fixtures::jabber_popout(POPOUT_ID, fixtures::JABBER_ROOM)];
+            a.session_start = fixtures::now() - 1_000;
+            a.seed_tab_drag(fixtures::JABBER_ROOM, ChatWinKey::Popout(POPOUT_ID));
+            a
+        });
+        let mut out = Vec::new();
+        app.jabber_window_body(ui, ChatWinKey::Popout(POPOUT_ID), &f, &mut out);
+    })
+    .hovered_at(pointer)
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
@@ -423,6 +446,7 @@ pub(crate) fn all() -> Vec<Scene> {
         fixtures::JABBER_ROOM,
         DRAFT_OVERFLOW,
     ));
+    v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     v
 }
 
@@ -1538,4 +1562,127 @@ fn uitest_jabber_composer_enter_sends_shift_enter_wraps() {
     harness.key_press(egui::Key::Enter);
     harness.run_steps(2);
     assert_eq!(draft(), "", "Enter did not send and clear the draft");
+}
+
+/// Where a string is actually painted this pass. Tabs and the drag ghost emit no AccessKit node,
+/// so the shape list is the only place they exist.
+fn painted_text_rects(harness: &egui_kittest::Harness<'_>, text: &str) -> Vec<egui::Rect> {
+    fn walk(shape: &egui::Shape, text: &str, out: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Text(t) if t.galley.text() == text => {
+                out.push(egui::Rect::from_min_size(t.pos, t.galley.size()));
+            }
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    walk(s, text, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for c in &harness.output().shapes {
+        walk(&c.shape, text, &mut out);
+    }
+    out
+}
+
+/// UI-023: a tab drag said nothing at the pointer, so the user could not tell one had begun. The
+/// gesture itself is not driven here (GAP-008: the tab is a painter-only `interact` rect kittest
+/// cannot grab), so the drag state is seeded and the painted output is what gets checked, against
+/// the same window under the same pointer with no drag running.
+#[test]
+fn uitest_jabber_tab_drag_paints_a_ghost_at_the_pointer() {
+    use egui_kittest::kittest::NodeT as _;
+
+    const LABEL: &str = "delve.imperium";
+    let pointer = egui::pos2(200.0, 150.0);
+    let node_rects = |h: &egui_kittest::Harness<'_>| -> Vec<egui::Rect> {
+        h.root()
+            .children_recursive()
+            .filter_map(|n| n.accesskit_node().bounding_box())
+            .map(|b| egui::Rect {
+                min: egui::pos2(b.x0 as f32, b.y0 as f32),
+                max: egui::pos2(b.x1 as f32, b.y1 as f32),
+            })
+            .collect()
+    };
+
+    let mut idle = jabber_popout_scene("tab_drag_control", [520.0, 480.0], fixtures::JABBER_ROOM, "")
+        .hovered_at(pointer);
+    let idle = harness::build(&mut idle, false);
+    assert_eq!(
+        painted_text_rects(&idle, LABEL).len(),
+        1,
+        "with no drag running, only the tab itself names the conversation"
+    );
+
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_popout_tab_drag").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let painted = painted_text_rects(&harness, LABEL);
+    assert_eq!(
+        painted.len(),
+        2,
+        "mid-drag the label should be painted twice, on the tab and on the ghost: {painted:?}"
+    );
+    let ghost = painted
+        .into_iter()
+        .max_by(|a, b| a.min.y.total_cmp(&b.min.y))
+        .expect("ghost");
+    assert!(
+        ghost.distance_to_pos(pointer) < 40.0,
+        "the ghost is at {ghost:?}, nowhere near the pointer at {pointer:?}"
+    );
+
+    // An interactive ghost would sit on the history as a click target, which is exactly what UI-020
+    // had to undo for the always-on-top pin. It is painted into a layer, so it owns no node at all.
+    assert_eq!(
+        node_rects(&harness),
+        node_rects(&idle),
+        "the drag ghost changed the AccessKit tree"
+    );
+}
+
+/// The other half: the ghost has to appear on a real press-and-move and be gone the moment the
+/// button comes up. The press goes in by coordinate, off the tab's own painted label, because the
+/// tab is an `interact` rect with no AccessKit node to click.
+#[test]
+fn uitest_jabber_tab_drag_ghost_comes_and_goes_with_the_gesture() {
+    const LABEL: &str = "delve.imperium";
+    let mut scene =
+        jabber_popout_scene("tab_drag_gesture", [520.0, 480.0], fixtures::JABBER_ROOM, "");
+    let mut harness = harness::build(&mut scene, false);
+    let from = painted_text_rects(&harness, LABEL)[0].center();
+    let to = egui::pos2(200.0, 150.0);
+    let btn = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+
+    harness.event(egui::Event::PointerMoved(from));
+    harness.run_steps(2);
+    harness.event(btn(from, true));
+    harness.run_steps(2);
+    // Two moves: the first crosses egui's drag threshold, the second carries the tab off the bar.
+    for p in [from + egui::vec2(8.0, 4.0), to] {
+        harness.event(egui::Event::PointerMoved(p));
+        harness.run_steps(2);
+    }
+    let painted = painted_text_rects(&harness, LABEL);
+    assert_eq!(painted.len(), 2, "the drag painted no ghost: {painted:?}");
+    let ghost = painted.into_iter().max_by(|a, b| a.min.y.total_cmp(&b.min.y)).expect("ghost");
+    assert!(
+        ghost.distance_to_pos(to) < 40.0,
+        "the ghost is at {ghost:?}, nowhere near the pointer at {to:?}"
+    );
+
+    harness.event(btn(to, false));
+    harness.run_steps(2);
+    assert_eq!(
+        painted_text_rects(&harness, LABEL).len(),
+        1,
+        "the ghost outlived the drag"
+    );
 }
