@@ -323,14 +323,14 @@ pub struct SpaiApp {
     store: Option<Store>,
     pub(crate) settings: Settings,
     pub(crate) view: View,
-    intel_channels_open: bool,
-    jump_bridges_open: bool,
+    pub(crate) intel_channels_open: bool,
+    pub(crate) jump_bridges_open: bool,
     jb_paste: String,
     sov_upgrades_open: bool,
     sov_paste: String,
-    coalitions_open: bool,
-    severity_open: bool,
-    coal_edit: Vec<(String, String)>,
+    pub(crate) coalitions_open: bool,
+    pub(crate) severity_open: bool,
+    pub(crate) coal_edit: Vec<(String, String)>,
     alliance_add: String,
     active_character: String,
     needs_save: bool,
@@ -376,10 +376,10 @@ pub struct SpaiApp {
     recent_wh: crate::zkill::RecentWh,
     work_throttle_shared: std::sync::Arc<std::sync::atomic::AtomicU8>,
     battles_enabled_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    battle_filter_open: bool,
-    filter_picker: Option<crate::pickers::FilterPicker>,
+    pub(crate) battle_filter_open: bool,
+    pub(crate) filter_picker: Option<crate::pickers::FilterPicker>,
     verdict_popup: Option<String>,
-    verdict_explainer_open: bool,
+    pub(crate) verdict_explainer_open: bool,
     filter_add_result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
     battle_filter_confirm_reset: bool,
     battle_filter_gen: u64,
@@ -547,7 +547,7 @@ pub struct SpaiApp {
     /// time instead of writing the whole (possibly self-revisiting) route at once.
     travel_ingame_dest: Option<i64>,
     travel_waypoints: Vec<i64>,
-    routes_dialog_open: bool,
+    pub(crate) routes_dialog_open: bool,
     route_save_name: String,
     route_save_folder: String,
     route_search: String,
@@ -17699,6 +17699,50 @@ impl SpaiApp {
         self.nav_rail(ui);
     }
 
+    /// Every dialog and secondary window, split out of `App::ui` for the same reason as
+    /// [`Self::root_chrome`]: the harness can only reach them without the poll/side-effect
+    /// prologue.
+    pub(crate) fn root_dialogs(&mut self, ctx: &egui::Context, jframe: Option<&JabberFrame>) {
+        self.intel_channels_window(ctx);
+        self.jump_bridges_window(ctx);
+        self.sov_upgrades_window(ctx);
+        self.coalitions_window(ctx);
+        self.travel_sov_dialog(ctx);
+        self.severity_window(ctx);
+        self.alert_window(ctx);
+        self.system_window(ctx);
+        self.constellation_window(ctx);
+        self.region_window(ctx);
+        self.ship_window(ctx);
+        self.pilot_window(ctx);
+        self.fit_window(ctx);
+        self.battle_filter_dialog(ctx);
+        self.filter_picker_dialog(ctx);
+        self.verdict_dialog(ctx);
+        self.dscan_view_dialog(ctx);
+        self.fleet_ping_window_ui(ctx);
+        self.routes_dialog(ctx);
+        self.safety_watch(ctx);
+        self.screen_flash(ctx);
+        if let Some(vp) = self.focus_window.take() {
+            ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
+        }
+        if self.map_popped {
+            self.show_map_viewport(ctx);
+        }
+        self.char_popout_windows(ctx);
+        if let Some(f) = jframe {
+            self.jabber_popout_windows(ctx, f);
+        }
+        self.cyno_generators_window(ctx);
+        #[cfg(feature = "fc-rescue")]
+        if self.settings.fc_rescue_enabled {
+            self.rescue_doctrines_window(ctx);
+            self.update_rescue_range();
+            self.show_rescue_window(ctx);
+        }
+    }
+
     /// The central panel and its dispatch on [`Self::view`]. `jframe` stays a parameter because
     /// `App::ui` builds it once per frame and reuses it for the popout windows afterwards.
     pub(crate) fn root_central(&mut self, ui: &mut egui::Ui, jframe: Option<&JabberFrame>) {
@@ -17870,44 +17914,7 @@ impl eframe::App for SpaiApp {
 
         self.root_central(ui, jframe.as_ref());
 
-        self.intel_channels_window(&ctx);
-        self.jump_bridges_window(&ctx);
-        self.sov_upgrades_window(&ctx);
-        self.coalitions_window(&ctx);
-        self.travel_sov_dialog(&ctx);
-        self.severity_window(&ctx);
-        self.alert_window(&ctx);
-        self.system_window(&ctx);
-        self.constellation_window(&ctx);
-        self.region_window(&ctx);
-        self.ship_window(&ctx);
-        self.pilot_window(&ctx);
-        self.fit_window(&ctx);
-        self.battle_filter_dialog(&ctx);
-        self.filter_picker_dialog(&ctx);
-        self.verdict_dialog(&ctx);
-        self.dscan_view_dialog(&ctx);
-        self.fleet_ping_window_ui(&ctx);
-        self.routes_dialog(&ctx);
-        self.safety_watch(&ctx);
-        self.screen_flash(&ctx);
-        if let Some(vp) = self.focus_window.take() {
-            ctx.send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
-        }
-        if self.map_popped {
-            self.show_map_viewport(&ctx);
-        }
-        self.char_popout_windows(&ctx);
-        if let Some(f) = &jframe {
-            self.jabber_popout_windows(&ctx, f);
-        }
-        self.cyno_generators_window(&ctx);
-        #[cfg(feature = "fc-rescue")]
-        if self.settings.fc_rescue_enabled {
-            self.rescue_doctrines_window(&ctx);
-            self.update_rescue_range();
-            self.show_rescue_window(&ctx);
-        }
+        self.root_dialogs(&ctx, jframe.as_ref());
 
         // Remember the main window's location + size across restarts. Skip the first passes, where
         // the window can briefly report a pre-restore rect.

@@ -478,6 +478,34 @@ fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) 
     .hovered_at(pointer)
 }
 
+/// A dialog or secondary window, opened by seeding its gate field and letting
+/// [`crate::app::SpaiApp::root_dialogs`] dispatch as it does in `App::ui`.
+///
+/// Two viewport settings make that reachable. kittest registers no immediate-viewport renderer, so
+/// `dialog_viewport_ext` would otherwise take egui's embedded fallback, which wraps the dialog in a
+/// stub `egui::Window` while the body's `CentralPanel` still paints full-screen on the root: an
+/// empty title bar floating over the dialog it is supposed to contain. Rendering the body straight
+/// onto the root drops the stub. Turning embedding off then keeps the two always-on deferred
+/// viewports (the alert and fleet-ping overlays) out, which would each open a second `CentralPanel`
+/// on the same context and paint egui's "double use of widget ID" error over the dialog.
+fn dialog_scene(
+    name: &'static str,
+    size: [f32; 2],
+    open: impl Fn(&mut crate::app::SpaiApp) + 'static,
+) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            harness::render_dialogs_on_the_root(ctx);
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            open(&mut a);
+            a
+        });
+        app.root_dialogs(ctx, None);
+    })
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
@@ -596,6 +624,93 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0]));
+    // Dialog sizes are the ones each dialog asks for in `dialog_viewport`, so a scene lays out at
+    // the width the real window opens at. The three that are plain `egui::Window`s or `Modal`s get
+    // room around them instead, since those float rather than fill.
+    v.push(dialog_scene("dialog_severity", [620.0, 480.0], |a| a.severity_open = true));
+    v.push(dialog_scene("dialog_intel_channels", [420.0, 480.0], |a| {
+        a.intel_channels_open = true;
+        a.settings.intel_channels =
+            ["Delve Intel", "Querious Intel", "corp"].map(str::to_owned).into();
+    }));
+    v.push(dialog_scene("dialog_jump_bridges", [440.0, 520.0], |a| {
+        a.jump_bridges_open = true;
+        a.settings.jump_bridges = [("1DQ1-A", "O-EIMK"), ("319-3D", "7-K5EL")]
+            .map(|(from, to)| crate::settings::JumpBridge {
+                from: from.to_owned(),
+                to: to.to_owned(),
+            })
+            .into();
+    }));
+    // `coal_edit` is the dialog's edit buffer, filled by the settings button that opens it, so the
+    // scene has to fill it the same way or the coalition list renders empty.
+    v.push(dialog_scene("dialog_coalitions", [520.0, 680.0], |a| {
+        a.coalitions_open = true;
+        a.coal_edit =
+            a.settings.coalitions.iter().map(|c| (c.name.clone(), c.alliances.join("\n"))).collect();
+        a.settings.alliances = ["Goonswarm Federation", "Pandemic Horde"]
+            .map(|name| crate::settings::AllianceConfig { name: name.to_owned(), color: None })
+            .into();
+    }));
+    v.push(dialog_scene("dialog_battle_filter", [580.0, 620.0], |a| {
+        use crate::settings::{BattleCond, BattleRule, RuleAction, ShipSize};
+        a.battle_filter_open = true;
+        a.settings.battles.rules = vec![
+            BattleRule {
+                action: RuleAction::Include,
+                match_all: true,
+                conditions: vec![
+                    BattleCond::Region("Delve".into()),
+                    BattleCond::HullSizeAtLeast(ShipSize::Capital),
+                ],
+                expanded: true,
+            },
+            BattleRule {
+                action: RuleAction::Exclude,
+                match_all: false,
+                conditions: vec![BattleCond::IskAtMost(500_000_000.0)],
+                expanded: true,
+            },
+        ];
+    }));
+    v.push(dialog_scene("dialog_routes", [640.0, 620.0], |a| {
+        a.routes_dialog_open = true;
+        a.systems = Some(fixtures::systems());
+        a.settings.route_folders = vec!["Deployments".into()];
+        a.settings.saved_routes = vec![
+            crate::settings::SavedRoute {
+                name: "Home run".into(),
+                folder: "Deployments".into(),
+                start: 30_004_759,
+                end: 30_000_142,
+                waypoints: vec![30_004_608],
+                jumps: 12,
+                constraints: None,
+            },
+            crate::settings::SavedRoute {
+                name: "Staging".into(),
+                folder: String::new(),
+                start: 30_004_608,
+                end: 30_003_704,
+                waypoints: vec![],
+                jumps: 3,
+                constraints: None,
+            },
+        ];
+    }));
+    v.push(dialog_scene("dialog_filter_picker", [520.0, 620.0], |a| {
+        let mut p = crate::pickers::FilterPicker::new(crate::pickers::PickerKind::Ships, 0);
+        p.data = crate::pickers::PickerData::List(
+            ["Kikimora", "Cenotaph", "Muninn", "Eagle", "Nightmare", "Revelation"]
+                .map(str::to_owned)
+                .into(),
+        );
+        p.selected = ["Muninn".to_owned(), "Revelation".to_owned()].into_iter().collect();
+        a.filter_picker = Some(p);
+    }));
+    v.push(dialog_scene("dialog_verdict_explainer", [520.0, 400.0], |a| {
+        a.verdict_explainer_open = true;
+    }));
     v
 }
 
@@ -3041,5 +3156,33 @@ fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
             r.height(),
             chip.height()
         );
+    }
+}
+
+
+
+/// Fails if a dialog scene degrades to the empty root panel, which is what a wrong gate field or a
+/// changed viewport route would look like: `uitest_layout` stays green on a blank scene.
+#[test]
+fn uitest_dialog_scenes_render_their_dialog() {
+    use egui_kittest::kittest::NodeT as _;
+
+    for (name, needle) in [
+        ("dialog_severity", "High-threat hulls (one per line)"),
+        ("dialog_intel_channels", "Querious Intel"),
+        ("dialog_jump_bridges", "1DQ1-A » O-EIMK"),
+        ("dialog_coalitions", "Alliances (sov holders)"),
+        ("dialog_battle_filter", "Add rule"),
+        ("dialog_routes", "Home run"),
+        ("dialog_filter_picker", "2 selected"),
+        ("dialog_verdict_explainer", "Uncertain pilot (?)"),
+    ] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        let found = harness.root().children_recursive().any(|node| {
+            let n = node.accesskit_node();
+            n.label().or_else(|| n.value()).is_some_and(|t| t.contains(needle))
+        });
+        assert!(found, "{name} rendered without {needle:?}");
     }
 }

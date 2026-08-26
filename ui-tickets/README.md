@@ -45,6 +45,7 @@ after, and any follow-up tickets it spawned.
 | [UI-022 Long chat histories lag, no virtualization plus a per-frame clone](UI-022-chat-history-not-virtualized/) | High | `jabber_conversation_ui` | user | **Fixed** |
 | [UI-020 Always-on-top pin floats over popout content](UI-020-ontop-pin-overlaps-content/) | Medium | `ontop_pin` | user | **Fixed** |
 | [UI-021 Composer should grow to 10 rows, drop Send](UI-021-composer-grows-and-drops-send/) | Medium | composer | user | **Fixed** |
+| [UI-033 The always-on-top pin overlays dialog content](UI-033-pin-overlays-dialog-content/) | Medium | `ontop_pin` | GAP-001 | Open |
 | [UI-032 The intel toolbar is too cramped](UI-032-intel-toolbar-too-cramped/) | Medium | `intel_view` | user | Open |
 | [UI-030 Alert rule names truncate in the default panel](UI-030-rule-names-truncate/) | Low | `alert_rules_editor` | UI-019 | Open |
 | [UI-031 Regenerate button uses a bare U+21BB](UI-031-bare-glyph-may-be-tofu/) | Low | `rescue_window_body` | UI-019 | Open |
@@ -56,7 +57,7 @@ Tool work rather than app defects. Ticketed so the backlog is complete; not sche
 
 | Ticket | Blocks | Effort |
 |---|---|---|
-| [GAP-001 28 dialogs unreachable](GAP-001-dialogs-unreachable/) | ~6,000 lines | Medium |
+| [GAP-001 28 dialogs unreachable](GAP-001-dialogs-unreachable/) | ~6,000 lines | **8 of 28 covered** |
 | [GAP-002 Scratch store is never seeded](GAP-002-seed-the-scratch-store/) | 5 of 9 views | Medium |
 | [GAP-003 Map is painter-only](GAP-003-map-painter-only/) | ~80% of Map pixels | Medium |
 | [GAP-004 Jabber view uncovered](GAP-004-jabber-view-uncovered/) | ~1,200 lines | **Popout done**, in-app view open |
@@ -64,6 +65,7 @@ Tool work rather than app defects. Ticketed so the backlog is complete; not sche
 | [GAP-006 Alert auto-dismiss untested](GAP-006-alert-auto-dismiss-untested/) | overlay click passthrough | **Closed** |
 | [GAP-007 Viewport commands dropped](GAP-007-viewport-commands-dropped/) | 12 sites, overlay process | Small / large |
 | [GAP-008 Input kinds undriven](GAP-008-input-kinds-undriven/) | 4 menus, 2 DnD systems | Small / large |
+| [GAP-010 Checker never compares a hit target against text](GAP-010-checker-misses-widget-over-text/) | UI-033's class of bug | Small |
 | [GAP-009 i18n and platform branches](GAP-009-i18n-and-platform/) | CJK overflow, rescue windows | Small / large |
 
 ## Branch layout
