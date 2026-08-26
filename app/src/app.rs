@@ -7752,12 +7752,15 @@ impl SpaiApp {
                                 .on_hover_text("Stack each side's ships by hull (count + losses)");
                             toolbar_sep(ui);
                             ui.label("Sort");
-                            egui::ComboBox::from_id_salt("battle_roster_sort")
-                                .selected_text(match self.battle_roster_sort {
-                                    RosterSort::Value => "ISK loss",
-                                    RosterSort::Hull => "Hull size",
-                                })
-                                .show_ui(ui, |ui| {
+                            let sort_label = match self.battle_roster_sort {
+                                RosterSort::Value => "ISK loss",
+                                RosterSort::Hull => "Hull size",
+                            };
+                            toolbar_combo(
+                                ui,
+                                "battle_roster_sort",
+                                sort_label.to_owned(),
+                                |ui| {
                                     ui.selectable_value(
                                         &mut self.battle_roster_sort,
                                         RosterSort::Value,
@@ -7768,7 +7771,8 @@ impl SpaiApp {
                                         RosterSort::Hull,
                                         "Hull size",
                                     );
-                                });
+                                },
+                            );
                             toolbar_sep(ui);
                             if ui.button(format!("{}  Add kill", icon::PLUS)).clicked() {
                                 self.battle_add_open = true;
@@ -7797,20 +7801,17 @@ impl SpaiApp {
                                     })
                                     .unwrap_or_else(|| "Select character".to_owned());
                                 ui.label("Manage as:");
-                                egui::ComboBox::from_id_salt("br_manage_as")
-                                    .selected_text(sel_name)
-                                    .show_ui(ui, |ui| {
-                                        for (id, name) in &authed {
-                                            if ui
-                                                .selectable_label(self.br_character == Some(*id), name)
-                                                .clicked()
-                                            {
-                                                self.br_character = Some(*id);
-                                            }
+                                toolbar_combo(ui, "br_manage_as", sel_name, |ui| {
+                                    for (id, name) in &authed {
+                                        if ui
+                                            .selectable_label(self.br_character == Some(*id), name)
+                                            .clicked()
+                                        {
+                                            self.br_character = Some(*id);
                                         }
-                                    })
-                                    .response
-                                    .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
+                                    }
+                                })
+                                .on_hover_text("Battle reports are owned per character; pick which one to upload + manage under");
                                 toolbar_sep(ui);
                             }
                             let sharing = matches!(
@@ -8048,15 +8049,17 @@ impl SpaiApp {
                 ui.add(egui::Spinner::new());
             }
             let mut th = self.settings.work_throttle;
-            egui::ComboBox::from_id_salt("work_throttle")
-                .selected_text(format!("{}  {}", egui_phosphor::regular::GAUGE, th.label()))
-                .show_ui(ui, |ui| {
+            toolbar_combo(
+                ui,
+                "work_throttle",
+                format!("{}  {}", egui_phosphor::regular::GAUGE, th.label()),
+                |ui| {
                     for opt in crate::settings::WorkThrottle::CHOICES {
                         ui.selectable_value(&mut th, opt, opt.label());
                     }
-                })
-                .response
-                .on_hover_text("Throttle background work (battle feed + clustering) to limit CPU.");
+                },
+            )
+            .on_hover_text("Throttle background work (battle feed + clustering) to limit CPU.");
             if th != self.settings.work_throttle {
                 self.settings.work_throttle = th;
                 self.work_throttle_shared.store(th.as_u8(), std::sync::atomic::Ordering::Relaxed);
@@ -19768,6 +19771,43 @@ fn toolbar_sep(ui: &mut egui::Ui) {
         st.pending.push((rect, cursor.top(), idx));
     }
     ui.data_mut(|d| d.insert_temp(id, st));
+}
+
+/// A `ComboBox` in a [`toolbar`].
+///
+/// `ComboBox::show_ui` opens with a plain `ui.horizontal`, whose desired size is whatever is left
+/// of the row, so the wrapping layout is never told a width that could not fit and never breaks
+/// before one. The box then lays its selected text out unwrapped and paints past the row's right
+/// edge. Reserving the same width egui is about to paint puts the wrap decision back on the real
+/// size, at any window width.
+fn toolbar_combo<R>(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    selected: String,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::Response {
+    let (icon_spacing, icon_width, pad_x, combo_width, row_h) = {
+        let sp = ui.spacing();
+        (sp.icon_spacing, sp.icon_width, sp.button_padding.x, sp.combo_width, sp.interact_size.y)
+    };
+    let galley = egui::WidgetText::from(selected.clone()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let w = (galley.size().x + icon_spacing + icon_width + 2.0 * pad_x).max(combo_width);
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, row_h),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::ComboBox::from_id_salt(id_salt)
+                .selected_text(selected)
+                .show_ui(ui, contents)
+                .response
+        },
+    )
+    .inner
 }
 
 fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Battle) {
