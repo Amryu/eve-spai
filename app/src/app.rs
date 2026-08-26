@@ -420,7 +420,7 @@ pub struct SpaiApp {
     ship_by_id: std::collections::HashMap<i64, String>,
     kills_loaded: bool,
     player: crate::esi::SharedPlayer,
-    systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
     bridges_applied: Vec<crate::settings::JumpBridge>,
     system_status: crate::systemstatus::SharedStatus,
     alerts_engine: std::sync::Arc<AlertEngine>,
@@ -504,7 +504,7 @@ pub struct SpaiApp {
     dscan_unfocused_at: Option<std::time::Instant>,
     dscan_share: std::sync::Arc<std::sync::Mutex<DscanShare>>,
     dscan_view: Option<DscanView>,
-    wh_cache: Vec<crate::wormholes::Wormhole>,
+    pub(crate) wh_cache: Vec<crate::wormholes::Wormhole>,
     wh_reloaded: Option<std::time::Instant>,
     wh_overlay: WhOverlay,
     wh_filter_dest: Option<crate::wormholes::DestClass>,
@@ -1839,7 +1839,18 @@ impl SpaiApp {
                     changed |= volume_slider(ui, &mut self.settings.jabber_mention_volume);
                     ui.end_row();
                     ui.label("");
-                    ui.label(egui::RichText::new("presets: horn · chime · beep · sweep · info · warning · danger · critical · off, or a file path").weak().small());
+                    // At body size this line is wider than the dialog, and the grid cell it sits
+                    // in imposes no wrap width of its own.
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "presets: horn · chime · beep · sweep · info · warning · danger · \
+                                 critical · off, or a file path",
+                            )
+                            .weak(),
+                        )
+                        .wrap(),
+                    );
                     ui.end_row();
                     ui.label("Mention words");
                     if ui
@@ -3874,7 +3885,7 @@ impl SpaiApp {
                         prev_sender = None;
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("— new —").weak().small());
+                            ui.label(egui::RichText::new("— new —").weak());
                             ui.separator();
                         });
                     }
@@ -4309,8 +4320,7 @@ impl SpaiApp {
                 ui.label(egui::RichText::new("No wormholes known yet.").weak());
                 ui.label(
                     egui::RichText::new("Seeded from EVE-Scout (Thera/Turnur) and intel channels.")
-                        .weak()
-                        .small(),
+                        .weak(),
                 );
             });
             return;
@@ -4376,14 +4386,14 @@ impl SpaiApp {
             .collect();
 
         use egui_phosphor::regular as icon;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("wh_grid").striped(true).num_columns(8).spacing([16.0, 6.0]).show(
                 ui,
                 |ui| {
                     for h in
                         ["System", "Type", "Destination", "Constellation", "Region", "Size", "Life", "Source"]
                     {
-                        ui.label(egui::RichText::new(h).strong().small());
+                        ui.label(egui::RichText::new(h).strong());
                     }
                     ui.end_row();
                     for r in &rows {
@@ -4395,8 +4405,7 @@ impl SpaiApp {
                             if r.drifter {
                                 ui.label(
                                     egui::RichText::new(format!("{} drifter", icon::WARNING))
-                                        .color(crate::theme::standing::WARNING)
-                                        .small(),
+                                        .color(crate::theme::standing::WARNING),
                                 );
                             }
                         });
@@ -14460,14 +14469,11 @@ impl SpaiApp {
                 ui.set_max_width(460.0);
                 ui.label("EVE Spai can't read or write its database, so settings and intel history won't be saved this session.");
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(&err).weak().small());
+                ui.label(egui::RichText::new(&err).weak());
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new(
-                        "This is usually a file-permission issue on the data folder. Check that your \
-                         user can write to it, or reinstall to a writable location.",
-                    )
-                    .small(),
+                    "This is usually a file-permission issue on the data folder. Check that your \
+                     user can write to it, or reinstall to a writable location.",
                 );
                 ui.add_space(8.0);
                 if ui.button("Continue anyway").clicked() {
@@ -14793,7 +14799,7 @@ impl SpaiApp {
             .default_width(460.0)
             .show(ctx, |ui| {
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(format!("Step {} of {total}", idx + 1)).weak().small());
+                ui.label(egui::RichText::new(format!("Step {} of {total}", idx + 1)).weak());
                 ui.separator();
                 ui.add_space(4.0);
                 match cur {
@@ -14823,8 +14829,7 @@ impl SpaiApp {
                                 if let Some(Err(e)) = &self.wizard_shortcut {
                                     ui.label(
                                         egui::RichText::new(format!("Couldn't create it: {e}"))
-                                            .color(crate::theme::standing::WARNING)
-                                            .small(),
+                                            .color(crate::theme::standing::WARNING),
                                     );
                                 }
                             }
@@ -14872,8 +14877,7 @@ impl SpaiApp {
                             Some(p) => {
                                 ui.label(
                                     egui::RichText::new(format!("Using {}", p.display()))
-                                        .weak()
-                                        .small(),
+                                        .weak(),
                                 );
                             }
                             None if self.settings.eve_logs_dir.trim().is_empty() => {
@@ -14882,15 +14886,13 @@ impl SpaiApp {
                                         "Couldn't auto-detect — enter the path to your EVE \
                                          Chatlogs folder.",
                                     )
-                                    .color(crate::theme::standing::WARNING)
-                                    .small(),
+                                    .color(crate::theme::standing::WARNING),
                                 );
                             }
                             None => {
                                 ui.label(
                                     egui::RichText::new("That folder has no EVE chat logs.")
-                                        .color(crate::theme::standing::WARNING)
-                                        .small(),
+                                        .color(crate::theme::standing::WARNING),
                                 );
                             }
                         }
@@ -21570,7 +21572,7 @@ pub(crate) fn render_ping(
                 }
                 let from = source.as_deref().unwrap_or("?");
                 let to = target.as_deref().unwrap_or("?");
-                ui.label(egui::RichText::new(format!("{from} {} {to}", icon::ARROW_RIGHT)).weak().small());
+                ui.label(egui::RichText::new(format!("{from} {} {to}", icon::ARROW_RIGHT)).weak());
             }
             Ping::Plain { text, sender, target, .. } => {
                 ui.horizontal_wrapped(|ui| {
