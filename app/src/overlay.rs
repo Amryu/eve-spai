@@ -211,26 +211,11 @@ impl Overlay {
                         };
                         {
                             let mut st = alert_shared.lock().unwrap();
-                            st.feed = m.feed;
-                            st.from_you = m.from_you;
-                            st.status = m.status;
-                            st.resolved_pilots = m.resolved_pilots;
-                            st.uncertain = m.uncertain;
-                            st.last_ship = m.last_ship;
+                            apply_alert(&mut st, m);
                             st.ship_details = ship_details;
                             st.ship_roles = ship_roles;
                             st.kills = Some(kills.clone());
                             st.affil = Some(affil.clone());
-                            // Countdown directive: reset to a finite value, reset to ∞, or (the
-                            // negative refresh sentinel) leave the overlay's own countdown running.
-                            if m.secs >= 0.0 {
-                                st.secs = m.secs;
-                            } else if m.secs <= crate::app::ALERT_SECS_INFINITE + 0.5 {
-                                st.secs = f32::INFINITY;
-                            }
-                            if m.focus {
-                                st.focus_pending = true;
-                            }
                         }
                         ctx.request_repaint_of(egui::ViewportId::from_hash_of("alert_window"));
                     }
@@ -253,12 +238,17 @@ impl Overlay {
                                 st.feed.push(rs);
                                 st.from_you.push(None);
                             }
+                            // A frame from a main process that predates the field leaves `via`
+                            // short, and a short vector shifts every verdict onto the wrong card.
                             let n = st.feed.len();
+                            st.via.resize(n, crate::app::JumpVia::default());
                             if n > 100 {
                                 let cut = n - 100;
                                 st.feed.drain(0..cut);
                                 let fy_cut = cut.min(st.from_you.len());
                                 st.from_you.drain(0..fy_cut);
+                                let via_cut = cut.min(st.via.len());
+                                st.via.drain(0..via_cut);
                             }
                             for (i, d) in ship_details {
                                 st.ship_details.insert(i, d);
@@ -475,5 +465,27 @@ impl eframe::App for Overlay {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
+    }
+}
+
+/// Copy one alert frame's wire fields into the shared state. The overlay's caches (ship details,
+/// kills, affiliations) are filled by the caller, which owns them.
+pub(crate) fn apply_alert(st: &mut crate::app::AlertWindowState, m: crate::ipc::AlertMsg) {
+    st.feed = m.feed;
+    st.from_you = m.from_you;
+    st.via = m.via;
+    st.status = m.status;
+    st.resolved_pilots = m.resolved_pilots;
+    st.uncertain = m.uncertain;
+    st.last_ship = m.last_ship;
+    // Countdown directive: reset to a finite value, reset to ∞, or (the negative refresh
+    // sentinel) leave the overlay's own countdown running.
+    if m.secs >= 0.0 {
+        st.secs = m.secs;
+    } else if m.secs <= crate::app::ALERT_SECS_INFINITE + 0.5 {
+        st.secs = f32::INFINITY;
+    }
+    if m.focus {
+        st.focus_pending = true;
     }
 }

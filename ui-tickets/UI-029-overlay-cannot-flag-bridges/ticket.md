@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `ipc::AlertMsg`, `overlay.rs`, `AlertWindowState` |
 | **Found by** | UI-026 |
 

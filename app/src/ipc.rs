@@ -28,6 +28,10 @@ pub struct PingMsg {
 pub struct AlertMsg {
     pub feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub from_you: Vec<Option<u32>>,
+    /// Bridge verdict per feed entry. The overlay cannot derive it: it holds neither the player's
+    /// system nor the bridge setting. Defaulted so frames from an older main process still parse.
+    #[serde(default)]
+    pub via: Vec<crate::app::JumpVia>,
     pub status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub resolved_pilots: std::collections::HashMap<String, i64>,
     #[serde(default)]
@@ -321,6 +325,7 @@ mod tests {
         let msg = MainToOverlay::Alert(AlertMsg {
             feed: vec![(report, crate::settings::Severity::Danger)],
             from_you: vec![Some(7)],
+            via: vec![crate::app::JumpVia::BridgeShorter(9)],
             status: std::collections::HashMap::new(),
             resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
             uncertain: Default::default(),
@@ -338,6 +343,7 @@ mod tests {
             MainToOverlay::Alert(m) => {
                 assert_eq!(m.feed.len(), 1);
                 assert_eq!(m.from_you, vec![Some(7)]);
+                assert_eq!(m.via, vec![crate::app::JumpVia::BridgeShorter(9)]);
                 assert_eq!(m.feed[0].0.probes, Some(crate::intel::Probes::Combat));
                 assert_eq!(m.feed[0].1, crate::settings::Severity::Danger);
                 assert_eq!(m.resolved_pilots.get("X"), Some(&42));
@@ -345,6 +351,70 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    fn alert_msg(via: Vec<crate::app::JumpVia>) -> AlertMsg {
+        AlertMsg {
+            feed: Vec::new(),
+            from_you: vec![Some(1), Some(2), None],
+            via,
+            status: Default::default(),
+            resolved_pilots: Default::default(),
+            uncertain: Default::default(),
+            last_ship: Default::default(),
+            kills: Default::default(),
+            affil: Default::default(),
+            secs: 5.0,
+            focus: false,
+        }
+    }
+
+    /// Every `JumpVia` shape has to survive the wire, including the gate count `BridgeShorter`
+    /// carries for the tooltip.
+    #[test]
+    fn frame_roundtrip_alert_via_verdicts() {
+        let sent = vec![
+            crate::app::JumpVia::Gates,
+            crate::app::JumpVia::BridgeShorter(4),
+            crate::app::JumpVia::BridgeOnly,
+        ];
+        let mut buf: Vec<u8> = Vec::new();
+        send(&mut buf, &MainToOverlay::Alert(alert_msg(sent.clone()))).unwrap();
+        let mut cur = Cursor::new(buf);
+        match recv::<MainToOverlay, _>(&mut cur).unwrap() {
+            MainToOverlay::Alert(m) => assert_eq!(m.via, sent),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A main process older than the field sends frames without it, and the overlay has to keep
+    /// showing alerts rather than dropping the frame.
+    #[test]
+    fn alert_without_via_still_parses() {
+        let mut json = serde_json::to_value(alert_msg(vec![crate::app::JumpVia::BridgeOnly]))
+            .expect("serialize");
+        json.as_object_mut().expect("object").remove("via").expect("via was present");
+        let m: AlertMsg = serde_json::from_value(json).expect("missing via must default");
+        assert!(m.via.is_empty());
+        assert_eq!(m.from_you, vec![Some(1), Some(2), None]);
+        assert_eq!(m.secs, 5.0);
+    }
+
+    /// The reverse upgrade order: an overlay older than the field must not choke on it. Nothing
+    /// on `AlertMsg` denies unknown fields, so a frame carrying `via` still reads as the old shape.
+    #[test]
+    fn alert_with_via_parses_where_the_field_is_unknown() {
+        #[derive(serde::Deserialize)]
+        struct OldAlertMsg {
+            from_you: Vec<Option<u32>>,
+            secs: f32,
+        }
+        let json = serde_json::to_string(&alert_msg(vec![crate::app::JumpVia::BridgeShorter(2)]))
+            .expect("serialize");
+        assert!(json.contains("\"via\""));
+        let old: OldAlertMsg = serde_json::from_str(&json).expect("old overlay must still parse");
+        assert_eq!(old.from_you, vec![Some(1), Some(2), None]);
+        assert_eq!(old.secs, 5.0);
     }
 
     #[test]
