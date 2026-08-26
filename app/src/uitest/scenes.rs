@@ -70,9 +70,18 @@ fn resolving_phases_scene(name: &'static str) -> Scene {
 }
 
 fn ping_scene(name: &'static str, ping: crate::pings::Ping) -> Scene {
+    ping_scene_with_doctrine_url(name, ping, "")
+}
+
+fn ping_scene_with_doctrine_url(
+    name: &'static str,
+    ping: crate::pings::Ping,
+    doctrine_url: &str,
+) -> Scene {
     let systems = Some(fixtures::systems());
+    let url = doctrine_url.to_owned();
     Scene::ui(name, [520.0, 320.0], move |ui| {
-        crate::app::render_ping(ui, &ping, &systems, false, "", &Default::default());
+        crate::app::render_ping(ui, &ping, &systems, false, &url, &Default::default());
     })
 }
 
@@ -219,6 +228,14 @@ pub(crate) fn all() -> Vec<Scene> {
             [320.0, 1400.0],
         ),
         ping_scene("ping_fleet", fixtures::ping_fleet()),
+        // The doctrine row carries a second link only when a doctrine URL is configured, which is
+        // the case that decides whether the row may hold more than one item.
+        ping_scene_with_doctrine_url(
+            "ping_fleet_doctrine_link",
+            fixtures::ping_fleet(),
+            "https://example.invalid/doctrines",
+        ),
+        ping_scene("ping_fleet_no_doctrine", fixtures::ping_fleet_no_doctrine()),
         ping_scene("ping_plain", fixtures::ping_plain()),
         nav_scene("nav_rail_collapsed", false, 560.0),
         nav_scene("nav_rail_expanded", true, 560.0),
@@ -931,4 +948,101 @@ fn uitest_alert_titlebar_has_no_competing_grab_target() {
             "dragging the {what} at {at:?} did not start a window drag"
         );
     }
+}
+
+/// Allocated rect of the first node whose label starts with `prefix`. Row heights, not ink, are
+/// what the vertical rhythm is made of.
+fn ping_label_rect(harness: &egui_kittest::Harness<'_>, prefix: &str) -> Option<egui::Rect> {
+    use egui_kittest::kittest::NodeT as _;
+
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Label {
+            continue;
+        }
+        if !n.label().or_else(|| n.value()).unwrap_or_default().starts_with(prefix) {
+            continue;
+        }
+        let b = n.bounding_box()?;
+        return Some(egui::Rect {
+            min: egui::pos2(b.x0 as f32, b.y0 as f32),
+            max: egui::pos2(b.x1 as f32, b.y1 as f32),
+        });
+    }
+    None
+}
+
+/// FC, Formup and Doctrine are the same thing: one line of text. Doctrine used to sit in a
+/// `horizontal_wrapped`, whose row is floored at `interact_size.y` whether or not anything
+/// interactive is in it, so it stood 11px taller than its neighbours.
+#[test]
+fn uitest_ping_metadata_rows_share_a_rhythm() {
+    for url in ["", "https://example.invalid/doctrines"] {
+        let mut scene = ping_scene_with_doctrine_url("rhythm_probe", fixtures::ping_fleet(), url);
+        let harness = harness::build(&mut scene, false);
+        let row = |p: &str| ping_label_rect(&harness, p).unwrap_or_else(|| panic!("no {p} row"));
+        let fc = row("FC:");
+        let formup = row("Formup:");
+        let doctrine = row("Doctrine:");
+        assert!(
+            (fc.height() - formup.height()).abs() < 0.5,
+            "FC {:.1} and Formup {:.1} already disagree",
+            fc.height(),
+            formup.height()
+        );
+        assert!(
+            (doctrine.height() - fc.height()).abs() < 0.5,
+            "doctrine_url {url:?}: Doctrine row is {:.1}px against {:.1}px for FC",
+            doctrine.height(),
+            fc.height()
+        );
+        // Comms is allowed its extra height because it hosts the Join Mumble button.
+        let comms = row("Comms:");
+        assert!(
+            comms.height() > fc.height(),
+            "Comms holds a button, so {:.1}px is too short for it",
+            comms.height()
+        );
+    }
+}
+
+/// The doctrine URL adds a second link to the same row rather than a row of its own.
+#[test]
+fn uitest_ping_doctrine_link_shares_the_doctrine_row() {
+    let mut scene = ping_scene_with_doctrine_url(
+        "doctrine_link_probe",
+        fixtures::ping_fleet(),
+        "https://example.invalid/doctrines",
+    );
+    let harness = harness::build(&mut scene, false);
+    let doctrine = ping_label_rect(&harness, "Doctrine:").expect("no Doctrine row");
+    let chip = ping_label_rect(&harness, "Doctrines").expect("no doctrine link chip");
+    assert_eq!(chip.top(), doctrine.top(), "the chip started its own row: {chip:?}");
+    assert_eq!(chip.height(), doctrine.height(), "the chip is taller than its row: {chip:?}");
+    assert!(chip.left() > doctrine.right(), "the chip sits on the Doctrine text: {chip:?}");
+}
+
+/// A fleet ping with no doctrine and no configured URL has nothing to put on the row, so it must
+/// not leave an empty one behind.
+#[test]
+fn uitest_ping_without_a_doctrine_leaves_no_row() {
+    let bottom = |ping: crate::pings::Ping| {
+        let mut scene = ping_scene("doctrine_gap_probe", ping);
+        let harness = harness::build(&mut scene, false);
+        ping_label_rect(&harness, "goonfleet").expect("no ping footer").bottom()
+    };
+    let with = bottom(fixtures::ping_fleet());
+    let without = bottom(fixtures::ping_fleet_no_doctrine());
+
+    let mut scene = ping_scene("doctrine_row_probe", fixtures::ping_fleet());
+    let harness = harness::build(&mut scene, false);
+    let doctrine = ping_label_rect(&harness, "Doctrine:").expect("no Doctrine row");
+    let fc = ping_label_rect(&harness, "FC:").expect("no FC row");
+    let formup = ping_label_rect(&harness, "Formup:").expect("no Formup row");
+    let want = doctrine.height() + (formup.top() - fc.bottom());
+    assert!(
+        (with - without - want).abs() < 1.0,
+        "dropping the doctrine saved {:.1}px, not the {want:.1}px its row plus spacing occupies",
+        with - without
+    );
 }

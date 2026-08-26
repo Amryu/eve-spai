@@ -21531,26 +21531,33 @@ pub(crate) fn render_ping(
                         }
                     }
                 }
-                ui.horizontal_wrapped(|ui| {
-                    if let Some(d) = doctrine {
-                        if let Some(url) = crate::doctrines::link_for(d) {
-                            if ui
-                                .link(format!("Doctrine: {d} \u{2197}"))
-                                .on_hover_text(url)
-                                .clicked()
-                            {
-                                let _ = open::that(url);
+                if doctrine.is_some() || !doctrine_url.is_empty() {
+                    // `horizontal_wrapped` floors the row at `interact_size.y` on the assumption
+                    // it holds a button. This one only ever holds text and links, so that floor is
+                    // 11px of dead air breaking the rhythm of the metadata rows above it.
+                    let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+                    let size = egui::vec2(ui.available_size_before_wrap().x, 0.0);
+                    ui.allocate_ui_with_layout(size, row, |ui| {
+                        if let Some(d) = doctrine {
+                            if let Some(url) = crate::doctrines::link_for(d) {
+                                if ui
+                                    .link(format!("Doctrine: {d} \u{2197}"))
+                                    .on_hover_text(url)
+                                    .clicked()
+                                {
+                                    let _ = open::that(url);
+                                }
+                            } else {
+                                ui.label(format!("Doctrine: {d}"));
                             }
-                        } else {
-                            ui.label(format!("Doctrine: {d}"));
                         }
-                    }
-                    if !doctrine_url.is_empty()
-                        && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked()
-                    {
-                        let _ = open::that(doctrine_url);
-                    }
-                });
+                        if !doctrine_url.is_empty()
+                            && ui.link("Doctrines \u{2197}").on_hover_text(doctrine_url).clicked()
+                        {
+                            let _ = open::that(doctrine_url);
+                        }
+                    });
+                }
                 if !description.is_empty() {
                     // The call text has to outrank the metadata labels above it, and the theme
                     // paints `strong` in the same color as body text, so size is the only lever.

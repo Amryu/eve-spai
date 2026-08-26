@@ -249,6 +249,16 @@ pub(crate) fn ping_fleet() -> crate::pings::Ping {
     }
 }
 
+/// A fleet ping that names no doctrine, which is the case where the doctrine row has nothing to
+/// hold at all.
+pub(crate) fn ping_fleet_no_doctrine() -> crate::pings::Ping {
+    let mut p = ping_fleet();
+    if let crate::pings::Ping::Fleet { doctrine, .. } = &mut p {
+        *doctrine = None;
+    }
+    p
+}
+
 pub(crate) fn ping_plain() -> crate::pings::Ping {
     crate::pings::Ping::Plain {
         timestamp: now() - 30,
