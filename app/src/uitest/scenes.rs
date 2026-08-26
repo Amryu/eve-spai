@@ -200,6 +200,76 @@ fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The wormhole table with rows in it. Headless populates no cache, so `view_wormholes` only ever
+/// shows the empty state and the column headers never render.
+fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    use crate::wormholes::{DestClass, ShipSize, Source, Wormhole};
+    harness::scratch_profile();
+    let now = fixtures::now();
+    let holes = vec![
+        Wormhole {
+            id: 1,
+            system_id: 30_004_759,
+            signature: Some("ABC-123".into()),
+            wh_type: Some("K162".into()),
+            dest: DestClass::Thera,
+            dest_system_id: Some(30_000_142),
+            dest_signature: None,
+            dest_wh_type: None,
+            size: Some(ShipSize::XLarge),
+            is_drifter: false,
+            reported_at: now - 600,
+            explicit_expiry: Some(now + 6 * 3600),
+            source: Source::EveScout,
+            updated_at: now - 600,
+        },
+        Wormhole {
+            id: 2,
+            system_id: 30_004_608,
+            signature: Some("XYZ-987".into()),
+            wh_type: Some("C729".into()),
+            dest: DestClass::Wspace,
+            dest_system_id: None,
+            dest_signature: None,
+            dest_wh_type: None,
+            size: None,
+            is_drifter: true,
+            reported_at: now - 1_800,
+            explicit_expiry: None,
+            source: Source::Intel,
+            updated_at: now - 1_800,
+        },
+        Wormhole {
+            id: 3,
+            system_id: 30_003_704,
+            signature: None,
+            wh_type: None,
+            dest: DestClass::Highsec,
+            dest_system_id: Some(30_004_759),
+            dest_signature: None,
+            dest_wh_type: None,
+            size: Some(ShipSize::Frigate),
+            is_drifter: false,
+            reported_at: now - 90,
+            explicit_expiry: Some(now + 1_800),
+            source: Source::Manual,
+            updated_at: now - 90,
+        },
+    ];
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Wormholes;
+            a.systems = Some(fixtures::systems());
+            a.wh_cache = holes.clone();
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
@@ -266,6 +336,9 @@ pub(crate) fn all() -> Vec<Scene> {
     // up at a row edge.
     v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
+    v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
+    // 720 is the app's minimum window width, where the eight-column table has the least room.
+    v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
     v
 }
 
@@ -677,6 +750,64 @@ fn uitest_intel_row_reporter_is_a_footer() {
         without < with - 10.0,
         "hiding the reporter saved {:.1}px, so a row was left behind (on {with:.1}, off {without:.1})",
         with - without
+    );
+}
+
+/// Height of the first `Label` node whose text contains `needle`. Text rendered at a reduced size
+/// lands in a shorter box, which is the only signal for font size the AccessKit tree carries.
+fn label_height(harness: &egui_kittest::Harness<'_>, needle: &str) -> f32 {
+    use egui_kittest::kittest::NodeT as _;
+
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Label {
+            continue;
+        }
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        if !label.contains(needle) {
+            continue;
+        }
+        if let Some(b) = n.bounding_box() {
+            return (b.y1 - b.y0) as f32;
+        }
+    }
+    panic!("no label containing {needle:?}");
+}
+
+/// The column headers and the drifter warning are read to pick a hole, so they carry the same body
+/// size as the cells under them.
+#[test]
+fn uitest_wormhole_table_text_is_body_size() {
+    let mut scene = wormholes_rows_scene("wormhole_text_probe", [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+
+    let cell = label_height(&harness, "O-EImg");
+    for header in ["Constellation", "Region", "Life"] {
+        let h = label_height(&harness, header);
+        assert!(
+            h >= cell - 0.5,
+            "column header {header:?} is {h:.1}px tall against a {cell:.1}px cell"
+        );
+    }
+    let drifter = label_height(&harness, "drifter");
+    assert!(
+        drifter >= cell - 0.5,
+        "the drifter tag is {drifter:.1}px tall against a {cell:.1}px cell"
+    );
+}
+
+/// Who sent a ping and who it went to decides whether it applies to you, so the footer stays at
+/// body size instead of shrinking below the call text.
+#[test]
+fn uitest_ping_footer_is_body_size() {
+    let mut scene = ping_scene("ping_footer_probe", fixtures::ping_fleet());
+    let harness = harness::build(&mut scene, false);
+
+    let body = label_height(&harness, "FC: Fleet Commander");
+    let footer = label_height(&harness, "goonfleet");
+    assert!(
+        footer >= body - 0.5,
+        "the ping footer is {footer:.1}px tall against a {body:.1}px metadata row"
     );
 }
 

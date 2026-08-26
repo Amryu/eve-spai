@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `cross-cutting` |
 | **Wave** | 8 |
 
 ## Symptom
 
-Content text is rendered at roughly half body size in 16 places, including the wormholes empty-state subtitle, the wormhole table column headers, the drifter tag, the ping card footer, and the alert window countdown. Contrast is fine at about 4.8:1; size is the problem.
+Content text is rendered at roughly half body size in 16 places, including the wormholes empty-state subtitle, the wormhole table column headers, the drifter tag, the ping card footer, and (INCORRECTLY) the alert window countdown, which uses .weak() only. See `review.md`. Contrast is fine at about 4.8:1; size is the problem.
 
 ## Cause
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/view_wormholes.png`, `before/ping_fleet.png`, `before/alert_window_typical.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/view_wormholes_rows.png`, `after/view_wormholes_rows_narrow.png`, `after/view_wormholes.png`, `after/ping_fleet.png`
