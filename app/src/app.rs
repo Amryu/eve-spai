@@ -21533,15 +21533,17 @@ fn rescue_chat_line(
 ) -> MsgRowAction {
     let body = condense_attention_list(body);
     message_row(ui, id, false, show, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            let spacing = ui.spacing().item_spacing.x;
+        // Not `horizontal_wrapped`: that floors the row at `interact_size.y`, 11px of dead air per
+        // line on a row that only holds a nick, text and the occasional link.
+        let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+        let size = egui::vec2(ui.available_size_before_wrap().x, 0.0);
+        ui.allocate_ui_with_layout(size, row, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             if !grouped {
                 ui.label(egui::RichText::new(format!("{who}:")).color(name_color(who)).strong());
             }
             // Same body renderer as the main chat: URLs become clickable links, text stays selectable.
             render_message_body(ui, body.as_ref());
-            ui.spacing_mut().item_spacing.x = spacing;
         });
     })
 }
@@ -21555,7 +21557,7 @@ fn rescue_grouped(sender: &str, time: i64, prev_sender: Option<&str>, prev_time:
 /// The rescue window's chat feed. Returns the action the user clicked plus the nick and the raw
 /// body of the message it came from.
 #[cfg(feature = "fc-rescue")]
-fn rescue_chat_feed(
+pub(crate) fn rescue_chat_feed(
     ui: &mut egui::Ui,
     msgs: &[(String, String, bool, i64)],
     salt: &str,

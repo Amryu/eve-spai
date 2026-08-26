@@ -2133,6 +2133,54 @@ fn uitest_jabber_blank_body_keeps_its_row() {
     );
 }
 
+/// UI-028. The rescue window's chat lines carried the same floored `horizontal_wrapped` the main
+/// chat shed in UI-027. GAP-009 leaves that window without a scene, so this drives the feed
+/// directly rather than through the window around it.
+#[cfg(feature = "fc-rescue")]
+#[test]
+fn uitest_rescue_chat_lines_are_one_line_tall() {
+    let (line, spacing) = (theme_body_line(), theme_spacing());
+    let now = chrono::Utc::now().timestamp();
+    let msgs = vec![
+        ("Rescue Actual".to_owned(), "form up now".to_owned(), false, now - 60),
+        (
+            "Rescue Actual".to_owned(),
+            "hostiles moved off the gate and are burning back to the keepstar right now"
+                .to_owned(),
+            false,
+            now - 30,
+        ),
+    ];
+    let mut scene = Scene::ui("rescue_chat_probe", [360.0, 240.0], move |ui| {
+        assert!(crate::app::rescue_chat_feed(ui, &msgs, "probe").is_none());
+    });
+    let harness = harness::build(&mut scene, false);
+    let nick = ping_label_rect(&harness, "Rescue Actual:").expect("no nick");
+    let body = ping_label_rect(&harness, "form up now").expect("no one-line body");
+    let wrapped = ping_label_rect(&harness, "hostiles moved off the gate").expect("no long body");
+    assert!(
+        body.height() < spacing.interact_size.y - 1.0,
+        "a rescue chat body is {:.1}px tall, still floored at interact_size {:.1}",
+        body.height(),
+        spacing.interact_size.y
+    );
+    for (what, r) in [("body", body), ("nick", nick)] {
+        assert!(
+            (r.height() - line).abs() < 0.5,
+            "the rescue chat {what} stands {:.1}px against {line:.1}px of text",
+            r.height()
+        );
+    }
+    assert!(wrapped.height() > line + 0.5, "the long body did not wrap, so this asserts nothing");
+    let rows = (wrapped.height() / line).round();
+    assert!(
+        (wrapped.height() - rows * line).abs() < 0.5,
+        "a wrapped rescue body is {:.1}px tall, not a whole number of {line:.1}px rows, so its \
+         first row is still floored",
+        wrapped.height()
+    );
+}
+
 /// The composer's text band, which is the height the galley *wants*. It lives inside a scroll
 /// area, so past the ten-row cap this rect keeps growing while the visible band stops. The frame
 /// margin is outside the field now, so this is the text alone.
