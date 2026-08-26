@@ -66,6 +66,10 @@ ambiguous) but worth recording. Noted on GAP-002.
 At 360x260, `jabber_popout_min_overflow` shows 83.9 (5.34 rows), the small-window clamp biting
 before the 10-row cap.
 
+**Corrected by UI-024:** that 83.9 was a cross-scene proxy and was 2px off. The real figure is
+86.0, both before and after this change. Likewise 153.9 above is really 153.69. The heights were
+right; the measurement was not.
+
 The AccessKit rect keeps growing past the cap (214.0) because that is the height the field *wants*
 inside its scroll area. The visible band is the number that matters and both tests assert on it.
 

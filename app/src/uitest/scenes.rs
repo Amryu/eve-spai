@@ -1456,8 +1456,9 @@ fn uitest_jabber_popout_renders_a_conversation() {
     }
 }
 
-/// The composer's own rect, which is the height the field *wants*. It lives inside a scroll area,
-/// so past the ten-row cap this rect keeps growing while the visible band stops.
+/// The composer's text band, which is the height the galley *wants*. It lives inside a scroll
+/// area, so past the ten-row cap this rect keeps growing while the visible band stops. The frame
+/// margin is outside the field now, so this is the text alone.
 fn composer_rect(harness: &egui_kittest::Harness<'_>) -> egui::Rect {
     use egui_kittest::kittest::NodeT as _;
     harness
@@ -1474,12 +1475,53 @@ fn composer_rect(harness: &egui_kittest::Harness<'_>) -> egui::Rect {
         .expect("no composer in the pop-out")
 }
 
-fn composer_metrics(name: &'static str) -> (egui::Rect, f32) {
+struct Composer {
+    /// The scrolling text band, from the AccessKit tree.
+    field: egui::Rect,
+    /// The painted border box, and the clip rect it was painted under.
+    border: egui::Rect,
+    clip: egui::Rect,
+    stroke: egui::Stroke,
+    /// What a focused `TextEdit` outlines itself with, read off the scene's own theme.
+    selection: egui::Stroke,
+    row_h: f32,
+}
+
+/// The composer's border emits no AccessKit node, so the frame's shape list is the only handle on
+/// the box the user actually sees, and on the clip rect that decides whether it survives whole.
+fn composer_border(harness: &egui_kittest::Harness<'_>) -> (egui::Rect, egui::Rect, egui::Stroke) {
+    let field = composer_rect(harness);
+    let probe = egui::pos2(field.center().x, field.top() + 1.0);
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        if let egui::Shape::Rect(r) = &clipped.shape {
+            let spans = r.rect.width() >= field.width() - 0.5;
+            if r.stroke.width > 0.0 && spans && r.rect.contains(probe) {
+                found.push((r.rect, clipped.clip_rect, r.stroke));
+            }
+        }
+    }
+    assert_eq!(found.len(), 1, "expected one composer border, got {found:?}");
+    found[0]
+}
+
+fn composer_metrics(name: &'static str) -> Composer {
+    composer_metrics_maybe_focused(name, false)
+}
+
+fn composer_metrics_maybe_focused(name: &'static str, focus: bool) -> Composer {
     let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
-    let harness = harness::build(&mut scene, false);
+    let mut harness = harness::build(&mut scene, false);
+    if focus {
+        use egui_kittest::kittest::Queryable as _;
+        harness.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+        harness.run_steps(2);
+    }
     let font = egui::TextStyle::Body.resolve(&harness.ctx.global_style());
     let row_h = harness.ctx.fonts_mut(|f| f.row_height(&font));
-    (composer_rect(&harness), row_h)
+    let (border, clip, stroke) = composer_border(&harness);
+    let selection = harness.ctx.global_style().visuals.selection.stroke;
+    Composer { field: composer_rect(&harness), border, clip, stroke, selection, row_h }
 }
 
 /// The composer grows with the draft to ten rows and then scrolls. The scenes cover empty, three
@@ -1487,12 +1529,12 @@ fn composer_metrics(name: &'static str) -> (egui::Rect, f32) {
 /// boundary are pinned.
 #[test]
 fn uitest_jabber_composer_grows_then_caps() {
-    let pad = 4.0;
-    let (empty, row_h) = composer_metrics("jabber_popout");
-    let (three, _) = composer_metrics("jabber_popout_drafting");
-    let (wrapped, _) = composer_metrics("jabber_popout_wrapped");
-    let (over, _) = composer_metrics("jabber_popout_overflow");
-    let rows = |r: &egui::Rect| (r.height() - pad) / row_h;
+    let empty = composer_metrics("jabber_popout");
+    let three = composer_metrics("jabber_popout_drafting");
+    let wrapped = composer_metrics("jabber_popout_wrapped");
+    let over = composer_metrics("jabber_popout_overflow");
+    let row_h = empty.row_h;
+    let rows = |c: &Composer| c.field.height() / row_h;
 
     assert!((rows(&empty) - 2.0).abs() < 0.1, "empty composer is {} rows", rows(&empty));
     assert!((rows(&three) - 3.0).abs() < 0.1, "3-line draft is {} rows", rows(&three));
@@ -1505,25 +1547,43 @@ fn uitest_jabber_composer_grows_then_caps() {
 
     // Every pop-out scene is the same width and pins the composer to the same bottom edge, so the
     // band the window actually shows is that bottom minus the field's top.
-    let shown = empty.bottom() - over.top();
+    let shown = empty.field.bottom() - over.field.top();
     assert!(
-        (shown - (10.0 * row_h + pad)).abs() < 1.0,
-        "past the cap the window shows {shown}px, not ten rows ({}px)",
-        10.0 * row_h + pad
+        (shown - 10.0 * row_h).abs() < 1.0,
+        "past the cap the window shows {shown}px of text, not ten rows ({}px)",
+        10.0 * row_h
     );
+    // The box the user sees: the text band plus the frame margin, and the cap holds it there.
+    for (c, want_rows) in [(&empty, 2.0), (&three, 3.0), (&wrapped, 5.0), (&over, 10.0)] {
+        assert!(
+            (c.border.height() - (want_rows * row_h + 4.0)).abs() < 0.5,
+            "the visible box is {}px, not {want_rows} rows ({}px)",
+            c.border.height(),
+            want_rows * row_h + 4.0
+        );
+    }
 }
 
 /// A ten-row composer is taller than the whole body of a 360x260 pop-out, so the cap has to yield
 /// to the window before it pushes the history off the bottom edge.
 #[test]
 fn uitest_jabber_composer_yields_to_a_small_window() {
-    let pad = 4.0;
-    let (empty, row_h) = composer_metrics("jabber_popout_min");
-    let (over, _) = composer_metrics("jabber_popout_min_overflow");
-    let shown = empty.bottom() - over.top();
+    let empty = composer_metrics("jabber_popout_min");
+    let over = composer_metrics("jabber_popout_min_overflow");
+    let row_h = empty.row_h;
+    let shown = over.border.height();
     assert!(
-        shown >= 2.0 * row_h + pad && shown < 10.0 * row_h + pad,
+        shown >= 2.0 * row_h + 4.0 && shown < 10.0 * row_h + 4.0,
         "small-window composer shows {shown}px, outside the 2..10 row range"
+    );
+    assert!(
+        over.field.height() > shown,
+        "the small-window draft is not overflowing its {shown}px box"
+    );
+    assert!(
+        empty.border.height() < shown,
+        "an empty small-window composer is {}px, no smaller than a full one",
+        empty.border.height()
     );
 }
 
@@ -1685,4 +1745,74 @@ fn uitest_jabber_tab_drag_ghost_comes_and_goes_with_the_gesture() {
         1,
         "the ghost outlived the drag"
     );
+}
+
+/// UI-024: the `ScrollArea` used to wrap the whole `TextEdit`, frame included, so past the ten-row
+/// cap the border scrolled with the text and the viewport clipped its top and bottom edges. The
+/// border is painted outside the scrolling region now, so its clip rect has to hold all of it.
+#[test]
+fn uitest_jabber_composer_border_does_not_scroll() {
+    for name in ["jabber_popout_overflow", "jabber_popout_min_overflow"] {
+        let c = composer_metrics(name);
+        assert!(
+            c.clip.contains_rect(c.border),
+            "{name} clips the composer border: {:?} painted under {:?}",
+            c.border,
+            c.clip
+        );
+        assert!(
+            c.field.height() > c.border.height(),
+            "{name} is not overflowing: a {}px field in a {}px box",
+            c.field.height(),
+            c.border.height()
+        );
+    }
+}
+
+/// The border carries the focus ring now, since the field itself is drawn frameless. A focused
+/// composer that outlines itself like an idle one reads as the odd widget out.
+#[test]
+fn uitest_jabber_composer_focused_border_is_the_focus_ring() {
+    for name in ["jabber_popout", "jabber_popout_overflow"] {
+        let idle = composer_metrics(name);
+        let focused = composer_metrics_maybe_focused(name, true);
+        assert_eq!(
+            focused.stroke.color, focused.selection.color,
+            "{name} focused draws a {:?} border, not the selection stroke",
+            focused.stroke
+        );
+        assert_ne!(
+            idle.stroke.color, focused.selection.color,
+            "{name} idle already draws the focus ring, so the test proves nothing"
+        );
+        assert!(
+            (focused.border.height() - idle.border.height()).abs() < 0.5,
+            "{name} changes height on focus: {} to {}",
+            idle.border.height(),
+            focused.border.height()
+        );
+        assert!(
+            focused.clip.contains_rect(focused.border),
+            "{name} clips the focused border: {:?} under {:?}",
+            focused.border,
+            focused.clip
+        );
+    }
+}
+
+/// The focus ring is painted, not exposed, so the overflowing focused composer needs a shot of its
+/// own. `all()` has no way to focus a widget, hence a scene built here.
+#[test]
+#[ignore = "renders to target/uishots; run with --ignored"]
+fn uitest_screenshots_composer_focused() {
+    use egui_kittest::kittest::Queryable as _;
+    for (name, size) in
+        [("jabber_popout_overflow", [520.0, 480.0]), ("jabber_popout_min_overflow", [360.0, 260.0])]
+    {
+        let mut scene = jabber_popout_scene(name, size, fixtures::JABBER_ROOM, DRAFT_OVERFLOW);
+        let mut harness = harness::build(&mut scene, true);
+        harness.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+        harness.run_steps(2);
+        harness::shot(&mut harness, &format!("{name}_focused"));
+    }
 }
