@@ -3865,12 +3865,23 @@ impl SpaiApp {
             );
         });
         ui.separator();
-        let composer_h = 32.0;
+        let body_h = ui.available_height();
+        let composer_h = if is_room && !sel_accessible {
+            32.0
+        } else {
+            composer_height(
+                ui,
+                self.jabber_drafts.get(&jid).map_or("", String::as_str),
+                ui.available_width(),
+            )
+        }
+        // A ten-row draft is taller than a small pop-out's whole body, so the history keeps its
+        // floor and the composer scrolls sooner instead of running off the bottom edge.
+        .min((body_h - HISTORY_MIN_H - 8.0).max(32.0));
         let session_start = self.session_start;
         let mut dm_click: Option<String> = None;
         let mut msg_mention: Option<String> = None;
         let mut msg_dm: Option<String> = None;
-        let body_h = ui.available_height();
         // Don't snap to the bottom while the pointer is held: that snap on
         // every incoming message was wiping out any text selection mid-drag
         // (the chat felt unselectable in a busy channel). It resumes on release.
@@ -3878,7 +3889,7 @@ impl SpaiApp {
         egui::ScrollArea::vertical()
             .id_salt("msgs")
             .auto_shrink([false, false])
-            .max_height((body_h - composer_h - 8.0).max(60.0))
+            .max_height((body_h - composer_h - 8.0).max(HISTORY_MIN_H))
             .stick_to_bottom(!selecting)
             .show(ui, |ui| {
                 let accent = ui.visuals().hyperlink_color;
@@ -3992,54 +4003,51 @@ impl SpaiApp {
                 .weak(),
             );
         } else {
-        ui.horizontal_top(|ui| {
-            let shift_enter = egui::KeyboardShortcut::new(
-                egui::Modifiers::SHIFT,
-                egui::Key::Enter,
-            );
-            let row_h = ui.text_style_height(&egui::TextStyle::Body);
-            let resp = egui::ScrollArea::vertical()
-                .id_salt("composer")
-                .max_height(row_h * 8.0)
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(
-                            self.jabber_drafts.entry(jid.clone()).or_default(),
-                        )
-                        .hint_text("Message (Shift+Enter for a new line)")
-                        .return_key(shift_enter)
-                        .desired_rows(2)
-                        .desired_width(ui.available_width() - 60.0),
+        let shift_enter = egui::KeyboardShortcut::new(
+            egui::Modifiers::SHIFT,
+            egui::Key::Enter,
+        );
+        let resp = egui::ScrollArea::vertical()
+            .id_salt("composer")
+            .max_height(composer_h)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(
+                        self.jabber_drafts.entry(jid.clone()).or_default(),
                     )
-                })
-                .inner;
-            if focus_composer {
-                resp.request_focus();
-            }
-            let send = resp.has_focus()
-                && ui.input(|i| {
-                    i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                });
-            let draft_empty = self
+                    .hint_text("Message (Shift+Enter for a new line)")
+                    .return_key(shift_enter)
+                    .desired_rows(COMPOSER_MIN_ROWS as usize)
+                    .desired_width(ui.available_width()),
+                )
+            })
+            .inner;
+        if focus_composer {
+            resp.request_focus();
+        }
+        let send = resp.has_focus()
+            && ui.input(|i| {
+                i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+            });
+        let draft_empty = self
+            .jabber_drafts
+            .get(&jid)
+            .map_or(true, |d| d.trim().is_empty());
+        if send && !draft_empty {
+            let body = self
                 .jabber_drafts
-                .get(&jid)
-                .map_or(true, |d| d.trim().is_empty());
-            if (ui.button("Send").clicked() || send) && !draft_empty {
-                let body = self
-                    .jabber_drafts
-                    .get_mut(&jid)
-                    .map(std::mem::take)
-                    .unwrap_or_default();
-                if let Some(tx) = &self.jabber_tx {
-                    let cmd = if is_room {
-                        crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
-                    } else {
-                        crate::jabber::Cmd::Send { to: jid.clone(), body }
-                    };
-                    let _ = tx.send(cmd);
-                }
+                .get_mut(&jid)
+                .map(std::mem::take)
+                .unwrap_or_default();
+            if let Some(tx) = &self.jabber_tx {
+                let cmd = if is_room {
+                    crate::jabber::Cmd::SendRoom { room: jid.clone(), body }
+                } else {
+                    crate::jabber::Cmd::Send { to: jid.clone(), body }
+                };
+                let _ = tx.send(cmd);
             }
-        });
+        }
         }
         if let Some(nick) = dm_click.or(msg_dm) {
             out.push(TabAction::Open { jid: self.full_user_jid(&nick), prefer: win });
@@ -18809,6 +18817,25 @@ pub(crate) struct MsgActions {
     copy: bool,
     mention: bool,
     dm: bool,
+}
+
+const HISTORY_MIN_H: f32 = 60.0;
+const COMPOSER_MIN_ROWS: f32 = 2.0;
+const COMPOSER_MAX_ROWS: f32 = 10.0;
+/// `TextEdit`'s own frame, `Margin::symmetric(4, 2)`.
+const COMPOSER_PAD: egui::Vec2 = egui::vec2(8.0, 4.0);
+
+/// Height the composer wants for `draft`, clamped to 2..=10 rows. Measured off the laid-out
+/// galley because `TextEdit::desired_rows` counts logical rows, so one long wrapped line would
+/// reserve a single row and clip the rest.
+fn composer_height(ui: &egui::Ui, draft: &str, avail_w: f32) -> f32 {
+    let row_h = ui.text_style_height(&egui::TextStyle::Body);
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let wrap_w = (avail_w - COMPOSER_PAD.x).max(24.0);
+    let galley = ui
+        .ctx()
+        .fonts_mut(|f| f.layout(draft.to_owned(), font_id, ui.visuals().text_color(), wrap_w));
+    galley.size().y.clamp(row_h * COMPOSER_MIN_ROWS, row_h * COMPOSER_MAX_ROWS) + COMPOSER_PAD.y
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

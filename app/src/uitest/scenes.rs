@@ -272,10 +272,34 @@ fn wormholes_rows_scene(name: &'static str, size: [f32; 2]) -> Scene {
 
 const POPOUT_ID: u64 = 1;
 
+/// One wrapped-not-newlined line, which `desired_rows` would count as a single row.
+const DRAFT_WRAPPED: &str = "hold the gate, we are waiting on the second logi wing before anyone \
+    warps, and the scout says there is a bubble on the far side so bring an mjd fit if you have \
+    one, otherwise burn back to the perch and hold there until the FC calls the next warp in, and \
+    keep your cap booster charges for the tackle rather than dumping them on the first neut";
+/// Past the composer's ten-row cap, so the field stops growing and scrolls.
+const DRAFT_OVERFLOW: &str = "line one\nline two\nline three\nline four\nline five\nline six\n\
+    line seven\nline eight\nline nine\nline ten\nline eleven\nline twelve\nline thirteen\n\
+    line fourteen";
+
+/// Reads the live draft back out of the scene's own `SpaiApp` after every frame, which is the only
+/// handle a test has on state the scene closure owns.
+type DraftProbe = std::sync::Arc<std::sync::Mutex<String>>;
+
 /// A popped-out chat window: the tab bar, one room's history and the composer, which is what the
 /// pop-out viewport puts in its central panel. `SpaiApp::build` starts no jabber session headless,
 /// so the chat state and the window's tab list are seeded here.
 fn jabber_popout_scene(name: &'static str, size: [f32; 2], active: &str, draft: &str) -> Scene {
+    jabber_popout_probed(name, size, active, draft, None)
+}
+
+fn jabber_popout_probed(
+    name: &'static str,
+    size: [f32; 2],
+    active: &str,
+    draft: &str,
+    probe: Option<DraftProbe>,
+) -> Scene {
     use crate::app::ChatWinKey;
     harness::scratch_profile();
     let (active, draft) = (active.to_owned(), draft.to_owned());
@@ -293,6 +317,9 @@ fn jabber_popout_scene(name: &'static str, size: [f32; 2], active: &str, draft: 
         });
         let mut out = Vec::new();
         app.jabber_window_body(ui, ChatWinKey::Popout(POPOUT_ID), &f, &mut out);
+        if let Some(p) = &probe {
+            *p.lock().unwrap() = app.jabber_drafts.get(&active).cloned().unwrap_or_default();
+        }
     })
 }
 
@@ -373,11 +400,29 @@ pub(crate) fn all() -> Vec<Scene> {
         fixtures::JABBER_ROOM,
         "reshipping, back in two\nbring a second logi\nand a scout for the gate",
     ));
+    v.push(jabber_popout_scene(
+        "jabber_popout_wrapped",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        DRAFT_WRAPPED,
+    ));
+    v.push(jabber_popout_scene(
+        "jabber_popout_overflow",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        DRAFT_OVERFLOW,
+    ));
     // A DM, which is the branch that draws the contact star and no room controls.
     v.push(jabber_popout_scene("jabber_popout_dm", [520.0, 480.0], fixtures::JABBER_DM, ""));
     // 360x260 is the pop-out's minimum inner size, where the tab bar overflows and the composer
     // and history have the least room.
     v.push(jabber_popout_scene("jabber_popout_min", [360.0, 260.0], fixtures::JABBER_ROOM, ""));
+    v.push(jabber_popout_scene(
+        "jabber_popout_min_overflow",
+        [360.0, 260.0],
+        fixtures::JABBER_ROOM,
+        DRAFT_OVERFLOW,
+    ));
     v
 }
 
@@ -1385,4 +1430,112 @@ fn uitest_jabber_popout_renders_a_conversation() {
             "the pop-out drew no {needle:?}: {labels:?}"
         );
     }
+}
+
+/// The composer's own rect, which is the height the field *wants*. It lives inside a scroll area,
+/// so past the ten-row cap this rect keeps growing while the visible band stops.
+fn composer_rect(harness: &egui_kittest::Harness<'_>) -> egui::Rect {
+    use egui_kittest::kittest::NodeT as _;
+    harness
+        .root()
+        .children_recursive()
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::MultilineTextInput)
+        .map(|n| {
+            let b = n.accesskit_node().bounding_box().expect("composer bounds");
+            egui::Rect {
+                min: egui::pos2(b.x0 as f32, b.y0 as f32),
+                max: egui::pos2(b.x1 as f32, b.y1 as f32),
+            }
+        })
+        .expect("no composer in the pop-out")
+}
+
+fn composer_metrics(name: &'static str) -> (egui::Rect, f32) {
+    let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let font = egui::TextStyle::Body.resolve(&harness.ctx.global_style());
+    let row_h = harness.ctx.fonts_mut(|f| f.row_height(&font));
+    (composer_rect(&harness), row_h)
+}
+
+/// The composer grows with the draft to ten rows and then scrolls. The scenes cover empty, three
+/// newlines, one long line that only wraps, and a draft past the cap, so both the growth and the
+/// boundary are pinned.
+#[test]
+fn uitest_jabber_composer_grows_then_caps() {
+    let pad = 4.0;
+    let (empty, row_h) = composer_metrics("jabber_popout");
+    let (three, _) = composer_metrics("jabber_popout_drafting");
+    let (wrapped, _) = composer_metrics("jabber_popout_wrapped");
+    let (over, _) = composer_metrics("jabber_popout_overflow");
+    let rows = |r: &egui::Rect| (r.height() - pad) / row_h;
+
+    assert!((rows(&empty) - 2.0).abs() < 0.1, "empty composer is {} rows", rows(&empty));
+    assert!((rows(&three) - 3.0).abs() < 0.1, "3-line draft is {} rows", rows(&three));
+    assert!(
+        rows(&wrapped) > 3.5,
+        "one wrapped line counted as {} rows, so wrapping is not being measured",
+        rows(&wrapped)
+    );
+    assert!(rows(&over) > 10.0, "the overflow draft should want more than ten rows");
+
+    // Every pop-out scene is the same width and pins the composer to the same bottom edge, so the
+    // band the window actually shows is that bottom minus the field's top.
+    let shown = empty.bottom() - over.top();
+    assert!(
+        (shown - (10.0 * row_h + pad)).abs() < 1.0,
+        "past the cap the window shows {shown}px, not ten rows ({}px)",
+        10.0 * row_h + pad
+    );
+}
+
+/// A ten-row composer is taller than the whole body of a 360x260 pop-out, so the cap has to yield
+/// to the window before it pushes the history off the bottom edge.
+#[test]
+fn uitest_jabber_composer_yields_to_a_small_window() {
+    let pad = 4.0;
+    let (empty, row_h) = composer_metrics("jabber_popout_min");
+    let (over, _) = composer_metrics("jabber_popout_min_overflow");
+    let shown = empty.bottom() - over.top();
+    assert!(
+        shown >= 2.0 * row_h + pad && shown < 10.0 * row_h + pad,
+        "small-window composer shows {shown}px, outside the 2..10 row range"
+    );
+}
+
+/// With the Send button gone, Enter is the only way to send, so both halves of the return-key split
+/// have to be driven, not reasoned about.
+#[test]
+fn uitest_jabber_composer_enter_sends_shift_enter_wraps() {
+    use egui_kittest::kittest::Queryable as _;
+    let probe: DraftProbe = Default::default();
+    let mut scene = jabber_popout_probed(
+        "composer_keys",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        "reshipping",
+        Some(probe.clone()),
+    );
+    let mut harness = harness::build(&mut scene, false);
+    let draft = || probe.lock().unwrap().clone();
+
+    assert!(
+        harness.query_by_label("Send").is_none(),
+        "the composer still draws a Send button"
+    );
+
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).focus();
+    harness.run_steps(2);
+
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Enter);
+    harness.run_steps(2);
+    let after_shift = draft();
+    assert!(
+        after_shift.contains('\n') && after_shift.contains("reshipping"),
+        "Shift+Enter did not add a line: {after_shift:?}"
+    );
+
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(draft(), "", "Enter did not send and clear the draft");
 }
