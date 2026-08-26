@@ -429,6 +429,63 @@ fn uitest_screenshots() {
     }
 }
 
+/// UI-020: the pin used to be a floating `Area` over the central panel, which put it on top of the
+/// tab bar's overflow caret. It now sits at the right end of the tab-bar row, so it shares that row
+/// with the caret, follows it rather than covering it, and stays inside the window at both sizes.
+#[test]
+fn uitest_jabber_popout_pin_is_in_the_tab_bar() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    for name in ["jabber_popout", "jabber_popout_min"] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let size = scene.size;
+        let harness = harness::build(&mut scene, false);
+        let mut pin = None;
+        let mut caret = None;
+        let mut others = Vec::new();
+        for node in harness.root().children_recursive() {
+            let n = node.accesskit_node();
+            if n.is_hidden() || n.role() != Role::Button {
+                continue;
+            }
+            let Some(b) = n.bounding_box() else { continue };
+            let r = egui::Rect {
+                min: egui::pos2(b.x0 as f32, b.y0 as f32),
+                max: egui::pos2(b.x1 as f32, b.y1 as f32),
+            };
+            let label = n.label().unwrap_or_default().to_string();
+            if label.contains(egui_phosphor::regular::PUSH_PIN) {
+                pin = Some(r);
+            } else if label.contains(egui_phosphor::regular::CARET_DOWN) {
+                caret = Some(r);
+            } else {
+                others.push((label, r));
+            }
+        }
+        let pin = pin.unwrap_or_else(|| panic!("{name}: no always-on-top pin"));
+        let caret = caret.unwrap_or_else(|| panic!("{name}: no overflow caret"));
+        assert!(
+            pin.max.x <= size.x && pin.min.x >= 0.0 && pin.min.y >= 0.0,
+            "{name}: the pin left the window: {pin:?} in {size:?}"
+        );
+        assert!(
+            pin.min.x >= caret.max.x,
+            "{name}: the pin is not clear of the overflow caret: {pin:?} vs {caret:?}"
+        );
+        assert!(
+            pin.min.y < caret.max.y && caret.min.y < pin.max.y,
+            "{name}: the pin left the tab-bar row: {pin:?} vs {caret:?}"
+        );
+        for (label, r) in others {
+            assert!(
+                !r.intersects(pin),
+                "{name}: the pin covers {label:?}: {pin:?} over {r:?}"
+            );
+        }
+    }
+}
+
 /// Rects of everything the toolbar puts in the flow. Dividers are painted decoration and emit no
 /// node of their own, so this is what has to sit on either side of one.
 fn content_rects(harness: &egui_kittest::Harness<'_>) -> Vec<egui::Rect> {

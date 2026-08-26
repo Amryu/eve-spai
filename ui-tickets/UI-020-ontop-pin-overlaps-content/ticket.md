@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `ontop_pin` + `jabber_tab_bar_ui` |
 | **Reported by** | user |
 | **Blocked on** | GAP-004 for visual verification |
