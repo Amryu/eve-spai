@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `rescue_chat_line` (`fc-rescue` feature) |
 | **Found by** | UI-027 |
 

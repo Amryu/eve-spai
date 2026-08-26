@@ -35,7 +35,7 @@ after, and any follow-up tickets it spawned.
 | [UI-017 Work-throttle ComboBox overflows at wide widths](UI-017-combobox-overflows-at-wide-widths/) | Low | `battles_view` | unscheduled | **Fixed** |
 | [UI-018 Ping body lines allocate 26px for 15px of ink](UI-018-ping-body-lines-overallocate/) | Low | `render_ping_body` | unscheduled | **Fixed** |
 | [UI-027 Chat message bodies allocate 26px for 15px of ink](UI-027-chat-body-lines-overallocate/) | Medium | `render_message_body` | UI-018 | **Fixed** |
-| [UI-028 Rescue chat lines allocate 26px for 15px of ink](UI-028-rescue-chat-line-overallocates/) | Low | `rescue_chat_line` | UI-027 | Open |
+| [UI-028 Rescue chat lines allocate 26px for 15px of ink](UI-028-rescue-chat-line-overallocates/) | Low | `rescue_chat_line` | UI-027 | **Fixed** |
 | [UI-029 The alert overlay cannot show the bridge flag](UI-029-overlay-cannot-flag-bridges/) | Medium | `ipc::AlertMsg` | UI-026 | Open |
 | [UI-019 Audit the remaining small_button call sites](UI-019-small-button-audit/) | Low | various | unscheduled | Open |
 | [UI-025 Intel cards count jump bridges regardless of the setting](UI-025-intel-jump-range-ignores-bridge-setting/) | High | `jumps_from_you` | user | **Fixed** |
