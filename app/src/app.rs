@@ -18749,8 +18749,17 @@ fn render_linked_text(ui: &mut egui::Ui, body: &str, weak: bool) {
 /// A ping's free text. Laid out a line at a time: ping bodies are multi-line, and a single wrapped
 /// row would put everything after an embedded newline beside the tall label instead of under it.
 fn render_ping_body(ui: &mut egui::Ui, body: &str, weak: bool) {
+    // Not `horizontal_wrapped`: that floors the row at `interact_size.y`, which is 11px of dead air
+    // per line on a body that only ever holds text and links.
+    let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
     for line in body.lines() {
-        ui.horizontal_wrapped(|ui| {
+        if line.trim().is_empty() {
+            // A tight row allocates nothing, so the author's paragraph break needs its own space.
+            ui.add_space(ui.text_style_height(&egui::TextStyle::Body));
+            continue;
+        }
+        let size = egui::vec2(ui.available_size_before_wrap().x, 0.0);
+        ui.allocate_ui_with_layout(size, row, |ui| {
             render_linked_text(ui, line, weak);
         });
     }

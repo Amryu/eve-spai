@@ -424,6 +424,7 @@ pub(crate) fn all() -> Vec<Scene> {
         ),
         ping_scene("ping_fleet_no_doctrine", fixtures::ping_fleet_no_doctrine()),
         ping_scene("ping_plain", fixtures::ping_plain()),
+        ping_scene("ping_plain_multiline", fixtures::ping_plain_multiline()),
         nav_scene("nav_rail_collapsed", false, 560.0),
         nav_scene("nav_rail_expanded", true, 560.0),
         // 460 is the app's minimum window height (main.rs), where the rail runs out of room for
@@ -1373,8 +1374,23 @@ fn uitest_alert_titlebar_has_no_competing_grab_target() {
 }
 
 /// Allocated rect of the first node whose label starts with `prefix`. Row heights, not ink, are
-/// what the vertical rhythm is made of.
+/// what the vertical rhythm is made of: in a wrapping horizontal layout egui pushes the row height
+/// into the galley as `first_row_min_height`, so a label reports the row it sits in.
 fn ping_label_rect(harness: &egui_kittest::Harness<'_>, prefix: &str) -> Option<egui::Rect> {
+    ping_node_rect(harness, prefix, |_| true)
+}
+
+/// Same, but only nodes that answer a click, which is how a hyperlink is told apart from the text
+/// beside it: egui's selectable-label pass leaves the node reporting `Role::Label`.
+fn ping_click_rect(harness: &egui_kittest::Harness<'_>, prefix: &str) -> Option<egui::Rect> {
+    ping_node_rect(harness, prefix, |n| n.data().supports_action(egui::accesskit::Action::Click))
+}
+
+fn ping_node_rect(
+    harness: &egui_kittest::Harness<'_>,
+    prefix: &str,
+    keep: impl Fn(&egui_kittest::kittest::AccessKitNode<'_>) -> bool,
+) -> Option<egui::Rect> {
     use egui_kittest::kittest::NodeT as _;
 
     for node in harness.root().children_recursive() {
@@ -1383,6 +1399,9 @@ fn ping_label_rect(harness: &egui_kittest::Harness<'_>, prefix: &str) -> Option<
             continue;
         }
         if !n.label().or_else(|| n.value()).unwrap_or_default().starts_with(prefix) {
+            continue;
+        }
+        if !keep(&n) {
             continue;
         }
         let b = n.bounding_box()?;
@@ -1467,6 +1486,90 @@ fn uitest_ping_without_a_doctrine_leaves_no_row() {
         "dropping the doctrine saved {:.1}px, not the {want:.1}px its row plus spacing occupies",
         with - without
     );
+}
+
+/// The prefixes of `fixtures::ping_plain_multiline`'s three body lines, in order.
+const BODY_LINES: [&str; 3] =
+    ["Sov timer in 68FT-6", "Fits and doctrine:", "Bring a mobile depot"];
+
+fn theme_spacing() -> egui::style::Spacing {
+    let ctx = egui::Context::default();
+    harness::prepare(&ctx);
+    ctx.global_style().spacing.clone()
+}
+
+/// A body line holds one line of text, so it must stand one line tall. `render_ping_body` put each
+/// line in its own `horizontal_wrapped`, whose row is floored at `interact_size.y` whether or not
+/// anything interactive is on it, so every line allocated 26px for 15px of ink.
+#[test]
+fn uitest_ping_body_lines_are_one_line_tall() {
+    let spacing = theme_spacing();
+    let mut scene = ping_scene("body_leading_probe", fixtures::ping_plain_multiline());
+    let harness = harness::build(&mut scene, false);
+    let rects: Vec<egui::Rect> = BODY_LINES
+        .iter()
+        .map(|p| ping_label_rect(&harness, p).unwrap_or_else(|| panic!("no body line {p:?}")))
+        .collect();
+    for (p, r) in BODY_LINES.iter().zip(&rects) {
+        assert!(
+            r.height() < spacing.interact_size.y - 1.0,
+            "body line {p:?} is {:.1}px tall, still floored at interact_size {:.1}",
+            r.height(),
+            spacing.interact_size.y
+        );
+    }
+    assert!(
+        (rects[0].height() - rects[2].height()).abs() < 0.5,
+        "body lines disagree: {:.1}px against {:.1}px",
+        rects[0].height(),
+        rects[2].height()
+    );
+    for (w, p) in rects.windows(2).zip(BODY_LINES.iter().skip(1)) {
+        let gap = w[1].top() - w[0].bottom();
+        assert!(
+            (gap - spacing.item_spacing.y).abs() < 1.0,
+            "{p:?} sits {gap:.1}px below the line above, not the usual {:.1}px",
+            spacing.item_spacing.y
+        );
+    }
+}
+
+/// A blank line is the author's paragraph break, and a tight row allocates nothing for it.
+#[test]
+fn uitest_ping_body_keeps_a_blank_line_as_a_break() {
+    let measure = |text: &str| {
+        let mut ping = fixtures::ping_plain();
+        if let crate::pings::Ping::Plain { text: t, .. } = &mut ping {
+            *t = text.to_owned();
+        }
+        let mut scene = ping_scene("blank_line_probe", ping);
+        let harness = harness::build(&mut scene, false);
+        let over = ping_label_rect(&harness, "over").expect("no first line");
+        let under = ping_label_rect(&harness, "under").expect("no second line");
+        (under.top() - over.bottom(), over.height())
+    };
+    let (tight, line) = measure("over\nunder");
+    let (broken, _) = measure("over\n\nunder");
+    assert!(
+        (broken - tight - line).abs() < 2.0,
+        "a blank line opened {:.1}px, not the {line:.1}px of the line it stands for",
+        broken - tight
+    );
+}
+
+/// A link is the one genuinely interactive thing a body line can hold, and the reason the row
+/// height was floored at all. It has to stay on its own line, beside the text it follows.
+#[test]
+fn uitest_ping_body_link_stays_on_its_line() {
+    let mut scene = ping_scene("body_link_probe", fixtures::ping_plain_multiline());
+    let harness = harness::build(&mut scene, false);
+    let text = ping_label_rect(&harness, BODY_LINES[1]).expect("no link line");
+    let link = ping_click_rect(&harness, "https://example.invalid").expect("no body link");
+    assert_eq!(link.top(), text.top(), "the link started its own row: {link:?}");
+    assert_eq!(link.height(), text.height(), "the link is taller than its line: {link:?}");
+    assert!(link.left() > text.right(), "the link sits on the text: {link:?}");
+    let after = ping_label_rect(&harness, BODY_LINES[2]).expect("no line after the link");
+    assert!(link.bottom() <= after.top(), "the link overruns the next line: {link:?}");
 }
 
 /// The Copy button was a `small_button`, which drops the `interact_size` floor and left a 17px
