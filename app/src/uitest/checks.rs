@@ -32,6 +32,10 @@ struct Widget {
     role: egui::accesskit::Role,
     label: String,
     rect: egui::Rect,
+    /// A label carries its `TextRun` child only when egui painted it, and egui paints a label only
+    /// when it survives the clip rect. Scrolled-away rows keep their true rect, so this is the one
+    /// signal in the tree that separates them from what the window actually shows.
+    painted: bool,
 }
 
 impl Widget {
@@ -103,6 +107,9 @@ fn collect(harness: &Harness<'_>) -> Vec<Widget> {
                 min: egui::pos2(b.x0 as f32, b.y0 as f32),
                 max: egui::pos2(b.x1 as f32, b.y1 as f32),
             },
+            painted: node
+                .children()
+                .any(|c| c.accesskit_node().role() == egui::accesskit::Role::TextRun),
         });
     }
     out
@@ -125,6 +132,16 @@ fn related(
         }
     }
     false
+}
+
+/// A label that wraps onto a second row starts its galley at the row's left edge, so its bounding
+/// box swallows whatever shared the first row with it (a chat nick, say) while the painted first
+/// row is indented clear of it. A shared origin plus the extra rows is what that shape looks like.
+fn wrapped_lead_in(a: &Widget, b: &Widget) -> bool {
+    let (lead, wrapped) = if a.rect.height() < b.rect.height() { (a, b) } else { (b, a) };
+    (lead.rect.min.x - wrapped.rect.min.x).abs() < 0.5
+        && (lead.rect.min.y - wrapped.rect.min.y).abs() < 0.5
+        && wrapped.rect.height() - lead.rect.height() > 8.0
 }
 
 /// Inspects the rendered pass for the layout faults that are invisible in a passing test but
@@ -178,12 +195,16 @@ pub(crate) fn inspect(harness: &mut Harness<'_>, size: egui::Vec2) -> Report {
         // its own pass. `TextRun` is skipped: egui nests one inside every `Label`.
         let text: Vec<&Widget> = widgets
             .iter()
-            .filter(|w| w.role == egui::accesskit::Role::Label && !w.label.is_empty())
+            .filter(|w| w.role == egui::accesskit::Role::Label && !w.label.is_empty() && w.painted)
             .collect();
         for (i, a) in text.iter().enumerate() {
             for b in &text[i + 1..] {
                 let hit = a.rect.intersect(b.rect);
-                if hit.width() > 1.0 && hit.height() > 1.0 && !related(a, b, &parents) {
+                if hit.width() > 1.0
+                    && hit.height() > 1.0
+                    && !related(a, b, &parents)
+                    && !wrapped_lead_in(a, b)
+                {
                     report.text_overlaps.push(format!("{} <-> {}", a.describe(), b.describe()));
                 }
             }
@@ -244,6 +265,24 @@ mod tests {
         let mut harness = harness::build(&mut scene, false);
         let report = super::inspect(&mut harness, size);
         assert!(!report.text_overlaps.is_empty(), "{}", report.render("selftest_text_overlap"));
+    }
+
+    /// Scrolled-away rows keep their true rect, so without the paint check every stick-to-bottom
+    /// history would report its scrolled-off text as overlapping whatever sits above the viewport.
+    #[test]
+    fn inspect_ignores_text_scrolled_out_of_view() {
+        let size = egui::vec2(300.0, 200.0);
+        let mut scene = Scene::ui("selftest_scrolled_text", size, |ui| {
+            ui.label("header above the scroll area");
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                for i in 0..40 {
+                    ui.label(format!("history line {i}"));
+                }
+            });
+        });
+        let mut harness = harness::build(&mut scene, false);
+        let report = super::inspect(&mut harness, size);
+        assert!(report.text_overlaps.is_empty(), "{}", report.render("selftest_scrolled_text"));
     }
 
     /// And equally worth distrusting if it fires on a layout that is fine.

@@ -263,3 +263,145 @@ pub(crate) fn ping_plain() -> crate::pings::Ping {
         raw: "raw plain body".into(),
     }
 }
+
+pub(crate) const JABBER_ROOM: &str = "delve.imperium@conference.goonfleet.com";
+pub(crate) const JABBER_ROOM_QUIET: &str = "corp.chat@conference.goonfleet.com";
+pub(crate) const JABBER_DM: &str = "wingmate@goonfleet.com";
+
+fn chat_msg(from: &str, body: &str, age: i64, outgoing: bool) -> crate::jabber::ChatMsg {
+    crate::jabber::ChatMsg {
+        from: from.to_owned(),
+        body: body.to_owned(),
+        time: now() - age,
+        outgoing,
+    }
+}
+
+/// Long enough to fill a default-sized pop-out and keep text under the top-right corner, where the
+/// always-on-top pin floats.
+fn room_history() -> Vec<crate::jabber::ChatMsg> {
+    let mut v = vec![
+        chat_msg("Scout Alpha", "gate camp still up in 319-3D, about 20 in bubbles", 5400, false),
+        chat_msg("Scout Alpha", "mostly Muninns and a couple of Loki", 5395, false),
+        chat_msg("Fleet Commander", "forming home defence in 1DQ1-A, Muninn doctrine", 5100, false),
+        chat_msg("Fleet Commander", "undock and warp to me, logi first", 5090, false),
+        chat_msg("Wingmate Alpha", "on my way, 3 jumps out", 4800, false),
+        chat_msg("me", "grabbing a Muninn, need 2 minutes", 4700, true),
+        chat_msg("Logi Lead", "logi channel is up, join before you undock", 4200, false),
+        chat_msg(
+            "Scout Bravo",
+            "hostiles moved off gate, they are burning towards the Keepstar undock and \
+             holding at about 60km, watch the bubbles on the way in",
+            3000,
+            false,
+        ),
+        chat_msg("Fleet Commander", "hold cloak until I call it", 2400, false),
+        chat_msg("Wingmate Alpha", "in fleet, in position", 1200, false),
+        chat_msg("me", "same, sitting on the FC", 900, true),
+        chat_msg("Scout Alpha", "second wave landing, 40+ now", 420, false),
+        chat_msg("Fleet Commander", "primary is the Loki on grid, broadcast for reps", 300, false),
+        chat_msg("Logi Lead", "reps landing, hold your cap", 120, false),
+        chat_msg("Wingmate Alpha", "nice, tackle is holding", 40, false),
+    ];
+    v.extend([chat_msg("Scout Bravo", "cyno up on the Keepstar", 10, false)]);
+    v
+}
+
+pub(crate) fn jabber_state() -> crate::jabber::JabberState {
+    let mut st = crate::jabber::JabberState {
+        enabled: true,
+        running: true,
+        connected: true,
+        status: "Online".into(),
+        ever_online: true,
+        ..Default::default()
+    };
+    st.rooms.insert(JABBER_ROOM.to_owned());
+    st.rooms.insert(JABBER_ROOM_QUIET.to_owned());
+    st.chats.insert(JABBER_ROOM.to_owned(), room_history());
+    st.chats.insert(
+        JABBER_ROOM_QUIET.to_owned(),
+        vec![chat_msg("Director", "sov timer tonight, sign up on the forum", 7200, false)],
+    );
+    st.chats.insert(
+        JABBER_DM.to_owned(),
+        vec![
+            chat_msg("Wingmate Alpha", "you flying tonight?", 900, false),
+            chat_msg("me", "yes, staging in 1DQ", 880, true),
+        ],
+    );
+    st.unread.insert(JABBER_ROOM_QUIET.to_owned());
+    st.unread.insert(JABBER_DM.to_owned());
+    st.mentions.insert(JABBER_DM.to_owned());
+    st.room_subjects.insert(
+        JABBER_ROOM.to_owned(),
+        "Delve intel. Report hostiles with system first.".to_owned(),
+    );
+    st
+}
+
+fn convo(
+    jid: &str,
+    name: &str,
+    presence: crate::jabber::Presence,
+    unread: bool,
+) -> crate::app::Convo {
+    crate::app::Convo {
+        jid: jid.to_owned(),
+        name: name.to_owned(),
+        unread,
+        group: "Fleet".to_owned(),
+        presence,
+        status_text: String::new(),
+    }
+}
+
+fn channel(jid: &str, unread: bool, motd: &str) -> crate::app::ChannelRow {
+    crate::app::ChannelRow {
+        jid: jid.to_owned(),
+        name: jid.split('@').next().unwrap_or(jid).to_owned(),
+        unread,
+        inaccessible: false,
+        motd: motd.to_owned(),
+    }
+}
+
+/// The per-frame snapshot `jabber_frame` normally builds off `JabberState` and the keyring. Built
+/// here directly: the real builder reads `has_password`, which needs an OS keyring no test machine
+/// has, and would leave `configured` false and the view stuck on its login form.
+pub(crate) fn jabber_frame() -> crate::app::JabberFrame {
+    let st = jabber_state();
+    crate::app::JabberFrame {
+        configured: true,
+        ever_online: true,
+        connected: true,
+        status: "Online".into(),
+        convos: vec![
+            convo(JABBER_DM, "Wingmate Alpha", crate::jabber::Presence::Online, true),
+            convo("logilead@goonfleet.com", "Logi Lead", crate::jabber::Presence::Away, false),
+        ],
+        pings: vec![ping_fleet(), ping_plain()],
+        rooms: vec![JABBER_ROOM.to_owned(), JABBER_ROOM_QUIET.to_owned()],
+        dm_keys: vec![JABBER_DM.to_owned()],
+        unread: st.unread.clone(),
+        mentions: st.mentions.clone(),
+        pings_unread: true,
+        channels: vec![
+            channel(JABBER_ROOM, false, "Delve intel. Report hostiles with system first."),
+            channel(JABBER_ROOM_QUIET, true, ""),
+        ],
+        inaccessible: Vec::new(),
+        subjects: st.room_subjects.clone(),
+    }
+}
+
+/// One pop-out holding all three conversations, `active` on top. `id` is the window id the scene
+/// addresses it by.
+pub(crate) fn jabber_popout(id: u64, active: &str) -> crate::app::ChatWindow {
+    crate::app::ChatWindow {
+        id,
+        tabs: vec![JABBER_ROOM.to_owned(), JABBER_ROOM_QUIET.to_owned(), JABBER_DM.to_owned()],
+        active: Some(active.to_owned()),
+        ..Default::default()
+    }
+}

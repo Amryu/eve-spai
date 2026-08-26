@@ -44,7 +44,7 @@ Tool work rather than app defects. Ticketed so the backlog is complete; not sche
 | [GAP-001 28 dialogs unreachable](GAP-001-dialogs-unreachable/) | ~6,000 lines | Medium |
 | [GAP-002 Scratch store is never seeded](GAP-002-seed-the-scratch-store/) | 5 of 9 views | Medium |
 | [GAP-003 Map is painter-only](GAP-003-map-painter-only/) | ~80% of Map pixels | Medium |
-| [GAP-004 Jabber view uncovered](GAP-004-jabber-view-uncovered/) | ~1,200 lines | Small |
+| [GAP-004 Jabber view uncovered](GAP-004-jabber-view-uncovered/) | ~1,200 lines | **Popout done**, in-app view open |
 | [GAP-005 Wall clock frozen](GAP-005-wall-clock-frozen/) | 13 sites | Small-medium |
 | [GAP-006 Alert auto-dismiss untested](GAP-006-alert-auto-dismiss-untested/) | overlay click passthrough | Small |
 | [GAP-007 Viewport commands dropped](GAP-007-viewport-commands-dropped/) | 12 sites, overlay process | Small / large |

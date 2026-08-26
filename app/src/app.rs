@@ -434,18 +434,18 @@ pub struct SpaiApp {
     alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
     proc_monitor: crate::procstat::Monitor,
-    jabber: crate::jabber::SharedJabber,
+    pub(crate) jabber: crate::jabber::SharedJabber,
     jabber_tx: Option<crate::jabber::CmdSender>,
     jabber_chat: Option<String>,
     jabber_tabs: Vec<String>,
     /// Extra floating chat windows. `jabber_tabs`/`jabber_chat` stay the main window's storage.
-    jabber_popouts: Vec<ChatWindow>,
+    pub(crate) jabber_popouts: Vec<ChatWindow>,
     jabber_tab_drag: Option<TabDrag>,
     /// Main window's cached (outer, inner) screen rects, for cross-window drop hit-testing.
     jabber_main_rect: Option<(egui::Rect, egui::Rect)>,
     jabber_join_open: bool,
     jabber_close_room_prompt: Option<(String, ChatWinKey)>,
-    jabber_drafts: std::collections::HashMap<String, String>,
+    pub(crate) jabber_drafts: std::collections::HashMap<String, String>,
     jabber_room_input: String,
     jabber_contact_search: String,
     jabber_dm_input: String,
@@ -465,7 +465,7 @@ pub struct SpaiApp {
     /// Comma-separated edit buffer for `jabber_mention_keywords`, so a half-typed "a," survives the
     /// round trip through the Vec.
     mention_input: String,
-    session_start: i64,
+    pub(crate) session_start: i64,
     eve_focused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     eve_focus_checked: Option<std::time::Instant>,
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
@@ -3313,7 +3313,7 @@ impl SpaiApp {
     }
 
     /// Tab bar + body for one chat window. No sidebar: that belongs to the Jabber page.
-    fn jabber_window_body(
+    pub(crate) fn jabber_window_body(
         &mut self,
         ui: &mut egui::Ui,
         win: ChatWinKey,
@@ -18175,20 +18175,20 @@ impl WhOverlay {
 
 /// One frame's worth of Jabber state, snapshotted under a single lock.
 pub(crate) struct JabberFrame {
-    configured: bool,
-    ever_online: bool,
-    connected: bool,
-    status: String,
-    convos: Vec<Convo>,
-    pings: Vec<crate::pings::Ping>,
-    rooms: Vec<String>,
-    dm_keys: Vec<String>,
-    unread: std::collections::BTreeSet<String>,
-    mentions: std::collections::BTreeSet<String>,
-    pings_unread: bool,
-    channels: Vec<ChannelRow>,
-    inaccessible: Vec<String>,
-    subjects: std::collections::BTreeMap<String, String>,
+    pub(crate) configured: bool,
+    pub(crate) ever_online: bool,
+    pub(crate) connected: bool,
+    pub(crate) status: String,
+    pub(crate) convos: Vec<Convo>,
+    pub(crate) pings: Vec<crate::pings::Ping>,
+    pub(crate) rooms: Vec<String>,
+    pub(crate) dm_keys: Vec<String>,
+    pub(crate) unread: std::collections::BTreeSet<String>,
+    pub(crate) mentions: std::collections::BTreeSet<String>,
+    pub(crate) pings_unread: bool,
+    pub(crate) channels: Vec<ChannelRow>,
+    pub(crate) inaccessible: Vec<String>,
+    pub(crate) subjects: std::collections::BTreeMap<String, String>,
 }
 
 impl JabberFrame {
@@ -18199,7 +18199,7 @@ impl JabberFrame {
 
 /// A tab-bar interaction, collected into a caller-owned list and applied outside the render
 /// closures that produced it.
-enum TabAction {
+pub(crate) enum TabAction {
     /// `jid: None` is the Fleet pings pseudo-tab, which only the main window has.
     Select { win: ChatWinKey, jid: Option<String> },
     Close { win: ChatWinKey, jid: String, is_room: bool },
@@ -18218,27 +18218,27 @@ enum TabAction {
 /// Which chat window owns a conversation. `Main` is the app's Jabber page; `Popout` carries a
 /// stable window id, never an index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum ChatWinKey {
+pub(crate) enum ChatWinKey {
     Main,
     Popout(u64),
 }
 
 /// One floating chat window: its own tab list, its own active tab, its own geometry.
 #[derive(Clone, Debug, Default)]
-struct ChatWindow {
-    id: u64,
-    tabs: Vec<String>,
-    active: Option<String>,
-    pos: Option<(f32, f32)>,
-    size: Option<(f32, f32)>,
+pub(crate) struct ChatWindow {
+    pub(crate) id: u64,
+    pub(crate) tabs: Vec<String>,
+    pub(crate) active: Option<String>,
+    pub(crate) pos: Option<(f32, f32)>,
+    pub(crate) size: Option<(f32, f32)>,
     /// One-shot: geometry is fed to the viewport builder on the first frame only.
-    geom_applied: bool,
+    pub(crate) geom_applied: bool,
     /// Screen rects, cached for cross-window drop hit-testing.
-    outer: Option<egui::Rect>,
-    inner: Option<egui::Rect>,
+    pub(crate) outer: Option<egui::Rect>,
+    pub(crate) inner: Option<egui::Rect>,
     /// Last known focus of this viewport, read one frame later by `jabber_frame` so a conversation
     /// you are staring at in a pop-out clears its unread marker like the main window's does.
-    focused: bool,
+    pub(crate) focused: bool,
 }
 
 /// A tab being dragged, tracked by its source window because the OS gives the pressing window an
@@ -18530,23 +18530,23 @@ fn reorder_index(tabs: &[String], centers: &[(String, f32)], jid: &str, x: f32) 
     }
 }
 
-struct Convo {
-    jid: String,
-    name: String,
-    unread: bool,
-    group: String,
-    presence: crate::jabber::Presence,
-    status_text: String,
+pub(crate) struct Convo {
+    pub(crate) jid: String,
+    pub(crate) name: String,
+    pub(crate) unread: bool,
+    pub(crate) group: String,
+    pub(crate) presence: crate::jabber::Presence,
+    pub(crate) status_text: String,
 }
 
-struct ChannelRow {
-    jid: String,
-    name: String,
-    unread: bool,
+pub(crate) struct ChannelRow {
+    pub(crate) jid: String,
+    pub(crate) name: String,
+    pub(crate) unread: bool,
     /// Left/kicked while online: struck-through, history-only.
-    inaccessible: bool,
+    pub(crate) inaccessible: bool,
     /// Full room MOTD (MUC subject); collapsed to two lines in the list, expandable on click.
-    motd: String,
+    pub(crate) motd: String,
 }
 
 /// First two non-empty-trimmed lines of a room MOTD (MUC subject) for the collapsed list preview.
