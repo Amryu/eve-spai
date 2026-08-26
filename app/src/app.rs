@@ -17379,6 +17379,47 @@ fn celestial_badge_label(name: &str) -> String {
     name.to_owned()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CelestialKey {
+    Star,
+    Planet(i64),
+    Moon(i64, i64),
+}
+
+fn celestial_index(tok: &str) -> Option<i64> {
+    match tok.parse::<i64>() {
+        Ok(n) if n > 0 => Some(n),
+        _ => roman_to_int(&tok.to_uppercase()),
+    }
+}
+
+/// Identifies the celestial two differently written names point at, so the `near_celestial` chip
+/// and a `celestials` chip for the same object can collapse into one. `None` for anything whose
+/// planet or moon index is not spelled out ("Moon IV", "Asteroid Belt", a station suffix), which
+/// keeps both chips rather than hiding hostiles sitting at a different celestial.
+fn celestial_key(name: &str) -> Option<CelestialKey> {
+    let lower = name.trim().to_lowercase();
+    if lower == "sun" || lower == "star" || lower.ends_with(" - star") {
+        return Some(CelestialKey::Star);
+    }
+    if let Some((planet, moon)) = lower.split_once(" - moon ") {
+        let p = celestial_index(planet.rsplit(' ').next()?)?;
+        let m = celestial_index(moon.split([' ', '-']).next()?)?;
+        return Some(CelestialKey::Moon(p, m));
+    }
+    if let Some(rest) = lower.strip_prefix("moon ") {
+        let (p, m) = rest.split(' ').next()?.split_once('-')?;
+        return Some(CelestialKey::Moon(celestial_index(p)?, celestial_index(m)?));
+    }
+    if lower.contains(" - ") {
+        return None;
+    }
+    let mut toks = lower.split_whitespace().rev();
+    let last = toks.next()?;
+    toks.next()?;
+    Some(CelestialKey::Planet(celestial_index(last)?))
+}
+
 fn roman_to_int(s: &str) -> Option<i64> {
     let mut total = 0;
     let mut prev = 0;
@@ -21994,8 +22035,10 @@ pub(crate) fn intel_row(
                     }
                 }
 
+                let mut near_cel = None;
                 if let Some((cname, dm)) = &r.near_celestial {
                     if *dm <= 15_000_000.0 {
+                        near_cel = celestial_key(cname);
                         let km = (dm / 1000.0).round() as i64;
                         let dist = if km >= 1000 {
                             format!("{},{:03} km", km / 1000, km % 1000)
@@ -22075,6 +22118,9 @@ pub(crate) fn intel_row(
                 }
 
                 for cel in &r.celestials {
+                    if near_cel.is_some() && celestial_key(cel) == near_cel {
+                        continue;
+                    }
                     let cicon = if cel.starts_with("Moon") {
                         icon::MOON
                     } else if cel.starts_with("Sun") {
@@ -23387,6 +23433,106 @@ mod wh_overlay_tests {
         );
         assert!(o.jspace_holes.contains(&30_000_001));
         assert!(!o.direct.iter().any(|&(a, b)| is_jspace(a) || is_jspace(b)));
+    }
+}
+
+#[cfg(test)]
+mod celestial_key_tests {
+    use super::*;
+
+    fn same(a: &str, b: &str) -> bool {
+        let (ka, kb) = (celestial_key(a), celestial_key(b));
+        ka.is_some() && ka == kb
+    }
+
+    #[test]
+    fn spellings_of_one_moon_agree() {
+        assert!(same(
+            "Planet VI - Moon 3 - Blood Raider Chemical Laboratory",
+            "Planet VI - Moon 3 - Chemical Laboratory"
+        ));
+        assert!(same("Moon 6-3", "Planet VI - Moon 3 - Chemical Laboratory"));
+        assert!(same("Moon 6-3", "7-K5EL VI - Moon 3"));
+        assert!(same("moon 6-3", "PLANET VI - MOON 3"));
+        assert!(same("Jita IV - Moon 4", "Moon 4-4"));
+    }
+
+    #[test]
+    fn spellings_of_one_planet_agree() {
+        assert!(same("Planet 6", "Jita VI"));
+        assert!(same("Planet VI", "Planet 6"));
+    }
+
+    /// Adversarial cases added on review. Merging hides a chip, and a hidden chip can mean a
+    /// pilot not knowing hostiles sit at a different celestial, so the failure that matters is a
+    /// false merge.
+    #[test]
+    fn review_adversarial_cases() {
+        // Prefix collisions in either index.
+        assert!(!same("Moon 6-3", "Planet VI - Moon 30 - Station"));
+        assert!(!same("Moon 6-30", "Planet VI - Moon 3 - Station"));
+        assert!(!same("Moon 60-3", "Planet VI - Moon 3 - Station"));
+        // A roman-looking system token must not become a planet index.
+        assert_eq!(celestial_key("K5EL 7"), Some(CelestialKey::Planet(7)));
+        assert_eq!(celestial_key("7-K5EL"), None);
+        // Digits inside a token keep it out of the roman path.
+        assert_eq!(celestial_key("MJ-5F9 IV"), Some(CelestialKey::Planet(4)));
+        assert_eq!(celestial_key("MJ-5F9"), None);
+        // Belts and unindexed suffixes stay unmergeable in both directions.
+        assert_eq!(celestial_key("Jita IV - Asteroid Belt 1"), None);
+        assert!(!same("Asteroid Belt", "Jita IV - Asteroid Belt 1"));
+        // A planet chip must never swallow a moon chip on the same planet.
+        assert!(!same("Planet VI", "Planet VI - Moon 3 - Station"));
+    }
+
+    /// Documents a known limit rather than asserting desired behaviour: the key carries no system,
+    /// so two planets with the same index in different systems collide. Both fields come from one
+    /// report, so this needs a report naming two systems' planets to bite.
+    #[test]
+    fn review_planet_key_ignores_the_system() {
+        assert!(same("Jita IV", "Amarr IV"));
+    }
+
+    #[test]
+    fn suns_agree() {
+        assert!(same("Sun", "Jita - Star"));
+    }
+
+    #[test]
+    fn different_moons_stay_apart() {
+        assert!(!same("Moon 6-4", "Planet VI - Moon 3 - Chemical Laboratory"));
+        assert!(!same("Moon 5-3", "Planet VI - Moon 3 - Chemical Laboratory"));
+        assert!(!same("Moon 3-6", "Planet VI - Moon 3"));
+        assert!(!same("Planet VI - Moon 13", "Planet VI - Moon 1"));
+    }
+
+    #[test]
+    fn a_moon_is_not_its_planet() {
+        assert!(!same("Planet VI", "Planet VI - Moon 3 - Chemical Laboratory"));
+        assert!(!same("Planet IV", "Jita IV - Moon 4"));
+        assert!(!same("Sun", "Jita IV"));
+    }
+
+    #[test]
+    fn nameless_indexes_never_match() {
+        assert_eq!(celestial_key("Moon IV"), None);
+        assert_eq!(celestial_key("Moon 3"), None);
+        assert_eq!(celestial_key("Asteroid Belt"), None);
+        assert_eq!(celestial_key("Ice Belt"), None);
+        assert_eq!(celestial_key("Belt"), None);
+        assert_eq!(celestial_key("Jita IV - Asteroid Belt 1"), None);
+        assert_eq!(celestial_key("Jita IV - Caldari Navy Assembly Plant"), None);
+        assert_eq!(celestial_key("Stargate (Perimeter)"), None);
+        assert!(!same("Moon IV", "Planet II - Moon 4"));
+        assert!(!same("Asteroid Belt", "Jita IV - Asteroid Belt 1"));
+    }
+
+    #[test]
+    fn keys_read_the_indexes() {
+        assert_eq!(celestial_key("Planet VI - Moon 3"), Some(CelestialKey::Moon(6, 3)));
+        assert_eq!(celestial_key("Moon 6-3"), Some(CelestialKey::Moon(6, 3)));
+        assert_eq!(celestial_key("Jita IV"), Some(CelestialKey::Planet(4)));
+        assert_eq!(celestial_key("Jita - Star"), Some(CelestialKey::Star));
     }
 }
 

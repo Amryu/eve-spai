@@ -125,6 +125,23 @@ pub(crate) fn intel_torture() -> IntelReport {
     }
 }
 
+/// A kill beside one moon while the same report names a different moon in the same system. The
+/// two chips have to both survive, since which moon the hostiles sit at is the point of the badge.
+pub(crate) fn intel_two_celestials() -> IntelReport {
+    IntelReport {
+        id: 5,
+        received: now() - 90,
+        channel: "delve.imperium".into(),
+        reporter: "Scout Delta".into(),
+        text: "7-K5EL  Planet VI - Moon 4  3 hostiles".into(),
+        systems: vec![detected("7-K5EL")],
+        celestials: vec!["Moon 6-4".into()],
+        near_celestial: Some(("Planet VI - Moon 3 - Chemical Laboratory".into(), 42.7)),
+        count: Some(3),
+        ..Default::default()
+    }
+}
+
 /// Mid-resolution: one pilot already carries a character id, the other is still queued, which is
 /// the only state that draws the "Resolving pilot" placeholder chip. `clock` is the `now` the row
 /// is drawn with, so the age chip reads the same however far the animation phase has advanced.
