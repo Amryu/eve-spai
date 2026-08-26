@@ -24,6 +24,14 @@ pub(crate) fn systems_bridged() -> Arc<Systems> {
     Arc::new(s)
 }
 
+/// [`systems_bridged`] plus a bridge to Jita, which has no gate adjacency in this graph at all, so
+/// gates cannot reach it by any route and only the bridged answer exists.
+pub(crate) fn systems_bridged_island() -> Arc<Systems> {
+    let mut s = build_systems();
+    s.add_bridges(&[(30_004_759, 30_003_704), (30_004_759, 30_000_142)]);
+    Arc::new(s)
+}
+
 fn build_systems() -> Systems {
     let mut by_name = HashMap::new();
     for (id, name, security, region) in [
@@ -94,6 +102,38 @@ pub(crate) fn intel_across_the_bridge() -> IntelReport {
         text: "7-K5EL  Jackdaw  hostile".into(),
         systems: vec![detected("7-K5EL")],
         ships: vec![ship(34_317, "Jackdaw")],
+        count: Some(1),
+        count_ships: 1,
+        ..Default::default()
+    }
+}
+
+/// A hostile in Jita, the far end of the gateless bridge in [`systems_bridged_island`].
+pub(crate) fn intel_beyond_the_gates() -> IntelReport {
+    IntelReport {
+        id: 11,
+        received: now() - 30,
+        channel: "delve.imperium".into(),
+        reporter: "Scout Delta".into(),
+        text: "Jita  Rifter  hostile".into(),
+        systems: vec![detected("Jita")],
+        ships: vec![ship(587, "Rifter")],
+        count: Some(1),
+        count_ships: 1,
+        ..Default::default()
+    }
+}
+
+/// A hostile one gate from the player, where no bridge changes the answer.
+pub(crate) fn intel_next_door() -> IntelReport {
+    IntelReport {
+        id: 10,
+        received: now() - 25,
+        channel: "delve.imperium".into(),
+        reporter: "Scout Bravo".into(),
+        text: "319-3D  Cerberus  hostile".into(),
+        systems: vec![detected("319-3D")],
+        ships: vec![ship(11_993, "Cerberus")],
         count: Some(1),
         count_ships: 1,
         ..Default::default()

@@ -20,6 +20,7 @@ fn intel_scene_sized(
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -51,6 +52,7 @@ fn resolving_phases_scene(name: &'static str) -> Scene {
                 clock,
                 false,
                 None,
+                crate::app::JumpVia::Gates,
                 &args.systems,
                 &args.status,
                 &args.ship_details,
@@ -157,9 +159,42 @@ fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
 const PLAYER_SYS: i64 = 30_004_759;
 
 /// The intel feed with the player in 1DQ1-A and one hostile in 7-K5EL, two gates away or one jump
-/// over the bridge in [`fixtures::systems_bridged`]. Headless runs no log watcher and no location
-/// poller, so the report and the player's position are seeded.
+/// over the bridge in [`fixtures::systems_bridged`].
 fn intel_bridge_scene(name: &'static str, count_bridges: bool, size: [f32; 2]) -> Scene {
+    intel_feed_scene(
+        name,
+        count_bridges,
+        fixtures::systems_bridged(),
+        vec![fixtures::intel_across_the_bridge()],
+        size,
+    )
+}
+
+/// One card per bridge state, against a graph where 319-3D is a plain gate hop, 7-K5EL is two
+/// gates or one bridge, and Jita has no gate route at all.
+fn intel_bridge_states_scene(name: &'static str, count_bridges: bool, size: [f32; 2]) -> Scene {
+    intel_feed_scene(
+        name,
+        count_bridges,
+        fixtures::systems_bridged_island(),
+        vec![
+            fixtures::intel_next_door(),
+            fixtures::intel_across_the_bridge(),
+            fixtures::intel_beyond_the_gates(),
+        ],
+        size,
+    )
+}
+
+/// The intel feed with the player parked in [`PLAYER_SYS`]. Headless runs no log watcher and no
+/// location poller, so the reports and the player's position are seeded.
+fn intel_feed_scene(
+    name: &'static str,
+    count_bridges: bool,
+    systems: std::sync::Arc<crate::geo::Systems>,
+    reports: Vec<crate::intel::IntelReport>,
+    size: [f32; 2],
+) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
@@ -167,10 +202,10 @@ fn intel_bridge_scene(name: &'static str, count_bridges: bool, size: [f32; 2]) -
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = View::Intel;
             a.chat_dir = Some(harness::scratch_chat_dir());
-            a.systems = Some(fixtures::systems_bridged());
+            a.systems = Some(systems.clone());
             a.settings.intel_count_bridges = count_bridges;
             a.player.lock().unwrap().system_id = Some(PLAYER_SYS);
-            a.intel_state.lock().unwrap().reports = vec![fixtures::intel_across_the_bridge()];
+            a.intel_state.lock().unwrap().reports = reports.clone();
             a
         });
         app.root_chrome(ui);
@@ -458,6 +493,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
     v.push(intel_bridge_scene("view_intel_feed", false, [1280.0, 800.0]));
+    v.push(intel_bridge_states_scene("view_intel_feed_bridged", true, [1280.0, 800.0]));
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
     // 720 is the app's minimum window width, where the eight-column table has the least room.
     v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
@@ -734,6 +770,7 @@ fn uitest_intel_row_resolving_chip_holds_its_width() {
                 clock,
                 false,
                 None,
+                crate::app::JumpVia::Gates,
                 &args.systems,
                 &args.status,
                 &args.ship_details,
@@ -777,6 +814,7 @@ fn uitest_intel_row_resolving_chip_explains_itself_on_hover() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -821,6 +859,7 @@ fn uitest_intel_row_hover_sets_tip_when_compact() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -861,6 +900,7 @@ fn uitest_intel_row_hover_shows_tooltip() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -900,6 +940,7 @@ fn intel_card_height(name: &'static str, show_reporter: bool) -> f32 {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -936,6 +977,7 @@ fn uitest_intel_row_reporter_is_a_footer() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1087,6 +1129,311 @@ fn uitest_intel_card_jumps_follow_the_bridge_setting() {
     assert_eq!(read(true), ["1j"], "counting bridges did not take the bridge");
 }
 
+/// Every jump-bridge marker the feed drew, in tree order.
+fn bridge_marks(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut out = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Label || n.is_hidden() {
+            continue;
+        }
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        if label.contains(egui_phosphor::regular::ARROWS_LEFT_RIGHT) {
+            out.push(label.trim().to_owned());
+        }
+    }
+    out
+}
+
+/// UI-026: with the setting on, a card's distance can be short by a few jumps or exist only
+/// because of a bridge, and a hostile can use neither. All three states share one feed, since a
+/// mark means nothing without an unmarked card beside it.
+#[test]
+fn uitest_intel_card_marks_a_bridge_dependent_range() {
+    let read = |count_bridges: bool| {
+        let mut scene =
+            intel_bridge_states_scene("bridge_states_probe", count_bridges, [1280.0, 800.0]);
+        let harness = harness::build(&mut scene, false);
+        (jump_chips(&harness), bridge_marks(&harness))
+    };
+
+    let arrows = egui_phosphor::regular::ARROWS_LEFT_RIGHT;
+    let (chips, marks) = read(true);
+    assert_eq!(chips, ["1j", "1j", "1j"], "counting bridges did not take both bridges");
+    assert_eq!(
+        marks,
+        [arrows.to_owned(), format!("{arrows} bridge only")],
+        "the two bridged cards are not marked, or the gate-only card is"
+    );
+
+    let (chips, marks) = read(false);
+    assert_eq!(chips, ["2j", "1j"], "gate-only did not walk the gates, or Jita gained a route");
+    assert!(marks.is_empty(), "gate-only distances were marked as bridged: {marks:?}");
+}
+
+/// The gap between a card's jump number and its first system chip, so an extra widget wedged
+/// between them shows up as width rather than having to be found by name.
+fn jump_to_chip_gap(harness: &egui_kittest::Harness<'_>, system: &str) -> f32 {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut numbers: Vec<(f32, f32, f32)> = Vec::new();
+    let mut chip: Option<(f32, f32, f32)> = None;
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.is_hidden() {
+            continue;
+        }
+        let Some(b) = n.bounding_box() else { continue };
+        let r = (b.x0 as f32, b.x1 as f32, b.y0 as f32);
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        match n.role() {
+            egui::accesskit::Role::Label if label.trim().ends_with('j') => numbers.push(r),
+            egui::accesskit::Role::Button if label.contains(system) => chip = Some(r),
+            _ => {}
+        }
+    }
+    let chip = chip.unwrap_or_else(|| panic!("no {system} chip on screen"));
+    // Same row as the chip, and the nearest number to its left.
+    numbers
+        .into_iter()
+        .filter(|n| (n.2 - chip.2).abs() < 6.0 && n.1 <= chip.0 + 0.5)
+        .map(|n| chip.0 - n.1)
+        .fold(f32::MAX, f32::min)
+}
+
+/// The mark is an extra widget on the row, so a card that did not earn one must carry nothing at
+/// all between its number and its first chip. This is the UI-002 trade: reserving width for an
+/// absent widget is the bug, not the fix.
+#[test]
+fn uitest_bridge_mark_only_takes_width_on_the_card_that_earned_it() {
+    let mut scene = intel_bridge_states_scene("bridge_align_probe", true, [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let plain = jump_to_chip_gap(&harness, "319-3D");
+    let bridged = jump_to_chip_gap(&harness, "7-K5EL");
+    let spacing = harness.ctx.global_style().spacing.item_spacing.x;
+    assert!(
+        plain <= spacing + 0.5,
+        "an unbridged card holds {plain:.1}px between its number and its chip, \
+         against {spacing:.1}px of plain item spacing"
+    );
+    assert!(
+        bridged > plain + 4.0,
+        "the bridged card drew no glyph: {bridged:.1}px against {plain:.1}px"
+    );
+}
+
+/// The number column is what UI-002 protected: the mark rides after it, never in front of it.
+#[test]
+fn uitest_bridge_mark_holds_the_jump_column() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = intel_bridge_states_scene("bridge_column_probe", true, [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let mut xs: Vec<f32> = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Label || n.is_hidden() {
+            continue;
+        }
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        if label.trim() == "1j" {
+            if let Some(b) = n.bounding_box() {
+                xs.push(b.x0 as f32);
+            }
+        }
+    }
+    assert_eq!(xs.len(), 3, "expected three jump numbers, got {xs:?}");
+    let first = xs[0];
+    assert!(
+        xs.iter().all(|x| (x - first).abs() < 0.5),
+        "the jump numbers no longer share a column: {xs:?}"
+    );
+}
+
+/// The mark is a glyph, so the whole explanation lives in the tooltip, and both the number and
+/// the glyph have to carry it: the number is the part a user reaches for.
+#[test]
+fn uitest_bridge_mark_explains_itself_on_hover() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let probe = |at: egui::Pos2| {
+        let mut scene = intel_bridge_states_scene("bridge_hover_probe", true, [1280.0, 800.0]);
+        let mut harness = harness::build(&mut scene, false);
+        assert!(harness.query_by_label_contains("by gate").is_none());
+        harness.event(egui::Event::PointerMoved(at));
+        harness.run_steps(3);
+        harness.query_by_label_contains("2j by gate").is_some()
+    };
+
+    let mut scene = intel_bridge_states_scene("bridge_hover_probe", true, [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let mut spots: Vec<egui::Pos2> = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Label || n.is_hidden() {
+            continue;
+        }
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        if label.contains(egui_phosphor::regular::ARROWS_LEFT_RIGHT) && !label.contains("only") {
+            if let Some(b) = n.bounding_box() {
+                // The number sits one item-spacing to the left of the glyph.
+                spots.push(egui::pos2((b.x0 as f32 + b.x1 as f32) / 2.0, (b.y0 as f32 + b.y1 as f32) / 2.0));
+                spots.push(egui::pos2(b.x0 as f32 - 12.0, (b.y0 as f32 + b.y1 as f32) / 2.0));
+            }
+        }
+    }
+    assert_eq!(spots.len(), 2, "expected one bridge glyph to hover");
+    drop(harness);
+    for at in spots {
+        assert!(probe(at), "hovering at {at:?} showed no gate distance");
+    }
+}
+
+/// The flag answers "does the number on screen rest on a bridge", not "do you own a bridge". With
+/// the setting off the number is already the gate answer, so nothing is marked however many
+/// bridges would have shortened the trip.
+#[test]
+fn uitest_bridge_flag_reads_the_number_that_is_shown() {
+    use crate::app::{jump_via, JumpVia};
+
+    const SEVEN_K5EL: i64 = 30_003_704;
+    const JITA: i64 = 30_000_142;
+    let sys = Some(fixtures::systems_bridged_island());
+    let via = |target: i64, use_bridges: bool, shown: u32| {
+        jump_via(&sys, Some(PLAYER_SYS), Some(target), use_bridges, Some(shown))
+    };
+
+    assert_eq!(via(SEVEN_K5EL, false, 2), JumpVia::Gates, "a gate-only number was marked");
+    assert_eq!(via(SEVEN_K5EL, true, 1), JumpVia::BridgeShorter(2), "the shortcut went unnoticed");
+    assert_eq!(via(JITA, true, 1), JumpVia::BridgeOnly, "a gateless target read as a shortcut");
+    assert_eq!(via(30_004_608, true, 1), JumpVia::Gates, "a plain gate hop was marked");
+    assert_eq!(
+        jump_via(&sys, Some(PLAYER_SYS), Some(JITA), true, None),
+        JumpVia::Gates,
+        "a card with no number still asked about bridges"
+    );
+}
+
+/// The colour has to be legible as "informational" beside the row's own vocabulary, where green
+/// means cleared and amber and red mean threat.
+#[test]
+fn uitest_bridge_mark_uses_its_own_colour_and_a_real_glyph() {
+    use crate::app::{jump_chip_style, jump_chip_tip, JumpVia};
+    use crate::theme::standing;
+
+    let (col, mark) = jump_chip_style(JumpVia::Gates);
+    assert_eq!(col, standing::CORP);
+    assert!(mark.is_none() && jump_chip_tip(JumpVia::Gates, 3).is_none());
+
+    for via in [JumpVia::BridgeShorter(9), JumpVia::BridgeOnly] {
+        let (col, mark) = jump_chip_style(via);
+        for (name, other) in
+            [("CORP", standing::CORP), ("HOSTILE", standing::HOSTILE), ("WARNING", standing::WARNING)]
+        {
+            assert_ne!(col, other, "{via:?} reuses {name}");
+        }
+        let mark = mark.unwrap_or_else(|| panic!("{via:?} drew no glyph"));
+        assert!(mark.starts_with(egui_phosphor::regular::ARROWS_LEFT_RIGHT), "{mark:?}");
+        let tip = jump_chip_tip(via, 2).unwrap_or_else(|| panic!("{via:?} has no tooltip"));
+        assert!(tip.contains("hostile") && tip.contains("bridge"), "{tip:?}");
+    }
+    assert_ne!(
+        jump_chip_style(JumpVia::BridgeShorter(9)).1,
+        jump_chip_style(JumpVia::BridgeOnly).1,
+        "a bridge shortcut and a bridge-only route read identically"
+    );
+}
+
+/// Detection is a second BFS per card per frame, on a graph the size of k-space, so the whole
+/// 250-card cap is what decides whether it needs caching. Two feeds: one whose reports sit within
+/// a few jumps, which is what intel channels actually carry, and one spread over the whole map.
+#[test]
+#[ignore = "timing, not an assertion; run with --ignored --nocapture"]
+fn uitest_bench_intel_bridge_detection() {
+    use crate::geo::{SystemInfo, Systems};
+
+    const N: i64 = 5200;
+    const CARDS: usize = 250;
+    let id = |k: i64| 30_000_000 + k.rem_euclid(N);
+    let mut by_name = std::collections::HashMap::new();
+    let mut adjacency = std::collections::HashMap::new();
+    for i in 0..N {
+        by_name.insert(
+            format!("s{i}"),
+            SystemInfo {
+                id: id(i),
+                name: format!("s{i}"),
+                security: -0.5,
+                constellation: String::new(),
+                region: String::new(),
+                faction: String::new(),
+            },
+        );
+        // A ring plus one long chord per system: four neighbours, the branching k-space has.
+        adjacency.insert(id(i), vec![id(i - 1), id(i + 1), id(i + 37), id(i - 37)]);
+    }
+    let mut sys = Systems::new(by_name, adjacency);
+    sys.add_bridges(&[(id(0), id(N / 2)), (id(0), id(120))]);
+    let sys = Some(std::sync::Arc::new(sys));
+
+    let feeds = [
+        ("home", (0..CARDS as i64).map(|i| id((i % 40) - 20)).collect::<Vec<_>>()),
+        ("map-wide", (0..CARDS as i64).map(|i| id(i * 17)).collect::<Vec<_>>()),
+    ];
+    for (name, targets) in feeds {
+        // `moving` walks the player one system per pass, which is what invalidates the memo, so it
+        // times the cold pass the feed pays when the player jumps. Standing still times a redraw.
+        let time = |detect: bool, moving: bool| {
+            let mut passes = 0i64;
+            let mut sink = 0u64;
+            if !moving {
+                // One untimed pass, or the standing-still figure carries the cold pass it exists
+                // to exclude.
+                for &target in &targets {
+                    let shown = crate::app::jumps_from_you(&sys, Some(id(0)), Some(target), true);
+                    crate::app::jump_via(&sys, Some(id(0)), Some(target), true, shown);
+                }
+            }
+            let t = std::time::Instant::now();
+            while t.elapsed() < std::time::Duration::from_millis(500) {
+                let me = Some(id(if moving { passes } else { 0 }));
+                for &target in &targets {
+                    let shown = crate::app::jumps_from_you(&sys, me, Some(target), true);
+                    sink += shown.unwrap_or(0) as u64;
+                    if detect {
+                        let via = crate::app::jump_via(&sys, me, Some(target), true, shown);
+                        sink += matches!(std::hint::black_box(via), crate::app::JumpVia::Gates)
+                            as u64;
+                    }
+                }
+                passes += 1;
+            }
+            assert!(sink > 0);
+            t.elapsed().as_secs_f64() * 1000.0 / passes as f64
+        };
+        let me = Some(id(0));
+        let flagged = targets
+            .iter()
+            .filter(|&&target| {
+                let shown = crate::app::jumps_from_you(&sys, me, Some(target), true);
+                crate::app::jump_via(&sys, me, Some(target), true, shown)
+                    != crate::app::JumpVia::Gates
+            })
+            .count();
+        let per = |detect, moving| (time(detect, moving) * 1000.0) / CARDS as f64;
+        println!(
+            "{name} feed, {CARDS} cards over {N} systems, {flagged} bridge-dependent: \
+             distances alone {:.0} us/card, \
+             detection adds {:.0} us/card cold and {:.0} us/card warm",
+            per(false, false),
+            per(true, true) - per(false, true),
+            per(true, false) - per(false, false),
+        );
+    }
+}
+
 /// The setting is only reachable from the alert rules editor unless the intel toolbar carries its
 /// own control, which is the half of UI-025 the user reported.
 #[test]
@@ -1168,6 +1515,7 @@ fn uitest_intel_row_click_returns_pilot() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1214,6 +1562,7 @@ fn uitest_click_at_hits_the_system_chip() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1635,6 +1984,7 @@ fn uitest_intel_row_marks_uncertain_pilot_from_display_cased_set() {
             fixtures::now(),
             false,
             None,
+            crate::app::JumpVia::Gates,
             &args.systems,
             &args.status,
             &args.ship_details,
