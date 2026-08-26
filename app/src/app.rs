@@ -2332,8 +2332,6 @@ impl SpaiApp {
                             self.jabber_window_body(ui, win, f, &mut out);
                         });
                         self.jabber_close_room_dialog(ctx, win);
-                        // Unique per window: a shared key would re-send WindowLevel every frame.
-                        ontop_pin(ctx, &vp_id);
                     }
                     let sz = ctx.content_rect().size();
                     if sz.x > 100.0 && sz.y > 100.0 {
@@ -3392,6 +3390,13 @@ impl SpaiApp {
             move_targets.push((ChatWinKey::Popout(w.id), name));
         }
         let can_new = self.jabber_popouts.len() < MAX_POPOUTS;
+        // The pop-out's always-on-top pin rides the right end of this row, so it is in the layout
+        // and costs no height of its own. The main window is not its own viewport, so it has none.
+        // The id is per window: a shared key would re-send WindowLevel every frame.
+        let pin: Option<String> = match win {
+            ChatWinKey::Popout(id) => Some(format!("jabberwin_{id}")),
+            ChatWinKey::Main => None,
+        };
         // Tab strip: Fleet pings (static, left-most) then one tab per open conversation.
         let mut focus: Option<Option<String>> = None;
         let mut close_tab: Option<(String, bool)> = None;
@@ -3438,7 +3443,8 @@ impl SpaiApp {
                     .x;
                 text_w + 2.0 * ui.spacing().button_padding.x + 4.0
             };
-            let tab_area = (full - dd_w).max(0.0);
+            let pin_w = pin.as_ref().map_or(0.0, |_| PIN_GAP + ontop_pin_w(ui));
+            let tab_area = (full - dd_w - pin_w).max(0.0);
 
             let mut used = 0.0;
             if is_main {
@@ -3604,7 +3610,7 @@ impl SpaiApp {
             }
 
             // Pin the dropdown pseudo-tab to the right edge (always shown, static position).
-            let pad = (full - used - dd_w).max(0.0);
+            let pad = (full - used - dd_w - pin_w).max(0.0);
             if pad > 0.0 {
                 ui.add_space(pad);
             }
@@ -3663,6 +3669,10 @@ impl SpaiApp {
                     });
                 }
             });
+            if let Some(vp) = &pin {
+                ui.add_space(PIN_GAP);
+                ontop_pin_ui(ui, vp);
+            }
         }).response.rect;
         if let Some(jid) = focus {
             out.push(TabAction::Select { win, jid });
@@ -18764,6 +18774,8 @@ fn selectable_chip<'a>(
 const MAX_POPOUTS: usize = 6;
 
 const TAB_H: f32 = 24.0;
+/// Separates the pin from the tab strip, which otherwise runs flush at zero item spacing.
+const PIN_GAP: f32 = 6.0;
 const TAB_PAD_X: f32 = 8.0;
 const TAB_GAP: f32 = 6.0;
 const TAB_LEAD_W: f32 = 16.0;
@@ -21299,22 +21311,43 @@ pub(crate) fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::Resc
     chk_reminder(ui, "Ask for what's on grid (attacking it)");
 }
 
+/// Floating pin, for viewports whose content is a bare central panel with no row to host it.
 fn ontop_pin(ctx: &egui::Context, id: &str) {
-    let key = egui::Id::new(("ontop", id));
-    let mut on = ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(true));
     egui::Area::new(egui::Id::new(("ontop_area", id)))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-6.0, 6.0))
         .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            if ui
-                .selectable_label(on, egui_phosphor::regular::PUSH_PIN)
-                .on_hover_text(if on { "Always on top (on)" } else { "Always on top (off)" })
-                .clicked()
-            {
-                on = !on;
-                ctx.data_mut(|d| d.insert_temp(key, on));
-            }
-        });
+        .show(ctx, |ui| ontop_pin_ui(ui, id));
+}
+
+/// Width `ontop_pin_ui` takes, so a row can reserve it before laying out its own content.
+fn ontop_pin_w(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let text = ui
+        .painter()
+        .layout_no_wrap(
+            egui_phosphor::regular::PUSH_PIN.to_owned(),
+            font,
+            egui::Color32::WHITE,
+        )
+        .size()
+        .x;
+    text + 2.0 * ui.spacing().button_padding.x
+}
+
+/// The pin itself, laid out where it is called. `id` is the viewport's, since the toggle state and
+/// the window command both belong to that window.
+fn ontop_pin_ui(ui: &mut egui::Ui, id: &str) {
+    let ctx = ui.ctx().clone();
+    let key = egui::Id::new(("ontop", id));
+    let mut on = ctx.data(|d| d.get_temp::<bool>(key).unwrap_or(true));
+    if ui
+        .selectable_label(on, egui_phosphor::regular::PUSH_PIN)
+        .on_hover_text(if on { "Always on top (on)" } else { "Always on top (off)" })
+        .clicked()
+    {
+        on = !on;
+        ctx.data_mut(|d| d.insert_temp(key, on));
+    }
     // Only send the window-level command when it changes. Sending it every frame leaves a pending
     // viewport command that forces a repaint each frame, spinning the dialog at 100% CPU.
     let applied_key = egui::Id::new(("ontop_applied", id));
