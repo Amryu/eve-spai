@@ -36,3 +36,16 @@ one. UI-016 was raised as a defect on exactly this basis and closed as a false p
 window keeps the window manager's title bar and close button, which never appear in a render.
 
 Any ticket about window furniture needs `with_decorations` checked in source before it is believed.
+
+## Writer-side gap, from UI-029
+
+UI-029 ships a `JumpVia` verdict to the overlay over IPC. The reader path is well covered: a scene
+builds an `AlertMsg`, pushes it through the real codec, applies it with `overlay::apply_alert`, and
+asserts the mark appears, plus a negative case with the field empty.
+
+**Nothing asserts the producer fills it.** Stopping `push_overlay_update` from populating `via`
+leaves every test green. The code is correct today, but the exact regression that ticket fixed would
+not be caught again.
+
+Testing the producer needs an `AlertEngine`, which is constructible but heavier than the reader-side
+scene. Worth doing when the overlay path is next touched.

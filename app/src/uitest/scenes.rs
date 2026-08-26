@@ -109,6 +109,62 @@ fn alert_window_scene(name: &'static str, feed: Vec<crate::intel::IntelReport>) 
     })
 }
 
+/// One card per bridge state, ruled on the way the main process would: 319-3D a plain gate hop,
+/// 7-K5EL one bridge jump where gates take two, Jita reachable by bridge alone.
+fn alert_bridge_cards() -> Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)> {
+    vec![
+        (fixtures::intel_next_door(), Some(1), crate::app::JumpVia::Gates),
+        (fixtures::intel_across_the_bridge(), Some(1), crate::app::JumpVia::BridgeShorter(2)),
+        (fixtures::intel_beyond_the_gates(), Some(1), crate::app::JumpVia::BridgeOnly),
+    ]
+}
+
+/// The alert window fed the way the overlay subprocess is fed: one `AlertMsg` through the frame
+/// codec and into the state the real reader fills. Nothing here knows the player's system or the
+/// bridge setting, so a mark can only have come from the verdict on the wire. GAP-007 keeps the
+/// subprocess itself out of the harness; this is the same callback reached the same way.
+fn alert_window_ipc_scene(
+    name: &'static str,
+    cards: Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)>,
+    send_via: bool,
+) -> Scene {
+    let msg = crate::ipc::AlertMsg {
+        feed: cards
+            .iter()
+            .map(|(r, _, _)| (r.clone(), crate::settings::Severity::Danger))
+            .collect(),
+        from_you: cards.iter().map(|(_, j, _)| *j).collect(),
+        via: if send_via { cards.iter().map(|(_, _, v)| *v).collect() } else { Vec::new() },
+        status: Default::default(),
+        resolved_pilots: fixtures::resolved_pilots(),
+        uncertain: fixtures::uncertain(),
+        last_ship: Default::default(),
+        kills: Default::default(),
+        affil: Default::default(),
+        secs: 5.0,
+        focus: false,
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    crate::ipc::send(&mut buf, &msg).expect("frame the alert");
+    let msg: crate::ipc::AlertMsg =
+        crate::ipc::recv(&mut std::io::Cursor::new(buf)).expect("read the alert back");
+    let mut st = crate::app::AlertWindowState {
+        enabled: true,
+        pinned: true,
+        systems: Some(fixtures::systems()),
+        kills: Some(fixtures::kills()),
+        affil: Some(fixtures::affil()),
+        ..Default::default()
+    };
+    crate::overlay::apply_alert(&mut st, msg);
+    let shared: crate::app::SharedAlertWindow = std::sync::Arc::new(std::sync::Mutex::new(st));
+    let cb = crate::app::build_alert_viewport_cb(shared);
+    Scene::ctx(name, [560.0, 720.0], move |ctx| {
+        let mut ui = harness::detached_ui(ctx);
+        cb(&mut ui, egui::ViewportClass::Root);
+    })
+}
+
 fn ping_window_scene(name: &'static str, pings: Vec<crate::pings::Ping>) -> Scene {
     let st = crate::app::PingWindowState {
         enabled: true,
@@ -429,6 +485,7 @@ pub(crate) fn all() -> Vec<Scene> {
             "alert_window_torture",
             vec![fixtures::intel_torture(), fixtures::intel_typical(), fixtures::intel_clear()],
         ),
+        alert_window_ipc_scene("alert_window_bridged", alert_bridge_cards(), true),
         ping_window_scene("ping_window_fleet", vec![fixtures::ping_fleet()]),
         ping_window_scene(
             "ping_window_mixed",
@@ -1171,6 +1228,32 @@ fn uitest_intel_card_marks_a_bridge_dependent_range() {
     let (chips, marks) = read(false);
     assert_eq!(chips, ["2j", "1j"], "gate-only did not walk the gates, or Jita gained a route");
     assert!(marks.is_empty(), "gate-only distances were marked as bridged: {marks:?}");
+}
+
+/// UI-029: the overlay is handed a jump number over IPC and has no graph to work out what it
+/// rests on, so the verdict has to travel with it. Sending the same feed without `via` is the bug
+/// as it shipped, and draws no mark at all.
+#[test]
+fn uitest_alert_window_marks_a_bridge_dependent_range() {
+    let read = |send_via: bool| {
+        let mut scene =
+            alert_window_ipc_scene("alert_bridge_probe", alert_bridge_cards(), send_via);
+        let harness = harness::build(&mut scene, false);
+        (jump_chips(&harness), bridge_marks(&harness))
+    };
+
+    let arrows = egui_phosphor::regular::ARROWS_LEFT_RIGHT;
+    let (chips, marks) = read(true);
+    assert_eq!(chips, ["1j", "1j", "1j"], "the overlay lost the jump numbers");
+    assert_eq!(
+        marks,
+        [format!("{arrows} bridge only"), arrows.to_owned()],
+        "the overlay did not mark both bridge-dependent cards, or marked the gate-only one"
+    );
+
+    let (chips, marks) = read(false);
+    assert_eq!(chips, ["1j", "1j", "1j"], "the numbers depend on the verdict");
+    assert!(marks.is_empty(), "a mark appeared with no verdict on the wire: {marks:?}");
 }
 
 /// The gap between a card's jump number and its first system chip, so an extra widget wedged

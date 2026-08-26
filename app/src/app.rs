@@ -16940,6 +16940,19 @@ impl AlertEngine {
                 )
             })
             .collect();
+        let via: Vec<JumpVia> = feed
+            .iter()
+            .zip(&from_you)
+            .map(|((r, _), &shown)| {
+                jump_via(
+                    &cfg.systems,
+                    player_sys,
+                    r.primary_system().map(|s| s.id),
+                    cfg.intel_count_bridges,
+                    shown,
+                )
+            })
+            .collect();
 
         let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
         let mut kill_chars: Vec<i64> = Vec::new();
@@ -16984,6 +16997,7 @@ impl AlertEngine {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
         from_you.hash(&mut hasher);
+        via.hash(&mut hasher);
         hash_sorted_map(&mut hasher, &status);
         hash_sorted_map(&mut hasher, &resolved_pilots);
         hash_sorted_map(&mut hasher, &last_ship);
@@ -17001,6 +17015,7 @@ impl AlertEngine {
         let msg = crate::ipc::AlertMsg {
             feed,
             from_you,
+            via,
             status,
             resolved_pilots,
             uncertain,
@@ -18186,7 +18201,7 @@ pub(crate) fn jumps_from_you(
 }
 
 /// What a card's jump distance rests on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum JumpVia {
     /// Gates alone reach the target in the number shown, so it is also what a hostile faces.
     #[default]
@@ -20442,6 +20457,7 @@ pub(crate) fn build_alert_viewport_cb(
         std::mem::take(&mut st.focus_pending);
         let feed = st.feed.clone();
         let from_you_pre = st.from_you.clone();
+        let via_pre = st.via.clone();
         let count_bridges = st.count_bridges;
         let systems = st.systems.clone();
         let status = st.status.clone();
@@ -20634,8 +20650,9 @@ pub(crate) fn build_alert_viewport_cb(
                             } else {
                                 jumps_from_you(&systems, player_sys, target, count_bridges)
                             };
-                            let via =
-                                jump_via(&systems, player_sys, target, count_bridges, from_you);
+                            let via = via_pre.get(i).copied().unwrap_or_else(|| {
+                                jump_via(&systems, player_sys, target, count_bridges, from_you)
+                            });
                             if let Some(c) = intel_row(
                                 ui, r, now_ts, false, from_you, via, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots,
@@ -20989,6 +21006,9 @@ pub(crate) enum PendingTip {
 pub(crate) struct AlertWindowState {
     pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) from_you: Vec<Option<u32>>,
+    /// Per-card bridge verdict, sent over IPC because the overlay subprocess knows neither the
+    /// player's system nor the bridge setting. Empty in the main process, which recomputes.
+    pub(crate) via: Vec<JumpVia>,
     pub(crate) count_bridges: bool,
     pub(crate) secs: f32,
     pub(crate) pinned: bool,
