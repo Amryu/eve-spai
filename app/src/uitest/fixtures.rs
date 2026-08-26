@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::geo::{SystemInfo, Systems};
@@ -186,13 +186,8 @@ pub(crate) fn resolved_pilots() -> HashMap<String, i64> {
     m
 }
 
-/// Keyed by LOWERCASED name: `intel_row` looks these up with `name.to_lowercase()`
-/// (`app.rs:22108`), which the `&HashSet<String>` parameter type does not hint at.
-pub(crate) fn uncertain() -> HashSet<String> {
-    ["Second Target", "Very Long Hostile Pilot Name Number 03"]
-        .iter()
-        .map(|n| n.to_lowercase())
-        .collect()
+pub(crate) fn uncertain() -> crate::pilot::UncertainPilots {
+    ["Second Target", "Very Long Hostile Pilot Name Number 03"].into_iter().collect()
 }
 
 /// Args for [`crate::app::intel_row`] that are the same in every scene, so a scene only has to say
@@ -203,7 +198,7 @@ pub(crate) struct IntelArgs {
     pub(crate) ship_details: HashMap<i64, crate::store::ShipDetails>,
     pub(crate) ship_roles: HashMap<i64, Vec<(&'static str, &'static str)>>,
     pub(crate) resolved_pilots: HashMap<String, i64>,
-    pub(crate) uncertain: HashSet<String>,
+    pub(crate) uncertain: crate::pilot::UncertainPilots,
     pub(crate) last_ship: HashMap<String, (i64, String, i64)>,
     pub(crate) kills: crate::kills::KillCache,
     pub(crate) affil: crate::affiliation::SharedAffil,
