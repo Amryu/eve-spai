@@ -1492,6 +1492,22 @@ fn uitest_ping_without_a_doctrine_leaves_no_row() {
 const BODY_LINES: [&str; 3] =
     ["Sov timer in 68FT-6", "Fits and doctrine:", "Bring a mobile depot"];
 
+/// One line of body text, resolved the way the app resolves it, so a row height can be checked
+/// against the ink it holds rather than against a number written down here.
+fn theme_body_line() -> f32 {
+    let ctx = egui::Context::default();
+    harness::prepare(&ctx);
+    let mut h = 0.0;
+    // Twice: `install_fonts_opts` only stashes the definitions, so the first pass still measures
+    // egui's defaults (see `harness::build`).
+    for _ in 0..2 {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            h = ui.text_style_height(&egui::TextStyle::Body);
+        });
+    }
+    h
+}
+
 fn theme_spacing() -> egui::style::Spacing {
     let ctx = egui::Context::default();
     harness::prepare(&ctx);
@@ -1683,6 +1699,88 @@ fn uitest_jabber_popout_renders_a_conversation() {
             "the pop-out drew no {needle:?}: {labels:?}"
         );
     }
+}
+
+/// UI-027. Chat bodies sat in `jabber_conversation_ui`'s own `horizontal_wrapped`, whose row is
+/// floored at `interact_size.y` whether or not anything interactive is on it, so every message
+/// allocated 26px for 15px of ink.
+#[test]
+fn uitest_jabber_message_body_is_one_line_tall() {
+    let (line, spacing) = (theme_body_line(), theme_spacing());
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_popout").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let body = ping_label_rect(&harness, "in fleet, in position").expect("no one-line body");
+    // That nick appears on more than one message, so pick the one on this body's row.
+    let top = body.top();
+    let nick = ping_node_rect(&harness, "Wingmate Alpha:", |n| {
+        n.bounding_box().is_some_and(|b| (b.y0 as f32 - top).abs() < 0.5)
+    })
+    .expect("no nick beside it");
+    assert!(
+        body.height() < spacing.interact_size.y - 1.0,
+        "a one-line body is {:.1}px tall, still floored at interact_size {:.1}",
+        body.height(),
+        spacing.interact_size.y
+    );
+    assert!(
+        (body.height() - line).abs() < 0.5,
+        "a one-line body stands {:.1}px against {line:.1}px of text",
+        body.height()
+    );
+    assert!(
+        (nick.height() - line).abs() < 0.5,
+        "the nick stands {:.1}px against {line:.1}px of text",
+        nick.height()
+    );
+}
+
+/// The second row of a wrapped body was already one line tall while the first was floored, so a
+/// two-row message measured 41px rather than 30px. Every row has to be the same height now.
+#[test]
+fn uitest_jabber_wrapped_body_rows_are_all_one_line() {
+    let line = theme_body_line();
+    for name in ["jabber_popout", "jabber_popout_min"] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        let body = ping_label_rect(&harness, "hostiles moved off gate")
+            .unwrap_or_else(|| panic!("no wrapped body in {name}"));
+        assert!(
+            body.height() > line + 0.5,
+            "{name}: the body did not wrap, so this asserts nothing"
+        );
+        let rows = (body.height() / line).round();
+        assert!(
+            (body.height() - rows * line).abs() < 0.5,
+            "{name}: a wrapped body is {:.1}px tall, not a whole number of {line:.1}px rows, so \
+             its first row is still floored",
+            body.height()
+        );
+    }
+}
+
+/// A message with an empty body has nothing in its row to hold it open, and a tight row is then
+/// literally 0.0px, which folds the message into the one above it.
+#[test]
+fn uitest_jabber_blank_body_keeps_its_row() {
+    let line = theme_body_line();
+    let mut scene = jabber_popout_seeded(
+        "blank_body_probe",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        "",
+        None,
+        fixtures::jabber_state_blank_body,
+    );
+    let harness = harness::build(&mut scene, false);
+    let before = ping_label_rect(&harness, "cyno up on the Keepstar").expect("no message before");
+    let after =
+        ping_label_rect(&harness, "and the second one just lit").expect("no message after");
+    let gap = after.top() - before.bottom();
+    assert!(
+        gap > line,
+        "the empty message opened {gap:.1}px between its neighbours, less than the {line:.1}px of \
+         the line it stands for"
+    );
 }
 
 /// The composer's text band, which is the height the galley *wants*. It lives inside a scroll

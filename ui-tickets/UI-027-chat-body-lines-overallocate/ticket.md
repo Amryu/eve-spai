@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `render_message_body`, `jabber_conversation_ui` |
 | **Found by** | UI-018 |
 
