@@ -3331,3 +3331,76 @@ fn uitest_alert_rule_names_fit_and_clear_the_arrows() {
         }
     }
 }
+
+/// UI-033: the pin was a floating `Area`, so it reserved no space and every `dialog_viewport`
+/// dialog laid its body out underneath it. `uitest_layout` cannot see that: its click-target pass
+/// and its text pass never compare one against the other (GAP-010), so this scene-specific check is
+/// the gate. The five names are exactly the scenes that route through `dialog_viewport_ext`; the
+/// other three dialog scenes are `Window`s or a `Modal` and carry no pin.
+#[test]
+fn uitest_dialog_pin_is_clear_of_the_dialog_body() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut failures = Vec::new();
+    for (name, viewport) in [
+        ("dialog_severity", "severity_window"),
+        ("dialog_intel_channels", "intel_channels_window"),
+        ("dialog_jump_bridges", "jump_bridges_window"),
+        ("dialog_coalitions", "coalitions_window"),
+        ("dialog_battle_filter", "battle_filter"),
+    ] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let size = scene.size;
+        let mut harness = harness::build(&mut scene, false);
+        let mut pin = None;
+        let mut text = Vec::new();
+        let mut hits = Vec::new();
+        for node in harness.root().children_recursive() {
+            let n = node.accesskit_node();
+            if n.is_hidden() {
+                continue;
+            }
+            let Some(b) = n.bounding_box() else { continue };
+            let r = egui::Rect {
+                min: egui::pos2(b.x0 as f32, b.y0 as f32),
+                max: egui::pos2(b.x1 as f32, b.y1 as f32),
+            };
+            let label = n.label().or_else(|| n.value()).unwrap_or_default().to_string();
+            if n.role() == Role::Button && label.contains(egui_phosphor::regular::PUSH_PIN) {
+                pin = Some(r);
+            } else if n.role() == Role::Label
+                && !label.is_empty()
+                && node.children().any(|c| c.accesskit_node().role() == Role::TextRun)
+            {
+                text.push((label, r));
+            } else if n.role() == Role::Button || n.role() == Role::TextInput {
+                hits.push((label, r));
+            }
+        }
+        let Some(pin) = pin else {
+            failures.push(format!("{name}: the dialog has no pin"));
+            continue;
+        };
+        if !egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(pin) {
+            failures.push(format!("{name}: pin {pin:?} is outside the {size:?} window"));
+        }
+        for (what, items) in [("Label", &text), ("hit target", &hits)] {
+            for (label, r) in items {
+                let hit = pin.intersect(*r);
+                if hit.width() > 1.0 && hit.height() > 1.0 {
+                    failures.push(format!("{name}: pin {pin:?} over {what} {label:?} {r:?}"));
+                }
+            }
+        }
+        let key = egui::Id::new(("ontop", viewport));
+        let before = harness.ctx.data(|d| d.get_temp::<bool>(key));
+        harness::click_at(&harness, pin.center());
+        harness.run_steps(2);
+        let after = harness.ctx.data(|d| d.get_temp::<bool>(key));
+        if after == before {
+            failures.push(format!("{name}: clicking the pin at {:?} did nothing", pin.center()));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}

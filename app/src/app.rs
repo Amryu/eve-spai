@@ -19717,11 +19717,11 @@ pub(crate) fn dialog_viewport_ext(
         builder,
         |ctx, _class| {
             egui::CentralPanel::default().show(ctx, |ui| {
+                ontop_pin_strip(ui, id);
                 if let Some(c) = content.take() {
                     c(ui);
                 }
             });
-            ontop_pin(ctx, id);
             if ctx.input(|i| i.viewport().close_requested()) {
                 keep = false;
             }
@@ -21778,8 +21778,27 @@ fn ontop_pin(ctx: &egui::Context, id: &str) {
         .show(ctx, |ui| ontop_pin_ui(ui, id));
 }
 
+/// The row a dialog body reserves for the pin before laying out its own content. A floating `Area`
+/// reserves nothing, so every dialog drew its first rows under the pin (UI-033), and unlike the
+/// jabber popout these dialogs have no row of their own to host it.
+fn ontop_pin_strip(ui: &mut egui::Ui, id: &str) {
+    egui::Panel::top(egui::Id::new(("ontop_strip", id)))
+        .show_separator_line(false)
+        .frame(egui::Frame::NONE)
+        .exact_size(ontop_pin_size(ui).y)
+        .show_inside(ui, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ontop_pin_ui(ui, id);
+            });
+        });
+}
+
 /// Width `ontop_pin_ui` takes, so a row can reserve it before laying out its own content.
 fn ontop_pin_w(ui: &egui::Ui) -> f32 {
+    ontop_pin_size(ui).x
+}
+
+fn ontop_pin_size(ui: &egui::Ui) -> egui::Vec2 {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text = ui
         .painter()
@@ -21788,9 +21807,9 @@ fn ontop_pin_w(ui: &egui::Ui) -> f32 {
             font,
             egui::Color32::WHITE,
         )
-        .size()
-        .x;
-    text + 2.0 * ui.spacing().button_padding.x
+        .size();
+    let size = text + 2.0 * ui.spacing().button_padding;
+    egui::vec2(size.x, size.y.max(ui.spacing().interact_size.y))
 }
 
 /// The pin itself, laid out where it is called. `id` is the viewport's, since the toggle state and

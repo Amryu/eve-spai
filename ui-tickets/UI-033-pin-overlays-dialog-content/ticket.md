@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `ontop_pin`, `dialog_viewport_ext` |
 | **Found by** | GAP-001 |
 
