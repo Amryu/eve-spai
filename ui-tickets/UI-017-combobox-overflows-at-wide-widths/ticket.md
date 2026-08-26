@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `battles_view` |
 | **Wave** | unscheduled |
 | **Found by** | UI-012's width sweep |

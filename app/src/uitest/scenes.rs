@@ -411,6 +411,9 @@ pub(crate) fn all() -> Vec<Scene> {
     // window. 720 breaks them into the most rows, which is where a divider is most likely to end
     // up at a row edge.
     v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
+    // UI-017: 1440 is a break point where the throttle picker used to land last on its row with
+    // too little space left, and paint over the panel edge.
+    v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
     // 720 is the app's minimum window width, where the eight-column table has the least room.
@@ -613,6 +616,27 @@ fn uitest_toolbar_dividers_keep_content_on_both_sides() {
             );
         }
     }
+}
+
+/// UI-017: a `ComboBox` used to claim only the row space left over instead of the width it paints,
+/// which overflows the window wherever the toolbar happens to break just before one. The two
+/// widths in the ticket sit between widths that both look fine, so sweep rather than spot-check.
+#[test]
+fn uitest_battles_toolbar_stays_inside_the_window() {
+    let mut failures = Vec::new();
+    for w in (720..=1600).step_by(40).map(|w| w as f32) {
+        let size = egui::vec2(w, 800.0);
+        let mut scene = view_scene("battles_width_probe", View::Battles, [w, 800.0]);
+        let mut harness = harness::build(&mut scene, false);
+        let report = super::checks::inspect(&mut harness, size);
+        for esc in &report.offscreen {
+            failures.push(format!("  {w}px: {esc}"));
+        }
+        if let Some(o) = &report.overflow {
+            failures.push(format!("  {w}px: {o}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
 /// The resolving placeholder is the only chip whose whole label is the pilot icon plus dots.
