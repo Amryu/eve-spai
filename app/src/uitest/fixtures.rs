@@ -307,6 +307,43 @@ fn room_history() -> Vec<crate::jabber::ChatMsg> {
     v
 }
 
+/// The cap `jabber.rs` drains a conversation back to, which is the case the user reported.
+pub(crate) const JABBER_LONG_LEN: usize = 1000;
+
+/// A conversation at the cap, generated rather than written out. Senders run in threes so grouping
+/// engages, bodies vary in length so rows are variable height, and the last six land inside the
+/// session window so the "new" divider sits near the bottom rather than off the top.
+fn room_history_long() -> Vec<crate::jabber::ChatMsg> {
+    const SENDERS: [&str; 5] =
+        ["Scout Alpha", "Fleet Commander", "Wingmate Alpha", "Logi Lead", "Scout Bravo"];
+    const BODIES: [&str; 4] = [
+        "gate is clear",
+        "holding at 60km off the undock, watch the bubbles",
+        "primary is the Loki on grid, broadcast for reps and keep transversal up while the \
+         second wave lands",
+        "warp to me",
+    ];
+    (0..JABBER_LONG_LEN)
+        .map(|i| {
+            let age = if i >= JABBER_LONG_LEN - 6 {
+                300 - (i - (JABBER_LONG_LEN - 6)) as i64 * 40
+            } else {
+                1200 + (JABBER_LONG_LEN - 6 - i) as i64 * 5
+            };
+            let outgoing = i % 17 == 0;
+            let from = if outgoing { "me" } else { SENDERS[(i / 3) % SENDERS.len()] };
+            chat_msg(from, &format!("{} #{i}", BODIES[i % BODIES.len()]), age, outgoing)
+        })
+        .collect()
+}
+
+/// [`jabber_state`] with the room history swapped for a full-cap one.
+pub(crate) fn jabber_state_long() -> crate::jabber::JabberState {
+    let mut st = jabber_state();
+    st.chats.insert(JABBER_ROOM.to_owned(), room_history_long());
+    st
+}
+
 pub(crate) fn jabber_state() -> crate::jabber::JabberState {
     let mut st = crate::jabber::JabberState {
         enabled: true,

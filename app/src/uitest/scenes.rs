@@ -300,6 +300,17 @@ fn jabber_popout_probed(
     draft: &str,
     probe: Option<DraftProbe>,
 ) -> Scene {
+    jabber_popout_seeded(name, size, active, draft, probe, fixtures::jabber_state)
+}
+
+fn jabber_popout_seeded(
+    name: &'static str,
+    size: [f32; 2],
+    active: &str,
+    draft: &str,
+    probe: Option<DraftProbe>,
+    state: fn() -> crate::jabber::JabberState,
+) -> Scene {
     use crate::app::ChatWinKey;
     harness::scratch_profile();
     let (active, draft) = (active.to_owned(), draft.to_owned());
@@ -308,7 +319,7 @@ fn jabber_popout_probed(
     Scene::ui(name, size, move |ui| {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
-            *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            *a.jabber.lock().unwrap() = state();
             a.jabber_popouts = vec![fixtures::jabber_popout(POPOUT_ID, &active)];
             a.jabber_drafts.insert(active.clone(), draft.clone());
             // Older than the newest messages, so the "new" divider sits inside the history.
@@ -448,6 +459,14 @@ pub(crate) fn all() -> Vec<Scene> {
         [360.0, 260.0],
         fixtures::JABBER_ROOM,
         DRAFT_OVERFLOW,
+    ));
+    v.push(jabber_popout_seeded(
+        "jabber_popout_long",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        "",
+        None,
+        fixtures::jabber_state_long,
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     v
@@ -1839,4 +1858,177 @@ fn uitest_screenshots_composer_focused() {
         harness.run_steps(2);
         harness::shot(&mut harness, &format!("{name}_focused"));
     }
+}
+
+/// UI-022's measuring stick. The harness asserts layout, not frame time, so the only way to judge
+/// whether a change to the history loop paid for itself is to time repeated passes over a
+/// full-cap conversation and quote the number.
+#[test]
+#[ignore = "timing, not an assertion; run with --ignored --nocapture"]
+fn uitest_bench_jabber_long_history() {
+    const FRAMES: usize = 120;
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_popout_long").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(10);
+    let t = std::time::Instant::now();
+    harness.run_steps(FRAMES);
+    let per = t.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
+
+    let msgs = fixtures::jabber_state_long();
+    let conv = msgs.chats.get(fixtures::JABBER_ROOM).expect("room history");
+    let t = std::time::Instant::now();
+    let mut sink = 0usize;
+    for _ in 0..FRAMES {
+        sink += std::hint::black_box(conv.clone()).len();
+    }
+    let clone_us = t.elapsed().as_secs_f64() * 1e6 / FRAMES as f64;
+    assert_eq!(sink, FRAMES * fixtures::JABBER_LONG_LEN);
+
+    println!(
+        "jabber_popout_long: {:.2} ms/frame over {FRAMES} frames, \
+         a bare {}-message clone costs {clone_us:.0} us",
+        per,
+        fixtures::JABBER_LONG_LEN
+    );
+}
+
+/// UI-022. A 1000-message conversation used to build every row on every pass. The history now
+/// skips over anything more than [`MSG_OVERDRAW`] outside the viewport, so what it builds tracks
+/// the window rather than the history. The upper bound is loose on purpose: the point is the shape
+/// of the growth, not a pixel-exact row count.
+#[test]
+fn uitest_jabber_long_history_builds_only_what_is_near_the_viewport() {
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_popout_long").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(4);
+    let built = crate::app::built_msg_rows(&harness.ctx);
+    assert!(built > 0, "no chat row was built at all, so this asserts nothing");
+    assert!(
+        built * 4 < fixtures::JABBER_LONG_LEN,
+        "{built} of {} rows built into a 480px window, the history is not virtualized",
+        fixtures::JABBER_LONG_LEN
+    );
+}
+
+/// Virtualizing broke none of the three things that read the whole history: the newest message is
+/// still what a fresh window lands on, the unread divider still sits where a scan from message
+/// zero puts it, and grouping still suppresses the repeated nick.
+#[test]
+fn uitest_jabber_long_history_keeps_its_tail_divider_and_grouping() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "jabber_popout_long").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let mut labels = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() == egui::accesskit::Role::Label {
+            labels.push(n.label().or_else(|| n.value()).unwrap_or_default().to_string());
+        }
+    }
+    let last = format!("#{}", fixtures::JABBER_LONG_LEN - 1);
+    for needle in [last.as_str(), "— new —"] {
+        assert!(
+            labels.iter().any(|l| l.contains(needle)),
+            "the long history drew no {needle:?}: {labels:?}"
+        );
+    }
+    assert!(
+        !labels.iter().any(|l| l.contains("#0 ") || l.ends_with("#0")),
+        "the oldest message was built while the window sits at the newest end: {labels:?}"
+    );
+    let nicks = labels.iter().filter(|l| l.ends_with(':')).count();
+    let bodies = labels.iter().filter(|l| l.contains('#')).count();
+    assert!(
+        nicks < bodies,
+        "every visible message drew its own nick ({nicks} nicks, {bodies} bodies), so grouping \
+         stopped working"
+    );
+}
+
+/// Scrolling a virtualized history has to behave like scrolling a built one: the window opens on
+/// the newest message, moves off it, keeps a contiguous run of messages under the pointer, comes
+/// back to the same place, and reaches the tail again. A skipped row that reserves the wrong space
+/// breaks the middle of that; one that reserves none breaks all of it.
+///
+/// Blind to a spacer that is wrong by a constant factor, which stays self-consistent because the
+/// set of skipped rows is a function of the offset. That is the one error this cannot see.
+#[test]
+fn uitest_jabber_long_history_survives_a_scroll_round_trip() {
+    use egui_kittest::kittest::NodeT as _;
+
+    fn shown(harness: &egui_kittest::Harness<'_>) -> Vec<usize> {
+        let mut v: Vec<usize> = harness
+            .root()
+            .children_recursive()
+            .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::Label)
+            .filter_map(|n| {
+                let l = n.accesskit_node().label().or_else(|| n.accesskit_node().value())?;
+                l.rsplit_once('#').and_then(|(_, i)| i.parse::<usize>().ok())
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    fn wheel(harness: &egui_kittest::Harness<'_>, dy: f32) {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+
+    let newest = fixtures::JABBER_LONG_LEN - 1;
+    let scene = all().into_iter().find(|s| s.name == "jabber_popout_long").expect("scene");
+    let mut scene = scene.hovered_at([260.0, 200.0]);
+    let mut harness = harness::build(&mut scene, false);
+    harness.run_steps(20);
+    let fresh = shown(&harness);
+    assert!(
+        fresh.contains(&newest),
+        "a fresh window did not land on the newest message: {fresh:?}"
+    );
+
+    // Creep up through the band this test then scrolls over, rather than jumping to it. A row's
+    // height only becomes trustworthy once it has been built, and the harness lays out its first
+    // pass with egui's defaults (see `harness::build`), which leaves anything never rebuilt short.
+    for _ in 0..12 {
+        wheel(&harness, 1000.0);
+        harness.run_steps(8);
+    }
+    wheel(&harness, -4000.0);
+    harness.run_steps(20);
+    let mid = shown(&harness);
+    assert!(!mid.is_empty(), "scrolling up emptied the history");
+    assert!(
+        mid.iter().max() < fresh.iter().min(),
+        "scrolling up did not move off the tail: {mid:?} against {fresh:?}"
+    );
+    assert!(
+        mid.windows(2).all(|w| w[1] == w[0] + 1),
+        "the messages built while scrolled up are not contiguous: {mid:?}"
+    );
+
+    wheel(&harness, 3000.0);
+    harness.run_steps(20);
+    wheel(&harness, -3000.0);
+    harness.run_steps(20);
+    assert_eq!(
+        shown(&harness),
+        mid,
+        "3000pt up and back landed somewhere else, so a spacer is not the height of the row it \
+         stands in for"
+    );
+
+    wheel(&harness, -20_000.0);
+    harness.run_steps(20);
+    let back = shown(&harness);
+    assert!(back.contains(&newest), "scrolling back to the end lost the tail: {back:?}");
+    assert!(
+        back.windows(2).all(|w| w[1] == w[0] + 1),
+        "the messages built back at the tail are not contiguous: {back:?}"
+    );
 }
