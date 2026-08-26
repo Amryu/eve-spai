@@ -141,6 +141,36 @@ fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = view;
+            // Only Intel: `battles_view` reads `chat_dir` too, and seeding it there would drop the
+            // "configure intel channels" hint the battles scenes exist to cover.
+            if view == View::Intel {
+                a.chat_dir = Some(harness::scratch_chat_dir());
+            }
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+/// 1DQ1-A, where [`intel_bridge_scene`] parks the player.
+const PLAYER_SYS: i64 = 30_004_759;
+
+/// The intel feed with the player in 1DQ1-A and one hostile in 7-K5EL, two gates away or one jump
+/// over the bridge in [`fixtures::systems_bridged`]. Headless runs no log watcher and no location
+/// poller, so the report and the player's position are seeded.
+fn intel_bridge_scene(name: &'static str, count_bridges: bool, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Intel;
+            a.chat_dir = Some(harness::scratch_chat_dir());
+            a.systems = Some(fixtures::systems_bridged());
+            a.settings.intel_count_bridges = count_bridges;
+            a.player.lock().unwrap().system_id = Some(PLAYER_SYS);
+            a.intel_state.lock().unwrap().reports = vec![fixtures::intel_across_the_bridge()];
             a
         });
         app.root_chrome(ui);
@@ -426,6 +456,7 @@ pub(crate) fn all() -> Vec<Scene> {
     // too little space left, and paint over the panel edge.
     v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
+    v.push(intel_bridge_scene("view_intel_feed", false, [1280.0, 800.0]));
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
     // 720 is the app's minimum window width, where the eight-column table has the least room.
     v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
@@ -1017,6 +1048,58 @@ fn uitest_ping_footer_is_body_size() {
         footer >= body - 0.5,
         "the ping footer is {footer:.1}px tall against a {body:.1}px metadata row"
     );
+}
+
+/// Every jump-distance chip on screen, in tree order. The card pads the text to four monospace
+/// columns, so the label carries leading spaces.
+fn jump_chips(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut out = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Label || n.is_hidden() {
+            continue;
+        }
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        let t = label.trim();
+        if t == "here"
+            || (t.ends_with('j') && t.len() > 1 && t[..t.len() - 1].chars().all(|c| c.is_ascii_digit()))
+        {
+            out.push(t.to_owned());
+        }
+    }
+    out
+}
+
+/// UI-025: the card's jump distance walked the bridged graph whichever way the setting was set, so
+/// a hostile who cannot use your bridges read as closer than the alert that fired on it. Both
+/// answers come from one fixture, since a single number proves nothing about which graph was used.
+#[test]
+fn uitest_intel_card_jumps_follow_the_bridge_setting() {
+    let read = |count_bridges: bool| {
+        let mut scene = intel_bridge_scene("bridge_probe", count_bridges, [1280.0, 800.0]);
+        let harness = harness::build(&mut scene, false);
+        jump_chips(&harness)
+    };
+    assert_eq!(read(false), ["2j"], "gate-only did not walk the gates");
+    assert_eq!(read(true), ["1j"], "counting bridges did not take the bridge");
+}
+
+/// The setting is only reachable from the alert rules editor unless the intel toolbar carries its
+/// own control, which is the half of UI-025 the user reported.
+#[test]
+fn uitest_intel_toolbar_carries_the_bridge_toggle() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = view_scene("intel_toolbar_probe", View::Intel, [1280.0, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let found = harness.root().children_recursive().any(|node| {
+        let n = node.accesskit_node();
+        n.role() == egui::accesskit::Role::CheckBox
+            && n.label().unwrap_or_default().contains("count jump bridges")
+    });
+    assert!(found, "the intel toolbar has no jump-bridge toggle");
 }
 
 /// Labels of every chip the card drew.

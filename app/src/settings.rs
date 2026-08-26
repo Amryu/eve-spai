@@ -35,6 +35,10 @@ pub struct Settings {
     pub kill_intel_jumps: u32,
     #[serde(default = "default_intel_ttl")]
     pub intel_ttl_secs: i64,
+    /// Whether the intel feed's jump distances count your own jump bridges. Off, as for alert
+    /// rules, is what a hostile who cannot use them actually has to travel.
+    #[serde(default)]
+    pub intel_count_bridges: bool,
     #[serde(default)]
     pub verdict_explained: bool,
     #[serde(default)]
@@ -770,6 +774,7 @@ impl Default for Settings {
             kill_intel: true,
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
+            intel_count_bridges: false,
             verdict_explained: false,
             fit_site: String::new(),
             doctrine_url: String::new(),
@@ -1229,6 +1234,18 @@ mod window_geometry_tests {
         assert!(back.main_window_maximized);
         assert_eq!(back.fleet_ping_window_pos, Some((300.0, 50.0)));
         assert_eq!(back.fleet_ping_window_size, Some((600.0, 400.0)));
+    }
+
+    #[test]
+    fn intel_count_bridges_roundtrips_and_defaults_to_gate_only() {
+        let s = Settings { intel_count_bridges: true, ..Default::default() };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert!(back.intel_count_bridges);
+        // A config written before the field existed keeps the alert rules' gate-only reading.
+        let legacy: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
+        assert_eq!(legacy.jabber_jid, "a@b");
+        assert!(!legacy.intel_count_bridges);
     }
 
     #[test]

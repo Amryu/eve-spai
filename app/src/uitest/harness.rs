@@ -22,6 +22,12 @@ pub(crate) fn scratch_profile() {
     });
 }
 
+/// A real directory to point `chat_dir` at. `intel_view` renders its "chat logs not found"
+/// placeholder instead of the toolbar without one, and headless starts no watcher to read it.
+pub(crate) fn scratch_chat_dir() -> std::path::PathBuf {
+    out_dir("uitest-chatlogs")
+}
+
 /// Stands in for the http image loaders. Every portrait, corp logo and ship render in the UI is an
 /// `egui::Image::new(<url>)`, and several omit `fit_to_exact_size`, so with no loader at all they
 /// collapse to a placeholder and the surrounding layout stops matching the real app.

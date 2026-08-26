@@ -321,7 +321,7 @@ use crate::theme::{Rgb, Theme};
 
 pub struct SpaiApp {
     store: Option<Store>,
-    settings: Settings,
+    pub(crate) settings: Settings,
     pub(crate) view: View,
     intel_channels_open: bool,
     jump_bridges_open: bool,
@@ -340,9 +340,9 @@ pub struct SpaiApp {
     copy_settings: crate::copysettings::CopyState,
     eve_clients: std::sync::Arc<std::sync::Mutex<crate::eveproc::Clients>>,
     eve_settings_path: std::sync::Arc<std::sync::Mutex<String>>,
-    intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
+    pub(crate) intel_state: std::sync::Arc<std::sync::Mutex<crate::intel::IntelState>>,
     watcher_started: bool,
-    chat_dir: Option<std::path::PathBuf>,
+    pub(crate) chat_dir: Option<std::path::PathBuf>,
     intel_query: String,
     intel_max_jumps: u32,
     intel_type: IntelTypeFilter,
@@ -419,7 +419,7 @@ pub struct SpaiApp {
     killfeed: crate::zkill::SharedKillFeed,
     ship_by_id: std::collections::HashMap<i64, String>,
     kills_loaded: bool,
-    player: crate::esi::SharedPlayer,
+    pub(crate) player: crate::esi::SharedPlayer,
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
     bridges_applied: Vec<crate::settings::JumpBridge>,
     system_status: crate::systemstatus::SharedStatus,
@@ -1371,6 +1371,7 @@ impl SpaiApp {
             cfg.kill_intel = self.settings.kill_intel;
             cfg.kill_intel_jumps = self.settings.kill_intel_jumps;
             cfg.intel_max_jumps = self.intel_max_jumps;
+            cfg.intel_count_bridges = self.settings.intel_count_bridges;
         }
         let (fired, matched) = {
             let mut rt = self.alerts_engine.runtime.lock().unwrap();
@@ -1537,10 +1538,12 @@ impl SpaiApp {
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
         let systems = self.systems.clone();
         let player_sys = self.player_system();
+        let bridges = self.settings.intel_count_bridges;
         let now = chrono::Utc::now().timestamp();
         let mut click: Option<IntelClick> = None;
         for (r, sev) in &feed {
-            let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+            let from_you =
+                jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
@@ -1622,6 +1625,7 @@ impl SpaiApp {
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
         let systems = self.systems.clone();
         let player_sys = self.player_system();
+        let bridges = self.settings.intel_count_bridges;
         let now = chrono::Utc::now().timestamp();
         let mut click: Option<IntelClick> = None;
         for (r, sev, suppressed) in &feed {
@@ -1631,7 +1635,8 @@ impl SpaiApp {
                         .color(crate::theme::standing::NEUTRAL),
                 );
             }
-            let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+            let from_you =
+                jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
@@ -5733,6 +5738,16 @@ impl SpaiApp {
                     .range(0..=50)
                     .custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n}") }),
             );
+            if ui
+                .checkbox(&mut self.settings.intel_count_bridges, "count jump bridges")
+                .on_hover_text(
+                    "Count your jump bridges in the card distances and the \u{2264} jumps filter. \
+                     Off = gate-only, how far a hostile, who can't use your bridges, really is.",
+                )
+                .changed()
+            {
+                self.needs_save = true;
+            }
             ui.separator();
             ui.label("outdated after").on_hover_text("How long until intel is outdated");
             if ui
@@ -5776,6 +5791,7 @@ impl SpaiApp {
         let query = self.intel_query.trim().to_lowercase();
         let type_filter = self.intel_type;
         let max_jumps = self.intel_max_jumps;
+        let bridges = self.settings.intel_count_bridges;
         let sev_rules = self.settings.severity.clone();
         let state = self.intel_state.lock().unwrap();
 
@@ -5786,7 +5802,7 @@ impl SpaiApp {
             .filter(|r| type_filter.matches(r))
             .filter(|r| {
                 max_jumps == 0
-                    || jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id))
+                    || jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges)
                         .is_some_and(|j| j <= max_jumps)
             })
             .filter(|r| {
@@ -5868,6 +5884,7 @@ impl SpaiApp {
                             &systems,
                             player_sys,
                             r.primary_system().map(|s| s.id),
+                            bridges,
                         );
                         let sev = severity_of(r, &sev_rules);
                         let kc = self.kill_cache.clone();
@@ -6001,6 +6018,7 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let player_sys = self.player_system();
         let systems = self.systems.clone();
+        let bridges = self.settings.intel_count_bridges;
         let sev_rules = self.settings.severity.clone();
         let ttl = self.settings.intel_ttl_secs;
         let ids: std::collections::HashSet<i64> =
@@ -6026,7 +6044,8 @@ impl SpaiApp {
         let status = self.system_status.lock().unwrap();
         for r in reports {
             let stale = state.is_stale(r) || (now - r.received) > ttl;
-            let from_you = jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id));
+            let from_you =
+                jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges);
             let sev = severity_of(r, &sev_rules);
             let inner = ui.scope(|ui| {
                 intel_row(
@@ -6047,6 +6066,7 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let player_sys = self.player_system();
         let systems = self.systems.clone();
+        let bridges = self.settings.intel_count_bridges;
 
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -6075,7 +6095,7 @@ impl SpaiApp {
                 .iter()
                 .filter_map(|r| {
                     let id = r.primary_system()?.id;
-                    let j = jumps_from_you(&systems, player_sys, Some(id))?;
+                    let j = jumps_from_you(&systems, player_sys, Some(id), bridges)?;
                     Some((j, r.primary_system().unwrap().name.clone()))
                 })
                 .min_by_key(|(j, _)| *j);
@@ -9075,6 +9095,7 @@ impl SpaiApp {
                 st.verdict_explained = self.settings.verdict_explained;
                 st.on_top_level = on_top;
                 st.compact = self.settings.alerts.compact_mode;
+                st.count_bridges = self.settings.intel_count_bridges;
                 st.win_pos = self.settings.alerts.window_pos;
                 st.win_size = self.settings.alerts.window_size;
                 st.feed = feed;
@@ -13938,6 +13959,7 @@ impl SpaiApp {
                         &self.systems,
                         player_sys,
                         r.primary_system().map(|s| s.id),
+                        self.settings.intel_count_bridges,
                     );
                     let sev = severity_of(r, &self.settings.severity);
                     let kc = self.kill_cache.clone();
@@ -16799,6 +16821,7 @@ struct AlertConfig {
     kill_intel: bool,
     kill_intel_jumps: u32,
     intel_max_jumps: u32,
+    intel_count_bridges: bool,
 }
 
 #[derive(Default)]
@@ -16904,7 +16927,14 @@ impl AlertEngine {
         };
         let from_you: Vec<Option<u32>> = feed
             .iter()
-            .map(|(r, _)| jumps_from_you(&cfg.systems, player_sys, r.primary_system().map(|s| s.id)))
+            .map(|(r, _)| {
+                jumps_from_you(
+                    &cfg.systems,
+                    player_sys,
+                    r.primary_system().map(|s| s.id),
+                    cfg.intel_count_bridges,
+                )
+            })
             .collect();
 
         let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
@@ -18138,9 +18168,10 @@ fn jumps_from_you(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     player_sys: Option<i64>,
     target: Option<i64>,
+    use_bridges: bool,
 ) -> Option<u32> {
     let (sys, p, t) = (systems.as_ref()?, player_sys?, target?);
-    sys.jumps(t, p, 50)
+    if use_bridges { sys.jumps(t, p, 50) } else { sys.jumps_gates_only(t, p, 50) }
 }
 
 fn min_jumps_from(
@@ -20270,6 +20301,7 @@ pub(crate) fn build_alert_viewport_cb(
         std::mem::take(&mut st.focus_pending);
         let feed = st.feed.clone();
         let from_you_pre = st.from_you.clone();
+        let count_bridges = st.count_bridges;
         let systems = st.systems.clone();
         let status = st.status.clone();
         let ship_details = st.ship_details.clone();
@@ -20462,6 +20494,7 @@ pub(crate) fn build_alert_viewport_cb(
                                     &systems,
                                     player_sys,
                                     r.primary_system().map(|s| s.id),
+                                    count_bridges,
                                 )
                             };
                             if let Some(c) = intel_row(
@@ -20817,6 +20850,7 @@ pub(crate) enum PendingTip {
 pub(crate) struct AlertWindowState {
     pub(crate) feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) from_you: Vec<Option<u32>>,
+    pub(crate) count_bridges: bool,
     pub(crate) secs: f32,
     pub(crate) pinned: bool,
     pub(crate) focus_pending: bool,

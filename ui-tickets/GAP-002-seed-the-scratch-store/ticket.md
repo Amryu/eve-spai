@@ -33,3 +33,15 @@ but the UI-NNN defects run first: closing those needs no new harness capability.
 normal and vertical escape is ambiguous. UI-021 hit the consequence: a composer running off the
 bottom of a small window would not have failed anything. Worth revisiting alongside seeded scenes,
 where a panel's true content height becomes knowable.
+
+## Partly closed by UI-025
+
+`view_intel` now renders, and it needed no store seeding at all: `chat_dir` pointed at a scratch dir
+plus `settings`, `intel_state` and `player` opened to `pub(crate)`. Census went from the ~12-target
+chrome baseline to 24.
+
+That closes the concrete consumer named above: UI-004's intel-toolbar call site is now covered by a
+permanent scene.
+
+`dashboard_view` reads the same three fields, so it is the next cheap unlock. Map, Battles and
+Characters still need the store seam.
