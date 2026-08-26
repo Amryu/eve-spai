@@ -4,6 +4,19 @@
 **Wave:** 7 (paired with UI-014 on `render_ping`)
 **Branch:** `fix/ui-010-uncertain-newtype`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 5.1 min across 1 round, 28 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 52/8 lines (added/removed), excluding the harness |
+| **Harness code changed** | 65/9 lines |
+| **Suite** | 431 to 433 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 `pilot::UncertainPilots(HashSet<String>)` with a private tuple field, so only `pilot.rs` can reach

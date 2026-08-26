@@ -4,6 +4,19 @@
 **Wave:** 8, run alone because it touches 16 sites across the file
 **Branch:** `fix/ui-008-small-fonts`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 11.9 min across 1 round, 74 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 28/26 lines (added/removed), excluding the harness |
+| **Harness code changed** | 131/0 lines |
+| **Suite** | 433 to 435 passing |
+| **Follow-ups** | fixed a pre-existing 89px overflow |
+
 ## Verdict per site: 13 changed, 3 kept
 
 Changed, all content the user reads to decide something: the jabber sound-preset reference list,

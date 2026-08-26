@@ -4,6 +4,19 @@
 **Wave:** 4 (paired with UI-007 on the alert viewport callback, no region overlap)
 **Branch:** `fix/ui-009-resolving-chip-width`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 12.5 min across 1 round, 55 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 16/3 lines (added/removed), excluding the harness |
+| **Harness code changed** | 165/0 lines |
+| **Suite** | 412 to 414 passing |
+| **Follow-ups** | found a dead tooltip |
+
 ## The change
 
 The dots move into a fixed-size atom slot inside the button, sized once from the widest phase:

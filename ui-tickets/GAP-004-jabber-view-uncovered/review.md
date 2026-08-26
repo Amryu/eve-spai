@@ -4,6 +4,19 @@
 **Branch:** `harness/gap-004-jabber-popout`
 **Why now:** UI-020 and UI-021 are both in this surface and neither could be verified without it.
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Popout covered |
+| **Agent time** | 20.5 min across 1 round, 92 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 44/44 lines (added/removed), excluding the harness |
+| **Harness code changed** | 249/2 lines |
+| **Suite** | 435 to 437 passing |
+| **Follow-ups** | unblocked UI-020, UI-021 |
+
 ## What landed
 
 Four permanent scenes rendering `jabber_window_body`, all flowing through `uitest_layout`, the

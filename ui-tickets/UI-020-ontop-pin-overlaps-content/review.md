@@ -4,6 +4,19 @@
 **Branch:** `fix/ui-020-ontop-pin-in-tab-bar`
 **Depended on:** GAP-004, which made this surface renderable at all
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 10.1 min across 1 round, 53 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 49/16 lines (added/removed), excluding the harness |
+| **Harness code changed** | 57/0 lines |
+| **Suite** | 437 to 438 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 `ontop_pin` split into three:

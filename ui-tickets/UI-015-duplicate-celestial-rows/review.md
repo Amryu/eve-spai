@@ -4,6 +4,19 @@
 **Wave:** 6 (paired with UI-013 on `render_ping`, no region overlap)
 **Branch:** `fix/ui-015-duplicate-celestials`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 7.7 min across 1 round, 42 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 146/0 lines (added/removed), excluding the harness |
+| **Harness code changed** | 66/0 lines |
+| **Suite** | 416 to 427 passing |
+| **Follow-ups** | none |
+
 ## The rule
 
 `celestial_key(name) -> Option<CelestialKey>` with `enum CelestialKey { Star, Planet(i64),

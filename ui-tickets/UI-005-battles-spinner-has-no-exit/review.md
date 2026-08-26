@@ -4,6 +4,19 @@
 **Wave:** 3 (paired with UI-006 on `settings_view`, no region overlap)
 **Branch:** `fix/ui-005-battles-wait-states`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 7.9 min across 1 round, 37 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 63/5 lines (added/removed), excluding the harness |
+| **Harness code changed** | 18/0 lines |
+| **Suite** | 410 to 411 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 New `battles_wait_note(&self, ui, waited)` replaces the unconditional spinner block, plus a

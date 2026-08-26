@@ -4,6 +4,19 @@
 **Wave:** 5 (paired with UI-011 on `intel_row`, no region overlap)
 **Branch:** `fix/ui-012-toolbar-dividers`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 17.8 min across 1 round, 75 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 85/12 lines (added/removed), excluding the harness |
+| **Harness code changed** | 117/0 lines |
+| **Suite** | 415 to 416 passing |
+| **Follow-ups** | UI-017 |
+
 ## The change
 
 Fixed in the helper, not the call site, which is right for two reasons: a wrapping toolbar's break

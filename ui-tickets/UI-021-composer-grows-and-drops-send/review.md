@@ -4,6 +4,19 @@
 **Branch:** `fix/ui-021-composer`
 **Depended on:** GAP-004
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 15.3 min across 1 round, 81 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 75/48 lines (added/removed), excluding the harness |
+| **Harness code changed** | 153/0 lines |
+| **Suite** | 438 to 441 passing |
+| **Follow-ups** | UI-024 |
+
 ## The ticket had the cause wrong
 
 I wrote that the field was "pinned at `desired_rows(2)`". It was not. `TextEdit` already grows with

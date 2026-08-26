@@ -4,9 +4,14 @@ Findings from the headless UI harness (`app/src/uitest/`). One folder per ticket
 `ticket.md`, `before/` screenshots, `after/` screenshots once fixed, and `review.md`
 recording the fix and review cycle.
 
-The workflow is written up in `CLAUDE.md` under "UI issue workflow". Short version:
-ticket, fix in a worktree, review the patch, verify by re-rendering the scene, record
-everything in `review.md`. A fix is not done until a screenshot shows it fixed.
+The process is defined in `CLAUDE.md` under "UI issue workflow", which is the authority.
+Short version: reproduce into a ticket, fix in a worktree via one agent, review the patch
+before applying it, verify by re-rendering the scene and looking at it, land on a branch
+merged `--no-ff`, then write the resolution report.
+
+Every closed ticket opens its `review.md` with a Resolution table: outcome, agent time and
+tool calls, patches rejected on review, app and harness lines changed, suite before and
+after, and any follow-up tickets it spawned.
 
 ## Defects
 
@@ -73,3 +78,24 @@ pairing is what keeps them from clobbering each other.
 | 6 | UI-013, UI-015 | `render_ping` + `intel_row` |
 | 7 | UI-014, UI-010 | `render_ping` + `intel_row` |
 | 8 | UI-008 | cross-cutting, runs alone |
+
+## Cost so far
+
+Fifteen defects, one false positive, one harness gap closed. Measured from the agent runs, so
+this is fix time and excludes ticket writing and review.
+
+| | |
+|---|---|
+| Agent time | about 3h 10m across 18 tickets |
+| Agent tool calls | 966 |
+| Patches rejected on review | 1 (UI-001, a reachability regression it introduced) |
+| App code changed | 792 lines added, 269 removed |
+| Harness code changed | 1401 lines added, 17 removed |
+| Suite | 409 to 441 passing |
+| Scenes | 21 to 49 |
+| Tickets spawned by fixing others | 4 (UI-017, UI-018, UI-019, UI-024) |
+
+The harness-to-app line ratio is the number worth watching: **1.8 lines of test for every line of
+app code changed**, and on the small tickets far more. UI-014 changed 2 lines of app code and added
+25 lines of test. That is the cost of the "a fix is not done until a screenshot shows it fixed"
+rule, and it is deliberate.

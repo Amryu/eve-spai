@@ -161,55 +161,102 @@ async-populated views show permanent loading states.
 
 ## UI issue workflow
 
-Findings from the harness become tickets under `ui-tickets/`, one folder per ticket:
-`ui-tickets/UI-NNN-slug/` with `ticket.md`, `before/` screenshots, and `review.md`.
-`ui-tickets/README.md` is the index.
+Findings become tickets under `ui-tickets/`, one folder per ticket:
 
-The cycle for each ticket, documented in its `review.md` every time:
-
-1. **Ticket** states the symptom, the screenshot that shows it, the file:line cause, severity,
-   and how to verify the fix.
-2. **Fix** happens in a git worktree, one agent per ticket: `git worktree add --detach <path>
-   main`, so the agent's `git diff HEAD` is its fix alone. If the tree carries uncommitted work,
-   seed the worktree with `git diff HEAD` applied and committed as a base first.
-3. **Review** the returned patch before applying it. Check it addresses the cause and not the
-   symptom, touches only its own region, and adds no comment that restates the code.
-4. **Verify** by applying the patch to the main tree, re-running `uitest`, re-rendering the
-   scene, and looking at the new PNG against `before/`. Save it as `after/`.
-5. **Record** all of the above in `review.md`: what changed, what the screenshots show, what was
-   rejected and why, and the test counts before and after.
-
-Each fix lands as its own branch, merged back with `--no-ff`:
-
-```bash
-git checkout -b fix/ui-NNN-slug main
-git apply <the agent's patch>        # plus its review.md and after/ screenshots
-git commit
-git checkout main
-git merge --no-ff fix/ui-NNN-slug
+```
+ui-tickets/UI-NNN-slug/
+  ticket.md     the problem, written before any fix exists
+  before/       screenshots showing the defect
+  after/        screenshots showing it gone
+  review.md     the resolution report, written when it lands
+ui-tickets/README.md   the index, with status per ticket
 ```
 
-One merge commit carries the code, its `review.md` and its `after/` screenshots together, so a fix
-reads like a PR and backs out with `git revert -m 1 <merge-commit>` without disturbing the others.
-Never squash several tickets into one commit; that is the whole point of the branch.
+`UI-NNN` for app defects, `GAP-NNN` for things the harness cannot reach. Numbers are never reused,
+including for tickets closed as false positives.
 
-Rules that matter:
+### `ticket.md`
 
-- Quote the test count to an agent as a FLOOR, never as an exact number. Told "must be green (11
-  passed)", an agent reads that as "must not change" and skips adding the regression test the
-  ticket most needs. Say that adding tests is welcome and the count going up is the goal.
-- Two agents paired by region of `app.rs` still collide in `app/src/uitest/scenes.rs`, because
-  every ticket adds a test there. Expect `git apply -3` on the second patch of a wave, and check
-  the resolve: a conflict boundary can truncate a test mid-function, which surfaces as an unclosed
-  delimiter rather than as a quietly dropped assertion.
-- At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI
-  lives in `app/src/app.rs`, so pair by region: `intel_row`, `render_ping`, `battles_view`,
-  `settings_view`, the alert viewport callback, `nav.rs`. Cross-cutting changes run alone.
-- Apply patches to the main tree one at a time and re-run the suite between them.
+Written before the fix, and never rewritten to match what was built. If the ticket turns out to be
+wrong, the correction goes in `review.md` and the ticket gets a pointer to it. Being able to see
+what was believed at the time is the point.
+
+Required: a metadata table (severity, status, region, reporter), **Symptom** in observable terms,
+**Cause** with `file:line`, **Notes** carrying anything a fixer would otherwise have to rediscover,
+and **How to verify**. State what would make the fix wrong, not just what would make it right.
+
+### The cycle
+
+1. **Ticket.** Reproduce first. A ticket without a `before/` screenshot showing the actual defect is
+   not ready. Two tickets in the first round carried screenshots that did not contain their own bug.
+2. **Fix**, one agent per ticket, in a worktree: `git worktree add --detach <path> main`. Seed with
+   `git diff HEAD` applied and committed first if the tree is dirty. Give the agent the region it
+   owns and the regions it must not touch, by function name.
+3. **Review the patch before applying it.** Does it address the cause or the symptom? Does it stay
+   in its region? Does every comment justify a WHY rather than restate the code? Verify the agent's
+   load-bearing claims in the source yourself; several have been subtly wrong, and several have been
+   right in a way that corrected the ticket.
+4. **Verify.** Apply to a branch, run the suite, re-render, and look at the PNG against `before/`.
+   Confirm any new test actually fails without the fix.
+5. **Land.** One branch per ticket, merged `--no-ff`, so the code, `review.md` and `after/` arrive in
+   one merge commit that `git revert -m 1` backs out cleanly.
+6. **Report** in `review.md`.
+
+### `review.md`
+
+Opens with a **Resolution** table: outcome, agent time and tool calls, patches rejected on review,
+app lines changed, harness lines changed, suite before and after, follow-up tickets spawned.
+
+Then the narrative: what changed and why that approach; what was rejected and why; how the tests
+were proven to have teeth; what the screenshots show, described by someone who looked at them; and
+residual risk or known limits. If the ticket was wrong, say so explicitly under its own heading.
+
+Record effort honestly even when it is embarrassing. A two-line fix that took twelve minutes and
+165 lines of test is useful information about where cost actually goes.
+
+### Rules that have earned their place
+
+- At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI is in
+  one file, so pair by function: `intel_row`, `render_ping`, `battles_view`, `settings_view`, the
+  alert viewport callback, the jabber tab bar, the composer, `nav.rs`. Cross-cutting changes run
+  alone.
+- Two agents paired by region still collide in `app/src/uitest/scenes.rs`, because every ticket adds
+  a test there. Expect `git apply -3` on the second patch of a wave, and check the resolve: a
+  conflict boundary can truncate a test mid-function, which surfaces as an unclosed delimiter rather
+  than a quietly dropped assertion.
+- Apply patches one at a time and re-run the suite between them.
+- Quote the test count to an agent as a FLOOR, never an exact number. Told "must be green (11
+  passed)", an agent reads it as "must not change" and skips the regression test the ticket most
+  needs.
 - A fix is not done until a screenshot shows it fixed. The exception is an interaction the harness
   cannot reach cheaply, drag-and-drop being the known one: seed the state and render the result
   rather than simulating the input, and if even that fights back, land the fix and record what is
   uncovered. Verification effort is meant to be proportionate, not total.
+- A test that reads a `#[cfg(test)]` hook cannot be teeth-checked by reverting the whole file,
+  because the hook goes with it. Revert only the behaviour under test.
+- Screenshots land in the worktree's own `target/uishots`, not in a shared `CARGO_TARGET_DIR`, since
+  the harness derives that path from `CARGO_MANIFEST_DIR`. Reading the main tree's PNGs after an
+  agent runs gives a stale answer.
+- A fix that spawns a new ticket is a good fix, not a failed one. Three of the first fifteen found
+  defects the ticket never mentioned.
+
+### Improving the process
+
+This section is meant to change. When a round teaches something, add it here in the same commit as
+the work that taught it, and say in the commit message what went wrong. Every rule above exists
+because something failed once.
+
+Revisions so far:
+
+- Test counts became floors after an agent skipped a regression test to protect a number.
+- Worktree seeding became conditional once the tree was committed.
+- Added the `scenes.rs` collision note after a three-way apply truncated a test.
+- Added the scene-cropping rule after two `before/` screenshots turned out not to contain their bug.
+- Added the `cfg(test)` teeth-check note after a self-check passed vacuously.
+- Capped verification effort for drag interactions, at the user's direction, after tab
+  drag-and-drop proved to be the expensive case GAP-008 predicted.
+- Added the Resolution table after the reviews turned out to record what changed but not what it
+  cost.
 
 ## Writing and comments (stop slop)
 

@@ -4,6 +4,19 @@
 **Wave:** 1
 **Worktree:** `wt/ui-001`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 22.8 min across 2 rounds, 71 tool calls |
+| **Patches rejected on review** | 1 |
+| **App code changed** | 99/11 lines (added/removed), excluding the harness |
+| **Harness code changed** | 45/4 lines |
+| **Suite** | 409 to 410 passing |
+| **Follow-ups** | none |
+
 ## Round 1: rejected
 
 The first patch made the footer anchor to the bottom only while there was room for it, and

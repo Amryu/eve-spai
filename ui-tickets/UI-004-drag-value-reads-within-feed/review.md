@@ -4,6 +4,19 @@
 **Wave:** 2 (paired with UI-001 on `nav.rs`, no region overlap)
 **Worktree:** `wt/ui-004`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 9.3 min across 1 round, 56 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 25/20 lines (added/removed), excluding the harness |
+| **Harness code changed** | 0/0 lines |
+| **Suite** | 410 to 410 passing |
+| **Follow-ups** | noted a GAP-002 consumer |
+
 ## The change
 
 Both sites now call one new `SpaiApp::kill_intel_range`, placed above `alerts_view`. The alerts

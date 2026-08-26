@@ -4,6 +4,19 @@
 **Wave:** 5 (paired with UI-012 on `battles_view`, no region overlap)
 **Branch:** `fix/ui-011-reporter-footer`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 7.7 min across 1 round, 54 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 12/10 lines (added/removed), excluding the harness |
+| **Harness code changed** | 124/1 lines |
+| **Suite** | 414 to 415 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 The badge closure is handed to `horizontal_wrapped` on its own, and the reporter label is emitted

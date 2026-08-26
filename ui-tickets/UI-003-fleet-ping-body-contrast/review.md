@@ -4,6 +4,19 @@
 **Wave:** 1 (paired with UI-001 on `nav.rs`, no region overlap)
 **Worktree:** `wt/ui-003`, seeded from the main tree's working state
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 5.1 min across 1 round, 33 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 8/1 lines (added/removed), excluding the harness |
+| **Harness code changed** | 0/0 lines |
+| **Suite** | 409 to 409 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 `app/src/app.rs`, `render_ping`, the `Ping::Fleet` arm. 8 insertions, 1 deletion, nothing else touched.

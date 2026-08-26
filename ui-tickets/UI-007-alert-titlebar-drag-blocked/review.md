@@ -4,6 +4,19 @@
 **Wave:** 4 (paired with UI-009 on `intel_row`, no region overlap)
 **Branch:** `fix/ui-007-alert-titlebar-drag`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 9.6 min across 1 round, 55 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 25/16 lines (added/removed), excluding the harness |
+| **Harness code changed** | 58/0 lines |
+| **Suite** | 411 to 412 passing |
+| **Follow-ups** | partly closed GAP-007 |
+
 ## The change
 
 Both title-row labels in `build_alert_viewport_cb` become

@@ -4,6 +4,19 @@
 **Wave:** 2 (paired with UI-001 on `nav.rs`, no region overlap)
 **Worktree:** `wt/ui-002`, seeded from the main tree including the UI-003 fix
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 5.4 min across 1 round, 34 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 7/6 lines (added/removed), excluding the harness |
+| **Harness code changed** | 0/0 lines |
+| **Suite** | 409 to 409 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 `app/src/app.rs`, `intel_row`. 7 insertions, 6 deletions, one region.

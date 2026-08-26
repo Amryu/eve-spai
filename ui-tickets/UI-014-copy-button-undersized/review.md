@@ -4,6 +4,19 @@
 **Wave:** 7 (paired with UI-010 on `intel_row`, no region overlap)
 **Branch:** `fix/ui-014-copy-button-size`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 4.8 min across 1 round, 33 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 2/2 lines (added/removed), excluding the harness |
+| **Harness code changed** | 25/0 lines |
+| **Suite** | 430 to 431 passing |
+| **Follow-ups** | UI-019 |
+
 ## The change
 
 `ui.small_button(..)` becomes `ui.button(..)` for the Copy button in both ping arms, Fleet and

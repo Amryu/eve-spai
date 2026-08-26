@@ -4,6 +4,19 @@
 **Wave:** 6 (paired with UI-015 on `intel_row`, no region overlap)
 **Branch:** `fix/ui-013-doctrine-row`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 10.2 min across 1 round, 45 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 25/18 lines (added/removed), excluding the harness |
+| **Harness code changed** | 125/1 lines |
+| **Suite** | 427 to 430 passing |
+| **Follow-ups** | UI-018 |
+
 ## The change
 
 `render_ping`, Fleet arm, doctrine row only. `ui.horizontal_wrapped(..)` becomes

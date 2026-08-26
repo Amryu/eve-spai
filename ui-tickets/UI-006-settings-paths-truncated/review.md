@@ -5,6 +5,19 @@
 **Worktree:** `wt/ui-006`
 **Branch:** `fix/ui-006-settings-dir-picker`
 
+
+## Resolution
+
+| | |
+|---|---|
+| **Outcome** | Fixed |
+| **Agent time** | 5.8 min across 1 round, 38 tool calls |
+| **Patches rejected on review** | 0 |
+| **App code changed** | 35/13 lines (added/removed), excluding the harness |
+| **Harness code changed** | 3/0 lines |
+| **Suite** | 410 to 410 passing |
+| **Follow-ups** | none |
+
 ## The change
 
 New free helper `dir_picker_row(ui, hint, value) -> bool` beside `color_row`, used by both
