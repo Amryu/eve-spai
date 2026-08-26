@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Type** | Harness coverage gap |
-| **Status** | Not scheduled |
+| **Status** | Mechanism proved, 8 of 28 covered, see `review.md` |
 | **Blocks** | ~6,000 lines |
 | **Effort** | Medium |
 

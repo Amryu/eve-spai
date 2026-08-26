@@ -127,6 +127,18 @@ pub(crate) fn detached_ui(ctx: &egui::Context) -> egui::Ui {
     )
 }
 
+/// Points egui's immediate-viewport hook at the calling context and switches embedding off, so a
+/// dialog opened through `dialog_viewport_ext` paints onto the root instead of into a stub
+/// `egui::Window`, and the deferred overlay viewports do not paint at all. The hook is a
+/// thread-local, so every scene sets it on the thread that runs it.
+pub(crate) fn render_dialogs_on_the_root(ctx: &egui::Context) {
+    ctx.set_embed_viewports(false);
+    egui::Context::set_immediate_viewport_renderer(|ctx, mut vp| {
+        let mut ui = detached_ui(ctx);
+        (vp.viewport_ui_cb)(&mut ui);
+    });
+}
+
 /// `gpu` attaches the wgpu test renderer, which is only needed for [`shot`]. It picks the CPU
 /// (lavapipe) adapter on its own and never creates a surface, so no display is involved.
 pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
