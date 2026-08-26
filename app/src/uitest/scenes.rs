@@ -2797,3 +2797,118 @@ fn uitest_jabber_long_history_survives_a_scroll_round_trip() {
         "the messages built back at the tail are not contiguous: {back:?}"
     );
 }
+
+/// [`alert_window_scene`] with the pin and the countdown under the test's control. Every scene in
+/// `all()` pins the window, which makes `active` permanently true and leaves the expiry path
+/// unrendered (GAP-006).
+fn alert_countdown_scene(name: &'static str, pinned: bool, secs: f32) -> Scene {
+    let mut st = crate::app::AlertWindowState {
+        enabled: true,
+        pinned,
+        secs,
+        systems: Some(fixtures::systems()),
+        resolved_pilots: fixtures::resolved_pilots(),
+        uncertain: fixtures::uncertain(),
+        kills: Some(fixtures::kills()),
+        affil: Some(fixtures::affil()),
+        ..Default::default()
+    };
+    st.from_you = vec![None];
+    st.feed = vec![(fixtures::intel_typical(), crate::settings::Severity::Danger)];
+    let shared: crate::app::SharedAlertWindow = std::sync::Arc::new(std::sync::Mutex::new(st));
+    let cb = crate::app::build_alert_viewport_cb(shared);
+    Scene::ctx(name, [560.0, 480.0], move |ctx| {
+        let mut ui = harness::detached_ui(ctx);
+        cb(&mut ui, egui::ViewportClass::Root);
+    })
+}
+
+/// Everything the viewports asked the windowing system for in the last pass. Visibility and
+/// click-through leave no other trace, so the command stream is the only place the alert window's
+/// expiry is observable.
+fn viewport_commands(harness: &egui_kittest::Harness<'_>) -> Vec<egui::ViewportCommand> {
+    harness.output().viewport_output.values().flat_map(|v| v.commands.iter().cloned()).collect()
+}
+
+/// An unpinned alert window has to stop absorbing clicks when its countdown runs out, or it sits
+/// over the EVE client eating every click aimed at the game. `secs` decays by `unstable_dt`, which
+/// kittest sets to `step_dt` (0.25s), so stepping drives it; `Instant::now()` would not.
+#[test]
+fn uitest_alert_window_auto_dismiss_hands_clicks_back_to_the_game() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = alert_countdown_scene("alert_countdown_probe", false, 5.0);
+    let mut harness = harness::build(&mut scene, false);
+    assert!(
+        harness.query_by_label_contains("Intel alerts").is_some(),
+        "the alert window painted no title while its countdown was still running"
+    );
+    assert!(
+        harness.query_by_label_contains("Hostile Pilot").is_some(),
+        "the alert window painted no feed while its countdown was still running"
+    );
+
+    let mut steps = 0;
+    let mut expired_at = None;
+    let mut passthrough_at = None;
+    let mut hidden_at = None;
+    while expired_at.is_none() {
+        steps += 1;
+        assert!(steps <= 60, "the countdown had not expired after {steps} passes");
+        harness.run_steps(1);
+        for cmd in viewport_commands(&harness) {
+            match cmd {
+                egui::ViewportCommand::MousePassthrough(true) => passthrough_at = Some(steps),
+                egui::ViewportCommand::Visible(false) => hidden_at = Some(steps),
+                _ => {}
+            }
+        }
+        if harness.query_by_label_contains("Intel alerts").is_none() {
+            expired_at = Some(steps);
+        }
+    }
+
+    assert!(
+        harness.query_by_label_contains("Hostile Pilot").is_none(),
+        "the feed is still painted after the countdown expired"
+    );
+    assert_eq!(
+        passthrough_at, expired_at,
+        "the window stopped painting on pass {expired_at:?} but handed clicks back on \
+         {passthrough_at:?}"
+    );
+    // app.rs only unmaps on Windows; elsewhere the overlay stays mapped and click-through, so a
+    // `Visible(false)` here would be the regression, not the absence of one.
+    let expect_hidden = if cfg!(target_os = "windows") { expired_at } else { None };
+    assert_eq!(
+        hidden_at, expect_hidden,
+        "visibility on expiry was wrong: hid on pass {hidden_at:?}, wanted {expect_hidden:?}"
+    );
+}
+
+/// The other half of the same branch, and what every scene in `all()` leans on: a pin holds the
+/// window open with the countdown frozen, however long the app runs.
+#[test]
+fn uitest_alert_window_pin_survives_the_countdown() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = alert_countdown_scene("alert_pinned_probe", true, 5.0);
+    let mut harness = harness::build(&mut scene, false);
+    let mut fired: Vec<egui::ViewportCommand> = Vec::new();
+    for _ in 0..60 {
+        harness.run_steps(1);
+        fired.extend(viewport_commands(&harness));
+    }
+    assert!(
+        harness.query_by_label_contains("Intel alerts").is_some(),
+        "the pinned alert window closed itself"
+    );
+    assert!(
+        harness.query_by_label("5s").is_some(),
+        "the pinned alert window ran its countdown down instead of holding it"
+    );
+    assert!(
+        !fired.contains(&egui::ViewportCommand::MousePassthrough(true)),
+        "the pinned alert window handed clicks back to the game: {fired:?}"
+    );
+}

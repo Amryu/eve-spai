@@ -58,7 +58,7 @@ Tool work rather than app defects. Ticketed so the backlog is complete; not sche
 | [GAP-003 Map is painter-only](GAP-003-map-painter-only/) | ~80% of Map pixels | Medium |
 | [GAP-004 Jabber view uncovered](GAP-004-jabber-view-uncovered/) | ~1,200 lines | **Popout done**, in-app view open |
 | [GAP-005 Wall clock frozen](GAP-005-wall-clock-frozen/) | 13 sites | Small-medium |
-| [GAP-006 Alert auto-dismiss untested](GAP-006-alert-auto-dismiss-untested/) | overlay click passthrough | Small |
+| [GAP-006 Alert auto-dismiss untested](GAP-006-alert-auto-dismiss-untested/) | overlay click passthrough | **Closed** |
 | [GAP-007 Viewport commands dropped](GAP-007-viewport-commands-dropped/) | 12 sites, overlay process | Small / large |
 | [GAP-008 Input kinds undriven](GAP-008-input-kinds-undriven/) | 4 menus, 2 DnD systems | Small / large |
 | [GAP-009 i18n and platform branches](GAP-009-i18n-and-platform/) | CJK overflow, rescue windows | Small / large |
