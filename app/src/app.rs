@@ -1403,7 +1403,7 @@ impl SpaiApp {
                 .range(0..=20)
                 .prefix(format!("{}  ", egui_phosphor::regular::CARET_UP_DOWN))
                 .custom_formatter(|n, _| match n as u32 {
-                    0 => "within the intel feed's range".to_owned(),
+                    0 => "within the feed's range".to_owned(),
                     1 => "within 1 jump".to_owned(),
                     n => format!("within {n} jumps"),
                 })
@@ -5712,6 +5712,13 @@ impl SpaiApp {
         }
     }
 
+    /// The intel toolbar's search field. Its own hint text is the floor: a field too narrow to
+    /// show its placeholder tells the user nothing about what it filters.
+    pub(crate) const INTEL_FILTER_HINT: &'static str = "Filter by system, text, or channel";
+    /// The hint lays out at ~187px, so a crowded row wraps the field onto its own line rather than
+    /// shrinking it past what it can say.
+    const INTEL_FILTER_MIN_W: f32 = 220.0;
+
     fn intel_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(10.0);
 
@@ -5726,8 +5733,11 @@ impl SpaiApp {
         let player_sys = self.player_system();
         let systems = self.systems.clone();
 
-        ui.horizontal(|ui| {
+        toolbar(ui, |ui| {
             use IntelTypeFilter::*;
+            // The five options are one control, so they are grouped tight rather than spaced like
+            // the independent controls that follow.
+            let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 2.0);
             for (lbl, v) in [
                 ("All", All),
                 ("Hostile", Hostile),
@@ -5739,15 +5749,19 @@ impl SpaiApp {
                     self.intel_type = v;
                 }
             }
-            ui.separator();
-            ui.label("\u{2264} jumps");
+            ui.spacing_mut().item_spacing.x = gap;
+            toolbar_sep(ui);
             ui.add(
                 egui::DragValue::new(&mut self.intel_max_jumps)
                     .range(0..=50)
+                    .prefix("\u{2264} ")
                     .custom_formatter(|n, _| if n == 0.0 { "any".to_owned() } else { format!("{n}") }),
+            )
+            .on_hover_text(
+                "Hide intel further than this many jumps from you. \"any\" keeps every distance.",
             );
             if ui
-                .checkbox(&mut self.settings.intel_count_bridges, "count jump bridges")
+                .checkbox(&mut self.settings.intel_count_bridges, "jump bridges")
                 .on_hover_text(
                     "Count your jump bridges in the card distances and the \u{2264} jumps filter. \
                      Off = gate-only, how far a hostile, who can't use your bridges, really is.",
@@ -5756,23 +5770,28 @@ impl SpaiApp {
             {
                 self.needs_save = true;
             }
-            ui.separator();
-            ui.label("outdated after").on_hover_text("How long until intel is outdated");
+            toolbar_sep(ui);
             if ui
                 .add(
                     egui::DragValue::new(&mut self.settings.intel_ttl_secs)
                         .range(30..=3600)
+                        .prefix(format!("{}  ", egui_phosphor::regular::CLOCK_COUNTDOWN))
                         .suffix("s"),
                 )
+                .on_hover_text("How long until intel is outdated")
                 .changed()
             {
                 self.needs_save = true;
             }
-            ui.separator();
-            if ui.button("Severity…").on_hover_text("Configure intel severity colours").clicked() {
+            toolbar_sep(ui);
+            if ui
+                .button(egui_phosphor::regular::PALETTE)
+                .on_hover_text("Configure intel severity colours")
+                .clicked()
+            {
                 self.severity_open = true;
             }
-            ui.separator();
+            toolbar_sep(ui);
             if ui
                 .checkbox(&mut self.settings.kill_intel, "zKill intel")
                 .on_hover_text("Show zKill killmails within range as intel cards")
@@ -5785,12 +5804,14 @@ impl SpaiApp {
             {
                 self.needs_save = true;
             }
-            ui.separator();
+            toolbar_sep(ui);
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
             ui.add_sized(
-                [ui.available_width(), ui.spacing().interact_size.y],
-                egui::TextEdit::singleline(&mut self.intel_query)
-                    .hint_text("Filter by system, text, or channel"),
+                [
+                    ui.available_rect_before_wrap().width().max(Self::INTEL_FILTER_MIN_W),
+                    ui.spacing().interact_size.y,
+                ],
+                egui::TextEdit::singleline(&mut self.intel_query).hint_text(Self::INTEL_FILTER_HINT),
             );
         });
         ui.add_space(6.0);

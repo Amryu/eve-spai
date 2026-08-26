@@ -577,6 +577,8 @@ pub(crate) fn all() -> Vec<Scene> {
     // too little space left, and paint over the panel edge.
     v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
+    // 720 is the app's minimum window width (main.rs), where the intel toolbar has to wrap.
+    v.push(view_scene("view_intel_narrow", View::Intel, [720.0, 800.0]));
     v.push(intel_bridge_scene("view_intel_feed", false, [1280.0, 800.0]));
     v.push(intel_bridge_states_scene("view_intel_feed_bridged", true, [1280.0, 800.0]));
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
@@ -856,25 +858,29 @@ fn content_rects(harness: &egui_kittest::Harness<'_>) -> Vec<egui::Rect> {
 /// the whole range from the app's minimum width up.
 #[test]
 fn uitest_toolbar_dividers_keep_content_on_both_sides() {
-    for w in (720..=1600).step_by(40).map(|w| w as f32) {
-        let mut scene = view_scene("battles_divider_probe", View::Battles, [w, 800.0]);
-        let harness = harness::build(&mut scene, false);
-        let seps = crate::app::painted_toolbar_seps(&harness.ctx);
-        assert!(!seps.is_empty(), "no toolbar divider painted at all at {w}px");
-        let content = content_rects(&harness);
-        for sep in &seps {
-            let row = |r: &&egui::Rect| {
-                let y = r.center().y;
-                sep.top() - 2.0 < y && y < sep.bottom() + 2.0
-            };
-            assert!(
-                content.iter().filter(row).any(|r| r.right() <= sep.left() + 0.5),
-                "divider at {sep:?} starts a row at {w}px"
-            );
-            assert!(
-                content.iter().filter(row).any(|r| r.left() >= sep.right() - 0.5),
-                "divider at {sep:?} ends a row at {w}px"
-            );
+    for (name, view) in
+        [("battles_divider_probe", View::Battles), ("intel_divider_probe", View::Intel)]
+    {
+        for w in (720..=1600).step_by(40).map(|w| w as f32) {
+            let mut scene = view_scene(name, view, [w, 800.0]);
+            let harness = harness::build(&mut scene, false);
+            let seps = crate::app::painted_toolbar_seps(&harness.ctx);
+            assert!(!seps.is_empty(), "no toolbar divider painted at all at {w}px in {name}");
+            let content = content_rects(&harness);
+            for sep in &seps {
+                let row = |r: &&egui::Rect| {
+                    let y = r.center().y;
+                    sep.top() - 2.0 < y && y < sep.bottom() + 2.0
+                };
+                assert!(
+                    content.iter().filter(row).any(|r| r.right() <= sep.left() + 0.5),
+                    "divider at {sep:?} starts a row at {w}px in {name}"
+                );
+                assert!(
+                    content.iter().filter(row).any(|r| r.left() >= sep.right() - 0.5),
+                    "divider at {sep:?} ends a row at {w}px in {name}"
+                );
+            }
         }
     }
 }
@@ -1635,7 +1641,9 @@ fn uitest_bench_intel_bridge_detection() {
 }
 
 /// The setting is only reachable from the alert rules editor unless the intel toolbar carries its
-/// own control, which is the half of UI-025 the user reported.
+/// own control, which is the half of UI-025 the user reported. UI-032 shortened the label, so this
+/// asserts a labelled, ticked control rather than the old wording: an icon or a menu entry would
+/// pass a looser check while losing the point.
 #[test]
 fn uitest_intel_toolbar_carries_the_bridge_toggle() {
     use egui_kittest::kittest::NodeT as _;
@@ -1645,9 +1653,83 @@ fn uitest_intel_toolbar_carries_the_bridge_toggle() {
     let found = harness.root().children_recursive().any(|node| {
         let n = node.accesskit_node();
         n.role() == egui::accesskit::Role::CheckBox
-            && n.label().unwrap_or_default().contains("count jump bridges")
+            && n.label().unwrap_or_default().contains("bridges")
     });
     assert!(found, "the intel toolbar has no jump-bridge toggle");
+}
+
+/// UI-032: the toolbar is one wrapping row ending in the search field, so every pixel a control
+/// spends is a pixel the field does not get. UI-004 and UI-025 each bought clarity with width and
+/// nobody measured the row, which left the field 57px wide at 1280.
+///
+/// The budget is three quarters of the window for the fixed controls, a quarter for the field.
+/// Measured against a 960px ceiling by restoring each ticket's copy: the row before either was
+/// 854px, UI-004 took it to 1008px and UI-025 to 1146px, so this fails on both and passes on what
+/// they were added to. The field then has to still sit on that row and still be able to show its
+/// own hint, since a placeholder it cannot render says nothing about what it filters.
+#[test]
+fn uitest_intel_toolbar_leaves_room_for_the_search_field() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let w = 1280.0;
+    let mut scene = view_scene("intel_budget_probe", View::Intel, [w, 800.0]);
+    let harness = harness::build(&mut scene, false);
+    let mut nodes = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.is_hidden() {
+            continue;
+        }
+        let Some(b) = n.bounding_box() else { continue };
+        nodes.push((
+            n.role(),
+            n.label().unwrap_or_default().to_string(),
+            egui::Rect {
+                min: egui::pos2(b.x0 as f32, b.y0 as f32),
+                max: egui::pos2(b.x1 as f32, b.y1 as f32),
+            },
+        ));
+    }
+    let first = nodes
+        .iter()
+        .find(|(role, label, _)| *role == egui::accesskit::Role::Button && label == "All")
+        .map(|(_, _, r)| *r)
+        .expect("no type filter in the intel toolbar");
+    let field = nodes
+        .iter()
+        .find(|(role, _, _)| *role == egui::accesskit::Role::TextInput)
+        .map(|(_, _, r)| *r)
+        .expect("no search field in the intel toolbar");
+    let row = |r: &egui::Rect| (r.center().y - first.center().y).abs() < 8.0;
+    // The field's own text run sits inside it, so it is excluded by containment rather than role.
+    let controls = nodes
+        .iter()
+        .filter(|(_, _, r)| row(r) && !field.contains_rect(*r))
+        .fold(f32::MIN, |acc, (_, _, r)| acc.max(r.right()));
+    let used = controls - first.left();
+    assert!(
+        used <= w * 0.75,
+        "the intel toolbar's controls take {used:.0}px of a {w:.0}px window, over the {:.0}px budget",
+        w * 0.75
+    );
+    assert!(row(&field), "the search field was pushed off the toolbar's row: {field:?}");
+    let font = egui::TextStyle::Body.resolve(&harness.ctx.global_style());
+    let hint = harness
+        .ctx
+        .fonts_mut(|f| {
+            f.layout_no_wrap(
+                crate::app::SpaiApp::INTEL_FILTER_HINT.to_owned(),
+                font,
+                egui::Color32::WHITE,
+            )
+        })
+        .size()
+        .x;
+    assert!(
+        field.width() >= hint,
+        "the search field is {:.0}px wide, too narrow for its own {hint:.0}px hint",
+        field.width()
+    );
 }
 
 /// Labels of every chip the card drew.
