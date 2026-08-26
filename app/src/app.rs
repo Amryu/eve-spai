@@ -3988,7 +3988,13 @@ impl SpaiApp {
                             dm: is_room && !m.outgoing,
                         },
                         |ui| {
-                            ui.horizontal_wrapped(|ui| {
+                            // Not `horizontal_wrapped`: that floors the row at `interact_size.y`,
+                            // which is 11px of dead air per message on a row that only holds a
+                            // nick, text and the occasional link.
+                            let row = egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_wrap(true);
+                            let size = egui::vec2(ui.available_size_before_wrap().x, 0.0);
+                            ui.allocate_ui_with_layout(size, row, |ui| {
                                 if !grouped {
                                     if m.outgoing {
                                         ui.label(
@@ -18685,6 +18691,12 @@ fn eve_time_label(ts: i64, now: i64) -> String {
 }
 
 fn render_message_body(ui: &mut egui::Ui, body: &str) {
+    if body.is_empty() {
+        // Nothing is emitted for an empty body, and a tight row is then literally 0.0px, so the
+        // message collapses into the one above it.
+        ui.allocate_space(egui::vec2(0.0, ui.text_style_height(&egui::TextStyle::Body)));
+        return;
+    }
     render_linked_text(ui, body, false);
 }
 

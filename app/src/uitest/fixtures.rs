@@ -382,6 +382,17 @@ fn room_history_long() -> Vec<crate::jabber::ChatMsg> {
         .collect()
 }
 
+/// [`jabber_state`] with an empty-bodied message grouped under the last one, which is what an
+/// `<body/>` with no text produces. Nothing else holds that row open, so it is the case where a
+/// body row of literally nothing shows up as a collapsed message.
+pub(crate) fn jabber_state_blank_body() -> crate::jabber::JabberState {
+    let mut st = jabber_state();
+    let v = st.chats.entry(JABBER_ROOM.to_owned()).or_default();
+    v.push(chat_msg("Scout Bravo", "", 8, false));
+    v.push(chat_msg("Scout Bravo", "and the second one just lit", 6, false));
+    st
+}
+
 /// [`jabber_state`] with the room history swapped for a full-cap one.
 pub(crate) fn jabber_state_long() -> crate::jabber::JabberState {
     let mut st = jabber_state();
