@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Low |
-| **Status** | Open |
+| **Status** | Fixed, see `review.md` |
 | **Region** | `render_ping` |
 | **Wave** | 7 |
 
@@ -34,4 +34,4 @@ cargo test --bin eve-spai uitest_screenshots -- --ignored     # writes target/ui
 
 Before: `before/ping_fleet.debug.png`, `before/ping_fleet.png`
 
-After: recorded in `review.md` once fixed.
+After: `after/ping_fleet.png`, `after/ping_fleet.debug.png`, `after/ping_window_mixed.png`

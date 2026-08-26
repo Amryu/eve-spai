@@ -25,10 +25,11 @@ everything in `review.md`. A fix is not done until a screenshot shows it fixed.
 | [UI-011 Reporter footer flows inline with badges](UI-011-reporter-footer-inline-with-badges/) | Low | `intel_row` | 5 | **Fixed** |
 | [UI-012 Battles toolbar ends on a dangling separator](UI-012-dangling-toolbar-separator/) | Low | `battles_view` | 5 | **Fixed** |
 | [UI-013 Doctrine row floats in extra air](UI-013-doctrine-row-floats/) | Low | `render_ping` | 6 | **Fixed** |
-| [UI-014 Copy button undersized](UI-014-copy-button-undersized/) | Low | `render_ping` | 7 | Open |
+| [UI-014 Copy button undersized](UI-014-copy-button-undersized/) | Low | `render_ping` | 7 | **Fixed** |
 | [UI-015 Near-duplicate celestial on two rows](UI-015-duplicate-celestial-rows/) | Low | `intel_row` | 6 | **Fixed** |
 | [UI-017 Work-throttle ComboBox overflows at wide widths](UI-017-combobox-overflows-at-wide-widths/) | Low | `battles_view` | unscheduled | Open |
 | [UI-018 Ping body lines allocate 26px for 15px of ink](UI-018-ping-body-lines-overallocate/) | Low | `render_ping_body` | unscheduled | Open |
+| [UI-019 Audit the remaining small_button call sites](UI-019-small-button-audit/) | Low | various | unscheduled | Open |
 | [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Closed, not a defect |
 
 ## Harness coverage gaps
