@@ -31,7 +31,7 @@ pub struct AlertMsg {
     pub status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub resolved_pilots: std::collections::HashMap<String, i64>,
     #[serde(default)]
-    pub uncertain: std::collections::HashSet<String>,
+    pub uncertain: crate::pilot::UncertainPilots,
     pub last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     pub kills: std::collections::HashMap<i64, crate::kills::KillInfo>,
     pub affil: std::collections::HashMap<i64, crate::affiliation::Affil>,
@@ -323,7 +323,7 @@ mod tests {
             from_you: vec![Some(7)],
             status: std::collections::HashMap::new(),
             resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
-            uncertain: std::collections::HashSet::new(),
+            uncertain: Default::default(),
             last_ship: std::collections::HashMap::new(),
             kills: std::collections::HashMap::new(),
             affil: std::collections::HashMap::new(),

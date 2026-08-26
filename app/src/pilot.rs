@@ -261,6 +261,33 @@ impl PilotCache {
     }
 }
 
+/// Pilot names flagged uncertain, matched case-insensitively. The set is keyed by lowercase and
+/// every way in (`FromIterator`, `Deserialize`) lowercases, so a caller cannot build one that
+/// silently matches nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+pub struct UncertainPilots(std::collections::HashSet<String>);
+
+impl UncertainPilots {
+    pub fn contains(&self, name: &str) -> bool {
+        // No pilot is flagged in the common case, so skip the lowercase allocation per card.
+        !self.0.is_empty() && self.0.contains(&name.to_lowercase())
+    }
+}
+
+impl<S: AsRef<str>> FromIterator<S> for UncertainPilots {
+    fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
+        Self(iter.into_iter().map(|n| n.as_ref().to_lowercase()).collect())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UncertainPilots {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = std::collections::HashSet::<String>::deserialize(d)?;
+        Ok(raw.into_iter().collect())
+    }
+}
+
 pub fn name_windows(candidate: &str) -> Vec<String> {
     let words: Vec<&str> = candidate.split_whitespace().collect();
     let mut out = Vec::new();
@@ -463,6 +490,23 @@ fn name_sample(names: &[String]) -> Vec<&String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncertain_pilots_normalizes_every_way_in() {
+        let built: UncertainPilots = ["Second Target", "bob SMITH"].into_iter().collect();
+        assert!(built.contains("Second Target") && built.contains("second target"));
+        assert!(built.contains("Bob Smith"));
+        assert!(!built.contains("Third Target"));
+
+        let wire = serde_json::to_string(&built).unwrap();
+        let back: UncertainPilots = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back, built);
+
+        let mixed: UncertainPilots = serde_json::from_str(r#"["Second Target"]"#).unwrap();
+        assert!(mixed.contains("Second Target"));
+
+        assert!(!UncertainPilots::default().contains("Second Target"));
+    }
 
     #[test]
     fn uncertainty_and_user_verdicts() {

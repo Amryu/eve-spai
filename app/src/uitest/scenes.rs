@@ -1071,3 +1071,64 @@ fn uitest_ping_copy_matches_the_other_buttons() {
         ago.center().y
     );
 }
+
+/// The uncertain set is built from display-cased pilot names here, the shape that used to render
+/// nothing at all. `UncertainPilots` normalizes on the way in, so the marker and the verdict click
+/// both have to survive it.
+#[test]
+fn uitest_intel_row_marks_uncertain_pilot_from_display_cased_set() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let args = IntelArgs {
+        uncertain: ["Second Target"].into_iter().collect(),
+        ..IntelArgs::default()
+    };
+    let report = fixtures::intel_typical();
+    let clicks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = clicks.clone();
+    let mut scene = Scene::ui("uncertain_case_probe", [520.0, 520.0], move |ui| {
+        let mut t = None;
+        let hit = crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            None,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            false,
+            &mut t,
+        );
+        if let Some(hit) = hit {
+            sink.borrow_mut().push(hit);
+        }
+    });
+    let mut harness = harness::build(&mut scene, false);
+    let labels = chip_labels(&harness);
+    assert!(
+        labels.iter().any(|l| l.contains("Second Target") && l.contains('?')),
+        "no uncertain marker on the flagged pilot: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.contains("Hostile Pilot") && !l.contains('?')),
+        "an unflagged pilot picked up the marker: {labels:?}"
+    );
+    harness.get_by_label_contains("Second Target").click();
+    harness.run_steps(2);
+    let got = clicks.borrow();
+    assert!(
+        got.iter().any(
+            |c| matches!(c, crate::app::IntelClick::PilotVerdict(p) if p == "Second Target")
+        ),
+        "clicking the uncertain pilot did not open the verdict: {got:?}"
+    );
+}

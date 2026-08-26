@@ -8945,7 +8945,7 @@ impl SpaiApp {
             let mut cache = self.pilots.lock().unwrap();
             cache.display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()))
         };
-        let uncertain: std::collections::HashSet<String> = if feed.is_empty() {
+        let uncertain = if feed.is_empty() {
             Default::default()
         } else {
             uncertain_set(&self.pilots.lock().unwrap(), &resolved_pilots)
@@ -20595,7 +20595,7 @@ pub(crate) struct AlertWindowState {
     pub(crate) ship_details: std::collections::HashMap<i64, crate::store::ShipDetails>,
     pub(crate) ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     pub(crate) resolved_pilots: std::collections::HashMap<String, i64>,
-    pub(crate) uncertain: std::collections::HashSet<String>,
+    pub(crate) uncertain: crate::pilot::UncertainPilots,
     pub(crate) last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     pub(crate) player_sys: Option<i64>,
     pub(crate) kills: Option<crate::kills::KillCache>,
@@ -21747,8 +21747,8 @@ fn report_key(r: &crate::intel::IntelReport) -> u64 {
 fn uncertain_set(
     cache: &crate::pilot::PilotCache,
     resolved: &std::collections::HashMap<String, i64>,
-) -> std::collections::HashSet<String> {
-    resolved.keys().filter(|n| cache.is_uncertain(n)).map(|n| n.to_lowercase()).collect()
+) -> crate::pilot::UncertainPilots {
+    resolved.keys().filter(|n| cache.is_uncertain(n)).collect()
 }
 
 /// A 0..=100% volume slider. Returns true when the value changed.
@@ -21889,7 +21889,7 @@ pub(crate) fn intel_row(
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
     ship_roles: &std::collections::HashMap<i64, Vec<(&'static str, &'static str)>>,
     resolved_pilots: &std::collections::HashMap<String, i64>,
-    uncertain: &std::collections::HashSet<String>,
+    uncertain: &crate::pilot::UncertainPilots,
     last_ship: &std::collections::HashMap<String, (i64, String, i64)>,
     kills: &crate::kills::KillCache,
     sev: crate::settings::Severity,
@@ -22300,7 +22300,7 @@ pub(crate) fn intel_row(
                         c.want(cid);
                         c.get(cid)
                     });
-                    let is_uncertain = uncertain.contains(&name.to_lowercase());
+                    let is_uncertain = uncertain.contains(name);
                     let amber = egui::Color32::from_rgb(0xfb, 0xbf, 0x24);
                     let sz = egui::Vec2::splat(pilot_isz);
                     let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);

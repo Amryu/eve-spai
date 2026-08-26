@@ -137,11 +137,14 @@ zero-area hit rects, and content wider than its window. It is blind to painted d
 (separators, canvas art) because those emit no AccessKit node, so the screenshots stay the
 primary signal and the assertions are the regression gate.
 
-Two traps that silently gut a fixture, both hit once already:
+One trap that silently guts a fixture, hit once already:
 
 - `intel_row` skips any pilot missing from `resolved_pilots` (app.rs), so unresolved fixture
   names render nothing at all.
-- `uncertain` is looked up with `name.to_lowercase()`, so entries must be pre-lowercased.
+
+The `uncertain` set used to be a second one, keyed by lowercase with nothing saying so. It is now
+`pilot::UncertainPilots`, which lowercases on construction and matches case-insensitively, so a
+fixture can pass display-cased names.
 
 Add a scene by appending to `scenes::all()`. Check the census afterwards: a scene near the
 ~12-target chrome baseline is not being inspected in any meaningful sense.
@@ -195,6 +198,10 @@ Rules that matter:
 - Quote the test count to an agent as a FLOOR, never as an exact number. Told "must be green (11
   passed)", an agent reads that as "must not change" and skips adding the regression test the
   ticket most needs. Say that adding tests is welcome and the count going up is the goal.
+- Two agents paired by region of `app.rs` still collide in `app/src/uitest/scenes.rs`, because
+  every ticket adds a test there. Expect `git apply -3` on the second patch of a wave, and check
+  the resolve: a conflict boundary can truncate a test mid-function, which surfaces as an unclosed
+  delimiter rather than as a quietly dropped assertion.
 - At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI
   lives in `app/src/app.rs`, so pair by region: `intel_row`, `render_ping`, `battles_view`,
   `settings_view`, the alert viewport callback, `nav.rs`. Cross-cutting changes run alone.
