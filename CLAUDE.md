@@ -232,8 +232,15 @@ Record effort honestly even when it is embarrassing. A two-line fix that took tw
   cannot reach cheaply, drag-and-drop being the known one: seed the state and render the result
   rather than simulating the input, and if even that fights back, land the fix and record what is
   uncovered. Verification effort is meant to be proportionate, not total.
+- **Never use `git stash` in a worktree.** There is one `refs/stash` in the common `.git`, shared by
+  every worktree, so two agents stashing concurrently swap each other's files. This happened: one
+  agent's `app.rs` landed in another's worktree and the second agent's work was consumed. To compare
+  against a baseline, copy the file aside or use `git show HEAD:path > /tmp/base.rs`. Both are
+  worktree-local and cannot collide. The same applies to the main tree while any agent is running.
 - A test that reads a `#[cfg(test)]` hook cannot be teeth-checked by reverting the whole file,
-  because the hook goes with it. Revert only the behaviour under test.
+  because the hook goes with it. Revert only the behaviour under test. Reverting a matching *string*
+  is not the same thing: an identical line elsewhere will absorb the edit and the check passes
+  vacuously.
 - Screenshots land in the worktree's own `target/uishots`, not in a shared `CARGO_TARGET_DIR`, since
   the harness derives that path from `CARGO_MANIFEST_DIR`. Reading the main tree's PNGs after an
   agent runs gives a stale answer.
@@ -257,6 +264,8 @@ Revisions so far:
   drag-and-drop proved to be the expensive case GAP-008 predicted.
 - Added the Resolution table after the reviews turned out to record what changed but not what it
   cost.
+- Banned `git stash` in worktrees after two concurrent agents swapped each other's `app.rs` through
+  the shared stash ref.
 
 ## Writing and comments (stop slop)
 
