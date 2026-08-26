@@ -32,7 +32,18 @@ which is the assumption the alert tooltip explicitly warns against.
 
 That is a correctness problem, not only a discoverability one.
 
-## Two things to decide, and they are product calls
+## Decisions, made by the user
+
+1. **Default: gate-only**, matching what alert rules already default to. This removes the
+   card/alert mismatch and gives the accurate distance for a hostile who cannot use your bridges.
+   **Existing numbers will get larger**, for example a card reading 3j today may read 7j. That is
+   accepted and expected, not a regression to report.
+2. **Scope: a toggle on the intel toolbar**, owning the feed's own setting, next to the existing
+   jumps and severity controls. Alert rules keep their separate per-rule `count_bridges` flag.
+
+The original framing of these as open questions is kept below for the record.
+
+## Two things that were decided, originally open
 
 1. **Scope.** `count_bridges` is per-rule. The intel feed is not per-rule. Does the feed get its own
    setting, or does it follow a global default, or does the per-rule flag get promoted? Do not
