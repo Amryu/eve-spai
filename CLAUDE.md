@@ -232,6 +232,11 @@ Record effort honestly even when it is embarrassing. A two-line fix that took tw
   cannot reach cheaply, drag-and-drop being the known one: seed the state and render the result
   rather than simulating the input, and if even that fights back, land the fix and record what is
   uncovered. Verification effort is meant to be proportionate, not total.
+- **Never discard uncommitted work to recover from a mistake.** The safety classifier blocks
+  `git stash drop`, `git stash push`, `git apply -R` and `git checkout -- <files>`, correctly, and an
+  agent told to run them just gets denied six times in a row. To recover a clobbered worktree,
+  capture every agent's work as a patch first, then make a FRESH worktree and apply the patch there.
+  That discards nothing, so nothing is blocked, and the damaged worktree can simply be abandoned.
 - **Never use `git stash` in a worktree.** There is one `refs/stash` in the common `.git`, shared by
   every worktree, so two agents stashing concurrently swap each other's files. This happened: one
   agent's `app.rs` landed in another's worktree and the second agent's work was consumed. To compare
@@ -266,6 +271,9 @@ Revisions so far:
   cost.
 - Banned `git stash` in worktrees after two concurrent agents swapped each other's `app.rs` through
   the shared stash ref.
+- Added the fresh-worktree recovery route after the obvious repair, `git checkout --` plus reapply,
+  was denied by the safety classifier six times running. Recovering by adding rather than discarding
+  is both safer and the only thing that actually executes.
 
 ## Writing and comments (stop slop)
 
