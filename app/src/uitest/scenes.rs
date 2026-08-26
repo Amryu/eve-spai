@@ -1046,3 +1046,28 @@ fn uitest_ping_without_a_doctrine_leaves_no_row() {
         with - without
     );
 }
+
+/// The Copy button was a `small_button`, which drops the `interact_size` floor and left a 17px
+/// target next to the 27px Join Mumble in the same card.
+#[test]
+fn uitest_ping_copy_matches_the_other_buttons() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut scene = ping_scene("copy_size_probe", fixtures::ping_fleet());
+    let harness = harness::build(&mut scene, false);
+    let copy = harness.get_by_label_contains("Copy").rect();
+    let mumble = harness.get_by_label_contains("Join Mumble").rect();
+    assert!(
+        (copy.height() - mumble.height()).abs() < 1.0,
+        "Copy is {:.1}px tall against {:.1}px for Join Mumble",
+        copy.height(),
+        mumble.height()
+    );
+    let ago = ping_label_rect(&harness, "2m ago").expect("no timestamp");
+    assert!(
+        (copy.center().y - ago.center().y).abs() < 1.0,
+        "Copy at {:.1} and the timestamp at {:.1} no longer share the header row",
+        copy.center().y,
+        ago.center().y
+    );
+}

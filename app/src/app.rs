@@ -21498,7 +21498,7 @@ pub(crate) fn render_ping(
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .small_button(format!("{}  Copy", icon::COPY))
+                            .button(format!("{}  Copy", icon::COPY))
                             .on_hover_text("Copy the ping text")
                             .clicked()
                         {
@@ -21579,7 +21579,7 @@ pub(crate) fn render_ping(
                     ui.label(egui::RichText::new(format!("{from}{to}")).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .small_button(format!("{}  Copy", icon::COPY))
+                            .button(format!("{}  Copy", icon::COPY))
                             .on_hover_text("Copy the ping text")
                             .clicked()
                         {
