@@ -3405,6 +3405,34 @@ fn is_ship_or_class_word(w: &str, ship_index: &HashMap<String, (i64, String)>) -
         && (SHIP_CLASSES.iter().any(|(k, _)| *k == lw.as_str()) || ship_of(&lw, ship_index).is_some())
 }
 
+/// A bare number the name parser already swallowed, returned as the "Lead N" candidate it belongs
+/// to. The pair has to appear in a name that was actually detected, which is what separates
+/// "Trinity 5 red" (pilot "Trinity 5", so the 5 is part of a name) from "ESS 5 reds" (no pilot
+/// "ESS 5", so the 5 is a count) even though both put a capitalised word in front of the number.
+///
+/// The caller records it as a `name_skip` rather than dropping it: if resolution decides the
+/// candidate is not a real character, `app.rs` adds the number back as a ship count.
+fn number_in_pilot_name(
+    words: &[&str],
+    i: usize,
+    digits: &str,
+    pilots: &[String],
+    systems: &Systems,
+    ship_index: &HashMap<String, (i64, String)>,
+) -> Option<String> {
+    let lead = words[i.checked_sub(1)?]
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
+    if !name_part(lead)
+        || systems.lookup(lead).is_some()
+        || ship_index.contains_key(&lead.to_ascii_lowercase())
+    {
+        return None;
+    }
+    let pair = format!("{lead} {digits}");
+    let needle = pair.to_ascii_lowercase();
+    pilots.iter().any(|p| p.to_ascii_lowercase().contains(&needle)).then_some(pair)
+}
+
 fn parse_count(
     text: &str,
     consumed: &[String],
@@ -3414,9 +3442,15 @@ fn parse_count(
     known_pilots: &HashMap<String, i64>,
 ) -> (Option<u32>, u32, Vec<(String, u32)>) {
     let mut name_skips: Vec<(String, u32)> = Vec::new();
-    const MAGNITUDE: &[&str] = &[
+    // A number in front of one of these is a quantity of something else, and every one of them is
+    // separately parsed elsewhere: ISK magnitudes by `parse_isk`, durations by `parse_time_left`
+    // (the ESS hack timer), distances by nothing at all. A number claimed by any of them must not
+    // also be read as a hostile count, however it is qualified: "ess reds 5 min" is a 5 minute
+    // timer, not 5 reds, and "reds 20 km off gate" is a range.
+    const UNIT_WORDS: &[&str] = &[
         "m", "mil", "mill", "million", "millions", "mio", "kk", "b", "bil", "bill", "billion",
-        "billions", "k", "isk",
+        "billions", "k", "isk", "min", "mins", "minute", "minutes", "s", "sec", "secs", "second",
+        "seconds", "h", "hr", "hrs", "hour", "hours", "km", "kms", "au",
     ];
     let mut best: Option<u32> = None;
     let mut plus: u32 = 0;
@@ -3474,6 +3508,17 @@ fn parse_count(
         {
             continue;
         }
+        // Before the qualification test, not after it: a number inside a name stays out of the
+        // count even when a red/neut keyword or a ship sits on its other side.
+        if bare_number {
+            if let Some(cand) = number_in_pilot_name(&words, i, digits, pilots, systems, ship_index)
+            {
+                if let Ok(n) = digits.parse::<u32>() {
+                    name_skips.push((cand, n));
+                }
+                continue;
+            }
+        }
         if bare_number && !qualified && i > 0 {
             let prevw = words[i - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
             let plc = prevw.to_lowercase();
@@ -3490,7 +3535,7 @@ fn parse_count(
             }
             if let Some(nx) = next {
                 let n = nx.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-                if MAGNITUDE.contains(&n.as_str()) {
+                if UNIT_WORDS.contains(&n.as_str()) {
                     continue;
                 }
             }
@@ -3581,6 +3626,71 @@ pub fn parse_eve_time(s: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::geo::{SystemInfo, Systems};
+
+    /// The ESS hack timer is a duration, and a red/neut keyword on the other side of it must not
+    /// turn it into a hostile count. "45 mins" counts here even though `ess_time` rejects it as
+    /// over the 6 minute main-bank cap: it is a duration either way.
+    #[test]
+    fn ess_timer_is_not_a_hostile_count() {
+        let s = systems();
+        let sh = ships_with(&[("Bellicose", 632)]);
+        for (text, why) in [
+            ("ess reds 5 min Rancer", "5 min is the timer, not 5 reds"),
+            ("ess hostiles 2 min left in Rancer", "2 min is the timer"),
+            ("ess neuts 45 mins left Rancer", "45 mins is a duration"),
+            ("reds 30 seconds out Rancer", "30 seconds is an ETA"),
+        ] {
+            let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+            assert_eq!(r.count, None, "{why}: {text} gave {:?}", r.count);
+        }
+        // A stated count alongside a timer still counts.
+        let r = analyze("ESS 5:00 3 reds Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(3), "a real count next to a timer must survive");
+        let r = analyze("ess 45 min reserve 3 reds Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(3));
+    }
+
+    /// A range off a gate is a distance. Nothing else parses these, so `parse_count` is the only
+    /// thing standing between "reds 20 km off gate" and a card claiming 20 hostiles.
+    #[test]
+    fn distance_is_not_a_hostile_count() {
+        let s = systems();
+        let sh = ships_with(&[("Loki", 29990)]);
+        for text in ["reds 20 km off gate Rancer", "hostiles 100 au out Rancer", "neuts 10 km gate Rancer"] {
+            let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+            assert_eq!(r.count, None, "{text} gave {:?}", r.count);
+        }
+        let r = analyze("5 Loki Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, Some(5), "a ship count must survive");
+    }
+
+    /// A number the name parser swallowed belongs to the name. The guard keys on the pair actually
+    /// appearing in a detected pilot, which is what keeps "ESS 5 reds" counting 5: no pilot "ESS 5"
+    /// is ever detected there, even though "ESS" is capitalised like a name.
+    #[test]
+    fn number_in_a_pilot_name_is_not_a_hostile_count() {
+        let s = systems();
+        let sh = ships_with(&[("Loki", 29990)]);
+        let r = analyze("Trinity 5 red in Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, None, "the 5 belongs to the name: {:?}", r.pilots);
+        assert!(
+            r.name_number_skips.iter().any(|(c, n)| c.eq_ignore_ascii_case("Trinity 5") && *n == 5),
+            "held as a skip so resolution can add it back: {:?}",
+            r.name_number_skips
+        );
+        let r = analyze("Bob 7 neut in Rancer", &s, &sh, &noknown(), 1, "ch", "x");
+        assert_eq!(r.count, None, "{:?}", r.pilots);
+
+        for (text, want) in [
+            ("ESS 5 reds Rancer", 5),
+            ("Rancer gate 5 reds", 5),
+            ("belt 3 neuts Rancer", 3),
+            ("reds 6 Rancer", 6),
+        ] {
+            let r = analyze(text, &s, &sh, &noknown(), 1, "ch", "x");
+            assert_eq!(r.count, Some(want), "{text} gave {:?}", r.count);
+        }
+    }
 
     #[test]
     fn sightings_counting_and_revival() {
