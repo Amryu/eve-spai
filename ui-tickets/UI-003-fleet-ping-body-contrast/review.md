@@ -103,3 +103,42 @@ normally, but a longer single-line description in a narrow window will now wrap 
 than before. Acceptable; noted in case a future ticket reports it.
 
 The ping card footer is still `.small()`, which is UI-008's scope, not this ticket's.
+
+---
+
+# Reverted by the user
+
+The user asked for the fleet description to go back to the darker, smaller form:
+`render_ping_body(ui, description, true)`, weak and with no size bump. Done, and it is the exact
+pre-UI-003 line, taken from `8931ab3^`.
+
+## Why the original reasoning was wrong
+
+This ticket argued that the fleet call body should outrank its metadata, because a fleet call is
+operationally urgent and a routine plain ping is not. The measurement behind it was real: the fleet
+body rendered at about 4.9:1 while the plain ping's rendered at about 11:1.
+
+What the reasoning missed is that **the fleet card's description is not the part a pilot acts on**.
+The actionable fields are FC, Formup, Comms and Doctrine, which are the metadata rows this change
+promoted the description above. The description is context. Making it the loudest thing on the card
+inverted the real hierarchy rather than fixing it, which is the opposite of what the ticket claimed.
+
+The plain ping comparison was also a false peer. A plain ping has no metadata rows at all, so its
+body IS its content and being the strongest text on that card is correct. Comparing the two bodies
+across card types looked like an inconsistency and was not one.
+
+## What stands
+
+No test asserted the brighter or larger form, so the full suite stayed green at 476 through the
+revert. The `weak` parameter on `render_ping_body` is used again, so UI-018's note that only `false`
+reached it from production code no longer holds.
+
+UI-013's doctrine-row fix and UI-018's body-row fix are untouched: those were about row height
+allocating 26px for 15px of ink, not about colour or size.
+
+## Lesson
+
+A contrast measurement can be correct and the conclusion drawn from it still wrong. This one
+compared two bodies and concluded the dimmer was a bug, without asking whether the two cards have
+the same information hierarchy. They do not. The person who reads these cards daily settled it in
+one sentence.

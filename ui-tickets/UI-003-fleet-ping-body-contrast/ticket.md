@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Severity** | Medium |
-| **Status** | Fixed, see `review.md` |
+| **Status** | **Reverted by the user**, see `review.md` |
 | **Region** | `render_ping` |
 | **Wave** | 1 |
 

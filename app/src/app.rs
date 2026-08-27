@@ -10342,11 +10342,12 @@ impl SpaiApp {
                 let band_color = [
                     egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
                     egui::Color32::from_rgb(0xE0, 0xA4, 0x3A),
+                    egui::Color32::from_rgb(0x4F, 0x9B, 0xD8),
                     egui::Color32::from_rgb(0xD8, 0x4C, 0x4C),
                 ];
                 if !schematic {
                     for (i, (name, ly)) in crate::map::JUMP_RANGES.iter().enumerate().rev() {
-                        let col = band_color.get(i).copied().unwrap_or(band_color[2]);
+                        let col = band_color.get(i).copied().unwrap_or(band_color[3]);
                         let r = crate::map::ly_to_pixels(*ly, &bounds, rect, self.map_zoom);
                         painter.circle_stroke(hp, r, egui::Stroke::new(1.5, col.gamma_multiply(0.85)));
                         painter.text(
@@ -10365,7 +10366,7 @@ impl SpaiApp {
                     }
                     let d = crate::map::ly_distance(real_h, &self.map_systems[i]);
                     if let Some(b) = crate::map::JUMP_RANGES.iter().position(|(_, ly)| d <= *ly) {
-                        let col = band_color.get(b).copied().unwrap_or(band_color[2]);
+                        let col = band_color.get(b).copied().unwrap_or(band_color[3]);
                         painter.circle_filled(pos[&s.id], dot + 4.0, col.gamma_multiply(0.70));
                     }
                 }
@@ -22072,14 +22073,7 @@ pub(crate) fn render_ping(
                     });
                 }
                 if !description.is_empty() {
-                    // The call text has to outrank the metadata labels above it, and the theme
-                    // paints `strong` in the same color as body text, so size is the only lever.
-                    ui.scope(|ui| {
-                        if let Some(f) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
-                            f.size += 1.5;
-                        }
-                        render_ping_body(ui, description, false);
-                    });
+                    render_ping_body(ui, description, true);
                 }
                 let from = source.as_deref().unwrap_or("?");
                 let to = target.as_deref().unwrap_or("?");
