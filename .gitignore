@@ -1,4 +1,5 @@
 /target
 crates/server/target/
 **/*.rs.bk
-.claude/
+.claude/*
+!.claude/skills/

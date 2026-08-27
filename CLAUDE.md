@@ -161,124 +161,17 @@ async-populated views show permanent loading states.
 
 ## UI issue workflow
 
-Findings become tickets under `ui-tickets/`, one folder per ticket:
+UI defects go through the `ui-tickets` skill: `.claude/skills/ui-tickets/SKILL.md`. Read it before
+filing, fixing, reviewing or landing one, and before dispatching a fix agent.
 
-```
-ui-tickets/UI-NNN-slug/
-  ticket.md     the problem, written before any fix exists
-  before/       screenshots showing the defect
-  after/        screenshots showing it gone
-  review.md     the resolution report, written when it lands
-ui-tickets/README.md   the index, with status per ticket
-```
+The shape, so it is recognisable without loading the skill: one folder per ticket under
+`ui-tickets/UI-NNN-slug/` holding `ticket.md`, `before/`, `after/` and `review.md`; `GAP-NNN` for
+what the harness cannot reach; at most two agents at once and never in the same region; one branch
+per ticket merged `--no-ff` so `git revert -m 1` backs the whole thing out.
 
-`UI-NNN` for app defects, `GAP-NNN` for things the harness cannot reach. Numbers are never reused,
-including for tickets closed as false positives.
-
-### `ticket.md`
-
-Written before the fix, and never rewritten to match what was built. If the ticket turns out to be
-wrong, the correction goes in `review.md` and the ticket gets a pointer to it. Being able to see
-what was believed at the time is the point.
-
-Required: a metadata table (severity, status, region, reporter), **Symptom** in observable terms,
-**Cause** with `file:line`, **Notes** carrying anything a fixer would otherwise have to rediscover,
-and **How to verify**. State what would make the fix wrong, not just what would make it right.
-
-### The cycle
-
-1. **Ticket.** Reproduce first. A ticket without a `before/` screenshot showing the actual defect is
-   not ready. Two tickets in the first round carried screenshots that did not contain their own bug.
-2. **Fix**, one agent per ticket, in a worktree: `git worktree add --detach <path> main`. Seed with
-   `git diff HEAD` applied and committed first if the tree is dirty. Give the agent the region it
-   owns and the regions it must not touch, by function name.
-3. **Review the patch before applying it.** Does it address the cause or the symptom? Does it stay
-   in its region? Does every comment justify a WHY rather than restate the code? Verify the agent's
-   load-bearing claims in the source yourself; several have been subtly wrong, and several have been
-   right in a way that corrected the ticket.
-4. **Verify.** Apply to a branch, run the suite, re-render, and look at the PNG against `before/`.
-   Confirm any new test actually fails without the fix.
-5. **Land.** One branch per ticket, merged `--no-ff`, so the code, `review.md` and `after/` arrive in
-   one merge commit that `git revert -m 1` backs out cleanly.
-6. **Report** in `review.md`.
-
-### `review.md`
-
-Opens with a **Resolution** table: outcome, agent time and tool calls, patches rejected on review,
-app lines changed, harness lines changed, suite before and after, follow-up tickets spawned.
-
-Then the narrative: what changed and why that approach; what was rejected and why; how the tests
-were proven to have teeth; what the screenshots show, described by someone who looked at them; and
-residual risk or known limits. If the ticket was wrong, say so explicitly under its own heading.
-
-Record effort honestly even when it is embarrassing. A two-line fix that took twelve minutes and
-165 lines of test is useful information about where cost actually goes.
-
-### Rules that have earned their place
-
-- At most 2 agents in parallel, and never two whose fixes touch the same region. Most of the UI is in
-  one file, so pair by function: `intel_row`, `render_ping`, `battles_view`, `settings_view`, the
-  alert viewport callback, the jabber tab bar, the composer, `nav.rs`. Cross-cutting changes run
-  alone.
-- Two agents paired by region still collide in `app/src/uitest/scenes.rs`, because every ticket adds
-  a test there. Expect `git apply -3` on the second patch of a wave, and check the resolve: a
-  conflict boundary can truncate a test mid-function, which surfaces as an unclosed delimiter rather
-  than a quietly dropped assertion.
-- Apply patches one at a time and re-run the suite between them.
-- Measure the test count when you write the brief; never copy it from the previous one. Quoted
-  floors go stale every time a ticket lands, and an agent that finds a higher number has to stop and
-  work out whether it broke something. This has now happened twice in one session, off by 3 both
-  times.
-- Quote the test count to an agent as a FLOOR, never an exact number. Told "must be green (11
-  passed)", an agent reads it as "must not change" and skips the regression test the ticket most
-  needs.
-- A fix is not done until a screenshot shows it fixed. The exception is an interaction the harness
-  cannot reach cheaply, drag-and-drop being the known one: seed the state and render the result
-  rather than simulating the input, and if even that fights back, land the fix and record what is
-  uncovered. Verification effort is meant to be proportionate, not total.
-- **Never discard uncommitted work to recover from a mistake.** The safety classifier blocks
-  `git stash drop`, `git stash push`, `git apply -R` and `git checkout -- <files>`, correctly, and an
-  agent told to run them just gets denied six times in a row. To recover a clobbered worktree,
-  capture every agent's work as a patch first, then make a FRESH worktree and apply the patch there.
-  That discards nothing, so nothing is blocked, and the damaged worktree can simply be abandoned.
-- **Never use `git stash` in a worktree.** There is one `refs/stash` in the common `.git`, shared by
-  every worktree, so two agents stashing concurrently swap each other's files. This happened: one
-  agent's `app.rs` landed in another's worktree and the second agent's work was consumed. To compare
-  against a baseline, copy the file aside or use `git show HEAD:path > /tmp/base.rs`. Both are
-  worktree-local and cannot collide. The same applies to the main tree while any agent is running.
-- A test that reads a `#[cfg(test)]` hook cannot be teeth-checked by reverting the whole file,
-  because the hook goes with it. Revert only the behaviour under test. Reverting a matching *string*
-  is not the same thing: an identical line elsewhere will absorb the edit and the check passes
-  vacuously.
-- Screenshots land in the worktree's own `target/uishots`, not in a shared `CARGO_TARGET_DIR`, since
-  the harness derives that path from `CARGO_MANIFEST_DIR`. Reading the main tree's PNGs after an
-  agent runs gives a stale answer.
-- A fix that spawns a new ticket is a good fix, not a failed one. Three of the first fifteen found
-  defects the ticket never mentioned.
-
-### Improving the process
-
-This section is meant to change. When a round teaches something, add it here in the same commit as
-the work that taught it, and say in the commit message what went wrong. Every rule above exists
-because something failed once.
-
-Revisions so far:
-
-- Test counts became floors after an agent skipped a regression test to protect a number.
-- Worktree seeding became conditional once the tree was committed.
-- Added the `scenes.rs` collision note after a three-way apply truncated a test.
-- Added the scene-cropping rule after two `before/` screenshots turned out not to contain their bug.
-- Added the `cfg(test)` teeth-check note after a self-check passed vacuously.
-- Capped verification effort for drag interactions, at the user's direction, after tab
-  drag-and-drop proved to be the expensive case GAP-008 predicted.
-- Added the Resolution table after the reviews turned out to record what changed but not what it
-  cost.
-- Banned `git stash` in worktrees after two concurrent agents swapped each other's `app.rs` through
-  the shared stash ref.
-- Measure, do not copy, the test-count floor, after two briefs quoted stale numbers.
-- Added the fresh-worktree recovery route after the obvious repair, `git checkout --` plus reapply,
-  was denied by the safety classifier six times running. Recovering by adding rather than discarding
-  is both safer and the only thing that actually executes.
+The skill carries the ticket and review templates, the agent brief, the harness traps and the
+incident log behind every rule. It is meant to grow: when a round teaches something, add the rule
+and the incident in the same commit as the work that taught it.
 
 ## Writing and comments (stop slop)
 
