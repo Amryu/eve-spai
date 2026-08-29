@@ -153,6 +153,45 @@ impl Systems {
         Self::bfs_jumps(&self.gate_adjacency, from, to, max_jumps)
     }
 
+    /// Systems nearest `from` in jumps that satisfy `ok`, searched ring by ring so the first ring
+    /// with a hit is the minimum. Returns that ring's jump count and every match in it, leaving the
+    /// tie to the caller. Used to pick a jump-off point: ranking candidates by lightyears finds the
+    /// geometrically nearest system, which in null sec is regularly a dozen gates away.
+    ///
+    /// Bridge-aware, matching [`Self::jumps`]. Untransitable systems are skipped, so a match is
+    /// always somewhere a fleet can actually sit.
+    pub fn nearest_matching(
+        &self,
+        from: i64,
+        max_jumps: u32,
+        ok: impl Fn(i64) -> bool,
+    ) -> Option<(u32, Vec<i64>)> {
+        if ok(from) {
+            return Some((0, vec![from]));
+        }
+        let mut visited: HashSet<i64> = HashSet::from([from]);
+        let mut ring = vec![from];
+        for dist in 1..=max_jumps {
+            let mut next = Vec::new();
+            for sys in ring.drain(..) {
+                for &n in self.adjacency.get(&sys).into_iter().flatten() {
+                    if !is_no_transit(n) && visited.insert(n) {
+                        next.push(n);
+                    }
+                }
+            }
+            if next.is_empty() {
+                return None;
+            }
+            let hits: Vec<i64> = next.iter().copied().filter(|&n| ok(n)).collect();
+            if !hits.is_empty() {
+                return Some((dist, hits));
+            }
+            ring = next;
+        }
+        None
+    }
+
     fn bfs_jumps(adj: &HashMap<i64, Vec<i64>>, from: i64, to: i64, max_jumps: u32) -> Option<u32> {
         if from == to {
             return Some(0);
@@ -253,6 +292,34 @@ impl Systems {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ring by ring, so a match twelve jumps out never beats one next door, and every match in the
+    /// winning ring comes back for the caller to break the tie on.
+    #[test]
+    fn nearest_matching_returns_the_whole_nearest_ring() {
+        let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut link = |a: i64, b: i64| {
+            adjacency.entry(a).or_default().push(b);
+            adjacency.entry(b).or_default().push(a);
+        };
+        // 1 -- 2, 1 -- 3, 2 -- 4, 4 -- 5
+        for (a, b) in [(1, 2), (1, 3), (2, 4), (4, 5)] {
+            link(a, b);
+        }
+        let s = Systems::new(HashMap::new(), adjacency);
+
+        let (d, hits) = s.nearest_matching(1, 10, |id| id == 2 || id == 3 || id == 5).unwrap();
+        assert_eq!(d, 1);
+        let mut hits = hits;
+        hits.sort();
+        assert_eq!(hits, vec![2, 3], "5 is three jumps out and must not tie with the neighbours");
+
+        assert_eq!(s.nearest_matching(1, 10, |id| id == 5).unwrap().0, 3);
+        assert_eq!(s.nearest_matching(1, 2, |id| id == 5), None, "capped short of the match");
+        assert_eq!(s.nearest_matching(1, 10, |id| id == 1).unwrap(), (0, vec![1]), "start counts");
+        assert_eq!(s.nearest_matching(1, 10, |_| false), None);
+    }
+
 
     #[test]
     fn wormhole_system_ids() {

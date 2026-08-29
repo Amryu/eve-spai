@@ -63,6 +63,8 @@ Each of these exists because something failed once. `references/lessons.md` has 
   conflict boundary can truncate a test mid-function, which surfaces as an unclosed delimiter rather
   than a quietly dropped assertion.
 - Apply patches one at a time and re-run the suite between them.
+- Stage by path. `git add -A` while a ticket folder is untracked sweeps the code in under the
+  ticket's commit message, so the history has no commit describing the fix. Done twice.
 
 **Test counts**
 - Measure the count when you write the brief. Never copy it from the previous brief. Quoted floors go

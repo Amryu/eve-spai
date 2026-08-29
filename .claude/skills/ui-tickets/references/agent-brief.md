@@ -69,8 +69,13 @@ mid-function, which surfaces as an unclosed delimiter rather than a quietly drop
 
 ## Landing
 
+Stage by path, never `git add -A`. The ticket, the fix and the review are three commits, and a
+sweeping add puts the code under the ticket's message, where nothing describes what changed:
+
 ```bash
-git add -A && git commit               # the fix, its tests, review.md and after/
+git add ui-tickets/UI-NNN-slug/ticket.md && git commit   # filed before the fix exists
+git add <the source files> && git commit                 # the fix and its tests
+git add ui-tickets/UI-NNN-slug/ && git commit            # review.md and after/
 git checkout main
 git merge --no-ff fix/ui-nnn-slug
 git worktree remove <worktree>
