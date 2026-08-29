@@ -47,6 +47,11 @@ command it was produced a confidently wrong answer and cost the user three promp
 **Two filters passed to `cargo test`.** It takes one. The second was silently ignored, nothing
 matched, and it reported success.
 
+**`git add -A` put the fix under the ticket's commit message.** Twice, on UI-034 and UI-035. The
+ticket folder is untracked when the ticket is written, so a sweeping add takes the source changes
+with it and the carefully written fix message commits nothing. Both were caught before pushing and
+repaired with `git reset --soft` plus a re-split, which discards nothing. Stage by path.
+
 **A patch landed on the wrong line.** The target string appeared identically elsewhere in the file,
 and the edit was absorbed by a different ticket's row, reverting that ticket instead. Match on
 enough context to be unique, and check what actually changed.
