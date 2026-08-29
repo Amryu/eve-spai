@@ -105,6 +105,45 @@ struct MapOverlays {
 #[cfg(feature = "fc-rescue")]
 const DELVE911_RANGE_LY: f64 = 6.0;
 
+/// The jump-off system a titan can bridge to from `stage_pos` that leaves the fleet the fewest
+/// jumps from `target`. Ties at the same jump count go to whichever is closest in lightyears, which
+/// is the only thing the old version ranked on: it picked the geometrically nearest in-range system
+/// outright, and null-sec gate topology does not follow the map, so that was regularly a dozen
+/// gates out while a neighbour of the target sat in range the whole time.
+///
+/// Falls back to the lightyear-nearest candidate when nothing in range can reach the target within
+/// `max_jumps`, so the out-of-range warning still names a system and reports no route rather than
+/// disappearing.
+#[cfg(feature = "fc-rescue")]
+fn best_jump_off<'a>(
+    systems: &crate::geo::Systems,
+    coords: &'a [crate::store::MapSystem],
+    stage_pos: &crate::store::MapSystem,
+    target: i64,
+    target_pos: &crate::store::MapSystem,
+    max_jumps: u32,
+) -> Option<&'a crate::store::MapSystem> {
+    let in_range: std::collections::HashSet<i64> = coords
+        .iter()
+        .filter(|s| s.id != target)
+        .filter(|s| crate::map::ly_distance(stage_pos, s) <= DELVE911_RANGE_LY)
+        .map(|s| s.id)
+        .collect();
+    let closest_ly = |ids: &dyn Fn(&crate::store::MapSystem) -> bool| {
+        coords
+            .iter()
+            .filter(|s| ids(s))
+            .min_by(|a, b| {
+                crate::map::ly_distance(a, target_pos)
+                    .total_cmp(&crate::map::ly_distance(b, target_pos))
+            })
+    };
+    match systems.nearest_matching(target, max_jumps, |id| in_range.contains(&id)) {
+        Some((_, hits)) => closest_ly(&|s| hits.contains(&s.id)),
+        None => closest_ly(&|s| in_range.contains(&s.id)),
+    }
+}
+
 /// Target sits outside titan range of staging: how far out, and the best jump-off system.
 #[cfg(feature = "fc-rescue")]
 struct RangeWarning {
@@ -4955,20 +4994,11 @@ impl SpaiApp {
             return;
         }
 
-        // Best jump-off point: of everything a titan can reach from staging, whichever sits
-        // closest to the target.
-        let Some(hop) = coords
-            .iter()
-            .filter(|s| s.id != target)
-            .filter(|s| crate::map::ly_distance(stage_pos, s) <= DELVE911_RANGE_LY)
-            .min_by(|a, b| {
-                crate::map::ly_distance(a, target_pos)
-                    .total_cmp(&crate::map::ly_distance(b, target_pos))
-            })
+        const MAX_JUMPS: u32 = 40;
+        let Some(hop) = best_jump_off(&systems, &coords, stage_pos, target, target_pos, MAX_JUMPS)
         else {
             return;
         };
-        const MAX_JUMPS: u32 = 40;
         self.rescue_range = Some(RangeWarning {
             ly_from_staging,
             closest_name: hop.name.clone(),
@@ -25054,5 +25084,151 @@ mod chat_window_tests {
                 }
             }
         });
+    }
+}
+
+#[cfg(all(test, feature = "fc-rescue"))]
+mod rescue_range_tests {
+    use crate::geo::{SystemInfo, Systems};
+    use crate::map::LY_METERS;
+    use crate::store::MapSystem;
+    use std::collections::HashMap;
+
+    /// One system on the x axis, `ly` lightyears from the origin where staging sits.
+    fn sys(id: i64, name: &str, ly: f64) -> MapSystem {
+        MapSystem {
+            id,
+            name: name.to_owned(),
+            security: -0.5,
+            region_id: 10_000_060,
+            x: ly * LY_METERS,
+            y: 0.0,
+            z: 0.0,
+            x2d: 0.0,
+            z2d: 0.0,
+        }
+    }
+
+    const STAGING: i64 = 30_000_001;
+    const TARGET: i64 = 30_000_100;
+    const NEAR_A: i64 = 30_000_101;
+    const NEAR_B: i64 = 30_000_102;
+    const FAR_BUT_CLOSE: i64 = 30_000_110;
+
+    /// Staging at 0 ly, the stranded capital at 10 ly, so the target is out of the 6 ly titan range
+    /// and the warning is live. Three systems sit inside titan range of staging:
+    ///
+    /// - `FAR-BUT-CLOSE` at 5.9 ly, the nearest to the target on the map, but ten gates away.
+    /// - `NEAR-A` at 3.0 ly and `NEAR-B` at 3.5 ly, both one gate from the target.
+    ///
+    /// The chain that connects `FAR-BUT-CLOSE` to the target is parked at 50+ ly so it cannot be
+    /// chosen as a jump-off point itself.
+    fn fixture() -> (Systems, Vec<MapSystem>) {
+        let mut coords = vec![
+            sys(STAGING, "STAGING", 0.0),
+            sys(TARGET, "5J4K-9", 10.0),
+            sys(NEAR_A, "NEAR-A", 3.0),
+            sys(NEAR_B, "NEAR-B", 3.5),
+            sys(FAR_BUT_CLOSE, "ZH-GKG", 5.9),
+        ];
+        let chain: Vec<i64> = (0..9).map(|i| 30_000_120 + i).collect();
+        for (i, id) in chain.iter().enumerate() {
+            coords.push(sys(*id, &format!("CHAIN-{i}"), 50.0 + i as f64));
+        }
+
+        let by_name: HashMap<String, SystemInfo> = coords
+            .iter()
+            .map(|s| {
+                (
+                    s.name.to_lowercase(),
+                    SystemInfo {
+                        id: s.id,
+                        name: s.name.clone(),
+                        security: s.security,
+                        constellation: "C".into(),
+                        region: "Delve".into(),
+                        faction: String::new(),
+                    },
+                )
+            })
+            .collect();
+
+        let mut adjacency: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut link = |a: i64, b: i64| {
+            adjacency.entry(a).or_default().push(b);
+            adjacency.entry(b).or_default().push(a);
+        };
+        link(TARGET, NEAR_A);
+        link(TARGET, NEAR_B);
+        let mut prev = TARGET;
+        for id in &chain {
+            link(prev, *id);
+            prev = *id;
+        }
+        link(prev, FAR_BUT_CLOSE);
+        (Systems::new(by_name, adjacency), coords)
+    }
+
+    fn pick(systems: &Systems, coords: &[MapSystem]) -> Option<String> {
+        let at = |id: i64| coords.iter().find(|s| s.id == id).unwrap();
+        super::best_jump_off(systems, coords, at(STAGING), TARGET, at(TARGET), 40)
+            .map(|s| s.name.clone())
+    }
+
+    /// The defect: the jump-off point was ranked by lightyears to the target, so the fleet was sent
+    /// to the system that merely looks nearest on the map.
+    #[test]
+    fn jump_off_is_the_fewest_jumps_out_not_the_nearest_on_the_map() {
+        let (systems, coords) = fixture();
+        let at = |id: i64| coords.iter().find(|s| s.id == id).unwrap();
+        let target_pos = at(TARGET);
+
+        // The old ranking's answer, stated here so the test fails loudly if it ever comes back.
+        assert!(
+            crate::map::ly_distance(at(FAR_BUT_CLOSE), target_pos)
+                < crate::map::ly_distance(at(NEAR_B), target_pos),
+            "fixture must keep the wrong system looking closest on the map"
+        );
+        assert_eq!(systems.jumps(FAR_BUT_CLOSE, TARGET, 40), Some(10));
+        assert_eq!(systems.jumps(NEAR_B, TARGET, 40), Some(1));
+
+        assert_eq!(pick(&systems, &coords).as_deref(), Some("NEAR-B"));
+    }
+
+    /// Two systems one jump out, which is the reported case. The nearer of the two in lightyears
+    /// wins, so the choice is stable rather than dependent on system id order.
+    #[test]
+    fn ties_at_the_same_jump_count_go_to_the_nearer_one() {
+        let (systems, coords) = fixture();
+        assert_eq!(systems.jumps(NEAR_A, TARGET, 40), Some(1));
+        assert_eq!(systems.jumps(NEAR_B, TARGET, 40), Some(1));
+        // NEAR_B sits 6.5 ly from the target, NEAR_A 7.0.
+        assert_eq!(pick(&systems, &coords).as_deref(), Some("NEAR-B"));
+    }
+
+    /// No route at all from anything in range: the warning still has to name a system and report
+    /// no route, rather than vanishing and leaving the FC with nothing.
+    #[test]
+    fn unroutable_target_falls_back_to_the_nearest_on_the_map() {
+        let (systems, coords) = fixture();
+        let by_name: HashMap<String, SystemInfo> = coords
+            .iter()
+            .map(|s| {
+                (
+                    s.name.to_lowercase(),
+                    SystemInfo {
+                        id: s.id,
+                        name: s.name.clone(),
+                        security: s.security,
+                        constellation: "C".into(),
+                        region: "Delve".into(),
+                        faction: String::new(),
+                    },
+                )
+            })
+            .collect();
+        let stranded = Systems::new(by_name, HashMap::new());
+        assert_eq!(stranded.jumps(NEAR_B, TARGET, 40), None);
+        assert_eq!(pick(&stranded, &coords).as_deref(), Some("ZH-GKG"));
     }
 }
