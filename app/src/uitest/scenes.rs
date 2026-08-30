@@ -2335,6 +2335,132 @@ fn uitest_jabber_popout_renders_a_conversation() {
     }
 }
 
+/// Every conversation in a window shared one `ScrollArea` id, so its scroll offset and its
+/// stuck-to-bottom flag carried across a tab switch. A short DM's content fits, so the press that
+/// switches tabs clears the sticky flag (`selecting` drops `stick_to_bottom` for that frame, and
+/// egui only re-enters sticky mode from a short body while sticking is asked for). The next,
+/// longer conversation then opened at offset 0, the top of a 1000-message history, and never
+/// snapped back.
+#[test]
+fn uitest_jabber_tab_switch_opens_at_the_newest_message() {
+    use crate::app::ChatWinKey;
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = jabber_popout_seeded(
+        "jabber_tab_switch_scroll",
+        [520.0, 480.0],
+        fixtures::JABBER_DM,
+        "",
+        None,
+        fixtures::jabber_state_long,
+    );
+    let mut harness = harness::build(&mut scene, false);
+    let tab = harness
+        .ctx
+        .read_response(egui::Id::new((
+            "jtab",
+            ChatWinKey::Popout(POPOUT_ID),
+            fixtures::JABBER_ROOM,
+        )))
+        .expect("the room tab is not in the pop-out's bar")
+        .rect;
+    harness::click_at(&harness, tab.center());
+    harness.run_steps(4);
+
+    let bodies: Vec<String> = harness
+        .root()
+        .children_recursive()
+        .map(|node| node.accesskit_node())
+        .filter(|n| n.role() == egui::accesskit::Role::Label)
+        .map(|n| n.label().or_else(|| n.value()).unwrap_or_default().to_string())
+        .collect();
+    let newest = format!("#{}", fixtures::JABBER_LONG_LEN - 1);
+    assert!(
+        bodies.iter().any(|b| b.contains(&newest)),
+        "switching to the long room did not open on its newest message ({newest}); drew: {:?}",
+        bodies.iter().filter(|b| b.contains('#')).take(6).collect::<Vec<_>>()
+    );
+    assert!(
+        !bodies.iter().any(|b| b.contains("#0 ") || b.ends_with("#0")),
+        "switching to the long room opened at the top of its history: {:?}",
+        bodies.iter().filter(|b| b.contains('#')).take(6).collect::<Vec<_>>()
+    );
+}
+
+/// The other half of UI-036: per-conversation state has to mean the scrollback is kept, not that
+/// every arrival is forced to the bottom. Scroll the room up, leave, come back, land where you
+/// left. A fix that simply snapped to the newest message on every switch would pass
+/// [`uitest_jabber_tab_switch_opens_at_the_newest_message`] and fail this.
+#[test]
+fn uitest_jabber_tab_switch_keeps_a_scrolled_back_conversation() {
+    use crate::app::ChatWinKey;
+
+    let mut scene = jabber_popout_seeded(
+        "jabber_tab_switch_scrollback",
+        [520.0, 480.0],
+        fixtures::JABBER_ROOM,
+        "",
+        None,
+        fixtures::jabber_state_long,
+    );
+    let mut harness = harness::build(&mut scene, false);
+    let tab = |harness: &egui_kittest::Harness<'_>, jid: &str| {
+        harness
+            .ctx
+            .read_response(egui::Id::new(("jtab", ChatWinKey::Popout(POPOUT_ID), jid)))
+            .unwrap_or_else(|| panic!("{jid} is not a tab in the pop-out's bar"))
+            .rect
+    };
+    // Over the history, below the tab bar and the room header, above the composer.
+    let body = egui::pos2(260.0, 240.0);
+    harness.event(egui::Event::PointerMoved(body));
+    for _ in 0..6 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run_steps(2);
+    }
+    // egui animates a wheel scroll, so the offset is still moving for a few frames after the last
+    // event. Reading the landing position early makes the comparison below drift by a message.
+    harness.run_steps(16);
+    let scrolled_back = jabber_top_body(&harness).expect("no message bodies in the room");
+    assert!(
+        !scrolled_back.contains(&format!("#{}", fixtures::JABBER_LONG_LEN - 1)),
+        "the wheel did not move the history, so this asserts nothing: {scrolled_back:?}"
+    );
+
+    let dm = tab(&harness, fixtures::JABBER_DM);
+    harness::click_at(&harness, dm.center());
+    harness.run_steps(4);
+    let room = tab(&harness, fixtures::JABBER_ROOM);
+    harness::click_at(&harness, room.center());
+    harness.run_steps(4);
+
+    assert_eq!(
+        jabber_top_body(&harness).as_deref(),
+        Some(scrolled_back.as_str()),
+        "coming back to the room did not restore where it was scrolled to"
+    );
+}
+
+/// The first message body in the AccessKit tree, which is the top of the history as drawn. Nicks
+/// and timestamps are labels too, so bodies are picked out by the marker every fixture body
+/// carries.
+fn jabber_top_body(harness: &egui_kittest::Harness<'_>) -> Option<String> {
+    use egui_kittest::kittest::NodeT as _;
+
+    harness
+        .root()
+        .children_recursive()
+        .map(|node| node.accesskit_node())
+        .filter(|n| n.role() == egui::accesskit::Role::Label)
+        .map(|n| n.label().or_else(|| n.value()).unwrap_or_default().to_string())
+        .find(|l| l.contains('#'))
+}
+
 /// UI-027. Chat bodies sat in `jabber_conversation_ui`'s own `horizontal_wrapped`, whose row is
 /// floored at `interact_size.y` whether or not anything interactive is on it, so every message
 /// allocated 26px for 15px of ink.
@@ -2824,6 +2950,38 @@ fn uitest_screenshots_composer_focused() {
         harness.run_steps(2);
         harness::shot(&mut harness, &format!("{name}_focused"));
     }
+}
+
+/// UI-036 needs both tabs in one gesture, and `all()` scenes cannot click, so the switch is
+/// rendered here: the pop-out opens on the short DM, the room tab is clicked, and the shot is what
+/// the long conversation looks like on arrival.
+#[test]
+#[ignore = "renders to target/uishots; run with --ignored"]
+fn uitest_screenshots_tab_switch() {
+    use crate::app::ChatWinKey;
+
+    let mut scene = jabber_popout_seeded(
+        "jabber_tab_switch",
+        [520.0, 480.0],
+        fixtures::JABBER_DM,
+        "",
+        None,
+        fixtures::jabber_state_long,
+    );
+    let mut harness = harness::build(&mut scene, true);
+    harness::shot(&mut harness, "jabber_tab_switch_from_dm");
+    let tab = harness
+        .ctx
+        .read_response(egui::Id::new((
+            "jtab",
+            ChatWinKey::Popout(POPOUT_ID),
+            fixtures::JABBER_ROOM,
+        )))
+        .expect("the room tab is not in the pop-out's bar")
+        .rect;
+    harness::click_at(&harness, tab.center());
+    harness.run_steps(4);
+    harness::shot(&mut harness, "jabber_tab_switch_to_room");
 }
 
 /// UI-022's measuring stick. The harness asserts layout, not frame time, so the only way to judge

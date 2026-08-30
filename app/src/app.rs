@@ -3961,7 +3961,10 @@ impl SpaiApp {
         let sel_msgs: &[crate::jabber::ChatMsg] =
             guard.chats.get(&jid).map_or(&[][..], Vec::as_slice);
         egui::ScrollArea::vertical()
-            .id_salt("msgs")
+            // UI-036. Salted by conversation, not just by window: one shared id handed every tab
+            // the previous one's offset and stuck-to-bottom flag, which opened the next, longer
+            // conversation at the top of its history.
+            .id_salt(("msgs", jid.as_str()))
             .auto_shrink([false, false])
             .max_height((body_h - composer_h - 8.0).max(HISTORY_MIN_H))
             .stick_to_bottom(!selecting)
