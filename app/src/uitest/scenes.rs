@@ -1481,15 +1481,16 @@ fn uitest_intel_card_badge_is_as_tall_as_the_chips_beside_it() {
     );
 }
 
-/// A compact card is ~320px and UI-002 fought over 33 of them, so the second slot is dropped there
-/// and the selected character's distance moves into the roster the badge opens.
+/// A compact card carries both slots too. Dropping the second one there was the wrong trade: the
+/// number you are used to reading disappearing when the feed is docked narrow is more confusing
+/// than the width it costs.
 #[test]
-fn uitest_intel_card_compact_shows_only_the_nearest() {
+fn uitest_intel_card_compact_shows_both_characters() {
     let mut scene =
         all().into_iter().find(|s| s.name == "intel_row_two_characters_narrow").expect("scene");
     let harness = harness::build(&mut scene, false);
-    assert_eq!(jump_chips(&harness), ["1j"]);
-    assert_eq!(char_badges(&harness), ["Scout Alt"]);
+    assert_eq!(jump_chips(&harness), ["1j", "4j"]);
+    assert_eq!(char_badges(&harness), ["Scout Alt", "Amryu"]);
 }
 
 /// Nothing to disambiguate, so one number, but the portrait stays: the card should not change

@@ -32,8 +32,7 @@ already relies on: `Systems` is only mutated before it is wrapped, so a bridge e
 
 `intel_row` takes `chars: &CardChars`. With hops it draws a badge and number per slot; without, it
 falls through to the existing path byte for byte, which is what all 17 call sites and every
-existing scene get. Full cards carry the nearest and the selected, the selected dimmed; compact
-cards carry only the nearest and put the rest in the roster the badge opens.
+existing scene get. Both card widths carry the nearest and the selected, the selected dimmed.
 
 `ipc::AlertMsg` gains `#[serde(default)] chars: Vec<CardChars>`, index-aligned with `feed`, because
 the overlay subprocess holds neither the roster nor anyone's location. `AlertConfig` gains the
@@ -76,10 +75,10 @@ just changed.
   in `ball` fails it with `zarzakh: ball 1 -> 30100000 at cap 1, left: None, right: Some(1)`. That
   ordering is not obvious: `bfs_jumps` answers `n == to` *before* testing `is_no_transit`, so a
   route may end at Zarzakh and never pass through it. This test is what licensed reusing the ball.
-- `uitest_intel_card_compact_shows_only_the_nearest` fails with two numbers if the `!compact` guard
-  goes; `uitest_intel_card_keeps_the_badge_when_nearest_is_selected` fails with two identical
-  numbers if the `i != 0` guard goes; `uitest_intel_card_draws_no_badge_for_one_character` fails if
-  a badge is drawn unconditionally.
+- `uitest_intel_card_keeps_the_badge_when_nearest_is_selected` fails with two identical numbers if
+  the `i != 0` guard goes; `uitest_intel_card_draws_no_badge_for_one_character` fails if a badge is
+  drawn unconditionally; `uitest_intel_card_compact_shows_both_characters` fails if a compact card
+  drops a slot.
 - `uitest_intel_card_jump_column_holds_its_x` pins UI-002's column across a card with a second slot
   and one without.
 - `the_hundred_card_trim_cuts_every_vector_by_the_same_amount` pins the shift bug the `via` comment
@@ -121,6 +120,11 @@ Three changes on the user's read of the shipped card, all in the same ticket:
   carries it whether or not a mark label exists beside it.
   `uitest_bridge_mark_explains_itself_on_hover` was reworked onto the number and proves it.
 - **The selected character's number was too faint.** `gamma_multiply(0.55)` to `0.8`.
+- **Compact cards carry both slots too.** They were built to show only the nearest, on the
+  reasoning that ~320px is the width UI-002 fought over. Wrong trade: the number you are used to
+  reading vanishing when the feed is docked narrow is worse than the width it costs. At 320px the
+  row now wraps its chips onto a third line, and `uitest_layout` confirms nothing escapes the
+  window.
 
 One claim of mine did not survive its own teeth check. I wrote a comment saying `Button::image` was
 what held the portrait at text size, and that swapping to `Button::new` fixed it. Reverting only the

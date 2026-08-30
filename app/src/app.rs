@@ -22935,12 +22935,8 @@ pub(crate) fn intel_row(
                 }
                 if let Some(near) = chars.nearest() {
                     consumed |= char_jump_slot(ui, near, chars, false, compact, tip);
-                    // A compact card has no room for the second badge, so the selected
-                    // character's own distance lives in the roster the badge opens.
-                    if !compact {
-                        if let Some(sel) = chars.second() {
-                            consumed |= char_jump_slot(ui, sel, chars, true, compact, tip);
-                        }
+                    if let Some(sel) = chars.second() {
+                        consumed |= char_jump_slot(ui, sel, chars, true, compact, tip);
                     }
                 } else if let Some(j) = from_you {
                     let jtxt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
