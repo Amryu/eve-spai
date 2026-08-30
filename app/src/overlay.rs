@@ -234,22 +234,7 @@ impl Overlay {
                         };
                         {
                             let mut st = alert_shared.lock().unwrap();
-                            for rs in m.reports {
-                                st.feed.push(rs);
-                                st.from_you.push(None);
-                            }
-                            // A frame from a main process that predates the field leaves `via`
-                            // short, and a short vector shifts every verdict onto the wrong card.
-                            let n = st.feed.len();
-                            st.via.resize(n, crate::app::JumpVia::default());
-                            if n > 100 {
-                                let cut = n - 100;
-                                st.feed.drain(0..cut);
-                                let fy_cut = cut.min(st.from_you.len());
-                                st.from_you.drain(0..fy_cut);
-                                let via_cut = cut.min(st.via.len());
-                                st.via.drain(0..via_cut);
-                            }
+                            push_reports(&mut st, m.reports);
                             for (i, d) in ship_details {
                                 st.ship_details.insert(i, d);
                             }
@@ -468,12 +453,39 @@ impl eframe::App for Overlay {
     }
 }
 
+/// Append pushed reports to the feed and keep every per-card vector the same length as it.
+///
+/// A push carries no distances, so `from_you` grows with `None` and the verdict and attribution
+/// vectors are resized rather than appended to: a frame from a main process that predates either
+/// field leaves it short, and a short vector shifts every value onto the wrong card.
+pub(crate) fn push_reports(
+    st: &mut crate::app::AlertWindowState,
+    reports: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
+) {
+    const KEEP: usize = 100;
+    for rs in reports {
+        st.feed.push(rs);
+        st.from_you.push(None);
+    }
+    let n = st.feed.len();
+    st.via.resize(n, crate::app::JumpVia::default());
+    st.chars.resize(n, crate::app::CardChars::default());
+    if n > KEEP {
+        let cut = n - KEEP;
+        st.feed.drain(0..cut);
+        st.from_you.drain(0..cut.min(st.from_you.len()));
+        st.via.drain(0..cut.min(st.via.len()));
+        st.chars.drain(0..cut.min(st.chars.len()));
+    }
+}
+
 /// Copy one alert frame's wire fields into the shared state. The overlay's caches (ship details,
 /// kills, affiliations) are filled by the caller, which owns them.
 pub(crate) fn apply_alert(st: &mut crate::app::AlertWindowState, m: crate::ipc::AlertMsg) {
     st.feed = m.feed;
     st.from_you = m.from_you;
     st.via = m.via;
+    st.chars = m.chars;
     st.status = m.status;
     st.resolved_pilots = m.resolved_pilots;
     st.uncertain = m.uncertain;
@@ -487,5 +499,76 @@ pub(crate) fn apply_alert(st: &mut crate::app::AlertWindowState, m: crate::ipc::
     }
     if m.focus {
         st.focus_pending = true;
+    }
+}
+
+#[cfg(test)]
+mod push_tests {
+    use super::*;
+    use crate::app::{CardChars, CharHop, JumpVia};
+
+    fn report(text: &str) -> (crate::intel::IntelReport, crate::settings::Severity) {
+        (
+            crate::intel::IntelReport { text: text.to_owned(), ..Default::default() },
+            crate::settings::Severity::Danger,
+        )
+    }
+
+    fn chars(name: &str) -> CardChars {
+        CardChars {
+            hops: vec![CharHop {
+                name: name.to_owned(),
+                id: 1,
+                jumps: Some(1),
+                via: JumpVia::Gates,
+            }],
+            selected: Some(0),
+        }
+    }
+
+    /// A push carries no attribution, so the vector has to be grown to match the feed. Left short,
+    /// every later card reads the character of the card two places back.
+    #[test]
+    fn a_push_keeps_the_per_card_vectors_aligned() {
+        let mut st = crate::app::AlertWindowState {
+            feed: vec![report("first"), report("second")],
+            from_you: vec![Some(1), Some(2)],
+            via: vec![JumpVia::Gates, JumpVia::BridgeOnly],
+            chars: vec![chars("Amryu"), chars("Scout")],
+            ..Default::default()
+        };
+        push_reports(&mut st, vec![report("third"), report("fourth"), report("fifth")]);
+
+        assert_eq!(st.feed.len(), 5);
+        assert_eq!(st.from_you.len(), 5);
+        assert_eq!(st.via.len(), 5);
+        assert_eq!(st.chars.len(), 5);
+        assert_eq!(st.chars[0].hops[0].name, "Amryu", "the cards that had one keep it");
+        assert_eq!(st.chars[1].hops[0].name, "Scout");
+        assert!(st.chars[4].hops.is_empty(), "a pushed card has no attribution yet");
+    }
+
+    /// The trim has to cut the same prefix off every vector, or the survivors are re-paired.
+    #[test]
+    fn the_hundred_card_trim_cuts_every_vector_by_the_same_amount() {
+        let mut st = crate::app::AlertWindowState::default();
+        for i in 0..100 {
+            st.feed.push(report(&format!("card {i}")));
+            st.from_you.push(Some(i as u32));
+            st.via.push(JumpVia::Gates);
+            st.chars.push(chars(&format!("char {i}")));
+        }
+        push_reports(&mut st, vec![report("card 100"), report("card 101")]);
+
+        assert_eq!(st.feed.len(), 100);
+        assert_eq!(st.chars.len(), 100);
+        assert_eq!(st.via.len(), 100);
+        assert_eq!(st.from_you.len(), 100);
+        assert_eq!(st.feed[0].0.text, "card 2", "the oldest two fell off");
+        assert_eq!(
+            st.chars[0].hops[0].name, "char 2",
+            "attribution must fall off with the card it belongs to"
+        );
+        assert_eq!(st.from_you[0], Some(2));
     }
 }

@@ -1407,6 +1407,7 @@ impl SpaiApp {
             cfg.systems = self.systems.clone();
             cfg.ship_index = self.ship_index.clone();
             cfg.active_character = self.active_character.clone();
+            cfg.chars = self.characters.iter().map(|c| (c.name.clone(), c.id)).collect();
             cfg.kill_intel = self.settings.kill_intel;
             cfg.kill_intel_jumps = self.settings.kill_intel_jumps;
             cfg.intel_max_jumps = self.intel_max_jumps;
@@ -1577,6 +1578,7 @@ impl SpaiApp {
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
         let systems = self.systems.clone();
         let player_sys = self.player_system();
+        let rings = self.char_rings();
         let bridges = self.settings.intel_count_bridges;
         let now = chrono::Utc::now().timestamp();
         let mut click: Option<IntelClick> = None;
@@ -1584,10 +1586,11 @@ impl SpaiApp {
             let target = r.primary_system().map(|s| s.id);
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
+            let cchars = rings.card(target);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
-                ui, r, now, false, from_you, via, &systems, &status, &ship_details, &ship_roles,
+                ui, r, now, false, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true,
             &affil, false, &mut None,
             ) {
@@ -1665,6 +1668,7 @@ impl SpaiApp {
         let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
         let systems = self.systems.clone();
         let player_sys = self.player_system();
+        let rings = self.char_rings();
         let bridges = self.settings.intel_count_bridges;
         let now = chrono::Utc::now().timestamp();
         let mut click: Option<IntelClick> = None;
@@ -1678,10 +1682,11 @@ impl SpaiApp {
             let target = r.primary_system().map(|s| s.id);
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
+            let cchars = rings.card(target);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
-                ui, r, now, false, from_you, via, &systems, &status, &ship_details, &ship_roles,
+                ui, r, now, false, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true, &affil,
             false, &mut None,
             ) {
@@ -5764,6 +5769,7 @@ impl SpaiApp {
         }
 
         let player_sys = self.player_system();
+        let rings = self.char_rings();
         let systems = self.systems.clone();
 
         toolbar(ui, |ui| {
@@ -5945,12 +5951,13 @@ impl SpaiApp {
                         let target = r.primary_system().map(|s| s.id);
                         let from_you = jumps_from_you(&systems, player_sys, target, bridges);
                         let via = jump_via(&systems, player_sys, target, bridges, from_you);
+                        let cchars = rings.card(target);
                         let sev = severity_of(r, &sev_rules);
                         let kc = self.kill_cache.clone();
                         let affil = self.affiliations.clone();
                         let inner = ui.scope(|ui| {
                             intel_row(
-                                ui, r, now, stale, from_you, via, &systems, &status, &ship_details,
+                                ui, r, now, stale, from_you, via, &cchars, &systems, &status, &ship_details,
                                 &ship_roles, &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
                             &affil, false, &mut None,
                             )
@@ -6076,6 +6083,7 @@ impl SpaiApp {
         }
         let now = chrono::Utc::now().timestamp();
         let player_sys = self.player_system();
+        let rings = self.char_rings();
         let systems = self.systems.clone();
         let bridges = self.settings.intel_count_bridges;
         let sev_rules = self.settings.severity.clone();
@@ -6106,10 +6114,11 @@ impl SpaiApp {
             let target = r.primary_system().map(|s| s.id);
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
+            let cchars = rings.card(target);
             let sev = severity_of(r, &sev_rules);
             let inner = ui.scope(|ui| {
                 intel_row(
-                    ui, r, now, stale, from_you, via, &systems, &status, &ship_details, &ship_roles,
+                    ui, r, now, stale, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                     &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
                 &affil, false, &mut None,
                 )
@@ -9144,6 +9153,11 @@ impl SpaiApp {
                 ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
             let systems = self.systems.clone();
             let player_sys = self.player_system();
+            let rings = self.char_rings();
+            let card_chars: Vec<CardChars> = feed
+                .iter()
+                .map(|(r, _)| rings.card(r.primary_system().map(|s| s.id)))
+                .collect();
 
             let (_active, just_opened, clicks, verdicts, moved, moved_size, compact_toggle) = {
                 let mut st = self.alert_shared.lock().unwrap();
@@ -9159,6 +9173,7 @@ impl SpaiApp {
                 st.win_pos = self.settings.alerts.window_pos;
                 st.win_size = self.settings.alerts.window_size;
                 st.feed = feed;
+                st.chars = card_chars;
                 st.status = status;
                 st.ship_details = ship_details;
                 st.ship_roles = ship_roles;
@@ -11210,6 +11225,27 @@ impl SpaiApp {
     fn player_system(&self) -> Option<i64> {
         let p = self.player.lock().unwrap();
         p.locations.get(&self.active_character).map(|(s, _)| *s).or(p.system_id)
+    }
+
+    /// Who this frame's cards may attribute a number to. Built once per view: a character costs a
+    /// graph walk, a card costs a lookup.
+    pub(crate) fn char_rings(&self) -> CharRings {
+        let (locations, fallback) = {
+            let p = self.player.lock().unwrap();
+            (p.locations.clone(), p.system_id)
+        };
+        let chars: Vec<(String, i64)> =
+            self.characters.iter().map(|c| (c.name.clone(), c.id)).collect();
+        build_char_rings(
+            &self.systems,
+            &chars,
+            &locations,
+            &self.active_character,
+            fallback,
+            &self.settings.intel_disabled_chars,
+            self.settings.alert_only_undocked,
+            self.settings.intel_count_bridges,
+        )
     }
 
     fn set_map_mode(&mut self, new: MapMode) {
@@ -13693,6 +13729,7 @@ impl SpaiApp {
 
         let ttl = self.settings.intel_ttl_secs;
         let player_sys = self.player_system();
+        let rings = self.char_rings();
         let (sys_reports, stale_flags, sys_last_ship): (
             Vec<crate::intel::IntelReport>,
             Vec<bool>,
@@ -14020,11 +14057,13 @@ impl SpaiApp {
                     let bridges = self.settings.intel_count_bridges;
                     let from_you = jumps_from_you(&self.systems, player_sys, target, bridges);
                     let via = jump_via(&self.systems, player_sys, target, bridges, from_you);
+                    let cchars = rings.card(target);
                     let sev = severity_of(r, &self.settings.severity);
                     let kc = self.kill_cache.clone();
                     let affil = self.affiliations.clone();
                     if let Some(c) = intel_row(
-                        ui, r, now, stale_flags[i], from_you, via, &self.systems, &status_snapshot,
+                        ui, r, now, stale_flags[i], from_you, via, &cchars, &self.systems,
+                        &status_snapshot,
                         &ship_details, &ship_roles, &resolved_pilots, &uncertain, &sys_last_ship,
                         &kc, sev, false,
                     &affil, false, &mut None,
@@ -16884,6 +16923,9 @@ struct AlertConfig {
     systems: Option<std::sync::Arc<crate::geo::Systems>>,
     ship_index: Option<std::sync::Arc<std::collections::HashMap<String, (i64, String)>>>,
     active_character: String,
+    /// Name and id per authenticated character. The engine thread has no store handle, and the
+    /// overlay needs the ids to draw portraits.
+    chars: Vec<(String, i64)>,
     kill_intel: bool,
     kill_intel_jumps: u32,
     intel_max_jumps: u32,
@@ -17015,6 +17057,23 @@ impl AlertEngine {
                 )
             })
             .collect();
+        let rings = {
+            let p = player.lock().unwrap();
+            build_char_rings(
+                &cfg.systems,
+                &cfg.chars,
+                &p.locations,
+                &cfg.active_character,
+                p.system_id,
+                &cfg.disabled,
+                cfg.only_undocked,
+                cfg.intel_count_bridges,
+            )
+        };
+        let card_chars: Vec<CardChars> = feed
+            .iter()
+            .map(|(r, _)| rings.card(r.primary_system().map(|s| s.id)))
+            .collect();
 
         let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
         let mut kill_chars: Vec<i64> = Vec::new();
@@ -17060,6 +17119,7 @@ impl AlertEngine {
         serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
         from_you.hash(&mut hasher);
         via.hash(&mut hasher);
+        card_chars.hash(&mut hasher);
         hash_sorted_map(&mut hasher, &status);
         hash_sorted_map(&mut hasher, &resolved_pilots);
         hash_sorted_map(&mut hasher, &last_ship);
@@ -17078,6 +17138,7 @@ impl AlertEngine {
             feed,
             from_you,
             via,
+            chars: card_chars,
             status,
             resolved_pilots,
             uncertain,
@@ -18279,6 +18340,200 @@ pub(crate) enum JumpVia {
     BridgeShorter(u32),
     /// Gates do not reach the target at all, so the number only exists because of a bridge.
     BridgeOnly,
+}
+
+/// One character's distance to a card's system.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CharHop {
+    pub(crate) name: String,
+    /// EVE character id, for the portrait. 0 when the name is not in the store, which renders a
+    /// glyph instead of a broken image.
+    pub(crate) id: i64,
+    /// None when nothing reaches the target inside [`JUMP_SCAN_CAP`].
+    pub(crate) jumps: Option<u32>,
+    #[serde(default)]
+    pub(crate) via: JumpVia,
+}
+
+/// Which characters a card's numbers belong to, nearest first. Empty where there is nothing to
+/// disambiguate, which is the single-character case, and the card then draws the plain number it
+/// always did.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CardChars {
+    pub(crate) hops: Vec<CharHop>,
+    /// Index into `hops` of the active character.
+    pub(crate) selected: Option<usize>,
+}
+
+impl CardChars {
+    pub(crate) fn nearest(&self) -> Option<&CharHop> {
+        self.hops.first().filter(|h| h.jumps.is_some())
+    }
+
+    /// The selected character's slot, only when it is not already the nearest one.
+    pub(crate) fn second(&self) -> Option<&CharHop> {
+        match self.selected {
+            Some(i) if i != 0 => self.hops.get(i),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a character's distance may stand behind an alert. Extracted so the card's candidate set
+/// and `AlertEngine::evaluate`'s cannot drift apart.
+pub(crate) fn alert_candidate(
+    name: &str,
+    docked: bool,
+    disabled: &[String],
+    only_undocked: bool,
+) -> bool {
+    let alerts_on = !disabled.iter().any(|d| d.eq_ignore_ascii_case(name));
+    let in_space = !only_undocked || !docked;
+    alerts_on && in_space
+}
+
+struct Ring {
+    name: String,
+    id: i64,
+    /// The ball the shown number comes from.
+    shown: std::sync::Arc<std::collections::HashMap<i64, u32>>,
+    /// Gate-only ball, kept only while bridges count, to derive the verdict per character.
+    gates: Option<std::sync::Arc<std::collections::HashMap<i64, u32>>>,
+    active: bool,
+}
+
+/// Every character a card may attribute a number to this frame, each with the whole distance ball
+/// around wherever it is sitting. Built once per feed, read per card: one walk per character beats
+/// one walk per card, which at 250 cards was already the frame budget before any alt was counted.
+#[derive(Default)]
+pub(crate) struct CharRings {
+    rings: Vec<Ring>,
+}
+
+impl CharRings {
+    /// N hash lookups. Nearest first, unreachable last, ties broken toward the active character so
+    /// an alt sitting beside you does not take the badge off you.
+    pub(crate) fn card(&self, target: Option<i64>) -> CardChars {
+        let (Some(t), true) = (target, self.rings.len() > 1) else {
+            return CardChars::default();
+        };
+        let mut hops: Vec<(CharHop, bool)> = self
+            .rings
+            .iter()
+            .map(|r| {
+                let jumps = r.shown.get(&t).copied();
+                let via = match (&r.gates, jumps) {
+                    (Some(g), Some(j)) => match g.get(&t).copied() {
+                        Some(gate) if gate == j => JumpVia::Gates,
+                        Some(gate) => JumpVia::BridgeShorter(gate),
+                        None => JumpVia::BridgeOnly,
+                    },
+                    _ => JumpVia::Gates,
+                };
+                (CharHop { name: r.name.clone(), id: r.id, jumps, via }, r.active)
+            })
+            .collect();
+        hops.sort_by(|(a, a_act), (b, b_act)| {
+            let by_dist = match (a.jumps, b.jumps) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            };
+            // Name last so the order is stable: `locations` is a HashMap and iterates arbitrarily.
+            by_dist.then(b_act.cmp(a_act)).then_with(|| a.name.cmp(&b.name))
+        });
+        let selected = hops.iter().position(|(_, active)| *active);
+        CardChars { hops: hops.into_iter().map(|(h, _)| h).collect(), selected }
+    }
+}
+
+/// Distances from one origin, cached per graph. Same invalidation story as [`ViaMemo`]: `Systems`
+/// is only ever mutated before it is wrapped in its `Arc`, so a bridge edit replaces the `Arc`.
+struct BallMemo {
+    systems: std::sync::Arc<crate::geo::Systems>,
+    balls: std::collections::HashMap<(i64, bool), std::sync::Arc<std::collections::HashMap<i64, u32>>>,
+}
+
+fn distance_ball(
+    systems: &std::sync::Arc<crate::geo::Systems>,
+    from: i64,
+    gate_only: bool,
+) -> std::sync::Arc<std::collections::HashMap<i64, u32>> {
+    thread_local! {
+        static MEMO: std::cell::RefCell<Option<BallMemo>> = const { std::cell::RefCell::new(None) };
+    }
+    MEMO.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let hit = matches!(slot.as_ref(), Some(m) if std::sync::Arc::ptr_eq(&m.systems, systems));
+        if !hit {
+            *slot = Some(BallMemo {
+                systems: systems.clone(),
+                balls: std::collections::HashMap::new(),
+            });
+        }
+        let memo = slot.as_mut().expect("set above");
+        // A ball is ~90KB, so this is a memory bound, not a hit-rate one: characters do not move
+        // often enough for the eviction to cost a rebuild in practice.
+        if memo.balls.len() >= 16 {
+            memo.balls.clear();
+        }
+        memo.balls
+            .entry((from, gate_only))
+            .or_insert_with(|| {
+                std::sync::Arc::new(if gate_only {
+                    systems.gate_distances_from(from, JUMP_SCAN_CAP)
+                } else {
+                    systems.distances_from(from, JUMP_SCAN_CAP)
+                })
+            })
+            .clone()
+    })
+}
+
+/// The active character is always a ring, whatever its alert setting, because the card quotes it
+/// by name and dropping it would leave the user unable to find their own number.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_char_rings(
+    systems: &Option<std::sync::Arc<crate::geo::Systems>>,
+    chars: &[(String, i64)],
+    locations: &std::collections::HashMap<String, (i64, bool)>,
+    active: &str,
+    active_fallback_sys: Option<i64>,
+    disabled: &[String],
+    only_undocked: bool,
+    use_bridges: bool,
+) -> CharRings {
+    let Some(sys) = systems.as_ref() else {
+        return CharRings::default();
+    };
+    let id_of = |name: &str| {
+        chars.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map_or(0, |(_, id)| *id)
+    };
+    let ring = |name: &str, from: i64, is_active: bool| Ring {
+        name: name.to_owned(),
+        id: id_of(name),
+        shown: distance_ball(sys, from, !use_bridges),
+        gates: use_bridges.then(|| distance_ball(sys, from, true)),
+        active: is_active,
+    };
+    let has_active = !active.is_empty() && active != "No character";
+    let mut rings: Vec<Ring> = locations
+        .iter()
+        .filter(|(name, (_, docked))| {
+            name.eq_ignore_ascii_case(active)
+                || alert_candidate(name, *docked, disabled, only_undocked)
+        })
+        .map(|(name, (from, _))| ring(name, *from, name.eq_ignore_ascii_case(active)))
+        .collect();
+    if has_active && !rings.iter().any(|r| r.active) {
+        // Offline, or ESI has no location for it, but `player_system` still answers from its
+        // fallback and the feed is already quoting that number.
+        if let Some(from) = active_fallback_sys {
+            rings.push(ring(active, from, true));
+        }
+    }
+    CharRings { rings }
 }
 
 /// Every answer for one graph, one player position and one setting. The graph is held by `Arc`
@@ -20527,6 +20782,7 @@ pub(crate) fn build_alert_viewport_cb(
         let feed = st.feed.clone();
         let from_you_pre = st.from_you.clone();
         let via_pre = st.via.clone();
+        let chars_pre = st.chars.clone();
         let count_bridges = st.count_bridges;
         let systems = st.systems.clone();
         let status = st.status.clone();
@@ -20722,8 +20978,9 @@ pub(crate) fn build_alert_viewport_cb(
                             let via = via_pre.get(i).copied().unwrap_or_else(|| {
                                 jump_via(&systems, player_sys, target, count_bridges, from_you)
                             });
+                            let cchars = chars_pre.get(i).cloned().unwrap_or_default();
                             if let Some(c) = intel_row(
-                                ui, r, now_ts, false, from_you, via, &systems, &status,
+                                ui, r, now_ts, false, from_you, via, &cchars, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots,
                                 &uncertain, &last_ship,
                                 kills, *sev, false, affil, compact, &mut tip,
@@ -20896,6 +21153,10 @@ pub(crate) fn build_alert_viewport_cb(
                 );
             }
         }
+
+        // A character menu opens in its own `Area`, outside the `Ui` `ui_contains_pointer` asks
+        // about, so without this the window counts down and closes while the menu is being read.
+        hovered |= egui::Popup::is_any_open(&ctx);
 
         let dt = ctx.input(|i| i.unstable_dt).min(2.0);
         let ms = if hovered { 100 } else { 1000 };
@@ -21078,6 +21339,9 @@ pub(crate) struct AlertWindowState {
     /// Per-card bridge verdict, sent over IPC because the overlay subprocess knows neither the
     /// player's system nor the bridge setting. Empty in the main process, which recomputes.
     pub(crate) via: Vec<JumpVia>,
+    /// Per-card character attribution, sent over IPC for the same reason as `via`: the overlay
+    /// holds neither the roster nor anyone's location.
+    pub(crate) chars: Vec<CardChars>,
     pub(crate) count_bridges: bool,
     pub(crate) secs: f32,
     pub(crate) pinned: bool,
@@ -22418,6 +22682,121 @@ fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> String {
     }
 }
 
+/// One character's badge and jump number. `small()` and no frame because a framed button floors to
+/// `interact_size.y`, which would put 28px under every 15px row in the feed (UI-027).
+fn char_jump_slot(
+    ui: &mut egui::Ui,
+    hop: &CharHop,
+    all: &CardChars,
+    dim: bool,
+    compact: bool,
+    tip: &mut Option<(egui::Pos2, PendingTip)>,
+) -> bool {
+    let sz = if compact { 14.0 } else { 16.0 };
+    let btn = if hop.id == 0 {
+        // Not in the store, usually a rename the deny list has not caught up with. A glyph beats
+        // an image request that can only 404.
+        egui::Button::new(egui::RichText::new(egui_phosphor::regular::USER).size(sz))
+    } else {
+        egui::Button::image(
+            egui::Image::new(eve_portrait_url(hop.id, sz))
+                .fit_to_exact_size(egui::Vec2::splat(sz))
+                .alt_text(&hop.name),
+        )
+    };
+    let (badge, _) = egui::containers::menu::MenuButton::from_button(btn.small().frame(false))
+        .ui(ui, |ui| char_jump_menu(ui, all));
+
+    let (color, mark) = jump_chip_style(hop.via);
+    let color = if dim { color.gamma_multiply(0.55) } else { color };
+    let jtxt = match hop.jumps {
+        Some(0) => "here".to_owned(),
+        Some(j) => format!("{j}j"),
+        None => "-".to_owned(),
+    };
+    // Padded to 4 so "here", "3j" and "12j" share one column down a stack of cards.
+    let jr = ui.label(egui::RichText::new(format!("{jtxt:>4}")).monospace().color(color));
+
+    let roster = char_roster_text(all);
+    let took_click = badge.clicked();
+    if compact {
+        if badge.hovered() || jr.hovered() {
+            *tip = Some((jr.rect.right_top(), PendingTip::Text(roster)));
+        }
+    } else {
+        badge.on_hover_text(&roster);
+    }
+
+    if let (Some(mark), Some(j)) = (mark, hop.jumps) {
+        if let Some(why) = jump_chip_tip(hop.via, j) {
+            let mr = ui.label(egui::RichText::new(mark).color(color));
+            if compact {
+                if mr.hovered() {
+                    *tip = Some((mr.rect.right_top(), PendingTip::Text(why)));
+                }
+            } else {
+                mr.on_hover_text(&why);
+                jr.on_hover_text(&why);
+            }
+        }
+    }
+    // The card flips to its raw text on any unclaimed background click, so opening the roster has
+    // to be claimed or it toggles the card underneath the menu it just opened.
+    took_click
+}
+
+/// Where the selected character's distance lives on a compact card, which cannot open a menu under
+/// a deferred tooltip.
+fn char_roster_text(all: &CardChars) -> String {
+    let width = all.hops.iter().map(|h| h.name.chars().count()).max().unwrap_or(0);
+    all.hops
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let jtxt = match h.jumps {
+                Some(0) => "here".to_owned(),
+                Some(j) => format!("{j}j"),
+                None => "out of range".to_owned(),
+            };
+            let you = if all.selected == Some(i) { "  (selected)" } else { "" };
+            format!("{:<width$}  {jtxt}{you}", h.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every alert-enabled character and its own distance to this card's system, nearest first.
+fn char_jump_menu(ui: &mut egui::Ui, all: &CardChars) {
+    ui.set_min_width(200.0);
+    for (i, h) in all.hops.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if h.id == 0 {
+                ui.label(egui::RichText::new(egui_phosphor::regular::USER).weak());
+            } else {
+                ui.add(
+                    egui::Image::new(eve_portrait_url(h.id, 18.0))
+                        .fit_to_exact_size(egui::Vec2::splat(18.0))
+                        .alt_text(&h.name),
+                );
+            }
+            let name = egui::RichText::new(&h.name);
+            ui.label(if all.selected == Some(i) { name.strong() } else { name });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (color, mark) = jump_chip_style(h.via);
+                let Some(j) = h.jumps else {
+                    ui.label(egui::RichText::new("out of range").weak());
+                    return;
+                };
+                if let (Some(m), Some(why)) = (mark, jump_chip_tip(h.via, j)) {
+                    ui.label(egui::RichText::new(m).color(color)).on_hover_text(why);
+                }
+                let jtxt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
+                ui.label(egui::RichText::new(jtxt).monospace().color(color));
+            });
+        });
+    }
+}
+
 pub(crate) fn intel_row(
     ui: &mut egui::Ui,
     r: &crate::intel::IntelReport,
@@ -22425,6 +22804,7 @@ pub(crate) fn intel_row(
     stale: bool,
     from_you: Option<u32>,
     via: JumpVia,
+    chars: &CardChars,
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     ship_details: &std::collections::HashMap<i64, crate::store::ShipDetails>,
@@ -22551,7 +22931,16 @@ pub(crate) fn intel_row(
                     r1.on_hover_text(&msg);
                     r2.on_hover_text(&msg);
                 }
-                if let Some(j) = from_you {
+                if let Some(near) = chars.nearest() {
+                    consumed |= char_jump_slot(ui, near, chars, false, compact, tip);
+                    // A compact card has no room for the second badge, so the selected
+                    // character's own distance lives in the roster the badge opens.
+                    if !compact {
+                        if let Some(sel) = chars.second() {
+                            consumed |= char_jump_slot(ui, sel, chars, true, compact, tip);
+                        }
+                    }
+                } else if let Some(j) = from_you {
                     let jtxt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
                     // Padded to 4 so "here", "3j" and "12j" share one column down a stack of cards.
                     let jr = ui.label(
@@ -25233,5 +25622,205 @@ mod rescue_range_tests {
         let stranded = Systems::new(by_name, HashMap::new());
         assert_eq!(stranded.jumps(NEAR_B, TARGET, 40), None);
         assert_eq!(pick(&stranded, &coords).as_deref(), Some("ZH-GKG"));
+    }
+}
+
+#[cfg(test)]
+mod char_rings_tests {
+    use super::*;
+    use crate::uitest::fixtures;
+
+    const DQ: i64 = 30_004_759; // 1DQ1-A
+    const THREE: i64 = 30_004_608; // 319-3D, one gate from 1DQ1-A
+    const K5: i64 = 30_003_704; // 7-K5EL, two gates from 1DQ1-A, one bridge in the bridged graph
+    const JITA: i64 = 30_000_142; // no gate adjacency at all in this graph
+
+    fn chars() -> Vec<(String, i64)> {
+        [("Amryu", 90_000_001_i64), ("Scout", 90_000_002), ("Hauler", 90_000_003)]
+            .into_iter()
+            .map(|(n, id)| (n.to_owned(), id))
+            .collect()
+    }
+
+    fn locs(at: &[(&str, i64, bool)]) -> std::collections::HashMap<String, (i64, bool)> {
+        at.iter().map(|(n, s, d)| ((*n).to_owned(), (*s, *d))).collect()
+    }
+
+    fn rings(
+        systems: &std::sync::Arc<crate::geo::Systems>,
+        at: &[(&str, i64, bool)],
+        disabled: &[&str],
+        only_undocked: bool,
+        use_bridges: bool,
+    ) -> CharRings {
+        let disabled: Vec<String> = disabled.iter().map(|s| (*s).to_owned()).collect();
+        build_char_rings(
+            &Some(systems.clone()),
+            &chars(),
+            &locs(at),
+            "Amryu",
+            None,
+            &disabled,
+            only_undocked,
+            use_bridges,
+        )
+    }
+
+    fn names_and_jumps(c: &CardChars) -> Vec<(String, Option<u32>)> {
+        c.hops.iter().map(|h| (h.name.clone(), h.jumps)).collect()
+    }
+
+    #[test]
+    fn alert_candidate_truth_table() {
+        let off = ["scout".to_owned()];
+        assert!(alert_candidate("Amryu", false, &off, false));
+        assert!(!alert_candidate("Scout", false, &off, false), "deny list is case-insensitive");
+        assert!(alert_candidate("Amryu", true, &off, false), "docked counts while the gate is off");
+        assert!(!alert_candidate("Amryu", true, &off, true), "docked is out while the gate is on");
+        assert!(alert_candidate("Amryu", false, &off, true));
+    }
+
+    #[test]
+    fn rings_are_nearest_first_and_carry_the_selected_index() {
+        let sys = fixtures::systems();
+        let at = [("Amryu", K5, false), ("Scout", THREE, false), ("Hauler", DQ, false)];
+        let c = rings(&sys, &at, &[], false, false).card(Some(DQ));
+        assert_eq!(
+            names_and_jumps(&c),
+            vec![
+                ("Hauler".to_owned(), Some(0)),
+                ("Scout".to_owned(), Some(1)),
+                ("Amryu".to_owned(), Some(2)),
+            ]
+        );
+        assert_eq!(c.selected, Some(2), "the active character is Amryu, two jumps out");
+        assert_eq!(c.nearest().map(|h| h.name.as_str()), Some("Hauler"));
+        assert_eq!(c.second().map(|h| h.name.as_str()), Some("Amryu"));
+    }
+
+    #[test]
+    fn a_deny_listed_character_is_dropped_but_never_the_active_one() {
+        let sys = fixtures::systems();
+        let at = [("Amryu", K5, false), ("Scout", THREE, false), ("Hauler", DQ, false)];
+
+        let c = rings(&sys, &at, &["Scout"], false, false).card(Some(DQ));
+        assert_eq!(
+            names_and_jumps(&c),
+            vec![("Hauler".to_owned(), Some(0)), ("Amryu".to_owned(), Some(2))]
+        );
+
+        // Alerts off for the character you are looking through: the card still has to quote it,
+        // or the number the rest of the app shows has no owner on screen.
+        let c = rings(&sys, &at, &["Amryu"], false, false).card(Some(DQ));
+        assert_eq!(c.hops.len(), 3);
+        assert_eq!(c.selected, Some(2));
+    }
+
+    #[test]
+    fn docked_characters_follow_the_only_undocked_setting() {
+        let sys = fixtures::systems();
+        let at = [("Amryu", K5, false), ("Scout", THREE, true), ("Hauler", DQ, false)];
+        let c = rings(&sys, &at, &[], true, false).card(Some(DQ));
+        assert_eq!(
+            names_and_jumps(&c),
+            vec![("Hauler".to_owned(), Some(0)), ("Amryu".to_owned(), Some(2))],
+            "Scout is docked and the setting is on"
+        );
+        let c = rings(&sys, &at, &[], false, false).card(Some(DQ));
+        assert_eq!(c.hops.len(), 3, "the same character counts while the setting is off");
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_active_character() {
+        let sys = fixtures::systems();
+        let at = [("Amryu", THREE, false), ("Scout", THREE, false)];
+        let c = rings(&sys, &at, &[], false, false).card(Some(DQ));
+        assert_eq!(c.hops[0].name, "Amryu", "an alt beside you must not take the badge off you");
+        assert_eq!(c.selected, Some(0));
+        assert_eq!(c.second(), None, "nearest is the selected one, so there is no second slot");
+    }
+
+    #[test]
+    fn one_character_leaves_the_card_alone() {
+        let sys = fixtures::systems();
+        let c = rings(&sys, &[("Amryu", K5, false)], &[], false, false).card(Some(DQ));
+        assert_eq!(c, CardChars::default(), "nothing to disambiguate, so no badge and no hops");
+    }
+
+    #[test]
+    fn each_character_gets_its_own_bridge_verdict() {
+        let sys = fixtures::systems_bridged();
+        let at = [("Amryu", DQ, false), ("Scout", THREE, false)];
+
+        let c = rings(&sys, &at, &[], false, true).card(Some(K5));
+        assert_eq!(names_and_jumps(&c), vec![
+            ("Amryu".to_owned(), Some(1)),
+            ("Scout".to_owned(), Some(1)),
+        ]);
+        assert_eq!(c.hops[0].via, JumpVia::BridgeShorter(2), "Amryu rides the bridge");
+        assert_eq!(c.hops[1].via, JumpVia::Gates, "Scout walks one gate either way");
+
+        let c = rings(&sys, &at, &[], false, false).card(Some(K5));
+        assert!(c.hops.iter().all(|h| h.via == JumpVia::Gates), "bridges off, nothing to flag");
+        assert_eq!(c.hops[0].jumps, Some(1), "Scout is now the nearest, at one gate");
+    }
+
+    #[test]
+    fn an_unreachable_character_sorts_last_and_keeps_no_number() {
+        // An alt parked in Jita while you are in Delve: this graph has no gate route between them.
+        let sys = fixtures::systems();
+        let at = [("Amryu", DQ, false), ("Scout", JITA, false)];
+        let c = rings(&sys, &at, &[], false, false).card(Some(DQ));
+        assert_eq!(names_and_jumps(&c), vec![
+            ("Amryu".to_owned(), Some(0)),
+            ("Scout".to_owned(), None),
+        ]);
+    }
+
+    #[test]
+    fn a_bridge_only_target_is_flagged_for_every_character_that_rides_it() {
+        let sys = fixtures::systems_bridged_island();
+        let at = [("Amryu", DQ, false), ("Scout", THREE, false)];
+        let c = rings(&sys, &at, &[], false, true).card(Some(JITA));
+        assert_eq!(names_and_jumps(&c), vec![
+            ("Amryu".to_owned(), Some(1)),
+            ("Scout".to_owned(), Some(2)),
+        ]);
+        assert!(
+            c.hops.iter().all(|h| h.via == JumpVia::BridgeOnly),
+            "no gate route reaches Jita in this graph, so both numbers only exist as bridges"
+        );
+
+        let c = rings(&sys, &at, &[], false, false).card(Some(JITA));
+        assert!(c.hops.iter().all(|h| h.jumps.is_none()), "gates alone reach nobody");
+    }
+
+    #[test]
+    fn a_ball_is_cached_per_graph_and_origin() {
+        let sys = fixtures::systems();
+        let a = distance_ball(&sys, DQ, false);
+        assert!(std::sync::Arc::ptr_eq(&a, &distance_ball(&sys, DQ, false)));
+        assert!(!std::sync::Arc::ptr_eq(&a, &distance_ball(&sys, THREE, false)), "keyed on origin");
+        assert!(!std::sync::Arc::ptr_eq(&a, &distance_ball(&sys, DQ, true)), "keyed on the graph");
+
+        let rebuilt = fixtures::systems();
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &distance_ball(&rebuilt, DQ, false)),
+            "a rebuilt graph invalidates, which is how a bridge edit lands"
+        );
+    }
+
+    /// The alert engine's own distance, which had no test at all.
+    #[test]
+    fn min_jumps_from_takes_the_nearest_source() {
+        let sys = Some(fixtures::systems());
+        assert_eq!(min_jumps_from(&sys, &[K5, THREE], Some(DQ), false), Some(1));
+        assert_eq!(min_jumps_from(&sys, &[K5], Some(DQ), false), Some(2));
+        assert_eq!(min_jumps_from(&sys, &[], Some(DQ), false), None, "no character, no distance");
+        assert_eq!(min_jumps_from(&sys, &[DQ], Some(JITA), false), None, "unreachable");
+
+        let bridged = Some(fixtures::systems_bridged());
+        assert_eq!(min_jumps_from(&bridged, &[DQ], Some(K5), true), Some(1));
+        assert_eq!(min_jumps_from(&bridged, &[DQ], Some(K5), false), Some(2), "gates only");
     }
 }

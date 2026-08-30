@@ -21,6 +21,7 @@ fn intel_scene_sized(
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -33,6 +34,43 @@ fn intel_scene_sized(
             true,
             &args.affil,
             false,
+            &mut tip,
+        );
+    })
+}
+
+/// One card with per-character attribution, which is what a feed looks like once more than one
+/// character has alerts on.
+fn intel_chars_scene(
+    name: &'static str,
+    report: crate::intel::IntelReport,
+    size: [f32; 2],
+    chars: crate::app::CardChars,
+    from_you: Option<u32>,
+) -> Scene {
+    let args = IntelArgs { chars, ..IntelArgs::default() };
+    Scene::ui(name, size, move |ui| {
+        let mut tip = None;
+        crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            from_you,
+            crate::app::JumpVia::Gates,
+            &args.chars,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            size[0] < 400.0,
             &mut tip,
         );
     })
@@ -53,6 +91,7 @@ fn resolving_phases_scene(name: &'static str) -> Scene {
                 false,
                 None,
                 crate::app::JumpVia::Gates,
+                &args.chars,
                 &args.systems,
                 &args.status,
                 &args.ship_details,
@@ -128,6 +167,17 @@ fn alert_window_ipc_scene(
     cards: Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)>,
     send_via: bool,
 ) -> Scene {
+    alert_window_ipc_chars_scene(name, cards, send_via, Vec::new())
+}
+
+/// The same frame with per-card character attribution on the wire, which is the only way to see
+/// what the overlay subprocess makes of it: the subprocess itself cannot be rendered by kittest.
+fn alert_window_ipc_chars_scene(
+    name: &'static str,
+    cards: Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)>,
+    send_via: bool,
+    chars: Vec<crate::app::CardChars>,
+) -> Scene {
     let msg = crate::ipc::AlertMsg {
         feed: cards
             .iter()
@@ -135,6 +185,7 @@ fn alert_window_ipc_scene(
             .collect(),
         from_you: cards.iter().map(|(_, j, _)| *j).collect(),
         via: if send_via { cards.iter().map(|(_, _, v)| *v).collect() } else { Vec::new() },
+        chars,
         status: Default::default(),
         resolved_pilots: fixtures::resolved_pilots(),
         uncertain: fixtures::uncertain(),
@@ -514,12 +565,51 @@ pub(crate) fn all() -> Vec<Scene> {
             vec![fixtures::intel_torture(), fixtures::intel_typical(), fixtures::intel_clear()],
         ),
         alert_window_ipc_scene("alert_window_bridged", alert_bridge_cards(), true),
+        // UI-037: the attribution has to survive the wire, since the overlay subprocess holds
+        // neither the roster nor anyone's location and cannot derive it.
+        alert_window_ipc_chars_scene(
+            "alert_window_chars",
+            alert_bridge_cards(),
+            true,
+            vec![fixtures::card_chars_two(); alert_bridge_cards().len()],
+        ),
         ping_window_scene("ping_window_fleet", vec![fixtures::ping_fleet()]),
         ping_window_scene(
             "ping_window_mixed",
             vec![fixtures::ping_fleet(), fixtures::ping_plain()],
         ),
         intel_scene("intel_row_typical", fixtures::intel_typical(), 520.0),
+        // UI-037. Two badges and two numbers when the nearest alerting character is not the one
+        // you are looking through, one badge and one number when it is, and a compact card that
+        // has room for neither the second badge nor the second number.
+        intel_chars_scene(
+            "intel_row_two_characters",
+            fixtures::intel_typical(),
+            [520.0, 520.0],
+            fixtures::card_chars_two(),
+            Some(4),
+        ),
+        intel_chars_scene(
+            "intel_row_two_characters_narrow",
+            fixtures::intel_typical(),
+            [320.0, 520.0],
+            fixtures::card_chars_two(),
+            Some(4),
+        ),
+        intel_chars_scene(
+            "intel_row_nearest_is_selected",
+            fixtures::intel_typical(),
+            [520.0, 520.0],
+            fixtures::card_chars_nearest_is_selected(),
+            Some(1),
+        ),
+        intel_chars_scene(
+            "intel_row_two_characters_bridged",
+            fixtures::intel_across_the_bridge(),
+            [520.0, 520.0],
+            fixtures::card_chars_bridged(),
+            Some(3),
+        ),
         intel_scene("intel_row_clear", fixtures::intel_clear(), 520.0),
         intel_scene("intel_row_torture", fixtures::intel_torture(), 520.0),
         intel_scene("intel_row_two_celestials", fixtures::intel_two_celestials(), 520.0),
@@ -953,6 +1043,7 @@ fn uitest_intel_row_resolving_chip_holds_its_width() {
                 false,
                 None,
                 crate::app::JumpVia::Gates,
+                &args.chars,
                 &args.systems,
                 &args.status,
                 &args.ship_details,
@@ -997,6 +1088,7 @@ fn uitest_intel_row_resolving_chip_explains_itself_on_hover() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1042,6 +1134,7 @@ fn uitest_intel_row_hover_sets_tip_when_compact() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1083,6 +1176,7 @@ fn uitest_intel_row_hover_shows_tooltip() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1123,6 +1217,7 @@ fn intel_card_height(name: &'static str, show_reporter: bool) -> f32 {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1160,6 +1255,7 @@ fn uitest_intel_row_reporter_is_a_footer() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1295,6 +1391,175 @@ fn jump_chips(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
         }
     }
     out
+}
+
+/// Every character badge on the card, by the portrait's alt text, in tree order.
+fn char_badges(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
+    use egui_kittest::kittest::NodeT as _;
+
+    harness
+        .root()
+        .children_recursive()
+        .map(|node| node.accesskit_node())
+        .filter(|n| n.role() == egui::accesskit::Role::Button && !n.is_hidden())
+        .filter_map(|n| n.label().map(|l| l.to_owned()))
+        .filter(|l| l == "Amryu" || l == "Scout Alt")
+        .collect()
+}
+
+/// The left edge of the first jump number, which is the column UI-002 exists to protect.
+fn first_jump_x(harness: &egui_kittest::Harness<'_>) -> Option<f32> {
+    use egui_kittest::kittest::NodeT as _;
+
+    harness
+        .root()
+        .children_recursive()
+        .map(|node| node.accesskit_node())
+        .filter(|n| n.role() == egui::accesskit::Role::Label && !n.is_hidden())
+        .find(|n| {
+            let l = n.label().or_else(|| n.value()).unwrap_or_default();
+            let t = l.trim();
+            t == "here" || (t.ends_with('j') && t[..t.len() - 1].chars().all(|c| c.is_ascii_digit()))
+        })
+        .and_then(|n| n.bounding_box())
+        .map(|b| b.x0 as f32)
+}
+
+/// UI-037. The alert engine already fires on the nearest alert-enabled character while the card
+/// quoted the selected one, so a report that alerted at one jump sat on a card reading four.
+#[test]
+fn uitest_intel_card_attributes_the_nearest_character() {
+    let mut scene = all().into_iter().find(|s| s.name == "intel_row_two_characters").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    assert_eq!(
+        jump_chips(&harness),
+        ["1j", "4j"],
+        "the nearest character's distance comes first, the selected one's second"
+    );
+    assert_eq!(
+        char_badges(&harness),
+        ["Scout Alt", "Amryu"],
+        "each number carries the portrait of the character it belongs to"
+    );
+}
+
+/// A compact card is ~320px and UI-002 fought over 33 of them, so the second slot is dropped there
+/// and the selected character's distance moves into the roster the badge opens.
+#[test]
+fn uitest_intel_card_compact_shows_only_the_nearest() {
+    let mut scene =
+        all().into_iter().find(|s| s.name == "intel_row_two_characters_narrow").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    assert_eq!(jump_chips(&harness), ["1j"]);
+    assert_eq!(char_badges(&harness), ["Scout Alt"]);
+}
+
+/// Nothing to disambiguate, so one number, but the portrait stays: the card should not change
+/// shape as an alt moves in and out of being the nearest.
+#[test]
+fn uitest_intel_card_keeps_the_badge_when_nearest_is_selected() {
+    let mut scene =
+        all().into_iter().find(|s| s.name == "intel_row_nearest_is_selected").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    assert_eq!(jump_chips(&harness), ["1j"]);
+    assert_eq!(char_badges(&harness), ["Amryu"]);
+}
+
+/// One character is the case that must look exactly like it always did.
+#[test]
+fn uitest_intel_card_draws_no_badge_for_one_character() {
+    let mut scene = intel_chars_scene(
+        "intel_row_one_character",
+        fixtures::intel_typical(),
+        [520.0, 520.0],
+        crate::app::CardChars::default(),
+        Some(1),
+    );
+    let harness = harness::build(&mut scene, false);
+    assert_eq!(jump_chips(&harness), ["1j"]);
+    assert!(char_badges(&harness).is_empty(), "a lone character has nobody to be told apart from");
+}
+
+/// UI-002 restated for the new layout: the badge is on every card in a multi-character feed, so
+/// the first number's column holds whether or not a card also carries a second slot.
+#[test]
+fn uitest_intel_card_jump_column_holds_its_x() {
+    let x = |name: &str| {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        first_jump_x(&harness)
+    };
+    let two = x("intel_row_two_characters").expect("two-slot card");
+    let one = x("intel_row_nearest_is_selected").expect("one-slot card");
+    assert!(
+        (two - one).abs() < 0.5,
+        "the first jump number moved {:.1}px between a card with a second slot and one without",
+        two - one
+    );
+}
+
+/// A per-character verdict is the thing one shared `JumpVia` could not express: the nearest
+/// character rides a bridge here and the other one does not.
+#[test]
+fn uitest_intel_card_marks_a_bridge_per_character() {
+    let mut scene =
+        all().into_iter().find(|s| s.name == "intel_row_two_characters_bridged").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    assert_eq!(jump_chips(&harness), ["1j", "3j"]);
+    assert_eq!(
+        bridge_marks(&harness).len(),
+        1,
+        "only the character whose trip the bridge shortened is marked"
+    );
+}
+
+/// Clicking a badge opens the whole roster, which is where a compact card's second distance lives
+/// and where a third character shows up at all.
+#[test]
+fn uitest_intel_card_badge_opens_the_character_roster() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "intel_row_two_characters").expect("scene");
+    let mut harness = harness::build(&mut scene, false);
+
+    let names = |h: &egui_kittest::Harness<'_>| -> Vec<String> {
+        h.root()
+            .children_recursive()
+            .map(|node| node.accesskit_node())
+            .filter(|n| n.role() == egui::accesskit::Role::Label)
+            .filter_map(|n| n.label().or_else(|| n.value()).map(|l| l.to_owned()))
+            .filter(|l| l == "Amryu" || l == "Scout Alt")
+            .collect()
+    };
+    assert!(names(&harness).is_empty(), "the roster is closed until the badge is clicked");
+
+    use egui_kittest::kittest::Queryable as _;
+    harness.get_by_label("Scout Alt").click();
+    harness.run_steps(2);
+
+    let mut rows = names(&harness);
+    rows.sort();
+    assert_eq!(rows, ["Amryu", "Scout Alt"], "the roster lists every alert-enabled character");
+    let chips = jump_chips(&harness);
+    assert!(
+        chips.iter().filter(|c| *c == "1j").count() >= 2
+            && chips.iter().filter(|c| *c == "4j").count() >= 2,
+        "each roster row carries that character's own distance: {chips:?}"
+    );
+}
+
+/// The attribution has to survive the IPC frame, because the overlay subprocess holds neither the
+/// roster nor anyone's location and cannot derive it.
+#[test]
+fn uitest_alert_window_shows_attribution_sent_over_ipc() {
+    let mut scene = all().into_iter().find(|s| s.name == "alert_window_chars").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let badges = char_badges(&harness);
+    assert!(
+        badges.iter().any(|b| b == "Scout Alt") && badges.iter().any(|b| b == "Amryu"),
+        "the wire dropped the attribution: {badges:?}"
+    );
+    assert!(jump_chips(&harness).iter().any(|c| c == "1j"), "the nearest number crossed too");
 }
 
 /// UI-025: the card's jump distance walked the bridged graph whichever way the setting was set, so
@@ -1800,6 +2065,7 @@ fn uitest_intel_row_click_returns_pilot() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -1847,6 +2113,7 @@ fn uitest_click_at_hits_the_system_chip() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -2269,6 +2536,7 @@ fn uitest_intel_row_marks_uncertain_pilot_from_display_cased_set() {
             false,
             None,
             crate::app::JumpVia::Gates,
+            &args.chars,
             &args.systems,
             &args.status,
             &args.ship_details,
@@ -2982,6 +3250,23 @@ fn uitest_screenshots_tab_switch() {
     harness::click_at(&harness, tab.center());
     harness.run_steps(4);
     harness::shot(&mut harness, "jabber_tab_switch_to_room");
+}
+
+/// The four attribution layouts side by side, which is what UI-037 has to be judged on: the same
+/// report reads differently depending on who is nearest and how wide the card is.
+#[test]
+#[ignore = "renders to target/uishots; run with --ignored"]
+fn uitest_screenshots_char_attribution() {
+    for name in [
+        "intel_row_two_characters",
+        "intel_row_two_characters_narrow",
+        "intel_row_nearest_is_selected",
+        "intel_row_two_characters_bridged",
+    ] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let mut harness = harness::build(&mut scene, true);
+        harness::shot(&mut harness, name);
+    }
 }
 
 /// UI-022's measuring stick. The harness asserts layout, not frame time, so the only way to judge

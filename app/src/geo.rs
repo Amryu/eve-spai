@@ -153,6 +153,40 @@ impl Systems {
         Self::bfs_jumps(&self.gate_adjacency, from, to, max_jumps)
     }
 
+    /// Jumps from `from` to every system within `max_jumps`, bridge-aware like [`Self::jumps`].
+    /// One walk answers a whole feed, where one [`Self::jumps`] per card is a walk per card.
+    pub fn distances_from(&self, from: i64, max_jumps: u32) -> HashMap<i64, u32> {
+        Self::ball(&self.adjacency, from, max_jumps)
+    }
+
+    /// [`Self::distances_from`] over gates only, matching [`Self::jumps_gates_only`].
+    pub fn gate_distances_from(&self, from: i64, max_jumps: u32) -> HashMap<i64, u32> {
+        Self::ball(&self.gate_adjacency, from, max_jumps)
+    }
+
+    fn ball(adj: &HashMap<i64, Vec<i64>>, from: i64, max_jumps: u32) -> HashMap<i64, u32> {
+        let mut dist: HashMap<i64, u32> = HashMap::from([(from, 0)]);
+        let mut queue: VecDeque<(i64, u32)> = VecDeque::from([(from, 0)]);
+        while let Some((sys, d)) = queue.pop_front() {
+            if d >= max_jumps {
+                continue;
+            }
+            for &n in adj.get(&sys).into_iter().flatten() {
+                // Recorded before the transit check and expanded after it, because `bfs_jumps`
+                // answers `n == to` before testing `is_no_transit`: a route may END at Zarzakh
+                // and never pass through it. Reversing the two makes this disagree with
+                // `jumps` on exactly one system.
+                if let std::collections::hash_map::Entry::Vacant(slot) = dist.entry(n) {
+                    slot.insert(d + 1);
+                    if !is_no_transit(n) {
+                        queue.push_back((n, d + 1));
+                    }
+                }
+            }
+        }
+        dist
+    }
+
     /// Systems nearest `from` in jumps that satisfy `ok`, searched ring by ring so the first ring
     /// with a hit is the minimum. Returns that ring's jump count and every match in it, leaving the
     /// tie to the caller. Used to pick a jump-off point: ranking candidates by lightyears finds the
@@ -424,6 +458,39 @@ mod tests {
         let g = zarzakh_graph();
         assert_eq!(g.route(1, 2, true, true, |_| true), Some(vec![1, 3, 4, 2]));
         assert_eq!(g.jumps(1, 2, 10), Some(3));
+    }
+
+    /// `distances_from` answers a whole feed in one walk, so the intel card and the `<= jumps`
+    /// filter read it instead of one `jumps` per card. That swap is only safe while the two agree
+    /// on every pair, Zarzakh included: `bfs_jumps` returns for `n == to` BEFORE testing
+    /// `is_no_transit`, so a route may end there and never pass through.
+    #[test]
+    fn a_ball_answers_exactly_what_jumps_would() {
+        for (label, g) in [("line", line_graph()), ("zarzakh", zarzakh_graph())] {
+            let ids: Vec<i64> = [1, 2, 3, 4, ZARZAKH, 99].into_iter().collect();
+            for cap in [0u32, 1, 2, 3, 10] {
+                for &from in &ids {
+                    let ball = g.distances_from(from, cap);
+                    let gates = g.gate_distances_from(from, cap);
+                    for &to in &ids {
+                        assert_eq!(
+                            ball.get(&to).copied(),
+                            g.jumps(from, to, cap),
+                            "{label}: ball {from} -> {to} at cap {cap}"
+                        );
+                        assert_eq!(
+                            gates.get(&to).copied(),
+                            g.jumps_gates_only(from, to, cap),
+                            "{label}: gate ball {from} -> {to} at cap {cap}"
+                        );
+                    }
+                }
+            }
+        }
+        // The pair the ordering above exists for: reachable as a destination, useless as a hop.
+        let g = zarzakh_graph();
+        assert_eq!(g.distances_from(1, 10).get(&ZARZAKH).copied(), Some(1));
+        assert_eq!(g.distances_from(1, 10).get(&2).copied(), Some(3), "not 2, through Zarzakh");
     }
 
     #[test]

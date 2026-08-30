@@ -32,6 +32,10 @@ pub struct AlertMsg {
     /// system nor the bridge setting. Defaulted so frames from an older main process still parse.
     #[serde(default)]
     pub via: Vec<crate::app::JumpVia>,
+    /// Which characters each card's numbers belong to, same reason as `via`: the overlay holds
+    /// neither the roster nor anyone's location. Defaulted so older frames still parse.
+    #[serde(default)]
+    pub chars: Vec<crate::app::CardChars>,
     pub status: std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     pub resolved_pilots: std::collections::HashMap<String, i64>,
     #[serde(default)]
@@ -326,6 +330,7 @@ mod tests {
             feed: vec![(report, crate::settings::Severity::Danger)],
             from_you: vec![Some(7)],
             via: vec![crate::app::JumpVia::BridgeShorter(9)],
+            chars: Vec::new(),
             status: std::collections::HashMap::new(),
             resolved_pilots: std::collections::HashMap::from([("X".to_owned(), 42i64)]),
             uncertain: Default::default(),
@@ -358,6 +363,7 @@ mod tests {
             feed: Vec::new(),
             from_you: vec![Some(1), Some(2), None],
             via,
+            chars: Vec::new(),
             status: Default::default(),
             resolved_pilots: Default::default(),
             uncertain: Default::default(),
@@ -412,6 +418,74 @@ mod tests {
         let json = serde_json::to_string(&alert_msg(vec![crate::app::JumpVia::BridgeShorter(2)]))
             .expect("serialize");
         assert!(json.contains("\"via\""));
+        let old: OldAlertMsg = serde_json::from_str(&json).expect("old overlay must still parse");
+        assert_eq!(old.from_you, vec![Some(1), Some(2), None]);
+        assert_eq!(old.secs, 5.0);
+    }
+
+    fn hop(name: &str, id: i64, jumps: Option<u32>) -> crate::app::CharHop {
+        crate::app::CharHop {
+            name: name.to_owned(),
+            id,
+            jumps,
+            via: crate::app::JumpVia::Gates,
+        }
+    }
+
+    fn card_chars() -> Vec<crate::app::CardChars> {
+        vec![
+            crate::app::CardChars {
+                hops: vec![hop("Scout", 90_000_002, Some(1)), hop("Amryu", 90_000_001, Some(4))],
+                selected: Some(1),
+            },
+            crate::app::CardChars::default(),
+        ]
+    }
+
+    /// The attribution has to survive framing index-aligned with the feed. A vector that arrives
+    /// shifted puts one character's distance under another character's portrait.
+    #[test]
+    fn frame_roundtrip_alert_chars() {
+        let mut msg = alert_msg(vec![crate::app::JumpVia::Gates]);
+        msg.chars = card_chars();
+        let mut buf: Vec<u8> = Vec::new();
+        send(&mut buf, &MainToOverlay::Alert(msg)).unwrap();
+        let got: MainToOverlay = recv(&mut Cursor::new(buf)).unwrap();
+        match got {
+            MainToOverlay::Alert(m) => {
+                assert_eq!(m.chars, card_chars());
+                assert_eq!(m.chars[0].hops[0].name, "Scout");
+                assert_eq!(m.chars[0].hops[0].jumps, Some(1));
+                assert_eq!(m.chars[0].selected, Some(1), "the badge order survives the wire");
+                assert!(m.chars[1].hops.is_empty());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alert_without_chars_still_parses() {
+        let mut msg = alert_msg(vec![crate::app::JumpVia::Gates]);
+        msg.chars = card_chars();
+        let mut json = serde_json::to_value(msg).expect("serialize");
+        json.as_object_mut().expect("object").remove("chars").expect("chars was present");
+        let m: AlertMsg = serde_json::from_value(json).expect("missing chars must default");
+        assert!(m.chars.is_empty(), "an older main process draws plain, unattributed numbers");
+        assert_eq!(m.from_you, vec![Some(1), Some(2), None]);
+    }
+
+    /// The reverse upgrade order: an overlay older than the field must not choke on it.
+    #[test]
+    fn alert_with_chars_parses_where_the_field_is_unknown() {
+        #[derive(serde::Deserialize)]
+        struct OldAlertMsg {
+            from_you: Vec<Option<u32>>,
+            secs: f32,
+        }
+        let mut msg = alert_msg(vec![crate::app::JumpVia::Gates]);
+        msg.chars = card_chars();
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(json.contains("\"chars\""));
         let old: OldAlertMsg = serde_json::from_str(&json).expect("old overlay must still parse");
         assert_eq!(old.from_you, vec![Some(1), Some(2), None]);
         assert_eq!(old.secs, 5.0);
