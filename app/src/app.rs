@@ -18612,16 +18612,13 @@ pub(crate) fn jump_via(
 /// Alliance purple because jump bridges are alliance infrastructure, and because the row already
 /// spends green on cleared reports and amber and red on threat.
 pub(crate) fn jump_chip_style(via: JumpVia) -> (egui::Color32, Option<String>) {
-    use egui_phosphor::regular as icon;
     match via {
         JumpVia::Gates => (crate::theme::standing::CORP, None),
-        JumpVia::BridgeShorter(_) => {
-            (crate::theme::standing::ALLIANCE, Some(icon::ARROWS_LEFT_RIGHT.to_owned()))
-        }
-        JumpVia::BridgeOnly => (
-            crate::theme::standing::ALLIANCE,
-            Some(format!("{} bridge only", icon::ARROWS_LEFT_RIGHT)),
-        ),
+        // Purple is the whole mark. A glyph beside every bridged number was noise in a home region
+        // where most of them are, and the tooltip still says which kind of bridge it is.
+        JumpVia::BridgeShorter(_) => (crate::theme::standing::ALLIANCE, None),
+        // Colour cannot say "there is no gate route at all", so this one keeps its words.
+        JumpVia::BridgeOnly => (crate::theme::standing::ALLIANCE, Some("bridge only".to_owned())),
     }
 }
 
@@ -22692,13 +22689,16 @@ fn char_jump_slot(
     compact: bool,
     tip: &mut Option<(egui::Pos2, PendingTip)>,
 ) -> bool {
-    let sz = if compact { 14.0 } else { 16.0 };
+    // As tall as the chips it sits beside, which already floor the row at `interact_size`, so a
+    // full-height portrait costs the row no height. `Button::new` over `Button::image` because
+    // only the former promises not to cap an image at the font height.
+    let sz = ui.spacing().interact_size.y;
     let btn = if hop.id == 0 {
         // Not in the store, usually a rename the deny list has not caught up with. A glyph beats
         // an image request that can only 404.
-        egui::Button::new(egui::RichText::new(egui_phosphor::regular::USER).size(sz))
+        egui::Button::new(egui::RichText::new(egui_phosphor::regular::USER).size(sz * 0.7))
     } else {
-        egui::Button::image(
+        egui::Button::new(
             egui::Image::new(eve_portrait_url(hop.id, sz))
                 .fit_to_exact_size(egui::Vec2::splat(sz))
                 .alt_text(&hop.name),
@@ -22708,7 +22708,9 @@ fn char_jump_slot(
         .ui(ui, |ui| char_jump_menu(ui, all));
 
     let (color, mark) = jump_chip_style(hop.via);
-    let color = if dim { color.gamma_multiply(0.55) } else { color };
+    // 0.55 read as greyed out rather than secondary. This ranks the two numbers and still leaves
+    // the dimmer one legible against the card.
+    let color = if dim { color.gamma_multiply(0.8) } else { color };
     let jtxt = match hop.jumps {
         Some(0) => "here".to_owned(),
         Some(j) => format!("{j}j"),
@@ -22727,16 +22729,16 @@ fn char_jump_slot(
         badge.on_hover_text(&roster);
     }
 
-    if let (Some(mark), Some(j)) = (mark, hop.jumps) {
-        if let Some(why) = jump_chip_tip(hop.via, j) {
-            let mr = ui.label(egui::RichText::new(mark).color(color));
-            if compact {
-                if mr.hovered() {
-                    *tip = Some((mr.rect.right_top(), PendingTip::Text(why)));
-                }
-            } else {
+    if let Some(why) = hop.jumps.and_then(|j| jump_chip_tip(hop.via, j)) {
+        let mr = mark.map(|m| ui.label(egui::RichText::new(m).color(color)));
+        if compact {
+            if jr.hovered() || mr.as_ref().is_some_and(egui::Response::hovered) {
+                *tip = Some((jr.rect.right_top(), PendingTip::Text(why)));
+            }
+        } else {
+            jr.on_hover_text(&why);
+            if let Some(mr) = mr {
                 mr.on_hover_text(&why);
-                jr.on_hover_text(&why);
             }
         }
     }
@@ -22946,19 +22948,28 @@ pub(crate) fn intel_row(
                     let jr = ui.label(
                         egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color),
                     );
-                    if let (Some(mark), Some(why)) = (&bridge_mark, jump_chip_tip(via, j)) {
-                        let mr = ui.label(egui::RichText::new(mark).color(jumps_color));
+                    if let Some(why) = jump_chip_tip(via, j) {
+                        // A shortcut is now purple and nothing else, so the number carries the
+                        // explanation whether or not there is a label beside it.
+                        let mr = bridge_mark
+                            .as_ref()
+                            .map(|m| ui.label(egui::RichText::new(m).color(jumps_color)));
                         if compact {
                             if jr.hovered() {
                                 *tip =
                                     Some((jr.rect.right_top(), PendingTip::Text(why.clone())));
                             }
-                            if mr.hovered() {
-                                *tip = Some((mr.rect.right_top(), PendingTip::Text(why)));
+                            if let Some(mr) = &mr {
+                                if mr.hovered() {
+                                    *tip =
+                                        Some((mr.rect.right_top(), PendingTip::Text(why.clone())));
+                                }
                             }
                         } else {
                             jr.on_hover_text(&why);
-                            mr.on_hover_text(&why);
+                            if let Some(mr) = mr {
+                                mr.on_hover_text(&why);
+                            }
                         }
                     }
                 }

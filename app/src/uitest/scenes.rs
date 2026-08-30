@@ -1443,6 +1443,44 @@ fn uitest_intel_card_attributes_the_nearest_character() {
     );
 }
 
+/// The portrait reads as a player, so it wants the height the row already has, not the height of
+/// the text beside it.
+#[test]
+fn uitest_intel_card_badge_is_as_tall_as_the_chips_beside_it() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "intel_row_two_characters").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let mut badge: Option<f32> = None;
+    let mut chip: Option<f32> = None;
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.role() != egui::accesskit::Role::Button || n.is_hidden() {
+            continue;
+        }
+        let label = n.label().unwrap_or_default().to_owned();
+        let Some(b) = n.bounding_box() else { continue };
+        let h = (b.y1 - b.y0) as f32;
+        if label == "Scout Alt" {
+            badge = Some(h);
+        } else if label.contains("1DQ1-A") {
+            chip = Some(h);
+        }
+    }
+    let badge = badge.expect("no portrait button");
+    let chip = chip.expect("no system chip");
+    assert!(
+        (badge - chip).abs() < 0.5,
+        "the portrait stands {badge:.1}px against a {chip:.1}px chip on the same row"
+    );
+    let line = theme_body_line();
+    assert!(
+        badge > line + 4.0,
+        "the portrait is {badge:.1}px against {line:.1}px of body text, so it shrank back to \
+         text size"
+    );
+}
+
 /// A compact card is ~320px and UI-002 fought over 33 of them, so the second slot is dropped there
 /// and the selected character's distance moves into the roster the badge opens.
 #[test]
@@ -1499,17 +1537,27 @@ fn uitest_intel_card_jump_column_holds_its_x() {
 }
 
 /// A per-character verdict is the thing one shared `JumpVia` could not express: the nearest
-/// character rides a bridge here and the other one does not.
+/// character rides a bridge here and the other one does not. The mark is a colour now, which the
+/// AccessKit tree cannot see, so the two halves are asserted where each is observable.
 #[test]
 fn uitest_intel_card_marks_a_bridge_per_character() {
+    use crate::app::jump_chip_style;
+
+    let chars = fixtures::card_chars_bridged();
+    assert_ne!(
+        jump_chip_style(chars.hops[0].via).0,
+        jump_chip_style(chars.hops[1].via).0,
+        "both characters' numbers would be drawn in the same colour"
+    );
+    assert_eq!(jump_chip_style(chars.hops[0].via).0, crate::theme::standing::ALLIANCE);
+
     let mut scene =
         all().into_iter().find(|s| s.name == "intel_row_two_characters_bridged").expect("scene");
     let harness = harness::build(&mut scene, false);
     assert_eq!(jump_chips(&harness), ["1j", "3j"]);
-    assert_eq!(
-        bridge_marks(&harness).len(),
-        1,
-        "only the character whose trip the bridge shortened is marked"
+    assert!(
+        bridge_marks(&harness).is_empty(),
+        "a shortcut is purple and wordless, so neither slot writes anything beside its number"
     );
 }
 
@@ -1587,7 +1635,10 @@ fn bridge_marks(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
             continue;
         }
         let label = n.label().or_else(|| n.value()).unwrap_or_default();
-        if label.contains(egui_phosphor::regular::ARROWS_LEFT_RIGHT) {
+        // A bridge that merely shortens the trip is purple and nothing else, so the only mark
+        // still written in words is the route gates cannot reach at all.
+        if label.trim() == "bridge only" || label.contains(egui_phosphor::regular::ARROWS_LEFT_RIGHT)
+        {
             out.push(label.trim().to_owned());
         }
     }
@@ -1606,13 +1657,12 @@ fn uitest_intel_card_marks_a_bridge_dependent_range() {
         (jump_chips(&harness), bridge_marks(&harness))
     };
 
-    let arrows = egui_phosphor::regular::ARROWS_LEFT_RIGHT;
     let (chips, marks) = read(true);
     assert_eq!(chips, ["1j", "1j", "1j"], "counting bridges did not take both bridges");
     assert_eq!(
         marks,
-        [arrows.to_owned(), format!("{arrows} bridge only")],
-        "the two bridged cards are not marked, or the gate-only card is"
+        ["bridge only"],
+        "a shortcut is purple and wordless now, and only an unreachable-by-gate route says so"
     );
 
     let (chips, marks) = read(false);
@@ -1632,13 +1682,12 @@ fn uitest_alert_window_marks_a_bridge_dependent_range() {
         (jump_chips(&harness), bridge_marks(&harness))
     };
 
-    let arrows = egui_phosphor::regular::ARROWS_LEFT_RIGHT;
     let (chips, marks) = read(true);
     assert_eq!(chips, ["1j", "1j", "1j"], "the overlay lost the jump numbers");
     assert_eq!(
         marks,
-        [format!("{arrows} bridge only"), arrows.to_owned()],
-        "the overlay did not mark both bridge-dependent cards, or marked the gate-only one"
+        ["bridge only"],
+        "the overlay lost the one route gates cannot reach, or marked a card that has one"
     );
 
     let (chips, marks) = read(false);
@@ -1684,7 +1733,8 @@ fn uitest_bridge_mark_only_takes_width_on_the_card_that_earned_it() {
     let mut scene = intel_bridge_states_scene("bridge_align_probe", true, [1280.0, 800.0]);
     let harness = harness::build(&mut scene, false);
     let plain = jump_to_chip_gap(&harness, "319-3D");
-    let bridged = jump_to_chip_gap(&harness, "7-K5EL");
+    let shortcut = jump_to_chip_gap(&harness, "7-K5EL");
+    let bridge_only = jump_to_chip_gap(&harness, "Jita");
     let spacing = harness.ctx.global_style().spacing.item_spacing.x;
     assert!(
         plain <= spacing + 0.5,
@@ -1692,8 +1742,13 @@ fn uitest_bridge_mark_only_takes_width_on_the_card_that_earned_it() {
          against {spacing:.1}px of plain item spacing"
     );
     assert!(
-        bridged > plain + 4.0,
-        "the bridged card drew no glyph: {bridged:.1}px against {plain:.1}px"
+        (shortcut - plain).abs() < 0.5,
+        "a bridge shortcut is colour only, so it must cost the same width as no mark at all: \
+         {shortcut:.1}px against {plain:.1}px"
+    );
+    assert!(
+        bridge_only > plain + 4.0,
+        "the bridge-only card lost its words: {bridge_only:.1}px against {plain:.1}px"
     );
 }
 
@@ -1742,26 +1797,40 @@ fn uitest_bridge_mark_explains_itself_on_hover() {
 
     let mut scene = intel_bridge_states_scene("bridge_hover_probe", true, [1280.0, 800.0]);
     let harness = harness::build(&mut scene, false);
-    let mut spots: Vec<egui::Pos2> = Vec::new();
+    // The shortcut no longer draws a widget of its own, so the number is the only thing left to
+    // reach for. Find it by the row its system chip sits on.
+    let mut row_y: Option<f32> = None;
+    let mut spot: Option<egui::Pos2> = None;
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.is_hidden() {
+            continue;
+        }
+        let label = n.label().or_else(|| n.value()).unwrap_or_default();
+        if n.role() == egui::accesskit::Role::Button && label.contains("7-K5EL") {
+            row_y = n.bounding_box().map(|b| (b.y0 as f32 + b.y1 as f32) / 2.0);
+        }
+    }
+    let row_y = row_y.expect("no 7-K5EL chip on screen");
     for node in harness.root().children_recursive() {
         let n = node.accesskit_node();
         if n.role() != egui::accesskit::Role::Label || n.is_hidden() {
             continue;
         }
         let label = n.label().or_else(|| n.value()).unwrap_or_default();
-        if label.contains(egui_phosphor::regular::ARROWS_LEFT_RIGHT) && !label.contains("only") {
-            if let Some(b) = n.bounding_box() {
-                // The number sits one item-spacing to the left of the glyph.
-                spots.push(egui::pos2((b.x0 as f32 + b.x1 as f32) / 2.0, (b.y0 as f32 + b.y1 as f32) / 2.0));
-                spots.push(egui::pos2(b.x0 as f32 - 12.0, (b.y0 as f32 + b.y1 as f32) / 2.0));
+        if label.trim() != "1j" {
+            continue;
+        }
+        if let Some(b) = n.bounding_box() {
+            let cy = (b.y0 as f32 + b.y1 as f32) / 2.0;
+            if (cy - row_y).abs() < 6.0 {
+                spot = Some(egui::pos2((b.x0 as f32 + b.x1 as f32) / 2.0, cy));
             }
         }
     }
-    assert_eq!(spots.len(), 2, "expected one bridge glyph to hover");
+    let spot = spot.expect("no jump number on the bridged card's row");
     drop(harness);
-    for at in spots {
-        assert!(probe(at), "hovering at {at:?} showed no gate distance");
-    }
+    assert!(probe(spot), "hovering the bridged number at {spot:?} showed no gate distance");
 }
 
 /// The flag answers "does the number on screen rest on a bridge", not "do you own a bridge". With
@@ -1792,7 +1861,7 @@ fn uitest_bridge_flag_reads_the_number_that_is_shown() {
 /// The colour has to be legible as "informational" beside the row's own vocabulary, where green
 /// means cleared and amber and red mean threat.
 #[test]
-fn uitest_bridge_mark_uses_its_own_colour_and_a_real_glyph() {
+fn uitest_a_bridged_range_is_marked_by_colour_not_a_glyph() {
     use crate::app::{jump_chip_style, jump_chip_tip, JumpVia};
     use crate::theme::standing;
 
@@ -1802,20 +1871,28 @@ fn uitest_bridge_mark_uses_its_own_colour_and_a_real_glyph() {
 
     for via in [JumpVia::BridgeShorter(9), JumpVia::BridgeOnly] {
         let (col, mark) = jump_chip_style(via);
+        assert_eq!(col, standing::ALLIANCE, "{via:?} is not purple");
         for (name, other) in
             [("CORP", standing::CORP), ("HOSTILE", standing::HOSTILE), ("WARNING", standing::WARNING)]
         {
             assert_ne!(col, other, "{via:?} reuses {name}");
         }
-        let mark = mark.unwrap_or_else(|| panic!("{via:?} drew no glyph"));
-        assert!(mark.starts_with(egui_phosphor::regular::ARROWS_LEFT_RIGHT), "{mark:?}");
+        assert!(
+            !mark.as_deref().unwrap_or_default().contains(egui_phosphor::regular::ARROWS_LEFT_RIGHT),
+            "{via:?} still draws the arrow glyph: {mark:?}"
+        );
         let tip = jump_chip_tip(via, 2).unwrap_or_else(|| panic!("{via:?} has no tooltip"));
         assert!(tip.contains("hostile") && tip.contains("bridge"), "{tip:?}");
     }
-    assert_ne!(
+    assert_eq!(
         jump_chip_style(JumpVia::BridgeShorter(9)).1,
-        jump_chip_style(JumpVia::BridgeOnly).1,
-        "a bridge shortcut and a bridge-only route read identically"
+        None,
+        "a shortcut says nothing in words, the colour is the whole mark"
+    );
+    assert_eq!(
+        jump_chip_style(JumpVia::BridgeOnly).1.as_deref(),
+        Some("bridge only"),
+        "colour alone cannot say gates do not reach at all, so this case keeps its words"
     );
 }
 

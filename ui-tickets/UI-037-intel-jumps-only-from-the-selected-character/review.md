@@ -105,6 +105,29 @@ headlessly.
 - **`min_jumps_from`'s hardcoded `50`** stays, rather than `JUMP_SCAN_CAP`. It is on the alert path
   and had no tests; it has tests now, so the constant can move in its own commit.
 
+## Follow-up round, after looking at it running
+
+Three changes on the user's read of the shipped card, all in the same ticket:
+
+- **The portraits were text-height.** They now take `ui.spacing().interact_size.y`, the height the
+  row's chips already force, so a full-height portrait costs the row nothing.
+  `uitest_intel_card_badge_is_as_tall_as_the_chips_beside_it` measures the badge against the
+  `1DQ1-A` chip on its own row and fails at the old 16px.
+- **A bridged range is purple and nothing else.** `jump_chip_style` no longer returns the
+  `ARROWS_LEFT_RIGHT` glyph for `BridgeShorter`: a glyph beside every bridged number is noise in a
+  home region where most of them are. `BridgeOnly` keeps the words "bridge only", because colour
+  cannot say "gates do not reach this at all" and that distinction is the whole of UI-026.
+  This moved the tooltip: it used to hang off the glyph, so with the glyph gone the number now
+  carries it whether or not a mark label exists beside it.
+  `uitest_bridge_mark_explains_itself_on_hover` was reworked onto the number and proves it.
+- **The selected character's number was too faint.** `gamma_multiply(0.55)` to `0.8`.
+
+One claim of mine did not survive its own teeth check. I wrote a comment saying `Button::image` was
+what held the portrait at text size, and that swapping to `Button::new` fixed it. Reverting only the
+constructor left the test passing: `Button::image`'s font-height cap does not override a
+`fit_to_exact_size` image, and the size came entirely from `sz`. The comment now says only what is
+true, and the teeth check is against `sz` instead.
+
 ## Residual risk
 
 The alert window is not virtualized and renders up to 100 cards, so two badges there is up to 200
