@@ -271,6 +271,8 @@ pub(crate) struct IntelArgs {
     pub(crate) last_ship: HashMap<String, (i64, String, i64)>,
     pub(crate) kills: crate::kills::KillCache,
     pub(crate) affil: crate::affiliation::SharedAffil,
+    /// Empty is the single-character card, which is every scene that does not say otherwise.
+    pub(crate) chars: crate::app::CardChars,
 }
 
 impl Default for IntelArgs {
@@ -285,7 +287,53 @@ impl Default for IntelArgs {
             last_ship: HashMap::new(),
             kills: kills(),
             affil: affil(),
+            chars: crate::app::CardChars::default(),
         }
+    }
+}
+
+/// Character ids shared with [`crate::uitest::scenes`]'s characters view, so a portrait in one
+/// scene is the same character as a portrait in another.
+pub(crate) const CHAR_AMRYU: i64 = 90_000_001;
+pub(crate) const CHAR_SCOUT: i64 = 90_000_002;
+
+fn hop(name: &str, id: i64, jumps: Option<u32>, via: crate::app::JumpVia) -> crate::app::CharHop {
+    crate::app::CharHop { name: name.to_owned(), id, jumps, via }
+}
+
+/// Two characters at different distances, the selected one further out. The case the feature
+/// exists for: the alert fired on Scout Alt's one jump while the card read Amryu's four.
+pub(crate) fn card_chars_two() -> crate::app::CardChars {
+    crate::app::CardChars {
+        hops: vec![
+            hop("Scout Alt", CHAR_SCOUT, Some(1), crate::app::JumpVia::Gates),
+            hop("Amryu", CHAR_AMRYU, Some(4), crate::app::JumpVia::Gates),
+        ],
+        selected: Some(1),
+    }
+}
+
+/// The nearest character is the one you are looking through, so there is one number to show and
+/// still a portrait saying whose it is.
+pub(crate) fn card_chars_nearest_is_selected() -> crate::app::CardChars {
+    crate::app::CardChars {
+        hops: vec![
+            hop("Amryu", CHAR_AMRYU, Some(1), crate::app::JumpVia::Gates),
+            hop("Scout Alt", CHAR_SCOUT, Some(6), crate::app::JumpVia::Gates),
+        ],
+        selected: Some(0),
+    }
+}
+
+/// The nearest character rides a jump bridge and the other does not, which is the per-character
+/// verdict a single shared `JumpVia` could not express.
+pub(crate) fn card_chars_bridged() -> crate::app::CardChars {
+    crate::app::CardChars {
+        hops: vec![
+            hop("Scout Alt", CHAR_SCOUT, Some(1), crate::app::JumpVia::BridgeShorter(5)),
+            hop("Amryu", CHAR_AMRYU, Some(3), crate::app::JumpVia::Gates),
+        ],
+        selected: Some(1),
     }
 }
 
