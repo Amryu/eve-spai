@@ -3,3 +3,6 @@ crates/server/target/
 **/*.rs.bk
 .claude/*
 !.claude/skills/
+
+# Exported battle reports: user data, not source. One was swept in by a broad `git add`.
+*.evespai-br.json
