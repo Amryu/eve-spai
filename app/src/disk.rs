@@ -202,6 +202,7 @@ pub(crate) fn spawn_monitor(ctx: egui::Context) {
         .spawn(move || {
             let mut clear_streak: u8 = 0;
             let mut first = true;
+            let mut last_maintenance: Option<std::time::Instant> = None;
             loop {
                 if !first {
                     std::thread::sleep(if level() == Level::Normal {
@@ -234,7 +235,13 @@ pub(crate) fn spawn_monitor(ctx: egui::Context) {
                     }
                     ctx.request_repaint();
                 }
-                if next != Level::Normal || current != Level::Normal {
+                // On the first tick, on any change, and every six hours otherwise. Running it
+                // only under pressure would mean retention never applied on a healthy disk, which
+                // is how the archive grew unbounded in the first place.
+                let due = last_maintenance
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(6 * 3600));
+                if due || next != current {
+                    last_maintenance = Some(std::time::Instant::now());
                     crate::store::run_maintenance(next);
                 }
             }
