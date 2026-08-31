@@ -311,6 +311,16 @@ pub fn copy(root: &Path, plan: &CopyPlan) -> Result<CopyReport, String> {
     let src_dir = profile_dir(root, &plan.source_profile);
     let dst_dir = profile_dir(root, &plan.dest_profile);
 
+    // `replicate` backs each target up and then overwrites it with a non-atomic `fs::copy`, so a
+    // half-written copy leaves the user's live EVE settings truncated with no rollback. Refuse to
+    // start rather than take that risk on a disk that is already under pressure.
+    if crate::disk::level() != crate::disk::Level::Normal {
+        return Err(
+            "not enough free disk space to copy settings safely; free some space and try again"
+                .to_owned(),
+        );
+    }
+
     let src_char = src_dir.join(format!("core_char_{}.dat", plan.source_char));
     if !src_char.is_file() {
         return Err(format!(

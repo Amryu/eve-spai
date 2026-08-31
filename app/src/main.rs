@@ -14,8 +14,10 @@ mod charlookup;
 mod charsettings;
 mod chatlog;
 mod copysettings;
+mod crashlog;
 mod dict;
 mod doctrines;
+mod disk;
 mod dscan;
 mod esi;
 mod esilog;
@@ -125,6 +127,11 @@ fn acquire_single_instance_lock() -> bool {
     let file = match std::fs::OpenOptions::new().create(true).write(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
+            // Failing open means two processes can end up on one SQLite file, which is a far worse
+            // outcome than a second window. A full disk is the case where that is most likely, so
+            // it feeds the pressure state and the user is told rather than only a console that a
+            // release build does not have.
+            disk::note_io_error(&e);
             eprintln!("[main] could not open lock file ({e}); continuing without single-instance guard");
             return true;
         }
@@ -141,43 +148,16 @@ fn acquire_single_instance_lock() -> bool {
     }
 }
 
-/// Append panics to `<data_dir>/crash.log`. A release build has no console (`windows_subsystem =
-/// "windows"`), so the default stderr hook is invisible; this is the only record of a crash.
-fn install_panic_logger() {
-    let default = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        if let Ok(dir) = store::data_dir() {
-            use std::io::Write;
-            if let Ok(mut f) =
-                std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log"))
-            {
-                let loc = info.location().map(|l| l.to_string()).unwrap_or_default();
-                let msg = info
-                    .payload()
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
-                let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
-                let _ = writeln!(
-                    f,
-                    "{} v{} [{thread}] {loc}: {msg}",
-                    chrono::Utc::now().to_rfc3339(),
-                    env!("CARGO_PKG_VERSION"),
-                );
-            }
-        }
-        default(info);
-    }));
-}
-
 fn main() -> eframe::Result<()> {
-    install_panic_logger();
+    // Installed per role, because both processes run this function and used to append to one
+    // crash.log, racing each other's rotation.
+    let overlay_child = std::env::args().any(|a| a == "--overlay");
+    crashlog::install(if overlay_child { crashlog::Role::Overlay } else { crashlog::Role::Main });
 
     // Re-exec into the overlay child when launched with the hidden flag, before any main-window
     // setup runs. The child must ALWAYS start (it is spawned by the main), so the single-instance
     // guard below is skipped for it.
-    if std::env::args().any(|a| a == "--overlay") {
+    if overlay_child {
         return overlay::run_overlay();
     }
 

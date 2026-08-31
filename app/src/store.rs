@@ -301,9 +301,34 @@ pub struct Store {
     path: PathBuf,
     sys_cache: std::cell::RefCell<Option<Vec<SysRow>>>,
     place_cache: std::cell::RefCell<Option<PlaceCache>>,
+    /// Set when the stored settings could not be parsed AND could not be stashed, which on a full
+    /// disk is the case where saving defaults over them destroys the only copy.
+    settings_locked: std::cell::Cell<bool>,
 }
 
+/// How long the kill archive is kept. The firehose writes a row per killmail and nothing used to
+/// delete them, which is how one profile reached 360MB of engagements.
+pub const ENGAGEMENT_RETENTION_SECS: i64 = 30 * 86_400;
+
 impl Store {
+    /// Archive data: skipped entirely under disk pressure, and the row is dropped rather than
+    /// queued. Buffering it would trade a disk problem for a memory problem, and this is the
+    /// highest-volume writer in the app.
+    fn exec_historic(&self, sql: &str, p: impl rusqlite::Params) {
+        if !crate::disk::writes_allowed(crate::disk::Kind::Historic) {
+            return;
+        }
+        if let Err(e) = self.conn.execute(sql, p) {
+            crate::disk::note_sqlite_error(&e);
+        }
+    }
+
+    /// Settings, auth and anything the user authored. Always attempted; a failure still teaches
+    /// the disk monitor something, where the old `let _ =` taught nobody anything.
+    fn exec_essential(&self, sql: &str, p: impl rusqlite::Params) -> Result<usize> {
+        self.conn.execute(sql, p).inspect_err(crate::disk::note_sqlite_error).map_err(Into::into)
+    }
+
     /// A trivial write, to catch a database that opened read-only (e.g. a read-only file or folder)
     /// where reads succeed but nothing persists. `open` alone can miss this: SQLite defers the error
     /// to the first write.
@@ -353,6 +378,7 @@ impl Store {
             conn,
             path,
             sys_cache: std::cell::RefCell::new(None),
+            settings_locked: std::cell::Cell::new(false),
             place_cache: std::cell::RefCell::new(None),
         })
     }
@@ -375,24 +401,48 @@ impl Store {
                 // user's config. Log it and stash the raw blob so the next save (with
                 // defaults) doesn't overwrite the only copy.
                 eprintln!("[settings] stored settings didn't parse, using defaults: {e}");
-                let _ = self.conn.execute(
+                let stashed = self.conn.execute(
                     "INSERT INTO kv (key, value) VALUES ('settings.bad', ?1)
                      ON CONFLICT(key) DO UPDATE SET value = ?1",
                     params![json],
                 );
+                if let Err(e) = &stashed {
+                    // Nowhere to copy it to, so the only way not to lose it is to not overwrite
+                    // it. The user is asked in `store_warning_dialog` which they want.
+                    crate::disk::note_sqlite_error(e);
+                    self.settings_locked.set(true);
+                }
                 None
             }
         }
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        if self.settings_locked.get() {
+            anyhow::bail!("refusing to overwrite settings that could not be read or backed up");
+        }
         let json = serde_json::to_string(settings)?;
-        self.conn.execute(
+        self.exec_essential(
             "INSERT INTO kv (key, value) VALUES ('settings', ?1)
              ON CONFLICT(key) DO UPDATE SET value = ?1",
             params![json],
         )?;
         Ok(())
+    }
+
+    /// True while the unparsed settings blob is the only copy and must not be overwritten.
+    pub fn settings_locked(&self) -> bool {
+        self.settings_locked.get()
+    }
+
+    /// The user chose to start fresh, so the stash is no longer worth protecting.
+    pub fn unlock_settings(&self) {
+        self.settings_locked.set(false);
+    }
+
+    /// The raw blob that failed to parse, so the stash stops being write-only.
+    pub fn stashed_settings(&self) -> Option<String> {
+        self.kv_get("settings.bad")
     }
 
     pub fn kv_get(&self, key: &str) -> Option<String> {
@@ -787,7 +837,7 @@ impl Store {
         // character with the same name, but never downgrade a confirmed pilot back to 0
         // (the WHERE guards that). Plain OR IGNORE left the stale 0 row forever, hiding the
         // pilot from `known_pilots`, which filters char_id != 0.
-        let _ = self.conn.execute(
+        self.exec_historic(
             "INSERT INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)
              ON CONFLICT(name_lc) DO UPDATE SET char_id=excluded.char_id, name=excluded.name
              WHERE excluded.char_id != 0",
@@ -796,9 +846,7 @@ impl Store {
     }
 
     pub fn add_ping(&self, ts: i64, json: &str) {
-        let _ = self
-            .conn
-            .execute("INSERT INTO pings(ts, json) VALUES(?1, ?2)", params![ts, json]);
+        self.exec_historic("INSERT INTO pings(ts, json) VALUES(?1, ?2)", params![ts, json]);
     }
 
     pub fn load_pings(&self, limit: i64) -> Vec<String> {
@@ -815,7 +863,7 @@ impl Store {
     }
 
     pub fn add_kill_intel(&self, killmail_id: i64, system_id: i64, ship_type_id: i64, time: i64, value: f64) {
-        let _ = self.conn.execute(
+        self.exec_historic(
             "INSERT OR IGNORE INTO kill_intel(killmail_id, system_id, ship_type_id, time, value)
              VALUES(?1, ?2, ?3, ?4, ?5)",
             params![killmail_id, system_id, ship_type_id, time, value],
@@ -853,7 +901,7 @@ impl Store {
 
     pub fn save_engagement(&self, e: &crate::battle::Engagement) {
         if let Ok(json) = serde_json::to_string(e) {
-            let _ = self.conn.execute(
+            self.exec_historic(
                 "INSERT OR REPLACE INTO engagements(kill_id, time, system_id, json)
                  VALUES(?1, ?2, ?3, ?4)",
                 params![e.kill_id, e.time, e.system_id, json],
@@ -874,9 +922,27 @@ impl Store {
         out
     }
 
-    #[allow(dead_code)]
-    pub fn prune_engagements(&self, before: i64) {
-        let _ = self.conn.execute("DELETE FROM engagements WHERE time < ?1", params![before]);
+    /// Deletes in batches: the first pass after an upgrade clears six figures of rows, and one
+    /// statement that long holds the write lock past every other connection's busy timeout.
+    pub fn prune_engagements(&self, before: i64) -> usize {
+        const BATCH: i64 = 20_000;
+        let mut total = 0;
+        loop {
+            let n = self
+                .conn
+                .execute(
+                    "DELETE FROM engagements WHERE kill_id IN
+                     (SELECT kill_id FROM engagements WHERE time < ?1 LIMIT ?2)",
+                    params![before, BATCH],
+                )
+                .inspect_err(crate::disk::note_sqlite_error)
+                .unwrap_or(0);
+            total += n;
+            if (n as i64) < BATCH {
+                return total;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     #[allow(dead_code)]
@@ -1000,7 +1066,7 @@ impl Store {
             Some((n, d)) => (Some(n.clone()), Some(*d)),
             None => (None, None),
         };
-        let _ = self.conn.execute(
+        self.exec_historic(
             "INSERT OR REPLACE INTO kill_details
                 (kill_id, hash, victim_char, victim_ship, victim_corp, victim_alliance,
                  system_id, value, time, final_blow_char, final_blow_corp, final_blow_alliance,
@@ -1069,7 +1135,7 @@ impl Store {
         last_corp_change: Option<i64>,
         fetched_at: i64,
     ) {
-        let _ = self.conn.execute(
+        self.exec_historic(
             "INSERT OR REPLACE INTO
                 pilot_activity(char_id, active_recent, birthday, last_corp_change, fetched_at)
              VALUES(?1, ?2, ?3, ?4, ?5)",
@@ -1145,7 +1211,7 @@ impl Store {
     }
 
     pub fn add_chat(&self, jid: &str, sender: &str, body: &str, time: i64, outgoing: bool) {
-        let _ = self.conn.execute(
+        self.exec_historic(
             "INSERT OR IGNORE INTO chats(jid, sender, body, time, outgoing) VALUES(?1,?2,?3,?4,?5)",
             params![jid, sender, body, time, outgoing as i64],
         );
@@ -1181,14 +1247,28 @@ impl Store {
         // The find-then-insert/update below is a read-modify-write; two scout/watcher
         // connections could both miss the row and both INSERT, and the loser's INSERT would
         // hit the dedup UNIQUE constraint and be silently dropped. BEGIN IMMEDIATE takes the
-        // write lock up front so concurrent upserts serialize. The body has no panic paths,
-        // so the connection can't be left mid-transaction.
-        let in_tx = self.conn.execute_batch("BEGIN IMMEDIATE").is_ok();
-        let id = self.upsert_wormhole_locked(incoming);
-        if in_tx {
-            let _ = self.conn.execute_batch("COMMIT");
+        // write lock up front so concurrent upserts serialize.
+        //
+        // RAII rather than a hand-rolled COMMIT: a discarded commit error left the connection
+        // inside the transaction, so every later BEGIN on it failed and it stayed wedged for the
+        // rest of the process. Dropping the guard rolls back instead.
+        match rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        ) {
+            Ok(tx) => {
+                let id = self.upsert_wormhole_locked(incoming);
+                if let Err(e) = tx.commit() {
+                    crate::disk::note_sqlite_error(&e);
+                }
+                id
+            }
+            // No lock available, so run unserialized rather than drop the report entirely.
+            Err(e) => {
+                crate::disk::note_sqlite_error(&e);
+                self.upsert_wormhole_locked(incoming)
+            }
         }
-        id
     }
 
     fn upsert_wormhole_locked(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
@@ -1701,6 +1781,53 @@ impl Store {
 /// `busy_timeout` a colliding write fails with `SQLITE_BUSY` and — since most mutations
 /// ignore the result — is silently dropped. WAL is a persistent DB property; the timeout
 /// is per-connection, so every open must set it.
+/// Whether reclaiming is worth it right now. VACUUM rebuilds the database into a complete second
+/// copy before swapping, so on a tight disk it is the last thing that should run: stop growing
+/// first, reclaim once there is room.
+pub(crate) fn should_vacuum(
+    available: u64,
+    db_bytes: u64,
+    deleted: usize,
+    last_vacuum_secs_ago: i64,
+    level: crate::disk::Level,
+) -> bool {
+    const HEADROOM: u64 = 512 * 1024 * 1024;
+    const MIN_INTERVAL: i64 = 7 * 86_400;
+    level == crate::disk::Level::Normal
+        && deleted > 0
+        && available >= db_bytes.saturating_mul(2).saturating_add(HEADROOM)
+        && last_vacuum_secs_ago >= MIN_INTERVAL
+}
+
+/// Retention and reclaim, off the main thread because the first pass after an upgrade deletes six
+/// figures of rows. Driven by the disk monitor rather than a frame, so it still runs while the
+/// window is minimised to tray and the firehose keeps writing.
+pub fn run_maintenance(level: crate::disk::Level) {
+    let Ok(store) = Store::open() else { return };
+    let now = chrono::Utc::now().timestamp();
+
+    let deleted = store.prune_engagements(now - ENGAGEMENT_RETENTION_SECS);
+    store.prune_kill_intel(now - 3600);
+    crate::image_cache::prune_for_level(level);
+    crate::lookup::prune_cache(level);
+
+    let last = store.kv_get("last_vacuum").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let db_bytes = std::fs::metadata(store.path()).map(|m| m.len()).unwrap_or(0)
+        + std::fs::metadata(store.path().with_extension("db-wal")).map(|m| m.len()).unwrap_or(0);
+    let available = crate::disk::available().unwrap_or(0);
+    if should_vacuum(available, db_bytes, deleted, now - last, level) {
+        // Holds an exclusive lock for the duration, which can exceed the 5s busy timeout every
+        // other connection uses, so a few seconds of archive writes may be dropped. Accepted:
+        // weekly at most, and only when the disk is comfortable. Raising the global timeout
+        // instead would freeze the UI, which runs queries on those same connections.
+        if let Err(e) = store.conn.execute("VACUUM", []) {
+            crate::disk::note_sqlite_error(&e);
+        } else {
+            store.kv_set("last_vacuum", &now.to_string());
+        }
+    }
+}
+
 pub(crate) fn apply_pragmas(conn: &Connection) {
     let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
@@ -1826,7 +1953,7 @@ fn trigrams(s: &str) -> std::collections::HashSet<[u8; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Store, SCHEMA};
+    use super::{should_vacuum, Store, ENGAGEMENT_RETENTION_SECS, SCHEMA};
     use rusqlite::{params, Connection};
 
     fn mem_store() -> Store {
@@ -1836,8 +1963,155 @@ mod tests {
             conn,
             path: std::path::PathBuf::new(),
             sys_cache: std::cell::RefCell::new(None),
+            settings_locked: std::cell::Cell::new(false),
             place_cache: std::cell::RefCell::new(None),
         }
+    }
+
+    /// A store whose database cannot grow past `pages`. SQLite answers a write past the cap with
+    /// SQLITE_FULL, the same code a real out-of-space error produces, so this exercises the real
+    /// classification and gating path rather than a mock.
+    fn capped_store(pages: i64) -> Store {
+        let s = mem_store();
+        s.conn.pragma_update(None, "max_page_count", pages).expect("cap");
+        s
+    }
+
+    fn an_engagement(kill_id: i64, time: i64) -> crate::battle::Engagement {
+        serde_json::from_value(serde_json::json!({
+            "kill_id": kill_id,
+            "time": time,
+            "system_id": 30_004_759,
+            "system_name": "1DQ1-A",
+            "security": -0.36,
+            "victim": { "kind": "Character", "id": 1, "name": "Victim" },
+            "victim_char": 1,
+            "victim_pilot": "Victim",
+            "victim_ship": 11_993,
+            "attackers": [],
+            "isk": 0.0,
+        }))
+        .expect("engagement fixture")
+    }
+
+    /// Exhaust the page cap with raw inserts, so the escalation under test comes from the app's
+    /// own write path afterwards rather than from the filling.
+    fn fill_pages(s: &Store) {
+        for i in 0..100_000i64 {
+            if s.conn
+                .execute(
+                    "INSERT OR REPLACE INTO engagements(kill_id, time, system_id, json)
+                     VALUES(?1, ?2, ?3, ?4)",
+                    params![i, 1_700_000_000i64, 30_004_759i64, "x".repeat(4000)],
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+        panic!("the page cap never tripped");
+    }
+
+    fn engagement_rows(s: &Store) -> i64 {
+        s.conn.query_row("SELECT count(*) FROM engagements", [], |r| r.get(0)).unwrap()
+    }
+
+    /// The whole point of the degraded mode: once the disk says no, the firehose stops asking,
+    /// and it starts again on its own when there is room.
+    #[test]
+    fn a_full_database_stops_the_archive_until_there_is_room() {
+        let _guard = crate::disk::test_guard();
+        let before = crate::disk::level();
+        crate::disk::force_level(crate::disk::Level::Normal);
+        let s = capped_store(24);
+        fill_pages(&s);
+        assert_eq!(crate::disk::level(), crate::disk::Level::Normal, "filling escalated too early");
+
+        // The app's own path: SQLITE_FULL is the same code a real out-of-space error produces.
+        s.save_engagement(&an_engagement(999_999, 1_700_000_000));
+        assert_eq!(
+            crate::disk::level(),
+            crate::disk::Level::Critical,
+            "a failed archive write did not raise the pressure level"
+        );
+
+        // Room again, but the level has not cleared: the write must not even be attempted.
+        s.conn.pragma_update(None, "max_page_count", 4096i64).expect("raise cap");
+        let was = engagement_rows(&s);
+        s.save_engagement(&an_engagement(1_000_001, 1_700_000_000));
+        assert_eq!(engagement_rows(&s), was, "an archive write went through while Critical");
+
+        crate::disk::force_level(crate::disk::Level::Normal);
+        s.save_engagement(&an_engagement(1_000_002, 1_700_000_000));
+        assert_eq!(
+            engagement_rows(&s),
+            was + 1,
+            "the archive did not resume once the pressure cleared"
+        );
+        crate::disk::force_level(before);
+    }
+
+    /// A discarded COMMIT used to leave the connection inside its transaction, wedging it for the
+    /// rest of the process. This covers the reachable half: an upsert against a full database
+    /// leaves the connection able to open the next transaction.
+    ///
+    /// It does NOT have teeth against the old hand-rolled BEGIN/COMMIT, and the honest reason is
+    /// that `max_page_count` fails the INSERT rather than the COMMIT, so the commit has nothing to
+    /// flush and succeeds either way. Failing at commit needs a real ENOSPC against the WAL, which
+    /// needs a loop device or a privileged container: see GAP-011.
+    #[test]
+    fn an_upsert_against_a_full_database_leaves_the_connection_usable() {
+        let _guard = crate::disk::test_guard();
+        let before = crate::disk::level();
+        crate::disk::force_level(crate::disk::Level::Normal);
+        let s = capped_store(24);
+        fill_pages(&s);
+        crate::disk::force_level(crate::disk::Level::Normal);
+
+        // Runs against a full database, so the commit fails.
+        s.upsert_wormhole(&a_hole(30_004_759, "ABC-123"));
+
+        // The connection must not still be mid-transaction.
+        s.conn.execute_batch("BEGIN IMMEDIATE").expect("the connection is wedged in a transaction");
+        let _ = s.conn.execute_batch("ROLLBACK");
+        crate::disk::force_level(before);
+    }
+
+    #[test]
+    fn engagements_are_pruned_to_the_retention_window() {
+        let _guard = crate::disk::test_guard();
+        let s = mem_store();
+        crate::disk::force_level(crate::disk::Level::Normal);
+        let now = 1_700_000_000i64;
+        for (id, age) in [(1i64, 0i64), (2, 10 * 86_400), (3, 45 * 86_400), (4, 400 * 86_400)] {
+            s.save_engagement(&an_engagement(id, now - age));
+        }
+        let deleted = s.prune_engagements(now - ENGAGEMENT_RETENTION_SECS);
+        assert_eq!(deleted, 2, "the two rows past 30 days were not the ones deleted");
+        let left: Vec<i64> = s
+            .conn
+            .prepare("SELECT kill_id FROM engagements ORDER BY kill_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(left, vec![1, 2]);
+    }
+
+    #[test]
+    fn reclaiming_waits_for_room_and_for_something_to_reclaim() {
+        use crate::disk::Level;
+        const GB: u64 = 1024 * 1024 * 1024;
+        let week = 8 * 86_400;
+        assert!(should_vacuum(50 * GB, GB, 100, week, Level::Normal));
+        assert!(!should_vacuum(50 * GB, GB, 0, week, Level::Normal), "nothing was deleted");
+        assert!(!should_vacuum(50 * GB, GB, 100, 86_400, Level::Normal), "ran a day ago");
+        assert!(!should_vacuum(50 * GB, GB, 100, week, Level::Low), "not while under pressure");
+        assert!(
+            !should_vacuum(GB + GB / 2, GB, 100, week, Level::Normal),
+            "VACUUM needs room for a second copy of the database plus headroom"
+        );
     }
 
     fn a_hole(system_id: i64, sig: &str) -> crate::wormholes::Wormhole {
@@ -1912,6 +2186,7 @@ mod tests {
             conn: ro,
             path: path.clone(),
             sys_cache: std::cell::RefCell::new(None),
+            settings_locked: std::cell::Cell::new(false),
             place_cache: std::cell::RefCell::new(None),
         };
         assert!(s.write_probe().is_err(), "a read-only DB must fail the probe");

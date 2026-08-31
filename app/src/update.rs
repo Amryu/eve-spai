@@ -226,6 +226,21 @@ pub fn download_and_replace(asset_api_url: &str) -> anyhow::Result<()> {
 
     let exe = std::env::current_exe().context("locating current executable")?;
     let new_path = exe.with_extension("new");
+    // The swap renames twice on Windows, and a failure between them leaves no executable at all
+    // with no recovery path. Check for room for the payload, the old binary and the new one
+    // before starting, rather than discovering it half way.
+    if let Some(dir) = exe.parent() {
+        if let Ok(free) = fs4::available_space(dir) {
+            let need = (bytes.len() as u64).saturating_mul(3);
+            if free < need {
+                anyhow::bail!(
+                    "not enough free disk space to install the update ({} free, {} needed)",
+                    crate::app::fmt_bytes(free),
+                    crate::app::fmt_bytes(need)
+                );
+            }
+        }
+    }
     std::fs::write(&new_path, &bytes).context("writing new binary")?;
     #[cfg(unix)]
     {
