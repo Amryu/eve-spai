@@ -220,8 +220,22 @@ fn ensure_tone(name: &str, volume: f32, tone: &Tone) -> Option<PathBuf> {
     if path.is_file() {
         return Some(path);
     }
-    std::fs::write(&path, wav(tone)).ok()?;
+    write_cached(&path, &wav(tone))?;
     Some(path)
+}
+
+/// Temp file then rename. A direct write that failed part way left a truncated WAV that passed the
+/// `is_file` check above forever after, so one full disk permanently broke that alert sound.
+/// Gated on its own result rather than on the disk level: `$TMPDIR` is often a different
+/// filesystem from the data directory.
+fn write_cached(path: &Path, bytes: &[u8]) -> Option<()> {
+    let tmp = path.with_extension("wav.tmp");
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        crate::disk::note_io_error(&e);
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    std::fs::rename(&tmp, path).ok()
 }
 
 /// Bake `volume` into a copy of a custom WAV file and cache it, returning the temp path. Returns
@@ -256,7 +270,7 @@ fn scaled_wav_file(spec: &str, volume: f32) -> Option<PathBuf> {
     }
     let bytes = std::fs::read(spec).ok()?;
     let scaled = scale_wav(&bytes, volume)?;
-    std::fs::write(&path, scaled).ok()?;
+    write_cached(&path, &scaled)?;
     Some(path)
 }
 

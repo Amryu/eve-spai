@@ -168,23 +168,53 @@ fn read_if_fresh(p: &Path) -> Option<Vec<u8>> {
 
 /// Write bytes to `p` atomically (temp file + rename) so a crash never leaves a partial image.
 fn write_atomic(p: &Path, bytes: &[u8]) {
+    if !crate::disk::writes_allowed(crate::disk::Kind::Historic) {
+        return;
+    }
     let tmp = p.with_extension("tmp");
-    if std::fs::write(&tmp, bytes).is_ok() {
-        let _ = std::fs::rename(&tmp, p);
+    match std::fs::write(&tmp, bytes) {
+        Ok(()) => {
+            let _ = std::fs::rename(&tmp, p);
+        }
+        // The partial file used to be left behind, so a full disk made this cache grow rather
+        // than shed, and every orphan then survived pruning for a full TTL on its fresh mtime.
+        Err(e) => {
+            crate::disk::note_io_error(&e);
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+}
+
+/// Under pressure the cache sheds far more aggressively: everything here refetches over the
+/// network, so it is the cheapest space in the profile to give back.
+pub(crate) fn prune_for_level(level: crate::disk::Level) {
+    let ttl = match level {
+        crate::disk::Level::Normal => TTL,
+        _ => Duration::from_secs(3 * 24 * 60 * 60),
+    };
+    if let Ok(dir) = crate::store::data_dir() {
+        prune_with(&dir.join("image_cache"), ttl);
     }
 }
 
 fn prune_old(dir: &Path) {
+    prune_with(dir, TTL);
+}
+
+fn prune_with(dir: &Path, ttl: Duration) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
+        let path = entry.path();
+        // A `.tmp` orphan is a failed write, never a cache hit, so age it out immediately.
+        let is_tmp = path.extension().is_some_and(|e| e == "tmp");
         let stale = entry
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age > TTL);
-        if stale {
-            let _ = std::fs::remove_file(entry.path());
+            .is_some_and(|age| age > ttl);
+        if stale || is_tmp {
+            let _ = std::fs::remove_file(path);
         }
     }
 }

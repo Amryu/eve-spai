@@ -514,6 +514,16 @@ pub struct SpaiApp {
     /// Set when the database can't be opened or written; drives a one-time warning.
     store_error: Option<String>,
     store_warn_dismissed: bool,
+    /// Backoff after a failed settings save, so a full disk is not retried every frame.
+    persist_retry_at: Option<std::time::Instant>,
+    /// Dismissed at this level; cleared when the level worsens. Never persisted: a restart should
+    /// re-warn, and on a full disk the settings write is itself likely to be what is failing.
+    disk_banner_dismissed: Option<crate::disk::Level>,
+    /// Snapshotted once per frame from `disk`'s process-global state, so rendering is a pure
+    /// function of the app and a scene can set what it wants to draw.
+    pub(crate) disk_level: crate::disk::Level,
+    pub(crate) disk_free: Option<u64>,
+    pub(crate) disk_saw_failure: bool,
     kill_cache: crate::kills::KillCache,
     kill_tx: Option<crate::kills::KillSender>,
     lookup_input: String,
@@ -848,6 +858,9 @@ impl SpaiApp {
             let cid = non_empty_or(&settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
             if !headless {
                 crate::esi::spawn_location_poller(cid, player.clone(), ctx.clone());
+                // Its own thread rather than a frame-driven poll: the window minimises to tray
+                // while the kill firehose keeps writing, which is exactly when the disk fills.
+                crate::disk::spawn_monitor(ctx.clone());
             }
         }
 
@@ -1158,6 +1171,11 @@ impl SpaiApp {
             update_dismissed: false,
             store_error,
             store_warn_dismissed: false,
+            persist_retry_at: None,
+            disk_banner_dismissed: None,
+            disk_level: crate::disk::Level::Normal,
+            disk_free: None,
+            disk_saw_failure: false,
             kill_cache,
             kill_tx,
             lookup_input: String::new(),
@@ -6671,7 +6689,12 @@ impl SpaiApp {
             let battles = crate::store::Store::open()
                 .ok()
                 .map(|s| {
-                    let engs = s.load_engagements(0);
+                    // Bounded by the retention window rather than by everything ever stored:
+                    // this used to parse the whole table, hundreds of MB of JSON, in one go, and
+                    // the prune that bounds it runs asynchronously.
+                    let since = chrono::Utc::now().timestamp()
+                        - crate::store::ENGAGEMENT_RETENTION_SECS;
+                    let engs = s.load_engagements(since);
                     let overrides = s.load_battle_overrides();
                     crate::battle::cluster(
                         &engs,
@@ -8107,7 +8130,14 @@ impl SpaiApp {
                 self.needs_save = true;
                 self.battle_break_shared.store(secs, std::sync::atomic::Ordering::Relaxed);
             }
-            if ui.checkbox(&mut self.show_history, "Full history").changed() {
+            if ui
+                .checkbox(&mut self.show_history, "Last 30 days")
+                .on_hover_text(
+                    "EVE Spai keeps 30 days of battle history on disk. Export a battle to JSON to \
+                     keep it longer; Open JSON reads it back.",
+                )
+                .changed()
+            {
                 self.battle_selected = None;
                 if self.show_history {
                     self.load_battle_history(ui.ctx());
@@ -8307,7 +8337,7 @@ impl SpaiApp {
                     fmt_isk(self.settings.min_battle_isk)
                 )
             } else if self.show_history {
-                "No recorded battles yet.".to_owned()
+                "No battles recorded in the last 30 days.".to_owned()
             } else if query.is_empty() {
                 "No active battles near the tracked area.".to_owned()
             } else {
@@ -13597,12 +13627,30 @@ impl SpaiApp {
     }
 
     fn persist(&mut self) {
-        if let Some(store) = &self.store {
-            if let Err(e) = store.save_settings(&self.settings) {
+        // Back off rather than retry every frame: ~90 sites set `needs_save`, `persist_main_geometry`
+        // among them, so a failing save used to become a 60Hz loop of failing writes.
+        if self.persist_retry_at.is_some_and(|t| std::time::Instant::now() < t) {
+            return;
+        }
+        let Some(store) = &self.store else {
+            self.needs_save = false;
+            return;
+        };
+        match store.save_settings(&self.settings) {
+            Ok(()) => {
+                self.persist_retry_at = None;
+                self.needs_save = false;
+            }
+            Err(e) => {
+                // Keep `needs_save` set: clearing it on failure was how settings silently stopped
+                // saving for the rest of a session, reported only to a console a release build
+                // does not have.
                 eprintln!("save settings: {e:#}");
+                self.store_error = Some(format!("settings could not be saved ({e:#})"));
+                self.persist_retry_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
             }
         }
-        self.needs_save = false;
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -13687,6 +13735,15 @@ impl SpaiApp {
                             .weak(),
                         )
                         .on_hover_text("CPU (share of one core) · resident memory");
+                        if self.disk_level != crate::disk::Level::Normal {
+                            if let Some(free) = self.disk_free {
+                                ui.label(
+                                    egui::RichText::new(format!("Disk {}", fmt_bytes(free)))
+                                        .color(crate::theme::standing::WARNING),
+                                )
+                                .on_hover_text("Free space where EVE Spai stores its data");
+                            }
+                        }
                     });
                 });
             });
@@ -14663,6 +14720,7 @@ impl SpaiApp {
         if self.store_warn_dismissed {
             return;
         }
+        let locked = self.store.as_ref().is_some_and(crate::store::Store::settings_locked);
         egui::Window::new(format!("{}  Storage problem", egui_phosphor::regular::WARNING))
             .collapsible(false)
             .resizable(false)
@@ -14673,10 +14731,39 @@ impl SpaiApp {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(&err).weak());
                 ui.add_space(4.0);
-                ui.label(
-                    "This is usually a file-permission issue on the data folder. Check that your \
-                     user can write to it, or reinstall to a writable location.",
-                );
+                // The same failure used to be reported as a permissions problem either way, which
+                // sent anyone with a full disk looking in the wrong place.
+                if self.disk_level == crate::disk::Level::Critical {
+                    ui.label(
+                        "The disk holding the data folder is full. Free some space and restart; \
+                         nothing here is a permission problem.",
+                    );
+                } else {
+                    ui.label(
+                        "This is usually a file-permission issue on the data folder. Check that \
+                         your user can write to it, or reinstall to a writable location.",
+                    );
+                }
+                if locked {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "Your saved settings could not be read, and could not be backed up either, \
+                         so saving now would overwrite the only copy with defaults.",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Keep my old settings").clicked() {
+                            self.store_warn_dismissed = true;
+                        }
+                        if ui.button("Start fresh").clicked() {
+                            if let Some(store) = &self.store {
+                                store.unlock_settings();
+                            }
+                            self.needs_save = true;
+                            self.store_warn_dismissed = true;
+                        }
+                    });
+                    return;
+                }
                 ui.add_space(8.0);
                 if ui.button("Continue anyway").clicked() {
                     self.store_warn_dismissed = true;
@@ -17801,8 +17888,78 @@ impl SpaiApp {
     /// without the poll/side-effect prologue that surrounds it there.
     pub(crate) fn root_chrome(&mut self, ui: &mut egui::Ui) {
         self.top_bar(ui);
+        // Between the two so it spans the full width above the nav rail, and so every view gets
+        // it without any of them knowing about it.
+        self.disk_banner(ui);
         self.status_bar(ui);
         self.nav_rail(ui);
+    }
+
+    /// Low disk space, and whether the archive has already stopped. Rendered from `root_chrome`
+    /// rather than per view, because the news is the same everywhere.
+    pub(crate) fn disk_banner(&mut self, ui: &mut egui::Ui) {
+        let level = self.disk_level;
+        if level == crate::disk::Level::Normal {
+            self.disk_banner_dismissed = None;
+            return;
+        }
+        // A worse level is new news, so a dismissal of the milder one does not cover it.
+        if self.disk_banner_dismissed == Some(level) {
+            return;
+        }
+        let free = self.disk_free.map(fmt_bytes);
+        let warn = crate::theme::standing::WARNING;
+        // No `exact_size`: the wording has to wrap on a narrow window rather than clip.
+        egui::Panel::top("disk_banner").show_inside(ui, |ui| {
+            ui.add_space(4.0);
+            // Headline and reading on one row, the explanation on its own: wrapping a long label
+            // inline beside short ones makes its box span the whole row and cover them.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).color(warn).strong());
+                let headline = match level {
+                    crate::disk::Level::Critical => "Disk almost full.",
+                    _ => "Low disk space.",
+                };
+                ui.label(egui::RichText::new(headline).color(warn).strong());
+                // A number from a poll that has not fired yet would be a worse answer than saying
+                // what actually happened.
+                if self.disk_saw_failure {
+                    ui.label("A save just failed because the disk is full.");
+                } else if let Some(free) = &free {
+                    ui.label(format!("{free} free where EVE Spai stores its data."));
+                }
+            });
+            ui.label(match level {
+                crate::disk::Level::Critical => {
+                    "EVE Spai has stopped recording history (battles, kill details, chat, cached \
+                     images) so it can keep running. Intel and alerts still work normally. \
+                     Recording resumes on its own when space is free."
+                }
+                _ => "Old battle history is being trimmed. Free some space to keep recording.",
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Open data folder").clicked() {
+                    if let Ok(dir) = crate::store::data_dir() {
+                        let _ = open::that(dir);
+                    }
+                }
+                // Critical has no dismiss: it reports a live degradation, and it clears itself.
+                if level == crate::disk::Level::Low && ui.button("Dismiss").clicked() {
+                    self.disk_banner_dismissed = Some(level);
+                }
+            })
+            .response
+            .on_hover_text(match (crate::store::data_dir(), crate::disk::measured_at()) {
+                (Ok(d), Some(at)) => format!(
+                    "Measured at {}, {}s ago",
+                    d.display(),
+                    (chrono::Utc::now().timestamp() - at).max(0)
+                ),
+                (Ok(d), None) => format!("Measured at {}", d.display()),
+                _ => "Could not resolve the data folder".to_owned(),
+            });
+            ui.add_space(4.0);
+        });
     }
 
     /// Every dialog and secondary window, split out of `App::ui` for the same reason as
@@ -17982,6 +18139,9 @@ impl eframe::App for SpaiApp {
         self.settings.theme.apply(&ctx);
 
         self.refresh_characters();
+        self.disk_level = crate::disk::level();
+        self.disk_free = crate::disk::available();
+        self.disk_saw_failure = crate::disk::saw_failure();
         self.player.lock().unwrap().active_name = self.active_character.clone();
         self.maybe_start_watcher(&ctx);
         self.maybe_start_jabber(&ctx);
@@ -20085,6 +20245,16 @@ fn from_you_chip(ui: &mut egui::Ui, from_you: Option<u32>) {
     if let Some(j) = from_you {
         let txt = if j == 0 { "here".to_owned() } else { format!("{j}j") };
         ui.label(egui::RichText::new(format!("{txt:>4}")).monospace().weak());
+    }
+}
+
+/// Free space, in the same shape as `procstat::rss_human` so the two read alike in the status bar.
+pub(crate) fn fmt_bytes(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{mb:.0} MB")
     }
 }
 

@@ -93,9 +93,39 @@ fn load_cache(character_id: i64) -> Option<PilotReport> {
 }
 
 fn save_cache(report: &PilotReport) {
+    if !crate::disk::writes_allowed(crate::disk::Kind::Historic) {
+        return;
+    }
     if let Some(path) = cache_path(report.character_id) {
         if let Ok(json) = serde_json::to_string(report) {
-            let _ = std::fs::write(path, json);
+            if let Err(e) = std::fs::write(&path, json) {
+                // A truncated file parses as nothing forever after, so drop it rather than leave
+                // a permanent cache miss behind.
+                crate::disk::note_io_error(&e);
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// One file per pilot ever looked up, with nothing deleting them until now. Everything here
+/// refetches, so age is the only thing worth keeping them for.
+pub(crate) fn prune_cache(level: crate::disk::Level) {
+    let ttl = match level {
+        crate::disk::Level::Normal => std::time::Duration::from_secs(30 * 24 * 60 * 60),
+        _ => std::time::Duration::from_secs(3 * 24 * 60 * 60),
+    };
+    let Ok(dir) = crate::store::data_dir().map(|d| d.join("lookup")) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > ttl);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
 }

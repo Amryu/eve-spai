@@ -262,6 +262,33 @@ fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The disk-pressure banner over a real view, sized so the top bar, nav rail and status bar are
+/// all in frame: an over-tall banner would displace exactly those.
+fn disk_scene(
+    name: &'static str,
+    level: crate::disk::Level,
+    free: Option<u64>,
+    saw_failure: bool,
+    size: [f32; 2],
+) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Dashboard;
+            a
+        });
+        // Set every frame: `root_chrome` is called directly here, so the per-frame snapshot in
+        // `App::update` never runs.
+        app.disk_level = level;
+        app.disk_free = free;
+        app.disk_saw_failure = saw_failure;
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// 1DQ1-A, where [`intel_bridge_scene`] parks the player.
 const PLAYER_SYS: i64 = 30_004_759;
 
@@ -577,6 +604,36 @@ pub(crate) fn all() -> Vec<Scene> {
         ping_window_scene(
             "ping_window_mixed",
             vec![fixtures::ping_fleet(), fixtures::ping_plain()],
+        ),
+        // UI-038. A gigabyte free is a warning; a quarter of one has already stopped the archive.
+        // The narrow pair proves the wording wraps rather than clipping.
+        disk_scene(
+            "disk_banner_low",
+            crate::disk::Level::Low,
+            Some(780 * 1024 * 1024),
+            false,
+            [1280.0, 800.0],
+        ),
+        disk_scene(
+            "disk_banner_low_narrow",
+            crate::disk::Level::Low,
+            Some(780 * 1024 * 1024),
+            false,
+            [720.0, 600.0],
+        ),
+        disk_scene(
+            "disk_banner_critical",
+            crate::disk::Level::Critical,
+            Some(190 * 1024 * 1024),
+            false,
+            [1280.0, 800.0],
+        ),
+        disk_scene(
+            "disk_banner_critical_after_a_failed_write",
+            crate::disk::Level::Critical,
+            None,
+            true,
+            [1280.0, 800.0],
         ),
         intel_scene("intel_row_typical", fixtures::intel_typical(), 520.0),
         // UI-037. Two badges and two numbers when the nearest alerting character is not the one
@@ -1609,6 +1666,76 @@ fn uitest_alert_window_shows_attribution_sent_over_ipc() {
         "the wire dropped the attribution: {badges:?}"
     );
     assert!(jump_chips(&harness).iter().any(|c| c == "1j"), "the nearest number crossed too");
+}
+
+/// UI-038. The banner has to say the archive stopped, not just that space is low, and it must not
+/// offer a Dismiss for a state that is still degrading the app.
+#[test]
+fn uitest_disk_banner_says_what_stopped_and_cannot_be_dismissed_when_critical() {
+    use egui_kittest::kittest::NodeT as _;
+
+    let text = |name: &str| -> String {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        harness
+            .root()
+            .children_recursive()
+            .map(|node| node.accesskit_node())
+            .filter(|n| !n.is_hidden())
+            .filter_map(|n| n.label().or_else(|| n.value()).map(|l| l.to_owned()))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+
+    let low = text("disk_banner_low");
+    assert!(low.contains("Low disk space"), "{low}");
+    assert!(low.contains("780 MB free"), "the reading is not on screen: {low}");
+    assert!(low.contains("Dismiss"), "a warning with room to act should be dismissible");
+
+    let crit = text("disk_banner_critical");
+    assert!(crit.contains("Disk almost full"), "{crit}");
+    assert!(
+        crit.contains("stopped recording history") && crit.contains("alerts still work"),
+        "the banner must say what stopped and what did not: {crit}"
+    );
+    assert!(
+        !crit.contains("Dismiss"),
+        "a live degradation must not be dismissible, it clears itself: {crit}"
+    );
+
+    // A stale number is a worse answer than what actually happened.
+    let failed = text("disk_banner_critical_after_a_failed_write");
+    assert!(failed.contains("A save just failed"), "{failed}");
+}
+
+/// The banner sits between the top bar and the nav rail, so an over-tall one pushes the status bar
+/// out of the window. Both have to stay in frame at both levels.
+#[test]
+fn uitest_disk_banner_does_not_displace_the_chrome() {
+    use egui_kittest::kittest::NodeT as _;
+
+    for name in ["disk_banner_low", "disk_banner_critical"] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let harness = harness::build(&mut scene, false);
+        let mut seen_status = false;
+        let mut lowest = 0.0f32;
+        for node in harness.root().children_recursive() {
+            let n = node.accesskit_node();
+            if n.is_hidden() {
+                continue;
+            }
+            let label = n.label().or_else(|| n.value()).unwrap_or_default();
+            if let Some(b) = n.bounding_box() {
+                lowest = lowest.max(b.y1 as f32);
+            }
+            // The status bar's own text, which is the thing a tall banner would push off.
+            if label.starts_with("Intel:") {
+                seen_status = true;
+            }
+        }
+        assert!(seen_status, "{name}: the status bar left the window");
+        assert!(lowest <= 800.5, "{name}: content reached {lowest:.1}px in an 800px window");
+    }
 }
 
 /// UI-025: the card's jump distance walked the bridged graph whichever way the setting was set, so
@@ -3340,6 +3467,23 @@ fn uitest_screenshots_char_attribution() {
         "intel_row_two_characters_narrow",
         "intel_row_nearest_is_selected",
         "intel_row_two_characters_bridged",
+    ] {
+        let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
+        let mut harness = harness::build(&mut scene, true);
+        harness::shot(&mut harness, name);
+    }
+}
+
+/// UI-038's before/after: the same low-disk situation with and without anything on screen saying
+/// so. Sized to the whole window, since the point is that the banner does not displace the chrome.
+#[test]
+#[ignore = "renders to target/uishots; run with --ignored"]
+fn uitest_screenshots_disk_banner() {
+    for name in [
+        "disk_banner_low",
+        "disk_banner_low_narrow",
+        "disk_banner_critical",
+        "disk_banner_critical_after_a_failed_write",
     ] {
         let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
         let mut harness = harness::build(&mut scene, true);

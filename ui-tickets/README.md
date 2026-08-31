@@ -45,6 +45,7 @@ after, and any follow-up tickets it spawned.
 | [UI-022 Long chat histories lag, no virtualization plus a per-frame clone](UI-022-chat-history-not-virtualized/) | High | `jabber_conversation_ui` | user | **Fixed** |
 | [UI-020 Always-on-top pin floats over popout content](UI-020-ontop-pin-overlaps-content/) | Medium | `ontop_pin` | user | **Fixed** |
 | [UI-021 Composer should grow to 10 rows, drop Send](UI-021-composer-grows-and-drops-send/) | Medium | composer | user | **Fixed** |
+| [UI-038 A full disk kills the app, with no warning before and no record after](UI-038-no-warning-or-survival-when-the-disk-fills/) | Critical | `store.rs` writes, panic hook | user | **Fixed** |
 | [UI-037 Intel jump distance measured from the selected character, not the one the alert fired on](UI-037-intel-jumps-only-from-the-selected-character/) | High | `intel_row` | user | **Fixed** |
 | [UI-036 Switching chat tabs opens the next conversation at the top of its history](UI-036-chat-scroll-shared-across-tabs/) | High | `jabber_conversation_ui` | user | **Fixed** |
 | [UI-035 Rescue jump-off system ranked by map distance, not jumps](UI-035-rescue-jump-off-ranked-by-lightyears/) | High | `update_rescue_range` | user | **Fixed** |
