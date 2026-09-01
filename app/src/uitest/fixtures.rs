@@ -534,6 +534,7 @@ fn convo(
         group: "Fleet".to_owned(),
         presence,
         status_text: String::new(),
+        in_roster: true,
     }
 }
 
@@ -574,6 +575,35 @@ pub(crate) fn jabber_frame() -> crate::app::JabberFrame {
         inaccessible: Vec::new(),
         subjects: st.room_subjects.clone(),
     }
+}
+
+/// A frame with the sidebar's own subject seeded: a kicked room that is history-only, a room with
+/// a MOTD, a roster contact and a remembered stranger who is not on the roster.
+pub(crate) fn jabber_sidebar_frame() -> crate::app::JabberFrame {
+    let mut f = jabber_frame();
+    f.convos.push(crate::app::Convo {
+        jid: "randomguy@goonfleet.com".to_owned(),
+        name: "Random Guy".to_owned(),
+        unread: false,
+        group: "Other".to_owned(),
+        presence: crate::jabber::Presence::Offline,
+        status_text: String::new(),
+        in_roster: false,
+    });
+    f.convos.push(crate::app::Convo {
+        jid: JABBER_ROOM_QUIET.to_owned(),
+        name: "corp.chat".to_owned(),
+        unread: false,
+        group: "Other".to_owned(),
+        presence: crate::jabber::Presence::Offline,
+        status_text: String::new(),
+        in_roster: false,
+    });
+    let mut dead = channel("ancient.op@conference.goonfleet.com", false, "Op stood down months ago.");
+    dead.inaccessible = true;
+    f.channels.push(dead);
+    f.inaccessible = vec!["ancient.op@conference.goonfleet.com".to_owned()];
+    f
 }
 
 /// One pop-out holding all three conversations, `active` on top. `id` is the window id the scene
