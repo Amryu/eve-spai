@@ -26,13 +26,15 @@ pub struct ShipClass {
 
 // base_ly / fuel_per_ly are the hull attributes before skills; JDC V doubles the range, JFC V
 // halves the fuel. Fatigue role bonus reduces effective distance: black ops 75%, jump freighters
-// / rorquals 90%, other capitals none. Rorqual sits last so saved routes keep their class index.
+// / rorquals 90%, other capitals none. Saved routes store the picker index, so a new class is
+// APPENDED here, never sorted into range order.
 pub const SHIP_CLASSES: &[ShipClass] = &[
     ShipClass { name: "Capital (Dread / Carrier / FAX)", base_ly: 3.5, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
     ShipClass { name: "Supercarrier / Titan", base_ly: 3.0, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
     ShipClass { name: "Black Ops", base_ly: 4.0, fuel_per_ly: 700.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.75 },
     ShipClass { name: "Jump Freighter", base_ly: 5.0, fuel_per_ly: 9400.0, fuel_role_reduction: 0.5, fatigue_role_reduction: 0.9 },
     ShipClass { name: "Rorqual", base_ly: 5.0, fuel_per_ly: 4000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.9 },
+    ShipClass { name: "Command Carrier", base_ly: 3.75, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
 ];
 
 pub fn max_range_ly(class: &ShipClass, jdc: u32) -> f64 {
@@ -247,7 +249,41 @@ mod tests {
     #[test]
     fn maxed_ranges_match_game() {
         let maxed: Vec<f64> = SHIP_CLASSES.iter().map(|c| max_range_ly(c, 5)).collect();
-        assert_eq!(maxed, vec![7.0, 6.0, 8.0, 10.0, 10.0]);
+        assert_eq!(maxed, vec![7.0, 6.0, 8.0, 10.0, 10.0, 7.5]);
+    }
+
+    #[test]
+    fn command_carrier_reaches_where_a_capital_cannot() {
+        let cc = SHIP_CLASSES.iter().find(|c| c.name == "Command Carrier").unwrap();
+        let cap = &SHIP_CLASSES[0];
+        assert_eq!(cc.base_ly, 3.75);
+        assert_eq!(max_range_ly(cc, 5), 7.5);
+        assert_eq!(max_range_ly(cc, 0), 3.75);
+
+        // 7.2 ly is inside a maxed command carrier and outside a maxed capital, so the class is
+        // the difference between a route and no route, not just a different fuel number.
+        let s = vec![sys(1, 0.0, -0.4), sys(2, 7.2, -0.4)];
+        let cap_ly = max_range_ly(cap, 5);
+        let cc_ly = max_range_ly(cc, 5);
+        assert!(shortest_path_pref(&s, cap_ly, 1, 2, &HashSet::new()).is_none());
+        assert_eq!(shortest_path_pref(&s, cc_ly, 1, 2, &HashSet::new()).unwrap(), vec![1, 2]);
+
+        // Carrier fuel and no role bonus: same cost as a capital over the same distance.
+        let path = vec![1, 2];
+        let a = route_cost(&s, &path, cc, 5);
+        let b = route_cost(&s, &path, cap, 5);
+        assert!((a.fuel - b.fuel).abs() < 0.01);
+        assert!((a.final_fatigue_min - b.final_fatigue_min).abs() < 0.01);
+    }
+
+    /// Saved routes store the picker index, so appending is the only safe way to add a class.
+    #[test]
+    fn existing_class_indices_are_stable() {
+        assert_eq!(SHIP_CLASSES[0].name, "Capital (Dread / Carrier / FAX)");
+        assert_eq!(SHIP_CLASSES[1].name, "Supercarrier / Titan");
+        assert_eq!(SHIP_CLASSES[2].name, "Black Ops");
+        assert_eq!(SHIP_CLASSES[3].name, "Jump Freighter");
+        assert_eq!(SHIP_CLASSES[4].name, "Rorqual");
     }
 
     #[test]

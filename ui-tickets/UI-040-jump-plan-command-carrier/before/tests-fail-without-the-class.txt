@@ -1,0 +1,33 @@
+running 8 tests
+test jumproute::tests::existing_class_indices_are_stable ... ok
+test jumproute::tests::command_carrier_reaches_where_a_capital_cannot ... FAILED
+test jumproute::tests::maxed_ranges_match_game ... FAILED
+test jumproute::tests::mechanics_match_game ... ok
+test jumproute::tests::skips_when_in_range ... ok
+test jumproute::tests::hisec_destination_unreachable ... ok
+test jumproute::tests::out_of_range_unreachable ... ok
+test jumproute::tests::straight_line_route ... ok
+
+failures:
+
+---- jumproute::tests::command_carrier_reaches_where_a_capital_cannot stdout ----
+
+thread 'jumproute::tests::command_carrier_reaches_where_a_capital_cannot' (83306) panicked at app/src/jumproute.rs:256:76:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- jumproute::tests::maxed_ranges_match_game stdout ----
+
+thread 'jumproute::tests::maxed_ranges_match_game' (83309) panicked at app/src/jumproute.rs:251:9:
+assertion `left == right` failed
+  left: [7.0, 6.0, 8.0, 10.0, 10.0]
+ right: [7.0, 6.0, 8.0, 10.0, 10.0, 7.5]
+
+
+failures:
+    jumproute::tests::command_carrier_reaches_where_a_capital_cannot
+    jumproute::tests::maxed_ranges_match_game
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 564 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p eve-spai --bin eve-spai`
