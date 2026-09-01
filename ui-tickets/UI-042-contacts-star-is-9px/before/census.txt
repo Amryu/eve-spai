@@ -1,0 +1,2 @@
+    jabber_sidebar_directory   24 hit targets   smallest: 9px  Button "\u{e46a}" at [[113.9 198.5] - [122.9 224.5]]
+                              roles: Button:21 ComboBox:1 Label:20 TextInput:2 TextRun:22 Unknown:2

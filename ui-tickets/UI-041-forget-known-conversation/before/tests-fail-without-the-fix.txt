@@ -1,0 +1,33 @@
+running 6 tests
+test app::jabber_forget_tests::roster_rows_are_not_forgettable_but_remembered_ones_are ... ok
+test app::jabber_forget_tests::forgetting_keeps_the_chat_history ... ok
+test app::jabber_forget_tests::forgetting_a_joined_room_leaves_it ... ok
+test app::jabber_forget_tests::forgetting_a_room_acts_as_if_we_were_never_in_it ... FAILED
+test app::jabber_forget_tests::a_forgotten_dm_comes_back_on_a_new_message ... FAILED
+test app::jabber_forget_tests::a_forgotten_room_comes_back_on_a_force_join ... ok
+
+failures:
+
+---- app::jabber_forget_tests::forgetting_a_room_acts_as_if_we_were_never_in_it stdout ----
+
+thread 'app::jabber_forget_tests::forgetting_a_room_acts_as_if_we_were_never_in_it' (109623) panicked at app/src/app.rs:26328:9:
+assertion `left == right` failed
+  left: []
+ right: ["delve@conference.goonfleet.com"]
+
+---- app::jabber_forget_tests::a_forgotten_dm_comes_back_on_a_new_message stdout ----
+
+thread 'app::jabber_forget_tests::a_forgotten_dm_comes_back_on_a_new_message' (109620) panicked at app/src/app.rs:26365:9:
+assertion `left == right` failed
+  left: []
+ right: ["someguy@goonfleet.com"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::jabber_forget_tests::a_forgotten_dm_comes_back_on_a_new_message
+    app::jabber_forget_tests::forgetting_a_room_acts_as_if_we_were_never_in_it
+
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 542 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p eve-spai --bin eve-spai`
