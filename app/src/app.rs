@@ -483,7 +483,6 @@ pub struct SpaiApp {
     /// Main window's cached (outer, inner) screen rects, for cross-window drop hit-testing.
     jabber_main_rect: Option<(egui::Rect, egui::Rect)>,
     jabber_join_open: bool,
-    jabber_close_room_prompt: Option<(String, ChatWinKey)>,
     pub(crate) jabber_drafts: std::collections::HashMap<String, String>,
     jabber_room_input: String,
     jabber_contact_search: String,
@@ -1147,7 +1146,6 @@ impl SpaiApp {
             jabber_tab_drag: None,
             jabber_main_rect: None,
             jabber_join_open: false,
-            jabber_close_room_prompt: None,
             jabber_drafts: std::collections::HashMap::new(),
             jabber_room_input: String::new(),
             jabber_contact_search: String::new(),
@@ -1750,11 +1748,46 @@ impl SpaiApp {
         ));
     }
 
+    /// The rooms Rescue Mode feeds on, while this build has the feature and the user has it
+    /// enabled: delve911, which `ingest_delve911_jabber` parses into rescue events, and
+    /// skirmish_commanders, which the rescue window reads and posts `!bping` requests to. A left
+    /// room's messages are dropped before they are stored, so losing either one breaks capital
+    /// rescue with no error anywhere. Both are pinned: always joined, never removable.
+    fn jabber_rescue_rooms(&self) -> Vec<String> {
+        #[cfg(feature = "fc-rescue")]
+        if self.settings.fc_rescue_enabled {
+            return [
+                goon_jid(&self.settings.rescue_delve911_jid, "delve911@conference.goonfleet.com"),
+                goon_jid(
+                    &self.settings.rescue_skirmish_jid,
+                    "skirmish_commanders@conference.goonfleet.com",
+                ),
+            ]
+            .into_iter()
+            .filter(|j| !j.is_empty())
+            .collect();
+        }
+        Vec::new()
+    }
+
     /// The rooms we join ourselves on connect. A deliberately left room is never in here; only the
-    /// server can put us back into one.
+    /// server can put us back into one. The pinned rescue room is always in here.
     fn jabber_rooms_to_join(&self) -> Vec<String> {
         let left = &self.settings.jabber_left_rooms;
-        self.settings.jabber_rooms.iter().filter(|r| !left.contains(r)).cloned().collect()
+        let pinned = self.jabber_rescue_rooms();
+        let mut v: Vec<String> = self
+            .settings
+            .jabber_rooms
+            .iter()
+            .filter(|r| !left.contains(r) || pinned.contains(r))
+            .cloned()
+            .collect();
+        for p in pinned {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+        }
+        v
     }
 
     /// MUC service to join and browse rooms on: the explicit setting, else `conference.<account
@@ -2004,14 +2037,6 @@ impl SpaiApp {
                                 .hint_text("directorbot@…"),
                         )
                         .changed();
-                    ui.end_row();
-                    ui.label("Closing a room tab");
-                    ui.horizontal(|ui| {
-                        let v = &mut self.settings.jabber_close_room_leaves;
-                        changed |= ui.selectable_value(v, None, "Ask").changed();
-                        changed |= ui.selectable_value(v, Some(true), "Leave room").changed();
-                        changed |= ui.selectable_value(v, Some(false), "Keep joined").changed();
-                    });
                     ui.end_row();
                 });
                 ui.separator();
@@ -2286,6 +2311,9 @@ impl SpaiApp {
     /// new message brings the whole backlog back; only the listing is suppressed. A joined room is
     /// left on the way out, through the same path as the tab close, so the leave sticks.
     fn jabber_forget(&mut self, jid: &str, is_room: bool) {
+        if self.jabber_rescue_rooms().iter().any(|r| r == jid) {
+            return;
+        }
         if is_room {
             if let Some(tx) = &self.jabber_tx {
                 let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: jid.to_owned() });
@@ -2340,32 +2368,13 @@ impl SpaiApp {
         self.tab_set().detach(jid);
     }
 
-    fn close_jabber_tab(&mut self, jid: &str, is_room: bool, win: ChatWinKey) {
+    /// The X hides, always. Closing a tab is not destructive and does not ask: leaving a room is
+    /// the sidebar's remove button and nothing else. This used to branch on a sticky one-time
+    /// answer, which silently turned every close into a leave, delve911 included.
+    fn close_jabber_tab(&mut self, jid: &str, is_room: bool, _win: ChatWinKey) {
         if is_room {
-            match self.settings.jabber_close_room_leaves {
-                None => {
-                    // First time: ask, then re-run with the saved choice.
-                    self.jabber_close_room_prompt = Some((jid.to_owned(), win));
-                    return;
-                }
-                Some(true) => {
-                    if let Some(tx) = &self.jabber_tx {
-                        let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: jid.to_owned() });
-                    }
-                    self.settings.jabber_rooms.retain(|r| r != jid);
-                    self.settings.jabber_closed_rooms.retain(|r| r != jid);
-                    if !self.settings.jabber_left_rooms.iter().any(|r| r == jid) {
-                        self.settings.jabber_left_rooms.push(jid.to_owned());
-                    }
-                    // Offline the command never reaches a worker, so record it here too: leaving
-                    // must stick whether or not we are connected.
-                    crate::jabber::note_room_left(&self.jabber, jid);
-                }
-                Some(false) => {
-                    if !self.settings.jabber_closed_rooms.iter().any(|r| r == jid) {
-                        self.settings.jabber_closed_rooms.push(jid.to_owned());
-                    }
-                }
+            if !self.settings.jabber_closed_rooms.iter().any(|r| r == jid) {
+                self.settings.jabber_closed_rooms.push(jid.to_owned());
             }
         } else if !self.settings.jabber_closed_dms.iter().any(|d| d == jid) {
             self.settings.jabber_closed_dms.push(jid.to_owned());
@@ -2480,7 +2489,6 @@ impl SpaiApp {
                         egui::CentralPanel::default().show(ctx, |ui| {
                             self.jabber_window_body(ui, win, f, &mut out);
                         });
-                        self.jabber_close_room_dialog(ctx, win);
                     }
                     let sz = ctx.content_rect().size();
                     if sz.x > 100.0 && sz.y > 100.0 {
@@ -2622,50 +2630,6 @@ impl SpaiApp {
         }
     }
 
-    /// The "leave or hide?" confirmation, rendered by the window whose close X raised it.
-    fn jabber_close_room_dialog(&mut self, ctx: &egui::Context, owner: ChatWinKey) {
-        let Some((jid, win)) = self.jabber_close_room_prompt.clone() else {
-            return;
-        };
-        if win != owner {
-            return;
-        }
-        let name = jid.split('@').next().unwrap_or(&jid).to_owned();
-        let mut open = true;
-        let mut dismiss = false;
-        egui::Window::new("Close room tab")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_min_width(300.0);
-                ui.label(format!("Closing the tab for \"{name}\"."));
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Leave the room for good, or keep it joined and just hide the tab? A left room is never rejoined unless you join it again or the server puts you back in. You can change this default later in the Jabber alerts window.",
-                    )
-                    .weak(),
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Leave room").clicked() {
-                        self.settings.jabber_close_room_leaves = Some(true);
-                        self.close_jabber_tab(&jid, true, win);
-                        dismiss = true;
-                    }
-                    if ui.button("Just hide tab").clicked() {
-                        self.settings.jabber_close_room_leaves = Some(false);
-                        self.close_jabber_tab(&jid, true, win);
-                        dismiss = true;
-                    }
-                });
-            });
-        if dismiss || !open {
-            self.jabber_close_room_prompt = None;
-        }
-    }
-
     fn jabber_view(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
         ui.add_space(8.0);
         self.jabber_ui(ui, f);
@@ -2724,6 +2688,7 @@ impl SpaiApp {
         ui.separator();
         let known: std::collections::HashSet<&str> =
             channels.iter().map(|c| c.jid.as_str()).collect();
+        let pinned = self.jabber_rescue_rooms();
         egui::ScrollArea::vertical().id_salt("channels").auto_shrink([false, false]).show(ui, |ui| {
             let w = &mut ui.visuals_mut().widgets;
             w.inactive.bg_stroke = egui::Stroke::NONE;
@@ -2761,7 +2726,8 @@ impl SpaiApp {
                                 .size(8.0),
                         );
                     }
-                    if forget_button(ui, &c.name) {
+                    let blocked = pinned.contains(&c.jid).then_some(PINNED_ROOM_TIP);
+                    if forget_button(ui, &c.name, blocked) {
                         forget = Some(c.jid.clone());
                     }
                     clicked
@@ -3007,6 +2973,24 @@ impl SpaiApp {
     /// per frame and before any window renders. Running it per window would let one window re-add
     /// a tab another one owns.
     fn jabber_reconcile(&mut self, f: &JabberFrame) {
+        // The pinned rescue room may have been left or forgotten before it was pinned, or while
+        // Rescue Mode was off. Undo that even while offline, so the next connect joins it. Hiding
+        // its tab is left alone: that is safe and keeps the room joined.
+        for p in self.jabber_rescue_rooms() {
+            let was = (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len());
+            self.settings.jabber_left_rooms.retain(|r| r != &p);
+            self.settings.jabber_forgotten.retain(|j| j != &p);
+            let mut changed =
+                was != (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len());
+            if !self.settings.jabber_rooms.contains(&p) {
+                self.settings.jabber_rooms.push(p.clone());
+                changed = true;
+            }
+            if changed {
+                self.jabber.lock().unwrap().rooms_left.remove(&p);
+                self.needs_save = true;
+            }
+        }
         if !f.configured || !f.ever_online {
             return;
         }
@@ -3366,6 +3350,7 @@ impl SpaiApp {
                 let accent = ui.visuals().hyperlink_color;
                 let mut toggle_contact: Option<(String, bool)> = None;
                 let mut forget_convo: Option<String> = None;
+                let pinned = self.jabber_rescue_rooms();
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
                     // Roster rows are list items, not chips: a border here is too heavy and would pop
                     // in on hover. Keep the fill highlight, drop the stroke, so nothing shifts.
@@ -3477,7 +3462,8 @@ impl SpaiApp {
                                 }
                                 // Roster rows come from the server and would be back on the next
                                 // push, so only a conversation we remember ourselves can be dropped.
-                                if !c.in_roster && forget_button(ui, &c.name) {
+                                let blocked = pinned.contains(&c.jid).then_some(PINNED_ROOM_TIP);
+                                if !c.in_roster && forget_button(ui, &c.name, blocked) {
                                     forget_convo = Some(c.jid.clone());
                                 }
                                 clicked
@@ -3515,7 +3501,6 @@ impl SpaiApp {
         let mut out: Vec<TabAction> = Vec::new();
         self.jabber_window_body(ui, ChatWinKey::Main, f, &mut out);
         self.jabber_join_dialog(ui.ctx(), &f.convos);
-        self.jabber_close_room_dialog(ui.ctx(), ChatWinKey::Main);
         self.apply_tab_actions(out);
     }
 
@@ -19645,18 +19630,26 @@ fn status_dot(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
 
 /// The sidebar's "remove from the list" affordance. Sized and framed to match the contacts star it
 /// sits beside (UI-019: an icon control is judged against its neighbours, not against a px floor).
-fn forget_button(ui: &mut egui::Ui, name: &str) -> bool {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(egui_phosphor::regular::X_CIRCLE)
-                .color(ui.visuals().weak_text_color()),
-        )
-        .frame(false)
-        // The glyph alone allocates a 13px-wide target against the app's ~27px norm (UI-014).
-        .min_size(egui::vec2(24.0, 24.0)),
+const PINNED_ROOM_TIP: &str = "Rescue Mode needs this channel. Turn Rescue Mode off to remove it. Closing its tab is safe: the room stays joined.";
+
+fn forget_button(ui: &mut egui::Ui, name: &str, blocked: Option<&str>) -> bool {
+    let btn = egui::Button::new(
+        egui::RichText::new(egui_phosphor::regular::X_CIRCLE).color(ui.visuals().weak_text_color()),
     )
-    .on_hover_text(format!("Remove {name} from the list. Chat history is kept."))
-    .clicked()
+    .frame(false)
+    // The glyph alone allocates a 13px-wide target against the app's ~27px norm (UI-014).
+    .min_size(egui::vec2(24.0, 24.0));
+    let resp = ui.add_enabled(blocked.is_none(), btn);
+    match blocked {
+        Some(why) => {
+            resp.on_disabled_hover_text(why);
+            false
+        }
+        None => {
+            resp.on_hover_text(format!("Remove {name} from the list. Chat history is kept."))
+                .clicked()
+        }
+    }
 }
 
 /// A selectable chip whose border is drawn in every state, so hovering doesn't pop a border in and
@@ -26228,13 +26221,31 @@ mod jabber_room_tests {
         assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
     }
 
+    /// The X is not a leave any more: it hides, and the room stays joined.
+    #[test]
+    fn closing_a_room_tab_only_hides_it() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        a.jabber.lock().unwrap().rooms.insert(ROOM.to_owned());
+        a.jabber_tabs = vec![ROOM.to_owned()];
+        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        assert_eq!(a.settings.jabber_closed_rooms, vec![ROOM.to_owned()]);
+        assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()], "the X left the room");
+        assert!(a.settings.jabber_left_rooms.is_empty(), "the X left the room");
+        assert!(a.jabber.lock().unwrap().rooms.contains(ROOM), "the X left the room");
+        assert!(a.jabber_tabs.is_empty());
+        // Still hidden after a reconcile that sees it joined.
+        a.jabber_reconcile(&frame(&[ROOM], &[ROOM], &[]));
+        assert!(a.jabber_tabs.is_empty());
+    }
+
     #[test]
     fn leaving_a_room_is_permanent() {
         let (_ctx, mut a) = app();
         a.settings.jabber_rooms = vec![ROOM.to_owned()];
-        a.settings.jabber_close_room_leaves = Some(true);
         a.jabber_tabs = vec![ROOM.to_owned()];
-        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        // Leaving is the sidebar's remove button now, the only path that leaves.
+        a.jabber_forget(ROOM, true);
         assert_eq!(a.settings.jabber_left_rooms, vec![ROOM.to_owned()]);
         assert!(a.settings.jabber_rooms.is_empty(), "we would rejoin it on the next start");
         assert!(!a.jabber.lock().unwrap().rooms.contains(ROOM));
@@ -26283,8 +26294,7 @@ mod jabber_room_tests {
         let f = a.jabber_frame(false);
         assert!(f.channels.iter().any(|c| c.jid == ROOM));
 
-        a.settings.jabber_close_room_leaves = Some(true);
-        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        a.jabber_forget(ROOM, true);
         let f = a.jabber_frame(false);
         assert!(!f.dm_keys.contains(&ROOM.to_owned()), "left room came back as a DM");
         assert!(!f.channels.iter().any(|c| c.jid == ROOM));
@@ -26503,5 +26513,127 @@ mod eve_time_label_tests {
     #[test]
     fn an_unrepresentable_timestamp_renders_nothing() {
         assert_eq!(eve_time_label(i64::MAX, 0), "");
+    }
+}
+
+#[cfg(all(test, feature = "fc-rescue"))]
+mod jabber_rescue_room_tests {
+    use super::*;
+
+    const RESCUE: &str = "delve911@conference.goonfleet.com";
+    const SKIRMISH: &str = "skirmish_commanders@conference.goonfleet.com";
+    const OTHER: &str = "corp@conference.goonfleet.com";
+
+    fn app(rescue_on: bool) -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.settings.fc_rescue_enabled = rescue_on;
+        (ctx, a)
+    }
+
+    fn frame(rooms: &[&str]) -> JabberFrame {
+        JabberFrame {
+            configured: true,
+            ever_online: true,
+            connected: true,
+            status: String::new(),
+            convos: Vec::new(),
+            pings: Vec::new(),
+            rooms: rooms.iter().map(|s| (*s).to_owned()).collect(),
+            dm_keys: Vec::new(),
+            unread: Default::default(),
+            mentions: Default::default(),
+            pings_unread: false,
+            channels: Vec::new(),
+            inaccessible: Vec::new(),
+            subjects: Default::default(),
+        }
+    }
+
+    #[test]
+    fn rescue_mode_pins_both_rooms() {
+        let (_ctx, a) = app(true);
+        assert_eq!(a.jabber_rescue_rooms(), vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+        // Joined on connect even though nothing put them in jabber_rooms.
+        assert_eq!(a.jabber_rooms_to_join(), vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+    }
+
+    #[test]
+    fn explicit_room_jids_override_the_defaults() {
+        let (_ctx, mut a) = app(true);
+        a.settings.rescue_delve911_jid = "rescue@conference.example.com".to_owned();
+        a.settings.rescue_skirmish_jid = "fc@conference.example.com".to_owned();
+        assert_eq!(
+            a.jabber_rescue_rooms(),
+            vec!["rescue@conference.example.com".to_owned(), "fc@conference.example.com".to_owned()]
+        );
+    }
+
+    #[test]
+    fn nothing_is_pinned_with_rescue_mode_off() {
+        let (_ctx, mut a) = app(false);
+        assert!(a.jabber_rescue_rooms().is_empty());
+        a.settings.jabber_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        a.settings.jabber_left_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        assert!(a.jabber_rooms_to_join().is_empty(), "a left room was joined with rescue off");
+    }
+
+    #[test]
+    fn neither_pinned_room_can_be_forgotten() {
+        for room in [RESCUE, SKIRMISH] {
+            let (_ctx, mut a) = app(true);
+            a.settings.jabber_rooms = vec![room.to_owned()];
+            a.jabber.lock().unwrap().rooms.insert(room.to_owned());
+            a.jabber_forget(room, true);
+            assert!(a.settings.jabber_forgotten.is_empty(), "{room} was forgotten");
+            assert!(a.settings.jabber_left_rooms.is_empty(), "{room} was left");
+            assert_eq!(a.settings.jabber_rooms, vec![room.to_owned()]);
+            assert!(a.jabber.lock().unwrap().rooms.contains(room), "we left {room}");
+        }
+    }
+
+    /// The tab X stays usable on it. Hiding keeps the room joined, so the parser keeps reading.
+    /// The tab X stays usable on them. Hiding keeps the room joined, so the parser keeps reading.
+    #[test]
+    fn a_pinned_room_can_still_be_hidden() {
+        let (_ctx, mut a) = app(true);
+        a.settings.jabber_rooms = vec![RESCUE.to_owned()];
+        a.jabber.lock().unwrap().rooms.insert(RESCUE.to_owned());
+        a.jabber_tabs = vec![RESCUE.to_owned()];
+        a.close_jabber_tab(RESCUE, true, ChatWinKey::Main);
+        assert_eq!(a.settings.jabber_closed_rooms, vec![RESCUE.to_owned()]);
+        assert!(a.jabber.lock().unwrap().rooms.contains(RESCUE));
+        assert!(a.jabber_rooms_to_join().contains(&RESCUE.to_owned()));
+        assert!(a.jabber_tabs.is_empty());
+    }
+
+    /// The reported profile's shape: the room was left or forgotten before it was pinned.
+    #[test]
+    fn previously_left_rescue_rooms_heal_on_reconcile() {
+        let (_ctx, mut a) = app(true);
+        a.settings.jabber_left_rooms =
+            vec![RESCUE.to_owned(), OTHER.to_owned(), SKIRMISH.to_owned()];
+        a.settings.jabber_forgotten = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        a.jabber.lock().unwrap().rooms_left.insert(RESCUE.to_owned());
+
+        a.jabber_reconcile(&frame(&[]));
+
+        assert_eq!(a.settings.jabber_left_rooms, vec![OTHER.to_owned()], "healed the wrong room");
+        assert!(a.settings.jabber_forgotten.is_empty());
+        assert_eq!(a.settings.jabber_rooms, vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+        assert!(!a.jabber.lock().unwrap().rooms_left.contains(RESCUE));
+        assert_eq!(a.jabber_rooms_to_join(), vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+    }
+
+    /// Healing must not depend on being online: the join list has to be right before we connect.
+    #[test]
+    fn healing_happens_while_offline_too() {
+        let (_ctx, mut a) = app(true);
+        a.settings.jabber_left_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        let mut f = frame(&[]);
+        f.configured = false;
+        f.ever_online = false;
+        a.jabber_reconcile(&f);
+        assert!(a.settings.jabber_left_rooms.is_empty());
     }
 }
