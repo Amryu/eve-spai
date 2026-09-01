@@ -1,0 +1,9 @@
+test app::jabber_tab_persist_tests::a_restored_tab_is_not_pruned_on_the_first_frame ... ok
+test app::jabber_tab_persist_tests::a_joined_room_does_not_open_a_tab_by_itself ... FAILED
+test app::jabber_tab_persist_tests::room_traffic_surfaces_a_tab_only_on_a_mention ... FAILED
+test app::jabber_tab_persist_tests::the_tab_bar_is_mirrored_into_settings ... FAILED
+test app::jabber_tab_persist_tests::only_the_previously_open_tabs_come_back ... FAILED
+test app::jabber_tab_persist_tests::a_restored_tab_survives_the_room_being_gone ... ok
+test app::jabber_tab_persist_tests::an_incoming_dm_still_surfaces_a_tab ... ok
+test app::jabber_tab_persist_tests::a_closed_tab_stays_closed_across_a_restart ... ok
+test result: FAILED. 4 passed; 4 failed; 0 ignored; 0 measured; 593 filtered out; finished in 0.02s
