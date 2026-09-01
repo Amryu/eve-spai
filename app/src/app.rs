@@ -1027,6 +1027,8 @@ impl SpaiApp {
         }
 
         let popouts = popouts_from_cfg(&settings.jabber_popout_windows);
+        // Read out before `settings` moves into the struct below.
+        let (main_tabs, main_active) = restored_main_tabs(&settings);
         let mut app = Self {
             store,
             settings,
@@ -1140,8 +1142,8 @@ impl SpaiApp {
             proc_monitor: crate::procstat::Monitor::new(),
             jabber,
             jabber_tx: None,
-            jabber_chat: None,
-            jabber_tabs: Vec::new(),
+            jabber_chat: main_active,
+            jabber_tabs: main_tabs,
             jabber_popouts: popouts,
             jabber_tab_drag: None,
             jabber_main_rect: None,
@@ -2409,6 +2411,16 @@ impl SpaiApp {
             self.settings.jabber_popout_windows = want;
             self.needs_save = true;
         }
+        // The main window's tab bar, on the same terms: pop-outs have always persisted theirs.
+        if self.settings.jabber_main_tabs != self.jabber_tabs {
+            self.settings.jabber_main_tabs = self.jabber_tabs.clone();
+            self.needs_save = true;
+        }
+        let active = self.jabber_chat.clone().unwrap_or_default();
+        if self.settings.jabber_main_active != active {
+            self.settings.jabber_main_active = active;
+            self.needs_save = true;
+        }
     }
 
     /// Should `win` paint a drop-target border? Every window asks this of the shared drag state,
@@ -3022,8 +3034,10 @@ impl SpaiApp {
         let closed_rooms: std::collections::HashSet<String> =
             self.settings.jabber_closed_rooms.iter().cloned().collect();
         let room_set: std::collections::HashSet<&String> = f.rooms.iter().collect();
-        // Tabs that are already open stay open unless they were explicitly closed, whichever
-        // window holds them; joined rooms and DMs with history are added on top.
+        // The open tabs are the ones that are open, restored from settings at startup. Nothing is
+        // added because a room happens to be joined or a DM happens to have history: that rebuilt
+        // the whole tab bar on every start and made the closed-lists the only thing standing
+        // between a conversation and permanent resurrection.
         let mut want: Vec<String> = self
             .tab_set()
             .all_tabs()
@@ -3036,13 +3050,14 @@ impl SpaiApp {
                 }
             })
             .collect();
-        for r in &f.rooms {
-            if !closed_rooms.contains(r) && !want.contains(r) {
-                want.push(r.clone());
-            }
-        }
-        for k in &f.dm_keys {
-            if !closed_dms.contains(k) && !want.contains(k) {
+        // New traffic still surfaces a conversation, or an incoming DM from someone with no tab
+        // would be invisible outside the sidebar. A room needs a mention, a DM needs a message,
+        // and neither reopens something on a closed-list (UI-039).
+        for k in &f.unread {
+            let is_room = room_set.contains(k);
+            let closed = if is_room { closed_rooms.contains(k) } else { closed_dms.contains(k) };
+            let loud = if is_room { f.mentions.contains(k) } else { true };
+            if loud && !closed && !want.contains(k) {
                 want.push(k.clone());
             }
         }
@@ -19327,6 +19342,16 @@ fn popout_cfg(w: &ChatWindow) -> crate::settings::ChatWindowCfg {
     }
 }
 
+/// The main window's tab bar as saved. Split out of `build` so the restore itself is testable
+/// without pointing a test at a real profile on disk. Empty `active` is the Fleet pings
+/// pseudo-tab, which is `None` rather than a tab.
+fn restored_main_tabs(s: &crate::settings::Settings) -> (Vec<String>, Option<String>) {
+    let active = (!s.jabber_main_active.is_empty()).then(|| s.jabber_main_active.clone());
+    // An active tab that is not in the bar would select nothing at all.
+    let active = active.filter(|a| s.jabber_main_tabs.contains(a));
+    (s.jabber_main_tabs.clone(), active)
+}
+
 /// Restore saved pop-out windows: empty ones and duplicate ids are dropped (two windows sharing an
 /// id would share a viewport), and an unknown or blank active tab falls back to the first one.
 fn popouts_from_cfg(cfgs: &[crate::settings::ChatWindowCfg]) -> Vec<ChatWindow> {
@@ -26279,7 +26304,10 @@ mod jabber_room_tests {
         a.jabber_reconcile(&frame(&[ROOM], &[], &[]));
         assert!(a.settings.jabber_left_rooms.is_empty());
         assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
-        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+        // The room is back in the Channels list, but it does not seize a tab: UI-046 leaves the
+        // tab bar to what the user actually opened.
+        assert!(a.jabber_frame(false).channels.iter().any(|c| c.jid == ROOM));
+        assert!(a.jabber_tabs.is_empty());
     }
 
     #[test]
@@ -26445,7 +26473,8 @@ mod jabber_forget_tests {
         assert!(a.settings.jabber_forgotten.is_empty());
         assert!(a.settings.jabber_left_rooms.is_empty());
         assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
-        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+        assert!(a.jabber_frame(false).channels.iter().any(|c| c.jid == ROOM));
+        assert!(a.jabber_tabs.is_empty(), "a force-join opened a tab the user never opened");
     }
 
     /// The button is offered per row, and a roster row must not carry one: the server owns the
@@ -26635,5 +26664,146 @@ mod jabber_rescue_room_tests {
         f.ever_online = false;
         a.jabber_reconcile(&f);
         assert!(a.settings.jabber_left_rooms.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod jabber_tab_persist_tests {
+    use super::*;
+
+    const ROOM: &str = "delve@conference.goonfleet.com";
+    const OTHER: &str = "corp@conference.goonfleet.com";
+    const DM: &str = "someguy@goonfleet.com";
+
+    fn frame(rooms: &[&str], dms: &[&str], unread: &[&str], mentions: &[&str]) -> JabberFrame {
+        JabberFrame {
+            configured: true,
+            ever_online: true,
+            connected: true,
+            status: String::new(),
+            convos: Vec::new(),
+            pings: Vec::new(),
+            rooms: rooms.iter().map(|s| (*s).to_owned()).collect(),
+            dm_keys: dms.iter().map(|s| (*s).to_owned()).collect(),
+            unread: unread.iter().map(|s| (*s).to_owned()).collect(),
+            mentions: mentions.iter().map(|s| (*s).to_owned()).collect(),
+            pings_unread: false,
+            channels: Vec::new(),
+            inaccessible: Vec::new(),
+            subjects: Default::default(),
+        }
+    }
+
+    fn app_with(settings: crate::settings::Settings) -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.settings = settings;
+        // Same call `build` makes, so the helper cannot drift from the real restore.
+        let (tabs, active) = restored_main_tabs(&a.settings);
+        a.jabber_tabs = tabs;
+        a.jabber_chat = active;
+        (ctx, a)
+    }
+
+    /// The headline: five joined rooms and a DM with history, none of them opened by the user.
+    #[test]
+    fn a_joined_room_does_not_open_a_tab_by_itself() {
+        let (_ctx, mut a) = app_with(Default::default());
+        a.jabber_reconcile(&frame(&[ROOM, OTHER], &[DM], &[], &[]));
+        assert!(a.jabber_tabs.is_empty(), "reconcile opened {:?}", a.jabber_tabs);
+    }
+
+    #[test]
+    fn only_the_previously_open_tabs_come_back() {
+        let mut s = crate::settings::Settings::default();
+        s.jabber_main_tabs = vec![ROOM.to_owned()];
+        s.jabber_main_active = ROOM.to_owned();
+        let (_ctx, mut a) = app_with(s);
+        // OTHER and DM are just as reachable, and stay shut.
+        a.jabber_reconcile(&frame(&[ROOM, OTHER], &[DM], &[], &[]));
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+        assert_eq!(a.jabber_chat.as_deref(), Some(ROOM));
+    }
+
+    /// A restored tab must survive the first reconcile, which is where `reconcile_tabs` prunes
+    /// anything not in the wanted set.
+    #[test]
+    fn a_restored_tab_is_not_pruned_on_the_first_frame() {
+        let mut s = crate::settings::Settings::default();
+        s.jabber_main_tabs = vec![ROOM.to_owned(), DM.to_owned()];
+        let (_ctx, mut a) = app_with(s);
+        a.jabber_reconcile(&frame(&[ROOM], &[DM], &[], &[]));
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned(), DM.to_owned()]);
+    }
+
+    /// A room we are no longer in keeps its tab: the history is still readable.
+    #[test]
+    fn a_restored_tab_survives_the_room_being_gone() {
+        let mut s = crate::settings::Settings::default();
+        s.jabber_main_tabs = vec![ROOM.to_owned()];
+        let (_ctx, mut a) = app_with(s);
+        a.jabber_reconcile(&frame(&[], &[], &[], &[]));
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+    }
+
+    #[test]
+    fn a_closed_tab_stays_closed_across_a_restart() {
+        let (_ctx, mut a) = app_with(Default::default());
+        a.jabber_tabs = vec![ROOM.to_owned(), DM.to_owned()];
+        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        a.close_jabber_tab(DM, false, ChatWinKey::Main);
+        a.sync_popout_settings();
+        assert!(a.settings.jabber_main_tabs.is_empty());
+
+        // Restart with exactly those settings.
+        let (_ctx2, mut b) = app_with(a.settings.clone());
+        assert!(b.jabber_tabs.is_empty());
+        b.jabber_reconcile(&frame(&[ROOM], &[DM], &[], &[]));
+        assert!(b.jabber_tabs.is_empty(), "a closed tab came back as {:?}", b.jabber_tabs);
+    }
+
+    #[test]
+    fn an_incoming_dm_still_surfaces_a_tab() {
+        let (_ctx, mut a) = app_with(Default::default());
+        a.jabber_reconcile(&frame(&[], &[DM], &[DM], &[]));
+        assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
+    }
+
+    #[test]
+    fn room_traffic_surfaces_a_tab_only_on_a_mention() {
+        let (_ctx, mut a) = app_with(Default::default());
+        a.jabber_reconcile(&frame(&[ROOM], &[], &[ROOM], &[]));
+        assert!(a.jabber_tabs.is_empty(), "plain room traffic opened a tab");
+        a.jabber_reconcile(&frame(&[ROOM], &[], &[ROOM], &[ROOM]));
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+    }
+
+    #[test]
+    fn the_restore_drops_an_active_tab_that_is_not_in_the_bar() {
+        let mut s = crate::settings::Settings::default();
+        s.jabber_main_tabs = vec![ROOM.to_owned()];
+        s.jabber_main_active = DM.to_owned();
+        assert_eq!(restored_main_tabs(&s), (vec![ROOM.to_owned()], None));
+        s.jabber_main_active = ROOM.to_owned();
+        assert_eq!(restored_main_tabs(&s), (vec![ROOM.to_owned()], Some(ROOM.to_owned())));
+        assert_eq!(
+            restored_main_tabs(&crate::settings::Settings::default()),
+            (Vec::new(), None),
+            "a fresh profile restored something"
+        );
+    }
+
+    #[test]
+    fn the_tab_bar_is_mirrored_into_settings() {
+        let (_ctx, mut a) = app_with(Default::default());
+        a.jabber_tabs = vec![ROOM.to_owned(), DM.to_owned()];
+        a.jabber_chat = Some(DM.to_owned());
+        a.sync_popout_settings();
+        assert_eq!(a.settings.jabber_main_tabs, vec![ROOM.to_owned(), DM.to_owned()]);
+        assert_eq!(a.settings.jabber_main_active, DM);
+        // The Fleet pings pseudo-tab round-trips as an empty string, not as a missing tab.
+        a.jabber_chat = None;
+        a.sync_popout_settings();
+        assert!(a.settings.jabber_main_active.is_empty());
     }
 }

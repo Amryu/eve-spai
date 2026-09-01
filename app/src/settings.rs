@@ -145,6 +145,13 @@ pub struct Settings {
     /// so rejoining or a new message restores the backlog; only the listing is suppressed.
     #[serde(default)]
     pub jabber_forgotten: Vec<String>,
+    /// The main chat window's open tabs and selected tab, so a restart restores the tab bar the
+    /// user left rather than rebuilding it from every room and DM the app knows about. Pop-outs
+    /// keep theirs in `jabber_popout_windows`. Empty `active` means the Fleet pings pseudo-tab.
+    #[serde(default)]
+    pub jabber_main_tabs: Vec<String>,
+    #[serde(default)]
+    pub jabber_main_active: String,
     /// Last-known room MOTD (MUC subject) per room JID, so history-only channels still show it.
     #[serde(default)]
     pub jabber_room_subjects: std::collections::BTreeMap<String, String>,
@@ -826,6 +833,8 @@ impl Default for Settings {
             jabber_closed_rooms: Vec::new(),
             jabber_left_rooms: Vec::new(),
             jabber_forgotten: Vec::new(),
+            jabber_main_tabs: Vec::new(),
+            jabber_main_active: String::new(),
             jabber_inaccessible_rooms: Vec::new(),
             jabber_room_subjects: std::collections::BTreeMap::new(),
             jabber_ping_bot: String::new(),
