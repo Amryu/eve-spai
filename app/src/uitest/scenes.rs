@@ -600,8 +600,28 @@ fn jump_plan_scene(name: &'static str, size: [f32; 2], ship: usize) -> Scene {
     })
 }
 
+/// The chat sidebar, one scene per pane. UI-041 lives on the rows: the Channels pane lists
+/// remembered rooms with their MOTDs, the Directory pane files anything remembered but not on the
+/// roster under "Other", and both now carry a remove button.
+fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], channels: bool) -> Scene {
+    harness::scratch_profile();
+    let f = fixtures::jabber_sidebar_frame();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            a
+        });
+        app.jabber_sidebar_for_test(ui, &f, channels);
+    })
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
+        // UI-041: both panes, because the remove button has to read the same in each.
+        jabber_sidebar_scene("jabber_sidebar_channels", [900.0, 560.0], true),
+        jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
         // UI-040: the class list is the subject, so the panel is sized to show the picker and the
         // range readout that moves with it.
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),

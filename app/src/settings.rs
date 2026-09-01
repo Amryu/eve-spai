@@ -141,6 +141,10 @@ pub struct Settings {
     /// still wins and clears the entry.
     #[serde(default)]
     pub jabber_left_rooms: Vec<String>,
+    /// Rooms and private chats the user removed from the sidebar. Their stored messages are kept,
+    /// so rejoining or a new message restores the backlog; only the listing is suppressed.
+    #[serde(default)]
+    pub jabber_forgotten: Vec<String>,
     /// Last-known room MOTD (MUC subject) per room JID, so history-only channels still show it.
     #[serde(default)]
     pub jabber_room_subjects: std::collections::BTreeMap<String, String>,
@@ -824,6 +828,7 @@ impl Default for Settings {
             jabber_closed_dms: Vec::new(),
             jabber_closed_rooms: Vec::new(),
             jabber_left_rooms: Vec::new(),
+            jabber_forgotten: Vec::new(),
             jabber_inaccessible_rooms: Vec::new(),
             jabber_room_subjects: std::collections::BTreeMap::new(),
             jabber_close_room_leaves: None,

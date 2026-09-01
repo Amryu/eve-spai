@@ -2282,6 +2282,51 @@ impl SpaiApp {
         }
     }
 
+    /// Drop a room or private chat from the sidebar. Stored messages are kept, so rejoining or a
+    /// new message brings the whole backlog back; only the listing is suppressed. A joined room is
+    /// left on the way out, through the same path as the tab close, so the leave sticks.
+    fn jabber_forget(&mut self, jid: &str, is_room: bool) {
+        if is_room {
+            if let Some(tx) = &self.jabber_tx {
+                let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: jid.to_owned() });
+            }
+            crate::jabber::note_room_left(&self.jabber, jid);
+            if !self.settings.jabber_left_rooms.iter().any(|r| r == jid) {
+                self.settings.jabber_left_rooms.push(jid.to_owned());
+            }
+        }
+        self.settings.jabber_rooms.retain(|r| r != jid);
+        self.settings.jabber_closed_rooms.retain(|r| r != jid);
+        self.settings.jabber_closed_dms.retain(|d| d != jid);
+        self.settings.jabber_inaccessible_rooms.retain(|r| r != jid);
+        self.settings.jabber_contacts.retain(|c| c != jid);
+        self.settings.jabber_room_subjects.remove(jid);
+        if !self.settings.jabber_forgotten.iter().any(|j| j == jid) {
+            self.settings.jabber_forgotten.push(jid.to_owned());
+        }
+        {
+            let mut st = self.jabber.lock().unwrap();
+            st.rooms_inaccessible.remove(jid);
+            st.room_subjects.remove(jid);
+            st.unread.remove(jid);
+            st.mentions.remove(jid);
+        }
+        self.remove_jabber_tab(jid);
+        self.jabber_motd_expanded.remove(jid);
+        if self.jabber_chat.as_deref() == Some(jid) {
+            self.jabber_chat = None;
+        }
+        self.needs_save = true;
+    }
+
+    /// Anything that puts a conversation back in front of the user undoes a forget.
+    fn jabber_unforget(&mut self, jid: &str) {
+        if self.settings.jabber_forgotten.iter().any(|j| j == jid) {
+            self.settings.jabber_forgotten.retain(|j| j != jid);
+            self.needs_save = true;
+        }
+    }
+
     /// Rejoining by hand undoes a deliberate leave, in settings and in the live session.
     fn jabber_unleave(&mut self, jid: &str) {
         if self.settings.jabber_left_rooms.iter().any(|r| r == jid) {
@@ -2510,6 +2555,7 @@ impl SpaiApp {
                 }
                 self.settings.jabber_closed_rooms.retain(|r| r != &room);
                 self.jabber_unleave(&room);
+                self.jabber_unforget(&room);
                 self.needs_save = true;
                 self.jabber_open(&room, ChatWinKey::Main);
                 close = true;
@@ -2551,6 +2597,7 @@ impl SpaiApp {
                         self.jabber_dm_input.clear();
                         self.jabber_dm_error.clear();
                         self.settings.jabber_closed_dms.retain(|j| j != &jid);
+                        self.jabber_unforget(&jid);
                         self.needs_save = true;
                         self.jabber_mark_read(&jid);
                         self.jabber_open(&jid, ChatWinKey::Main);
@@ -2636,6 +2683,7 @@ impl SpaiApp {
         let mut open: Option<String> = None;
         let mut toggle_motd: Option<String> = None;
         let mut join: Option<String> = None;
+        let mut forget: Option<String> = None;
         // MUC service to browse: an explicit setting, else the domain of a room we already know,
         // else the convention. Without the last step a user who has joined nothing yet has no known
         // room to take a domain from, so the one button that finds rooms would sit disabled.
@@ -2697,7 +2745,7 @@ impl SpaiApp {
             for c in shown {
                 let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
                 let struck = c.inaccessible && connected;
-                let fit = fit_chars(ui.available_width() - 34.0 - if c.unread { 16.0 } else { 0.0 });
+                let fit = fit_chars(ui.available_width() - 54.0 - if c.unread { 16.0 } else { 0.0 });
                 let mut name = egui::RichText::new(truncate_to(&c.name, fit));
                 if struck {
                     name = name.strikethrough();
@@ -2712,6 +2760,9 @@ impl SpaiApp {
                                 .color(UNREAD_RED)
                                 .size(8.0),
                         );
+                    }
+                    if forget_button(ui, &c.name) {
+                        forget = Some(c.jid.clone());
                     }
                     clicked
                 });
@@ -2808,6 +2859,9 @@ impl SpaiApp {
                 }
             }
         });
+        if let Some(jid) = forget {
+            self.jabber_forget(&jid, true);
+        }
         if let Some(jid) = join {
             if let Some(tx) = &self.jabber_tx {
                 let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: jid.clone() });
@@ -2818,6 +2872,7 @@ impl SpaiApp {
             }
             self.settings.jabber_closed_rooms.retain(|j| j != &jid);
             self.jabber_unleave(&jid);
+            self.jabber_unforget(&jid);
             open = Some(jid);
         }
         if let Some(jid) = toggle_motd {
@@ -2871,9 +2926,12 @@ impl SpaiApp {
                 group: c.groups.first().cloned().unwrap_or_else(|| "Other".to_owned()),
                 presence: c.presence,
                 status_text: c.status_text.clone(),
+                in_roster: true,
             });
         }
-        for jid in st.chats.keys() {
+        let forgotten: std::collections::HashSet<&String> =
+            self.settings.jabber_forgotten.iter().collect();
+        for jid in st.chats.keys().filter(|j| !forgotten.contains(*j)) {
             let pres = st.presences.get(jid).map(|(p, _)| *p).unwrap_or_default();
             set.entry(jid.clone()).or_insert_with(|| Convo {
                 jid: jid.clone(),
@@ -2882,6 +2940,7 @@ impl SpaiApp {
                 group: "Other".to_owned(),
                 presence: pres,
                 status_text: String::new(),
+                in_roster: false,
             });
         }
         for jid in &st.unread {
@@ -2897,6 +2956,7 @@ impl SpaiApp {
             .filter(|k| {
                 !st.rooms.contains(*k)
                     && !st.rooms_left.contains(*k)
+                    && !forgotten.contains(*k)
                     && k.as_str() != crate::jabber::PING_FEED_KEY
                     && valid_bare_jid(k)
             })
@@ -2911,7 +2971,7 @@ impl SpaiApp {
         known.extend(st.rooms.iter());
         known.extend(st.rooms_inaccessible.iter());
         known.remove(&crate::jabber::PING_FEED_KEY.to_owned());
-        known.retain(|j| !st.rooms_left.contains(*j));
+        known.retain(|j| !st.rooms_left.contains(*j) && !forgotten.contains(*j));
         let mut channels: Vec<ChannelRow> = known
             .into_iter()
             .map(|jid| ChannelRow {
@@ -2960,6 +3020,12 @@ impl SpaiApp {
                 self.settings.jabber_closed_dms.remove(p);
                 save = true;
             }
+            // A forgotten conversation is curation, not a mute. A new message outranks it, or
+            // removing a row from the sidebar would silently drop mail.
+            if let Some(p) = self.settings.jabber_forgotten.iter().position(|j| j == k) {
+                self.settings.jabber_forgotten.remove(p);
+                save = true;
+            }
         }
         for k in &f.mentions {
             if let Some(p) = self.settings.jabber_closed_rooms.iter().position(|j| j == k) {
@@ -3004,6 +3070,10 @@ impl SpaiApp {
                 self.settings.jabber_left_rooms.retain(|r| r != rjid);
                 save = true;
             }
+            if self.settings.jabber_forgotten.iter().any(|j| j == rjid) {
+                self.settings.jabber_forgotten.retain(|j| j != rjid);
+                save = true;
+            }
             if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
                 self.settings.jabber_rooms.push(rjid.clone());
                 save = true;
@@ -3019,6 +3089,12 @@ impl SpaiApp {
         if save {
             self.needs_save = true;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn jabber_sidebar_for_test(&mut self, ui: &mut egui::Ui, f: &JabberFrame, channels: bool) {
+        self.jabber_pane = if channels { JabberPane::Channels } else { JabberPane::Directory };
+        self.jabber_ui(ui, f);
     }
 
     fn jabber_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
@@ -3289,6 +3365,7 @@ impl SpaiApp {
                 }
                 let accent = ui.visuals().hyperlink_color;
                 let mut toggle_contact: Option<(String, bool)> = None;
+                let mut forget_convo: Option<String> = None;
                 egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
                     // Roster rows are list items, not chips: a border here is too heavy and would pop
                     // in on hover. Keep the fill highlight, drop the stroke, so nothing shifts.
@@ -3352,7 +3429,12 @@ impl SpaiApp {
                             let (r, g, b) = c.presence.color();
                             let disp = truncate_to(
                                 &c.name,
-                                fit_chars(ui.available_width() - 34.0 - if c.unread { 16.0 } else { 0.0 }),
+                                fit_chars(
+                                    ui.available_width()
+                                        - 34.0
+                                        - if c.in_roster { 0.0 } else { 20.0 }
+                                        - if c.unread { 16.0 } else { 0.0 },
+                                ),
                             );
                             let name = if c.unread {
                                 egui::RichText::new(disp).strong()
@@ -3393,6 +3475,11 @@ impl SpaiApp {
                                 {
                                     toggle_contact = Some((c.jid.clone(), !is_contact));
                                 }
+                                // Roster rows come from the server and would be back on the next
+                                // push, so only a conversation we remember ourselves can be dropped.
+                                if !c.in_roster && forget_button(ui, &c.name) {
+                                    forget_convo = Some(c.jid.clone());
+                                }
                                 clicked
                             });
                             let tip = if c.status_text.is_empty() {
@@ -3418,6 +3505,10 @@ impl SpaiApp {
                         self.settings.jabber_contacts.retain(|j| j != &jid);
                     }
                     self.needs_save = true;
+                }
+                if let Some(jid) = forget_convo {
+                    let is_room = f.rooms.iter().any(|r| r == &jid);
+                    self.jabber_forget(&jid, is_room);
                 }
                 }
             });
@@ -19324,6 +19415,9 @@ pub(crate) struct Convo {
     pub(crate) group: String,
     pub(crate) presence: crate::jabber::Presence,
     pub(crate) status_text: String,
+    /// From the XMPP roster rather than remembered from chat history. The server owns these, so
+    /// forgetting one would only last until the next roster push.
+    pub(crate) in_roster: bool,
 }
 
 pub(crate) struct ChannelRow {
@@ -19545,6 +19639,22 @@ fn status_dot(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
     let d = size * 0.72;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), d / 2.0, color);
+}
+
+/// The sidebar's "remove from the list" affordance. Sized and framed to match the contacts star it
+/// sits beside (UI-019: an icon control is judged against its neighbours, not against a px floor).
+fn forget_button(ui: &mut egui::Ui, name: &str) -> bool {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(egui_phosphor::regular::X_CIRCLE)
+                .color(ui.visuals().weak_text_color()),
+        )
+        .frame(false)
+        // The glyph alone allocates a 13px-wide target against the app's ~27px norm (UI-014).
+        .min_size(egui::vec2(24.0, 24.0)),
+    )
+    .on_hover_text(format!("Remove {name} from the list. Chat history is kept."))
+    .clicked()
 }
 
 /// A selectable chip whose border is drawn in every state, so hovering doesn't pop a border in and
@@ -26176,5 +26286,177 @@ mod jabber_room_tests {
         let f = a.jabber_frame(false);
         assert!(!f.dm_keys.contains(&ROOM.to_owned()), "left room came back as a DM");
         assert!(!f.channels.iter().any(|c| c.jid == ROOM));
+    }
+}
+
+#[cfg(test)]
+mod jabber_forget_tests {
+    use super::*;
+
+    const ROOM: &str = "delve@conference.goonfleet.com";
+    const DM: &str = "someguy@goonfleet.com";
+
+    fn app() -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        let app = SpaiApp::build(&ctx, true);
+        (ctx, app)
+    }
+
+    fn seed_history(a: &SpaiApp, jid: &str) {
+        a.jabber.lock().unwrap().chats.insert(
+            jid.to_owned(),
+            vec![crate::jabber::ChatMsg {
+                from: "someone".to_owned(),
+                body: "hi".to_owned(),
+                time: 0,
+                outgoing: false,
+            }],
+        );
+    }
+
+    #[test]
+    fn forgetting_a_room_acts_as_if_we_were_never_in_it() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        a.settings.jabber_closed_rooms = vec![ROOM.to_owned()];
+        a.settings.jabber_inaccessible_rooms = vec![ROOM.to_owned()];
+        a.settings.jabber_room_subjects.insert(ROOM.to_owned(), "MOTD".to_owned());
+        a.settings.jabber_contacts = vec![ROOM.to_owned()];
+        seed_history(&a, ROOM);
+        {
+            let mut st = a.jabber.lock().unwrap();
+            st.rooms.insert(ROOM.to_owned());
+            st.room_subjects.insert(ROOM.to_owned(), "MOTD".to_owned());
+        }
+        a.jabber_tabs = vec![ROOM.to_owned()];
+        a.jabber_chat = Some(ROOM.to_owned());
+
+        a.jabber_forget(ROOM, true);
+
+        assert!(a.settings.jabber_rooms.is_empty());
+        assert!(a.settings.jabber_closed_rooms.is_empty());
+        assert!(a.settings.jabber_inaccessible_rooms.is_empty());
+        assert!(a.settings.jabber_room_subjects.is_empty(), "the MOTD outlived the room");
+        assert!(a.settings.jabber_contacts.is_empty());
+        assert_eq!(a.settings.jabber_forgotten, vec![ROOM.to_owned()]);
+        assert!(a.jabber_tabs.is_empty());
+        assert_eq!(a.jabber_chat, None);
+
+        // Gone from every list, in both panes.
+        let f = a.jabber_frame(false);
+        assert!(!f.channels.iter().any(|c| c.jid == ROOM));
+        assert!(!f.convos.iter().any(|c| c.jid == ROOM));
+        assert!(!f.dm_keys.contains(&ROOM.to_owned()));
+    }
+
+    /// Removing a channel from the sidebar closes its tab, in whichever window holds it, and the
+    /// pop-out that is left empty goes with it.
+    #[test]
+    fn forgetting_closes_the_tab_in_a_popout_too() {
+        let (_ctx, mut a) = app();
+        a.jabber_tabs = vec![DM.to_owned()];
+        a.jabber_chat = Some(DM.to_owned());
+        a.jabber_popouts = vec![ChatWindow {
+            id: 1,
+            tabs: vec![ROOM.to_owned()],
+            active: Some(ROOM.to_owned()),
+            ..Default::default()
+        }];
+        a.jabber.lock().unwrap().rooms.insert(ROOM.to_owned());
+
+        a.jabber_forget(ROOM, true);
+        assert!(a.jabber_popouts[0].tabs.is_empty());
+        assert_eq!(a.jabber_popouts[0].active, None);
+        // The main window is untouched.
+        assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
+        assert_eq!(a.jabber_chat.as_deref(), Some(DM));
+
+        // reconcile prunes the emptied pop-out and must not resurrect the tab.
+        let mut f = a.jabber_frame(false);
+        f.configured = true;
+        f.ever_online = true;
+        a.jabber_reconcile(&f);
+        assert!(a.jabber_popouts.is_empty(), "an empty pop-out was left on screen");
+        assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
+    }
+
+    #[test]
+    fn forgetting_keeps_the_chat_history() {
+        let (_ctx, mut a) = app();
+        seed_history(&a, ROOM);
+        a.jabber.lock().unwrap().rooms.insert(ROOM.to_owned());
+        a.jabber_forget(ROOM, true);
+        let st = a.jabber.lock().unwrap();
+        assert_eq!(st.chats.get(ROOM).map(Vec::len), Some(1), "history was destroyed");
+    }
+
+    #[test]
+    fn forgetting_a_joined_room_leaves_it() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        a.jabber.lock().unwrap().rooms.insert(ROOM.to_owned());
+        a.jabber_forget(ROOM, true);
+        assert_eq!(a.settings.jabber_left_rooms, vec![ROOM.to_owned()]);
+        assert!(!a.jabber.lock().unwrap().rooms.contains(ROOM));
+        assert!(a.jabber_rooms_to_join().is_empty());
+    }
+
+    #[test]
+    fn a_forgotten_dm_comes_back_on_a_new_message() {
+        let (_ctx, mut a) = app();
+        seed_history(&a, DM);
+        a.jabber_forget(DM, false);
+        assert_eq!(a.settings.jabber_forgotten, vec![DM.to_owned()]);
+
+        let mut f = a.jabber_frame(false);
+        assert!(!f.convos.iter().any(|c| c.jid == DM));
+        // jabber_frame reports the headless app as unconfigured, and reconcile no-ops on that.
+        f.configured = true;
+        f.ever_online = true;
+        f.unread.insert(DM.to_owned());
+        f.dm_keys = vec![DM.to_owned()];
+        a.jabber_reconcile(&f);
+        assert!(a.settings.jabber_forgotten.is_empty(), "a new message was swallowed");
+        assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
+    }
+
+    #[test]
+    fn a_forgotten_room_comes_back_on_a_force_join() {
+        let (_ctx, mut a) = app();
+        a.jabber.lock().unwrap().rooms.insert(ROOM.to_owned());
+        a.jabber_forget(ROOM, true);
+        crate::jabber::note_room_joined(&a.jabber, ROOM);
+        let mut f = a.jabber_frame(false);
+        f.configured = true;
+        f.ever_online = true;
+        a.jabber_reconcile(&f);
+        assert!(a.settings.jabber_forgotten.is_empty());
+        assert!(a.settings.jabber_left_rooms.is_empty());
+        assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+    }
+
+    /// The button is offered per row, and a roster row must not carry one: the server owns the
+    /// roster and would push the contact straight back.
+    #[test]
+    fn roster_rows_are_not_forgettable_but_remembered_ones_are() {
+        let (_ctx, mut a) = app();
+        seed_history(&a, DM);
+        a.jabber.lock().unwrap().roster.insert(
+            "friend@goonfleet.com".to_owned(),
+            crate::jabber::Contact {
+                jid: "friend@goonfleet.com".to_owned(),
+                name: Some("Friend".to_owned()),
+                groups: vec!["Corp".to_owned()],
+                presence: crate::jabber::Presence::default(),
+                status_text: String::new(),
+            },
+        );
+        let f = a.jabber_frame(false);
+        let roster = f.convos.iter().find(|c| c.jid == "friend@goonfleet.com").unwrap();
+        let remembered = f.convos.iter().find(|c| c.jid == DM).unwrap();
+        assert!(roster.in_roster);
+        assert!(!remembered.in_roster);
+        assert_eq!(remembered.group, "Other");
     }
 }
