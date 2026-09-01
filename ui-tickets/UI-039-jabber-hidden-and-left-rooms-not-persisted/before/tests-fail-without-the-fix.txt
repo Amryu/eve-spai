@@ -1,0 +1,46 @@
+running 7 tests
+test app::jabber_room_tests::being_named_in_a_hidden_room_brings_the_tab_back ... ok
+test app::jabber_room_tests::a_server_force_join_overrides_a_leave ... ok
+test app::jabber_room_tests::hidden_room_survives_ordinary_traffic ... FAILED
+test app::jabber_room_tests::leaving_a_room_is_permanent ... FAILED
+test app::jabber_room_tests::a_left_room_is_neither_a_dm_nor_a_channel_row ... FAILED
+test app::jabber_room_tests::a_left_room_is_not_joined_on_the_next_start ... FAILED
+test app::jabber_room_tests::a_closed_dm_still_reopens_on_a_plain_message ... ok
+
+failures:
+
+---- app::jabber_room_tests::hidden_room_survives_ordinary_traffic stdout ----
+
+thread 'app::jabber_room_tests::hidden_room_survives_ordinary_traffic' (68673) panicked at app/src/app.rs:26077:9:
+a message un-hid a room hidden on purpose
+
+---- app::jabber_room_tests::leaving_a_room_is_permanent stdout ----
+
+thread 'app::jabber_room_tests::leaving_a_room_is_permanent' (68674) panicked at app/src/app.rs:26108:9:
+assertion `left == right` failed
+  left: []
+ right: ["delve@conference.goonfleet.com"]
+
+---- app::jabber_room_tests::a_left_room_is_neither_a_dm_nor_a_channel_row stdout ----
+
+thread 'app::jabber_room_tests::a_left_room_is_neither_a_dm_nor_a_channel_row' (68669) panicked at app/src/app.rs:26159:9:
+left room came back as a DM
+
+---- app::jabber_room_tests::a_left_room_is_not_joined_on_the_next_start stdout ----
+
+thread 'app::jabber_room_tests::a_left_room_is_not_joined_on_the_next_start' (68670) panicked at app/src/app.rs:26128:9:
+assertion `left == right` failed
+  left: ["delve@conference.goonfleet.com", "other@conference.x"]
+ right: ["other@conference.x"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::jabber_room_tests::a_left_room_is_neither_a_dm_nor_a_channel_row
+    app::jabber_room_tests::a_left_room_is_not_joined_on_the_next_start
+    app::jabber_room_tests::hidden_room_survives_ordinary_traffic
+    app::jabber_room_tests::leaving_a_room_is_permanent
+
+test result: FAILED. 3 passed; 4 failed; 0 ignored; 0 measured; 533 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p eve-spai --bin eve-spai`

@@ -913,6 +913,7 @@ impl SpaiApp {
             pings: loaded_pings,
             chats: loaded_chats,
             rooms_inaccessible: settings.jabber_inaccessible_rooms.iter().cloned().collect(),
+            rooms_left: settings.jabber_left_rooms.iter().cloned().collect(),
             room_subjects: settings.jabber_room_subjects.clone(),
             ..Default::default()
         }));
@@ -1736,7 +1737,7 @@ impl SpaiApp {
             systems.lookup(t).or_else(|| systems.lookup_prefix(t)).map(|i| i.id)
         });
         let server = self.settings.jabber_server.clone();
-        let rooms = self.settings.jabber_rooms.clone();
+        let rooms = self.jabber_rooms_to_join();
         self.jabber_tx = Some(crate::jabber::spawn(
             jid,
             pw,
@@ -1747,6 +1748,13 @@ impl SpaiApp {
             self.ping_shared.clone(),
             ctx.clone(),
         ));
+    }
+
+    /// The rooms we join ourselves on connect. A deliberately left room is never in here; only the
+    /// server can put us back into one.
+    fn jabber_rooms_to_join(&self) -> Vec<String> {
+        let left = &self.settings.jabber_left_rooms;
+        self.settings.jabber_rooms.iter().filter(|r| !left.contains(r)).cloned().collect()
     }
 
     /// MUC service to join and browse rooms on: the explicit setting, else `conference.<account
@@ -2274,6 +2282,15 @@ impl SpaiApp {
         }
     }
 
+    /// Rejoining by hand undoes a deliberate leave, in settings and in the live session.
+    fn jabber_unleave(&mut self, jid: &str) {
+        if self.settings.jabber_left_rooms.iter().any(|r| r == jid) {
+            self.settings.jabber_left_rooms.retain(|r| r != jid);
+            self.needs_save = true;
+        }
+        self.jabber.lock().unwrap().rooms_left.remove(jid);
+    }
+
     fn remove_jabber_tab(&mut self, jid: &str) {
         self.tab_set().detach(jid);
     }
@@ -2291,6 +2308,13 @@ impl SpaiApp {
                         let _ = tx.send(crate::jabber::Cmd::LeaveRoom { room: jid.to_owned() });
                     }
                     self.settings.jabber_rooms.retain(|r| r != jid);
+                    self.settings.jabber_closed_rooms.retain(|r| r != jid);
+                    if !self.settings.jabber_left_rooms.iter().any(|r| r == jid) {
+                        self.settings.jabber_left_rooms.push(jid.to_owned());
+                    }
+                    // Offline the command never reaches a worker, so record it here too: leaving
+                    // must stick whether or not we are connected.
+                    crate::jabber::note_room_left(&self.jabber, jid);
                 }
                 Some(false) => {
                     if !self.settings.jabber_closed_rooms.iter().any(|r| r == jid) {
@@ -2485,6 +2509,7 @@ impl SpaiApp {
                     self.settings.jabber_rooms.push(room.clone());
                 }
                 self.settings.jabber_closed_rooms.retain(|r| r != &room);
+                self.jabber_unleave(&room);
                 self.needs_save = true;
                 self.jabber_open(&room, ChatWinKey::Main);
                 close = true;
@@ -2571,7 +2596,7 @@ impl SpaiApp {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(
-                        "Leave the room, or keep it joined and just hide the tab? You can change this later in the Jabber alerts window.",
+                        "Leave the room for good, or keep it joined and just hide the tab? A left room is never rejoined unless you join it again or the server puts you back in. You can change this default later in the Jabber alerts window.",
                     )
                     .weak(),
                 );
@@ -2792,6 +2817,7 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             self.settings.jabber_closed_rooms.retain(|j| j != &jid);
+            self.jabber_unleave(&jid);
             open = Some(jid);
         }
         if let Some(jid) = toggle_motd {
@@ -2868,7 +2894,12 @@ impl SpaiApp {
         let dm_keys: Vec<String> = st
             .chats
             .keys()
-            .filter(|k| !st.rooms.contains(*k) && k.as_str() != crate::jabber::PING_FEED_KEY && valid_bare_jid(k))
+            .filter(|k| {
+                !st.rooms.contains(*k)
+                    && !st.rooms_left.contains(*k)
+                    && k.as_str() != crate::jabber::PING_FEED_KEY
+                    && valid_bare_jid(k)
+            })
             .cloned()
             .collect();
         let unread = st.unread.clone();
@@ -2880,6 +2911,7 @@ impl SpaiApp {
         known.extend(st.rooms.iter());
         known.extend(st.rooms_inaccessible.iter());
         known.remove(&crate::jabber::PING_FEED_KEY.to_owned());
+        known.retain(|j| !st.rooms_left.contains(*j));
         let mut channels: Vec<ChannelRow> = known
             .into_iter()
             .map(|jid| ChannelRow {
@@ -2919,12 +2951,17 @@ impl SpaiApp {
             return;
         }
         let mut save = false;
-        // An incoming message (present in `unread`) reopens a conversation whose tab was closed.
+        // An incoming DM (present in `unread`) reopens a conversation whose tab was closed. A
+        // hidden room is deliberately hidden while still joined, so only being named in it is loud
+        // enough to bring the tab back - reopening on ordinary room traffic would undo the hide
+        // within seconds of every reconnect.
         for k in &f.unread {
             if let Some(p) = self.settings.jabber_closed_dms.iter().position(|j| j == k) {
                 self.settings.jabber_closed_dms.remove(p);
                 save = true;
             }
+        }
+        for k in &f.mentions {
             if let Some(p) = self.settings.jabber_closed_rooms.iter().position(|j| j == k) {
                 self.settings.jabber_closed_rooms.remove(p);
                 save = true;
@@ -2960,8 +2997,13 @@ impl SpaiApp {
             }
         }
         // A room the server put us in (bookmark, invite, force-join) is only known to this
-        // session; persist it so we rejoin it ourselves next time.
+        // session; persist it so we rejoin it ourselves next time. Being in `f.rooms` at all means
+        // the server put us back in a room we had left, which overrides the leave.
         for rjid in &f.rooms {
+            if self.settings.jabber_left_rooms.iter().any(|r| r == rjid) {
+                self.settings.jabber_left_rooms.retain(|r| r != rjid);
+                save = true;
+            }
             if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
                 self.settings.jabber_rooms.push(rjid.clone());
                 save = true;
@@ -25999,5 +26041,130 @@ mod char_rings_tests {
         let bridged = Some(fixtures::systems_bridged());
         assert_eq!(min_jumps_from(&bridged, &[DQ], Some(K5), true), Some(1));
         assert_eq!(min_jumps_from(&bridged, &[DQ], Some(K5), false), Some(2), "gates only");
+    }
+}
+
+#[cfg(test)]
+mod jabber_room_tests {
+    use super::*;
+
+    const ROOM: &str = "delve@conference.goonfleet.com";
+    const DM: &str = "someguy@goonfleet.com";
+
+    fn app() -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        let app = SpaiApp::build(&ctx, true);
+        (ctx, app)
+    }
+
+    fn frame(rooms: &[&str], unread: &[&str], mentions: &[&str]) -> JabberFrame {
+        JabberFrame {
+            configured: true,
+            ever_online: true,
+            connected: true,
+            status: String::new(),
+            convos: Vec::new(),
+            pings: Vec::new(),
+            rooms: rooms.iter().map(|s| (*s).to_owned()).collect(),
+            dm_keys: Vec::new(),
+            unread: unread.iter().map(|s| (*s).to_owned()).collect(),
+            mentions: mentions.iter().map(|s| (*s).to_owned()).collect(),
+            pings_unread: false,
+            channels: Vec::new(),
+            inaccessible: Vec::new(),
+            subjects: Default::default(),
+        }
+    }
+
+    #[test]
+    fn hidden_room_survives_ordinary_traffic() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        a.settings.jabber_closed_rooms = vec![ROOM.to_owned()];
+        a.jabber_reconcile(&frame(&[ROOM], &[ROOM], &[]));
+        assert!(a.jabber_tabs.is_empty(), "a message un-hid a room hidden on purpose");
+        assert_eq!(a.settings.jabber_closed_rooms, vec![ROOM.to_owned()]);
+    }
+
+    #[test]
+    fn being_named_in_a_hidden_room_brings_the_tab_back() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        a.settings.jabber_closed_rooms = vec![ROOM.to_owned()];
+        a.jabber_reconcile(&frame(&[ROOM], &[ROOM], &[ROOM]));
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+        assert!(a.settings.jabber_closed_rooms.is_empty());
+    }
+
+    #[test]
+    fn a_closed_dm_still_reopens_on_a_plain_message() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_closed_dms = vec![DM.to_owned()];
+        let mut f = frame(&[], &[DM], &[]);
+        f.dm_keys = vec![DM.to_owned()];
+        a.jabber_reconcile(&f);
+        assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
+    }
+
+    #[test]
+    fn leaving_a_room_is_permanent() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        a.settings.jabber_close_room_leaves = Some(true);
+        a.jabber_tabs = vec![ROOM.to_owned()];
+        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        assert_eq!(a.settings.jabber_left_rooms, vec![ROOM.to_owned()]);
+        assert!(a.settings.jabber_rooms.is_empty(), "we would rejoin it on the next start");
+        assert!(!a.jabber.lock().unwrap().rooms.contains(ROOM));
+
+        // A room message still in flight past the leave must not resurrect it.
+        assert!(!crate::jabber::note_room_seen(&a.jabber, ROOM));
+        assert!(!a.jabber.lock().unwrap().rooms.contains(ROOM));
+
+        // Nor may a reconcile with no live rooms put it back in the join list.
+        a.jabber_reconcile(&frame(&[], &[], &[]));
+        assert!(a.settings.jabber_rooms.is_empty());
+        assert_eq!(a.settings.jabber_left_rooms, vec![ROOM.to_owned()]);
+        assert!(a.jabber_tabs.is_empty());
+    }
+
+    #[test]
+    fn a_left_room_is_not_joined_on_the_next_start() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned(), "other@conference.x".to_owned()];
+        a.settings.jabber_left_rooms = vec![ROOM.to_owned()];
+        assert_eq!(a.jabber_rooms_to_join(), vec!["other@conference.x".to_owned()]);
+    }
+
+    #[test]
+    fn a_server_force_join_overrides_a_leave() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_left_rooms = vec![ROOM.to_owned()];
+        a.jabber.lock().unwrap().rooms_left.insert(ROOM.to_owned());
+        // Self-presence from the MUC: the server put us back in.
+        crate::jabber::note_room_joined(&a.jabber, ROOM);
+        a.jabber_reconcile(&frame(&[ROOM], &[], &[]));
+        assert!(a.settings.jabber_left_rooms.is_empty());
+        assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
+    }
+
+    #[test]
+    fn a_left_room_is_neither_a_dm_nor_a_channel_row() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![ROOM.to_owned()];
+        {
+            let mut st = a.jabber.lock().unwrap();
+            st.chats.insert(ROOM.to_owned(), Vec::new());
+            st.rooms.insert(ROOM.to_owned());
+        }
+        let f = a.jabber_frame(false);
+        assert!(f.channels.iter().any(|c| c.jid == ROOM));
+
+        a.settings.jabber_close_room_leaves = Some(true);
+        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        let f = a.jabber_frame(false);
+        assert!(!f.dm_keys.contains(&ROOM.to_owned()), "left room came back as a DM");
+        assert!(!f.channels.iter().any(|c| c.jid == ROOM));
     }
 }
