@@ -148,9 +148,6 @@ pub struct Settings {
     /// Last-known room MOTD (MUC subject) per room JID, so history-only channels still show it.
     #[serde(default)]
     pub jabber_room_subjects: std::collections::BTreeMap<String, String>,
-    // None = ask on first room-tab close; Some(true) = leave; Some(false) = keep joined, hide tab.
-    #[serde(default)]
-    pub jabber_close_room_leaves: Option<bool>,
     #[serde(default)]
     pub jabber_ping_bot: String,
     #[serde(default)]
@@ -831,7 +828,6 @@ impl Default for Settings {
             jabber_forgotten: Vec::new(),
             jabber_inaccessible_rooms: Vec::new(),
             jabber_room_subjects: std::collections::BTreeMap::new(),
-            jabber_close_room_leaves: None,
             jabber_ping_bot: String::new(),
             jabber_ping_groups: Vec::new(),
             jabber_ping_rules: default_ping_rules(),

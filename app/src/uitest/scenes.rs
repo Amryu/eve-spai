@@ -604,6 +604,15 @@ fn jump_plan_scene(name: &'static str, size: [f32; 2], ship: usize) -> Scene {
 /// remembered rooms with their MOTDs, the Directory pane files anything remembered but not on the
 /// roster under "Other", and both now carry a remove button.
 fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], channels: bool) -> Scene {
+    jabber_sidebar_scene_cfg(name, size, channels, false)
+}
+
+fn jabber_sidebar_scene_cfg(
+    name: &'static str,
+    size: [f32; 2],
+    channels: bool,
+    rescue: bool,
+) -> Scene {
     harness::scratch_profile();
     let f = fixtures::jabber_sidebar_frame();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -611,6 +620,7 @@ fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], channels: bool) -> S
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            a.settings.fc_rescue_enabled = rescue;
             a
         });
         app.jabber_sidebar_for_test(ui, &f, channels);
@@ -848,6 +858,10 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     #[cfg(feature = "fc-rescue")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
+    // UI-045: with Rescue Mode on, delve911's remove button is disabled while every other room
+    // keeps its own. Only meaningful in a build that has the feature.
+    #[cfg(feature = "fc-rescue")]
+    v.push(jabber_sidebar_scene_cfg("jabber_sidebar_rescue_pinned", [900.0, 560.0], true, true));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
     // UI-030: the rule panel's 180px drag minimum, the least room a rule name ever gets.

@@ -599,6 +599,16 @@ pub(crate) fn jabber_sidebar_frame() -> crate::app::JabberFrame {
         status_text: String::new(),
         in_roster: false,
     });
+    f.channels.push(channel(
+        "delve911@conference.goonfleet.com",
+        false,
+        "Capital rescue. Ping with system, ship and status.",
+    ));
+    f.channels.push(channel(
+        "skirmish_commanders@conference.goonfleet.com",
+        false,
+        "FC coordination. !bping <group> to raise a ping.",
+    ));
     let mut dead = channel("ancient.op@conference.goonfleet.com", false, "Op stood down months ago.");
     dead.inaccessible = true;
     f.channels.push(dead);
