@@ -1,0 +1,15 @@
+test app::jabber_force_join_tests::it_opens_once_and_the_close_sticks ... FAILED
+test app::jabber_force_join_tests::enabling_rescue_mode_is_not_a_force_join ... FAILED
+test app::jabber_force_join_tests::an_already_known_room_is_not_a_force_join ... ok
+test app::jabber_force_join_tests::a_force_join_survives_a_stale_hidden_flag ... FAILED
+test app::jabber_rescue_room_tests::healing_happens_while_offline_too ... ok
+test app::jabber_force_join_tests::a_force_join_opens_the_tab ... FAILED
+test app::jabber_force_join_tests::a_hand_joined_room_does_not_double_open ... ok
+test app::jabber_rescue_room_tests::explicit_room_jids_override_the_defaults ... ok
+test app::jabber_rescue_room_tests::the_rescue_rooms_are_open_and_working_end_to_end ... FAILED
+test app::jabber_rescue_room_tests::the_pinned_rooms_cannot_be_closed ... FAILED
+test app::jabber_rescue_room_tests::nothing_is_pinned_with_rescue_mode_off ... ok
+test app::jabber_rescue_room_tests::neither_pinned_room_can_be_forgotten ... ok
+test app::jabber_rescue_room_tests::rescue_mode_pins_both_rooms ... ok
+test app::jabber_rescue_room_tests::previously_left_rescue_rooms_heal_on_reconcile ... ok
+test result: FAILED. 593 passed; 8 failed; 8 ignored; 0 measured; 0 filtered out; finished in 6.66s
