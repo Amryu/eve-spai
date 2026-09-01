@@ -45,6 +45,7 @@ after, and any follow-up tickets it spawned.
 | [UI-022 Long chat histories lag, no virtualization plus a per-frame clone](UI-022-chat-history-not-virtualized/) | High | `jabber_conversation_ui` | user | **Fixed** |
 | [UI-020 Always-on-top pin floats over popout content](UI-020-ontop-pin-overlaps-content/) | Medium | `ontop_pin` | user | **Fixed** |
 | [UI-021 Composer should grow to 10 rows, drop Send](UI-021-composer-grows-and-drops-send/) | Medium | composer | user | **Fixed** |
+| [UI-046 Every joined room and every remembered DM gets a tab on every start](UI-046-tabs-persist-and-reconcile-stops-opening/) | High | `jabber_reconcile`, `SpaiApp::build` | user | **Fixed** |
 | [UI-045 Closing a room tab leaves the channel, and can silently kill Rescue Mode](UI-045-close-hides-and-rescue-room-pinned/) | High | `close_jabber_tab`, `jabber_forget` | user | **Fixed** |
 | [UI-043 Chat timestamps are minute-resolution](UI-043-chat-timestamps-need-seconds/) | Medium | `eve_time_label` | user | **Fixed** |
 | [UI-044 Chat timestamps render at 9.5px](UI-044-chat-timestamp-below-body-size/) | Low | chat timestamp labels | UI-043 | Open |
