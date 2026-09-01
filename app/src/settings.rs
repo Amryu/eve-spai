@@ -1501,3 +1501,69 @@ mod battle_filter_tests {
         assert!(!located.is_broad());
     }
 }
+
+/// The tab bar is persisted through `Store::save_settings` / `load_settings`, which are a plain
+/// `serde_json` round-trip. These cover that link without pointing a test at a profile on disk.
+#[cfg(test)]
+mod tab_persistence_tests {
+    use super::*;
+
+    const ROOM: &str = "delve@conference.goonfleet.com";
+    const DM: &str = "someguy@goonfleet.com";
+
+    fn round_trip(s: &Settings) -> Settings {
+        serde_json::from_str(&serde_json::to_string(s).expect("serialize")).expect("deserialize")
+    }
+
+    #[test]
+    fn the_open_tabs_survive_a_save_and_load() {
+        let mut s = Settings::default();
+        s.jabber_main_tabs = vec![ROOM.to_owned(), DM.to_owned()];
+        s.jabber_main_active = DM.to_owned();
+        let back = round_trip(&s);
+        assert_eq!(back.jabber_main_tabs, vec![ROOM.to_owned(), DM.to_owned()]);
+        assert_eq!(back.jabber_main_active, DM);
+    }
+
+    #[test]
+    fn a_config_written_before_the_feature_still_loads() {
+        let s: Settings = serde_json::from_str(r#"{"jabber_rooms":["a@conference.x"]}"#)
+            .expect("an older config must not fail the parse");
+        assert!(s.jabber_main_tabs.is_empty());
+        assert!(s.jabber_main_active.is_empty());
+        assert_eq!(s.jabber_rooms, vec!["a@conference.x".to_owned()]);
+    }
+
+    /// UI-045 removed `jabber_close_room_leaves`. An unknown key must be ignored, not fail the
+    /// whole parse: `load_settings` falls back to defaults on a parse error, which would reset
+    /// every setting the user has.
+    #[test]
+    fn a_config_carrying_the_removed_key_still_loads() {
+        let s: Settings = serde_json::from_str(
+            r#"{"jabber_close_room_leaves":true,"jabber_rooms":["a@conference.x"]}"#,
+        )
+        .expect("a dropped field must not fail the parse");
+        assert_eq!(s.jabber_rooms, vec!["a@conference.x".to_owned()]);
+    }
+
+    /// Every list this session added, together, so none of them is the one that silently resets.
+    /// Field by field, not whole-struct: some UI-transient flags are deliberately not persisted
+    /// (`BattleRule::expanded` among them) and would fail an equality check for the wrong reason.
+    #[test]
+    fn the_jabber_lists_all_round_trip() {
+        let mut s = Settings::default();
+        s.jabber_closed_rooms = vec!["a".to_owned()];
+        s.jabber_closed_dms = vec!["b".to_owned()];
+        s.jabber_left_rooms = vec!["c".to_owned()];
+        s.jabber_forgotten = vec!["d".to_owned()];
+        s.jabber_main_tabs = vec!["e".to_owned()];
+        s.jabber_main_active = "e".to_owned();
+        let b = round_trip(&s);
+        assert_eq!(b.jabber_closed_rooms, s.jabber_closed_rooms);
+        assert_eq!(b.jabber_closed_dms, s.jabber_closed_dms);
+        assert_eq!(b.jabber_left_rooms, s.jabber_left_rooms);
+        assert_eq!(b.jabber_forgotten, s.jabber_forgotten);
+        assert_eq!(b.jabber_main_tabs, s.jabber_main_tabs);
+        assert_eq!(b.jabber_main_active, s.jabber_main_active);
+    }
+}
