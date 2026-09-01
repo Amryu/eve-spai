@@ -261,6 +261,9 @@ pub struct JabberState {
     /// Rooms we were joined to and then left/kicked while online. Rendered struck-through in the
     /// channel list; a clean connection drop fires no RoomLeft, so a full outage never lands here.
     pub rooms_inaccessible: std::collections::BTreeSet<String>,
+    /// Rooms the user deliberately left. Nothing here is ever auto-joined or resurrected by a
+    /// straggling room message; only a real `RoomJoined` (a server force-join) clears an entry.
+    pub rooms_left: std::collections::BTreeSet<String>,
     /// Room MOTD (MUC subject) keyed by room bare JID, last-known value.
     pub room_subjects: std::collections::BTreeMap<String, String>,
     /// disco#items browse of the MUC service, with per-room join access.
@@ -407,6 +410,36 @@ fn push_ping_window(ping_shared: &crate::app::SharedPingWindow, ctx: &egui::Cont
     // Wake the root so `fleet_ping_window_ui` runs and forwards the new ping over IPC. (Harmless
     // when running the in-process fallback.)
     ctx.request_repaint();
+}
+
+/// Self-presence from the MUC proves we are in the room, so a server force-join, bookmark join or
+/// invite overrides an earlier deliberate leave.
+pub(crate) fn note_room_joined(state: &SharedJabber, room: &str) {
+    let mut s = state.lock().unwrap();
+    s.rooms_inaccessible.remove(room);
+    s.rooms_left.remove(room);
+    s.rooms.insert(room.to_owned());
+}
+
+/// A room the server force-joined us into never raised `RoomJoined`; without this it is not in
+/// `rooms` and the UI files its history under DMs. Returns false for a room we deliberately left,
+/// where the same rule would let a message still in flight past the leave resurrect it.
+pub(crate) fn note_room_seen(state: &SharedJabber, room: &str) -> bool {
+    let mut s = state.lock().unwrap();
+    if s.rooms_left.contains(room) {
+        return false;
+    }
+    s.rooms_inaccessible.remove(room);
+    s.rooms.insert(room.to_owned());
+    true
+}
+
+/// Leaving is permanent until the user rejoins or the server puts us back in.
+pub(crate) fn note_room_left(state: &SharedJabber, room: &str) {
+    let mut s = state.lock().unwrap();
+    s.rooms.remove(room);
+    s.rooms_inaccessible.remove(room);
+    s.rooms_left.insert(room.to_owned());
 }
 
 fn push_msg(
@@ -785,12 +818,14 @@ async fn session(
                 Cmd::JoinRoom { room } => {
                     if let Ok(r) = room.parse::<BareJid>() {
                         agent.join_room(JoinRoomSettings::new(r)).await;
+                        state.lock().unwrap().rooms_left.remove(&room);
                         joined_edits.push((room, true));
                     }
                 }
                 Cmd::LeaveRoom { room } => {
                     if let Ok(r) = room.parse::<BareJid>() {
                         agent.leave_room(LeaveRoomSettings::new(r)).await;
+                        note_room_left(state, &room);
                         joined_edits.push((room, false));
                     }
                 }
@@ -1002,10 +1037,7 @@ fn handle_event(
         }
         Event::RoomJoined(room) => {
             eprintln!("[jabber] room joined: {room}");
-            let mut s = state.lock().unwrap();
-            let room = room.to_string();
-            s.rooms_inaccessible.remove(&room);
-            s.rooms.insert(room);
+            note_room_joined(state, &room.to_string());
         }
         Event::RoomLeft(room) => {
             eprintln!("[jabber] room left: {room}");
@@ -1100,12 +1132,8 @@ fn handle_event(
                 .map(|d| d.stamp.0.timestamp())
                 .unwrap_or(now);
             let room = room.to_string();
-            // A room the server force-joined us into never raised RoomJoined; without this it is not
-            // in `rooms` and the UI files it under DMs.
-            {
-                let mut s = state.lock().unwrap();
-                s.rooms_inaccessible.remove(&room);
-                s.rooms.insert(room.clone());
+            if !note_room_seen(state, &room) {
+                return false;
             }
             // Our own reflected message (MUC echoes it back under our nick): store it but never
             // notify/sound for it.

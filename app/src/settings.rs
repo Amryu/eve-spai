@@ -137,6 +137,10 @@ pub struct Settings {
     /// Rooms left/kicked while online, kept struck-through in the channel list across restarts.
     #[serde(default)]
     pub jabber_inaccessible_rooms: Vec<String>,
+    /// Rooms the user deliberately left. We never rejoin these ourselves; a server-side force-join
+    /// still wins and clears the entry.
+    #[serde(default)]
+    pub jabber_left_rooms: Vec<String>,
     /// Last-known room MOTD (MUC subject) per room JID, so history-only channels still show it.
     #[serde(default)]
     pub jabber_room_subjects: std::collections::BTreeMap<String, String>,
@@ -819,6 +823,7 @@ impl Default for Settings {
             jabber_contacts: Vec::new(),
             jabber_closed_dms: Vec::new(),
             jabber_closed_rooms: Vec::new(),
+            jabber_left_rooms: Vec::new(),
             jabber_inaccessible_rooms: Vec::new(),
             jabber_room_subjects: std::collections::BTreeMap::new(),
             jabber_close_room_leaves: None,
