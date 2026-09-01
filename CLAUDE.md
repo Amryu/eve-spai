@@ -159,6 +159,15 @@ background threads, the tray and the overlay subprocess, and refuses to open a s
 `EVE_SPAI_DATA_DIR` is set. Headless also disables the workers that populate views, so
 async-populated views show permanent loading states.
 
+**Never render real data. Every scene uses fixtures, never the live profile.** Screenshots get
+committed to `ui-tickets/*/before|after/` and pushed to a public repo, and alliance chat is
+operational information: room names, contact JIDs, fleet pings and intel must not leave the
+machine in a PNG. `harness::build` and `harness::shot` both call `assert_no_live_profile`, which
+fails the test unless `EVE_SPAI_DATA_DIR` (and `store::data_dir()` through it) resolves to
+`target/uitest-profile`. Do not weaken that guard to "just get a real-looking screenshot", and do
+not paste real chat into a fixture; write plausible fake traffic instead. If a render needs data
+the fixtures do not have, add it to `fixtures.rs`.
+
 ## UI issue workflow
 
 UI defects go through the `ui-tickets` skill: `.claude/skills/ui-tickets/SKILL.md`. Read it before

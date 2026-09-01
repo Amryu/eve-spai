@@ -19445,10 +19445,12 @@ fn eve_time_label(ts: i64, now: i64) -> String {
         return String::new();
     };
     let n = Utc.timestamp_opt(now, 0).single().unwrap_or(t);
+    // Seconds, not minutes: intel and rescue traffic is ordered and read back at that resolution,
+    // and two reports half a minute apart must not stamp identically.
     if t.year() == n.year() && t.ordinal() == n.ordinal() {
-        format!("EVE {}", t.format("%H:%M"))
+        format!("EVE {}", t.format("%H:%M:%S"))
     } else {
-        format!("EVE {}", t.format("%Y/%m/%d %H:%M"))
+        format!("EVE {}", t.format("%Y/%m/%d %H:%M:%S"))
     }
 }
 
@@ -26458,5 +26460,48 @@ mod jabber_forget_tests {
         assert!(roster.in_roster);
         assert!(!remembered.in_roster);
         assert_eq!(remembered.group, "Other");
+    }
+}
+
+#[cfg(test)]
+mod eve_time_label_tests {
+    use super::*;
+
+    const DAY: i64 = 86_400;
+
+    #[test]
+    fn same_day_carries_seconds() {
+        // 2026-09-01 12:02:35 UTC
+        let ts = 1_788_264_155;
+        assert_eq!(eve_time_label(ts, ts), "EVE 12:02:35");
+    }
+
+    #[test]
+    fn an_older_message_keeps_its_date_and_gains_seconds() {
+        let ts = 1_788_264_155;
+        assert_eq!(eve_time_label(ts, ts + DAY), "EVE 2026/09/01 12:02:35");
+    }
+
+    /// The whole point: two messages inside the same minute must read differently. +10s, not +30,
+    /// because 12:02:35 + 30 lands in 12:03 and the old format would have passed this vacuously.
+    #[test]
+    fn two_messages_in_one_minute_are_distinguishable() {
+        let ts = 1_788_264_155;
+        let a = eve_time_label(ts, ts);
+        let b = eve_time_label(ts + 10, ts);
+        assert!(a.starts_with("EVE 12:02:") && b.starts_with("EVE 12:02:"), "{a} / {b} not one minute");
+        assert_ne!(a, b, "{a} and {b} stamp identically");
+    }
+
+    /// Both windows read the same helper, so neither can drift.
+    #[test]
+    fn the_jabber_and_rescue_windows_share_one_format() {
+        let ts = 1_788_264_155;
+        assert_eq!(eve_time_label(ts, ts).matches(':').count(), 2);
+    }
+
+    #[test]
+    fn an_unrepresentable_timestamp_renders_nothing() {
+        assert_eq!(eve_time_label(i64::MAX, 0), "");
     }
 }

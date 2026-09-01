@@ -1,0 +1,40 @@
+running 5 tests
+test app::eve_time_label_tests::an_unrepresentable_timestamp_renders_nothing ... ok
+test app::eve_time_label_tests::two_messages_in_one_minute_are_distinguishable ... ok
+test app::eve_time_label_tests::same_day_carries_seconds ... FAILED
+test app::eve_time_label_tests::the_jabber_and_rescue_windows_share_one_format ... FAILED
+test app::eve_time_label_tests::an_older_message_keeps_its_date_and_gains_seconds ... FAILED
+
+failures:
+
+---- app::eve_time_label_tests::same_day_carries_seconds stdout ----
+
+thread 'app::eve_time_label_tests::same_day_carries_seconds' (133198) panicked at app/src/app.rs:26476:9:
+assertion `left == right` failed
+  left: "EVE 12:02"
+ right: "EVE 12:02:35"
+
+---- app::eve_time_label_tests::the_jabber_and_rescue_windows_share_one_format stdout ----
+
+thread 'app::eve_time_label_tests::the_jabber_and_rescue_windows_share_one_format' (133199) panicked at app/src/app.rs:26498:9:
+assertion `left == right` failed
+  left: 1
+ right: 2
+
+---- app::eve_time_label_tests::an_older_message_keeps_its_date_and_gains_seconds stdout ----
+
+thread 'app::eve_time_label_tests::an_older_message_keeps_its_date_and_gains_seconds' (133196) panicked at app/src/app.rs:26482:9:
+assertion `left == right` failed
+  left: "EVE 2026/09/01 12:02"
+ right: "EVE 2026/09/01 12:02:35"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    app::eve_time_label_tests::an_older_message_keeps_its_date_and_gains_seconds
+    app::eve_time_label_tests::same_day_carries_seconds
+    app::eve_time_label_tests::the_jabber_and_rescue_windows_share_one_format
+
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 579 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p eve-spai --bin eve-spai`
