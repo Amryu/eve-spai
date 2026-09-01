@@ -1,0 +1,9 @@
+test app::jabber_rescue_room_tests::rescue_mode_pins_the_default_room ... FAILED
+test app::jabber_rescue_room_tests::healing_happens_while_offline_too ... FAILED
+test app::jabber_rescue_room_tests::nothing_is_pinned_with_rescue_mode_off ... ok
+test app::jabber_rescue_room_tests::the_pinned_room_cannot_be_forgotten ... FAILED
+test app::jabber_rescue_room_tests::a_previously_left_rescue_room_heals_on_reconcile ... FAILED
+test app::jabber_rescue_room_tests::an_explicit_room_jid_overrides_the_default ... FAILED
+test app::jabber_rescue_room_tests::the_pinned_room_can_still_be_hidden ... FAILED
+test app::jabber_room_tests::closing_a_room_tab_only_hides_it ... FAILED
+test result: FAILED. 578 passed; 7 failed; 8 ignored; 0 measured; 0 filtered out; finished in 6.88s
