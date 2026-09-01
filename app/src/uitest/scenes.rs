@@ -584,8 +584,28 @@ fn dialog_scene(
     })
 }
 
+/// The Jump Plan panel with the ship picker open, which is the only place the class list is
+/// visible. `jump_plan_content` is private, so the scene drives the panel through `jump_plan_ui`
+/// and clicks the combo open in the interaction test rather than here.
+fn jump_plan_scene(name: &'static str, size: [f32; 2], ship: usize) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.seed_jump_ship(ship);
+            a
+        });
+        app.jump_plan_ui(ui);
+    })
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
+        // UI-040: the class list is the subject, so the panel is sized to show the picker and the
+        // range readout that moves with it.
+        jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
+        jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
         alert_window_scene(
             "alert_window_torture",

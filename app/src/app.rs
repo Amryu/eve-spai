@@ -12085,6 +12085,16 @@ impl SpaiApp {
         self.jump_alt.dedup();
     }
 
+    #[cfg(test)]
+    pub(crate) fn jump_plan_ui(&mut self, ui: &mut egui::Ui) {
+        self.jump_plan_content(ui);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_jump_ship(&mut self, ship: usize) {
+        self.jump_ship = ship;
+    }
+
     fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
