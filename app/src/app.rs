@@ -2374,6 +2374,10 @@ impl SpaiApp {
     /// the sidebar's remove button and nothing else. This used to branch on a sticky one-time
     /// answer, which silently turned every close into a leave, delve911 included.
     fn close_jabber_tab(&mut self, jid: &str, is_room: bool, _win: ChatWinKey) {
+        // Rescue Mode holds its rooms open, so closing one would reopen on the next frame.
+        if self.jabber_rescue_rooms().iter().any(|r| r == jid) {
+            return;
+        }
         if is_room {
             if !self.settings.jabber_closed_rooms.iter().any(|r| r == jid) {
                 self.settings.jabber_closed_rooms.push(jid.to_owned());
@@ -2990,10 +2994,14 @@ impl SpaiApp {
         // its tab is left alone: that is safe and keeps the room joined.
         for p in self.jabber_rescue_rooms() {
             let was = (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len());
+            let was_closed = self.settings.jabber_closed_rooms.len();
             self.settings.jabber_left_rooms.retain(|r| r != &p);
             self.settings.jabber_forgotten.retain(|j| j != &p);
+            // Held open, so a hidden flag on one is state nothing can act on.
+            self.settings.jabber_closed_rooms.retain(|r| r != &p);
             let mut changed =
-                was != (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len());
+                was != (self.settings.jabber_left_rooms.len(), self.settings.jabber_forgotten.len())
+                    || was_closed != self.settings.jabber_closed_rooms.len();
             if !self.settings.jabber_rooms.contains(&p) {
                 self.settings.jabber_rooms.push(p.clone());
                 changed = true;
@@ -3029,6 +3037,30 @@ impl SpaiApp {
                 save = true;
             }
         }
+        // A room the server put us in (bookmark, invite, force-join) is only known to this
+        // session; persist it so we rejoin it ourselves next time. Being in `f.rooms` at all means
+        // the server put us back in a room we had left, which overrides the leave.
+        let mut force_joined: Vec<String> = Vec::new();
+        for rjid in &f.rooms {
+            if self.settings.jabber_left_rooms.iter().any(|r| r == rjid) {
+                self.settings.jabber_left_rooms.retain(|r| r != rjid);
+                save = true;
+            }
+            if self.settings.jabber_forgotten.iter().any(|j| j == rjid) {
+                self.settings.jabber_forgotten.retain(|j| j != rjid);
+                save = true;
+            }
+            if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
+                self.settings.jabber_rooms.push(rjid.clone());
+                // First sight of a room we never asked to be in. Open it once so it is not just a
+                // new sidebar row, then it is an ordinary room. This branch cannot fire twice: the
+                // next frame finds it in `jabber_rooms`. Hand-joins never reach here, they are put
+                // in `jabber_rooms` before the join lands.
+                self.settings.jabber_closed_rooms.retain(|r| r != rjid);
+                force_joined.push(rjid.clone());
+                save = true;
+            }
+        }
         let closed_dms: std::collections::HashSet<String> =
             self.settings.jabber_closed_dms.iter().cloned().collect();
         let closed_rooms: std::collections::HashSet<String> =
@@ -3061,21 +3093,16 @@ impl SpaiApp {
                 want.push(k.clone());
             }
         }
-        // A room the server put us in (bookmark, invite, force-join) is only known to this
-        // session; persist it so we rejoin it ourselves next time. Being in `f.rooms` at all means
-        // the server put us back in a room we had left, which overrides the leave.
-        for rjid in &f.rooms {
-            if self.settings.jabber_left_rooms.iter().any(|r| r == rjid) {
-                self.settings.jabber_left_rooms.retain(|r| r != rjid);
-                save = true;
+        for r in force_joined {
+            if !want.contains(&r) {
+                want.push(r);
             }
-            if self.settings.jabber_forgotten.iter().any(|j| j == rjid) {
-                self.settings.jabber_forgotten.retain(|j| j != rjid);
-                save = true;
-            }
-            if !self.settings.jabber_rooms.iter().any(|r| r == rjid) {
-                self.settings.jabber_rooms.push(rjid.clone());
-                save = true;
+        }
+        // Rescue Mode's rooms are held open, not just joined. The FC has to be able to see
+        // delve911 and skirmish_commanders without going looking for them.
+        for p in self.jabber_rescue_rooms() {
+            if !want.contains(&p) {
+                want.push(p);
             }
         }
         let mut t = self.tab_set();
@@ -26304,10 +26331,9 @@ mod jabber_room_tests {
         a.jabber_reconcile(&frame(&[ROOM], &[], &[]));
         assert!(a.settings.jabber_left_rooms.is_empty());
         assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
-        // The room is back in the Channels list, but it does not seize a tab: UI-046 leaves the
-        // tab bar to what the user actually opened.
         assert!(a.jabber_frame(false).channels.iter().any(|c| c.jid == ROOM));
-        assert!(a.jabber_tabs.is_empty());
+        // First sight of a server-driven join opens the tab once (UI-047).
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
     }
 
     #[test]
@@ -26474,7 +26500,7 @@ mod jabber_forget_tests {
         assert!(a.settings.jabber_left_rooms.is_empty());
         assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
         assert!(a.jabber_frame(false).channels.iter().any(|c| c.jid == ROOM));
-        assert!(a.jabber_tabs.is_empty(), "a force-join opened a tab the user never opened");
+        assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()], "a force-join did not surface");
     }
 
     /// The button is offered per row, and a roster row must not carry one: the server owns the
@@ -26622,18 +26648,70 @@ mod jabber_rescue_room_tests {
     }
 
     /// The tab X stays usable on it. Hiding keeps the room joined, so the parser keeps reading.
-    /// The tab X stays usable on them. Hiding keeps the room joined, so the parser keeps reading.
+    /// Held open, not merely joined: the FC must not have to go looking for these.
     #[test]
-    fn a_pinned_room_can_still_be_hidden() {
+    fn the_pinned_rooms_cannot_be_closed() {
         let (_ctx, mut a) = app(true);
-        a.settings.jabber_rooms = vec![RESCUE.to_owned()];
-        a.jabber.lock().unwrap().rooms.insert(RESCUE.to_owned());
-        a.jabber_tabs = vec![RESCUE.to_owned()];
+        a.settings.jabber_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        {
+            let mut st = a.jabber.lock().unwrap();
+            st.rooms.insert(RESCUE.to_owned());
+            st.rooms.insert(SKIRMISH.to_owned());
+        }
+        a.jabber_tabs = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
         a.close_jabber_tab(RESCUE, true, ChatWinKey::Main);
-        assert_eq!(a.settings.jabber_closed_rooms, vec![RESCUE.to_owned()]);
+        a.close_jabber_tab(SKIRMISH, true, ChatWinKey::Main);
+        assert!(a.settings.jabber_closed_rooms.is_empty());
+        assert_eq!(a.jabber_tabs, vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+    }
+
+    /// The whole guarantee in one walk: joined, held open, un-leavable, un-forgettable, and
+    /// receiving. Every link in the chain the rescue parser depends on.
+    #[test]
+    fn the_rescue_rooms_are_open_and_working_end_to_end() {
+        let (_ctx, mut a) = app(true);
+        // A profile that had left and forgotten both, with no tabs and nothing in jabber_rooms.
+        a.settings.jabber_left_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        a.settings.jabber_forgotten = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        a.settings.jabber_closed_rooms = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
+        a.jabber.lock().unwrap().rooms_left.insert(RESCUE.to_owned());
+
+        // Offline reconcile: the join list is repaired before we ever connect.
+        let mut off = frame(&[]);
+        off.configured = false;
+        off.ever_online = false;
+        a.jabber_reconcile(&off);
+        assert_eq!(a.jabber_rooms_to_join(), vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
+
+        // Connected: both joined, both hold a tab.
+        crate::jabber::note_room_joined(&a.jabber, RESCUE);
+        crate::jabber::note_room_joined(&a.jabber, SKIRMISH);
+        a.jabber_reconcile(&frame(&[RESCUE, SKIRMISH]));
+        assert!(a.jabber_tabs.contains(&RESCUE.to_owned()), "delve911 has no tab");
+        assert!(a.jabber_tabs.contains(&SKIRMISH.to_owned()), "skirmish has no tab");
+
+        // Receiving: neither is muted at the store gate, which is what feeds the parser.
+        assert!(crate::jabber::note_room_seen(&a.jabber, RESCUE));
+        assert!(crate::jabber::note_room_seen(&a.jabber, SKIRMISH));
+
+        // Every removal path refuses, and the tabs survive another reconcile.
+        for room in [RESCUE, SKIRMISH] {
+            a.jabber_forget(room, true);
+            a.close_jabber_tab(room, true, ChatWinKey::Main);
+        }
+        a.jabber_reconcile(&frame(&[RESCUE, SKIRMISH]));
+        assert!(a.settings.jabber_left_rooms.is_empty());
+        assert!(a.settings.jabber_forgotten.is_empty());
+        assert!(a.settings.jabber_closed_rooms.is_empty());
+        assert!(a.jabber_tabs.contains(&RESCUE.to_owned()));
+        assert!(a.jabber_tabs.contains(&SKIRMISH.to_owned()));
         assert!(a.jabber.lock().unwrap().rooms.contains(RESCUE));
-        assert!(a.jabber_rooms_to_join().contains(&RESCUE.to_owned()));
-        assert!(a.jabber_tabs.is_empty());
+        assert!(a.jabber.lock().unwrap().rooms.contains(SKIRMISH));
+
+        // And they survive a restart: the tab bar is saved with them in it.
+        a.sync_popout_settings();
+        assert!(a.settings.jabber_main_tabs.contains(&RESCUE.to_owned()));
+        assert!(a.settings.jabber_main_tabs.contains(&SKIRMISH.to_owned()));
     }
 
     /// The reported profile's shape: the room was left or forgotten before it was pinned.
@@ -26708,7 +26786,10 @@ mod jabber_tab_persist_tests {
     /// The headline: five joined rooms and a DM with history, none of them opened by the user.
     #[test]
     fn a_joined_room_does_not_open_a_tab_by_itself() {
-        let (_ctx, mut a) = app_with(Default::default());
+        let mut s = crate::settings::Settings::default();
+        // Already known, so not a first-sight force-join (UI-047).
+        s.jabber_rooms = vec![ROOM.to_owned(), OTHER.to_owned()];
+        let (_ctx, mut a) = app_with(s);
         a.jabber_reconcile(&frame(&[ROOM, OTHER], &[DM], &[], &[]));
         assert!(a.jabber_tabs.is_empty(), "reconcile opened {:?}", a.jabber_tabs);
     }
@@ -26718,6 +26799,7 @@ mod jabber_tab_persist_tests {
         let mut s = crate::settings::Settings::default();
         s.jabber_main_tabs = vec![ROOM.to_owned()];
         s.jabber_main_active = ROOM.to_owned();
+        s.jabber_rooms = vec![ROOM.to_owned(), OTHER.to_owned()];
         let (_ctx, mut a) = app_with(s);
         // OTHER and DM are just as reachable, and stay shut.
         a.jabber_reconcile(&frame(&[ROOM, OTHER], &[DM], &[], &[]));
@@ -26748,7 +26830,9 @@ mod jabber_tab_persist_tests {
 
     #[test]
     fn a_closed_tab_stays_closed_across_a_restart() {
-        let (_ctx, mut a) = app_with(Default::default());
+        let mut s = crate::settings::Settings::default();
+        s.jabber_rooms = vec![ROOM.to_owned()];
+        let (_ctx, mut a) = app_with(s);
         a.jabber_tabs = vec![ROOM.to_owned(), DM.to_owned()];
         a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
         a.close_jabber_tab(DM, false, ChatWinKey::Main);
@@ -26771,7 +26855,9 @@ mod jabber_tab_persist_tests {
 
     #[test]
     fn room_traffic_surfaces_a_tab_only_on_a_mention() {
-        let (_ctx, mut a) = app_with(Default::default());
+        let mut s = crate::settings::Settings::default();
+        s.jabber_rooms = vec![ROOM.to_owned()];
+        let (_ctx, mut a) = app_with(s);
         a.jabber_reconcile(&frame(&[ROOM], &[], &[ROOM], &[]));
         assert!(a.jabber_tabs.is_empty(), "plain room traffic opened a tab");
         a.jabber_reconcile(&frame(&[ROOM], &[], &[ROOM], &[ROOM]));
@@ -26805,5 +26891,123 @@ mod jabber_tab_persist_tests {
         a.jabber_chat = None;
         a.sync_popout_settings();
         assert!(a.settings.jabber_main_active.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod jabber_force_join_tests {
+    use super::*;
+
+    const NEW: &str = "mandatory@conference.goonfleet.com";
+    const KNOWN: &str = "corp@conference.goonfleet.com";
+
+    fn app() -> (egui::Context, SpaiApp) {
+        let ctx = egui::Context::default();
+        (ctx.clone(), SpaiApp::build(&ctx, true))
+    }
+
+    fn frame(rooms: &[&str]) -> JabberFrame {
+        JabberFrame {
+            configured: true,
+            ever_online: true,
+            connected: true,
+            status: String::new(),
+            convos: Vec::new(),
+            pings: Vec::new(),
+            rooms: rooms.iter().map(|s| (*s).to_owned()).collect(),
+            dm_keys: Vec::new(),
+            unread: Default::default(),
+            mentions: Default::default(),
+            pings_unread: false,
+            channels: Vec::new(),
+            inaccessible: Vec::new(),
+            subjects: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_force_join_opens_the_tab() {
+        let (_ctx, mut a) = app();
+        a.jabber_reconcile(&frame(&[NEW]));
+        assert_eq!(a.jabber_tabs, vec![NEW.to_owned()]);
+        assert_eq!(a.settings.jabber_rooms, vec![NEW.to_owned()]);
+    }
+
+    /// "Once" is the whole requirement: close it and it must stay closed.
+    #[test]
+    fn it_opens_once_and_the_close_sticks() {
+        let (_ctx, mut a) = app();
+        a.jabber_reconcile(&frame(&[NEW]));
+        assert_eq!(a.jabber_tabs, vec![NEW.to_owned()]);
+
+        a.close_jabber_tab(NEW, true, ChatWinKey::Main);
+        assert!(a.jabber_tabs.is_empty());
+
+        // Same session, many frames.
+        for _ in 0..5 {
+            a.jabber_reconcile(&frame(&[NEW]));
+        }
+        assert!(a.jabber_tabs.is_empty(), "the force-join reopened the tab");
+
+        // And across a restart, with the room still joined.
+        a.sync_popout_settings();
+        let (_ctx2, mut b) = app();
+        b.settings = a.settings.clone();
+        let (tabs, active) = restored_main_tabs(&b.settings);
+        b.jabber_tabs = tabs;
+        b.jabber_chat = active;
+        b.jabber_reconcile(&frame(&[NEW]));
+        assert!(b.jabber_tabs.is_empty(), "the force-join reopened after a restart");
+    }
+
+    #[test]
+    fn an_already_known_room_is_not_a_force_join() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![KNOWN.to_owned()];
+        a.jabber_reconcile(&frame(&[KNOWN]));
+        assert!(a.jabber_tabs.is_empty(), "a known room opened a tab");
+    }
+
+    /// A hand-join puts the room in `jabber_rooms` before the join lands, so it must not also be
+    /// treated as a first-sight force-join.
+    #[test]
+    fn a_hand_joined_room_does_not_double_open() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_rooms = vec![KNOWN.to_owned()];
+        a.jabber_open(KNOWN, ChatWinKey::Main);
+        assert_eq!(a.jabber_tabs, vec![KNOWN.to_owned()]);
+        a.jabber_reconcile(&frame(&[KNOWN]));
+        assert_eq!(a.jabber_tabs, vec![KNOWN.to_owned()]);
+        a.close_jabber_tab(KNOWN, true, ChatWinKey::Main);
+        a.jabber_reconcile(&frame(&[KNOWN]));
+        assert!(a.jabber_tabs.is_empty());
+    }
+
+    /// The force-join has to clear a stale hidden flag, or the tab is opened and then pruned.
+    #[test]
+    fn a_force_join_survives_a_stale_hidden_flag() {
+        let (_ctx, mut a) = app();
+        a.settings.jabber_closed_rooms = vec![NEW.to_owned()];
+        a.jabber_reconcile(&frame(&[NEW]));
+        assert_eq!(a.jabber_tabs, vec![NEW.to_owned()]);
+        a.jabber_reconcile(&frame(&[NEW]));
+        assert_eq!(a.jabber_tabs, vec![NEW.to_owned()], "opened then pruned");
+    }
+
+    /// Pinning is not a force-join: the rescue rooms are added to `jabber_rooms` by the healing
+    /// step before the branch runs, so enabling Rescue Mode must not go through this path twice.
+    #[cfg(feature = "fc-rescue")]
+    #[test]
+    fn enabling_rescue_mode_is_not_a_force_join() {
+        let (_ctx, mut a) = app();
+        a.settings.fc_rescue_enabled = true;
+        let rescue = a.jabber_rescue_rooms();
+        a.jabber_reconcile(&frame(&[]));
+        // Held open by the pin, and already recorded, so a later join is not "first sight".
+        assert_eq!(a.jabber_tabs, rescue);
+        let before = a.settings.jabber_rooms.clone();
+        a.jabber_reconcile(&frame(&rescue.iter().map(String::as_str).collect::<Vec<_>>()));
+        assert_eq!(a.settings.jabber_rooms, before, "pinning re-added the rooms");
+        assert_eq!(a.jabber_tabs, rescue);
     }
 }
