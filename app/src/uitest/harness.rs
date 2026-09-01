@@ -14,12 +14,55 @@ fn out_dir(name: &str) -> std::path::PathBuf {
 /// Redirects every on-disk profile path (DB, image cache, esilog, lookup) at a scratch dir.
 /// `SpaiApp::build` refuses to open a store headlessly unless this is set, so a test that forgets
 /// to call it gets no store rather than the user's live one.
+///
+/// Not `Once`-gated: a screenshot can end up committed to a ticket folder and pushed to a public
+/// repo, so the redirect is re-asserted on every call rather than trusting that the first one is
+/// still in force.
 pub(crate) fn scratch_profile() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let d = out_dir("uitest-profile");
-        std::env::set_var("EVE_SPAI_DATA_DIR", &d);
-    });
+    let d = out_dir("uitest-profile");
+    std::env::set_var("EVE_SPAI_DATA_DIR", &d);
+}
+
+/// Refuses to proceed unless the live profile is out of reach. Renders go into ticket folders that
+/// get committed and pushed, and alliance chat is operational information, so a scene must never be
+/// one forgotten override away from painting real rooms, contacts or messages into a public PNG.
+/// Why this profile path is unacceptable, or `None` if it is the scratch one. Split out pure so
+/// the guard can be tested without writing a process-wide variable every other test in this binary
+/// reads concurrently.
+pub(crate) fn profile_objection(
+    got: Option<&std::path::Path>,
+    want: &std::path::Path,
+) -> Option<String> {
+    match got {
+        None => Some(format!(
+            "EVE_SPAI_DATA_DIR is unset, so the profile resolves to the user's real one instead of \
+             {want:?}"
+        )),
+        Some(p) if p != want => {
+            Some(format!("profile is {p:?}, not the scratch profile {want:?}"))
+        }
+        Some(_) => None,
+    }
+}
+
+pub(crate) fn assert_no_live_profile() {
+    let want = out_dir("uitest-profile");
+    let got = std::env::var_os("EVE_SPAI_DATA_DIR").map(std::path::PathBuf::from);
+    if let Some(why) = profile_objection(got.as_deref(), &want) {
+        panic!(
+            "the UI harness would render from a live profile: {why}. Renders are committed to \
+             ticket folders and pushed, and alliance chat is operational information."
+        );
+    }
+    // Checked through `data_dir` too, not just the raw variable: that is the single choke point
+    // every on-disk profile path goes through, so this proves the redirect actually reaches them.
+    let real = crate::store::data_dir().ok();
+    assert_eq!(
+        real.as_deref(),
+        Some(want.as_path()),
+        "store::data_dir resolves to {real:?} despite the override; the scratch redirect is not \
+         reaching every on-disk profile path."
+    );
 }
 
 /// A real directory to point `chat_dir` at. `intel_view` renders its "chat logs not found"
@@ -143,6 +186,7 @@ pub(crate) fn render_dialogs_on_the_root(ctx: &egui::Context) {
 /// (lavapipe) adapter on its own and never creates a surface, so no display is involved.
 pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
     scratch_profile();
+    assert_no_live_profile();
     let pointer = scene.pointer;
     let mut builder = Harness::builder().with_size(scene.size).with_max_steps(8);
     if gpu {
@@ -178,6 +222,8 @@ pub(crate) fn build(scene: &mut Scene, gpu: bool) -> Harness<'_> {
 }
 
 pub(crate) fn shot(harness: &mut Harness<'_>, name: &str) {
+    // Last gate before a PNG exists on disk.
+    assert_no_live_profile();
     let img = harness.render().expect("render");
     let path = shot_dir().join(format!("{name}.png"));
     img.save(&path).expect("write png");

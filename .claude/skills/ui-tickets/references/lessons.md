@@ -88,3 +88,29 @@ ticket needs:
   production hang.
 - A wormhole table 89px wider than the app's own minimum window.
 - A toolbar running 511px past a 720px window.
+
+## Renders leave the machine
+
+Screenshots are committed to ticket folders and pushed to a public repo. The subject here is an
+EVE alliance's chat: room names, contact JIDs, fleet pings and intel are operational information,
+and a PNG of the real client is a leak that no amount of later deletion undoes, because it is in
+the git history and on GitHub's CDN.
+
+The harness was already pointed at a scratch profile, and `SpaiApp::build` already refused to open
+a store headlessly without `EVE_SPAI_DATA_DIR`. Both are redirects, not guards: they depend on
+every scene remembering to call `scratch_profile()`, and the redirect was `Once`-gated, so nothing
+would have noticed if the variable were later set back to a live path.
+
+`harness::assert_no_live_profile` now fails the test unless the profile resolves to
+`target/uitest-profile`, checked through `store::data_dir()` so it proves the choke point is
+honouring the override rather than that two strings match. It runs in `harness::build` and again in
+`harness::shot`, the last point before a PNG exists.
+
+Two rules fell out of writing it:
+
+- The guard's logic is a pure function (`profile_objection`) because the obvious test, set the
+  variable to a live path and catch the panic, mutates process-wide state that every other test in
+  the binary reads concurrently. That test would have flaked, and worse, could have made an
+  unrelated scene fail.
+- Do not paste real chat into a fixture to make a scene look convincing. Write plausible fake
+  traffic. `fixtures.rs` is the place for it.

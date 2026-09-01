@@ -617,8 +617,43 @@ fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], channels: bool) -> S
     })
 }
 
+/// The rescue feed on its own. GAP-009 leaves the rescue window itself without a scene, so this
+/// renders the chat the way `uitest_rescue_chat_lines_are_one_line_tall` drives it, which is enough
+/// to read the timestamps UI-043 changed.
+#[cfg(feature = "fc-rescue")]
+fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    let base = fixtures::now();
+    let msgs = vec![
+        ("Rescue Actual".to_owned(), "titan tackled in 1DQ, need subcaps now".to_owned(), false, base - 95),
+        ("Rescue Actual".to_owned(), "cyno is up, bridge is open".to_owned(), false, base - 65),
+        ("Wingmate Alpha".to_owned(), "on the bridge".to_owned(), false, base - 34),
+        ("me".to_owned(), "in fleet, jumping".to_owned(), true, base - 7),
+    ];
+    Scene::ui(name, size, move |ui| {
+        let _ = crate::app::rescue_chat_feed(ui, &msgs, "shot");
+    })
+}
+
+/// The screenshot path must not be one forgotten override away from painting a real alliance's
+/// rooms, contacts or messages into a PNG that gets committed to a ticket folder.
+#[test]
+fn uitest_a_live_profile_is_refused() {
+    let want = std::path::Path::new("/w/target/uitest-profile");
+    // The two ways a render could reach live data: no override at all, and an override pointing
+    // somewhere real.
+    assert!(harness::profile_objection(None, want).is_some(), "an unset override was accepted");
+    let live = std::path::Path::new("/home/someone/.local/share/eve-spai");
+    assert!(
+        harness::profile_objection(Some(live), want).is_some(),
+        "a live profile path was accepted"
+    );
+    assert!(harness::profile_objection(Some(want), want).is_none(), "the scratch profile was refused");
+}
+
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
+        // UI-043: the timestamp is the subject, so the messages sit seconds apart.
+        jabber_popout_scene("jabber_popout_stamps", [520.0, 480.0], fixtures::JABBER_ROOM, ""),
         // UI-041: both panes, because the remove button has to read the same in each.
         jabber_sidebar_scene("jabber_sidebar_channels", [900.0, 560.0], true),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
@@ -811,6 +846,8 @@ pub(crate) fn all() -> Vec<Scene> {
         fixtures::jabber_state_long,
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
+    #[cfg(feature = "fc-rescue")]
+    v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
     // UI-030: the rule panel's 180px drag minimum, the least room a rule name ever gets.
