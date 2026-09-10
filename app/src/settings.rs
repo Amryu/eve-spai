@@ -7,6 +7,10 @@ use crate::theme::Theme;
 pub struct Settings {
     pub theme: Theme,
     pub nav_expanded: bool,
+    /// Pilot picked in the top bar. Persisted so a restart resumes on the same character;
+    /// cleared on load if that character is no longer authed.
+    #[serde(default)]
+    pub active_character: String,
     pub use_eve_time: bool,
     pub eve_logs_dir: String,
     pub eve_settings_dir: String,
@@ -770,6 +774,7 @@ impl Default for Settings {
         Self {
             theme: Theme::default(),
             nav_expanded: false,
+            active_character: String::new(),
             use_eve_time: true,
             eve_logs_dir: String::new(),
             eve_settings_dir: String::new(),
@@ -1261,6 +1266,21 @@ mod window_geometry_tests {
         let legacy: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
         assert_eq!(legacy.jabber_jid, "a@b");
         assert!(!legacy.intel_count_bridges);
+    }
+
+    #[test]
+    fn active_character_roundtrips_and_legacy_configs_still_parse() {
+        let s = Settings { active_character: "Amryu".to_owned(), ..Default::default() };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.active_character, "Amryu");
+        // A config written before the field existed must still deserialize whole: one field that
+        // fails to parse aborts all of Settings and silently resets every other setting.
+        let legacy: Settings =
+            serde_json::from_str(r#"{"jabber_jid":"a@b","nav_expanded":true}"#).unwrap();
+        assert_eq!(legacy.jabber_jid, "a@b");
+        assert!(legacy.nav_expanded);
+        assert_eq!(legacy.active_character, "");
     }
 
     #[test]

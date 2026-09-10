@@ -769,6 +769,22 @@ pub struct SpaiApp {
     type_names_loading: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 
+/// Which pilot should be active, given the pick restored from settings and the authed list.
+fn resolve_active_character(current: &str, characters: &[CharacterRow]) -> String {
+    // An empty list means nothing is authed *yet*, not that the remembered pilot is gone. Keeping
+    // the name here is what stops a restored pick being discarded before the store has loaded.
+    if characters.is_empty() {
+        return current.to_owned();
+    }
+    // A pilot that has since been removed must not stay selected: the name would sit in the top
+    // bar while every ESI call keyed off it failed.
+    if current != "No character" && characters.iter().any(|c| c.name.eq_ignore_ascii_case(current))
+    {
+        return current.to_owned();
+    }
+    characters[0].name.clone()
+}
+
 impl SpaiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::build(&cc.egui_ctx, false)
@@ -856,6 +872,12 @@ impl SpaiApp {
             .as_ref()
             .map(|s| s.list_characters())
             .unwrap_or_default();
+
+        let active_character = if settings.active_character.is_empty() {
+            "No character".to_owned()
+        } else {
+            settings.active_character.clone()
+        };
 
         let player: crate::esi::SharedPlayer =
             std::sync::Arc::new(std::sync::Mutex::new(crate::esi::Player::default()));
@@ -1049,7 +1071,7 @@ impl SpaiApp {
             severity_open: false,
             coal_edit: Vec::new(),
             alliance_add: String::new(),
-            active_character: "No character".to_owned(),
+            active_character,
             needs_save: false,
             sde_status,
             auth_status: std::sync::Arc::new(std::sync::Mutex::new(AuthStatus::Idle)),
@@ -8612,10 +8634,16 @@ impl SpaiApp {
         if let Some(store) = &self.store {
             self.characters = store.list_characters();
         }
-        if self.active_character == "No character" {
-            if let Some(first) = self.characters.first() {
-                self.active_character = first.name.clone();
-            }
+        self.active_character = resolve_active_character(&self.active_character, &self.characters);
+        self.remember_active_character();
+    }
+
+    /// Mirror the working selection into settings so it survives a restart. Runs every frame via
+    /// `refresh_characters`, so it must only mark a save when the pick actually changed.
+    fn remember_active_character(&mut self) {
+        if self.settings.active_character != self.active_character {
+            self.settings.active_character = self.active_character.clone();
+            self.needs_save = true;
         }
     }
 
@@ -13855,8 +13883,35 @@ impl SpaiApp {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Character").weak());
+
+                    // egui's defaults are a 100px button and a 200px popup: long pilot names got
+                    // truncated and the list capped at ~7 rows however tall the window was. Size
+                    // the button to the widest name and let the popup grow into the window.
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let widest = std::iter::once("No character")
+                        .chain(self.characters.iter().map(|c| c.name.as_str()))
+                        .map(|name| {
+                            ui.painter()
+                                .layout_no_wrap(
+                                    name.to_owned(),
+                                    font.clone(),
+                                    egui::Color32::PLACEHOLDER,
+                                )
+                                .size()
+                                .x
+                        })
+                        .fold(0.0_f32, f32::max);
+                    // Room for the dropdown arrow and the button's own padding.
+                    let combo_w = (widest + 44.0).clamp(180.0, 360.0);
+                    // Budget for the top bar the popup hangs off plus the status bar below it.
+                    let popup_h =
+                        (ui.ctx().content_rect().height() - 120.0).clamp(200.0, 720.0);
+
+                    let before = self.active_character.clone();
                     egui::ComboBox::from_id_salt("active_character")
                         .selected_text(&self.active_character)
+                        .width(combo_w)
+                        .height(popup_h)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.active_character,
@@ -13871,6 +13926,9 @@ impl SpaiApp {
                                 );
                             }
                         });
+                    if self.active_character != before {
+                        self.remember_active_character();
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
@@ -27040,5 +27098,53 @@ mod jabber_force_join_tests {
         a.jabber_reconcile(&frame(&rescue.iter().map(String::as_str).collect::<Vec<_>>()));
         assert_eq!(a.settings.jabber_rooms, before, "pinning re-added the rooms");
         assert_eq!(a.jabber_tabs, rescue);
+    }
+}
+
+#[cfg(test)]
+mod active_character_tests {
+    use super::{CharacterRow, resolve_active_character};
+
+    fn rows(names: &[&str]) -> Vec<CharacterRow> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| CharacterRow {
+                id: i as i64 + 1,
+                name: (*n).to_owned(),
+                expires_at: 0,
+                scopes: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_remembered_pilot_survives_the_restart() {
+        let chars = rows(&["Amryu", "Scout"]);
+        assert_eq!(resolve_active_character("Scout", &chars), "Scout");
+    }
+
+    #[test]
+    fn case_differences_still_match_the_remembered_pilot() {
+        let chars = rows(&["Amryu"]);
+        assert_eq!(resolve_active_character("amryu", &chars), "amryu");
+    }
+
+    #[test]
+    fn an_empty_list_keeps_the_pick_because_nothing_is_authed_yet() {
+        assert_eq!(resolve_active_character("Amryu", &[]), "Amryu");
+        assert_eq!(resolve_active_character("No character", &[]), "No character");
+    }
+
+    #[test]
+    fn a_removed_pilot_falls_back_to_the_first_authed_one() {
+        let chars = rows(&["Amryu", "Scout"]);
+        assert_eq!(resolve_active_character("Deleted", &chars), "Amryu");
+    }
+
+    #[test]
+    fn no_character_picks_the_first_authed_one() {
+        let chars = rows(&["Amryu", "Scout"]);
+        assert_eq!(resolve_active_character("No character", &chars), "Amryu");
     }
 }
