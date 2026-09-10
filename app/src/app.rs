@@ -10052,7 +10052,7 @@ impl SpaiApp {
         // dot as one block. It is laid out here, once, because the pieces draw in different passes:
         // the upgrade icons on the right need the width of everything to their left, and all of them
         // need to know whether the name survived culling.
-        const NAME_FONT: f32 = 13.0;
+        const NAME_FONT: f32 = 12.0;
         const NAME_GAP: f32 = 4.0;
         let name_font = egui::FontId::proportional(NAME_FONT);
         // Icons track the dot, so they neither float away from a tiny dot nor crowd a fat one.
