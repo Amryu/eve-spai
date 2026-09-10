@@ -30,6 +30,7 @@ mod geo;
 mod image_cache;
 mod instance;
 mod jabber;
+mod jove;
 mod jumproute;
 mod intel;
 mod ipc;

@@ -600,6 +600,15 @@ fn jump_plan_scene(name: &'static str, size: [f32; 2], ship: usize) -> Scene {
     })
 }
 
+fn map_layers_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| crate::app::SpaiApp::build(ui.ctx(), true));
+        egui::ScrollArea::vertical().show(ui, |ui| app.map_layers_ui(ui));
+    })
+}
+
 /// The chat sidebar, one scene per pane. UI-041 lives on the rows: the Channels pane lists
 /// remembered rooms with their MOTDs, the Directory pane files anything remembered but not on the
 /// roster under "Other", and both now carry a remove button.
@@ -816,6 +825,7 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(wormholes_rows_scene("view_wormholes_rows", [1280.0, 800.0]));
     // 720 is the app's minimum window width, where the eight-column table has the least room.
     v.push(wormholes_rows_scene("view_wormholes_rows_narrow", [720.0, 800.0]));
+    v.push(map_layers_scene("map_layers", [320.0, 800.0]));
     // 520x480 is what `jabber_popout_windows` opens a new window at.
     v.push(jabber_popout_scene("jabber_popout", [520.0, 480.0], fixtures::JABBER_ROOM, ""));
     v.push(jabber_popout_scene(
@@ -4159,4 +4169,28 @@ fn uitest_dialog_pin_is_clear_of_the_dialog_body() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// The Jove observatory layer is the only way to see the baked observatory list, so the checkbox
+/// has to reach the Layers panel, not just the overlay struct.
+#[test]
+fn uitest_map_layers_offers_the_jove_observatory_filter() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
+
+    let mut scene = all().into_iter().find(|s| s.name == "map_layers").expect("scene");
+    let harness = harness::build(&mut scene, false);
+    let mut labels = Vec::new();
+    for node in harness.root().children_recursive() {
+        let n = node.accesskit_node();
+        if n.is_hidden() || n.role() != Role::CheckBox {
+            continue;
+        }
+        labels.push(n.label().unwrap_or_default().to_string());
+    }
+    let want = format!("{}  Jove observatories", egui_phosphor::regular::CELL_TOWER);
+    assert!(
+        labels.iter().any(|l| l.contains(&want)),
+        "no Jove observatory layer among the map layers: {labels:?}"
+    );
 }

@@ -82,6 +82,8 @@ impl ActivityMode {
 
 type SysHit = (i64, String, f64, String, String);
 
+const JOVE_COLOR: egui::Color32 = egui::Color32::from_rgb(0xB8, 0x8C, 0xF0);
+
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct MapOverlays {
@@ -97,6 +99,8 @@ struct MapOverlays {
     camps: bool,
     #[serde(default)]
     cyno_gen: bool,
+    #[serde(default)]
+    jove: bool,
 }
 
 /// delve911 covers a titan bridge out of staging. Past this the fleet can't be dropped on the
@@ -173,6 +177,7 @@ impl MapOverlays {
             turnur: false,
             camps: false,
             cyno_gen: self.cyno_gen,
+            jove: false,
         }
     }
 }
@@ -191,6 +196,7 @@ impl Default for MapOverlays {
             turnur: true,
             camps: true,
             cyno_gen: false,
+            jove: false,
         }
     }
 }
@@ -263,6 +269,7 @@ impl MapMode {
                 _ => ActivityMode::ShipKills,
             },
             cyno_gen: false,
+            jove: false,
         }
     }
 }
@@ -10036,6 +10043,16 @@ impl SpaiApp {
                     .push((egui_phosphor::regular::SPIRAL, wh_col));
             }
         }
+        if ov.jove {
+            for s in &self.map_draw {
+                if crate::jove::has(s.id) {
+                    lead_icons
+                        .entry(s.id)
+                        .or_default()
+                        .push((egui_phosphor::regular::CELL_TOWER, JOVE_COLOR));
+                }
+            }
+        }
         if ov.camps {
             let now = chrono::Utc::now().timestamp();
             if now - self.camped_cache_at >= 2 {
@@ -11160,6 +11177,8 @@ impl SpaiApp {
             });
         }
         ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
+        ui.checkbox(&mut self.map_overlays.jove, format!("{}  Jove observatories", icon::CELL_TOWER))
+            .on_hover_text("Marks systems that hold a Jove Observatory");
         if ui
             .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
             .on_hover_text("Routes and Set Destination use scanned holes, with a waypoint at each hole entrance")
@@ -12206,6 +12225,12 @@ impl SpaiApp {
     #[cfg(test)]
     pub(crate) fn jump_plan_ui(&mut self, ui: &mut egui::Ui) {
         self.jump_plan_content(ui);
+    }
+
+    /// The Layers panel only renders inside a map that needs the SDE, which headless does not have.
+    #[cfg(test)]
+    pub(crate) fn map_layers_ui(&mut self, ui: &mut egui::Ui) {
+        self.map_layers_content(ui);
     }
 
     #[cfg(test)]
@@ -20434,6 +20459,12 @@ fn system_chips_ex(
         if !info.faction.is_empty() && info.security < 0.5 {
             ui.label(egui::RichText::new(&info.faction).color(standing::NEUTRAL));
         }
+    }
+    if crate::jove::has(system_id) {
+        ui.label(
+            egui::RichText::new(format!("{}  Jove Observatory", egui_phosphor::regular::CELL_TOWER))
+                .color(JOVE_COLOR),
+        );
     }
     if let Some(f) = status.get(&system_id) {
         if f.incursion {
