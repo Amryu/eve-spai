@@ -469,9 +469,16 @@ pub struct SpaiApp {
     /// UI-thread state the web publisher cannot work out for itself, pushed down once a
     /// frame. Same arrangement as `AlertEngine::config`.
     web_facts: crate::web::facts::SharedFacts,
-    /// Held so the publisher and the HTTP layer share one state; WEB-003 is what reads it.
-    #[allow(dead_code)]
     web: crate::web::state::SharedWeb,
+    web_server: Option<crate::web::server::Handle>,
+    /// What the listener was started for. Restarting on a change is cheaper and clearer than
+    /// reaching into a running server to re-read its settings.
+    web_started_for: Option<u64>,
+    /// A bind that failed, kept so settings can say why the page is unreachable rather than leaving
+    /// the user to find it in a terminal they never opened.
+    pub(crate) web_error: Option<String>,
+    /// Off in the UI harness, which builds an app without any of the side effects.
+    web_allowed: bool,
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
     bridges_applied: Vec<crate::settings::JumpBridge>,
     system_status: crate::systemstatus::SharedStatus,
@@ -1098,6 +1105,10 @@ impl SpaiApp {
         let mut app = Self {
             web_facts,
             web,
+            web_server: None,
+            web_started_for: None,
+            web_error: None,
+            web_allowed: !headless,
             store,
             settings,
             view: View::Dashboard,
@@ -1483,6 +1494,63 @@ impl SpaiApp {
         self.focus_window = Some(egui::ViewportId::from_hash_of("ship_window"));
     }
 
+    /// Start, stop or restart the web listener to match the settings.
+    ///
+    /// Called every frame and does nothing on almost all of them: the settings are hashed and
+    /// compared, so only an actual change touches the socket.
+    fn sync_web_server(&mut self) {
+        if !self.web_allowed {
+            return;
+        }
+        let w = &self.settings.web;
+        if w.enabled && w.token.is_empty() {
+            match crate::web::auth::new_token() {
+                Some(t) => {
+                    self.settings.web.token = t;
+                    self.needs_save = true;
+                }
+                None => {
+                    // No entropy, no pairing secret, so the socket stays shut rather than opening
+                    // with something weaker.
+                    self.settings.web.enabled = false;
+                    self.web_error = Some("could not generate a pairing token".to_owned());
+                    self.needs_save = true;
+                    return;
+                }
+            }
+        }
+        let w = self.settings.web.clone();
+        let want = w.enabled.then(|| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (w.port, w.bind_lan, &w.token).hash(&mut h);
+            self.settings.theme.background.array().hash(&mut h);
+            self.settings.theme.foreground.array().hash(&mut h);
+            self.settings.theme.accent.array().hash(&mut h);
+            h.finish()
+        });
+        if want == self.web_started_for {
+            return;
+        }
+        self.web_server = None;
+        self.web_started_for = want;
+        self.web_error = None;
+        let Some(_) = want else { return };
+        let cfg = crate::web::server::Config {
+            port: w.port,
+            bind_lan: w.bind_lan,
+            token: w.token.clone(),
+            theme: self.settings.theme.clone(),
+        };
+        match crate::web::server::start(cfg, self.web.clone()) {
+            Ok(h) => self.web_server = Some(h),
+            Err(e) => {
+                eprintln!("[web] {e}; web view disabled");
+                self.web_error = Some(e);
+            }
+        }
+    }
+
     fn publish_ui_facts(&self) {
         let mut f = self.web_facts.lock().unwrap_or_else(|e| e.into_inner());
         f.systems = self.systems.clone();
@@ -1519,6 +1587,7 @@ impl SpaiApp {
             cfg.intel_count_bridges = self.settings.intel_count_bridges;
         }
         self.publish_ui_facts();
+        self.sync_web_server();
         let (fired, matched) = {
             let mut rt = self.alerts_engine.runtime.lock().unwrap();
             (std::mem::take(&mut rt.fired_ui), std::mem::take(&mut rt.matched_ui))
@@ -23015,7 +23084,7 @@ pub(crate) fn severity_of(
     s
 }
 
-fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
+pub(crate) fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
     use crate::settings::Severity::*;
     match s {
         Info => egui::Color32::from_rgb(0x6E, 0x7A, 0x86),
@@ -24788,7 +24857,7 @@ fn activity_color(v: u32, scale: f32) -> egui::Color32 {
     egui::Color32::from_rgb(0xFF, (0xC0 as f32 * (1.0 - heat)) as u8, 0x30)
 }
 
-fn security_color(security: f64) -> egui::Color32 {
+pub(crate) fn security_color(security: f64) -> egui::Color32 {
     const COLORS: [(u8, u8, u8); 11] = [
         (0xB0, 0x3A, 0x9A),
         (0xD7, 0x30, 0x00),
