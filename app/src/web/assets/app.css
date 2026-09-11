@@ -53,3 +53,20 @@ body {
   padding: 0.25rem 0.6rem;
 }
 .counts b { color: var(--accent); font-weight: 600; }
+
+#tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+
+.tab {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+.tab[aria-selected="true"] { background: var(--surface-active); border-color: var(--accent); }
+.tab b { color: var(--accent); font-weight: 600; }
+
+.pane { margin-bottom: 1.25rem; }
+.pane h2 { font-size: 1rem; margin: 0 0 0.4rem; color: var(--fg); }

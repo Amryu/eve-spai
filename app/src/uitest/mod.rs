@@ -29,3 +29,4 @@ pub(crate) mod checks;
 pub(crate) mod fixtures;
 pub(crate) mod harness;
 mod scenes;
+mod webdemo;
