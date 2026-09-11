@@ -466,6 +466,12 @@ pub struct SpaiApp {
     ship_by_id: std::collections::HashMap<i64, String>,
     kills_loaded: bool,
     pub(crate) player: crate::esi::SharedPlayer,
+    /// UI-thread state the web publisher cannot work out for itself, pushed down once a
+    /// frame. Same arrangement as `AlertEngine::config`.
+    web_facts: crate::web::facts::SharedFacts,
+    /// Held so the publisher and the HTTP layer share one state; WEB-003 is what reads it.
+    #[allow(dead_code)]
+    web: crate::web::state::SharedWeb,
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
     bridges_applied: Vec<crate::settings::JumpBridge>,
     system_status: crate::systemstatus::SharedStatus,
@@ -1030,6 +1036,37 @@ impl SpaiApp {
             );
         }
 
+        let web_facts = crate::web::facts::shared();
+        let web = crate::web::state::shared();
+        if !headless {
+            let engine = alerts_engine.clone();
+            let (a_intel, a_pilots, a_player, a_status, a_affil, a_kills) = (
+                intel_state.clone(),
+                pilots.clone(),
+                player.clone(),
+                system_status.clone(),
+                affiliations.clone(),
+                kill_cache.clone(),
+            );
+            crate::web::publish::spawn(
+                crate::web::publish::Deps {
+                    facts: web_facts.clone(),
+                    web: web.clone(),
+                    intel_state: intel_state.clone(),
+                    pilots: pilots.clone(),
+                    player: player.clone(),
+                    system_status: system_status.clone(),
+                    jabber: jabber.clone(),
+                },
+                move || {
+                    let gate = engine.alerts_enabled();
+                    engine.build_alert_msg(
+                        &a_intel, &a_pilots, &a_player, &a_status, &a_affil, &a_kills, gate,
+                    )
+                },
+            );
+        }
+
         let eve_focused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let ping_viewport_cb = build_ping_viewport_cb(ping_shared.clone());
@@ -1059,6 +1096,8 @@ impl SpaiApp {
         // Read out before `settings` moves into the struct below.
         let (main_tabs, main_active) = restored_main_tabs(&settings);
         let mut app = Self {
+            web_facts,
+            web,
             store,
             settings,
             view: View::Dashboard,
@@ -1444,6 +1483,24 @@ impl SpaiApp {
         self.focus_window = Some(egui::ViewportId::from_hash_of("ship_window"));
     }
 
+    fn publish_ui_facts(&self) {
+        let mut f = self.web_facts.lock().unwrap_or_else(|e| e.into_inner());
+        f.systems = self.systems.clone();
+        f.chars = self.characters.iter().map(|c| (c.name.clone(), c.id)).collect();
+        f.active_character = self.active_character.clone();
+        f.disabled = self.settings.intel_disabled_chars.clone();
+        f.only_undocked = self.settings.alert_only_undocked;
+        f.count_bridges = self.settings.intel_count_bridges;
+        f.intel_max_jumps = self.intel_max_jumps;
+        f.intel_ttl_secs = self.settings.intel_ttl_secs;
+        f.severity = self.settings.severity.clone();
+        f.ping_rules = self.settings.jabber_ping_rules.clone();
+        f.alert_enabled = self.settings.alert_enabled;
+        f.compact = self.settings.alerts.compact_mode;
+        f.theme = self.settings.theme.clone();
+        f.allow_writeback = self.settings.web.allow_writeback;
+    }
+
     fn drain_alerts(&mut self) {
         {
             let mut cfg = self.alerts_engine.config.lock().unwrap();
@@ -1461,6 +1518,7 @@ impl SpaiApp {
             cfg.intel_max_jumps = self.intel_max_jumps;
             cfg.intel_count_bridges = self.settings.intel_count_bridges;
         }
+        self.publish_ui_facts();
         let (fired, matched) = {
             let mut rt = self.alerts_engine.runtime.lock().unwrap();
             (std::mem::take(&mut rt.fired_ui), std::mem::take(&mut rt.matched_ui))
@@ -17312,9 +17370,21 @@ impl AlertEngine {
         }
     }
 
-    /// Push the enriched `AlertMsg` (resolved pilots, jump distances, ...) from the engine thread,
-    /// so it keeps updating while the main window is minimized and its UI loop is parked.
-    fn push_overlay_update(
+    /// Whether intel alerts are on at all. The overlay wants the feed only when a rule opens its
+    /// window; the web view wants it whenever alerts are enabled.
+    pub(crate) fn alerts_enabled(&self) -> bool {
+        self.config.lock().unwrap().enabled
+    }
+
+    /// The enriched alert feed: live report bodies, resolved pilots, jump distances, character
+    /// rings, kill info and affiliations. Built off the UI thread, so it keeps updating while the
+    /// main window is minimized and its UI loop is parked.
+    ///
+    /// Shared by the overlay push and the web publisher, so the two cannot disagree about what a
+    /// card says. `gate` is the caller's own reason to want the feed at all: the overlay wants it
+    /// only when a rule opens its window, the web view whenever alerts are on. `secs` and `focus`
+    /// are overlay timing and are left at zero for the caller to fill in.
+    pub(crate) fn build_alert_msg(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
         pilots: &crate::pilot::SharedPilots,
@@ -17322,13 +17392,10 @@ impl AlertEngine {
         system_status: &crate::systemstatus::SharedStatus,
         affiliations: &crate::affiliation::SharedAffil,
         kill_cache: &crate::kills::KillCache,
-    ) {
-        use std::hash::{Hash, Hasher};
-        if self.overlay_stdin.lock().unwrap().is_none() {
-            return;
-        }
+        gate: bool,
+    ) -> crate::ipc::AlertMsg {
         let cfg = self.config.lock().unwrap().clone();
-        let feature = cfg.enabled && cfg.alerts.rules.iter().any(|r| r.enabled && r.custom_window);
+        let feature = gate;
 
         let raw: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = {
             let st = self.alert_shared.lock().unwrap();
@@ -17443,38 +17510,7 @@ impl AlertEngine {
             }
         }
 
-        let (fresh, daemon_secs) = {
-            let mut st = self.alert_shared.lock().unwrap();
-            (std::mem::take(&mut st.focus_pending), st.secs)
-        };
-        let secs = if !feature || feed.is_empty() {
-            0.0
-        } else if fresh {
-            if daemon_secs.is_finite() { daemon_secs.max(0.0) } else { ALERT_SECS_INFINITE }
-        } else {
-            ALERT_SECS_REFRESH
-        };
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(&feed).unwrap_or_default().hash(&mut hasher);
-        from_you.hash(&mut hasher);
-        via.hash(&mut hasher);
-        card_chars.hash(&mut hasher);
-        hash_sorted_map(&mut hasher, &status);
-        hash_sorted_map(&mut hasher, &resolved_pilots);
-        hash_sorted_map(&mut hasher, &last_ship);
-        hash_sorted_map(&mut hasher, &kills_send);
-        hash_sorted_map(&mut hasher, &affil_send);
-        let hash = hasher.finish();
-
-        {
-            let mut prev = self.alert_sent_hash.lock().unwrap();
-            if *prev == Some(hash) && !fresh {
-                return;
-            }
-            *prev = Some(hash);
-        }
-        let msg = crate::ipc::AlertMsg {
+        crate::ipc::AlertMsg {
             feed,
             from_you,
             via,
@@ -17485,9 +17521,71 @@ impl AlertEngine {
             last_ship,
             kills: kills_send,
             affil: affil_send,
-            secs,
-            focus: fresh,
+            secs: 0.0,
+            focus: false,
+        }
+    }
+
+    /// Send the enriched feed to the overlay subprocess, unchanged payloads skipped.
+    fn push_overlay_update(
+        &self,
+        intel_state: &std::sync::Mutex<crate::intel::IntelState>,
+        pilots: &crate::pilot::SharedPilots,
+        player: &crate::esi::SharedPlayer,
+        system_status: &crate::systemstatus::SharedStatus,
+        affiliations: &crate::affiliation::SharedAffil,
+        kill_cache: &crate::kills::KillCache,
+    ) {
+        use std::hash::{Hash, Hasher};
+        if self.overlay_stdin.lock().unwrap().is_none() {
+            return;
+        }
+        let feature = {
+            let cfg = self.config.lock().unwrap();
+            cfg.enabled && cfg.alerts.rules.iter().any(|r| r.enabled && r.custom_window)
         };
+        let mut msg = self.build_alert_msg(
+            intel_state,
+            pilots,
+            player,
+            system_status,
+            affiliations,
+            kill_cache,
+            feature,
+        );
+
+        let (fresh, daemon_secs) = {
+            let mut st = self.alert_shared.lock().unwrap();
+            (std::mem::take(&mut st.focus_pending), st.secs)
+        };
+        msg.secs = if !feature || msg.feed.is_empty() {
+            0.0
+        } else if fresh {
+            if daemon_secs.is_finite() { daemon_secs.max(0.0) } else { ALERT_SECS_INFINITE }
+        } else {
+            ALERT_SECS_REFRESH
+        };
+        msg.focus = fresh;
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&msg.feed).unwrap_or_default().hash(&mut hasher);
+        msg.from_you.hash(&mut hasher);
+        msg.via.hash(&mut hasher);
+        msg.chars.hash(&mut hasher);
+        hash_sorted_map(&mut hasher, &msg.status);
+        hash_sorted_map(&mut hasher, &msg.resolved_pilots);
+        hash_sorted_map(&mut hasher, &msg.last_ship);
+        hash_sorted_map(&mut hasher, &msg.kills);
+        hash_sorted_map(&mut hasher, &msg.affil);
+        let hash = hasher.finish();
+
+        {
+            let mut prev = self.alert_sent_hash.lock().unwrap();
+            if *prev == Some(hash) && !fresh {
+                return;
+            }
+            *prev = Some(hash);
+        }
         crate::ipc::send_shared(&self.overlay_stdin, &crate::ipc::MainToOverlay::Alert(msg));
     }
 
@@ -22870,7 +22968,7 @@ pub(crate) fn render_ping(
     });
 }
 
-fn severity_of(
+pub(crate) fn severity_of(
     r: &crate::intel::IntelReport,
     rules: &crate::settings::SeverityRules,
 ) -> crate::settings::Severity {
@@ -22927,7 +23025,7 @@ fn severity_color(s: crate::settings::Severity) -> egui::Color32 {
     }
 }
 
-fn build_last_ship(
+pub(crate) fn build_last_ship(
     reports: &[crate::intel::IntelReport],
 ) -> std::collections::HashMap<String, (i64, String, i64)> {
     let mut out: std::collections::HashMap<String, (i64, String, i64)> =
@@ -23013,7 +23111,7 @@ fn report_key(r: &crate::intel::IntelReport) -> u64 {
     h.finish()
 }
 
-fn uncertain_set(
+pub(crate) fn uncertain_set(
     cache: &crate::pilot::PilotCache,
     resolved: &std::collections::HashMap<String, i64>,
 ) -> crate::pilot::UncertainPilots {

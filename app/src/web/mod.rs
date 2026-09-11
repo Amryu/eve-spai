@@ -6,7 +6,12 @@
 //! field and its one call, the `if !headless` start hook, one arm in the existing `OverlayToMain`
 //! drain, and the settings pane. See `ui-tickets/README.md`.
 
-// Unused until WEB-003 wires the server up; the module lands first so that ticket owns only
-// `web/server.rs` and one hook in `app.rs`.
-#[allow(dead_code)]
+// Parts of this land before anything serves them: WEB-003 brings the HTTP surface and WEB-004 the
+// push channel. Split that way so each ticket owns one region and no two collide in `app.rs`.
+#![allow(dead_code)]
+
 pub mod auth;
+pub mod facts;
+pub mod publish;
+pub mod snapshot;
+pub mod state;

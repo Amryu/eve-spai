@@ -1,0 +1,410 @@
+//! The publisher thread.
+//!
+//! Deliberately its own thread rather than the egui update loop: the point of the web view is that a
+//! phone keeps working while the desktop window is minimized, and egui parks when it is. Deliberately
+//! not the alert daemon either, which already carries kill ingest, reconcile, evaluate and both
+//! overlay pushes at 400ms; an optional feature does not belong on the alert critical path.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use super::facts::SharedFacts;
+use super::snapshot::*;
+use super::state::{hash_of, Pane, SharedWeb};
+
+const TICK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Newest reports carried to the page. Matches the app's own `CARD_CAP`, so the phone and the
+/// desktop run out of feed at the same point.
+const CARD_CAP: usize = 250;
+
+pub struct Deps {
+    pub facts: SharedFacts,
+    pub web: SharedWeb,
+    pub intel_state: Arc<Mutex<crate::intel::IntelState>>,
+    pub pilots: crate::pilot::SharedPilots,
+    pub player: crate::esi::SharedPlayer,
+    pub system_status: crate::systemstatus::SharedStatus,
+    pub jabber: crate::jabber::SharedJabber,
+}
+
+pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'static) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(TICK);
+        let facts = deps.facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if facts.systems.is_none() {
+            continue;
+        }
+        tick(&deps, &facts, &alerts());
+    });
+}
+
+fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMsg) {
+    // Phase 1, copy out. Each lock is taken alone and dropped before the next, so the documented
+    // `intel_state -> pilots` order cannot be violated: the two are never held together.
+    let reports: Vec<crate::intel::IntelReport> = {
+        let st = deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+        let n = st.reports.len();
+        st.reports[n.saturating_sub(CARD_CAP)..].to_vec()
+    };
+    let last_ship = crate::app::build_last_ship(&reports);
+    let (resolved_pilots, uncertain) = {
+        let mut cache = deps.pilots.lock().unwrap_or_else(|e| e.into_inner());
+        let rp =
+            cache.display_ids(reports.iter().flat_map(|r| r.pilots.iter()).map(|s| s.as_str()));
+        let un = crate::app::uncertain_set(&cache, &rp);
+        (rp, un)
+    };
+    let status = deps.system_status.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (player_sys, locations) = {
+        let p = deps.player.lock().unwrap_or_else(|e| e.into_inner());
+        let sys = p.locations.get(&facts.active_character).map(|(s, _)| *s).or(p.system_id);
+        (sys, p.locations.clone())
+    };
+    let pings = {
+        let j = deps.jabber.lock().unwrap_or_else(|e| e.into_inner());
+        j.pings.clone()
+    };
+
+    // Phase 2, enrich with nothing held.
+    let systems = facts.systems.clone();
+    let rings = crate::app::build_char_rings(
+        &systems,
+        &facts.chars,
+        &locations,
+        &facts.active_character,
+        player_sys,
+        &facts.disabled,
+        facts.only_undocked,
+        facts.count_bridges,
+    );
+    let mut cards: Vec<IntelCard> = reports
+        .iter()
+        .map(|r| {
+            let target = r.primary_system().map(|s| s.id);
+            let from_you =
+                crate::app::jumps_from_you(&systems, player_sys, target, facts.count_bridges);
+            IntelCard {
+                severity: crate::app::severity_of(r, &facts.severity),
+                from_you,
+                via: crate::app::jump_via(
+                    &systems,
+                    player_sys,
+                    target,
+                    facts.count_bridges,
+                    from_you,
+                ),
+                chars: rings.card(target),
+                report: r.clone(),
+            }
+        })
+        .collect();
+    // Newest first, the same ordering `intel_view` applies. Report order in `IntelState` is arrival
+    // order, and an amended report keeps its original slot, so the two are not the same thing.
+    cards.sort_by(|a, b| b.report.received.cmp(&a.report.received));
+
+    let ping_cards: Vec<PingCard> = pings
+        .iter()
+        .map(|p| {
+            let m = crate::pings::match_ping_rule(&facts.ping_rules, p);
+            PingCard {
+                ping: p.clone(),
+                rule: m.map(|r| r.name.clone()),
+                suppressed: m.is_some_and(|r| r.suppress),
+            }
+        })
+        .collect();
+
+    let map = map_live(&cards, player_sys, &locations, facts.intel_ttl_secs);
+
+    // Phase 3, publish. Only the hash comparison happens under the web lock.
+    let mut st = deps.web.lock().unwrap_or_else(|e| e.into_inner());
+    let lookups = Lookups {
+        resolved_pilots,
+        uncertain,
+        last_ship,
+        kills: alerts.kills.clone(),
+        affil: alerts.affil.clone(),
+        status,
+    };
+    if let Some(rev) = st.changed(Pane::Intel, hash_of(&(&cards, &lookups))) {
+        st.put_intel(IntelPane { rev, cards, lookups });
+    }
+    if let Some(rev) = st.changed(Pane::Alerts, hash_of(&alerts.feed)) {
+        st.put_alerts(AlertPane { rev, msg: alerts.clone() });
+    }
+    if let Some(rev) = st.changed(Pane::Pings, hash_of(&ping_cards)) {
+        st.put_pings(PingPane { rev, pings: ping_cards });
+    }
+    if let Some(rev) = st.changed(Pane::Map, hash_of(&map)) {
+        st.put_map(MapLive { rev, ..map });
+    }
+    let meta = Meta {
+        rev: 0,
+        version: env!("CARGO_PKG_VERSION"),
+        theme: facts.theme.clone(),
+        compact: facts.compact,
+        intel_ttl_secs: facts.intel_ttl_secs,
+        intel_max_jumps: facts.intel_max_jumps,
+        count_bridges: facts.count_bridges,
+        allow_writeback: facts.allow_writeback,
+        active_character: facts.active_character.clone(),
+        chars: facts.chars.clone(),
+        player_system: player_sys,
+    };
+    if let Some(rev) = st.changed(Pane::Meta, hash_of(&meta)) {
+        st.put_meta(Meta { rev, ..meta });
+    }
+}
+
+/// Worst severity and newest sighting per system, plus where your characters are. Systems only,
+/// never coordinates: the geometry is served once and cached against the SDE version.
+fn map_live(
+    cards: &[IntelCard],
+    you: Option<i64>,
+    locations: &HashMap<String, (i64, bool)>,
+    ttl: i64,
+) -> MapLive {
+    let now = chrono::Utc::now().timestamp();
+    let mut per_system: HashMap<i64, (u8, i64)> = HashMap::new();
+    for c in cards {
+        if ttl > 0 && now - c.report.received > ttl {
+            continue;
+        }
+        let Some(sys) = c.report.primary_system() else { continue };
+        let e = per_system.entry(sys.id).or_insert((0, 0));
+        e.0 = e.0.max(c.severity as u8);
+        e.1 = e.1.max(c.report.received);
+    }
+    let mut intel: Vec<(i64, u8, i64)> =
+        per_system.into_iter().map(|(id, (sev, ts))| (id, sev, ts)).collect();
+    intel.sort_unstable();
+
+    let mut counts: HashMap<i64, u32> = HashMap::new();
+    for (sys, _) in locations.values() {
+        *counts.entry(*sys).or_default() += 1;
+    }
+    let mut chars: Vec<(i64, u32)> = counts.into_iter().collect();
+    chars.sort_unstable();
+
+    MapLive { rev: 0, you, chars, intel }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::uitest::fixtures;
+
+    /// The player sits in 1DQ1-A, so `intel_typical` is here and `intel_beyond_the_gates` is two
+    /// gates out through 319-3D.
+    const HOME: i64 = 30_004_759;
+
+    fn facts() -> super::super::facts::UiFacts {
+        super::super::facts::UiFacts {
+            systems: Some(fixtures::systems()),
+            chars: vec![("Amryu".to_owned(), 42)],
+            active_character: "Amryu".to_owned(),
+            intel_ttl_secs: 3600,
+            ..Default::default()
+        }
+    }
+
+    fn deps(reports: Vec<crate::intel::IntelReport>) -> Deps {
+        deps_at(reports, HashMap::from([("Amryu".to_owned(), (HOME, false))]))
+    }
+
+    fn deps_at(
+        reports: Vec<crate::intel::IntelReport>,
+        locations: HashMap<String, (i64, bool)>,
+    ) -> Deps {
+        let intel_state = Arc::new(Mutex::new(crate::intel::IntelState::default()));
+        intel_state.lock().unwrap().reports = reports;
+        let player = Arc::new(Mutex::new(crate::esi::Player {
+            active_name: "Amryu".to_owned(),
+            system_id: Some(HOME),
+            docked: false,
+            locations,
+        }));
+        Deps {
+            facts: super::super::facts::shared(),
+            web: super::super::state::shared(),
+            intel_state,
+            pilots: Default::default(),
+            player,
+            system_status: Default::default(),
+            jabber: Default::default(),
+        }
+    }
+
+    fn empty_alerts() -> crate::ipc::AlertMsg {
+        crate::ipc::AlertMsg {
+            feed: Vec::new(),
+            from_you: Vec::new(),
+            via: Vec::new(),
+            chars: Vec::new(),
+            status: Default::default(),
+            resolved_pilots: Default::default(),
+            uncertain: Default::default(),
+            last_ship: Default::default(),
+            kills: Default::default(),
+            affil: Default::default(),
+            secs: 0.0,
+            focus: false,
+        }
+    }
+
+    #[test]
+    fn a_card_carries_the_distance_and_ring_the_report_does_not() {
+        // Given in arrival order; `intel_typical` is the oldest of the three.
+        let d = deps(vec![
+            fixtures::intel_typical(),
+            fixtures::intel_across_the_bridge(),
+            fixtures::intel_next_door(),
+        ]);
+        tick(&d, &facts(), &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        let intel = st.snapshot_since(0).intel.expect("intel pane published");
+        let ids: Vec<u64> = intel.cards.iter().map(|c| c.report.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                fixtures::intel_across_the_bridge().id,
+                fixtures::intel_next_door().id,
+                fixtures::intel_typical().id,
+            ],
+            "newest first, by report time rather than arrival order"
+        );
+
+        let by_id = |id: u64| intel.cards.iter().find(|c| c.report.id == id).unwrap();
+        assert_eq!(by_id(fixtures::intel_typical().id).from_you, Some(0), "player is here");
+        assert_eq!(by_id(fixtures::intel_next_door().id).from_you, Some(1), "one gate");
+        let far = by_id(fixtures::intel_across_the_bridge().id);
+        assert_eq!(far.from_you, Some(2), "two gates, through 319-3D");
+        assert!(
+            far.chars.hops.is_empty(),
+            "one character has nothing to disambiguate, so the card draws the plain number"
+        );
+    }
+
+    /// The ring only exists to say whose number a card is quoting, so it only fills in once there
+    /// is more than one character to confuse. Second character sits in 319-3D, one gate nearer.
+    #[test]
+    fn a_second_character_fills_in_the_ring() {
+        let d = deps_at(
+            vec![fixtures::intel_across_the_bridge()],
+            HashMap::from([
+                ("Amryu".to_owned(), (HOME, false)),
+                ("Alt".to_owned(), (30_004_608, false)),
+            ]),
+        );
+        let mut f = facts();
+        f.chars.push(("Alt".to_owned(), 43));
+        tick(&d, &f, &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        let intel = st.snapshot_since(0).intel.unwrap();
+        let hops = &intel.cards[0].chars.hops;
+        assert_eq!(hops.len(), 2);
+        assert_eq!(hops[0].name, "Alt", "nearest first");
+        assert_eq!(hops[0].jumps, Some(1));
+        assert_eq!(hops[1].name, "Amryu");
+        assert_eq!(hops[1].jumps, Some(2));
+        assert_eq!(intel.cards[0].chars.selected, Some(1), "the active character is Amryu");
+    }
+
+    /// Jita is in the fixture graph but nothing connects to it. An unreachable system has to come
+    /// back as "no distance", not as zero, or a card claims a hostile is on top of you.
+    #[test]
+    fn an_unreachable_system_has_no_distance() {
+        let d = deps(vec![fixtures::intel_beyond_the_gates()]);
+        tick(&d, &facts(), &empty_alerts());
+        let st = d.web.lock().unwrap();
+        let intel = st.snapshot_since(0).intel.unwrap();
+        assert_eq!(intel.cards[0].from_you, None);
+    }
+
+    #[test]
+    fn map_live_carries_systems_and_never_coordinates() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        tick(&d, &facts(), &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        let map = st.snapshot_since(0).map.expect("map pane published");
+        assert_eq!(map.you, Some(HOME));
+        assert_eq!(map.chars, vec![(HOME, 1)]);
+        assert_eq!(map.intel.len(), 1);
+        assert_eq!(map.intel[0].0, HOME);
+        let json = serde_json::to_string(&map).unwrap();
+        assert!(!json.contains("x2d") && !json.contains("\"x\""), "geometry must not ride along");
+    }
+
+    /// The whole point of the revs. A second tick over unchanged inputs must publish nothing, or an
+    /// idle app pushes a frame to every connected phone twice a second forever.
+    #[test]
+    fn an_unchanged_tick_publishes_nothing() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        let f = facts();
+        tick(&d, &f, &empty_alerts());
+        let first = d.web.lock().unwrap().seq;
+        assert!(first > 0, "the first tick has to publish");
+
+        tick(&d, &f, &empty_alerts());
+        assert_eq!(d.web.lock().unwrap().seq, first, "nothing changed, so nothing is published");
+
+        assert!(
+            d.web.lock().unwrap().snapshot_since(first).intel.is_none(),
+            "a caught-up client is sent no pane"
+        );
+    }
+
+    #[test]
+    fn a_new_report_moves_only_the_panes_it_touches() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        let f = facts();
+        tick(&d, &f, &empty_alerts());
+        let (seq, meta_rev) = {
+            let st = d.web.lock().unwrap();
+            (st.seq, st.snapshot_since(0).meta.unwrap().rev)
+        };
+
+        d.intel_state.lock().unwrap().reports.push(fixtures::intel_clear());
+        tick(&d, &f, &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        assert!(st.seq > seq, "a new report has to publish");
+        let snap = st.snapshot_since(seq);
+        assert!(snap.intel.is_some(), "the intel pane changed");
+        assert!(snap.meta.is_none(), "nothing about the meta pane changed");
+        assert_eq!(st.snapshot_since(0).meta.unwrap().rev, meta_rev);
+    }
+
+    /// The documented lock order is `intel_state -> pilots`. A publisher that takes both together
+    /// deadlocks against any UI-thread path that takes them the other way round. Holding `pilots`
+    /// from another thread is what makes that visible: this test hangs rather than fails if the
+    /// three-phase copy-out is ever collapsed into nested locks.
+    #[test]
+    fn the_publisher_never_holds_two_locks_at_once() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        let f = facts();
+        let pilots = d.pilots.clone();
+        let intel_state = d.intel_state.clone();
+
+        let held = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = held.clone();
+        // Takes the locks in the opposite order to the publisher, and holds both.
+        let other = std::thread::spawn(move || {
+            let _p = pilots.lock().unwrap();
+            flag.store(true, std::sync::atomic::Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _i = intel_state.lock().unwrap();
+        });
+        while !held.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+
+        tick(&d, &f, &empty_alerts());
+        other.join().expect("the opposing thread finished");
+        assert!(d.web.lock().unwrap().seq > 0);
+    }
+}
