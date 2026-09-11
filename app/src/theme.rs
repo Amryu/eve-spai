@@ -94,22 +94,18 @@ impl Theme {
     }
 
     pub fn apply(&self, ctx: &egui::Context) {
-        let bg = self.background.color();
-        let fg = self.foreground.color();
-        let accent = self.accent.color();
-
-        let dark = luminance(bg) < 0.5;
-        let contrast = if dark {
-            Color32::WHITE
-        } else {
-            Color32::BLACK
-        };
-
-        let surface = mix(bg, contrast, 0.05);
-        let surface_hi = mix(bg, contrast, 0.10);
-        let surface_active = mix(bg, contrast, 0.16);
-        let muted = mix(fg, bg, 0.45);
-        let line = mix(bg, contrast, 0.18);
+        let Derived {
+            dark,
+            bg,
+            fg,
+            accent,
+            surface,
+            surface_hi,
+            surface_active,
+            faint,
+            muted,
+            line,
+        } = derived(self);
 
         let mut v = if dark {
             egui::Visuals::dark()
@@ -121,7 +117,7 @@ impl Theme {
         v.panel_fill = surface;
         v.window_fill = surface;
         v.extreme_bg_color = bg;
-        v.faint_bg_color = mix(bg, contrast, 0.03);
+        v.faint_bg_color = faint;
         v.window_stroke = Stroke::new(1.0, line);
         v.hyperlink_color = accent;
 
@@ -168,6 +164,42 @@ impl Theme {
             style.spacing.interact_size.y = 26.0;
             style.spacing.menu_margin = egui::Margin::same(8);
         });
+    }
+}
+
+/// Every colour `Theme::apply` puts into the egui `Visuals`, derived from the theme's three.
+/// Pulled out of `apply` so the web view can emit the same palette as CSS custom properties rather
+/// than re-deriving it in JavaScript, where the two would drift apart the first time either changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Derived {
+    pub dark: bool,
+    pub bg: Color32,
+    pub fg: Color32,
+    pub accent: Color32,
+    pub surface: Color32,
+    pub surface_hi: Color32,
+    pub surface_active: Color32,
+    pub faint: Color32,
+    pub muted: Color32,
+    pub line: Color32,
+}
+
+pub fn derived(theme: &Theme) -> Derived {
+    let bg = theme.background.color();
+    let fg = theme.foreground.color();
+    let dark = luminance(bg) < 0.5;
+    let contrast = if dark { Color32::WHITE } else { Color32::BLACK };
+    Derived {
+        dark,
+        bg,
+        fg,
+        accent: theme.accent.color(),
+        surface: mix(bg, contrast, 0.05),
+        surface_hi: mix(bg, contrast, 0.10),
+        surface_active: mix(bg, contrast, 0.16),
+        faint: mix(bg, contrast, 0.03),
+        muted: mix(fg, bg, 0.45),
+        line: mix(bg, contrast, 0.18),
     }
 }
 
@@ -259,6 +291,60 @@ fn luminance(c: Color32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Pins the arithmetic itself. Everything else here only checks that `apply` routes the derived
+    /// values to the right `Visuals` fields, which stays true if the derivation silently changes.
+    #[test]
+    fn derived_pins_the_default_palette() {
+        let d = derived(&Theme::caldari());
+        assert!(d.dark);
+        assert_eq!(d.bg, Color32::from_rgb(0x0B, 0x0F, 0x12));
+        assert_eq!(d.fg, Color32::from_rgb(0xC8, 0xD2, 0xD8));
+        assert_eq!(d.accent, Color32::from_rgb(0x3F, 0xA9, 0xC9));
+        assert_eq!(d.surface, Color32::from_rgb(23, 27, 30));
+        assert_eq!(d.surface_hi, Color32::from_rgb(35, 39, 42));
+        assert_eq!(d.surface_active, Color32::from_rgb(50, 53, 56));
+        assert_eq!(d.faint, Color32::from_rgb(18, 22, 25));
+        assert_eq!(d.muted, Color32::from_rgb(115, 122, 127));
+        assert_eq!(d.line, Color32::from_rgb(55, 58, 61));
+    }
+
+    #[test]
+    fn derived_reads_light_themes_as_light() {
+        assert!(!derived(&Theme::daylight()).dark);
+        for t in Theme::presets().iter().filter(|t| t.name != "Daylight") {
+            assert!(derived(t).dark, "{} should be dark", t.name);
+        }
+    }
+
+    /// The web view emits `derived()` as CSS, so a `Visuals` field that stops agreeing with it is the
+    /// two surfaces drifting apart. Checked for every preset, since a light theme takes the other
+    /// contrast branch.
+    #[test]
+    fn apply_puts_the_derived_palette_into_visuals() {
+        for theme in Theme::presets() {
+            let d = derived(&theme);
+            let ctx = egui::Context::default();
+            theme.apply(&ctx);
+            let v = ctx.style().visuals.clone();
+            let n = &theme.name;
+            assert_eq!(v.dark_mode, d.dark, "{n} dark_mode");
+            assert_eq!(v.override_text_color, Some(d.fg), "{n} text");
+            assert_eq!(v.panel_fill, d.surface, "{n} panel_fill");
+            assert_eq!(v.window_fill, d.surface, "{n} window_fill");
+            assert_eq!(v.extreme_bg_color, d.bg, "{n} extreme_bg_color");
+            assert_eq!(v.faint_bg_color, d.faint, "{n} faint_bg_color");
+            assert_eq!(v.window_stroke.color, d.line, "{n} window_stroke");
+            assert_eq!(v.hyperlink_color, d.accent, "{n} hyperlink_color");
+            assert_eq!(v.widgets.noninteractive.bg_fill, d.surface, "{n} noninteractive fill");
+            assert_eq!(v.widgets.noninteractive.fg_stroke.color, d.muted, "{n} muted");
+            assert_eq!(v.widgets.inactive.bg_fill, d.surface_hi, "{n} inactive fill");
+            assert_eq!(v.widgets.hovered.bg_fill, d.surface_active, "{n} hovered fill");
+            assert_eq!(v.widgets.active.bg_stroke.color, d.accent, "{n} active stroke");
+        }
+    }
+
     #[test]
     fn install_fonts_lays_out_cjk_without_panicking() {
         let ctx = egui::Context::default();

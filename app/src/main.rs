@@ -59,6 +59,7 @@ mod tokens;
 mod tray;
 mod update;
 mod watcher;
+mod web;
 mod wormholes;
 mod zkill;
 #[cfg(test)]

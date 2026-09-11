@@ -137,7 +137,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 
 | Ticket | Region | Wave | Status |
 |---|---|---|---|
-| [WEB-001 Settings, pairing token, theme derivation](WEB-001-settings-token-theme-derivation/) | `settings.rs`, `theme.rs` | 1 | **Open** |
+| [WEB-001 Settings, pairing token, theme derivation](WEB-001-settings-token-theme-derivation/) | `settings.rs`, `theme.rs` | 1 | **Fixed** |
 | [WEB-002 Snapshot and publisher thread](WEB-002-snapshot-publisher/) | `web/snapshot.rs` | 2 | **Open** |
 | [WEB-003 HTTP server, auth, assets](WEB-003-http-server-auth-assets/) | `web/server.rs` | 3 | **Open** |
 | [WEB-004 SSE transport](WEB-004-sse-transport/) | `web/sse.rs` | 4 | **Open** |
