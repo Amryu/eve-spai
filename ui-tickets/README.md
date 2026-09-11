@@ -123,3 +123,43 @@ The harness-to-app line ratio is the number worth watching: **1.8 lines of test 
 app code changed**, and on the small tickets far more. UI-014 changed 2 lines of app code and added
 25 lines of test. That is the cost of the "a fix is not done until a screenshot shows it fixed"
 rule, and it is deliberate.
+
+## Web companion (WEB-NNN)
+
+A feature series, not defects: an opt-in local web server in the app serving a responsive page that
+mirrors the intel feed, intel alerts, fleet pings and the map to a phone on the same network. Same
+folder shape and the same cycle as a UI ticket, one branch per ticket merged `--no-ff`, at most two
+agents and never in the same region. Design notes and the reasoning behind the transport and auth
+choices live in each ticket.
+
+For a feature ticket, `before/` states the gap and the acceptance evidence; there is no defect to
+photograph. Browser screenshots come from WEB-005's fixture demo server, never from the live profile.
+
+| Ticket | Region | Wave | Status |
+|---|---|---|---|
+| [WEB-001 Settings, pairing token, theme derivation](WEB-001-settings-token-theme-derivation/) | `settings.rs`, `theme.rs` | 1 | **Open** |
+| [WEB-002 Snapshot and publisher thread](WEB-002-snapshot-publisher/) | `web/snapshot.rs` | 2 | **Open** |
+| [WEB-003 HTTP server, auth, assets](WEB-003-http-server-auth-assets/) | `web/server.rs` | 3 | **Open** |
+| [WEB-004 SSE transport](WEB-004-sse-transport/) | `web/sse.rs` | 4 | **Open** |
+| [WEB-005 Fixture demo server](WEB-005-fixture-demo-server/) | `uitest/webdemo.rs` | 5 | **Open** |
+| [WEB-006 Intel pane](WEB-006-intel-pane/) | `panes-intel.js` | 6 | **Open** |
+| [WEB-007 Alerts and pings panes](WEB-007-alerts-and-pings-panes/) | `panes-alerts.js`, `panes-pings.js` | 6 | **Open** |
+| [WEB-008 Browser dialogs and write-back](WEB-008-browser-dialogs-and-writeback/) | `routes_detail.rs`, `dialogs.js` | 7 | **Open** |
+| [WEB-009 Sound and mute](WEB-009-sound-and-mute/) | `sound.rs`, `sound.js` | 7 | **Open** |
+| [WEB-010 Layout engine](WEB-010-layout-engine/) | `layout.js` | 8 | **Open** |
+| [WEB-011 Map pane](WEB-011-map-pane/) | `web/map.rs`, `map.js` | 8 | **Open** |
+| [WEB-012 Desktop settings UI](WEB-012-desktop-settings-ui/) | `settings_view` | 9 | **Open** |
+
+### The `app.rs` rule
+
+`app/src/app.rs` is 27k lines and is the path of least resistance for all of this. The whole series
+is allowed exactly four edits to it, in four different tickets, so no two agents collide there:
+
+| Ticket | Permitted edit |
+|---|---|
+| WEB-002 | the `UiFacts` field and one `publish_ui_facts()` call |
+| WEB-003 | the `if !headless` server start hook, beside `instance::start_control_listener` |
+| WEB-008 | one arm in the existing `OverlayToMain` drain |
+| WEB-012 | the settings pane section |
+
+Everything else lives under `app/src/web/`.
