@@ -13,6 +13,8 @@
 pub mod assets;
 pub mod auth;
 pub mod css;
+#[cfg(test)]
+pub mod demo;
 pub mod icons;
 pub mod routes;
 pub mod server;

@@ -20,21 +20,44 @@ export function ico(name) {
   return span.outerHTML;
 }
 
-function render() {
+export const PANES = ["intel", "alerts", "pings", "map"];
+
+const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleet pings", map: "Map" };
+
+/// Each pane ticket replaces its own entry. Until then the slot says what it is waiting for, which
+/// is more honest than an empty box.
+export const renderers = {};
+
+function count(pane) {
   const s = state.snapshot;
-  const counts = [
-    ["intel", s?.intel?.cards?.length ?? 0],
-    ["alerts", s?.alerts?.msg?.feed?.length ?? 0],
-    ["pings", s?.pings?.pings?.length ?? 0],
-    ["systems with intel", s?.map?.intel?.length ?? 0],
-  ];
-  $("panes").innerHTML = `
-    <p class="placeholder">Paired. The feed is reaching this device; the panes that draw it land in
-    the tickets after this one.</p>
-    <ul class="counts">
-      ${counts.map(([k, n]) => `<li>${ico("broadcast")} ${k} <b>${n}</b></li>`).join("")}
-    </ul>
-    <p class="placeholder">sequence <code>${s?.seq ?? 0}</code></p>`;
+  switch (pane) {
+    case "intel": return s?.intel?.cards?.length ?? 0;
+    case "alerts": return s?.alerts?.msg?.feed?.length ?? 0;
+    case "pings": return s?.pings?.pings?.length ?? 0;
+    case "map": return s?.map?.intel?.length ?? 0;
+  }
+  return 0;
+}
+
+function renderTabs() {
+  document.getElementById("tabs").innerHTML = PANES.map(
+    (p) => `<button class="tab" data-pane="${p}">${TITLES[p]} <b>${count(p)}</b></button>`
+  ).join("");
+}
+
+function render() {
+  renderTabs();
+  for (const pane of PANES) {
+    const el = document.querySelector(`[data-pane="${pane}"]`);
+    if (!el) continue;
+    if (renderers[pane]) {
+      renderers[pane](el, state.snapshot);
+    } else {
+      el.innerHTML = `<h2>${TITLES[pane]}</h2>
+        <p class="placeholder">${count(pane)} carried in the snapshot. The pane that draws them
+        lands in its own ticket.</p>`;
+    }
+  }
 }
 
 let es = null;

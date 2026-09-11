@@ -10,9 +10,17 @@
 <body>
 <header id="bar">
   <span class="brand">EVE SPAI</span>
+  <nav id="tabs"></nav>
   <span id="status" class="status" data-state="connecting">connecting</span>
 </header>
-<main id="panes"></main>
+<!-- One section per pane, declared here so each pane ticket owns its own file and none of them
+     have to edit this one. WEB-010 decides how they are arranged. -->
+<main id="panes">
+  <section class="pane" data-pane="intel" aria-label="Intel"></section>
+  <section class="pane" data-pane="alerts" aria-label="Alerts"></section>
+  <section class="pane" data-pane="pings" aria-label="Fleet pings"></section>
+  <section class="pane" data-pane="map" aria-label="Map"></section>
+</main>
 <script type="module" src="/assets/app.js"></script>
 </body>
 </html>

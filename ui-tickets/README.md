@@ -141,7 +141,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-002 Snapshot and publisher thread](WEB-002-snapshot-publisher/) | `web/snapshot.rs` | 2 | **Fixed** |
 | [WEB-003 HTTP server, auth, assets](WEB-003-http-server-auth-assets/) | `web/server.rs` | 3 | **Fixed** |
 | [WEB-004 SSE transport](WEB-004-sse-transport/) | `web/sse.rs` | 4 | **Fixed** |
-| [WEB-005 Fixture demo server](WEB-005-fixture-demo-server/) | `uitest/webdemo.rs` | 5 | **Open** |
+| [WEB-005 Fixture demo server](WEB-005-fixture-demo-server/) | `uitest/webdemo.rs` | 5 | **Fixed** |
 | [WEB-006 Intel pane](WEB-006-intel-pane/) | `panes-intel.js` | 6 | **Open** |
 | [WEB-007 Alerts and pings panes](WEB-007-alerts-and-pings-panes/) | `panes-alerts.js`, `panes-pings.js` | 6 | **Open** |
 | [WEB-008 Browser dialogs and write-back](WEB-008-browser-dialogs-and-writeback/) | `routes_detail.rs`, `dialogs.js` | 7 | **Open** |
@@ -149,6 +149,11 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-010 Layout engine](WEB-010-layout-engine/) | `layout.js` | 8 | **Open** |
 | [WEB-011 Map pane](WEB-011-map-pane/) | `web/map.rs`, `map.js` | 8 | **Open** |
 | [WEB-012 Desktop settings UI](WEB-012-desktop-settings-ui/) | `settings_view` | 9 | **Open** |
+
+### Browser evidence
+
+The egui harness cannot render HTML, so the WEB series is verified by eye against the WEB-005 demo
+server. `GAP-011` records exactly what that leaves uncovered and what stands in for it.
 
 ### The `app.rs` rule
 
