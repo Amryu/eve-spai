@@ -37,17 +37,58 @@ function render() {
     <p class="placeholder">sequence <code>${s?.seq ?? 0}</code></p>`;
 }
 
-async function poll() {
-  try {
-    const r = await fetch("/api/snapshot", { cache: "no-store" });
-    if (!r.ok) throw new Error(r.status);
-    state.snapshot = await r.json();
-    setStatus("live", "live");
-  } catch {
-    setStatus("no connection", "down");
+let es = null;
+let stale = null;
+
+// Panes arrive whole or not at all: the server sends a pane only when it changed, so merging is a
+// field-by-field replace rather than a patch.
+function merge(update) {
+  const s = state.snapshot ?? { seq: 0, gen: update.gen };
+  if (update.gen !== s.gen) {
+    state.snapshot = update;
+    return;
   }
-  render();
+  for (const pane of ["intel", "alerts", "pings", "map", "meta"]) {
+    if (update[pane] !== undefined) s[pane] = update[pane];
+  }
+  s.seq = update.seq;
+  state.snapshot = s;
 }
+
+function markStale() {
+  clearTimeout(stale);
+  // A stream that has gone quiet past the keepalive is not a stream that is working.
+  stale = setTimeout(() => setStatus("stale", "stale"), 20000);
+}
+
+function connect() {
+  es?.close();
+  es = new EventSource("/api/events");
+  es.onopen = () => {
+    setStatus("live", "live");
+    markStale();
+  };
+  es.onmessage = (e) => {
+    merge(JSON.parse(e.data));
+    setStatus("live", "live");
+    markStale();
+    render();
+  };
+  // A reset means the server could not fill the gap, so what is held is thrown away.
+  es.addEventListener("reset", (e) => {
+    state.snapshot = JSON.parse(e.data);
+    setStatus("live", "live");
+    markStale();
+    render();
+  });
+  es.onerror = () => setStatus("reconnecting", "down");
+}
+
+// iOS kills the stream when the tab backgrounds and sometimes hands back a dead one on return, so
+// the page reconnects deliberately rather than trusting what it is given.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && es?.readyState !== EventSource.OPEN) connect();
+});
 
 async function main() {
   try {
@@ -55,10 +96,8 @@ async function main() {
   } catch {
     // A missing icon renders as nothing, which is better than a tofu square.
   }
-  await poll();
-  // Placeholder cadence. WEB-004 replaces this with a push channel, at which point the page stops
-  // asking and starts being told.
-  setInterval(poll, 2000);
+  render();
+  connect();
 }
 
 main();

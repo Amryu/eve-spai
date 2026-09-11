@@ -76,6 +76,15 @@ mod tests {
         assert!(font_path().ends_with(".ttf"));
     }
 
+    /// The page has to actually use the push channel. A silent regression to polling would still
+    /// show live data and would quietly cost every connected phone its battery.
+    #[test]
+    fn the_page_subscribes_rather_than_polls() {
+        let js = find("/assets/app.js").expect("app.js").body;
+        assert!(js.contains("new EventSource(\"/api/events\")"));
+        assert!(!js.contains("setInterval"), "no poll loop");
+    }
+
     #[test]
     fn etags_change_with_the_version_and_the_file() {
         assert_ne!(etag("app.js"), etag("app.css"));

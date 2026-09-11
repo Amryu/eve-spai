@@ -14,6 +14,7 @@ pub enum Route {
     Icons,
     Font,
     Snapshot,
+    Events,
     Health,
     NotFound,
     NotAllowed,
@@ -35,6 +36,7 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/theme.css" => Route::ThemeCss,
         "/api/icons.json" => Route::Icons,
         "/api/snapshot" => Route::Snapshot,
+        "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
         p if super::assets::find(p).is_some() => Route::Asset,
         _ => Route::NotFound,
@@ -151,6 +153,7 @@ mod tests {
         assert_eq!(classify("GET", "/api/theme.css"), Route::ThemeCss);
         assert_eq!(classify("GET", "/api/icons.json"), Route::Icons);
         assert_eq!(classify("GET", "/api/snapshot"), Route::Snapshot);
+        assert_eq!(classify("GET", "/api/events"), Route::Events);
         assert_eq!(classify("GET", "/assets/app.js"), Route::Asset);
         assert_eq!(classify("GET", "/assets/phosphor-9.9.9.ttf"), Route::Font);
         assert_eq!(classify("GET", "/nope"), Route::NotFound);
@@ -161,7 +164,7 @@ mod tests {
     #[test]
     fn only_the_health_check_is_public() {
         assert!(is_public(Route::Health));
-        for r in [Route::Index, Route::Asset, Route::ThemeCss, Route::Snapshot, Route::Font] {
+        for r in [Route::Index, Route::Asset, Route::ThemeCss, Route::Snapshot, Route::Events, Route::Font] {
             assert!(!is_public(r), "{r:?} must require pairing");
         }
     }
