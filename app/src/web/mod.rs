@@ -16,6 +16,7 @@ pub mod css;
 pub mod icons;
 pub mod routes;
 pub mod server;
+pub mod sse;
 pub mod facts;
 pub mod publish;
 pub mod snapshot;

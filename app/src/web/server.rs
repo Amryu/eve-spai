@@ -9,9 +9,11 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 use super::routes::{self, Access, Route};
+use super::sse::SharedHub;
 use super::state::SharedWeb;
 
 const WORKERS: usize = 4;
@@ -34,14 +36,15 @@ pub struct Handle {
     server: Arc<tiny_http::Server>,
     running: Arc<AtomicBool>,
     clients: Arc<AtomicU32>,
+    hub: SharedHub,
     pub addr: String,
 }
 
 impl Handle {
-    /// Devices that have completed a request recently. Surfaced in settings so a user can tell
-    /// whether the phone in their hand is the thing that is connected.
-    pub fn clients(&self) -> u32 {
-        self.clients.load(Ordering::Relaxed)
+    /// Devices holding a live stream. Surfaced in settings so a user can tell whether the phone in
+    /// their hand is the thing that is connected.
+    pub fn clients(&self) -> usize {
+        self.hub.client_count()
     }
 }
 
@@ -55,6 +58,7 @@ impl Drop for Handle {
 struct Ctx {
     cfg: Config,
     web: SharedWeb,
+    hub: SharedHub,
     fails: Mutex<HashMap<IpAddr, (Instant, u32)>>,
     clients: Arc<AtomicU32>,
 }
@@ -70,9 +74,12 @@ pub fn start(cfg: Config, web: SharedWeb) -> Result<Handle, String> {
     // Read back rather than echoing the setting, so port 0 resolves to what was actually bound.
     let addr = server.server_addr().to_string();
 
+    let hub: SharedHub = Arc::new(super::sse::Hub::default());
+    super::sse::spawn_broadcaster(hub.clone(), web.clone());
     let ctx = Arc::new(Ctx {
         cfg,
         web,
+        hub: hub.clone(),
         fails: Mutex::new(HashMap::new()),
         clients: clients.clone(),
     });
@@ -90,7 +97,7 @@ pub fn start(cfg: Config, web: SharedWeb) -> Result<Handle, String> {
             }
         });
     }
-    Ok(Handle { server, running, clients, addr })
+    Ok(Handle { server, running, clients, hub, addr })
 }
 
 fn header<'a>(req: &'a tiny_http::Request, name: &'static str) -> Option<&'a str> {
@@ -213,6 +220,10 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, query: &str) {
             ])
         }
         Route::Icons => cached(req, inm, "icons", "application/json; charset=utf-8", super::icons::json().as_bytes()),
+        Route::Events => {
+            let since = header(&req, "Last-Event-ID").and_then(|v| v.trim().parse::<u64>().ok());
+            super::sse::serve(req, ctx.hub.clone(), ctx.web.clone(), since)
+        }
         Route::Snapshot => {
             let json = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).full_json();
             respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[
@@ -276,9 +287,11 @@ mod tests {
     struct Running {
         _handle: Handle,
         base: String,
+        web: crate::web::state::SharedWeb,
     }
 
     fn serve_test() -> Running {
+        let web = crate::web::state::shared();
         let handle = start(
             Config {
                 port: 0,
@@ -286,11 +299,11 @@ mod tests {
                 token: TOKEN.to_owned(),
                 theme: crate::theme::Theme::caldari(),
             },
-            crate::web::state::shared(),
+            web.clone(),
         )
         .expect("bind an ephemeral loopback port");
         let base = format!("http://{}", handle.addr);
-        Running { _handle: handle, base }
+        Running { _handle: handle, base, web }
     }
 
     fn client() -> reqwest::blocking::Client {
@@ -425,6 +438,88 @@ mod tests {
         assert_eq!(r.status(), 404);
         let r = c.post(format!("{}/", s.base)).header("Cookie", &cookie).send().unwrap();
         assert_eq!(r.status(), 405);
+    }
+
+    fn open_stream(base: &str) -> std::net::TcpStream {
+        let addr = base.trim_start_matches("http://").to_owned();
+        let mut sock = std::net::TcpStream::connect(&addr).expect("connect");
+        let host = addr.clone();
+        write!(
+            sock,
+            "GET /api/events HTTP/1.1\r\nHost: {host}\r\nCookie: spai={TOKEN}\r\n\r\n"
+        )
+        .expect("request");
+        sock.set_read_timeout(Some(Duration::from_millis(2500))).expect("timeout");
+        sock
+    }
+
+    /// Read until `pat` shows up, or give up. Returns how long it took.
+    fn wait_for(sock: &mut std::net::TcpStream, pat: &str) -> Option<Duration> {
+        use std::io::Read;
+        let start = Instant::now();
+        let mut seen = String::new();
+        let mut buf = [0u8; 2048];
+        while start.elapsed() < Duration::from_millis(2500) {
+            match sock.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if seen.contains(pat) {
+                        return Some(start.elapsed());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        None
+    }
+
+    /// The regression test for the whole reason `sse.rs` writes its own chunks.
+    ///
+    /// `tiny_http`'s unknown-length response buffers 8 KB and never flushes per write, so the
+    /// obvious implementation delivers nothing until roughly forty events have piled up. Against
+    /// that version this test times out; the framing in `sse::serve` is what makes it pass.
+    #[test]
+    fn first_event_arrives_promptly() {
+        let s = serve_test();
+        let mut sock = open_stream(&s.base);
+        let took = wait_for(&mut sock, "data: ").expect("no event reached the socket");
+        assert!(took < Duration::from_millis(500), "first event took {took:?}");
+    }
+
+    #[test]
+    fn a_later_publish_reaches_an_open_stream() {
+        let s = serve_test();
+        let mut sock = open_stream(&s.base);
+        wait_for(&mut sock, "data: ").expect("opening snapshot");
+
+        {
+            let mut st = s.web.lock().unwrap();
+            let rev = st.changed(crate::web::state::Pane::Map, 12345).expect("a fresh hash");
+            st.put_map(crate::web::snapshot::MapLive { rev, you: Some(30_004_759), ..Default::default() });
+        }
+        let took = wait_for(&mut sock, "30004759").expect("the change never arrived");
+        assert!(took < Duration::from_millis(900), "a publish took {took:?} to reach the stream");
+    }
+
+    #[test]
+    fn the_ninth_stream_is_turned_away() {
+        let s = serve_test();
+        let held: Vec<_> = (0..crate::web::sse::MAX_CLIENTS).map(|_| {
+            let mut sock = open_stream(&s.base);
+            wait_for(&mut sock, "data: ").expect("opening snapshot");
+            sock
+        }).collect();
+
+        let c = client();
+        let over = c
+            .get(format!("{}/api/events", s.base))
+            .header("Cookie", format!("spai={TOKEN}"))
+            .send()
+            .expect("request");
+        assert_eq!(over.status(), 503);
+        assert_eq!(over.headers().get("retry-after").unwrap(), "5");
+        drop(held);
     }
 
     #[test]
