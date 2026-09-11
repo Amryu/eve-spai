@@ -83,6 +83,8 @@ pub struct Settings {
     pub severity: SeverityRules,
     #[serde(default = "default_alerts")]
     pub alerts: AlertSettings,
+    #[serde(default = "default_web")]
+    pub web: WebSettings,
     #[serde(default = "default_true")]
     pub battles_enabled: bool,
     #[serde(default)]
@@ -460,6 +462,57 @@ fn default_alerts() -> AlertSettings {
     AlertSettings::default()
 }
 
+/// The remote web view: an opt-in local server that mirrors the intel feed, alerts, fleet pings and
+/// the map to a browser on the same network.
+///
+/// Everything web lives in this one sub-struct on purpose. `Store::load_settings` fails the whole
+/// parse on a single bad field and returns None, so a key added or retyped at the `Settings` top
+/// level is how every setting a user has gets reset. Growing inside here keeps that blast radius at
+/// zero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebSettings {
+    pub enabled: bool,
+    pub port: u16,
+    /// Bind 0.0.0.0 so a phone on the same network can reach it; false binds loopback only.
+    pub bind_lan: bool,
+    /// Whether the page may write back (pilot verdicts, alert acknowledgements) or is read-only.
+    pub allow_writeback: bool,
+    /// Seeds a browser's first visit only. The real layout is per device, in the browser.
+    pub default_layout: WebLayout,
+    /// Pairing secret, generated on first enable. Deliberately not in the OS keyring: that holds ESI
+    /// refresh tokens, which reach a player's EVE account, while this reaches a LAN page on a machine
+    /// an attacker is already on. Keeping it here also means the settings export carries it.
+    pub token: String,
+}
+
+impl Default for WebSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 6767,
+            bind_lan: true,
+            allow_writeback: true,
+            default_layout: WebLayout::Auto,
+            token: String::new(),
+        }
+    }
+}
+
+fn default_web() -> WebSettings {
+    WebSettings::default()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebLayout {
+    /// Columns on a wide screen, swipeable tabs on a narrow one.
+    #[default]
+    Auto,
+    Tabs,
+    Columns,
+    Grid,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Severity {
     Info,
@@ -811,6 +864,7 @@ impl Default for Settings {
             alliances: Vec::new(),
             severity: SeverityRules::default(),
             alerts: AlertSettings::default(),
+            web: WebSettings::default(),
             battles_enabled: true,
             battles: BattleFilter::default(),
             min_battle_isk: 0.0,
@@ -1585,5 +1639,48 @@ mod tab_persistence_tests {
         assert_eq!(b.jabber_forgotten, s.jabber_forgotten);
         assert_eq!(b.jabber_main_tabs, s.jabber_main_tabs);
         assert_eq!(b.jabber_main_active, s.jabber_main_active);
+    }
+}
+
+#[cfg(test)]
+mod web_settings_tests {
+    use super::*;
+
+    #[test]
+    fn web_settings_roundtrip_and_default_to_off_on_6767() {
+        let d = Settings::default();
+        assert!(!d.web.enabled, "the server must never start unasked");
+        assert_eq!(d.web.port, 6767);
+        assert!(d.web.bind_lan);
+        assert!(d.web.allow_writeback);
+        assert_eq!(d.web.default_layout, WebLayout::Auto);
+        assert!(d.web.token.is_empty(), "the token is minted on first enable, not at rest");
+
+        let s = Settings {
+            web: WebSettings {
+                enabled: true,
+                port: 9000,
+                bind_lan: false,
+                allow_writeback: false,
+                default_layout: WebLayout::Grid,
+                token: "tok".to_owned(),
+            },
+            ..Default::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.web, s.web);
+    }
+
+    /// The whole reason the web keys live in one sub-struct: `Store::load_settings` fails the entire
+    /// parse on one bad field, so a blob written before this feature existed has to keep loading, and
+    /// every other setting in it has to survive.
+    #[test]
+    fn a_settings_blob_written_before_the_web_feature_still_loads() {
+        let legacy = r#"{"jabber_jid":"pilot@example.com","intel_ttl_secs":900,"nav_expanded":true}"#;
+        let back: Settings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back.jabber_jid, "pilot@example.com");
+        assert_eq!(back.intel_ttl_secs, 900);
+        assert!(back.nav_expanded);
+        assert_eq!(back.web, WebSettings::default());
     }
 }
