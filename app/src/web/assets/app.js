@@ -49,17 +49,25 @@ function count(pane) {
   return 0;
 }
 
+const MODES = [["auto", "Auto"], ["tabs", "Tabs"], ["columns", "Columns"], ["grid", "Grid"]];
+
 function renderTabs() {
   // `data-tab`, not `data-pane`: the sections below already own that attribute, and a shared one
   // makes `querySelector("[data-pane=...]")` match whichever comes first in the document, which is
   // the button. Every pane then renders inside the header.
-  document.getElementById("tabs").innerHTML = PANES.map(
-    (p) => `<button class="tab" data-tab="${p}">${TITLES[p]} <b>${count(p)}</b></button>`
-  ).join("");
+  document.getElementById("tabs").innerHTML =
+    PANES.map(
+      (p) => `<button class="tab" data-tab="${p}">${TITLES[p]} <b>${count(p)}</b></button>`
+    ).join("") +
+    `<span class="modebar">` +
+    MODES.map(([m, label]) => `<button data-mode="${m}">${label}</button>`).join("") +
+    `</span>`;
 }
 
 export function render() {
   renderTabs();
+  // The tab bar is rebuilt from scratch here, so whatever the layout put on those buttons has to be
+  // put back. `afterRender` is called at the end of this function for that.
   for (const pane of PANES) {
     const el = document.querySelector(`#panes [data-pane="${pane}"]`);
     if (!el) continue;
@@ -71,7 +79,12 @@ export function render() {
         lands in its own ticket.</p>`;
     }
   }
+  for (const fn of afterRender) fn();
 }
+
+/// Things that have to run after every repaint, chiefly the layout reapplying pane order and tab
+/// selection to elements this function just replaced.
+export const afterRender = [];
 
 let es = null;
 let stale = null;
