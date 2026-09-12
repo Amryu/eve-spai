@@ -48,6 +48,25 @@ pub fn theme_css(theme: &Theme) -> String {
         let name = format!("{sev:?}").to_lowercase();
         out.push_str(&format!("  --sev-{name}: {};\n", hex(crate::app::severity_color(sev))));
     }
+    for (name, c) in [
+        ("chip-clear", theme::chip::CLEAR),
+        ("chip-kill-icon", theme::chip::KILL_ICON),
+        ("chip-celestial", theme::chip::CELESTIAL),
+        ("chip-celestial-bg", theme::chip::CELESTIAL_BG),
+        ("chip-isk", theme::chip::ISK),
+        ("chip-isk-bg", theme::chip::ISK_BG),
+        ("chip-structure", theme::chip::STRUCTURE),
+        ("chip-structure-bg", theme::chip::STRUCTURE_BG),
+        ("chip-probes", theme::chip::PROBES),
+        ("chip-probes-bg", theme::chip::PROBES_BG),
+        ("chip-tackled", theme::chip::TACKLED),
+        ("chip-tackled-bg", theme::chip::TACKLED_BG),
+        ("chip-uncertain", theme::chip::UNCERTAIN),
+        ("chip-uncertain-bg", theme::chip::UNCERTAIN_BG),
+        ("chip-kill-card-bg", theme::chip::KILL_CARD_BG),
+    ] {
+        out.push_str(&format!("  --{name}: {};\n", hex(c)));
+    }
     // EVE's eleven security stops, indexed the way `security_color` indexes them, so the page can
     // pick one with the same arithmetic instead of carrying its own ramp.
     for i in 0..=10 {
@@ -99,7 +118,8 @@ mod tests {
             "--bg", "--fg", "--accent", "--surface", "--surface-hi", "--surface-active", "--faint",
             "--muted", "--line", "--hostile", "--neutral", "--friendly", "--corp", "--alliance",
             "--warning", "--sev-info", "--sev-warning", "--sev-danger", "--sev-critical",
-            "--sec-0", "--sec-5", "--sec-10",
+            "--sec-0", "--sec-5", "--sec-10", "--chip-clear", "--chip-celestial",
+            "--chip-isk-bg", "--chip-uncertain", "--chip-kill-card-bg", "--chip-tackled-bg",
         ] {
             assert!(css.contains(token), "{token} missing");
         }
@@ -120,6 +140,7 @@ mod tests {
             hex(crate::app::severity_color(crate::settings::Severity::Critical))
         )));
         assert!(css.contains(&format!("--sec-10: {}", hex(crate::app::security_color(1.0)))));
+        assert!(css.contains(&format!("--chip-uncertain: {}", hex(theme::chip::UNCERTAIN))));
         assert!(css.contains("color-scheme: dark"));
     }
 

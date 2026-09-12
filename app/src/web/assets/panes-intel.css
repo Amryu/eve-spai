@@ -1,0 +1,105 @@
+/* Card and chip metrics mirror `intel_row`: a flex-wrap row of fixed-height chips, on a card tinted
+   by severity. Compact is density only, exactly as in the app: nothing is hidden. */
+.feed { --row: 28px; --icon: 24px; --portrait: 20px; --gap: 6px; --pad: 8px 4px; }
+.feed.compact { --row: 16px; --icon: 16px; --portrait: 16px; --gap: 2px; --pad: 5px 1px; }
+
+.card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  padding: var(--pad);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin-bottom: var(--gap);
+}
+
+.card .chip,
+.card .tag,
+.card .move,
+.card .age,
+.card .jn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--row);
+  white-space: nowrap;
+}
+
+.card .chip {
+  border: 0;
+  border-radius: 4px;
+  padding: 0 6px;
+  font: inherit;
+  cursor: default;
+}
+.card button.chip,
+.card a.chip { cursor: pointer; text-decoration: none; }
+.card button.chip:hover,
+.card a.chip:hover { outline: 1px solid var(--accent); }
+
+.card .tico { font-family: phosphor; font-size: 1.1em; line-height: 1; }
+
+/* Right-aligned to a fixed column so a stack of cards lines up, the same reason the app pads these
+   to a monospace width. */
+.card .age,
+.card .jn {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--muted);
+  justify-content: flex-end;
+  min-width: 5ch;
+}
+.feed.compact .age, .feed.compact .jn { min-width: 3.5ch; }
+.card .jn { color: inherit; min-width: 4ch; }
+.card .jn.plain { padding-right: 2px; }
+
+.card img { height: var(--portrait); width: var(--portrait); border-radius: 2px; }
+.card .ship img { height: var(--icon); width: var(--icon); }
+
+.card .sys { font-weight: 600; }
+.card .ship b { font-weight: 600; }
+.card .pilot.un { background: var(--chip-uncertain-bg); }
+.card .pilot .q { color: var(--chip-uncertain); font-weight: 700; }
+.card .amb { color: var(--chip-uncertain); box-shadow: inset 0 0 0 1px var(--chip-uncertain); }
+.card .cls { font-style: italic; color: var(--muted); }
+.card .gate { color: var(--accent); }
+
+.card .tag { font-size: 0.85em; font-weight: 700; letter-spacing: 0.04em; }
+.card .move { color: var(--muted); font-style: italic; }
+
+.card .rep { flex-basis: 100%; color: var(--muted); font-size: 0.9em; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin-bottom: 0.5rem; }
+.toolbar .tf {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+.toolbar .tf.on { background: var(--surface-active); border-color: var(--accent); }
+.toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+}
+.toolbar input {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  outline: none;
+  min-width: 0;
+}
+.toolbar .jf input { width: 4ch; }
+.toolbar .qf { flex: 1 1 12rem; }
+.toolbar .qf input { width: 100%; }
+
+.count { color: var(--muted); margin: 0 0 0.5rem; }

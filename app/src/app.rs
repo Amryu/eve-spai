@@ -11497,7 +11497,7 @@ impl SpaiApp {
 
         let now = chrono::Utc::now().timestamp();
         let state = self.intel_state.lock().unwrap();
-        let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+        let green = crate::theme::chip::CLEAR;
         let mut shown = 0;
         for r in state.reports.iter().rev() {
             if !r.systems.iter().any(|s| s.id == id) {
@@ -18648,7 +18648,7 @@ impl eframe::App for SpaiApp {
         if crate::transparency_enabled() {
             [0.0, 0.0, 0.0, 0.0]
         } else {
-            egui::Color32::from_rgb(12, 12, 12).to_normalized_gamma_f32()
+            crate::theme::chip::KILL_CARD_BG.to_normalized_gamma_f32()
         }
     }
 }
@@ -23465,7 +23465,7 @@ pub(crate) fn intel_row(
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
-    let green = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
+    let green = crate::theme::chip::CLEAR;
     let warn = crate::theme::standing::WARNING;
     let red = crate::theme::standing::HOSTILE;
     let accent = ui.visuals().hyperlink_color;
@@ -23488,9 +23488,9 @@ pub(crate) fn intel_row(
         icon::INFO
     };
     let tint = if r.clear { green } else { severity_color(sev) };
-    let icon_color = if is_zkill { egui::Color32::from_rgb(0xEF, 0x53, 0x50) } else { tint };
+    let icon_color = if is_zkill { crate::theme::chip::KILL_ICON } else { tint };
     let card_fill = if is_zkill {
-        egui::Color32::from_rgb(12, 12, 12).gamma_multiply(if stale { 0.6 } else { 1.0 })
+        crate::theme::chip::KILL_CARD_BG.gamma_multiply(if stale { 0.6 } else { 1.0 })
     } else {
         tint.gamma_multiply(if stale { 0.05 } else { 0.13 })
     };
@@ -23662,9 +23662,9 @@ pub(crate) fn intel_row(
                         chip(
                             ui,
                             egui::RichText::new(format!("{cicon} {label}  {dist}"))
-                                .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                                .color(crate::theme::chip::CELESTIAL)
                                 .strong(),
-                            egui::Color32::from_rgb(0x10, 0x32, 0x3a),
+                            crate::theme::chip::CELESTIAL_BG,
                         )
                         .on_hover_text(format!("Death {dist} from {cname}"));
                     }
@@ -23690,9 +23690,9 @@ pub(crate) fn intel_row(
                     chip(
                         ui,
                         egui::RichText::new(format!("{} {}", icon::COINS, crate::intel::format_isk(isk)))
-                            .color(egui::Color32::from_rgb(0xff, 0xd9, 0x6b))
+                            .color(crate::theme::chip::ISK)
                             .strong(),
-                        egui::Color32::from_rgb(0x4a, 0x3d, 0x10),
+                        crate::theme::chip::ISK_BG,
                     )
                     .on_hover_text("ISK posted");
                 }
@@ -23702,7 +23702,7 @@ pub(crate) fn intel_row(
                         Some(d) => format!("{name}  {d}"),
                         None => name.clone(),
                     };
-                    let col = egui::Color32::from_rgb(0xc4, 0xb5, 0xfd);
+                    let col = crate::theme::chip::STRUCTURE;
                     if let Some(tid) = crate::intel::structure_type_id(name) {
                         let url = eve_type_render_url(tid, badge_isz);
                         let img = egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(badge_isz));
@@ -23713,7 +23713,7 @@ pub(crate) fn intel_row(
                     chip(
                         ui,
                         egui::RichText::new(format!("{} {text}", icon::CASTLE_TURRET)).color(col).strong(),
-                        egui::Color32::from_rgb(0x2e, 0x24, 0x4a),
+                        crate::theme::chip::STRUCTURE_BG,
                     )
                     .on_hover_text(match dist {
                         Some(d) => format!("{name}, {d} off"),
@@ -23737,9 +23737,9 @@ pub(crate) fn intel_row(
                     chip(
                         ui,
                         egui::RichText::new(format!("{cicon} {cel}"))
-                            .color(egui::Color32::from_rgb(0x8e, 0xd6, 0xe6))
+                            .color(crate::theme::chip::CELESTIAL)
                             .strong(),
-                        egui::Color32::from_rgb(0x10, 0x32, 0x3a),
+                        crate::theme::chip::CELESTIAL_BG,
                     )
                     .on_hover_text(format!("{cel} (celestial)"));
                 }
@@ -23748,9 +23748,9 @@ pub(crate) fn intel_row(
                     chip(
                         ui,
                         egui::RichText::new(format!("{} {probes}", icon::MAGNIFYING_GLASS))
-                            .color(egui::Color32::from_rgb(0x7d, 0xd3, 0xde))
+                            .color(crate::theme::chip::PROBES)
                             .strong(),
-                        egui::Color32::from_rgb(0x10, 0x3a, 0x40),
+                        crate::theme::chip::PROBES_BG,
                     )
                     .on_hover_text("Scanning probes on D-Scan (someone is scanning)");
                 }
@@ -23873,8 +23873,8 @@ pub(crate) fn intel_row(
                         ui,
                         egui::RichText::new(label)
                             .strong()
-                            .color(egui::Color32::from_rgb(0xff, 0x8a, 0x8a)),
-                        egui::Color32::from_rgb(0x5a, 0x18, 0x18),
+                            .color(crate::theme::chip::TACKLED),
+                        crate::theme::chip::TACKLED_BG,
                     );
                 };
                 for target in &r.tackled_targets {
@@ -23898,7 +23898,7 @@ pub(crate) fn intel_row(
                         c.get(cid)
                     });
                     let is_uncertain = uncertain.contains(name);
-                    let amber = egui::Color32::from_rgb(0xfb, 0xbf, 0x24);
+                    let amber = crate::theme::chip::UNCERTAIN;
                     let sz = egui::Vec2::splat(pilot_isz);
                     let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);
                     let resp = if let Some(cid) = char_id {
@@ -23915,7 +23915,7 @@ pub(crate) fn intel_row(
                         }
                         let mut btn = egui::Button::new(atoms);
                         if is_uncertain {
-                            btn = btn.fill(egui::Color32::from_rgb(0x3d, 0x30, 0x14));
+                            btn = btn.fill(crate::theme::chip::UNCERTAIN_BG);
                         }
                         ui.add(btn)
                     } else {
@@ -24180,7 +24180,7 @@ pub(crate) fn intel_row(
                                             };
                                             ui.label(
                                                 egui::RichText::new(tag)
-                                                    .color(egui::Color32::from_rgb(0xfb, 0xbf, 0x24))
+                                                    .color(crate::theme::chip::UNCERTAIN)
                                                     .strong(),
                                             )
                                             .on_hover_text(hover);

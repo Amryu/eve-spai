@@ -203,6 +203,45 @@ pub fn derived(theme: &Theme) -> Derived {
     }
 }
 
+/// The intel card's chip palette.
+///
+/// These were literals inside `intel_row`, which meant the web view had to copy fourteen hex values
+/// out of a 27k-line file and hope. Named here so both surfaces read the same constant and
+/// `web::css` can emit them, and so a chip's colour can be found by searching for what it is rather
+/// than for its hex.
+#[allow(dead_code)]
+pub mod chip {
+    use egui::Color32;
+
+    /// A "clear" report, and the icon that goes with it.
+    pub const CLEAR: Color32 = Color32::from_rgb(0x5A, 0xC8, 0x6A);
+    /// A zKill-derived card's icon.
+    pub const KILL_ICON: Color32 = Color32::from_rgb(0xEF, 0x53, 0x50);
+
+    /// Celestials and the near-celestial chip.
+    pub const CELESTIAL: Color32 = Color32::from_rgb(0x8E, 0xD6, 0xE6);
+    pub const CELESTIAL_BG: Color32 = Color32::from_rgb(0x10, 0x32, 0x3A);
+
+    pub const ISK: Color32 = Color32::from_rgb(0xFF, 0xD9, 0x6B);
+    pub const ISK_BG: Color32 = Color32::from_rgb(0x4A, 0x3D, 0x10);
+
+    pub const STRUCTURE: Color32 = Color32::from_rgb(0xC4, 0xB5, 0xFD);
+    pub const STRUCTURE_BG: Color32 = Color32::from_rgb(0x2E, 0x24, 0x4A);
+
+    pub const PROBES: Color32 = Color32::from_rgb(0x7D, 0xD3, 0xDE);
+    pub const PROBES_BG: Color32 = Color32::from_rgb(0x10, 0x3A, 0x40);
+
+    pub const TACKLED: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x8A);
+    pub const TACKLED_BG: Color32 = Color32::from_rgb(0x5A, 0x18, 0x18);
+
+    /// An unresolved or uncertain name: the `?` on a pilot badge, and an ambiguous hull.
+    pub const UNCERTAIN: Color32 = Color32::from_rgb(0xFB, 0xBF, 0x24);
+    pub const UNCERTAIN_BG: Color32 = Color32::from_rgb(0x3D, 0x30, 0x14);
+
+    /// A zKill card's own background, darker than any theme surface so it reads as foreign.
+    pub const KILL_CARD_BG: Color32 = Color32::from_rgb(0x0C, 0x0C, 0x0C);
+}
+
 #[allow(dead_code)]
 pub mod standing {
     use egui::Color32;
@@ -342,6 +381,37 @@ mod tests {
             assert_eq!(v.widgets.inactive.bg_fill, d.surface_hi, "{n} inactive fill");
             assert_eq!(v.widgets.hovered.bg_fill, d.surface_active, "{n} hovered fill");
             assert_eq!(v.widgets.active.bg_stroke.color, d.accent, "{n} active stroke");
+        }
+    }
+
+    /// Pins every chip colour to the literal it replaced inside `intel_row`. Extracting fourteen hex
+    /// values by hand is exactly the kind of edit where one digit slips, and a wrong chip colour is
+    /// invisible until someone notices a card looks off.
+    #[test]
+    fn chip_colours_match_the_literals_they_replaced() {
+        use chip::*;
+        for (name, got, want) in [
+            ("CLEAR", CLEAR, (0x5A, 0xC8, 0x6A)),
+            ("KILL_ICON", KILL_ICON, (0xEF, 0x53, 0x50)),
+            ("CELESTIAL", CELESTIAL, (0x8E, 0xD6, 0xE6)),
+            ("CELESTIAL_BG", CELESTIAL_BG, (0x10, 0x32, 0x3A)),
+            ("ISK", ISK, (0xFF, 0xD9, 0x6B)),
+            ("ISK_BG", ISK_BG, (0x4A, 0x3D, 0x10)),
+            ("STRUCTURE", STRUCTURE, (0xC4, 0xB5, 0xFD)),
+            ("STRUCTURE_BG", STRUCTURE_BG, (0x2E, 0x24, 0x4A)),
+            ("PROBES", PROBES, (0x7D, 0xD3, 0xDE)),
+            ("PROBES_BG", PROBES_BG, (0x10, 0x3A, 0x40)),
+            ("TACKLED", TACKLED, (0xFF, 0x8A, 0x8A)),
+            ("TACKLED_BG", TACKLED_BG, (0x5A, 0x18, 0x18)),
+            ("UNCERTAIN", UNCERTAIN, (0xFB, 0xBF, 0x24)),
+            ("UNCERTAIN_BG", UNCERTAIN_BG, (0x3D, 0x30, 0x14)),
+            ("KILL_CARD_BG", KILL_CARD_BG, (0x0C, 0x0C, 0x0C)),
+        ] {
+            assert_eq!(
+                (got.r(), got.g(), got.b()),
+                want,
+                "{name} does not match the literal it was extracted from"
+            );
         }
     }
 
