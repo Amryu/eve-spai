@@ -32,11 +32,20 @@ pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'sta
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
         let facts = deps.facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if facts.systems.is_none() {
+        if !should_publish(&facts) {
             continue;
         }
         tick(&deps, &facts, &alerts());
     });
+}
+
+/// Whether this tick is worth doing.
+///
+/// Split out pure because the loop it guards never returns, so the only way to test the decision is
+/// to be able to ask it directly. Both halves matter: the feature is off by default, and the SDE
+/// graph arrives well after startup.
+fn should_publish(facts: &super::facts::UiFacts) -> bool {
+    facts.web_enabled && facts.systems.is_some()
 }
 
 fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMsg) {
@@ -201,6 +210,7 @@ mod tests {
 
     fn facts() -> super::super::facts::UiFacts {
         super::super::facts::UiFacts {
+            web_enabled: true,
             systems: Some(fixtures::systems()),
             chars: vec![("Amryu".to_owned(), 42)],
             active_character: "Amryu".to_owned(),
@@ -251,6 +261,22 @@ mod tests {
             secs: 0.0,
             focus: false,
         }
+    }
+
+    /// The publisher thread is spawned whether or not anyone wants it. Ticking anyway would clone
+    /// 250 reports, resolve pilots, walk the graph for character rings and serialize four panes,
+    /// twice a second, forever, for every user who never turns the web view on. It is off by
+    /// default, so that is almost all of them.
+    #[test]
+    fn a_tick_is_skipped_unless_the_feature_is_on_and_the_graph_is_loaded() {
+        let ready = facts();
+        assert!(should_publish(&ready));
+
+        let off = super::super::facts::UiFacts { web_enabled: false, ..ready.clone() };
+        assert!(!should_publish(&off), "off by default has to mean idle, not merely unserved");
+
+        let no_graph = super::super::facts::UiFacts { systems: None, ..ready };
+        assert!(!should_publish(&no_graph), "the SDE arrives long after the thread starts");
     }
 
     #[test]
