@@ -28,6 +28,16 @@ const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleet pings", map: "M
 /// is more honest than an empty box.
 export const renderers = {};
 
+/// A pane module registers itself here.
+///
+/// Module scripts run in document order, so `main()` has already painted the placeholders by the
+/// time a pane module is evaluated. Registering therefore has to repaint, or the pane never appears
+/// until the next push.
+export function register(name, fn) {
+  renderers[name] = fn;
+  render();
+}
+
 function count(pane) {
   const s = state.snapshot;
   switch (pane) {
@@ -48,7 +58,7 @@ function renderTabs() {
   ).join("");
 }
 
-function render() {
+export function render() {
   renderTabs();
   for (const pane of PANES) {
     const el = document.querySelector(`#panes [data-pane="${pane}"]`);

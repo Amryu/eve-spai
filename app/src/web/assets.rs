@@ -18,6 +18,16 @@ pub const ASSETS: &[Asset] = &[
         body: include_str!("assets/app.css"),
     },
     Asset {
+        path: "/assets/panes-intel.css",
+        mime: "text/css; charset=utf-8",
+        body: include_str!("assets/panes-intel.css"),
+    },
+    Asset {
+        path: "/assets/panes-intel.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_str!("assets/panes-intel.js"),
+    },
+    Asset {
         path: "/assets/app.js",
         mime: "text/javascript; charset=utf-8",
         body: include_str!("assets/app.js"),
