@@ -32,20 +32,22 @@ Underneath it, the parts that can be tested without a browser are:
 
 ## Notes
 
-Screenshots for WEB-005 and everything after it are pending: this session had no browser available.
-The Claude in Chrome extension is not connected, and the flatpak Firefox on this machine does not
-complete a `--headless --screenshot` run. Taking them needs one command and a browser:
+**Resolved, in part.** `app/src/uitest/webshot.sh` now shoots the demo at 1440 and 390 with the
+flatpak Firefox. The first report that no browser was available was wrong: Firefox works, but fails
+silently in three ways, each of which looks like "headless is broken here".
 
-```
-cargo test --bin eve-spai webdemo -- --ignored --nocapture
-# then open http://127.0.0.1:6799/?t=demo
-```
+- It can only write under `xdg-download`, so `--screenshot /tmp/x.png` exits 0 and writes nothing,
+  and a `--profile` outside that path reports "Could not find profile folder".
+- Without `--no-remote` and its own profile, a running Firefox swallows the URL and exits 0.
+- `--screenshot` fires on `load`, so anything fetched after that is not in the shot. The page now
+  inlines its first snapshot, which makes a load-time shot show real data.
 
-Until they exist, each WEB ticket's `after/` folder is empty and its `review.md` says so. That is the
-honest state, not a passed check.
+What that leaves: a shot is a single frame at load. Interaction, swipe, pinch and audio unlock are
+still verified by hand on a real device, and each `review.md` names the device.
 
 ## How to close it
 
-Either wire a headless browser into the repo so a render can be produced the way `uitest_screenshots`
-produces PNGs, or accept that this surface is verified by eye and keep saying so in each review.
-Automating it is only worth doing if the WEB series keeps growing after the first twelve tickets.
+The static-render half is closed. What is left is driving the page rather than photographing it:
+clicks, swipes, pinch, and the audio unlock. That needs a browser that can be scripted, which the
+flatpak Firefox cannot be without a WebDriver setup. Worth doing only if the WEB series keeps growing
+past the first twelve tickets; until then each review names what was checked by hand and on what.

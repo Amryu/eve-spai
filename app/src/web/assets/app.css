@@ -25,6 +25,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  flex-wrap: wrap;
   padding: 0.5rem 0.75rem;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
@@ -33,7 +34,15 @@ body {
   z-index: 10;
 }
 
-.brand { color: var(--accent); font-weight: 700; font-size: 1rem; letter-spacing: 0.06em; }
+.brand {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  /* Two words in a flex row wrap to two lines the moment the tabs need the space, which at phone
+     width is always. */
+  white-space: nowrap;
+}
 
 .status { margin-left: auto; color: var(--muted); font-size: 0.9rem; }
 .status[data-state="live"] { color: var(--friendly); }

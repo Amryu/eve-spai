@@ -149,11 +149,17 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-010 Layout engine](WEB-010-layout-engine/) | `layout.js` | 8 | **Open** |
 | [WEB-011 Map pane](WEB-011-map-pane/) | `web/map.rs`, `map.js` | 8 | **Open** |
 | [WEB-012 Desktop settings UI](WEB-012-desktop-settings-ui/) | `settings_view` | 9 | **Open** |
+| [WEB-013 First browser render was blank, then drew every pane in the header](WEB-013-first-browser-render/) | `assets/app.js`, `web/assets.rs` | after 5 | **Fixed** |
 
 ### Browser evidence
 
-The egui harness cannot render HTML, so the WEB series is verified by eye against the WEB-005 demo
-server. `GAP-011` records exactly what that leaves uncovered and what stands in for it.
+The egui harness cannot render HTML, so the WEB series is shot with `app/src/uitest/webshot.sh`,
+which renders the WEB-005 fixture demo at 1440 and 390 into `target/webshots`. `GAP-011` records what
+that still leaves uncovered. `CLAUDE.md` carries the three ways a headless Firefox silently produces
+no file at all.
+
+WEB-013 is why this matters: five tickets landed with 631 green tests and a page that rendered
+nothing.
 
 ### The `app.rs` rule
 

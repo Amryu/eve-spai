@@ -91,6 +91,19 @@ impl Hub {
         Some(ring.iter().filter(|(id, _)| *id > since).cloned().collect())
     }
 
+    /// Tell every stream to go away and come back.
+    ///
+    /// Without this a restart, which is what changing the port, the token or the theme does, leaves
+    /// each connected phone holding a socket that will never carry another byte: the listener is
+    /// gone but the stream threads and their sockets are not. `EventSource` only reconnects when the
+    /// stream ends, so the page would sit on stale data indefinitely.
+    pub fn close_all(&self, why: &'static str) {
+        let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
+        for c in clients.drain(..) {
+            let _ = c.tx.try_send(Frame::Bye(why));
+        }
+    }
+
     fn broadcast(&self, id: u64, json: Arc<str>) {
         {
             let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
@@ -302,6 +315,20 @@ mod tests {
 
     /// A phone that stopped reading must not hold the broadcaster up, and must not accumulate a
     /// backlog either. It is dropped, and EventSource brings it back with a `Last-Event-ID`.
+    #[test]
+    fn closing_tells_every_stream_to_come_back() {
+        let hub = Hub::default();
+        let held: Vec<_> = (0..3).map(|_| hub.join().expect("joined")).collect();
+        hub.close_all("restart");
+        assert_eq!(hub.client_count(), 0, "the hub lets go of them");
+        for (_, rx) in &held {
+            assert!(
+                matches!(rx.try_recv(), Ok(Frame::Bye("restart"))),
+                "each stream has to be told, or the phone sits on a dead socket"
+            );
+        }
+    }
+
     #[test]
     fn a_client_that_stops_reading_is_dropped_rather_than_queued() {
         let hub = Hub::default();

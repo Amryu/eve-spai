@@ -17450,9 +17450,9 @@ impl AlertEngine {
     /// main window is minimized and its UI loop is parked.
     ///
     /// Shared by the overlay push and the web publisher, so the two cannot disagree about what a
-    /// card says. `gate` is the caller's own reason to want the feed at all: the overlay wants it
-    /// only when a rule opens its window, the web view whenever alerts are on. `secs` and `focus`
-    /// are overlay timing and are left at zero for the caller to fill in.
+    /// card says. `want_feed` is the caller's own reason to want the feed at all: the overlay wants
+    /// it only when a rule opens its window, the web view whenever alerts are on. `secs` and
+    /// `focus` are overlay timing and are left at zero for the caller to fill in.
     pub(crate) fn build_alert_msg(
         &self,
         intel_state: &std::sync::Mutex<crate::intel::IntelState>,
@@ -17461,10 +17461,10 @@ impl AlertEngine {
         system_status: &crate::systemstatus::SharedStatus,
         affiliations: &crate::affiliation::SharedAffil,
         kill_cache: &crate::kills::KillCache,
-        gate: bool,
+        want_feed: bool,
     ) -> crate::ipc::AlertMsg {
         let cfg = self.config.lock().unwrap().clone();
-        let feature = gate;
+        let feature = want_feed;
 
         let raw: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = {
             let st = self.alert_shared.lock().unwrap();
@@ -26244,7 +26244,7 @@ mod rescue_range_tests {
     /// no route, rather than vanishing and leaving the FC with nothing.
     #[test]
     fn unroutable_target_falls_back_to_the_nearest_on_the_map() {
-        let (systems, coords) = fixture();
+        let (_systems, coords) = fixture();
         let by_name: HashMap<String, SystemInfo> = coords
             .iter()
             .map(|s| {
