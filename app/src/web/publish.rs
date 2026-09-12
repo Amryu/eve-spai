@@ -124,6 +124,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         })
         .collect();
 
+    let formup_names = formup_names(&ping_cards, &systems);
     let map = map_live(&cards, player_sys, &locations, facts.intel_ttl_secs);
 
     // Phase 3, publish. Only the hash comparison happens under the web lock.
@@ -142,8 +143,8 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
     if let Some(rev) = st.changed(Pane::Alerts, hash_of(&alerts.feed)) {
         st.put_alerts(AlertPane { rev, msg: alerts.clone() });
     }
-    if let Some(rev) = st.changed(Pane::Pings, hash_of(&ping_cards)) {
-        st.put_pings(PingPane { rev, pings: ping_cards });
+    if let Some(rev) = st.changed(Pane::Pings, hash_of(&(&ping_cards, &formup_names))) {
+        st.put_pings(PingPane { rev, pings: ping_cards, systems: formup_names });
     }
     if let Some(rev) = st.changed(Pane::Map, hash_of(&map)) {
         st.put_map(MapLive { rev, ..map });
@@ -164,6 +165,27 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
     if let Some(rev) = st.changed(Pane::Meta, hash_of(&meta)) {
         st.put_meta(Meta { rev, ..meta });
     }
+}
+
+/// Names for every system a formup points at, and nothing else: the page has no SDE to look them up
+/// in, and a formup that reads as a bare id is useless to someone trying to get to it.
+fn formup_names(
+    pings: &[PingCard],
+    systems: &Option<Arc<crate::geo::Systems>>,
+) -> HashMap<i64, String> {
+    let Some(sys) = systems.as_ref() else { return HashMap::new() };
+    let mut out = HashMap::new();
+    for p in pings {
+        let crate::pings::Ping::Fleet { formup, .. } = &p.ping else { continue };
+        for f in formup {
+            if let crate::pings::Formup::System(id) = f {
+                if let Some(info) = sys.info_of(*id) {
+                    out.insert(*id, info.name.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Worst severity and newest sighting per system, plus where your characters are. Systems only,
@@ -348,6 +370,19 @@ mod tests {
         let st = d.web.lock().unwrap();
         let intel = st.snapshot_since(0).intel.unwrap();
         assert_eq!(intel.cards[0].from_you, None);
+    }
+
+    /// `Formup::System` carries an id and nothing else, and the page has no SDE, so a formup that
+    /// is not resolved here renders as a bare number to whoever is trying to get to it.
+    #[test]
+    fn a_formup_system_is_named_for_the_page() {
+        let d = deps(vec![]);
+        d.jabber.lock().unwrap().pings = vec![fixtures::ping_fleet()];
+        tick(&d, &facts(), &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        let pane = st.snapshot_since(0).pings.expect("pings pane");
+        assert_eq!(pane.systems.get(&HOME).map(String::as_str), Some("1DQ1-A"));
     }
 
     #[test]

@@ -1,0 +1,51 @@
+/* Mirrors `render_ping`: a grouped card, with an accent stroke and a faint accent wash when a rule
+   matched. That highlight is the only thing separating a ping that concerns you from one that does
+   not, so it is not decoration. */
+.ping {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.ping.matched {
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.phead { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.phead .fname { color: var(--accent); }
+.phead .page { margin-left: auto; color: var(--muted); }
+
+.pap {
+  border-radius: 3px;
+  padding: 0 0.35rem;
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.pap.strat { color: #fff; background: var(--hostile); }
+.pap.peace { color: var(--bg); background: var(--warning); }
+
+.prow { display: flex; gap: 0.5rem; align-items: baseline; margin-top: 0.25rem; flex-wrap: wrap; }
+.prow .plabel { color: var(--muted); min-width: 5rem; }
+
+.ping .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  font: inherit;
+  background: var(--surface-hi);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+.ping .mumble { color: var(--accent); }
+
+/* Line height matched to the ink. UI-018 and UI-027 both landed on ping and chat bodies allocating
+   26px of row for 15px of text; the web card must not reintroduce it. */
+.pbody { margin: 0.4rem 0 0; line-height: 1.35; white-space: pre-wrap; }
+.pfoot { margin-top: 0.3rem; color: var(--muted); font-size: 0.9em; }
