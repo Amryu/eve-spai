@@ -1602,6 +1602,7 @@ impl SpaiApp {
         f.compact = self.settings.alerts.compact_mode;
         f.theme = self.settings.theme.clone();
         f.allow_writeback = self.settings.web.allow_writeback;
+        f.sounds = self.settings.alerts.sounds.clone();
         drop(f);
 
         let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());

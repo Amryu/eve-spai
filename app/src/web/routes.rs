@@ -5,7 +5,7 @@
 
 use std::net::IpAddr;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
     Index,
     /// A file from the static table, by path.
@@ -19,6 +19,7 @@ pub enum Route {
     SystemInfo(i64),
     ShipInfo(i64),
     Action,
+    Sound(String),
     Events,
     Health,
     NotFound,
@@ -27,7 +28,7 @@ pub enum Route {
 
 /// Whether a route is reachable without pairing. Only the health check is: everything else is
 /// either the intel itself or a page that immediately asks for it.
-pub fn is_public(r: Route) -> bool {
+pub fn is_public(r: &Route) -> bool {
     matches!(r, Route::Health)
 }
 
@@ -48,6 +49,17 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/map/geometry" => Route::MapGeometry,
         "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
+        p if p.starts_with("/assets/sound/") && p.ends_with(".wav") => {
+            let file = &p["/assets/sound/".len()..p.len() - 4];
+            // The name is a preset, never a path: `/assets/sound/../../etc/passwd.wav` must not be
+            // a way to read a file off a machine this socket is exposed on.
+            match file.split_once("-v") {
+                Some((name, _)) if name.chars().all(|c| c.is_ascii_lowercase()) && !name.is_empty() => {
+                    Route::Sound(name.to_owned())
+                }
+                _ => Route::NotFound,
+            }
+        }
         p if p.starts_with("/api/system/") => match p["/api/system/".len()..].parse() {
             Ok(id) => Route::SystemInfo(id),
             Err(_) => Route::NotFound,
@@ -133,7 +145,7 @@ pub enum Access {
 }
 
 pub fn authorize(
-    route: Route,
+    route: &Route,
     query_token: Option<&str>,
     cookie_token: Option<&str>,
     host: Option<&str>,
@@ -179,6 +191,7 @@ mod tests {
         assert_eq!(classify("GET", "/api/system/30004759"), Route::SystemInfo(30_004_759));
         assert_eq!(classify("GET", "/api/ship/587"), Route::ShipInfo(587));
         assert_eq!(classify("GET", "/api/system/not-a-number"), Route::NotFound);
+        assert_eq!(classify("GET", "/assets/sound/warning-v6.wav"), Route::Sound("warning".into()));
         assert_eq!(classify("POST", "/api/action"), Route::Action);
         assert_eq!(classify("POST", "/api/snapshot"), Route::NotAllowed);
         assert_eq!(classify("GET", "/api/action"), Route::NotFound);
@@ -189,9 +202,26 @@ mod tests {
         assert_eq!(classify("DELETE", "/api/snapshot"), Route::NotAllowed);
     }
 
+    /// The socket can be on the LAN, so a sound name must never be able to become a path.
+    #[test]
+    fn a_sound_name_cannot_escape_into_the_filesystem() {
+        for bad in [
+            "/assets/sound/../../../etc/passwd.wav",
+            "/assets/sound/..-v6.wav",
+            "/assets/sound/%2e%2e-v6.wav",
+            "/assets/sound/Warning-v6.wav",
+            "/assets/sound/home/alarm-v6.wav",
+            "/assets/sound/-v6.wav",
+            "/assets/sound/warning.wav",
+        ] {
+            assert_eq!(classify("GET", bad), Route::NotFound, "{bad} was accepted");
+        }
+        assert_eq!(classify("GET", "/assets/sound/critical-v6.wav"), Route::Sound("critical".into()));
+    }
+
     #[test]
     fn only_the_health_check_is_public() {
-        assert!(is_public(Route::Health));
+        assert!(is_public(&Route::Health));
         for r in [
             Route::Index,
             Route::Asset,
@@ -203,7 +233,7 @@ mod tests {
             Route::Events,
             Route::Font,
         ] {
-            assert!(!is_public(r), "{r:?} must require pairing");
+            assert!(!is_public(&r), "{r:?} must require pairing");
         }
     }
 
@@ -267,33 +297,33 @@ mod tests {
         let host = Some("192.168.1.5:6767");
 
         assert_eq!(
-            authorize(Route::Health, None, None, Some("evil.com"), tok, false),
+            authorize(&Route::Health, None, None, Some("evil.com"), tok, false),
             Access::Granted,
             "the health check answers before any of the checks"
         );
-        assert_eq!(authorize(Route::Index, None, None, host, tok, false), Access::Denied);
+        assert_eq!(authorize(&Route::Index, None, None, host, tok, false), Access::Denied);
         assert_eq!(
-            authorize(Route::Index, Some("wrong"), None, host, tok, false),
+            authorize(&Route::Index, Some("wrong"), None, host, tok, false),
             Access::Denied
         );
-        assert_eq!(authorize(Route::Index, Some(tok), None, host, tok, false), Access::Pair);
-        assert_eq!(authorize(Route::Index, None, Some(tok), host, tok, false), Access::Granted);
+        assert_eq!(authorize(&Route::Index, Some(tok), None, host, tok, false), Access::Pair);
+        assert_eq!(authorize(&Route::Index, None, Some(tok), host, tok, false), Access::Granted);
         assert_eq!(
-            authorize(Route::Index, Some(tok), None, Some("evil.com"), tok, false),
+            authorize(&Route::Index, Some(tok), None, Some("evil.com"), tok, false),
             Access::RebindBlocked,
             "a rebound request must not pair, however good its token"
         );
         assert_eq!(
-            authorize(Route::Index, Some(tok), None, host, "", false),
+            authorize(&Route::Index, Some(tok), None, host, "", false),
             Access::Denied,
             "no token configured means nothing is reachable"
         );
         assert_eq!(
-            authorize(Route::Index, Some(tok), None, host, tok, true),
+            authorize(&Route::Index, Some(tok), None, host, tok, true),
             Access::RateLimited
         );
         assert_eq!(
-            authorize(Route::Index, None, Some(tok), host, tok, true),
+            authorize(&Route::Index, None, Some(tok), host, tok, true),
             Access::Granted,
             "an already paired device is not rate limited"
         );

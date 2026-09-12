@@ -93,6 +93,12 @@ pub struct Meta {
     pub active_character: String,
     pub chars: Vec<(String, i64)>,
     pub player_system: Option<i64>,
+    /// Severity name to sound name, so the page asks for the sound the user configured rather than
+    /// guessing one from the severity.
+    pub sounds: HashMap<String, String>,
+    /// Bumped when the synthesis changes, so a browser cannot keep an immutable WAV past a tone
+    /// change.
+    pub sound_rev: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -78,6 +78,11 @@ pub const ASSETS: &[Asset] = &[
         body: include_str!("assets/dialogs.js"),
     },
     Asset {
+        path: "/assets/sound.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_str!("assets/sound.js"),
+    },
+    Asset {
         path: "/assets/app.js",
         mime: "text/javascript; charset=utf-8",
         body: include_str!("assets/app.js"),

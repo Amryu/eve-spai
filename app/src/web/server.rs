@@ -135,7 +135,7 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
 
     let limited = peer.is_some_and(|ip| is_limited(ctx, ip));
     let access = routes::authorize(
-        route,
+        &route,
         query_token,
         cookie_token,
         host.as_deref(),
@@ -293,6 +293,13 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             ])
         }
         Route::NotAllowed => respond(req, 405, "text/plain; charset=utf-8", b"method not allowed\n", &[]),
+        Route::Sound(name) => match crate::sound::preset_wav(&name) {
+            Some(bytes) => respond(req, 200, "audio/wav", &bytes, &[(
+                "Cache-Control",
+                "public, max-age=31536000, immutable".to_owned(),
+            )]),
+            None => respond(req, 404, "text/plain; charset=utf-8", b"no such sound\n", &[]),
+        },
         Route::SystemInfo(id) => {
             let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
             let body = d.graph.as_ref().and_then(|g| {

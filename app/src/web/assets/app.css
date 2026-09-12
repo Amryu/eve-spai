@@ -79,3 +79,21 @@ body {
 
 .pane { margin-bottom: 1.25rem; }
 .pane h2 { font-size: 1rem; margin: 0 0 0.4rem; color: var(--fg); }
+
+.soundbar { margin-left: auto; }
+.soundbar .armbtn,
+.soundbar .mutebtn {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  /* A thumb-sized target: this is the control people reach for first on a phone. */
+  min-height: 2rem;
+  padding: 0 0.6rem;
+  cursor: pointer;
+}
+.soundbar .armbtn { border-color: var(--warning); color: var(--warning); }
+.soundbar .mutebtn[aria-pressed="true"] { color: var(--muted); }
+
+.status { margin-left: 0.5rem; }
