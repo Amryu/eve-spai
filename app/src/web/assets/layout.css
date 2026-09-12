@@ -1,0 +1,65 @@
+/* tabs: a native scroll-snap strip. Swipe, momentum and rubber-banding are then the browser's job,
+   which is the whole reason there are no touch handlers in layout.js. */
+#panes[data-mode="tabs"] {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  gap: 0;
+  padding: 0;
+}
+#panes[data-mode="tabs"]::-webkit-scrollbar { display: none; }
+#panes[data-mode="tabs"] > .pane {
+  flex: 0 0 100%;
+  min-width: 100%;
+  scroll-snap-align: start;
+  overflow-y: auto;
+  padding: 0.75rem;
+  margin: 0;
+}
+/* Its own heading is the tab chip above it. */
+#panes[data-mode="tabs"] > .pane > h2 { display: none; }
+
+#panes[data-mode="columns"],
+#panes[data-mode="grid"] {
+  display: grid;
+  gap: 0.75rem;
+  align-items: start;
+}
+#panes[data-mode="columns"] { grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); }
+#panes[data-mode="grid"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#panes[data-mode="columns"] > .pane,
+#panes[data-mode="grid"] > .pane {
+  min-width: 0;
+  margin: 0;
+  background: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem;
+  max-height: calc(100vh - 7rem);
+  overflow-y: auto;
+}
+
+@media (max-width: 1300px) {
+  #panes[data-mode="columns"] { --cols: 2; }
+}
+
+.tab { touch-action: none; }
+.tab.dragging { opacity: 0.6; border-color: var(--accent); }
+
+/* The tab chips are ordered by `style.order`, and an unset order is 0, which sorted this span in
+   among them. It belongs after every tab, whatever the pane order is. */
+.modebar { display: flex; gap: 0.25rem; margin-left: 0.25rem; order: 99; }
+.modebar button {
+  font: inherit;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+.modebar button.on { color: var(--fg); border-color: var(--accent); }

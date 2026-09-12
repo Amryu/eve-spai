@@ -239,6 +239,7 @@ const renderIntel = (el, snap) => {
   const cards = (pane?.cards ?? []).filter((c) => matches(c, filter));
 
   el.innerHTML =
+    `<h2>Intel</h2>` +
     `<div class="toolbar">` +
     TYPES.map(
       (t) => `<button class="tf${t === filter.type ? " on" : ""}" data-type="${t}">${t}</button>`
