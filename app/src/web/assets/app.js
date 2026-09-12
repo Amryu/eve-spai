@@ -40,15 +40,18 @@ function count(pane) {
 }
 
 function renderTabs() {
+  // `data-tab`, not `data-pane`: the sections below already own that attribute, and a shared one
+  // makes `querySelector("[data-pane=...]")` match whichever comes first in the document, which is
+  // the button. Every pane then renders inside the header.
   document.getElementById("tabs").innerHTML = PANES.map(
-    (p) => `<button class="tab" data-pane="${p}">${TITLES[p]} <b>${count(p)}</b></button>`
+    (p) => `<button class="tab" data-tab="${p}">${TITLES[p]} <b>${count(p)}</b></button>`
   ).join("");
 }
 
 function render() {
   renderTabs();
   for (const pane of PANES) {
-    const el = document.querySelector(`[data-pane="${pane}"]`);
+    const el = document.querySelector(`#panes [data-pane="${pane}"]`);
     if (!el) continue;
     if (renderers[pane]) {
       renderers[pane](el, state.snapshot);
@@ -113,14 +116,28 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && es?.readyState !== EventSource.OPEN) connect();
 });
 
-async function main() {
+function boot() {
   try {
-    state.icons = await (await fetch("/api/icons.json")).json();
+    const raw = document.getElementById("boot")?.textContent;
+    if (raw && raw !== '"__BOOT__"') state.snapshot = JSON.parse(raw);
   } catch {
-    // A missing icon renders as nothing, which is better than a tofu square.
+    // A page served without its island still works; it just paints empty for one round trip.
   }
+}
+
+function main() {
+  boot();
   render();
   connect();
+  // Icons are decoration. Fetching them before the first paint is how the page ends up blank
+  // behind a "connecting" label when that one request is slow.
+  fetch("/api/icons.json")
+    .then((r) => r.json())
+    .then((i) => {
+      state.icons = i;
+      render();
+    })
+    .catch(() => {});
 }
 
 main();

@@ -1,6 +1,6 @@
 # WEB-005 review cycle
 
-**Status:** Delivered, browser evidence pending
+**Status:** Fixed and verified
 **Branch:** `web/web-005-demo`
 
 ## Resolution
@@ -42,17 +42,15 @@ The demo was run and exercised over HTTP:
 The sequence reaching 18 on its own is the publish loop and the rev comparison working end to end:
 the panes are re-hashed every tick and only the ones that actually changed move it.
 
-## What is NOT verified
+## What was NOT verified at the time, and what that cost
 
-**No screenshot.** This session had no browser: the Claude in Chrome extension is not connected, and
-the flatpak Firefox on this machine does not complete a `--headless --screenshot` run. So the page has
-been proven to serve correct data and has not been proven to look right.
+This ticket originally landed with no screenshot, on the belief that no browser was available. The
+page had been proven to serve correct data and had not been proven to look right.
 
-`after/` is therefore empty, and that is recorded rather than papered over. GAP-011 carries the full
-picture of what the egui harness cannot reach here and what stands in for it. Anyone with a browser
-closes this in about a minute:
+It did not look right. The first render was blank, and the second drew every pane inside the header.
+Both are written up in **WEB-013**, along with the three ways a headless Firefox silently produces no
+file, which is what the "no browser available" conclusion actually was.
 
-```
-cargo test --bin eve-spai webdemo -- --ignored --nocapture
-# open http://127.0.0.1:6799/?t=demo
-```
+`after/` now holds shots from `app/src/uitest/webshot.sh`. The lesson is in the demo's favour: the
+demo server was the right thing to land before the panes, and the mistake was closing a ticket on
+green tests while the only surface that could show the defect went unlooked at.

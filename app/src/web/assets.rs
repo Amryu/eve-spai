@@ -26,14 +26,44 @@ pub const ASSETS: &[Asset] = &[
 
 pub const INDEX: &str = include_str!("assets/index.html");
 
+/// Where the first snapshot is spliced into the page.
+const BOOT_SLOT: &str = "\"__BOOT__\"";
+
+/// The page with its first snapshot already in it.
+///
+/// Without this the page costs two round trips before it shows anything: fetch the document, then
+/// fetch the state. On a phone on the far side of a wifi link that is the difference between
+/// instant and visibly slow, and it is the same JSON-island trick the battle-report server already
+/// uses.
+pub fn index_with_boot(snapshot_json: &str) -> String {
+    INDEX.replace(BOOT_SLOT, &js_safe_json(snapshot_json))
+}
+
+/// Neutralise anything that could close the `<script>` element the JSON sits in.
+///
+/// The snapshot carries EVE chat verbatim, and anyone in an intel channel can type `</script>`.
+/// Escaping to `\uXXXX` keeps the JSON valid and identical once parsed, because these three
+/// characters never appear as JSON syntax, only inside string values. Same approach as
+/// `crates/server/src/views.rs`.
+fn js_safe_json(s: &str) -> String {
+    s.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
+}
+
 pub fn find(path: &str) -> Option<&'static Asset> {
     ASSETS.iter().find(|a| a.path == path)
 }
 
-/// Weak, and keyed on the app version plus the path. The files cannot change without the binary
-/// changing, so the version is the only input that matters.
-pub fn etag(name: &str) -> String {
-    format!("W/\"{}-{}\"", env!("CARGO_PKG_VERSION"), name)
+/// Keyed on the content, not on the version.
+///
+/// Keying it on `CARGO_PKG_VERSION` looked equivalent, because an asset cannot change without the
+/// binary changing. It is not: the version only moves at release, so every dev build served a
+/// changed file under an unchanged tag and browsers kept running the old one. That cost a debugging
+/// session where a fixed page kept rendering the bug.
+pub fn etag(body: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut h);
+    format!("W/\"{:x}\"", h.finish())
 }
 
 /// The icon font the app itself draws with, served straight from the crate that is already linked
@@ -86,8 +116,62 @@ mod tests {
     }
 
     #[test]
-    fn etags_change_with_the_version_and_the_file() {
-        assert_ne!(etag("app.js"), etag("app.css"));
-        assert!(etag("app.js").contains(env!("CARGO_PKG_VERSION")));
+    fn the_first_snapshot_is_spliced_into_the_page() {
+        let page = index_with_boot("{\"seq\":7}");
+        assert!(page.contains("{\"seq\":7}"), "the snapshot has to reach the document");
+        assert!(!page.contains(BOOT_SLOT), "the placeholder has to be gone");
+    }
+
+    /// The snapshot carries chat text verbatim, and anyone in an intel channel can type this.
+    #[test]
+    fn chat_cannot_close_the_script_element_it_travels_in() {
+        let hostile = "{\"text\":\"</script><img src=x onerror=alert(1)>\"}";
+        let page = index_with_boot(hostile);
+        assert!(!page.contains("</script><img"), "the payload escaped its island");
+        assert!(page.contains("\\u003c/script\\u003e"), "it should be escaped, not stripped");
+        // Still the same value once a JSON parser has read it back.
+        let start = page.find("id=\"boot\">").expect("island") + "id=\"boot\">".len();
+        let end = page[start..].find("</script>").expect("island end") + start;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&page[start..end]).expect("still valid json");
+        assert_eq!(parsed["text"], "</script><img src=x onerror=alert(1)>");
+    }
+
+    #[test]
+    fn the_page_paints_before_it_fetches_anything() {
+        let js = find("/assets/app.js").expect("app.js").body;
+        assert!(
+            !js.contains("await fetch"),
+            "the first paint must not wait on a request: a slow or failed /api/icons.json would \
+             otherwise leave a blank page behind a 'connecting' label"
+        );
+        assert!(js.contains("boot"), "the page has to read its inlined first snapshot");
+    }
+
+    /// The tab buttons and the pane sections are different elements. They shared `data-pane` once,
+    /// and because the buttons come first in the document every pane rendered inside the header.
+    #[test]
+    fn the_pane_lookup_cannot_match_a_tab() {
+        let js = find("/assets/app.js").expect("app.js").body;
+        assert!(
+            js.contains("#panes [data-pane="),
+            "the pane lookup has to be scoped to #panes"
+        );
+        assert!(
+            !js.contains("data-pane=\"${p}\""),
+            "a tab must not be given the attribute the panes are found by"
+        );
+    }
+
+    /// The regression test for a stale-asset bug that a version-keyed tag cannot catch: the version
+    /// does not move between a source edit and the next run, so an edited file kept its tag and the
+    /// browser kept the old copy.
+    #[test]
+    fn an_etag_follows_the_content() {
+        assert_ne!(etag(b"one"), etag(b"two"));
+        assert_eq!(etag(b"same"), etag(b"same"));
+        let js = find("/assets/app.js").expect("app.js").body;
+        let css = find("/assets/app.css").expect("app.css").body;
+        assert_ne!(etag(js.as_bytes()), etag(css.as_bytes()));
     }
 }

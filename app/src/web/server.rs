@@ -7,9 +7,8 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::io::Write;
 use std::time::{Duration, Instant};
 
 use super::routes::{self, Access, Route};
@@ -35,14 +34,16 @@ pub struct Config {
 pub struct Handle {
     server: Arc<tiny_http::Server>,
     running: Arc<AtomicBool>,
-    clients: Arc<AtomicU32>,
     hub: SharedHub,
+    /// The address actually bound, for the pairing link the settings pane shows.
+    #[allow(dead_code)]
     pub addr: String,
 }
 
 impl Handle {
     /// Devices holding a live stream. Surfaced in settings so a user can tell whether the phone in
     /// their hand is the thing that is connected.
+    #[allow(dead_code)]
     pub fn clients(&self) -> usize {
         self.hub.client_count()
     }
@@ -52,6 +53,10 @@ impl Drop for Handle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
         self.server.unblock();
+        // The listener stopping does not end the streams it already handed out, and a restart is
+        // the normal way this drops. Tell them, so each page reconnects to the new listener instead
+        // of holding a socket nothing will ever write to again.
+        self.hub.close_all("restart");
     }
 }
 
@@ -60,7 +65,6 @@ struct Ctx {
     web: SharedWeb,
     hub: SharedHub,
     fails: Mutex<HashMap<IpAddr, (Instant, u32)>>,
-    clients: Arc<AtomicU32>,
 }
 
 /// `None` when the port could not be bound. The caller reports that and leaves the feature off.
@@ -70,7 +74,6 @@ pub fn start(cfg: Config, web: SharedWeb) -> Result<Handle, String> {
         .map_err(|e| format!("could not bind {host}:{} ({e})", cfg.port))?;
     let server = Arc::new(server);
     let running = Arc::new(AtomicBool::new(true));
-    let clients = Arc::new(AtomicU32::new(0));
     // Read back rather than echoing the setting, so port 0 resolves to what was actually bound.
     let addr = server.server_addr().to_string();
 
@@ -81,7 +84,6 @@ pub fn start(cfg: Config, web: SharedWeb) -> Result<Handle, String> {
         web,
         hub: hub.clone(),
         fails: Mutex::new(HashMap::new()),
-        clients: clients.clone(),
     });
     for _ in 0..WORKERS {
         let server = server.clone();
@@ -97,7 +99,7 @@ pub fn start(cfg: Config, web: SharedWeb) -> Result<Handle, String> {
             }
         });
     }
-    Ok(Handle { server, running, clients, hub, addr })
+    Ok(Handle { server, running, hub, addr })
 }
 
 fn header<'a>(req: &'a tiny_http::Request, name: &'static str) -> Option<&'a str> {
@@ -126,10 +128,7 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
     );
 
     match access {
-        Access::Granted => {
-            ctx.clients.store(1, Ordering::Relaxed);
-            serve(ctx, req, route, &query)
-        }
+        Access::Granted => serve(ctx, req, route, &path, &query),
         Access::Pair => {
             if let Some(ip) = peer {
                 ctx.fails.lock().unwrap_or_else(|e| e.into_inner()).remove(&ip);
@@ -187,17 +186,24 @@ fn note_failure(ctx: &Ctx, ip: IpAddr) {
     e.1 += 1;
 }
 
-fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, query: &str) {
+fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &str) {
     let inm = header(&req, "If-None-Match").map(str::to_owned);
     match route {
         Route::Health => respond(req, 200, "text/plain; charset=utf-8", b"ok\n", &[]),
-        Route::Index => cached(req, inm, "index", "text/html; charset=utf-8", super::assets::INDEX.as_bytes()),
+        Route::Index => {
+            // Carries the live snapshot, so it is never cached.
+            let boot = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).full_json();
+            let page = super::assets::index_with_boot(&boot);
+            respond(req, 200, "text/html; charset=utf-8", page.as_bytes(), &[(
+                "Cache-Control",
+                "no-store".to_owned(),
+            )])
+        }
         Route::Asset => {
-            let (path, _) = routes::split_url(req.url());
             match super::assets::find(path) {
                 Some(a) => {
                     let (mime, body) = (a.mime, a.body.as_bytes());
-                    cached(req, inm, a.path, mime, body)
+                    cached(req, inm, mime, body)
                 }
                 None => respond(req, 404, "text/plain; charset=utf-8", b"not found\n", &[]),
             }
@@ -219,7 +225,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, query: &str) {
                 ("Cache-Control", "no-store".to_owned()),
             ])
         }
-        Route::Icons => cached(req, inm, "icons", "application/json; charset=utf-8", super::icons::json().as_bytes()),
+        Route::Icons => cached(req, inm, "application/json; charset=utf-8", super::icons::json().as_bytes()),
         Route::Events => {
             let since = header(&req, "Last-Event-ID").and_then(|v| v.trim().parse::<u64>().ok());
             super::sse::serve(req, ctx.hub.clone(), ctx.web.clone(), since)
@@ -235,14 +241,8 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, query: &str) {
     }
 }
 
-fn cached(
-    req: tiny_http::Request,
-    if_none_match: Option<String>,
-    name: &str,
-    mime: &str,
-    body: &[u8],
-) {
-    let tag = super::assets::etag(name);
+fn cached(req: tiny_http::Request, if_none_match: Option<String>, mime: &str, body: &[u8]) {
+    let tag = super::assets::etag(body);
     if if_none_match.as_deref() == Some(tag.as_str()) {
         return respond(req, 304, mime, b"", &[("ETag", tag)]);
     }
@@ -280,6 +280,8 @@ carries the pairing token.</p></div>
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     const TOKEN: &str = "test-token-aaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -168,6 +168,28 @@ fails the test unless `EVE_SPAI_DATA_DIR` (and `store::data_dir()` through it) r
 not paste real chat into a fixture; write plausible fake traffic instead. If a render needs data
 the fixtures do not have, add it to `fixtures.rs`.
 
+## Web view screenshots
+
+The web view (`app/src/web/`) is HTML in a browser, so the egui harness cannot render it and
+`checks.rs` cannot see it. `GAP-011` records what that leaves uncovered. What stands in for it:
+
+- `app/src/uitest/webshot.sh` shoots the fixture demo at 1440 and 390 into `target/webshots`.
+- It starts `cargo test --bin eve-spai webdemo -- --ignored --nocapture` if nothing is on port 6799,
+  which serves `uitest::fixtures` on loopback. **Never the live profile**: the same rule as the egui
+  renders, for the same reason.
+
+Three traps, each of which silently produces nothing rather than an error:
+
+- The flatpak Firefox can only write under `xdg-download`. A `--screenshot /tmp/x.png` succeeds and
+  writes no file, and `--profile` outside that path reports "Could not find profile folder".
+- Without `--no-remote` and its own profile, a running Firefox swallows the URL and exits 0.
+- `--screenshot` fires on the `load` event, so anything the page fetches afterwards is not in the
+  shot. The page inlines its first snapshot as a JSON island for that reason, which is also one less
+  round trip on a phone.
+
+To stop the demo, kill it **by port** (`fuser -k 6799/tcp`). A `pkill -f` broad enough to match the
+test binary also matches the shell that ran it, which kills the session (exit 144).
+
 ## UI issue workflow
 
 UI defects go through the `ui-tickets` skill: `.claude/skills/ui-tickets/SKILL.md`. Read it before

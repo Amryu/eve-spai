@@ -90,7 +90,9 @@ pub fn host_allowed(host: Option<&str>) -> bool {
 }
 
 /// The same test, applied to an `Origin`. Required on writes, where a cross-site form post is the
-/// thing being stopped.
+/// thing being stopped. Written and tested here with the rest of the access rules; WEB-008 is what
+/// brings the first write for it to guard.
+#[allow(dead_code)]
 pub fn origin_allowed(origin: Option<&str>) -> bool {
     let Some(o) = origin.map(str::trim) else { return false };
     let rest = o.strip_prefix("http://").or_else(|| o.strip_prefix("https://"));

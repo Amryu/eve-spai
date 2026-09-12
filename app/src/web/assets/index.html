@@ -21,6 +21,9 @@
   <section class="pane" data-pane="pings" aria-label="Fleet pings"></section>
   <section class="pane" data-pane="map" aria-label="Map"></section>
 </main>
+<!-- The first snapshot, spliced in by the server so the page paints without a second round trip.
+     Escaped on the way in: this carries EVE chat verbatim. -->
+<script type="application/json" id="boot">"__BOOT__"</script>
 <script type="module" src="/assets/app.js"></script>
 </body>
 </html>
