@@ -470,6 +470,8 @@ pub struct SpaiApp {
     /// frame. Same arrangement as `AlertEngine::config`.
     web_facts: crate::web::facts::SharedFacts,
     web: crate::web::state::SharedWeb,
+    web_detail: crate::web::Detail,
+    web_inbox: crate::web::Inbox,
     web_server: Option<crate::web::server::Handle>,
     /// What the listener was started for. Restarting on a change is cheaper and clearer than
     /// reaching into a running server to re-read its settings.
@@ -1045,6 +1047,8 @@ impl SpaiApp {
 
         let web_facts = crate::web::facts::shared();
         let web = crate::web::state::shared();
+        let web_detail = crate::web::detail();
+        let web_inbox = crate::web::inbox();
         if !headless {
             let engine = alerts_engine.clone();
             let (a_intel, a_pilots, a_player, a_status, a_affil, a_kills) = (
@@ -1105,6 +1109,8 @@ impl SpaiApp {
         let mut app = Self {
             web_facts,
             web,
+            web_detail,
+            web_inbox,
             web_server: None,
             web_started_for: None,
             web_error: None,
@@ -1523,7 +1529,7 @@ impl SpaiApp {
         let want = w.enabled.then(|| {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            (w.port, w.bind_lan, &w.token).hash(&mut h);
+            (w.port, w.bind_lan, w.allow_writeback, &w.token).hash(&mut h);
             self.settings.theme.background.array().hash(&mut h);
             self.settings.theme.foreground.array().hash(&mut h);
             self.settings.theme.accent.array().hash(&mut h);
@@ -1539,11 +1545,17 @@ impl SpaiApp {
         let cfg = crate::web::server::Config {
             port: w.port,
             bind_lan: w.bind_lan,
+            allow_writeback: w.allow_writeback,
             token: w.token.clone(),
             theme: self.settings.theme.clone(),
             map: self.web_map_geometry(),
         };
-        match crate::web::server::start(cfg, self.web.clone()) {
+        match crate::web::server::start(
+            cfg,
+            self.web.clone(),
+            self.web_detail.clone(),
+            self.web_inbox.clone(),
+        ) {
             Ok(h) => self.web_server = Some(h),
             Err(e) => {
                 eprintln!("[web] {e}; web view disabled");
@@ -1590,6 +1602,15 @@ impl SpaiApp {
         f.compact = self.settings.alerts.compact_mode;
         f.theme = self.settings.theme.clone();
         f.allow_writeback = self.settings.web.allow_writeback;
+        drop(f);
+
+        let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
+        d.graph = self.systems.clone();
+        d.player_sys = self.player_system();
+        d.count_bridges = self.settings.intel_count_bridges;
+        // Cloned rather than shared: the status map is small and rewritten wholesale by its poller,
+        // so holding its lock from a request thread would be the only way to block that poller.
+        d.status = self.system_status.lock().unwrap_or_else(|e| e.into_inner()).clone();
     }
 
     fn drain_alerts(&mut self) {
@@ -9604,6 +9625,48 @@ impl SpaiApp {
                 },
             );
         }
+    }
+
+    /// One handler for everything that arrives from outside the UI thread.
+    ///
+    /// The overlay subprocess and the web page send the same enum into the same arms, so there is a
+    /// single answer to what a verdict or an acknowledgement does, rather than two that can drift.
+    fn apply_overlay_message(&mut self, m: crate::ipc::OverlayToMain, ctx: &egui::Context) {
+        match m {
+            crate::ipc::OverlayToMain::Click(c) => {
+                self.pending_overlay_clicks.push(c);
+                ctx.request_repaint();
+            }
+            crate::ipc::OverlayToMain::Verdict { name, hidden } => {
+                self.apply_pilot_verdict(&name, hidden)
+            }
+            crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
+                self.persist_alert_geometry(pos, size)
+            }
+            crate::ipc::OverlayToMain::PingMoved { pos, size } => {
+                self.persist_ping_geometry(pos, size)
+            }
+            crate::ipc::OverlayToMain::CompactToggle(v) => {
+                self.settings.alerts.compact_mode = v;
+                self.needs_save = true;
+            }
+            crate::ipc::OverlayToMain::AlertAck { id } => self.ack_alert(id),
+            crate::ipc::OverlayToMain::Hello => {}
+        }
+    }
+
+    /// Clear one report from everywhere an alert is remembered.
+    ///
+    /// All three, not just the feed: the alert window reads `alert_shared`, the Alerts tab reads
+    /// `alert_feed`, and a rule's own history reads `rule_feeds`. Clearing one would leave the same
+    /// alert acknowledged in one place and outstanding in another.
+    fn ack_alert(&mut self, id: u64) {
+        self.alert_feed.retain(|(r, _)| r.id != id);
+        for feed in self.rule_feeds.values_mut() {
+            feed.retain(|(r, _, _)| r.id != id);
+        }
+        let mut st = self.alert_shared.lock().unwrap_or_else(|e| e.into_inner());
+        st.feed.retain(|(r, _)| r.id != id);
     }
 
     fn act_on_intel_click(&mut self, click: IntelClick, ctx: &egui::Context) {
@@ -18497,6 +18560,14 @@ impl eframe::App for SpaiApp {
             self.act_on_intel_click(c, &ctx);
         }
 
+        // The page's actions are the overlay's actions: same enum, same handlers. Drained here so
+        // there is one place that decides what a verdict or an acknowledgement does.
+        let from_web =
+            std::mem::take(&mut *self.web_inbox.lock().unwrap_or_else(|e| e.into_inner()));
+        for m in from_web {
+            self.apply_overlay_message(m, &ctx);
+        }
+
         // `|`, not `||`: short-circuiting would leave `raise_main` set whenever a second-instance
         // request fired first, raising the window again on a later frame.
         if crate::instance::take_raise_request() | std::mem::take(&mut self.raise_main) {
@@ -18519,26 +18590,7 @@ impl eframe::App for SpaiApp {
         {
             let msgs = self.overlay.as_ref().map(|l| l.drain_inbox()).unwrap_or_default();
             for m in msgs {
-                match m {
-                    crate::ipc::OverlayToMain::Click(c) => {
-                        self.pending_overlay_clicks.push(c);
-                        ctx.request_repaint();
-                    }
-                    crate::ipc::OverlayToMain::Verdict { name, hidden } => {
-                        self.apply_pilot_verdict(&name, hidden)
-                    }
-                    crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
-                        self.persist_alert_geometry(pos, size)
-                    }
-                    crate::ipc::OverlayToMain::PingMoved { pos, size } => {
-                        self.persist_ping_geometry(pos, size)
-                    }
-                    crate::ipc::OverlayToMain::CompactToggle(v) => {
-                        self.settings.alerts.compact_mode = v;
-                        self.needs_save = true;
-                    }
-                    crate::ipc::OverlayToMain::Hello => {}
-                }
+                self.apply_overlay_message(m, &ctx);
             }
         }
 

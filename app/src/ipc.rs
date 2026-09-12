@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 pub enum OverlayToMain {
     Hello,
     Click(crate::app::IntelClick),
+    /// Acknowledge one alert, by `IntelReport::id`. Safe to add: this enum only flows child to
+    /// parent, and the parent always spawns the child from its own `current_exe`, so the parent is
+    /// never the older binary.
+    AlertAck {
+        id: u64,
+    },
     Verdict { name: String, hidden: bool },
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
     PingMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
