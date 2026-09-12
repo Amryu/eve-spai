@@ -243,6 +243,31 @@ fn nav_scene(name: &'static str, expanded: bool, height: f32) -> Scene {
     })
 }
 
+/// Settings with the web view switched on, so its controls actually render.
+///
+/// The plain `view_settings` scene leaves it off, which is the default and shows one checkbox. The
+/// port, the LAN toggle and the three link buttons only exist once it is enabled, and those are the
+/// widgets worth checking for overlap and for escaping their row.
+fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Settings;
+            a.settings.web.enabled = true;
+            a.settings.web.token = "PAIRING-TOKEN-FOR-THE-SCENE-0123456789ab".to_owned();
+            // Path detection finds the real EVE install, so a render of this view carries the
+            // machine's home directory. These renders get committed to ticket folders and pushed.
+            a.settings.eve_logs_dir = "/fixture/EVE/logs".to_owned();
+            a.settings.eve_settings_dir = "/fixture/EVE/settings".to_owned();
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 fn view_scene(name: &'static str, view: View, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -810,6 +835,10 @@ pub(crate) fn all() -> Vec<Scene> {
     // 720 is the app's minimum window width (main.rs), where the settings path fields and their
     // Browse buttons have the least room to share.
     v.push(view_scene("view_settings_narrow", View::Settings, [720.0, 800.0]));
+    // Tall enough to hold the whole settings column: the web section sits below Alerts, and a
+    // scene that crops its own subject reads as coverage without being any.
+    v.push(web_settings_scene("web_settings", [980.0, 2600.0]));
+    v.push(web_settings_scene("web_settings_narrow", [720.0, 2600.0]));
     // Both battle toolbars are one wrapping row of groups, so where they break moves with the
     // window. 720 breaks them into the most rows, which is where a divider is most likely to end
     // up at a row edge.
