@@ -30,6 +30,9 @@ pub struct UiFacts {
     pub compact: bool,
     pub theme: crate::theme::Theme,
     pub allow_writeback: bool,
+    /// Per-severity sound names, indexed the way `AlertSettings::sounds` is. WEB-002's ticket listed
+    /// this and it landed here instead, with the ticket that needed it.
+    pub sounds: Vec<String>,
 }
 
 pub type SharedFacts = Arc<Mutex<UiFacts>>;

@@ -23,6 +23,15 @@ struct Tone {
 const BLIP: &[f32] = &[1.0, 0.3];
 const BRASS: &[f32] = &[1.0, 0.8, 0.6, 0.45, 0.32, 0.22, 0.15, 0.1];
 
+/// The tones a build can actually play.
+///
+/// `siren` is the delve911 scramble callout and its `preset` arm is behind `fc-rescue`, so listing
+/// it unconditionally offered a sound that a stock build resolves to `None` and plays as silence.
+/// The list and the synthesizer have to agree, because nothing else tells the user.
+#[cfg(not(feature = "fc-rescue"))]
+pub const PRESETS: &[&str] =
+    &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn"];
+#[cfg(feature = "fc-rescue")]
 pub const PRESETS: &[&str] =
     &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn", "siren"];
 
@@ -209,6 +218,22 @@ fn play_file(path: &Path, volume: f32) {
         }
     }
 }
+
+/// A preset rendered to WAV bytes in memory, for callers that want the audio rather than playback.
+///
+/// Deliberately not the temp-dir cache `ensure_tone` uses: a request should not depend on a
+/// writable temp dir, and a preset is ~50 KB and a couple of milliseconds to synthesize.
+///
+/// Volume is **not** baked in. The desktop bakes it because Windows `PlaySoundW` has no per-sound
+/// gain; a browser has a real `GainNode`, so this serves the authored amplitude and lets the page
+/// scale it.
+pub fn preset_wav(name: &str) -> Option<Vec<u8>> {
+    preset(name).map(|t| wav(&t))
+}
+
+/// Bumped whenever the synthesis changes, so a cached WAV cannot outlive the tone it came from.
+/// Matches the `-v6-` already baked into `ensure_tone`'s filename.
+pub const SYNTH_REV: u32 = 6;
 
 fn ensure_tone(name: &str, volume: f32, tone: &Tone) -> Option<PathBuf> {
     let dir = std::env::temp_dir().join("eve-spai-sounds");
@@ -514,5 +539,49 @@ mod tests {
         assert!(gate_allows(Some((t0, 3)), t0 + COOLDOWN, 0));
         assert!(!gate_allows(Some((t0, 2)), t0 + Duration::from_millis(100), 2));
         assert!(gate_allows(Some((t0, 2)), t0 + Duration::from_millis(100), 3));
+    }
+}
+
+#[cfg(test)]
+mod web_tests {
+    use super::*;
+
+    #[test]
+    fn every_preset_renders_a_real_wav() {
+        for name in PRESETS {
+            let b = preset_wav(name).unwrap_or_else(|| panic!("{name} has no tone"));
+            assert_eq!(&b[0..4], b"RIFF", "{name} is not RIFF");
+            assert_eq!(&b[8..12], b"WAVE", "{name} is not WAVE");
+            assert!(b.len() > 1000, "{name} is {} bytes, which is not a tone", b.len());
+            // The header's declared size has to match what was actually written, or a browser
+            // decodes silence and nobody finds out until an alert does not sound.
+            let declared = u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize;
+            assert_eq!(declared, b.len() - 8, "{name} has a lying RIFF size");
+        }
+    }
+
+    /// The regression test for the list and the synthesizer disagreeing. Every name the app offers
+    /// has to resolve to a tone in the build that offers it.
+    #[test]
+    fn every_offered_preset_resolves_in_this_build() {
+        for name in PRESETS {
+            assert!(preset(name).is_some(), "{name} is offered but has no tone in this build");
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_preset_has_no_audio() {
+        assert!(preset_wav("not-a-preset").is_none());
+        assert!(preset_wav("").is_none());
+        // A path is a custom sound, which is served by rule index and never synthesized.
+        assert!(preset_wav("/home/someone/alarm.wav").is_none());
+    }
+
+    #[test]
+    fn preset_wav_is_what_the_desktop_would_play() {
+        for name in ["warning", "critical"] {
+            let direct = wav(&preset(name).expect("tone"));
+            assert_eq!(preset_wav(name).expect("bytes"), direct);
+        }
     }
 }

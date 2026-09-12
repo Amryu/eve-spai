@@ -161,10 +161,27 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         active_character: facts.active_character.clone(),
         chars: facts.chars.clone(),
         player_system: player_sys,
+        sounds: sound_map(&facts.sounds),
+        sound_rev: crate::sound::SYNTH_REV,
     };
     if let Some(rev) = st.changed(Pane::Meta, hash_of(&meta)) {
         st.put_meta(Meta { rev, ..meta });
     }
+}
+
+/// Severity name to sound name. `AlertSettings::sounds` is a positional list; the page wants it
+/// keyed, because it holds a severity string and not an index.
+fn sound_map(sounds: &[String]) -> HashMap<String, String> {
+    use crate::settings::Severity::*;
+    [Info, Warning, Danger, Critical]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, sev)| {
+            let name = sounds.get(i)?;
+            (!name.is_empty() && !name.eq_ignore_ascii_case("off"))
+                .then(|| (format!("{sev:?}"), name.clone()))
+        })
+        .collect()
 }
 
 /// Names for every system a formup points at, and nothing else: the page has no SDE to look them up
@@ -383,6 +400,21 @@ mod tests {
         let st = d.web.lock().unwrap();
         let pane = st.snapshot_since(0).pings.expect("pings pane");
         assert_eq!(pane.systems.get(&HOME).map(String::as_str), Some("1DQ1-A"));
+    }
+
+    #[test]
+    fn the_configured_sounds_reach_the_page_keyed_by_severity() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        let mut f = facts();
+        f.sounds = vec!["off".into(), "warning".into(), "danger".into(), "critical".into()];
+        tick(&d, &f, &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        let meta = st.snapshot_since(0).meta.expect("meta pane");
+        assert_eq!(meta.sounds.get("Warning").map(String::as_str), Some("warning"));
+        assert_eq!(meta.sounds.get("Critical").map(String::as_str), Some("critical"));
+        assert!(meta.sounds.get("Info").is_none(), "\"off\" is not a sound to fetch");
+        assert_eq!(meta.sound_rev, crate::sound::SYNTH_REV);
     }
 
     #[test]

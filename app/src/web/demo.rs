@@ -159,6 +159,12 @@ fn meta() -> Meta {
         active_character: "Amryu".to_owned(),
         chars: vec![("Amryu".to_owned(), 0)],
         player_system: Some(HOME),
+        sounds: HashMap::from([
+            ("Warning".to_owned(), "warning".to_owned()),
+            ("Danger".to_owned(), "danger".to_owned()),
+            ("Critical".to_owned(), "critical".to_owned()),
+        ]),
+        sound_rev: crate::sound::SYNTH_REV,
     }
 }
 
