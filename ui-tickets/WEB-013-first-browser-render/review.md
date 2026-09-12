@@ -79,6 +79,14 @@ what `cross-check.yml` runs, went from clean to seven errors. Backed out and app
 line that actually warns. A default-feature build never sees any of this, which is exactly why the
 `--all-features` check exists.
 
+## A fifth, in the script itself
+
+The first version of `webshot.sh` killed the pid it started. `cargo test` execs the test binary as a
+child, so that left the demo server running on 6799 after every run, which the next run then quietly
+reused: a stale server serving the previous build. It stops by port now. Two earlier attempts at
+`pkill -f` exited 144 by matching the shell that ran them, which is the same trap already recorded in
+this repo's notes and which I walked into twice.
+
 ## Verification
 
 `app/src/uitest/webshot.sh`, at 1440 and 390, in `after/`.
