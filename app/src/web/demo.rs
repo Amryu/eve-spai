@@ -188,3 +188,11 @@ pub fn map_geometry() -> super::map::Geometry {
         .collect();
     super::map::build(&rows, &systems)
 }
+
+/// The dialog sources, from the same fixture graph as everything else.
+pub fn detail() -> super::Detail {
+    let d = super::detail();
+    d.lock().unwrap().graph = Some(crate::uitest::fixtures::systems());
+    d.lock().unwrap().player_sys = Some(HOME);
+    d
+}

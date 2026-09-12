@@ -1,0 +1,58 @@
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+.mback { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
+
+.mpanel {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: min(80vh, 44rem);
+  overflow-y: auto;
+}
+
+.mclose {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  font: inherit;
+  font-family: phosphor;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  /* A close button on a phone needs a thumb-sized target, not a glyph-sized one. */
+  min-width: 2.2rem;
+  min-height: 2.2rem;
+}
+
+.mpanel h3 { margin: 0 0 0.6rem; display: flex; align-items: center; gap: 0.4rem; }
+.mpanel h3 small { color: var(--muted); font-weight: 400; }
+.mgroup { margin: 0 0 0.6rem; color: var(--muted); }
+
+.mrow { display: flex; gap: 0.75rem; padding: 0.2rem 0; border-top: 1px solid var(--line); }
+.mrow > span:first-child { color: var(--muted); flex: 0 0 9rem; }
+.mrow > span:last-child { flex: 1 1 auto; min-width: 0; }
+.mres b { font-weight: 600; margin-right: 0.6rem; }
+
+.mgates { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.mgates .chip,
+.mbtns button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+
+.mhull { height: 2rem; width: 2rem; }
+.mport { width: 8rem; border-radius: 4px; }
+.mtraits { margin: 0.6rem 0 0; padding-left: 1.1rem; line-height: 1.4; }
+.mname { font-weight: 600; }
+.mbtns { display: flex; gap: 0.5rem; margin-top: 0.8rem; }
+.mbtns button { min-height: 2.4rem; padding: 0 0.9rem; }
+.mbtns .mok { border-color: var(--friendly); }
+.mbtns .mno { border-color: var(--hostile); }

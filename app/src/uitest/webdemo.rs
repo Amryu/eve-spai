@@ -25,6 +25,7 @@ fn webdemo() {
     let handle = crate::web::server::start(
         crate::web::server::Config {
             port: PORT,
+            allow_writeback: true,
             // Never the LAN. The token is "demo", and the whole point of this process is to be
             // trivially reachable from a browser on this machine.
             bind_lan: false,
@@ -33,6 +34,8 @@ fn webdemo() {
             map: Some(std::sync::Arc::new(crate::web::demo::map_geometry())),
         },
         web.clone(),
+        crate::web::demo::detail(),
+        crate::web::inbox(),
     )
     .expect("bind the demo port");
 

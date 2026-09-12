@@ -144,7 +144,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-005 Fixture demo server](WEB-005-fixture-demo-server/) | `uitest/webdemo.rs` | 5 | **Fixed** |
 | [WEB-006 Intel pane](WEB-006-intel-pane/) | `panes-intel.js` | 6 | **Fixed** |
 | [WEB-007 Alerts and pings panes](WEB-007-alerts-and-pings-panes/) | `panes-alerts.js`, `panes-pings.js` | 6 | **Fixed** |
-| [WEB-008 Browser dialogs and write-back](WEB-008-browser-dialogs-and-writeback/) | `routes_detail.rs`, `dialogs.js` | 7 | **Open** |
+| [WEB-008 Browser dialogs and write-back](WEB-008-browser-dialogs-and-writeback/) | `web/detail.rs`, `dialogs.js` | 7 | **Fixed** |
 | [WEB-009 Sound and mute](WEB-009-sound-and-mute/) | `sound.rs`, `sound.js` | 7 | **Open** |
 | [WEB-010 Layout engine](WEB-010-layout-engine/) | `layout.js` | 8 | **Fixed** |
 | [WEB-011 Map pane](WEB-011-map-pane/) | `web/map.rs`, `map.js` | 8 | **Fixed** |

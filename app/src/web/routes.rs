@@ -16,6 +16,9 @@ pub enum Route {
     Snapshot,
     State,
     MapGeometry,
+    SystemInfo(i64),
+    ShipInfo(i64),
+    Action,
     Events,
     Health,
     NotFound,
@@ -29,6 +32,9 @@ pub fn is_public(r: Route) -> bool {
 }
 
 pub fn classify(method: &str, path: &str) -> Route {
+    if method == "POST" {
+        return if path == "/api/action" { Route::Action } else { Route::NotAllowed };
+    }
     if !matches!(method, "GET" | "HEAD") {
         return Route::NotAllowed;
     }
@@ -42,6 +48,14 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/map/geometry" => Route::MapGeometry,
         "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
+        p if p.starts_with("/api/system/") => match p["/api/system/".len()..].parse() {
+            Ok(id) => Route::SystemInfo(id),
+            Err(_) => Route::NotFound,
+        },
+        p if p.starts_with("/api/ship/") => match p["/api/ship/".len()..].parse() {
+            Ok(id) => Route::ShipInfo(id),
+            Err(_) => Route::NotFound,
+        },
         p if super::assets::find(p).is_some() => Route::Asset,
         _ => Route::NotFound,
     }
@@ -162,6 +176,12 @@ mod tests {
         assert_eq!(classify("GET", "/api/events"), Route::Events);
         assert_eq!(classify("GET", "/api/state"), Route::State);
         assert_eq!(classify("GET", "/api/map/geometry"), Route::MapGeometry);
+        assert_eq!(classify("GET", "/api/system/30004759"), Route::SystemInfo(30_004_759));
+        assert_eq!(classify("GET", "/api/ship/587"), Route::ShipInfo(587));
+        assert_eq!(classify("GET", "/api/system/not-a-number"), Route::NotFound);
+        assert_eq!(classify("POST", "/api/action"), Route::Action);
+        assert_eq!(classify("POST", "/api/snapshot"), Route::NotAllowed);
+        assert_eq!(classify("GET", "/api/action"), Route::NotFound);
         assert_eq!(classify("GET", "/assets/app.js"), Route::Asset);
         assert_eq!(classify("GET", "/assets/phosphor-9.9.9.ttf"), Route::Font);
         assert_eq!(classify("GET", "/nope"), Route::NotFound);
@@ -179,6 +199,7 @@ mod tests {
             Route::Snapshot,
             Route::State,
             Route::MapGeometry,
+            Route::Action,
             Route::Events,
             Route::Font,
         ] {
