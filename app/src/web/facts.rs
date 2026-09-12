@@ -10,6 +10,10 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
 pub struct UiFacts {
+    /// Whether the feature is on at all. The publisher thread is spawned unconditionally, so this is
+    /// what stops it doing a feed's worth of work twice a second for the large majority of users who
+    /// never turn the web view on.
+    pub web_enabled: bool,
     pub systems: Option<Arc<crate::geo::Systems>>,
     /// Name and id per authenticated character. The publisher has no store handle, and the page
     /// needs the ids to draw portraits.

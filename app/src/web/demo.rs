@@ -17,6 +17,7 @@ const HOME: i64 = 30_004_759;
 pub fn seed(web: &SharedWeb, tick: u64) {
     let reports = reports_for(tick);
     let cards = cards(&reports);
+    let alerts = alerts(&cards);
     let pings = pings(tick);
     let meta = meta();
     let map = map(&cards);
@@ -29,6 +30,9 @@ pub fn seed(web: &SharedWeb, tick: u64) {
     };
     if let Some(rev) = st.changed(Pane::Intel, hash_of(&(&cards, &lookups))) {
         st.put_intel(IntelPane { rev, cards, lookups });
+    }
+    if let Some(rev) = st.changed(Pane::Alerts, hash_of(&alerts.feed)) {
+        st.put_alerts(AlertPane { rev, msg: alerts });
     }
     if let Some(rev) = st.changed(Pane::Pings, hash_of(&pings)) {
         st.put_pings(PingPane { rev, pings });
@@ -88,6 +92,32 @@ fn cards(reports: &[crate::intel::IntelReport]) -> Vec<IntelCard> {
         .collect();
     cards.sort_by(|a, b| b.report.received.cmp(&a.report.received));
     cards
+}
+
+/// The alert feed: the cards a rule would have fired on, which for the fixtures is anything above
+/// Info. Without this the alerts pane renders empty in every screenshot, and WEB-007 would land with
+/// no way to see whether it draws anything at all.
+fn alerts(cards: &[IntelCard]) -> crate::ipc::AlertMsg {
+    let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = cards
+        .iter()
+        .filter(|c| c.severity > crate::settings::Severity::Info)
+        .map(|c| (c.report.clone(), c.severity))
+        .collect();
+    let n = feed.len();
+    crate::ipc::AlertMsg {
+        from_you: cards.iter().take(n).map(|c| c.from_you).collect(),
+        via: cards.iter().take(n).map(|c| c.via).collect(),
+        chars: cards.iter().take(n).map(|c| c.chars.clone()).collect(),
+        feed,
+        status: Default::default(),
+        resolved_pilots: crate::uitest::fixtures::resolved_pilots(),
+        uncertain: crate::uitest::fixtures::uncertain(),
+        last_ship: Default::default(),
+        kills: Default::default(),
+        affil: Default::default(),
+        secs: 0.0,
+        focus: false,
+    }
 }
 
 fn pings(tick: u64) -> Vec<PingCard> {

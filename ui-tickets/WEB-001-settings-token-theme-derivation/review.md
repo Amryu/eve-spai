@@ -13,7 +13,7 @@
 | **App code changed** | 277 added, 17 removed |
 | **Harness code changed** | 0, this ticket predates any web render surface |
 | **Suite** | 574 to 583 |
-| **Follow-ups** | none |
+| **Follow-ups** | WEB-014 (QR pairing) |
 
 ## What changed
 
@@ -66,3 +66,9 @@ bit at any position also breaks the prefix. The length cases in
 `a_settings_blob_written_before_the_web_feature_still_loads` parses a three-key blob with no `web`
 object and asserts the other keys survive. It is the regression test for the failure mode described
 above, and it is cheap to keep forever.
+
+## Deferred, and now filed
+
+The ticket said a QR of the pairing link "lands here only if that new dependency is acceptable,
+otherwise it becomes its own follow-up". It did not land and the follow-up was not filed at the time,
+which is how a deferral turns into a thing nobody remembers. It is **WEB-014** now.

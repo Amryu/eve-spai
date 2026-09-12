@@ -54,3 +54,13 @@ file, which is what the "no browser available" conclusion actually was.
 `after/` now holds shots from `app/src/uitest/webshot.sh`. The lesson is in the demo's favour: the
 demo server was the right thing to land before the panes, and the mistake was closing a ticket on
 green tests while the only surface that could show the defect went unlooked at.
+
+## The demo served an empty alerts pane
+
+Every screenshot showed `Alerts 0`, because the seed built intel, pings, map and meta and left the
+alert pane alone. WEB-007 would have landed the alerts pane with no way to see whether it drew
+anything.
+
+The seed now builds an `AlertMsg` from the fixture cards above `Info`, with the jump distances and
+rings that the real publisher attaches, so the pane has something to render and the screenshot says
+so.

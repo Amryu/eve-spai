@@ -48,9 +48,8 @@ a dead one.
 underlying data moves on a 1500ms log poll, in exchange for the publisher holding a reference to the
 connection list. Not worth the coupling.
 
-**Long-polling only.** Each cycle is a fresh connection and a fresh thread, which on a phone is a
-wakeup per cycle. `/api/state?since=N` is still worth adding as a fallback for anything that proxies
-SSE badly, and it shares the serializer, but it is not the default.
+**Long-polling as the default.** Each cycle is a fresh connection and a fresh thread, which on a
+phone is a wakeup per cycle.
 
 ## How the tests were proven to have teeth
 
@@ -66,3 +65,17 @@ boundary, the client cap, and a stalled client being dropped rather than queued.
 cap: the two together are the answer to `tiny_http` exposing no socket handle, so no send timeout can
 be set on a stream. Nothing here can stop a wedged socket from holding its thread; it can only bound
 how many of them there are.
+
+## `/api/state` was in the deliverable and was not built
+
+The ticket asked for `GET /api/state?since=N` as a fallback alongside the stream. It was not
+implemented, and the review above discussed it as though it were an option under consideration rather
+than something promised and skipped. That is the failure worth naming: the wording made a gap read
+like a decision.
+
+It exists now, with one deliberate narrowing. The ticket said long-polling; it answers immediately
+instead, returning whatever changed since `since` and closing. There are four workers, so a handful
+of parked phones would starve every other request on the server, and `tiny_http` gives no way to set
+a send timeout on a held socket. A client polling this every couple of seconds gets the same result
+without that risk. `state_answers_a_delta_and_does_not_hold_the_connection` asserts both halves,
+including that it returns in well under a second.

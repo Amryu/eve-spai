@@ -1553,6 +1553,13 @@ impl SpaiApp {
 
     fn publish_ui_facts(&self) {
         let mut f = self.web_facts.lock().unwrap_or_else(|e| e.into_inner());
+        f.web_enabled = self.settings.web.enabled;
+        // Everything below clones a roster, a rule list and a graph handle, once per frame. The web
+        // view is off by default, so doing it anyway would be a cost paid by every user who never
+        // turns it on. The publisher reads `web_enabled` and idles for the same reason.
+        if !f.web_enabled {
+            return;
+        }
         f.systems = self.systems.clone();
         f.chars = self.characters.iter().map(|c| (c.name.clone(), c.id)).collect();
         f.active_character = self.active_character.clone();

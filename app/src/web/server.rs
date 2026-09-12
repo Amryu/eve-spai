@@ -230,6 +230,22 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             let since = header(&req, "Last-Event-ID").and_then(|v| v.trim().parse::<u64>().ok());
             super::sse::serve(req, ctx.hub.clone(), ctx.web.clone(), since)
         }
+        Route::State => {
+            // The fallback for anything that mangles an event stream: the same serializer, asked
+            // for rather than pushed. It answers immediately with whatever changed since `since`,
+            // and does NOT hold the connection open. Long-polling was the original plan and is the
+            // wrong shape here: there are four workers, so a handful of parked phones would starve
+            // every other request on the server.
+            let since = routes::query_param(query, "since")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            let snap = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).snapshot_since(since);
+            let json = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_owned());
+            respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[(
+                "Cache-Control",
+                "no-store".to_owned(),
+            )])
+        }
         Route::Snapshot => {
             let json = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).full_json();
             respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[
@@ -502,6 +518,45 @@ mod tests {
         }
         let took = wait_for(&mut sock, "30004759").expect("the change never arrived");
         assert!(took < Duration::from_millis(900), "a publish took {took:?} to reach the stream");
+    }
+
+    /// WEB-004's fallback for a network that mangles event streams.
+    #[test]
+    fn state_answers_a_delta_and_does_not_hold_the_connection() {
+        let s = serve_test();
+        let c = client();
+        let cookie = format!("spai={TOKEN}");
+        let get_state = |since: u64| {
+            let started = Instant::now();
+            let body = c
+                .get(format!("{}/api/state?since={since}", s.base))
+                .header("Cookie", &cookie)
+                .send()
+                .unwrap()
+                .text()
+                .unwrap();
+            (body, started.elapsed())
+        };
+
+        {
+            let mut st = s.web.lock().unwrap();
+            let rev = st.changed(crate::web::state::Pane::Map, 777).expect("fresh");
+            st.put_map(crate::web::snapshot::MapLive {
+                rev,
+                you: Some(30_004_759),
+                ..Default::default()
+            });
+        }
+        let seq = s.web.lock().unwrap().seq;
+
+        let (fresh, took) = get_state(0);
+        assert!(fresh.contains("30004759"), "a client with nothing gets everything");
+        assert!(took < Duration::from_secs(1), "it must not park a worker: took {took:?}");
+
+        let (caught_up, took) = get_state(seq);
+        assert!(!caught_up.contains("30004759"), "a caught-up client is sent no pane");
+        assert!(caught_up.contains(&format!("\"seq\":{seq}")), "but is still told where it is");
+        assert!(took < Duration::from_secs(1), "took {took:?}");
     }
 
     #[test]

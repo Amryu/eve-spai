@@ -84,3 +84,22 @@ three existing free functions `pub(crate)` (`severity_of`, `build_last_ship`, `u
 publisher can reuse them instead of copying their bodies, added an `alerts_enabled()` accessor next to
 the engine method it serves, and holds a `web` field for WEB-003 to read. Visibility and one accessor,
 no logic, but it is more than the ticket said and it is recorded here rather than left to be noticed.
+
+## Two things this shipped wrong, fixed in a later pass
+
+**The publisher ran whether or not anyone wanted it.** `spawn` is called unconditionally from
+`SpaiApp::build`, and nothing checked the setting. So every user got a thread that, twice a second,
+cloned up to 250 reports, locked and resolved the pilot cache, walked the graph for character rings,
+built the whole enriched `AlertMsg` and JSON-serialized four panes to hash them. The web view is off
+by default, so that was pure waste for almost everyone who would ever run this build.
+
+`UiFacts` now carries `web_enabled`, `publish_ui_facts` returns before its clones when the feature is
+off, and the tick decision is a pure `should_publish` so it can be tested at all: the loop it guards
+never returns, which is exactly why the missing check was invisible.
+
+The lesson is narrow and worth keeping: a background thread spawned unconditionally needs its gate
+tested, because "is this thread doing anything" is not something any other test asks.
+
+**`UiFacts` has no `sounds`.** The ticket listed it. It is only needed when the page can play
+anything, so it lands with WEB-009 rather than sitting unused and unpopulated until then. Recorded
+here so the ticket and the code do not silently disagree.
