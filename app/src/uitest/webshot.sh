@@ -52,10 +52,12 @@ for size in "${sizes[@]}"; do
   fi
 done
 
-# Kill by the pid we started, never by pattern. A `pkill -f` broad enough to catch the test binary
-# is also broad enough to catch the shell that ran it, which is how this script first exited 144.
+# Stop it by the port it holds, never by a command-line pattern. `cargo test` execs the test binary
+# as a child, so killing the pid we started leaves the server running; and a `pkill -f` broad enough
+# to catch that binary is also broad enough to catch the shell running this script, which is how
+# this exited 144 twice while it was being written.
 if [ -n "$demo_pid" ]; then
-  kill "$demo_pid" 2>/dev/null || true
+  fuser -k 6799/tcp >/dev/null 2>&1 || true
   wait "$demo_pid" 2>/dev/null || true
 fi
 
