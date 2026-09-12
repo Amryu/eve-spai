@@ -30,6 +30,7 @@ fn webdemo() {
             bind_lan: false,
             token: TOKEN.to_owned(),
             theme: crate::theme::Theme::caldari(),
+            map: Some(std::sync::Arc::new(crate::web::demo::map_geometry())),
         },
         web.clone(),
     )

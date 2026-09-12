@@ -1,0 +1,39 @@
+.starmap {
+  width: 100%;
+  height: min(60vh, 520px);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  /* The SVG owns the gesture: without this the page scrolls instead of the map panning. */
+  touch-action: none;
+  cursor: grab;
+}
+.starmap:active { cursor: grabbing; }
+
+/* Every edge in one path. A universe is ~13.5k of them, and 13.5k elements is a stall on a phone.
+   non-scaling-stroke keeps the line 1.5 screen pixels at any zoom; in user units it would be
+   invisible zoomed out and slab-thick zoomed in. */
+.starmap .links {
+  stroke: var(--line);
+  stroke-width: 1.5;
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.starmap .sys { cursor: pointer; }
+.starmap .sys:hover { stroke: var(--fg); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+/* Intel heat sits under its system, so the dot's security colour stays readable on top. */
+.starmap .hot { opacity: 0.35; }
+.starmap text { fill: var(--muted); paint-order: stroke; }
+
+.maptools { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.maptools button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+.maphint { color: var(--muted); font-size: 0.9em; }
