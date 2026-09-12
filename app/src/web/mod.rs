@@ -12,6 +12,7 @@ pub mod css;
 #[cfg(test)]
 pub mod demo;
 pub mod icons;
+pub mod map;
 pub mod routes;
 pub mod server;
 pub mod sse;

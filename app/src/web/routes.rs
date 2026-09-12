@@ -15,6 +15,7 @@ pub enum Route {
     Font,
     Snapshot,
     State,
+    MapGeometry,
     Events,
     Health,
     NotFound,
@@ -38,6 +39,7 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/icons.json" => Route::Icons,
         "/api/snapshot" => Route::Snapshot,
         "/api/state" => Route::State,
+        "/api/map/geometry" => Route::MapGeometry,
         "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
         p if super::assets::find(p).is_some() => Route::Asset,
@@ -159,6 +161,7 @@ mod tests {
         assert_eq!(classify("GET", "/api/snapshot"), Route::Snapshot);
         assert_eq!(classify("GET", "/api/events"), Route::Events);
         assert_eq!(classify("GET", "/api/state"), Route::State);
+        assert_eq!(classify("GET", "/api/map/geometry"), Route::MapGeometry);
         assert_eq!(classify("GET", "/assets/app.js"), Route::Asset);
         assert_eq!(classify("GET", "/assets/phosphor-9.9.9.ttf"), Route::Font);
         assert_eq!(classify("GET", "/nope"), Route::NotFound);
@@ -175,6 +178,7 @@ mod tests {
             Route::ThemeCss,
             Route::Snapshot,
             Route::State,
+            Route::MapGeometry,
             Route::Events,
             Route::Font,
         ] {

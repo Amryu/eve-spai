@@ -147,7 +147,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-008 Browser dialogs and write-back](WEB-008-browser-dialogs-and-writeback/) | `routes_detail.rs`, `dialogs.js` | 7 | **Open** |
 | [WEB-009 Sound and mute](WEB-009-sound-and-mute/) | `sound.rs`, `sound.js` | 7 | **Open** |
 | [WEB-010 Layout engine](WEB-010-layout-engine/) | `layout.js` | 8 | **Fixed** |
-| [WEB-011 Map pane](WEB-011-map-pane/) | `web/map.rs`, `map.js` | 8 | **Open** |
+| [WEB-011 Map pane](WEB-011-map-pane/) | `web/map.rs`, `map.js` | 8 | **Fixed** |
 | [WEB-012 Desktop settings UI](WEB-012-desktop-settings-ui/) | `settings_view` | 9 | **Open** |
 | [WEB-013 First browser render was blank, then drew every pane in the header](WEB-013-first-browser-render/) | `assets/app.js`, `web/assets.rs` | after 5 | **Fixed** |
 | [WEB-014 Pairing means typing 43 characters by hand](WEB-014-qr-pairing/) | `settings_view` | with 12 | **Open** |

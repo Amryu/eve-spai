@@ -1541,6 +1541,7 @@ impl SpaiApp {
             bind_lan: w.bind_lan,
             token: w.token.clone(),
             theme: self.settings.theme.clone(),
+            map: self.web_map_geometry(),
         };
         match crate::web::server::start(cfg, self.web.clone()) {
             Ok(h) => self.web_server = Some(h),
@@ -1549,6 +1550,21 @@ impl SpaiApp {
                 self.web_error = Some(e);
             }
         }
+    }
+
+    /// Map geometry for the page, built once from the SDE the app already has loaded.
+    ///
+    /// Built here rather than in the server because this is where both halves are to hand: the store
+    /// holds the projected coordinates and `systems` holds the graph. Returns `None` before the SDE
+    /// is ready, which the page renders as an empty map rather than as an error.
+    fn web_map_geometry(&self) -> Option<std::sync::Arc<crate::web::map::Geometry>> {
+        let store = self.store.as_ref()?;
+        let graph = self.systems.as_ref()?;
+        let systems = store.all_map_systems();
+        if systems.is_empty() {
+            return None;
+        }
+        Some(std::sync::Arc::new(crate::web::map::build(&systems, graph)))
     }
 
     fn publish_ui_facts(&self) {

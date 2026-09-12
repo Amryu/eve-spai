@@ -29,6 +29,9 @@ pub struct Config {
     pub bind_lan: bool,
     pub token: String,
     pub theme: crate::theme::Theme,
+    /// Built once on the worker that first asks for it, then cached: the SDE does not change while
+    /// the app is running, and walking 8000 systems per request would be silly.
+    pub map: Option<Arc<super::map::Geometry>>,
 }
 
 pub struct Handle {
@@ -64,6 +67,7 @@ struct Ctx {
     cfg: Config,
     web: SharedWeb,
     hub: SharedHub,
+    map_json: Mutex<Option<Arc<str>>>,
     fails: Mutex<HashMap<IpAddr, (Instant, u32)>>,
 }
 
@@ -83,6 +87,7 @@ pub fn start(cfg: Config, web: SharedWeb) -> Result<Handle, String> {
         cfg,
         web,
         hub: hub.clone(),
+        map_json: Mutex::new(None),
         fails: Mutex::new(HashMap::new()),
     });
     for _ in 0..WORKERS {
@@ -230,6 +235,18 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             let since = header(&req, "Last-Event-ID").and_then(|v| v.trim().parse::<u64>().ok());
             super::sse::serve(req, ctx.hub.clone(), ctx.web.clone(), since)
         }
+        Route::MapGeometry => {
+            let json = {
+                let mut slot = ctx.map_json.lock().unwrap_or_else(|e| e.into_inner());
+                slot.get_or_insert_with(|| match &ctx.cfg.map {
+                    Some(g) => serde_json::to_string(g.as_ref()).unwrap_or_default().into(),
+                    None => Arc::from("{\"extent\":4096,\"nodes\":[],\"edges\":[]}"),
+                })
+                .clone()
+            };
+            // Keyed on the content, so a rebuilt SDE serves a new tag and an unchanged one does not.
+            cached(req, inm, "application/json; charset=utf-8", json.as_bytes())
+        }
         Route::State => {
             // The fallback for anything that mangles an event stream: the same serializer, asked
             // for rather than pushed. It answers immediately with whatever changed since `since`,
@@ -316,6 +333,7 @@ mod tests {
                 bind_lan: false,
                 token: TOKEN.to_owned(),
                 theme: crate::theme::Theme::caldari(),
+                map: None,
             },
             web.clone(),
         )

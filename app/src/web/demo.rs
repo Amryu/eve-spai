@@ -161,3 +161,30 @@ fn meta() -> Meta {
         player_system: Some(HOME),
     }
 }
+
+/// A four-system map from the same fixture graph the cards use, so the map pane has something with
+/// real edges to draw.
+pub fn map_geometry() -> super::map::Geometry {
+    let systems = crate::uitest::fixtures::systems();
+    let coords = [
+        (30_004_759_i64, "1DQ1-A", -0.36, 0.0, 0.0),
+        (30_004_608, "319-3D", -0.41, 120.0, 60.0),
+        (30_003_704, "7-K5EL", -0.29, 240.0, 10.0),
+        (30_000_142, "Jita", 0.95, 40.0, 200.0),
+    ];
+    let rows: Vec<crate::store::MapSystem> = coords
+        .iter()
+        .map(|&(id, name, sec, x, z)| crate::store::MapSystem {
+            id,
+            name: name.to_owned(),
+            security: sec,
+            region_id: 10_000_060,
+            x,
+            y: 0.0,
+            z,
+            x2d: x,
+            z2d: z,
+        })
+        .collect();
+    super::map::build(&rows, &systems)
+}
