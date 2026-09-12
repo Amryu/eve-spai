@@ -261,6 +261,8 @@ fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
             // machine's home directory. These renders get committed to ticket folders and pushed.
             a.settings.eve_logs_dir = "/fixture/EVE/logs".to_owned();
             a.settings.eve_settings_dir = "/fixture/EVE/settings".to_owned();
+            // The link and QR are hidden until asked for, which a scene has to ask for.
+            a.web_reveal = true;
             a
         });
         app.root_chrome(ui);

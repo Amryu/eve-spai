@@ -62,3 +62,71 @@ mod tests {
         }
     }
 }
+
+/// The pairing link as a QR, rasterised for egui.
+///
+/// Typing 43 characters of mixed-case base64 into a phone is where people give up, so this is the
+/// difference between the feature being usable and being technically available.
+///
+/// `scale` is pixels per module. Cameras need a few: at 1 the code is the size of a postage stamp on
+/// a modern display and nothing can read it.
+pub fn qr_image(url: &str, scale: usize) -> Option<egui::ColorImage> {
+    let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
+    let modules = code.to_colors();
+    let side = (modules.len() as f64).sqrt() as usize;
+    if side == 0 || side * side != modules.len() {
+        return None;
+    }
+    // A quiet zone is part of the spec, not decoration: without it a reader cannot find the code
+    // against whatever is behind it.
+    const QUIET: usize = 4;
+    let px = (side + QUIET * 2) * scale;
+    let mut pixels = vec![egui::Color32::WHITE; px * px];
+    for (i, m) in modules.iter().enumerate() {
+        if *m != qrcode::Color::Dark {
+            continue;
+        }
+        let (mx, my) = (i % side + QUIET, i / side + QUIET);
+        for dy in 0..scale {
+            for dx in 0..scale {
+                pixels[(my * scale + dy) * px + mx * scale + dx] = egui::Color32::BLACK;
+            }
+        }
+    }
+    Some(egui::ColorImage { size: [px, px], pixels, source_size: egui::vec2(px as f32, px as f32) })
+}
+
+#[cfg(test)]
+mod qr_tests {
+    use super::*;
+
+    #[test]
+    fn a_pairing_url_becomes_a_square_code() {
+        let url = format!("http://192.168.1.5:6767/?t={}", new_token().expect("rng"));
+        let img = qr_image(&url, 4).expect("encodes");
+        assert_eq!(img.size[0], img.size[1], "a QR is square");
+        assert!(img.size[0] > 100, "too small to scan: {}px", img.size[0]);
+
+        // Light border all the way round: the quiet zone is what a reader finds the code against.
+        let w = img.size[0];
+        for i in 0..w {
+            assert_eq!(img.pixels[i], egui::Color32::WHITE, "top row {i} is not quiet");
+            assert_eq!(img.pixels[(w - 1) * w + i], egui::Color32::WHITE, "bottom row {i}");
+            assert_eq!(img.pixels[i * w], egui::Color32::WHITE, "left column {i}");
+        }
+        assert!(img.pixels.iter().any(|p| *p == egui::Color32::BLACK), "no modules were drawn");
+    }
+
+    #[test]
+    fn scale_multiplies_the_raster() {
+        let url = "http://10.0.0.2:6767/?t=abc";
+        let small = qr_image(url, 2).expect("encodes");
+        let big = qr_image(url, 6).expect("encodes");
+        assert_eq!(big.size[0], small.size[0] / 2 * 6);
+    }
+
+    #[test]
+    fn a_url_too_long_to_encode_is_refused_rather_than_panicking() {
+        assert!(qr_image(&"x".repeat(10_000), 4).is_none());
+    }
+}

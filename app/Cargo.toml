@@ -62,6 +62,9 @@ rfd = "0.15"
 # Cross-platform advisory file locks for the single-instance guard (main.rs). Default
 # `sync` feature only — operates on std::fs::File, no extra runtime deps.
 fs4 = "1.1.0"
+# Pairing QR for the web view. Default features off: `image` would pull an encoder this never needs,
+# since the code is rasterised straight into an egui texture.
+qrcode = { version = "0.14.1", default-features = false }
 
 [dev-dependencies]
 # Headless UI harness: renders any egui surface to a PNG and drives hover/click through the

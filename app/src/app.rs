@@ -472,6 +472,11 @@ pub struct SpaiApp {
     web: crate::web::state::SharedWeb,
     web_detail: crate::web::Detail,
     web_inbox: crate::web::Inbox,
+    /// The pairing QR and the link it encodes, so a changed token cannot leave a stale code.
+    web_qr: Option<(String, egui::TextureHandle)>,
+    /// Whether the token is on screen. Never persisted: a revealed secret should not survive a
+    /// restart into the next time someone shares this pane.
+    pub(crate) web_reveal: bool,
     web_server: Option<crate::web::server::Handle>,
     /// What the listener was started for. Restarting on a change is cheaper and clearer than
     /// reaching into a running server to re-read its settings.
@@ -1111,6 +1116,8 @@ impl SpaiApp {
             web,
             web_detail,
             web_inbox,
+            web_qr: None,
+            web_reveal: false,
             web_server: None,
             web_started_for: None,
             web_error: None,
@@ -1646,13 +1653,42 @@ impl SpaiApp {
             );
         });
 
-        // The link is not shown by default: it carries the token, and a settings pane is the kind of
-        // screen people share. Revealing it is a deliberate act.
-        ui.collapsing("Show the pairing link", |ui| {
+        // Neither the link nor the code is shown by default: both carry the token, and a settings
+        // pane is the kind of screen people share or stream. Revealing either is a deliberate act,
+        // and it does not persist.
+        let label = if self.web_reveal { "Hide the pairing link" } else { "Show the pairing link and QR" };
+        if ui.button(format!("{}  {label}", icon::MAGNIFYING_GLASS)).clicked() {
+            self.web_reveal = !self.web_reveal;
+        }
+        if self.web_reveal {
             ui.label(egui::RichText::new(&url).monospace());
-        });
+            ui.label(
+                egui::RichText::new("Scan this from the phone. Anyone who reads it is paired.")
+                    .weak(),
+            );
+            if let Some(tex) = self.web_qr_texture(ui.ctx(), &url) {
+                ui.add(egui::Image::new(&tex).fit_to_original_size(1.0));
+            }
+        }
 
         changed
+    }
+
+    /// The pairing QR, uploaded once per distinct link.
+    ///
+    /// Keyed on the URL itself, so regenerating the token or changing the port replaces the texture
+    /// rather than leaving a code that pairs nothing.
+    fn web_qr_texture(
+        &mut self,
+        ctx: &egui::Context,
+        url: &str,
+    ) -> Option<egui::TextureHandle> {
+        if self.web_qr.as_ref().is_none_or(|(for_url, _)| for_url != url) {
+            let img = crate::web::auth::qr_image(url, 4)?;
+            let tex = ctx.load_texture("web-pairing-qr", img, egui::TextureOptions::NEAREST);
+            self.web_qr = Some((url.to_owned(), tex));
+        }
+        self.web_qr.as_ref().map(|(_, t)| t.clone())
     }
 
     /// The address a phone should open, token and all. Falls back to the bound address when the
@@ -1664,8 +1700,11 @@ impl SpaiApp {
             .map(|h| h.addr.clone())
             .unwrap_or_else(|| format!("0.0.0.0:{}", self.settings.web.port));
         // 0.0.0.0 is every interface, which is not an address anyone can type into a phone.
+        //
+        // Not probed headlessly: a harness build performs no side effects, and a render of this pane
+        // gets committed to a ticket folder, where the machine's own address has no business being.
         let host = match host.strip_prefix("0.0.0.0") {
-            Some(port) => match crate::web::server::lan_address() {
+            Some(port) => match self.web_allowed.then(crate::web::server::lan_address).flatten() {
                 Some(ip) => format!("{ip}{port}"),
                 None => format!("<this machine's address>{port}"),
             },
