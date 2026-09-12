@@ -63,6 +63,9 @@ pub struct PingCard {
 pub struct PingPane {
     pub rev: u64,
     pub pings: Vec<PingCard>,
+    /// Names for the system ids a formup points at. `Formup::System` carries an id and nothing else,
+    /// and the page has no SDE, so without this a formup reads "30004759" instead of "1DQ1-A".
+    pub systems: HashMap<i64, String>,
 }
 
 /// The map's live layer. Geometry never travels here: it comes from `/api/map/geometry`, cached hard

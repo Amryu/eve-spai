@@ -35,7 +35,12 @@ pub fn seed(web: &SharedWeb, tick: u64) {
         st.put_alerts(AlertPane { rev, msg: alerts });
     }
     if let Some(rev) = st.changed(Pane::Pings, hash_of(&pings)) {
-        st.put_pings(PingPane { rev, pings });
+        let systems = crate::uitest::fixtures::systems();
+        let names = systems
+            .info_of(HOME)
+            .map(|i| HashMap::from([(HOME, i.name.clone())]))
+            .unwrap_or_default();
+        st.put_pings(PingPane { rev, pings, systems: names });
     }
     if let Some(rev) = st.changed(Pane::Map, hash_of(&map)) {
         st.put_map(MapLive { rev, ..map });
