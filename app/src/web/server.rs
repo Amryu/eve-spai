@@ -118,6 +118,19 @@ pub fn start(
     Ok(Handle { server, running, hub, addr })
 }
 
+/// This machine's address on the network it would route out of.
+///
+/// A UDP socket "connected" to a documentation address sends no packets; the kernel simply picks the
+/// interface it would use and the local address falls out of that. Enumerating interfaces instead
+/// means guessing which of several is the one the phone can reach.
+pub fn lan_address() -> Option<std::net::IpAddr> {
+    let sock = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    // TEST-NET-1: reserved for documentation and never routed anywhere.
+    sock.connect(("192.0.2.1", 80)).ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
+}
+
 fn header<'a>(req: &'a tiny_http::Request, name: &'static str) -> Option<&'a str> {
     req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str())
 }
@@ -437,6 +450,20 @@ mod tests {
 
     fn get(c: &reqwest::blocking::Client, url: &str) -> reqwest::blocking::Response {
         c.get(url).send().expect("request")
+    }
+
+    /// Either an address a phone could use, or nothing. Never loopback or 0.0.0.0, which would be a
+    /// link that silently cannot work from another device.
+    #[test]
+    fn the_lan_address_is_usable_or_absent() {
+        match lan_address() {
+            Some(ip) => {
+                assert!(!ip.is_loopback(), "{ip} is this machine only");
+                assert!(!ip.is_unspecified(), "{ip} is not an address");
+            }
+            // A machine with no route out is a legitimate answer, and the caller says so.
+            None => {}
+        }
     }
 
     #[test]

@@ -1564,6 +1564,116 @@ impl SpaiApp {
         }
     }
 
+    /// The remote web view's settings.
+    ///
+    /// Returns whether anything changed, which the caller folds into its own save flag.
+    fn web_settings_section(&mut self, ui: &mut egui::Ui) -> bool {
+        use egui_phosphor::regular as icon;
+        let mut changed = false;
+
+        ui.label(egui::RichText::new(format!("{}  Remote web view", icon::BROADCAST)).strong());
+        changed |= ui
+            .checkbox(&mut self.settings.web.enabled, "Serve the intel feed to a browser")
+            .on_hover_text(
+                "Opens a page on this machine showing the intel feed, alerts, fleet pings and the                  map. Pair a phone once and it stays paired.",
+            )
+            .changed();
+
+        if !self.settings.web.enabled {
+            ui.label(
+                egui::RichText::new(
+                    "LAN only, and not encrypted. Do not forward this port to the internet.",
+                )
+                .weak(),
+            );
+            return changed;
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Port");
+            changed |= ui
+                .add(egui::DragValue::new(&mut self.settings.web.port).range(1024..=65535))
+                .changed();
+            changed |= ui
+                .checkbox(&mut self.settings.web.bind_lan, "Reachable from the network")
+                .on_hover_text(
+                    "Off binds this machine only, which needs a tunnel to reach from a phone.",
+                )
+                .changed();
+            changed |= ui
+                .checkbox(&mut self.settings.web.allow_writeback, "Allow changes from the page")
+                .on_hover_text(
+                    "Classifying an uncertain pilot and acknowledging an alert. Off makes the page                      read-only.",
+                )
+                .changed();
+        });
+
+        if let Some(err) = &self.web_error {
+            ui.label(
+                egui::RichText::new(format!("{}  {err}", icon::WARNING))
+                    .color(crate::theme::standing::WARNING),
+            );
+        }
+
+        let url = self.web_pairing_url();
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(format!("{}  Copy pairing link", icon::COPY))
+                .on_hover_text("Carries the token. Treat it as a password.")
+                .clicked()
+            {
+                ui.ctx().copy_text(url.clone());
+            }
+            if ui.button(format!("{}  Open in browser", icon::ARROW_SQUARE_OUT)).clicked() {
+                let _ = open::that(&url);
+            }
+            if ui
+                .button(format!("{}  Regenerate link", icon::ARROWS_CLOCKWISE))
+                .on_hover_text("Invalidates every paired device. They have to open a new link.")
+                .clicked()
+            {
+                self.settings.web.token.clear();
+                changed = true;
+            }
+            let n = self.web_server.as_ref().map_or(0, |h| h.clients());
+            ui.label(
+                egui::RichText::new(match n {
+                    0 => "no devices connected".to_owned(),
+                    1 => "1 device connected".to_owned(),
+                    n => format!("{n} devices connected"),
+                })
+                .weak(),
+            );
+        });
+
+        // The link is not shown by default: it carries the token, and a settings pane is the kind of
+        // screen people share. Revealing it is a deliberate act.
+        ui.collapsing("Show the pairing link", |ui| {
+            ui.label(egui::RichText::new(&url).monospace());
+        });
+
+        changed
+    }
+
+    /// The address a phone should open, token and all. Falls back to the bound address when the
+    /// machine's LAN address cannot be worked out.
+    fn web_pairing_url(&self) -> String {
+        let host = self
+            .web_server
+            .as_ref()
+            .map(|h| h.addr.clone())
+            .unwrap_or_else(|| format!("0.0.0.0:{}", self.settings.web.port));
+        // 0.0.0.0 is every interface, which is not an address anyone can type into a phone.
+        let host = match host.strip_prefix("0.0.0.0") {
+            Some(port) => match crate::web::server::lan_address() {
+                Some(ip) => format!("{ip}{port}"),
+                None => format!("<this machine's address>{port}"),
+            },
+            None => host,
+        };
+        format!("http://{host}/?t={}", self.settings.web.token)
+    }
+
     /// Map geometry for the page, built once from the SDE the app already has loaded.
     ///
     /// Built here rather than in the server because this is where both halves are to hand: the store
@@ -17313,6 +17423,10 @@ impl SpaiApp {
                     ui.label(
                         egui::RichText::new("Alert rules live in the Alerts tab.").weak(),
                     );
+
+                    ui.separator();
+
+                    changed |= self.web_settings_section(ui);
 
                     ui.separator();
 
