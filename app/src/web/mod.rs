@@ -15,6 +15,7 @@ pub mod demo;
 pub mod icons;
 pub mod jabber;
 pub mod map;
+pub mod route;
 pub mod routes;
 pub mod server;
 pub mod sse;
@@ -38,6 +39,9 @@ pub struct DetailState {
     /// Type names the app has resolved, shared so the ship dialog can name the skill a hull bonus
     /// belongs to. Shared rather than copied because the request thread fills it in on a miss.
     pub type_names: Option<Arc<Mutex<std::collections::HashMap<i64, String>>>>,
+    /// Every system's real coordinates, for the light-year maths the jump routes are made of.
+    /// `geo::Systems` is topology only; the positions live in `store::MapSystem`.
+    pub coords: Option<Arc<Vec<crate::store::MapSystem>>>,
     /// The live jabber session, shared rather than copied: one room's backlog is larger than every
     /// other pane put together, and the pane reads one conversation at a time.
     pub jabber: Option<Arc<Mutex<crate::jabber::JabberState>>>,

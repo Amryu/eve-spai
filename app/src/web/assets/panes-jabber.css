@@ -59,7 +59,9 @@
 .jwho { color: color-mix(in srgb, var(--accent) 55%, var(--fg)); font-weight: 600; }
 .jmsg.me .jwho { color: var(--accent); }
 .jat { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-.jbody { flex: 1 1 100%; overflow-wrap: anywhere; }
+/* `pre-wrap`, because a chat message's own line breaks are part of what was said: a fleet ping is
+   several lines and they were arriving as one run-on paragraph. */
+.jbody { flex: 1 1 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
 .jbody a { color: var(--accent); }
 /* Being named is the one thing in a busy room worth finding by eye. */
 .jmention { color: var(--warning); background: color-mix(in srgb, var(--warning) 18%, transparent); border-radius: 2px; padding: 0 0.15rem; }

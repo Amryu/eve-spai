@@ -39,6 +39,11 @@ pub enum OverlayToMain {
     /// domain, and joining a room is a command to the session. Both live on the app side, and the
     /// page should not be able to name an arbitrary JID for the app to join.
     JabberOpen { name: String, room: bool },
+    /// Set the in-game destination, for the character the app has selected.
+    ///
+    /// A system id, and the app decides which character and whether the ESI scope is there. The page
+    /// is on the LAN; what it can ask for is "route me here", not "call this endpoint".
+    SetDestination { id: i64 },
     /// Send one message to a conversation that is already open.
     JabberSend { jid: String, body: String },
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },

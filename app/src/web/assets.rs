@@ -58,6 +58,11 @@ pub const ASSETS: &[Asset] = &[
         body: include_str!("assets/panes-jabber.js"),
     },
     Asset {
+        path: "/assets/route.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_str!("assets/route.js"),
+    },
+    Asset {
         path: "/assets/layout.css",
         mime: "text/css; charset=utf-8",
         body: include_str!("assets/layout.css"),
