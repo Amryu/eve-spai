@@ -576,15 +576,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
         },
         Route::SystemInfo(id) => {
             let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
-            let body = d.graph.as_ref().and_then(|g| {
-                super::detail::system(
-                    id,
-                    g,
-                    d.status.get(&id),
-                    d.player_sys,
-                    d.count_bridges,
-                )
-            });
+            let body = super::detail::system(id, &d);
             json_or_404(req, body)
         }
         Route::ShipInfo(id) => {

@@ -246,35 +246,165 @@ function rows(pairs) {
     .join("");
 }
 
+/// The four damage types, in the app's own order and colours. Shared by the ship dialog's resist
+/// table and the rat profile, which are asking the same question from two sides.
+const DMG = [
+  ["EM", "#5aa9e0"],
+  ["Th", "#d64545"],
+  ["Kin", "#9aa3a8"],
+  ["Exp", "#d6a645"],
+];
+
+const DMG_COL = (name) => (DMG.find(([t]) => name.toLowerCase().startsWith(t.toLowerCase().slice(0, 2)))
+  ?? [null, "var(--fg)"])[1];
+
+/// A counter read against its own region's average, the way the app colours it.
+///
+/// Twenty kills is a quiet hour in Delve and a siege in Aridia, so the bare number says nothing. Two
+/// times the regional average is hostile, above it is a warning, and anything else is just traffic.
+function heat(v, avg) {
+  if (avg > 0 && v >= 2 * avg) return "var(--hostile)";
+  if (avg > 0 && v > avg) return "var(--warning)";
+  return "var(--fg)";
+}
+
+const CAMP_TEXT = {
+  likely: ["Likely gate camp", "#ef4444"],
+  possible: ["Possible camp", "#ffa726"],
+  flag: ["Recent gate kills", "#ffd54f"],
+};
+
+const ADM_COL = (adm) => (adm >= 5 ? "#5ac86a" : adm >= 3 ? "var(--warning)" : "var(--hostile)");
+
+/// The system dialog, carrying what the app's own system window carries.
+///
+/// Laid out as cards rather than the app's single column of labels: the page has the width for it,
+/// and rats, wormholes and the hour's traffic are three separate questions that were reading as one
+/// wall of text.
 async function showSystem(id) {
   open("system", `<h3>System</h3><p class="placeholder">Loading.</p>`);
   const r = await fetch(`/api/system/${id}`);
   if (!r.ok) return open("system", `<h3>System</h3><p class="placeholder">Not in the star map.</p>`);
   const s = await r.json();
-  const jumps = s.jumps_from_you == null ? "no route" : s.jumps_from_you === 0 ? "you are here" : `${s.jumps_from_you} jumps`;
+
+  // Live intel for the neighbour chips, from the snapshot the page already has. The app counts
+  // reports; severity is the same question answered better, and costs nothing extra here.
+  const sev = new Map((state.snapshot?.map?.intel ?? []).map(([sid, v]) => [sid, v]));
+  const SEV = ["info", "warning", "danger", "critical"];
+
+  const chip = (text, colour) =>
+    `<span class="schip" style="--c:${colour}">${esc(text)}</span>`;
+  const chips = [
+    s.sov ? chip(s.sov, "var(--corp)") : "",
+    s.faction && s.security < 0.5 ? chip(s.faction, "var(--neutral)") : "",
+    s.jove ? chip("Jove Observatory", "#b88cf0") : "",
+    s.incursion ? chip("INCURSION", "var(--alliance)") : "",
+    s.fw ? chip(`FW ${s.fw}`, "var(--warning)") : "",
+    s.wormhole ? chip("Wormhole space", "var(--accent)") : "",
+  ].join("");
+
+  const stat = (label, v, avg) =>
+    `<div class="sstat"><b style="color:${heat(v, avg)}">${v.toLocaleString("en-US")}</b>` +
+    `<span>${label}</span></div>`;
+
+  const camp = s.camp
+    ? `<p class="scamp" style="--c:${CAMP_TEXT[s.camp.level][1]}">${ico("campfire")} ` +
+      `<b>${CAMP_TEXT[s.camp.level][0]}</b>: ${s.camp.kills} kills over ${s.camp.span_min}m, ` +
+      `last ${s.camp.age_min}m ago</p>`
+    : "";
+
+  const rats = s.rats
+    ? `<section class="scard"><h4>${ico("skull")} ${esc(s.rats.faction)} rats</h4>` +
+      `<div class="srat"><span>Deals</span><span>` +
+      s.rats.deal.map((t) => `<b style="color:${DMG_COL(t)}">${esc(t)}</b>`).join(" · ") +
+      `</span></div><div class="srat"><span>Weak to</span><span>` +
+      s.rats.weak.map((t) => `<b style="color:${DMG_COL(t)}">${esc(t)}</b>`).join(" · ") +
+      `</span></div>` +
+      (s.rats.ewar ? `<div class="srat"><span>EWAR</span><span>${esc(s.rats.ewar)}</span></div>` : "") +
+      `<p class="shint">Tank what they deal; bring what they are weak to.</p></section>`
+    : "";
+
+  const holes = s.holes.length
+    ? `<section class="scard"><h4>${ico("spiral")} Wormholes</h4>` +
+      s.holes
+        .map((h) => {
+          const tail = [h.kind, h.size, h.hours == null ? "expiring" : `< ${h.hours}h`]
+            .filter(Boolean)
+            .map(esc)
+            .join(" · ");
+          const to = h.to_id
+            ? `<button class="chip" data-system="${h.to_id}">${esc(h.to)}</button>`
+            : `<b>${esc(h.to)}</b>`;
+          return `<div class="shole"><code>${esc(h.sig)}</code> ${ico("arrow-right")} ${to}` +
+            `<small>${tail}</small></div>`;
+        })
+        .join("") +
+      `</section>`
+    : "";
+
+  const upgrades = s.upgrades.length
+    ? `<section class="scard"><h4>${ico("arrow-up")} Sov upgrades</h4><ul class="supg">` +
+      s.upgrades.map((u) => `<li>${esc(u)}</li>`).join("") +
+      `</ul></section>`
+    : "";
+
+  // Neighbours, coloured by security and tinted when the step leaves the constellation or the
+  // region, which is the app's way of showing that a gate is a border.
+  const neigh = s.neighbours.length
+    ? `<section class="scard"><h4>Neighbours</h4><div class="sneigh">` +
+      s.neighbours
+        .map((n) => {
+          const v = sev.get(n.id);
+          const cls = n.cross_region ? " xregion" : n.cross_const ? " xconst" : "";
+          const title = n.cross_region
+            ? `${n.constellation} (${n.region})`
+            : n.cross_const
+              ? n.constellation
+              : n.name;
+          return `<button class="chip nb${cls}" data-system="${n.id}" title="${esc(title)}" ` +
+            `style="color:${secVar(n.security)}">${n.security.toFixed(1)} ${esc(n.name)}` +
+            (v == null ? "" : `<i class="ndot" style="background:var(--sev-${SEV[v] ?? "info"})"></i>`) +
+            `</button>`;
+        })
+        .join("") +
+      `</div></section>`
+    : "";
+
+  const jumpsTo = s.jumps_from_you == null
+    ? "no route"
+    : s.jumps_from_you === 0
+      ? "you are here"
+      : `${s.jumps_from_you} jumps`;
+
   open(
     "system",
-    `<h3 style="color:${secVar(s.security)}">${ico("planet")} ${esc(s.name)} <small>${s.security.toFixed(1)}</small></h3>` +
-      rows([
-        ["Region", esc(s.region)],
-        ["Constellation", esc(s.constellation)],
-        ["Faction", esc(s.faction)],
-        ["Sovereignty", esc(s.sov)],
-        ["ADM", s.adm == null ? null : s.adm.toFixed(1)],
-        ["From you", jumps],
-        ["Incursion", s.incursion ? "yes" : null],
-        ["Jove observatory", s.jove ? "yes" : null],
-        ["Ship kills (1h)", s.ship_kills || null],
-        ["Pod kills (1h)", s.pod_kills || null],
-        ["NPC kills (1h)", s.npc_kills || null],
-      ]) +
-      (s.gates.length
-        ? `<div class="mrow"><span>Gates</span><span class="mgates">` +
-          s.gates
-            .map(([gid, name]) => `<button class="chip" data-system="${gid}">${esc(name)}</button>`)
-            .join("") +
-          `</span></div>`
-        : "")
+    `<h3 class="shead">` +
+      `<span class="ssec" style="background:${secVar(s.security)}">${s.security.toFixed(1)}</span>` +
+      `<span class="sname">${esc(s.name)}</span>` +
+      `<button class="sstar${s.bookmarked ? " on" : ""}" data-bookmark="${s.id}" ` +
+      `data-on="${s.bookmarked ? 0 : 1}" title="${s.bookmarked ? "Remove bookmark" : "Bookmark this system"}">` +
+      `${ico("bookmark-simple")}</button>` +
+      (s.sov_alliance
+        ? `<img class="ssov" src="https://images.evetech.net/alliances/${s.sov_alliance}/logo?size=64" ` +
+          `alt="" title="${esc(s.sov ?? "")}">`
+        : "") +
+      (s.adm == null ? "" : `<span class="sadm" style="color:${ADM_COL(s.adm)}" ` +
+        `title="Activity Defense Multiplier">ADM ${s.adm.toFixed(1)}</span>`) +
+      `</h3>` +
+      `<p class="sloc">${esc(s.constellation)} <span>&lsaquo;</span> ${esc(s.region)}` +
+      `<span class="sfrom">${jumpsTo}</span></p>` +
+      (chips ? `<p class="schips">${chips}</p>` : "") +
+      camp +
+      `<section class="scard"><h4>Last hour</h4><div class="sstats">` +
+      stat("jumps", s.jumps, s.avg_jumps) +
+      stat("ship kills", s.ship_kills, s.avg_ship_kills) +
+      stat("pod kills", s.pod_kills, s.avg_ship_kills) +
+      stat("NPC kills", s.npc_kills, s.avg_npc_kills) +
+      `</div><p class="shint">Coloured against the ${esc(s.region)} average.</p></section>` +
+      rats +
+      holes +
+      upgrades +
+      neigh
   );
 }
 
@@ -283,14 +413,6 @@ async function showShip(id) {
   const r = await fetch(`/api/ship/${id}`);
   if (!r.ok) return open("ship", `<h3>Ship</h3><p class="placeholder">Not in the static data.</p>`);
   const s = await r.json();
-  // The damage types carry the app's own colours. A row of four bare percentages says nothing about
-  // which hole in a resist profile you are looking at; the colour is how that is read at a glance.
-  const DMG = [
-    ["EM", "#5aa9e0"],
-    ["Th", "#d64545"],
-    ["Kin", "#9aa3a8"],
-    ["Exp", "#d6a645"],
-  ];
   const layer = (name, hp, r, ehp) =>
     hp <= 0
       ? ""
@@ -984,6 +1106,18 @@ export async function send(action) {
 document.addEventListener("click", (e) => {
   const intel = e.target.closest("[data-intel]");
   if (intel) return showIntel(Number(intel.dataset.intel));
+  const mark = e.target.closest("[data-bookmark]");
+  if (mark) {
+    const id = Number(mark.dataset.bookmark);
+    const on = mark.dataset.on === "1";
+    // Flipped here as well as sent: the app's answer arrives on the next snapshot, and a star that
+    // waits half a second to fill reads as a dead button.
+    mark.dataset.on = on ? "0" : "1";
+    mark.classList.toggle("on", on);
+    mark.title = on ? "Remove bookmark" : "Bookmark this system";
+    send({ Bookmark: { id, on } });
+    return;
+  }
   const sys = e.target.closest("[data-system]");
   if (sys) return showSystem(Number(sys.dataset.system));
   const ship = e.target.closest("[data-ship]");

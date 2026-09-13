@@ -25,22 +25,163 @@ pub struct SystemInfo {
     pub pod_kills: u32,
     pub npc_kills: u32,
     pub jumps_from_you: Option<u32>,
+    /// Gate traffic in the last hour, and the region's own average for each of the four counters.
+    /// The app colours a counter against its region rather than against an absolute number, because
+    /// twenty kills is a quiet hour in Delve and a siege in Aridia; without the average the page
+    /// would just be showing four numbers that mean nothing.
+    pub jumps: u32,
+    pub avg_jumps: f64,
+    pub avg_ship_kills: f64,
+    pub avg_npc_kills: f64,
+    pub bookmarked: bool,
+    pub fw: Option<String>,
+    /// Alliance holding sov, so the page can show the same logo the app does.
+    pub sov_alliance: Option<i64>,
+    pub camp: Option<CampInfo>,
+    pub rats: Option<RatInfo>,
+    pub holes: Vec<HoleInfo>,
+    pub upgrades: Vec<String>,
+    /// Gate neighbours with what the app's neighbour buttons carry: security for the colour, and
+    /// whether the step leaves the constellation or the region.
+    pub neighbours: Vec<Neighbour>,
 }
 
-pub fn system(
-    id: i64,
-    graph: &crate::geo::Systems,
-    status: Option<&crate::systemstatus::SysFlags>,
-    player_sys: Option<i64>,
-    count_bridges: bool,
-) -> Option<SystemInfo> {
+#[derive(Serialize)]
+pub struct CampInfo {
+    /// "likely", "possible" or "flag", matching the app's three levels.
+    pub level: &'static str,
+    pub kills: usize,
+    pub span_min: i64,
+    pub age_min: i64,
+}
+
+#[derive(Serialize)]
+pub struct RatInfo {
+    pub faction: &'static str,
+    pub deal: [&'static str; 2],
+    pub weak: [&'static str; 2],
+    pub ewar: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+pub struct HoleInfo {
+    pub sig: String,
+    pub to: String,
+    pub to_id: Option<i64>,
+    pub kind: Option<String>,
+    pub size: Option<String>,
+    /// Hours left, or `None` once it is into its final, unpredictable stretch.
+    pub hours: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct Neighbour {
+    pub id: i64,
+    pub name: String,
+    pub security: f64,
+    pub constellation: String,
+    pub region: String,
+    pub cross_const: bool,
+    pub cross_region: bool,
+}
+
+pub fn system(id: i64, d: &super::DetailState) -> Option<SystemInfo> {
+    let graph = d.graph.as_deref()?;
     let info = graph.info_of(id)?;
+    let status = d.status.get(&id);
+    let now = chrono::Utc::now().timestamp();
+
     let mut gates: Vec<(i64, String)> = graph
         .neighbors_gates_only(id)
         .iter()
         .filter_map(|n| graph.info_of(*n).map(|i| (i.id, i.name.clone())))
         .collect();
     gates.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // Every neighbour, not just the gate ones: the app's neighbour row includes whatever the graph
+    // joins, which is how a scanned hole shows up as somewhere you can go.
+    let mut neighbours: Vec<Neighbour> = graph
+        .neighbors(id)
+        .iter()
+        .filter_map(|n| graph.info_of(*n))
+        .map(|ni| Neighbour {
+            id: ni.id,
+            name: ni.name.clone(),
+            security: ni.security,
+            constellation: ni.constellation.clone(),
+            region: ni.region.clone(),
+            cross_const: ni.constellation != info.constellation,
+            cross_region: ni.region != info.region && !ni.region.is_empty(),
+        })
+        .collect();
+    neighbours.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // The region's average for each counter, which is the only thing that makes the raw numbers
+    // readable. Averaged over every system in the region, the same way the app does it.
+    let region_ids: Vec<i64> = d
+        .store
+        .as_ref()
+        .and_then(|s| s.region_of_system(id).map(|r| s.region_systems(r)))
+        .map(|v| v.into_iter().map(|m| m.id).collect())
+        .unwrap_or_default();
+    let avg = |sel: &dyn Fn(&crate::systemstatus::SysFlags) -> u32| -> f64 {
+        if region_ids.is_empty() {
+            return 0.0;
+        }
+        let sum: u64 = region_ids.iter().filter_map(|s| d.status.get(s)).map(|f| sel(f) as u64).sum();
+        sum as f64 / region_ids.len() as f64
+    };
+
+    let camp = d.camps.as_ref().and_then(|c| {
+        c.lock().unwrap_or_else(|e| e.into_inner()).camp(id, now).map(|c| CampInfo {
+            level: match c.level {
+                crate::camp::CampLevel::Likely => "likely",
+                crate::camp::CampLevel::Possible => "possible",
+                crate::camp::CampLevel::Flag => "flag",
+            },
+            kills: c.kills,
+            span_min: (c.span / 60).max(0),
+            age_min: (c.age / 60).max(0),
+        })
+    });
+
+    let rats = crate::rats::rat_profile(&info.region).map(|rp| RatInfo {
+        faction: rp.faction,
+        deal: rp.deal,
+        weak: rp.weak,
+        ewar: (rp.ewar != "None").then_some(rp.ewar),
+    });
+
+    // A hole is listed from either end, so the "other side" is whichever end is not this system.
+    let holes: Vec<HoleInfo> = d
+        .wh_cache
+        .iter()
+        .filter(|w| w.system_id == id || w.dest_system_id == Some(id))
+        .map(|w| {
+            let here_is_near = w.system_id == id;
+            let other_id = if here_is_near { w.dest_system_id } else { Some(w.system_id) };
+            HoleInfo {
+                sig: if here_is_near { w.signature.clone() } else { w.dest_signature.clone() }
+                    .unwrap_or_else(|| "?".to_owned()),
+                to: other_id
+                    .and_then(|sid| graph.info_of(sid).map(|i| i.name.clone()))
+                    .unwrap_or_else(|| w.dest.label().to_owned()),
+                to_id: other_id.filter(|sid| graph.info_of(*sid).is_some()),
+                kind: w.wh_type.clone(),
+                size: w.effective_size().map(|s| s.label().to_owned()),
+                hours: w.hours_left(now),
+            }
+        })
+        .collect();
+
+    let upgrades: Vec<String> = d
+        .sov_upgrades
+        .iter()
+        .filter(|u| u.system.eq_ignore_ascii_case(&info.name))
+        .flat_map(|u| crate::app::split_upgrade_label(&u.upgrade))
+        .map(|u| u.to_owned())
+        .collect();
+
     Some(SystemInfo {
         id,
         name: info.name.clone(),
@@ -58,13 +199,25 @@ pub fn system(
         pod_kills: status.map_or(0, |s| s.pod_kills),
         npc_kills: status.map_or(0, |s| s.npc_kills),
         // Same walk `jumps_from_you` does, against the borrow this function already holds.
-        jumps_from_you: player_sys.and_then(|from| {
-            if count_bridges {
+        jumps_from_you: d.player_sys.and_then(|from| {
+            if d.count_bridges {
                 graph.jumps(id, from, crate::app::JUMP_SCAN_CAP)
             } else {
                 graph.jumps_gates_only(id, from, crate::app::JUMP_SCAN_CAP)
             }
         }),
+        jumps: status.map_or(0, |s| s.jumps),
+        avg_jumps: avg(&|f| f.jumps),
+        avg_ship_kills: avg(&|f| f.ship_kills),
+        avg_npc_kills: avg(&|f| f.npc_kills),
+        bookmarked: d.bookmarks.contains(&id),
+        fw: status.and_then(|s| s.fw.clone()),
+        sov_alliance: status.and_then(|s| s.sov_alliance),
+        camp,
+        rats,
+        holes,
+        upgrades,
+        neighbours,
     })
 }
 

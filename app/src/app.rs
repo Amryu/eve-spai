@@ -1976,6 +1976,10 @@ impl SpaiApp {
             .collect();
         d.holes = if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
         d.type_names = Some(self.type_names.clone());
+        d.wh_cache = self.wh_cache.clone();
+        d.sov_upgrades = self.settings.sov_upgrades.clone();
+        d.bookmarks = self.settings.bookmarks.clone();
+        d.camps = Some(self.camps.clone());
     }
 
     /// The rescue pane, or `None` when this build has no rescue mode or the user has it off.
@@ -10266,6 +10270,13 @@ impl SpaiApp {
                 list.retain(|&s| s != id);
                 if on {
                     list.push(id);
+                }
+                self.needs_save = true;
+            }
+            crate::ipc::OverlayToMain::Bookmark { id, on } => {
+                self.settings.bookmarks.retain(|&b| b != id);
+                if on {
+                    self.settings.bookmarks.push(id);
                 }
                 self.needs_save = true;
             }
@@ -20607,7 +20618,7 @@ fn parse_bridges(text: &str, graph: &crate::geo::Systems) -> Vec<crate::settings
     out
 }
 
-fn split_upgrade_label(label: &str) -> Vec<&str> {
+pub(crate) fn split_upgrade_label(label: &str) -> Vec<&str> {
     label
         .split(',')
         .map(|u| u.trim_start_matches("<-").trim())

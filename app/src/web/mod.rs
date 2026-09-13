@@ -54,6 +54,15 @@ pub struct DetailState {
     /// Every system's real coordinates, for the light-year maths the jump routes are made of.
     /// `geo::Systems` is topology only; the positions live in `store::MapSystem`.
     pub coords: Option<Arc<Vec<crate::store::MapSystem>>>,
+    /// Scanned wormholes, sov upgrades and bookmarks, for the system dialog. Copied: each is a
+    /// handful of entries the user maintains by hand, and the request thread must not hold a lock
+    /// the UI writes to.
+    pub wh_cache: Vec<crate::wormholes::Wormhole>,
+    pub sov_upgrades: Vec<crate::settings::SovUpgrade>,
+    pub bookmarks: Vec<i64>,
+    /// Gate camps, shared: the detection state is rebuilt from killmails on its own schedule and
+    /// asking it about one system is cheap.
+    pub camps: Option<Arc<Mutex<crate::camp::CampState>>>,
     /// The live jabber session, shared rather than copied: one room's backlog is larger than every
     /// other pane put together, and the pane reads one conversation at a time.
     pub jabber: Option<Arc<Mutex<crate::jabber::JabberState>>>,

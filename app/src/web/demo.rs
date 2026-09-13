@@ -313,8 +313,51 @@ fn jabber_state() -> std::sync::Arc<std::sync::Mutex<crate::jabber::JabberState>
 
 pub fn detail() -> super::Detail {
     let d = super::detail();
-    d.lock().unwrap().graph = Some(crate::uitest::fixtures::systems());
-    d.lock().unwrap().player_sys = Some(HOME);
-    d.lock().unwrap().jabber = Some(jabber_state());
+    let mut st = d.lock().unwrap();
+    st.graph = Some(crate::uitest::fixtures::systems());
+    st.player_sys = Some(HOME);
+    st.jabber = Some(jabber_state());
+    // Sov, traffic, a scanned hole, an upgrade and a bookmark, so every section of the system
+    // dialog has something in it. Empty sections screenshot as if they were never written.
+    st.status = std::collections::HashMap::from([
+        (HOME, crate::systemstatus::SysFlags {
+            sov: Some("Goonswarm Federation".to_owned()),
+            sov_alliance: Some(1_354_830_081),
+            adm: Some(5.4),
+            ship_kills: 12,
+            pod_kills: 3,
+            npc_kills: 140,
+            jumps: 820,
+            ..Default::default()
+        }),
+        (30_004_608, crate::systemstatus::SysFlags {
+            ship_kills: 2,
+            npc_kills: 60,
+            jumps: 190,
+            ..Default::default()
+        }),
+    ]);
+    st.wh_cache = vec![crate::wormholes::Wormhole {
+        id: 1,
+        system_id: HOME,
+        signature: Some("ABC-123".to_owned()),
+        wh_type: Some("K162".to_owned()),
+        dest: crate::wormholes::DestClass::Highsec,
+        dest_system_id: Some(30_000_142),
+        dest_signature: Some("XYZ-987".to_owned()),
+        dest_wh_type: None,
+        size: Some(crate::wormholes::ShipSize::Large),
+        is_drifter: false,
+        reported_at: chrono::Utc::now().timestamp() - 3600,
+        explicit_expiry: None,
+        source: crate::wormholes::Source::Manual,
+        updated_at: 0,
+    }];
+    st.sov_upgrades = vec![crate::settings::SovUpgrade {
+        system: "1DQ1-A".to_owned(),
+        upgrade: "Metenox Moon Drill".to_owned(),
+    }];
+    st.bookmarks = vec![HOME];
+    drop(st);
     d
 }
