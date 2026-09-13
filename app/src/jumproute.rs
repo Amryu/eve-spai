@@ -52,8 +52,12 @@ pub fn cyno_able(security: f64) -> bool {
 /// Zarzakh is null sec and passes the security test, and nothing jumps into or out of it: no cynos,
 /// and the only ways through are the drifter gates. A jump route through it is not a route.
 pub fn jumpable(s: &MapSystem) -> bool {
-    cyno_able(s.security) && !crate::geo::is_no_transit(s.id)
+    cyno_able(s.security) && !crate::geo::is_no_transit(s.id) && s.region_id != POCHVEN
 }
+
+/// Pochven. Null sec by security, and no capital jumps into or out of it: the only ways in are the
+/// Triglavian gates, so a jump route through it is a route nobody can fly.
+pub const POCHVEN: i64 = 10_000_070;
 
 struct Grid {
     cell: f64,
@@ -363,6 +367,17 @@ mod tests {
         // 8 ly needs the middle hop, and the middle hop is Zarzakh, so there is no route at all.
         assert!(shortest_path_pref(&s, 5.0, 1, 3, &HashSet::new()).is_none());
         assert!(alternatives(&s, 5.0, 1, 3).is_empty());
+    }
+
+    /// Pochven is null sec by security and has no capital jumps: the only ways in are the Triglavian
+    /// gates, so a jump route through it is one nobody can fly.
+    #[test]
+    fn pochven_is_never_jumped_through() {
+        let mut mid = at(9, 4.0, 0.0);
+        mid.region_id = POCHVEN;
+        let s = vec![at(1, 0.0, 0.0), mid, at(3, 8.0, 0.0)];
+        assert!(!jumpable(&s[1]));
+        assert!(shortest_path_pref(&s, 5.0, 1, 3, &HashSet::new()).is_none());
     }
 
     /// Per-hop fatigue is what the totals are made of, so they cannot disagree.

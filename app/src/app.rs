@@ -712,6 +712,11 @@ pub struct SpaiApp {
     /// Systems a titan is sitting in, for this route. Not a setting: which ships are where is a fact
     /// about the operation you are planning, not about the installation.
     map_titans: Vec<i64>,
+    /// Systems offered as a stop between two hops, while that picker is open.
+    map_alts: Option<Vec<i64>>,
+    map_save_open: bool,
+    map_save_name: String,
+    map_load_open: bool,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1450,6 +1455,10 @@ impl SpaiApp {
             map_avoid_once: std::collections::HashSet::new(),
             map_intel_for: None,
             map_titans: Vec::new(),
+            map_alts: None,
+            map_save_open: false,
+            map_save_name: String::new(),
+            map_load_open: false,
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -12263,6 +12272,37 @@ impl SpaiApp {
             }
         }
 
+        // Everything the route is being planned around, while it is being planned. A cross, not a
+        // ring: a ring is what this map uses for "look here", and this is the opposite.
+        if !self.map_route_anchors.is_empty() {
+            let jumping = self.map_route_kind == "jump";
+            let always: Vec<i64> = if jumping {
+                self.settings.route_avoid_jump.clone()
+            } else {
+                self.settings.route_avoid_gate.clone()
+            };
+            for id in always.iter().chain(self.map_avoid_once.iter()) {
+                if let Some(&p) = pos.get(id) {
+                    let d = (dot * 2.2).max(4.0);
+                    let st = egui::Stroke::new(1.6, crate::theme::standing::HOSTILE);
+                    painter.line_segment([p - egui::vec2(d, d), p + egui::vec2(d, d)], st);
+                    painter.line_segment([p + egui::vec2(d, -d), p - egui::vec2(d, -d)], st);
+                }
+            }
+        }
+
+        // A route with a start and nowhere to go yet, or the menu's "Start ... Route" looks like it
+        // did nothing until a destination is picked.
+        if self.map_route_anchors.len() == 1 {
+            if let Some(&p) = pos.get(&self.map_route_anchors[0]) {
+                painter.circle_stroke(
+                    p,
+                    (dot * 3.8).max(7.0),
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0xF2, 0xB1, 0x34)),
+                );
+            }
+        }
+
         // Where the ships are, whether or not the route currently goes near them.
         if self.map_route_kind == "titan" {
             const TITAN_COL: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x7A, 0x3D);
@@ -12282,6 +12322,8 @@ impl SpaiApp {
 
         // The route the drag settled on, in its own colours so it does not read as the travel route.
         if let Some(o) = self.map_route_opts.get(self.map_route_at) {
+            let phase = (ui.input(|i| i.time) * 28.0) as f32;
+            ui.ctx().request_repaint();
             const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
             const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
             const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
@@ -12297,9 +12339,21 @@ impl SpaiApp {
                             egui::Stroke::new(2.5, col),
                         ));
                     }
-                    _ => {
-                        painter.line_segment([a, b], egui::Stroke::new(2.5, PICK_GATE));
-                    }
+                    // Crawling dashes, the same as the browser's and the same as this map's own
+                    // travel route: a static line is hard to pick out of a map already full of them.
+                    _ => dashed_flow(&painter, a, b, PICK_GATE, phase),
+                }
+            }
+            // The systems the user named, as opposed to the ones the route passes through.
+            for h in &o.hops {
+                if !h.anchor {
+                    continue;
+                }
+                if let Some(&p) = pos.get(&h.id) {
+                    let r = (dot * 4.4).max(8.0);
+                    painter.circle_filled(p, r, PICK_GATE.gamma_multiply(0.18));
+                    painter.circle_stroke(p, r, egui::Stroke::new(2.5, PICK_GATE));
+                    painter.circle_stroke(p, r * 0.6, egui::Stroke::new(1.2, PICK_GATE));
                 }
             }
             // The titan's own jump, which the fleet does not fly: a long dash the other way round,
@@ -14245,6 +14299,24 @@ impl SpaiApp {
                 crate::theme::standing::FRIENDLY
             }));
         }
+        if let Some(d) = &o.detour {
+            ui.label(
+                egui::RichText::new(format!("{}  {d}", egui_phosphor::regular::EYE_SLASH))
+                    .color(crate::theme::standing::WARNING),
+            );
+        }
+        if let Some(tj) = &o.titan_jump {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  Titan jumps {} → {}, {:.1} ly",
+                    egui_phosphor::regular::STAR_FOUR,
+                    tj.from_name,
+                    tj.to_name,
+                    tj.ly
+                ))
+                .color(egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)),
+            );
+        }
         if let Some(n) = &o.note {
             ui.label(egui::RichText::new(n).weak());
         }
@@ -14295,6 +14367,16 @@ impl SpaiApp {
             return;
         }
 
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(format!("{}  Save route", icon::COPY)).clicked() {
+                self.map_save_name.clear();
+                self.map_save_open = true;
+            }
+            if ui.button(format!("{}  Load…", icon::ARROW_SQUARE_OUT)).clicked() {
+                self.map_load_open = true;
+            }
+        });
+
         ui.separator();
         let hops: Vec<crate::web::route::Hop> = self
             .map_route_opts
@@ -14322,6 +14404,7 @@ impl SpaiApp {
         let mut waypoint_now: Option<i64> = None;
         let mut titan_now: Option<(i64, bool)> = None;
         let mut drop_anchor_row: Option<usize> = None;
+        let mut alts_for: Option<usize> = None;
         let mut show_intel: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
@@ -14391,6 +14474,20 @@ impl SpaiApp {
                                     ui.close();
                                 }
                             }
+                            if self.map_route_kind == "jump"
+                                && i > 0
+                                && i + 1 < hops.len()
+                                && ui.button("Other systems between…").clicked()
+                            {
+                                alts_for = Some(i);
+                                ui.close();
+                            }
+                            if ui.button("Show info").clicked() {
+                                self.map_selected = Some(h.id);
+                                self.right_dock_open = true;
+                                self.right_dock_tab = RightDockTab::System;
+                                ui.close();
+                            }
                             if self.map_route_kind == "titan" {
                                 let t = self.map_titans.contains(&h.id);
                                 if ui
@@ -14454,6 +14551,198 @@ impl SpaiApp {
         }
         if let Some(id) = show_intel {
             self.map_intel_for = Some(id);
+        }
+        if let Some(i) = alts_for {
+            // The systems a capital could stop in between the two hops either side of this one.
+            // Picking one inserts it as a waypoint, which is what makes it a steer rather than a
+            // different route.
+            let (a, b) = (hops.get(i - 1).map(|h| h.id), hops.get(i + 1).map(|h| h.id));
+            if let (Some(a), Some(b)) = (a, b) {
+                self.ensure_jump_systems();
+                let coords = self.jump_systems.clone().unwrap_or_default();
+                let max_ly = crate::jumproute::max_range_ly(
+                    &crate::jumproute::SHIP_CLASSES[self.jump_ship],
+                    self.jump_jdc,
+                );
+                let mut ids = crate::jumproute::alternatives(&coords, max_ly, a, b);
+                ids.sort_unstable();
+                ids.dedup();
+                ids.truncate(40);
+                self.map_alts = Some(ids);
+            }
+        }
+    }
+
+    /// Saving and loading a route, the same store the page writes to.
+    ///
+    /// The whole route, not just the endpoints: a route is the anchors and what you told the planner
+    /// about them, and one that came back without its avoid list would be a different route with the
+    /// same name.
+    fn map_route_store_windows(&mut self, ctx: &egui::Context) {
+        use egui_phosphor::regular as icon;
+        if self.map_save_open {
+            let mut open = true;
+            let mut go = false;
+            let wh = self.settings.route_via_wormholes;
+            egui::Window::new(format!("{}  Save route", icon::COPY))
+                .id(egui::Id::new("map_save_route"))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.set_min_width(280.0);
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.map_save_name).hint_text("Name"),
+                    );
+                    if wh {
+                        ui.label(
+                            egui::RichText::new(
+                                "Planned through scanned wormholes. Those chains move, so this is \
+                                 deleted a day after saving rather than quietly becoming wrong.",
+                            )
+                            .color(crate::theme::standing::WARNING),
+                        );
+                    }
+                    go = ui.button("Save").clicked()
+                        || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                });
+            if go && !self.map_save_name.trim().is_empty() {
+                let route = crate::settings::SavedMapRoute {
+                    name: self.map_save_name.trim().to_owned(),
+                    kind: self.map_route_kind.to_owned(),
+                    anchors: self.map_route_anchors.clone(),
+                    avoid: self.map_avoid_once.iter().copied().collect(),
+                    titans: self.map_titans.clone(),
+                    titan_at_start: self.map_titan_at_start,
+                    titan_self_jump: self.map_titan_self_jump,
+                    hull: self.jump_ship,
+                    jdc: self.jump_jdc,
+                    jfc: self.jump_jfc,
+                    saved_at: 0,
+                    via_wormholes: wh,
+                };
+                self.apply_overlay_message(crate::ipc::OverlayToMain::SaveRoute { route }, ctx);
+                self.map_save_open = false;
+            }
+            if !open {
+                self.map_save_open = false;
+            }
+        }
+        if self.map_load_open {
+            let mut open = true;
+            let mut load: Option<crate::settings::SavedMapRoute> = None;
+            let mut forget: Option<String> = None;
+            let now = chrono::Utc::now().timestamp();
+            let rows: Vec<crate::settings::SavedMapRoute> = self
+                .settings
+                .saved_map_routes
+                .iter()
+                .filter(|r| {
+                    !r.via_wormholes
+                        || now - r.saved_at < crate::settings::WORMHOLE_ROUTE_TTL_SECS
+                })
+                .cloned()
+                .collect();
+            egui::Window::new(format!("{}  Saved routes", icon::ARROW_SQUARE_OUT))
+                .id(egui::Id::new("map_load_route"))
+                .collapsible(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    if rows.is_empty() {
+                        ui.label(egui::RichText::new("Nothing saved yet.").weak());
+                        return;
+                    }
+                    let name_of = |id: i64| {
+                        self.systems
+                            .as_ref()
+                            .and_then(|g| g.info_of(id).map(|i| i.name.clone()))
+                            .unwrap_or_default()
+                    };
+                    for r in &rows {
+                        ui.horizontal(|ui| {
+                            if ui.button(&r.name).clicked() {
+                                load = Some(r.clone());
+                            }
+                            let ends = format!(
+                                "{} → {} · {}{}",
+                                r.anchors.first().copied().map(name_of).unwrap_or_default(),
+                                r.anchors.last().copied().map(name_of).unwrap_or_default(),
+                                r.kind,
+                                if r.via_wormholes { " · expires" } else { "" }
+                            );
+                            ui.label(egui::RichText::new(ends).weak().size(11.0));
+                            if ui.small_button(icon::X).on_hover_text("Forget").clicked() {
+                                forget = Some(r.name.clone());
+                            }
+                        });
+                    }
+                });
+            if let Some(name) = forget {
+                self.apply_overlay_message(crate::ipc::OverlayToMain::DeleteRoute { name }, ctx);
+            }
+            if let Some(r) = load {
+                self.map_route_kind = match r.kind.as_str() {
+                    "jump" => "jump",
+                    "titan" => "titan",
+                    _ => "gate",
+                };
+                self.map_route_anchors = r.anchors;
+                self.map_avoid_once = r.avoid.into_iter().collect();
+                self.map_titans = r.titans;
+                self.map_titan_at_start = r.titan_at_start;
+                self.map_titan_self_jump = r.titan_self_jump;
+                self.jump_ship = r.hull.min(crate::jumproute::SHIP_CLASSES.len() - 1);
+                self.jump_jdc = r.jdc.min(5);
+                self.jump_jfc = r.jfc.min(5);
+                self.map_leg_pick.clear();
+                self.map_replan_route();
+                self.map_load_open = false;
+            }
+            if !open {
+                self.map_load_open = false;
+            }
+        }
+    }
+
+    /// The alternatives picker: systems in range of both neighbours, any of which becomes a waypoint.
+    fn map_alts_window(&mut self, ctx: &egui::Context) {
+        let Some(ids) = self.map_alts.clone() else { return };
+        let mut open = true;
+        let mut pick: Option<i64> = None;
+        egui::Window::new("In range of both")
+            .id(egui::Id::new("map_alts"))
+            .collapsible(false)
+            .default_width(240.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if ids.is_empty() {
+                    ui.label(egui::RichText::new("Nothing else is in range of both.").weak());
+                    return;
+                }
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for id in &ids {
+                        if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(*id)) {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(&info.name)
+                                            .color(security_color(info.security)),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                pick = Some(*id);
+                            }
+                        }
+                    }
+                });
+            });
+        if let Some(id) = pick {
+            self.map_route_add_waypoint(id);
+            self.map_alts = None;
+        } else if !open {
+            self.map_alts = None;
         }
     }
 
@@ -20269,6 +20558,8 @@ impl SpaiApp {
         self.ship_window(ctx);
         self.map_route_window(ctx);
         self.route_intel_window(ctx);
+        self.map_alts_window(ctx);
+        self.map_route_store_windows(ctx);
         self.pilot_window(ctx);
         self.fit_window(ctx);
         self.battle_filter_dialog(ctx);

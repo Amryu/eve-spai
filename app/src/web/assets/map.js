@@ -1450,8 +1450,11 @@ function showLinkTip() {
     tip.id = "linktip";
     document.body.append(tip);
   }
-  const t = geo.nodes[geo.byId.get(link.over)];
   const k = geo.byId.get(link.over);
+  const t = k == null ? null : geo.nodes[k];
+  // The geometry can be replaced while a drag is in flight, and then the id under the finger is not
+  // in the new index. Everything below reads the node's position, so there is nothing to place.
+  if (!t) return hideLinkTip();
   const ly = lightYears(geo, geo.byId.get(link.from), k);
   const g = link.reach.gates[k];
   const b = link.reach.bridged[k];
