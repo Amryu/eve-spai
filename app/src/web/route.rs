@@ -446,7 +446,8 @@ pub fn titan(
             .map(reverse)
             .collect();
     }
-    let (Some(start), Some(target)) = (pos(coords, from), pos(coords, to)) else {
+    // The target's position is not needed: the ring is found by gate distance, not by distance.
+    let (Some(start), Some(_)) = (pos(coords, from), pos(coords, to)) else {
         return Vec::new();
     };
     // Everything the titan can reach in one jump, the target itself excluded: if it were in range

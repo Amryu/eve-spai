@@ -441,6 +441,11 @@ impl Store {
     }
 
     /// The raw blob that failed to parse, so the stash stops being write-only.
+    ///
+    /// Nothing reads it yet. Kept because it is the recovery half of a safety net whose writing half
+    /// is live: `settings.bad` is the only copy of a config that failed to parse, and deleting the
+    /// reader would make the stash write-only again, which is the state this exists to end.
+    #[allow(dead_code)]
     pub fn stashed_settings(&self) -> Option<String> {
         self.kv_get("settings.bad")
     }

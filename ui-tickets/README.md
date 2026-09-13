@@ -210,6 +210,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [UI-066 Fleet detection stopped; exit button for a mode that is gone](UI-066-rescue-poller/) | `app.rs` | after 65 | **Fixed** |
 | [UI-067 Route panel fell out of the dock; arcs do not move](UI-067-route-dock/) | `app.rs` | after 66 | **Fixed** |
 | [UI-068 Three features lost their only entry point in the menu cleanup](UI-068-orphaned-by-the-menu-cleanup/) | `app.rs` | after 67 | **Fixed** |
+| [UI-069 Dead code left by this round of reworks](UI-069-dead-code/) | `app.rs`, `jumproute.rs` | after 68 | **Done** |
 
 ### Browser evidence
 
