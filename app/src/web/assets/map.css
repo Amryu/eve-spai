@@ -1,40 +1,28 @@
 .mapwrap { display: flex; min-height: 12rem; }
 
 .starmap {
-  /* Fills whatever the pane gives it rather than a guessed height, which in grid mode left the map
-     tiny in a tall box and in tabs mode overflowed it. */
+  /* Fills whatever the pane gives it rather than a guessed height. */
   flex: 1 1 auto;
   width: 100%;
   height: 100%;
   min-height: 0;
+  display: block;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
-  /* The SVG owns the gesture: without this the page scrolls instead of the map panning. */
+  /* The canvas owns the gesture: without this a drag scrolls the page instead of panning. */
   touch-action: none;
   cursor: grab;
 }
 .starmap:active { cursor: grabbing; }
 
-/* Every edge in one path. A universe is ~13.5k of them, and 13.5k elements is a stall on a phone.
-   non-scaling-stroke keeps the line 1.5 screen pixels at any zoom; in user units it would be
-   invisible zoomed out and slab-thick zoomed in. */
-.starmap .links {
-  stroke: var(--line);
-  stroke-width: 1.5;
-  fill: none;
-  vector-effect: non-scaling-stroke;
+.maptools {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
 }
-
-.starmap .sys { cursor: pointer; }
-.starmap .me { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.starmap .you { fill: none; stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; }
-.starmap .sys:hover { stroke: var(--fg); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-/* Intel heat sits under its system, so the dot's security colour stays readable on top. */
-.starmap .hot { opacity: 0.35; }
-.starmap text { fill: var(--muted); paint-order: stroke; }
-
-.maptools { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
 .maptools button {
   font: inherit;
   color: var(--fg);
@@ -44,4 +32,12 @@
   padding: 0.15rem 0.5rem;
   cursor: pointer;
 }
-.maphint { color: var(--muted); font-size: 0.9em; }
+/* A layer that is on reads as pressed, the same language the pane toggles use. */
+.maptools .ml { opacity: 0.5; }
+.maptools .ml.on { opacity: 1; border-color: var(--accent); }
+.maphint { color: var(--muted); font-size: 0.9em; margin-left: auto; }
+
+@media (max-width: 640px) {
+  .maptools button { min-height: 2.2rem; }
+  .maphint { width: 100%; margin-left: 0; }
+}

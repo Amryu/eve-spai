@@ -5,7 +5,7 @@
 //! not the alert daemon either, which already carries kill ingest, reconcile, evaluate and both
 //! overlay pushes at 400ms; an optional feature does not belong on the alert critical path.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use super::facts::SharedFacts;
@@ -125,17 +125,17 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         .collect();
 
     let formup_names = formup_names(&ping_cards, &systems);
-    let map = map_live(&cards, player_sys, &locations, facts.intel_ttl_secs);
+    let map = map_live(&cards, player_sys, &locations, facts, &status);
 
     // Phase 3, publish. Only the hash comparison happens under the web lock.
     let mut st = deps.web.lock().unwrap_or_else(|e| e.into_inner());
     let lookups = Lookups {
-        resolved_pilots,
+        resolved_pilots: resolved_pilots.into_iter().collect(),
         uncertain,
-        last_ship,
-        kills: alerts.kills.clone(),
-        affil: alerts.affil.clone(),
-        status,
+        last_ship: last_ship.into_iter().collect(),
+        kills: alerts.kills.clone().into_iter().collect(),
+        affil: alerts.affil.clone().into_iter().collect(),
+        status: status.iter().map(|(k, v)| (*k, v.clone())).collect(),
     };
     if let Some(rev) = st.changed(Pane::Intel, hash_of(&(&cards, &lookups))) {
         st.put_intel(IntelPane { rev, cards, lookups });
@@ -171,7 +171,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
 
 /// Severity name to sound name. `AlertSettings::sounds` is a positional list; the page wants it
 /// keyed, because it holds a severity string and not an index.
-fn sound_map(sounds: &[String]) -> HashMap<String, String> {
+fn sound_map(sounds: &[String]) -> BTreeMap<String, String> {
     use crate::settings::Severity::*;
     [Info, Warning, Danger, Critical]
         .iter()
@@ -189,9 +189,9 @@ fn sound_map(sounds: &[String]) -> HashMap<String, String> {
 fn formup_names(
     pings: &[PingCard],
     systems: &Option<Arc<crate::geo::Systems>>,
-) -> HashMap<i64, String> {
-    let Some(sys) = systems.as_ref() else { return HashMap::new() };
-    let mut out = HashMap::new();
+) -> BTreeMap<i64, String> {
+    let Some(sys) = systems.as_ref() else { return BTreeMap::new() };
+    let mut out = BTreeMap::new();
     for p in pings {
         let crate::pings::Ping::Fleet { formup, .. } = &p.ping else { continue };
         for f in formup {
@@ -211,8 +211,10 @@ fn map_live(
     cards: &[IntelCard],
     you: Option<i64>,
     locations: &HashMap<String, (i64, bool)>,
-    ttl: i64,
+    facts: &super::facts::UiFacts,
+    status: &HashMap<i64, crate::systemstatus::SysFlags>,
 ) -> MapLive {
+    let ttl = facts.intel_ttl_secs;
     let now = chrono::Utc::now().timestamp();
     let mut per_system: HashMap<i64, (u8, i64)> = HashMap::new();
     for c in cards {
@@ -235,7 +237,25 @@ fn map_live(
     let mut chars: Vec<(i64, u32)> = counts.into_iter().collect();
     chars.sort_unstable();
 
-    MapLive { rev: 0, you, chars, intel }
+    let mut sov: Vec<(i64, String)> = status
+        .iter()
+        .filter_map(|(id, f)| {
+            let name = f.sov.as_ref()?;
+            Some((*id, facts.sov_colors.get(name).cloned()?))
+        })
+        .collect();
+    sov.sort_unstable();
+
+    MapLive {
+        rev: 0,
+        you,
+        chars,
+        intel,
+        sov,
+        camps: facts.camps.clone(),
+        holes: facts.holes.clone(),
+        upgrades: facts.upgrades.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -434,6 +454,9 @@ mod tests {
 
     /// The whole point of the revs. A second tick over unchanged inputs must publish nothing, or an
     /// idle app pushes a frame to every connected phone twice a second forever.
+    ///
+    /// This passed while the bug was live, because the fixtures resolve no pilots and the empty maps
+    /// hashed stably. `an_idle_tick_with_real_lookups_publishes_nothing` is the one with teeth.
     #[test]
     fn an_unchanged_tick_publishes_nothing() {
         let d = deps(vec![fixtures::intel_typical()]);
@@ -448,6 +471,45 @@ mod tests {
         assert!(
             d.web.lock().unwrap().snapshot_since(first).intel.is_none(),
             "a caught-up client is sent no pane"
+        );
+    }
+
+    /// The reported bug: every pane republished on every tick, which reset the scroll position of
+    /// whatever the user was reading.
+    ///
+    /// It needs populated lookups to reproduce. The maps are rebuilt each tick, and a `HashMap`
+    /// serializes in its own instance's iteration order, so identical contents hashed differently
+    /// and nothing ever compared equal.
+    #[test]
+    fn an_idle_tick_with_real_lookups_publishes_nothing() {
+        let d = deps(vec![fixtures::intel_torture()]);
+        // Populated lookups are the whole point: empty maps hash stably whatever container they
+        // are, so a fixture with nothing in them would pass either way.
+        {
+            let mut st = d.system_status.lock().unwrap();
+            for id in 30_004_700..30_004_712 {
+                st.insert(id, crate::systemstatus::SysFlags::default());
+            }
+        }
+        let f = facts();
+        let alerts = empty_alerts();
+        tick(&d, &f, &alerts);
+        let first = d.web.lock().unwrap().seq;
+
+        {
+            let st = d.web.lock().unwrap();
+            let pane = st.snapshot_since(0).intel.expect("intel pane");
+            assert!(!pane.cards.is_empty());
+            assert!(pane.lookups.status.len() >= 12, "the lookups have to be worth hashing");
+        }
+
+        for _ in 0..10 {
+            tick(&d, &f, &alerts);
+        }
+        assert_eq!(
+            d.web.lock().unwrap().seq,
+            first,
+            "ten idle ticks published something; the panes are not comparing equal"
         );
     }
 

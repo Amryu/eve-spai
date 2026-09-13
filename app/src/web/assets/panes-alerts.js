@@ -1,8 +1,8 @@
 // The alerts pane: the cards a rule fired on, newest first, each carrying the severity that fired it.
 // The card body is the intel card, so an alert and its feed entry cannot look like different events.
 
-import { state, ico, register } from "./app.js";
-import { card, fmtAge } from "./panes-intel.js";
+import { state, register } from "./app.js";
+import { card } from "./panes-intel.js";
 
 /// Rows this device has already seen. Per device on purpose: two people watching the same app should
 /// not clear each other's unseen markers.
@@ -52,10 +52,10 @@ const renderAlerts = (el, snap) => {
         via: msg.via?.[i] ?? "Gates",
         chars: msg.chars?.[i] ?? { hops: [], selected: null },
       };
+      // No severity header and no age above the card: the card already carries both, in its tint,
+      // its icon and its age column. A second copy just pushed the cards apart.
       return (
         `<div class="alert${fresh ? " fresh" : ""}">` +
-        `<div class="ahead" style="color:var(--sev-${String(severity).toLowerCase()})">` +
-        `${ico("bell")} ${severity}<span class="aage">${fmtAge(now - report.received, compact)} ago</span></div>` +
         card(c, { resolved_pilots: msg.resolved_pilots, uncertain: msg.uncertain }, compact, now) +
         `</div>`
       );

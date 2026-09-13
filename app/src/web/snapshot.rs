@@ -5,7 +5,14 @@
 //! asks once and gets exactly what it missed. No patch format, because a patch format is a second
 //! thing to get subtly wrong.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+
+/// Ordered, not hashed, throughout this module.
+///
+/// The publisher rebuilds these every tick and hashes the result to decide whether anything
+/// changed. A `HashMap` serializes in iteration order and every instance gets its own seed, so two
+/// identical maps hashed differently and every pane republished every tick. See
+/// `state::a_hashmap_would_not_have_hashed_stably`.
 
 use serde::Serialize;
 
@@ -26,12 +33,12 @@ pub struct IntelCard {
 /// pilot, a hull or an alliance appears in many cards and a phone pays for every duplicated byte.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Lookups {
-    pub resolved_pilots: HashMap<String, i64>,
+    pub resolved_pilots: BTreeMap<String, i64>,
     pub uncertain: crate::pilot::UncertainPilots,
-    pub last_ship: HashMap<String, (i64, String, i64)>,
-    pub kills: HashMap<i64, crate::kills::KillInfo>,
-    pub affil: HashMap<i64, crate::affiliation::Affil>,
-    pub status: HashMap<i64, crate::systemstatus::SysFlags>,
+    pub last_ship: BTreeMap<String, (i64, String, i64)>,
+    pub kills: BTreeMap<i64, crate::kills::KillInfo>,
+    pub affil: BTreeMap<i64, crate::affiliation::Affil>,
+    pub status: BTreeMap<i64, crate::systemstatus::SysFlags>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -65,7 +72,7 @@ pub struct PingPane {
     pub pings: Vec<PingCard>,
     /// Names for the system ids a formup points at. `Formup::System` carries an id and nothing else,
     /// and the page has no SDE, so without this a formup reads "30004759" instead of "1DQ1-A".
-    pub systems: HashMap<i64, String>,
+    pub systems: BTreeMap<i64, String>,
 }
 
 /// The map's live layer. Geometry never travels here: it comes from `/api/map/geometry`, cached hard
@@ -78,6 +85,14 @@ pub struct MapLive {
     pub chars: Vec<(i64, u32)>,
     /// System id, worst severity seen, newest report timestamp. Bounded by `intel_ttl_secs`.
     pub intel: Vec<(i64, u8, i64)>,
+    /// System id to sovereignty colour, already resolved against the user's alliance colours so the
+    /// page and the app agree without the page knowing anything about alliances.
+    pub sov: Vec<(i64, String)>,
+    pub camps: Vec<i64>,
+    /// Scanned wormhole connections, as system pairs. Both ends known only.
+    pub holes: Vec<(i64, i64)>,
+    /// System id and how many sov upgrades are configured there.
+    pub upgrades: Vec<(i64, u32)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,7 +110,7 @@ pub struct Meta {
     pub player_system: Option<i64>,
     /// Severity name to sound name, so the page asks for the sound the user configured rather than
     /// guessing one from the severity.
-    pub sounds: HashMap<String, String>,
+    pub sounds: BTreeMap<String, String>,
     /// Bumped when the synthesis changes, so a browser cannot keep an immutable WAV past a tone
     /// change.
     pub sound_rev: u32,

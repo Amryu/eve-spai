@@ -81,7 +81,16 @@ export function render(dirty = null) {
     const el = document.querySelector(`#panes [data-pane="${pane}"]`);
     if (!el) continue;
     if (renderers[pane]) {
+      // Re-rendering replaces the scrolled element, which would jump the reader back to the top of
+      // whatever they were reading. Panes are rebuilt rarely now, but "rarely" is not "never".
+      const keep = el.querySelector(".feed");
+      const at = keep ? keep.scrollTop : 0;
+      const wasAtTop = at === 0;
       renderers[pane](el, state.snapshot);
+      if (!wasAtTop) {
+        const now = el.querySelector(".feed");
+        if (now) now.scrollTop = at;
+      }
     } else {
       el.innerHTML = `<h2>${TITLES[pane]}</h2>
         <p class="placeholder">${count(pane)} carried in the snapshot. The pane that draws them

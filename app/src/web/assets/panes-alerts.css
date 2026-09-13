@@ -1,14 +1,4 @@
-.alert { margin-bottom: 0.6rem; }
-/* An alert this device has not seen yet gets an accent edge, the same idea as the app's unread dot. */
-.alert.fresh { box-shadow: inset 3px 0 0 0 var(--accent); padding-left: 0.4rem; }
-
-.ahead {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-weight: 700;
-  font-size: 0.9em;
-  letter-spacing: 0.04em;
-  margin-bottom: 0.2rem;
-}
-.ahead .aage { margin-left: auto; color: var(--muted); font-weight: 400; letter-spacing: 0; }
+.alert { margin-bottom: 0.35rem; }
+/* An alert this device has not seen yet gets an accent edge, the same idea as the app's unread dot.
+   The card itself carries the severity and the age, so nothing is repeated above it. */
+.alert.fresh { box-shadow: inset 3px 0 0 0 var(--accent); padding-left: 0.35rem; }

@@ -1,7 +1,10 @@
 /* Card and chip metrics mirror `intel_row`: a flex-wrap row of fixed-height chips, on a card tinted
    by severity. Compact is density only, exactly as in the app: nothing is hidden. */
-.feed { --row: 28px; --icon: 24px; --portrait: 20px; --gap: 6px; --pad: 8px 4px; }
-.feed.compact { --row: 16px; --icon: 16px; --portrait: 16px; --gap: 2px; --pad: 5px 1px; }
+/* `Margin::symmetric(8, 4)` in `intel_row` is 8 horizontal and 4 vertical, and compact is
+   `symmetric(5, 1)`. CSS shorthand is vertical then horizontal, so these read the other way round
+   from the Rust; writing them in the Rust order gave every card tall thin padding. */
+.feed { --row: 28px; --icon: 24px; --portrait: 20px; --gap: 6px; --pad: 4px 8px; }
+.feed.compact { --row: 16px; --icon: 16px; --portrait: 16px; --gap: 2px; --pad: 1px 5px; }
 
 .card {
   display: flex;

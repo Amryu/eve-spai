@@ -121,3 +121,70 @@ impl WebState {
         json
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every pane was being published on every tick, and the revision check that was supposed to
+    /// stop that was doing nothing.
+    ///
+    /// `hash_of` serializes with serde_json, and a `HashMap` is serialized in iteration order. Each
+    /// `HashMap` instance gets its own hash seed, so two maps with identical contents built a tick
+    /// apart serialize their keys in different orders and hash differently. The publisher rebuilds
+    /// these maps every tick, so nothing ever compared equal.
+    #[test]
+    fn a_map_hashes_the_same_however_it_was_built() {
+        let build = || {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in
+                [("alpha", 1), ("bravo", 2), ("charlie", 3), ("delta", 4), ("echo", 5)]
+            {
+                m.insert(k.to_owned(), v);
+            }
+            m
+        };
+        let mut reversed = std::collections::BTreeMap::new();
+        for (k, v) in [("echo", 5), ("delta", 4), ("charlie", 3), ("bravo", 2), ("alpha", 1)] {
+            reversed.insert(k.to_owned(), v);
+        }
+        assert_eq!(hash_of(&build()), hash_of(&reversed), "insertion order must not matter");
+
+        // And the thing that actually bit: two separately built instances.
+        for _ in 0..20 {
+            assert_eq!(hash_of(&build()), hash_of(&build()));
+        }
+    }
+
+    /// The proof that the fix was needed, kept because it is the only thing that explains why the
+    /// lookups are `BTreeMap` and must stay that way.
+    #[test]
+    fn a_hashmap_would_not_have_hashed_stably() {
+        let build = || {
+            let mut m = std::collections::HashMap::new();
+            for (k, v) in [
+                ("alpha", 1), ("bravo", 2), ("charlie", 3), ("delta", 4), ("echo", 5),
+                ("foxtrot", 6), ("golf", 7), ("hotel", 8),
+            ] {
+                m.insert(k.to_owned(), v);
+            }
+            m
+        };
+        let first = hash_of(&build());
+        let unstable = (0..50).any(|_| hash_of(&build()) != first);
+        assert!(
+            unstable,
+            "a HashMap hashed identically 50 times; if this ever becomes true the BTreeMaps in \
+             `snapshot` can go back to being HashMaps"
+        );
+    }
+
+    #[test]
+    fn changed_reports_only_real_changes() {
+        let mut st = WebState::default();
+        assert!(st.changed(Pane::Intel, 1).is_some(), "first publish");
+        assert!(st.changed(Pane::Intel, 1).is_none(), "same hash");
+        assert!(st.changed(Pane::Intel, 2).is_some(), "different hash");
+        assert!(st.changed(Pane::Alerts, 1).is_some(), "panes are independent");
+    }
+}

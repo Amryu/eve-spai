@@ -153,6 +153,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-014 Pairing means typing 43 characters by hand](WEB-014-qr-pairing/) | `settings_view` | with 12 | **Fixed** |
 | [WEB-015 Map drew wormhole space, rebuilt on every push, dialogs would not close](WEB-015-map-perf-and-panes/) | `web/map.rs`, `map.js`, `layout.*` | after 14 | **Fixed** |
 | [WEB-016 Scanning the pairing QR lands on "not paired"](WEB-016-pairing-cookie/) | `web/server.rs` | after 15 | **Fixed** |
+| [WEB-017 Every pane republished every tick; map mirrored, laggy and missing layers](WEB-017-map-layers-and-churn/) | `web/map.rs`, `map.js`, `publish.rs` | after 16 | **Fixed** |
 
 ### Browser evidence
 

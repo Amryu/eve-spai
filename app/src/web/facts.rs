@@ -33,6 +33,13 @@ pub struct UiFacts {
     /// Per-severity sound names, indexed the way `AlertSettings::sounds` is. WEB-002's ticket listed
     /// this and it landed here instead, with the ticket that needed it.
     pub sounds: Vec<String>,
+    /// Map overlays the UI thread already has to hand. Pushed down rather than re-derived, because
+    /// the publisher has neither the camp state, the wormhole table nor the settings.
+    pub camps: Vec<i64>,
+    pub holes: Vec<(i64, i64)>,
+    pub upgrades: Vec<(i64, u32)>,
+    /// Alliance name to colour, as the app resolves it.
+    pub sov_colors: std::collections::HashMap<String, String>,
 }
 
 pub type SharedFacts = Arc<Mutex<UiFacts>>;

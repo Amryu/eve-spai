@@ -78,9 +78,9 @@ body {
   padding: 0.25rem 0.6rem;
   cursor: pointer;
 }
-/* A pane switched off stays in the bar, dimmed, because the chip is also how it comes back. */
-.tab.off { opacity: 0.45; border-style: dashed; }
-.tab.off b { color: var(--muted); }
+/* A pane switched off leaves the bar entirely. It comes back from the layout menu, which is where
+   turning it off happened; leaving a dead chip in the bar was just clutter. */
+.tab.off { display: none; }
 .tab[aria-selected="true"] { background: var(--surface-active); border-color: var(--accent); }
 .tab b { color: var(--accent); font-weight: 600; }
 

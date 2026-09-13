@@ -19,6 +19,9 @@ pub struct Node {
     pub r: i64,
     pub x: i64,
     pub z: i64,
+    /// Holds a Jove Observatory. Static, so it rides with the geometry rather than the live layer.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub j: bool,
 }
 
 #[derive(Serialize)]
@@ -28,6 +31,9 @@ pub struct Geometry {
     /// Index pairs into `nodes`, deduped `a < b`. Ids would be eight bytes each and there are
     /// thousands of them; indices roughly halve the payload.
     pub edges: Vec<(usize, usize)>,
+    /// Jump bridges, same index-pair shape. Separate from `edges` because they are drawn
+    /// differently and can be switched off on their own.
+    pub bridges: Vec<(usize, usize)>,
 }
 
 /// Whether a system belongs on the star map at all.
@@ -53,11 +59,15 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
     let (min_x, max_x, min_z, max_z) = bounds(&nodes);
     let span = ((max_x - min_x).max(max_z - min_z)).max(1.0);
     let project = |v: f64, min: f64| (((v - min) / span) * EXTENT).round() as i64;
+    // North is up. `map::project` draws with `center.y - (z - mid)`, so screen y runs opposite to
+    // z; emitting z unflipped rendered the whole map upside down against the app's.
+    let project_z = |v: f64| ((((max_z - v) / span)) * EXTENT).round() as i64;
 
     let index: std::collections::HashMap<i64, usize> =
         nodes.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
     let mut edges: Vec<(usize, usize)> = Vec::new();
+    let mut bridges: Vec<(usize, usize)> = Vec::new();
     for s in &nodes {
         let Some(&a) = index.get(&s.id) else { continue };
         for &nb in graph.neighbors_gates_only(s.id) {
@@ -66,9 +76,20 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
                 edges.push((a, b));
             }
         }
+        for &nb in graph.neighbors(s.id) {
+            if !graph.is_bridge(s.id, nb) {
+                continue;
+            }
+            let Some(&b) = index.get(&nb) else { continue };
+            if a < b {
+                bridges.push((a, b));
+            }
+        }
     }
     edges.sort_unstable();
     edges.dedup();
+    bridges.sort_unstable();
+    bridges.dedup();
 
     Geometry {
         extent: EXTENT,
@@ -80,10 +101,12 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
                 s: (s.security * 10.0).round() / 10.0,
                 r: s.region_id,
                 x: project(s.x2d, min_x),
-                z: project(s.z2d, min_z),
+                z: project_z(s.z2d),
+                j: crate::jove::has(s.id),
             })
             .collect(),
         edges,
+        bridges,
     }
 }
 
@@ -168,6 +191,19 @@ mod tests {
                 assert!(x < n, "{x} is not an index into {n} nodes, it looks like an id");
             }
         }
+    }
+
+    /// North is up, as in the app. Emitting z unflipped rendered the whole map upside down.
+    #[test]
+    fn greater_z_is_higher_on_screen() {
+        let (_, g) = fixture();
+        let s = vec![
+            sys(30_004_759, "south", 0.0, 0.0),
+            sys(30_004_608, "north", 0.0, 100.0),
+        ];
+        let geo = build(&s, &g);
+        let by = |n: &str| geo.nodes.iter().find(|x| x.n == n).unwrap().z;
+        assert!(by("north") < by("south"), "north {} should sit above south {}", by("north"), by("south"));
     }
 
     #[test]

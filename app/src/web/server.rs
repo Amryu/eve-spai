@@ -773,6 +773,31 @@ mod tests {
 
     /// The cookie is `SameSite=Strict`, so a cross-site post should not carry it at all. The origin
     /// check is the second lock on the same door, and it is cheap.
+    /// The page asks the desktop to join comms; it never sends a URL. A message carrying one would
+    /// be a way to make this machine open anything, from the network.
+    #[test]
+    fn join_comms_names_a_ping_and_never_a_url() {
+        let s = serve_test();
+        let c = client();
+        let origin = Some(s.base.as_str());
+
+        assert_eq!(post(&c, &s.base, origin, r#"{"JoinComms":{"ts":1789173781}}"#).status(), 204);
+        assert!(matches!(
+            &s.inbox.lock().unwrap()[0],
+            crate::ipc::OverlayToMain::JoinComms { ts: 1789173781 }
+        ));
+
+        // Nothing in the protocol accepts a link.
+        for body in [
+            r#"{"JoinComms":{"url":"mumble://evil"}}"#,
+            r#"{"JoinComms":{"ts":"file:///etc/passwd"}}"#,
+            r#"{"OpenUrl":{"url":"http://evil"}}"#,
+        ] {
+            assert_eq!(post(&c, &s.base, origin, body).status(), 400, "{body}");
+        }
+        assert_eq!(s.inbox.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn a_post_from_somewhere_else_is_refused() {
         let s = serve_test();

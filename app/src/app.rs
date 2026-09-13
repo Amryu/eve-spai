@@ -1713,6 +1713,37 @@ impl SpaiApp {
         format!("http://{host}/?t={}", self.settings.web.token)
     }
 
+    /// Sov upgrades per system, resolved from the configured names.
+    fn web_upgrade_counts(&self) -> Vec<(i64, u32)> {
+        let Some(g) = &self.systems else { return Vec::new() };
+        let mut counts: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
+        for u in &self.settings.sov_upgrades {
+            if let Some(info) = g.lookup(&u.system) {
+                *counts.entry(info.id).or_default() += 1;
+            }
+        }
+        let mut out: Vec<(i64, u32)> = counts.into_iter().collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Alliance name to colour, resolved the way the map resolves it: the user's configured colour
+    /// where there is one, otherwise the same hash-derived colour the app falls back to. Sent
+    /// resolved so the page never has to know an alliance exists.
+    fn web_sov_colors(&self) -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        let status = self.system_status.lock().unwrap_or_else(|e| e.into_inner());
+        for f in status.values() {
+            let Some(name) = &f.sov else { continue };
+            if out.contains_key(name) {
+                continue;
+            }
+            let c = self.alliance_color_of(name).unwrap_or_else(|| name_color(name));
+            out.insert(name.clone(), format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b()));
+        }
+        out
+    }
+
     /// Map geometry for the page, built once from the SDE the app already has loaded.
     ///
     /// Built here rather than in the server because this is where both halves are to hand: the store
@@ -1752,6 +1783,14 @@ impl SpaiApp {
         f.theme = self.settings.theme.clone();
         f.allow_writeback = self.settings.web.allow_writeback;
         f.sounds = self.settings.alerts.sounds.clone();
+        f.camps = self.camped_cache.iter().map(|(id, _)| *id).collect();
+        f.holes = self
+            .wh_cache
+            .iter()
+            .filter_map(|w| Some((w.system_id, w.dest_system_id?)))
+            .collect();
+        f.upgrades = self.web_upgrade_counts();
+        f.sov_colors = self.web_sov_colors();
         drop(f);
 
         let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
@@ -9801,7 +9840,34 @@ impl SpaiApp {
                 self.needs_save = true;
             }
             crate::ipc::OverlayToMain::AlertAck { id } => self.ack_alert(id),
+            crate::ipc::OverlayToMain::JoinComms { ts } => self.join_comms(ts),
             crate::ipc::OverlayToMain::Hello => {}
+        }
+    }
+
+    /// Open the comms link of the ping sent at `ts`, on this machine.
+    ///
+    /// The phone cannot follow a `mumble://` link usefully; the client is here. So the page asks the
+    /// app to join, and the app looks the link up in the pings it already holds rather than being
+    /// handed a URL by something on the network.
+    fn join_comms(&mut self, ts: i64) {
+        let link = {
+            let j = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
+            j.pings.iter().find_map(|p| match p {
+                crate::pings::Ping::Fleet { timestamp, comms, .. } if *timestamp == ts => {
+                    match comms {
+                        Some(crate::pings::Comms::Mumble { link, .. }) => Some(link.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+        };
+        match link {
+            Some(l) => {
+                let _ = open::that(&l);
+            }
+            None => eprintln!("[web] join comms: no ping at {ts} with a mumble link"),
         }
     }
 
