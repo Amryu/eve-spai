@@ -1,4 +1,8 @@
 .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+/* Without this the dialog cannot be closed at all. `hidden` is a UA rule of the same specificity as
+   `.modal`, and an author rule wins, so `display: flex` kept it on screen however many times the
+   close button was pressed. */
+.modal[hidden] { display: none; }
 .mback { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
 
 .mpanel {
@@ -23,8 +27,9 @@
   border: 0;
   cursor: pointer;
   /* A close button on a phone needs a thumb-sized target, not a glyph-sized one. */
-  min-width: 2.2rem;
-  min-height: 2.2rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  font-size: 1.2rem;
 }
 
 .mpanel h3 { margin: 0 0 0.6rem; display: flex; align-items: center; gap: 0.4rem; }

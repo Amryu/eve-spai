@@ -151,6 +151,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-012 Desktop settings UI](WEB-012-desktop-settings-ui/) | `settings_view` | 9 | **Fixed** |
 | [WEB-013 First browser render was blank, then drew every pane in the header](WEB-013-first-browser-render/) | `assets/app.js`, `web/assets.rs` | after 5 | **Fixed** |
 | [WEB-014 Pairing means typing 43 characters by hand](WEB-014-qr-pairing/) | `settings_view` | with 12 | **Fixed** |
+| [WEB-015 Map drew wormhole space, rebuilt on every push, dialogs would not close](WEB-015-map-perf-and-panes/) | `web/map.rs`, `map.js`, `layout.*` | after 14 | **Fixed** |
 
 ### Browser evidence
 

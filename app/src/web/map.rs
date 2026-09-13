@@ -30,8 +30,24 @@ pub struct Geometry {
     pub edges: Vec<(usize, usize)>,
 }
 
+/// Whether a system belongs on the star map at all.
+///
+/// The SDE carries far more than the map shows: wormhole space, abyssal pockets and the Jove
+/// regions are all in `sde_systems`, and none of them are places you fly to through a gate. The
+/// desktop map drops them with exactly these two rules (`app.rs`, the `map_systems` build), so this
+/// uses the same ones rather than inventing a third answer.
+///
+/// - Nothing connects to it, so it cannot be reached or drawn as part of the graph.
+/// - Its region name contains a digit, which is how J-space (`A-R00001`) and the abyssal and Jove
+///   regions are named and normal space is not.
+pub fn on_the_map(id: i64, graph: &crate::geo::Systems) -> bool {
+    !graph.neighbors(id).is_empty()
+        && graph.info_of(id).is_none_or(|i| !i.region.chars().any(|c| c.is_ascii_digit()))
+}
+
 pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -> Geometry {
-    let mut nodes: Vec<&crate::store::MapSystem> = systems.iter().collect();
+    let mut nodes: Vec<&crate::store::MapSystem> =
+        systems.iter().filter(|s| on_the_map(s.id, graph)).collect();
     nodes.sort_unstable_by_key(|s| s.id);
 
     let (min_x, max_x, min_z, max_z) = bounds(&nodes);
@@ -160,6 +176,36 @@ mod tests {
         s[0].security = -0.3649;
         let (_, g) = fixture();
         assert_eq!(build(&s, &g).nodes[0].s, -0.4);
+    }
+
+    /// The reported bug: the payload carried 2604 wormhole systems and 401 abyssal ones, none of
+    /// which are on the star map, plus 3222 systems with no gate at all.
+    #[test]
+    fn wormhole_abyssal_and_unconnected_systems_are_not_on_the_map() {
+        let (mut s, g) = fixture();
+        // A J-space system: in the SDE, in no region the map draws, connected to nothing.
+        s.push(sys(31_000_123, "J123456", 500.0, 500.0));
+        // An abyssal pocket.
+        s.push(sys(32_000_042, "ADR01", 600.0, 600.0));
+        // A k-space id that the graph has no edges for.
+        s.push(sys(30_009_999, "Orphan", 700.0, 700.0));
+
+        let geo = build(&s, &g);
+        let names: Vec<&str> = geo.nodes.iter().map(|n| n.n.as_str()).collect();
+        assert_eq!(names, vec!["7-K5EL", "319-3D", "1DQ1-A"], "only connected k-space, {names:?}");
+    }
+
+    /// Every node has to keep indexing correctly after the filter removes rows. Filtering before
+    /// the index is built is the whole reason this is safe; doing it after would shift every edge.
+    #[test]
+    fn edges_still_index_the_filtered_list() {
+        let (mut s, g) = fixture();
+        s.insert(0, sys(31_000_123, "J123456", 500.0, 500.0));
+        let geo = build(&s, &g);
+        for &(a, b) in &geo.edges {
+            assert!(a < geo.nodes.len() && b < geo.nodes.len(), "{a},{b} out of range");
+        }
+        assert_eq!(geo.edges.len(), 2);
     }
 
     #[test]

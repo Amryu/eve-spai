@@ -127,7 +127,9 @@ function paint() {
   const el = document.getElementById("sound");
   if (!el) return;
   if (!armed) {
-    el.innerHTML = `<button class="armbtn" data-arm>Tap to enable sound</button>`;
+    el.innerHTML =
+      `<button class="armbtn" data-arm title="Enable sound">` +
+      `<span class="armfull">Tap to enable sound</span><span class="armshort">\u{1F507}+</span></button>`;
     el.querySelector("[data-arm]").addEventListener("click", arm);
     return;
   }

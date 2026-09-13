@@ -16,9 +16,13 @@
   flex: 0 0 100%;
   min-width: 100%;
   scroll-snap-align: start;
+  /* Each pane scrolls itself; the strip only ever scrolls sideways. */
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 0.75rem;
   margin: 0;
+  display: flex;
+  flex-direction: column;
 }
 /* Its own heading is the tab chip above it. */
 #panes[data-mode="tabs"] > .pane > h2 { display: none; }
@@ -27,20 +31,34 @@
 #panes[data-mode="grid"] {
   display: grid;
   gap: 0.75rem;
-  align-items: start;
+  /* `stretch`, not `start`: a pane has to fill its cell so the map can fill the pane, and so a long
+     list scrolls inside its box instead of growing the page. */
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
 }
-#panes[data-mode="columns"] { grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); }
-#panes[data-mode="grid"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#panes[data-mode="columns"] {
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+#panes[data-mode="grid"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
 #panes[data-mode="columns"] > .pane,
 #panes[data-mode="grid"] > .pane {
   min-width: 0;
+  min-height: 0;
   margin: 0;
   background: var(--faint);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.6rem;
-  max-height: calc(100vh - 7rem);
+  /* Bounded by its grid cell rather than by a guess at the chrome height, and scrolling inside it.
+     The old `calc(100vh - 7rem)` was both fragile and, with two rows, taller than the screen. */
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 @media (max-width: 1300px) {
@@ -50,9 +68,35 @@
 .tab { touch-action: none; }
 .tab.dragging { opacity: 0.6; border-color: var(--accent); }
 
-/* The tab chips are ordered by `style.order`, and an unset order is 0, which sorted this span in
-   among them. It belongs after every tab, whatever the pane order is. */
-.modebar { display: flex; gap: 0.25rem; margin-left: 0.25rem; order: 99; }
+/* The layout menu: modes on one row, pane visibility on the next. A dropdown on a desktop, a bottom
+   sheet on a phone, the same markup either way.
+
+   `order: 99` because the tab chips are ordered by `style.order` and an unset order is 0, which
+   sorted this into the middle of them. */
+.modebar {
+  display: none;
+  order: 99;
+  position: absolute;
+  top: 100%;
+  right: 0.5rem;
+  z-index: 30;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+body.sheet .modebar { display: flex; }
+.mbrow { display: flex; gap: 0.3rem; }
+.mbpanes { flex-wrap: wrap; }
+
+.modebar .panetoggle { opacity: 0.5; }
+/* A pane that is on reads as pressed; off reads as dimmed and dashed, the same language the tab
+   chips use, so the two controls agree. */
+.modebar .panetoggle.on { opacity: 1; border-color: var(--accent); color: var(--fg); }
 .modebar button {
   font: inherit;
   color: var(--muted);
@@ -63,3 +107,26 @@
   cursor: pointer;
 }
 .modebar button.on { color: var(--fg); border-color: var(--accent); }
+
+/* A pane's heading and toolbar stay put; whatever follows them is the part that scrolls. */
+.pane > h2 { flex: 0 0 auto; }
+.pane > .toolbar, .pane > .maptools, .pane > .count { flex: 0 0 auto; }
+.pane > .feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.pane > .mapwrap { flex: 1 1 auto; min-height: 0; }
+
+/* On a phone the mode switcher is a settings-ish control, not a per-glance one, so it stops taking
+   a row in the bar and sits behind the sheet button. These rules live here, not in app.css, because
+   this file loads later and would otherwise override them. */
+@media (max-width: 640px) {
+  .modebar {
+    position: fixed;
+    top: auto;
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: calc(0.5rem + env(safe-area-inset-bottom));
+    z-index: 30;
+    margin: 0;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .modebar button { flex: 1; min-height: 2.6rem; }
+}

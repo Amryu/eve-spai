@@ -93,6 +93,8 @@ pub const INDEX: &str = include_str!("assets/index.html");
 
 /// Where the first snapshot is spliced into the page.
 const BOOT_SLOT: &str = "\"__BOOT__\"";
+/// Where the icon map is spliced in.
+const ICON_SLOT: &str = "\"__ICONS__\"";
 
 /// The page with its first snapshot already in it.
 ///
@@ -101,7 +103,11 @@ const BOOT_SLOT: &str = "\"__BOOT__\"";
 /// instant and visibly slow, and it is the same JSON-island trick the battle-report server already
 /// uses.
 pub fn index_with_boot(snapshot_json: &str) -> String {
-    INDEX.replace(BOOT_SLOT, &js_safe_json(snapshot_json))
+    INDEX
+        .replace(BOOT_SLOT, &js_safe_json(snapshot_json))
+        // Inlined for the same reason as the snapshot, and one more: fetched, the page paints once
+        // without icons and again with them, which is a visible flicker on every load.
+        .replace(ICON_SLOT, &js_safe_json(&super::icons::json()))
 }
 
 /// Neutralise anything that could close the `<script>` element the JSON sits in.
@@ -185,6 +191,8 @@ mod tests {
         let page = index_with_boot("{\"seq\":7}");
         assert!(page.contains("{\"seq\":7}"), "the snapshot has to reach the document");
         assert!(!page.contains(BOOT_SLOT), "the placeholder has to be gone");
+        assert!(!page.contains(ICON_SLOT), "the icon placeholder has to be gone");
+        assert!(page.contains("\"warning\":"), "the icon map has to reach the document");
     }
 
     /// The snapshot carries chat text verbatim, and anyone in an intel channel can type this.
@@ -226,6 +234,33 @@ mod tests {
             !js.contains("data-pane=\"${p}\""),
             "a tab must not be given the attribute the panes are found by"
         );
+    }
+
+    /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as
+    /// `.modal`, an author rule wins, and `display: flex` kept it on screen.
+    #[test]
+    fn a_hidden_modal_is_actually_hidden() {
+        let css = find("/assets/dialogs.css").expect("dialogs.css").body;
+        assert!(css.contains(".modal[hidden]"), "nothing overrides display for a hidden modal");
+    }
+
+    /// A pane may scroll; the page may not. Four independently long panes in grid mode otherwise
+    /// become one very long document and the layout stops meaning anything.
+    #[test]
+    fn the_page_itself_does_not_scroll() {
+        let css = find("/assets/app.css").expect("app.css").body;
+        let rule = css.split("html, body {").nth(1).expect("body rule");
+        let rule = rule.split('}').next().expect("body rule end");
+        assert!(rule.contains("overflow: hidden"), "{rule}");
+    }
+
+    /// The map rebuilt every node on every push, which with a real SDE is thousands of elements
+    /// several times a second.
+    #[test]
+    fn a_snapshot_push_does_not_rebuild_every_pane() {
+        let js = find("/assets/app.js").expect("app.js").body;
+        assert!(js.contains("render(dirty)"), "the push has to say which panes changed");
+        assert!(js.contains("dirty && !dirty.has(pane)"), "and render has to honour it");
     }
 
     /// The regression test for a stale-asset bug that a version-keyed tag cannot catch: the version
