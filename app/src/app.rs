@@ -779,7 +779,6 @@ pub struct SpaiApp {
     #[cfg(feature = "fc-rescue")]
     rescue_range: Option<RangeWarning>,
     #[cfg(feature = "fc-rescue")]
-    rescue_window_open: bool,
     /// System last pushed to ESI as the auto-destination while the rescue window is open. Reset when
     /// the window closes so reopening re-applies, and tracked so a static ping isn't re-pushed each frame.
     #[cfg(feature = "fc-rescue")]
@@ -1510,7 +1509,6 @@ impl SpaiApp {
             #[cfg(feature = "fc-rescue")]
             rescue_range: None,
             #[cfg(feature = "fc-rescue")]
-            rescue_window_open: false,
             #[cfg(feature = "fc-rescue")]
             rescue_dest_set: None,
             #[cfg(feature = "fc-rescue")]
@@ -4442,7 +4440,7 @@ impl SpaiApp {
                         .on_hover_text("Open capital rescue (cap save)")
                         .clicked()
                 {
-                    self.enter_rescue_mode(true);
+                    self.view = nav::View::Rescue;
                 }
             });
         });
@@ -6029,7 +6027,7 @@ impl SpaiApp {
             );
         }
 
-        // Fleet-composition poller (FC rescue only). Runs idle until Rescue Mode is active.
+        // Fleet-composition poller (FC rescue only).
         #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled && !self.fleet_poller_started {
             let ship_types: std::collections::HashMap<i64, (String, String)> =
@@ -6237,45 +6235,6 @@ impl SpaiApp {
         changed
     }
 
-    /// Open the rescue window, ready to watch delve911 with the newest unresolved ping selected.
-    ///
-    /// There is no longer a mode to enter or leave: the feature is the switch, and it is already an
-    /// explicit choice made in the build and in the settings. A second state that could be off while
-    /// the feature was on meant the window, the map and the pings each had their own idea of whether
-    /// a rescue was happening.
-    #[cfg(feature = "fc-rescue")]
-    fn enter_rescue_mode(&mut self, on: bool) {
-        {
-            let mut r = self.rescue.lock().unwrap();
-            r.active = on;
-            r.pending_ping.clear();
-            r.ping_edited = false;
-            r.snowflakes.clear();
-            if on {
-                r.select_newest();
-            } else {
-                r.selected_ping = None;
-                r.test_mode = false;
-            }
-        }
-        self.rescue_armed = false;
-        if on {
-            self.rescue_window_open = true;
-            self.rescue_geom_applied = false; // apply saved geometry once on this open
-            // Seed the jump-range focus on staging, once, so the rings are up before the FC touches
-            // the map. Hovering overrides it per frame and a click replaces it; neither is fought.
-            if let Some(id) = self
-                .systems
-                .as_ref()
-                .and_then(|g| g.lookup(&self.settings.rescue_staging_system).map(|i| i.id))
-            {
-                self.map_selected = Some(id);
-            }
-        } else {
-            self.rescue_window_open = false;
-        }
-    }
-
     /// Recompute the titan-range check only when staging or the target changes: it scans every
     /// system for the nearest in-range jump-off point, which is far too much for every frame.
     #[cfg(feature = "fc-rescue")]
@@ -6453,7 +6412,6 @@ impl SpaiApp {
         let doctrines = self.settings.rescue_doctrines.clone();
         let (jab_connected, jab_status, jab_retry_in, _) = self.jabber_conn();
         let mut retry_click = false;
-        let mut exit = false;
         let mut set_dest: Option<i64> = None;
         let mut chat_dm: Option<String> = None;
         let has_char = self.active_character != "No character";
@@ -6478,16 +6436,6 @@ impl SpaiApp {
             )
         });
 
-        egui::Panel::bottom("rescue_exit_bar")
-            .exact_size(40.0)
-            .show_inside(ui, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Exit rescue mode").clicked() {
-                        exit = true;
-                    }
-                });
-            });
         egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
             let mut r = self.rescue.lock().unwrap();
             let test_mode = r.test_mode;
@@ -6967,9 +6915,6 @@ impl SpaiApp {
         }
         if let Some(sid) = set_dest {
             self.rescue_push_destination(sid);
-        }
-        if exit {
-            self.enter_rescue_mode(false);
         }
         if let Some(nick) = chat_dm {
             let dm = self.full_user_jid(&nick);
@@ -20556,6 +20501,16 @@ impl SpaiApp {
         self.cyno_generators_window(ctx);
         #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled {
+            // The feature being on is the mode. `active` still gates the pollers, which is genuinely
+            // per-session state, but nothing switches it any more: UI-065 removed the only thing
+            // that did and left the fleet poller waiting for a flag that was never set again.
+            {
+                let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+                if !r.active {
+                    r.active = true;
+                    r.select_newest();
+                }
+            }
             self.rescue_doctrines_window(ctx);
             self.update_rescue_range();
         }
