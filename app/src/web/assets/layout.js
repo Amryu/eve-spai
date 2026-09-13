@@ -7,7 +7,7 @@ import { afterRender, PANES } from "./app.js";
 
 const KEY = "spai_layout";
 
-const DEFAULTS = { mode: "auto", order: [...PANES], active: 0 };
+const DEFAULTS = { mode: "auto", order: [...PANES], active: 0, off: [] };
 
 export const layout = load();
 
@@ -17,7 +17,9 @@ function load() {
     if (!saved) return { ...DEFAULTS };
     // A pane added or removed by an upgrade must not strand the saved order.
     const order = [...new Set([...(saved.order ?? []).filter((p) => PANES.includes(p)), ...PANES])];
-    return { ...DEFAULTS, ...saved, order };
+    const off = (saved.off ?? []).filter((p) => PANES.includes(p));
+    // Never hide everything: a page with no panes has no way back except clearing storage.
+    return { ...DEFAULTS, ...saved, order, off: off.length < PANES.length ? off : [] };
   } catch {
     return { ...DEFAULTS };
   }
@@ -33,6 +35,26 @@ function save() {
 
 /// `auto` is a media query rather than a stored choice, so rotating a tablet does the right thing
 /// without the user having picked anything.
+/// Panes the user has left switched on, in their chosen order.
+export function shown() {
+  return layout.order.filter((p) => !layout.off.includes(p));
+}
+
+export function isOn(pane) {
+  return !layout.off.includes(pane);
+}
+
+export function setOn(pane, on) {
+  const off = new Set(layout.off);
+  if (on) off.delete(pane);
+  else off.add(pane);
+  if (off.size >= PANES.length) return; // keep at least one
+  layout.off = [...off];
+  layout.active = Math.min(layout.active, Math.max(0, shown().length - 1));
+  save();
+  apply();
+}
+
 export function effectiveMode() {
   if (layout.mode !== "auto") return layout.mode;
   return window.matchMedia("(min-width: 900px)").matches ? "columns" : "tabs";
@@ -46,10 +68,16 @@ export function apply() {
 
   // Order is applied with `order` rather than by moving nodes, so a re-render never has to rebuild
   // the DOM and an input inside a pane keeps its focus.
+  const on = shown();
   for (const [i, name] of layout.order.entries()) {
     const el = main.querySelector(`[data-pane="${name}"]`);
-    if (el) el.style.order = String(i);
+    if (!el) continue;
+    el.style.order = String(i);
+    el.hidden = !on.includes(name);
   }
+  // Columns divide by what is actually showing, so switching one off widens the rest instead of
+  // leaving a gap.
+  main.style.setProperty("--cols", String(Math.max(1, Math.min(on.length, 4))));
   if (mode === "tabs") scrollToActive(false);
   paintTabs();
 }
@@ -59,16 +87,21 @@ function paintTabs() {
   document
     .querySelectorAll(".modebar [data-mode]")
     .forEach((b) => b.classList.toggle("on", b.dataset.mode === layout.mode));
+  document
+    .querySelectorAll(".modebar [data-toggle]")
+    .forEach((b) => b.classList.toggle("on", isOn(b.dataset.toggle)));
+  const on = shown();
   document.querySelectorAll("#tabs .tab").forEach((b) => {
-    const i = layout.order.indexOf(b.dataset.tab);
-    b.style.order = String(i);
-    b.setAttribute("aria-selected", String(mode === "tabs" && i === layout.active));
+    const name = b.dataset.tab;
+    b.style.order = String(layout.order.indexOf(name));
+    b.classList.toggle("off", !on.includes(name));
+    b.setAttribute("aria-selected", String(mode === "tabs" && on[layout.active] === name));
   });
 }
 
 function scrollToActive(smooth) {
   const main = document.getElementById("panes");
-  const name = layout.order[layout.active];
+  const name = shown()[layout.active];
   const el = main?.querySelector(`[data-pane="${name}"]`);
   el?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", inline: "start", block: "nearest" });
 }
@@ -88,7 +121,7 @@ function watchScroll() {
       clearTimeout(t);
       t = setTimeout(() => {
         const i = Math.round(main.scrollLeft / main.clientWidth);
-        if (i !== layout.active && i >= 0 && i < layout.order.length) {
+        if (i !== layout.active && i >= 0 && i < shown().length) {
           layout.active = i;
           save();
           paintTabs();
@@ -154,9 +187,19 @@ function wireTabs() {
       setMode(m.dataset.mode);
       return;
     }
+    const t = e.target.closest("[data-toggle]");
+    if (t) {
+      setOn(t.dataset.toggle, !isOn(t.dataset.toggle));
+      return;
+    }
     const b = e.target.closest(".tab");
     if (!b) return;
-    const i = layout.order.indexOf(b.dataset.tab);
+    // A tab that is switched off comes back when tapped, rather than being a dead chip.
+    if (!isOn(b.dataset.tab)) {
+      setOn(b.dataset.tab, true);
+      return;
+    }
+    const i = shown().indexOf(b.dataset.tab);
     if (i < 0) return;
     if (effectiveMode() === "tabs") {
       layout.active = i;
@@ -171,9 +214,34 @@ function wireTabs() {
   });
 }
 
+function wireSheet() {
+  const b = document.getElementById("sheet");
+  if (!b) return;
+  b.textContent = "\u2261"; // three bars; the icon font may not have loaded this early
+  b.title = "Layout";
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.body.classList.toggle("sheet");
+  });
+  // Choosing a mode ends that errand; toggling panes usually does not, so the menu stays open for
+  // those.
+  document.getElementById("tabs")?.addEventListener("click", (e) => {
+    if (e.target.closest("[data-mode]")) document.body.classList.remove("sheet");
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".modebar") && !e.target.closest("#sheet")) {
+      document.body.classList.remove("sheet");
+    }
+  });
+}
+
 export function wire() {
+  // `#layout` opens the menu on load. Same reason the dialogs take deep links: the harness cannot
+  // click, so without this the menu is the one control no screenshot can show.
+  if (location.hash === "#layout") document.body.classList.add("sheet");
   watchScroll();
   wireTabs();
+  wireSheet();
   window.matchMedia("(min-width: 900px)").addEventListener("change", apply);
   apply();
 }

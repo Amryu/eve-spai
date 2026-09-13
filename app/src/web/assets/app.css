@@ -5,6 +5,9 @@
 html, body {
   margin: 0;
   height: 100%;
+  /* The page itself never scrolls. Panes scroll inside themselves, so switching to grid cannot turn
+     four independently long lists into one very long document. */
+  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -22,6 +25,7 @@ body {
 .ph { font-family: phosphor; font-style: normal; line-height: 1; }
 
 #bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -49,7 +53,7 @@ body {
 .status[data-state="stale"] { color: var(--warning); }
 .status[data-state="down"] { color: var(--hostile); }
 
-#panes { flex: 1; min-height: 0; overflow: auto; padding: 0.75rem; }
+#panes { flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 0.75rem; }
 
 .placeholder { color: var(--muted); max-width: 32rem; line-height: 1.5; }
 .placeholder code { color: var(--fg); background: var(--surface-hi); padding: 0 0.25rem; border-radius: 3px; }
@@ -63,7 +67,7 @@ body {
 }
 .counts b { color: var(--accent); font-weight: 600; }
 
-#tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+#tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; align-items: center; }
 
 .tab {
   font: inherit;
@@ -74,6 +78,9 @@ body {
   padding: 0.25rem 0.6rem;
   cursor: pointer;
 }
+/* A pane switched off stays in the bar, dimmed, because the chip is also how it comes back. */
+.tab.off { opacity: 0.45; border-style: dashed; }
+.tab.off b { color: var(--muted); }
 .tab[aria-selected="true"] { background: var(--surface-active); border-color: var(--accent); }
 .tab b { color: var(--accent); font-weight: 600; }
 
@@ -97,3 +104,57 @@ body {
 .soundbar .mutebtn[aria-pressed="true"] { color: var(--muted); }
 
 .status { margin-left: 0.5rem; }
+
+/* The layout menu's button. Present at every width: turning a pane off has to be reachable on a
+   desktop too, and a dropdown is a better home for six controls than six more chips in the bar. */
+#sheet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-family: phosphor;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  min-width: 2.4rem;
+  min-height: 2.4rem;
+  cursor: pointer;
+}
+
+/* ---- phone controls ----
+   The data display reads fine narrow; the controls are what get cramped. Below this width the bar
+   becomes two rows, every control becomes a real touch target, and the tabs scroll sideways rather
+   than wrapping the bar into three rows and eating the feed.
+
+   The mode switcher lives in layout.css with the rest of `.modebar`: that file loads after this one,
+   so a rule here of the same specificity would silently lose. */
+@media (max-width: 640px) {
+  #bar {
+    gap: 0.4rem;
+    padding: 0.4rem 0.5rem;
+    display: grid;
+    grid-template-columns: auto auto 1fr auto;
+    grid-template-areas:
+      "brand sheet sound status"
+      "tabs  tabs  tabs  tabs";
+  }
+  .brand { grid-area: brand; }
+  #sheet { grid-area: sheet; }
+  .soundbar { grid-area: sound; margin-left: auto; }
+  .status { grid-area: status; }
+  #tabs { grid-area: tabs; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #tabs::-webkit-scrollbar { display: none; }
+
+  /* 44px is the smallest target a thumb hits reliably. */
+  .tab { min-height: 2.4rem; padding: 0 0.7rem; flex: 0 0 auto; }
+  .soundbar .armbtn, .soundbar .mutebtn { min-height: 2.4rem; }
+}
+
+/* The arm button says what it wants in a sentence on a desktop and in a glyph on a phone, where the
+   bar has four things to fit and no room for a sentence. */
+.armshort { display: none; }
+@media (max-width: 640px) {
+  .armfull { display: none; }
+  .armshort { display: inline; font-size: 1.1rem; }
+}

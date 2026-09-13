@@ -1,6 +1,12 @@
+.mapwrap { display: flex; min-height: 12rem; }
+
 .starmap {
+  /* Fills whatever the pane gives it rather than a guessed height, which in grid mode left the map
+     tiny in a tall box and in tabs mode overflowed it. */
+  flex: 1 1 auto;
   width: 100%;
-  height: min(60vh, 520px);
+  height: 100%;
+  min-height: 0;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -21,6 +27,8 @@
 }
 
 .starmap .sys { cursor: pointer; }
+.starmap .me { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.starmap .you { fill: none; stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; }
 .starmap .sys:hover { stroke: var(--fg); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 /* Intel heat sits under its system, so the dot's security colour stays readable on top. */
 .starmap .hot { opacity: 0.35; }

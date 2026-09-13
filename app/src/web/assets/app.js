@@ -57,18 +57,27 @@ function renderTabs() {
   // the button. Every pane then renders inside the header.
   document.getElementById("tabs").innerHTML =
     PANES.map(
-      (p) => `<button class="tab" data-tab="${p}">${TITLES[p]} <b>${count(p)}</b></button>`
+      (p) =>
+        `<button class="tab" data-tab="${p}"><span class="tname">${TITLES[p]}</span> <b>${count(p)}</b></button>`
     ).join("") +
-    `<span class="modebar">` +
+    `<div class="modebar">` +
+    `<div class="mbrow">` +
     MODES.map(([m, label]) => `<button data-mode="${m}">${label}</button>`).join("") +
-    `</span>`;
+    `</div>` +
+    `<div class="mbrow mbpanes">` +
+    PANES.map(
+      (p) => `<button class="panetoggle" data-toggle="${p}">${TITLES[p]}</button>`
+    ).join("") +
+    `</div></div>`;
 }
 
-export function render() {
+/// `dirty` is the set of panes worth redrawing, or `null` for all of them.
+export function render(dirty = null) {
   renderTabs();
   // The tab bar is rebuilt from scratch here, so whatever the layout put on those buttons has to be
   // put back. `afterRender` is called at the end of this function for that.
   for (const pane of PANES) {
+    if (dirty && !dirty.has(pane)) continue;
     const el = document.querySelector(`#panes [data-pane="${pane}"]`);
     if (!el) continue;
     if (renderers[pane]) {
@@ -91,17 +100,28 @@ let stale = null;
 
 // Panes arrive whole or not at all: the server sends a pane only when it changed, so merging is a
 // field-by-field replace rather than a patch.
+/// Merge an update and report which panes it actually touched.
+///
+/// The server only sends a pane when it changed, so this is already the answer; the point is to stop
+/// throwing it away. Re-rendering every pane on every push is what made a 5000-node map redraw twice
+/// a second and took the whole page down with it.
 function merge(update) {
   const s = state.snapshot ?? { seq: 0, gen: update.gen };
   if (update.gen !== s.gen) {
     state.snapshot = update;
-    return;
+    return null; // a new generation invalidates everything
   }
+  const dirty = new Set();
   for (const pane of ["intel", "alerts", "pings", "map", "meta"]) {
-    if (update[pane] !== undefined) s[pane] = update[pane];
+    if (update[pane] !== undefined) {
+      s[pane] = update[pane];
+      dirty.add(pane);
+    }
   }
   s.seq = update.seq;
   state.snapshot = s;
+  // Meta carries compact mode and the theme, which every pane draws with.
+  return dirty.has("meta") ? null : dirty;
 }
 
 function markStale() {
@@ -118,10 +138,10 @@ function connect() {
     markStale();
   };
   es.onmessage = (e) => {
-    merge(JSON.parse(e.data));
+    const dirty = merge(JSON.parse(e.data));
     setStatus("live", "live");
     markStale();
-    render();
+    render(dirty);
   };
   // A reset means the server could not fill the gap, so what is held is thrown away.
   es.addEventListener("reset", (e) => {
@@ -146,21 +166,28 @@ function boot() {
   } catch {
     // A page served without its island still works; it just paints empty for one round trip.
   }
+  try {
+    const raw = document.getElementById("icons")?.textContent;
+    if (raw && raw !== '"__ICONS__"') state.icons = JSON.parse(raw);
+  } catch {
+    // A missing icon renders as nothing, which is better than a tofu square.
+  }
 }
 
 function main() {
   boot();
   render();
   connect();
-  // Icons are decoration. Fetching them before the first paint is how the page ends up blank
-  // behind a "connecting" label when that one request is slow.
-  fetch("/api/icons.json")
-    .then((r) => r.json())
-    .then((i) => {
-      state.icons = i;
-      render();
-    })
-    .catch(() => {});
+  // Only if the island was missing, which means an older server.
+  if (!Object.keys(state.icons).length) {
+    fetch("/api/icons.json")
+      .then((r) => r.json())
+      .then((i) => {
+        state.icons = i;
+        render();
+      })
+      .catch(() => {});
+  }
 }
 
 main();

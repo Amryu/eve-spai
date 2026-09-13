@@ -17,6 +17,7 @@
 <header id="bar">
   <span class="brand">EVE SPAI</span>
   <nav id="tabs"></nav>
+  <button id="sheet" aria-label="Layout"></button>
   <span id="sound" class="soundbar"></span>
   <span id="status" class="status" data-state="connecting">connecting</span>
 </header>
@@ -31,6 +32,8 @@
 <!-- The first snapshot, spliced in by the server so the page paints without a second round trip.
      Escaped on the way in: this carries EVE chat verbatim. -->
 <script type="application/json" id="boot">"__BOOT__"</script>
+<!-- The icon map, inlined so the first paint has its glyphs instead of painting twice. -->
+<script type="application/json" id="icons">"__ICONS__"</script>
 <script type="module" src="/assets/app.js"></script>
 <script type="module" src="/assets/panes-intel.js"></script>
 <script type="module" src="/assets/panes-alerts.js"></script>
