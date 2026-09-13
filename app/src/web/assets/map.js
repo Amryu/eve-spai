@@ -1,150 +1,309 @@
-// The map: one SVG, panned and zoomed by mutating its viewBox.
+// The map, drawn on a canvas.
 //
-// # Why this is built in layers
+// # Why canvas
 //
-// The first version rebuilt the whole `innerHTML` on every snapshot push, every pan and every zoom.
-// With a real SDE that is 5000+ circles and a 7000-segment path, several times a second, and it made
-// the entire page feel broken, not just the map. So the structure here is deliberate:
+// SVG put one element per system in the DOM. With the real SDE that is 5255 circles, and every
+// viewBox change re-rasterises all of them, so a zoom gesture rebuilt the whole layer tree each
+// frame. Canvas draws the same 5255 dots in a millisecond or two and redraws on every frame without
+// touching the DOM at all.
 //
-//   base    built once when geometry arrives, never touched again
-//   live    the handful of intel and character markers, rebuilt when the snapshot changes
-//   labels  rebuilt on a debounce, and only for what is on screen and only when zoomed in
+// It also fixes sizing. In SVG the radius is in map units, so zooming in made the dots enormous;
+// here everything is drawn in screen pixels and stays the size it should be at any zoom.
 //
-// Pan and zoom set one attribute and touch no DOM at all.
+// Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
 import { ico, register, state } from "./app.js";
 
 let geo = null;
 let loading = false;
-const view = { x: 0, y: 0, w: 4096, h: 4096 };
-let fitted = false;
 let el = null;
-let lastLiveRev = -1;
+let canvas = null;
+let ctx = null;
+let raf = null;
 
-const NS = "http://www.w3.org/2000/svg";
+/// Map units per pixel. One number instead of a viewBox: the projection is `screen = (map - o) / k`.
+const view = { ox: 0, oz: 0, k: 1 };
+let fitted = false;
 
-const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-  );
+export const layers = load();
 
-const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
+function load() {
+  const dflt = { sov: true, bridges: true, holes: true, camps: true, jove: false, upgrades: false, labels: true };
+  try {
+    return { ...dflt, ...JSON.parse(localStorage.getItem("spai_map_layers") ?? "{}") };
+  } catch {
+    return dflt;
+  }
+}
+
+function saveLayers() {
+  try {
+    localStorage.setItem("spai_map_layers", JSON.stringify(layers));
+  } catch {
+    // Private browsing; the choice lasts one session.
+  }
+}
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/// Resolved once per draw. Reading a custom property per dot would be thousands of style lookups.
+let pal = null;
+function palette() {
+  return {
+    sec: Array.from({ length: 11 }, (_, i) => css(`--sec-${i}`)),
+    sev: ["info", "warning", "danger", "critical"].map((s) => css(`--sev-${s}`)),
+    line: css("--line"),
+    accent: css("--accent"),
+    muted: css("--muted"),
+    alliance: css("--alliance"),
+    hostile: css("--hostile"),
+    warning: css("--warning"),
+    fg: css("--fg"),
+  };
+}
 
 async function loadGeometry() {
   if (geo || loading) return;
   loading = true;
   try {
     geo = await (await fetch("/api/map/geometry")).json();
-    geo.byId = new Map(geo.nodes.map((n) => [n.i, n]));
+    geo.byId = new Map(geo.nodes.map((n, idx) => [n.i, idx]));
     fitted = false;
-    lastLiveRev = -1;
-    draw();
+    build();
   } catch {
-    geo = { extent: 4096, nodes: [], edges: [], byId: new Map() };
-    draw();
+    geo = { extent: 4096, nodes: [], edges: [], bridges: [], byId: new Map() };
+    build();
   } finally {
     loading = false;
   }
 }
 
-/// Frame the systems that exist, not the 0..4096 box, so a sparse map is not mostly empty space.
+const sx = (x) => (x - view.ox) / view.k;
+const sy = (z) => (z - view.oz) / view.k;
+
 function fit() {
-  if (!geo?.nodes.length) return;
+  if (!geo?.nodes.length || !canvas) return;
   let [x0, x1, z0, z1] = [Infinity, -Infinity, Infinity, -Infinity];
   for (const n of geo.nodes) {
     x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x);
     z0 = Math.min(z0, n.z); z1 = Math.max(z1, n.z);
   }
-  const box = el?.querySelector(".starmap")?.getBoundingClientRect();
-  const aspect = box && box.height > 0 ? box.width / box.height : 1;
-  const pad = Math.max(40, (x1 - x0 + z1 - z0) * 0.04);
-  let w = x1 - x0 + pad * 2;
-  let h = z1 - z0 + pad * 2;
-  // Match the box's shape so `preserveAspectRatio` does not letterbox the map inside its own pane.
-  if (w / h > aspect) h = w / aspect;
-  else w = h * aspect;
-  view.x = (x0 + x1) / 2 - w / 2;
-  view.y = (z0 + z1) / 2 - h / 2;
-  view.w = Math.max(1, w);
-  view.h = Math.max(1, h);
+  const w = canvas.clientWidth || 1;
+  const h = canvas.clientHeight || 1;
+  const pad = 0.04;
+  view.k = Math.max((x1 - x0) / w, (z1 - z0) / h) * (1 + pad * 2) || 1;
+  view.ox = (x0 + x1) / 2 - (w * view.k) / 2;
+  view.oz = (z0 + z1) / 2 - (h * view.k) / 2;
   fitted = true;
 }
 
-/// One `<path>` for every gate, because a real map is ~7000 of them and 7000 elements is a stall.
-function edgePath() {
-  const parts = [];
+/// Dot radius in screen pixels, growing a little as you zoom in so a close-up is not all dots and
+/// no space, but never the runaway scaling that map units gave.
+function radius() {
+  return Math.max(1.6, Math.min(5.5, 2.2 / Math.sqrt(view.k) * 8));
+}
+
+function schedule() {
+  if (raf) return;
+  raf = requestAnimationFrame(() => {
+    raf = null;
+    paint();
+  });
+}
+
+function paint() {
+  if (!ctx || !geo) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!pal) pal = palette();
+
+  const live = state.snapshot?.map ?? {};
+  const r = radius();
+  const pad = 40;
+  const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
+
+  // Gates. One path for all of them, clipped to the viewport as we go: off-screen segments still
+  // cost the rasteriser if they are in the path.
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = pal.line;
+  ctx.beginPath();
   for (const [a, b] of geo.edges) {
     const p = geo.nodes[a];
     const q = geo.nodes[b];
-    if (p && q) parts.push(`M${p.x} ${p.z}L${q.x} ${q.z}`);
+    const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
+    if (!onScreen(px, py) && !onScreen(qx, qy)) continue;
+    ctx.moveTo(px, py);
+    ctx.lineTo(qx, qy);
   }
-  return parts.join("");
-}
+  ctx.stroke();
 
-const R = 7;
+  if (layers.bridges && geo.bridges?.length) {
+    ctx.strokeStyle = pal.alliance;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    for (const [a, b] of geo.bridges) {
+      const p = geo.nodes[a];
+      const q = geo.nodes[b];
+      const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
+      if (!onScreen(px, py) && !onScreen(qx, qy)) continue;
+      ctx.moveTo(px, py);
+      ctx.lineTo(qx, qy);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
-function buildBase(svg) {
-  const dots = geo.nodes
-    .map(
-      (n) =>
-        `<circle class="sys" data-system="${n.i}" cx="${n.x}" cy="${n.z}" r="${R}" fill="${secVar(n.s)}"><title>${esc(n.n)}</title></circle>`
-    )
-    .join("");
-  svg.innerHTML =
-    `<path class="links" d="${edgePath()}"/>` +
-    `<g class="base">${dots}</g><g class="live"></g><g class="labels"></g>`;
-}
+  if (layers.holes && live.holes?.length) {
+    ctx.strokeStyle = pal.accent;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    for (const [a, b] of live.holes) {
+      const p = geo.nodes[geo.byId.get(a)];
+      const q = geo.nodes[geo.byId.get(b)];
+      if (!p || !q) continue;
+      ctx.moveTo(sx(p.x), sy(p.z));
+      ctx.lineTo(sx(q.x), sy(q.z));
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
-const SEV = ["info", "warning", "danger", "critical"];
+  // Sovereignty sits under the systems as a soft wash, the way the app shades it.
+  if (layers.sov && live.sov?.length) {
+    ctx.globalAlpha = 0.28;
+    for (const [id, colour] of live.sov) {
+      const n = geo.nodes[geo.byId.get(id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillStyle = colour;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
 
-/// Only the markers, which number in the tens even on a busy night.
-function drawLive(svg) {
-  const g = svg.querySelector(".live");
-  if (!g) return;
-  const live = state.snapshot?.map ?? {};
-  const out = [];
+  // Intel heat.
+  ctx.globalAlpha = 0.45;
   for (const [id, sev] of live.intel ?? []) {
-    const n = geo.byId.get(id);
-    if (n) out.push(`<circle class="hot" cx="${n.x}" cy="${n.z}" r="${R * 2.4}" fill="var(--sev-${SEV[sev] ?? "info"})"/>`);
+    const n = geo.nodes[geo.byId.get(id)];
+    if (!n) continue;
+    const px = sx(n.x), py = sy(n.z);
+    if (!onScreen(px, py)) continue;
+    ctx.fillStyle = pal.sev[sev] ?? pal.sev[0];
+    ctx.beginPath();
+    ctx.arc(px, py, r * 2.6, 0, Math.PI * 2);
+    ctx.fill();
   }
-  for (const [id] of live.chars ?? []) {
-    const n = geo.byId.get(id);
-    if (n) out.push(`<circle class="me" cx="${n.x}" cy="${n.z}" r="${R * 1.9}"/>`);
-  }
-  const you = geo.byId.get(live.you);
-  if (you) out.push(`<circle class="you" cx="${you.x}" cy="${you.z}" r="${R * 2.9}"/>`);
-  g.innerHTML = out.join("");
-}
+  ctx.globalAlpha = 1;
 
-/// Labels are the one thing that has to follow the viewport, so they are the one thing rebuilt on a
-/// gesture, debounced, and only when zoomed in far enough to read them.
-function drawLabels(svg) {
-  const g = svg.querySelector(".labels");
-  if (!g) return;
-  const box = svg.getBoundingClientRect();
-  const unit = view.w / Math.max(1, box.width);
-  // Below this a label is smaller than the text it would replace, and thousands of them overlap
-  // into grey mush.
-  if (11 * unit > R * 3) {
-    g.innerHTML = "";
-    return;
-  }
-  const m = view.w * 0.1;
-  const out = [];
+  // Systems.
+  let drawn = 0;
   for (const n of geo.nodes) {
-    if (n.x < view.x - m || n.x > view.x + view.w + m) continue;
-    if (n.z < view.y - m || n.z > view.y + view.h + m) continue;
-    out.push(`<text x="${n.x + R * 1.5}" y="${n.z + R * 0.8}" font-size="${11 * unit}">${esc(n.n)}</text>`);
-    if (out.length > 400) break;
+    const px = sx(n.x), py = sy(n.z);
+    if (!onScreen(px, py)) continue;
+    drawn++;
+    ctx.fillStyle = pal.sec[Math.min(10, Math.max(0, Math.round(n.s * 10)))] ?? pal.muted;
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fill();
   }
-  g.innerHTML = out.join("");
+
+  if (layers.upgrades && live.upgrades?.length) {
+    ctx.fillStyle = pal.fg;
+    ctx.font = `${Math.max(8, r * 2)}px system-ui, sans-serif`;
+    ctx.textBaseline = "middle";
+    for (const [id, count] of live.upgrades) {
+      const n = geo.nodes[geo.byId.get(id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillText(String(count), px + r * 1.4, py - r * 1.4);
+    }
+  }
+
+  if (layers.jove) {
+    ctx.strokeStyle = pal.muted;
+    ctx.lineWidth = 1;
+    for (const n of geo.nodes) {
+      if (!n.j) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.beginPath();
+      ctx.rect(px - r * 1.8, py - r * 1.8, r * 3.6, r * 3.6);
+      ctx.stroke();
+    }
+  }
+
+  if (layers.camps && live.camps?.length) {
+    ctx.strokeStyle = pal.hostile;
+    ctx.lineWidth = 2;
+    for (const id of live.camps) {
+      const n = geo.nodes[geo.byId.get(id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  // Where your characters are, and which one is you.
+  ctx.strokeStyle = pal.accent;
+  ctx.lineWidth = 2;
+  for (const [id] of live.chars ?? []) {
+    const n = geo.nodes[geo.byId.get(id)];
+    if (!n) continue;
+    ctx.beginPath();
+    ctx.arc(sx(n.x), sy(n.z), r * 2.2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const you = geo.nodes[geo.byId.get(live.you)];
+  if (you) {
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(sx(you.x), sy(you.z), r * 3.2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Labels, only when they would be readable and only for what is on screen.
+  if (layers.labels && r >= 3) {
+    ctx.fillStyle = pal.muted;
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    let n = 0;
+    for (const s of geo.nodes) {
+      const px = sx(s.x), py = sy(s.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillText(s.n, px + r + 3, py);
+      if (++n > 300) break;
+    }
+  }
+
+  const hint = el?.querySelector(".maphint");
+  if (hint) hint.textContent = `${drawn} of ${geo.nodes.length} systems`;
 }
 
-function applyView(svg) {
-  svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
-}
+const LAYERS = [
+  ["sov", "Sov"],
+  ["bridges", "Bridges"],
+  ["holes", "Holes"],
+  ["camps", "Camps"],
+  ["upgrades", "Upgrades"],
+  ["jove", "Jove"],
+  ["labels", "Labels"],
+];
 
-function draw() {
+function build() {
   if (!el) return;
   if (!geo) {
     el.innerHTML = `<h2>Map</h2><div class="mapwrap"><p class="placeholder">Loading the star map.</p></div>`;
@@ -158,120 +317,125 @@ function draw() {
   el.innerHTML =
     `<h2>Map</h2>` +
     `<div class="maptools"><button data-fit>${ico("crosshair")} Fit</button>` +
-    `<span class="maphint">${geo.nodes.length} systems</span></div>` +
-    `<div class="mapwrap"><svg class="starmap" preserveAspectRatio="xMidYMid slice"></svg></div>`;
+    LAYERS.map(
+      ([k, label]) =>
+        `<button class="ml${layers[k] ? " on" : ""}" data-layer="${k}">${label}</button>`
+    ).join("") +
+    `<span class="maphint"></span></div>` +
+    `<div class="mapwrap"><canvas class="starmap"></canvas></div>`;
 
-  const svg = el.querySelector(".starmap");
-  buildBase(svg);
+  canvas = el.querySelector("canvas");
+  ctx = canvas.getContext("2d");
+  pal = null;
   if (!fitted) fit();
-  applyView(svg);
-  drawLive(svg);
-  drawLabels(svg);
-  wire(svg);
-  lastLiveRev = state.snapshot?.map?.rev ?? -1;
+  wire();
+  schedule();
 }
 
-function wire(svg) {
+function wire() {
   el.querySelector("[data-fit]")?.addEventListener("click", () => {
-    fitted = false;
     fit();
-    applyView(svg);
-    drawLabels(svg);
+    schedule();
   });
+  el.querySelectorAll("[data-layer]").forEach((b) =>
+    b.addEventListener("click", () => {
+      layers[b.dataset.layer] = !layers[b.dataset.layer];
+      b.classList.toggle("on", layers[b.dataset.layer]);
+      saveLayers();
+      schedule();
+    })
+  );
 
   const pointers = new Map();
   let pinch = null;
-  let labels = null;
-  const queueLabels = () => {
-    clearTimeout(labels);
-    labels = setTimeout(() => drawLabels(svg), 140);
-  };
-  const zoom = (k, ax, ay) => {
-    const w = Math.min(geo.extent * 3, Math.max(40, view.w * k));
-    const h = Math.min(geo.extent * 3, Math.max(40, view.h * k));
-    // Keep the point under the cursor where it is.
-    view.x = ax - (ax - view.x) * (w / view.w);
-    view.y = ay - (ay - view.y) * (h / view.h);
-    view.w = w;
-    view.h = h;
-    applyView(svg);
-    queueLabels();
+  let moved = 0;
+
+  const zoomAt = (factor, px, py) => {
+    const k = Math.max(geo.extent / 200000, Math.min(geo.extent / 200, view.k * factor));
+    // Keep the map point under the cursor where it is.
+    view.ox += px * (view.k - k);
+    view.oz += py * (view.k - k);
+    view.k = k;
+    schedule();
   };
 
-  svg.addEventListener("pointerdown", (e) => {
-    svg.setPointerCapture(e.pointerId);
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, e);
+    moved = 0;
   });
-  svg.addEventListener("pointermove", (e) => {
+  canvas.addEventListener("pointermove", (e) => {
     if (!pointers.has(e.pointerId)) return;
     const prev = pointers.get(e.pointerId);
     pointers.set(e.pointerId, e);
-    const box = svg.getBoundingClientRect();
-
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
       if (pinch) {
-        zoom(pinch / dist, view.x + view.w / 2, view.y + view.h / 2);
+        const box = canvas.getBoundingClientRect();
+        zoomAt(pinch / dist, (a.clientX + b.clientX) / 2 - box.left, (a.clientY + b.clientY) / 2 - box.top);
       }
       pinch = dist;
       return;
     }
-    // Pan touches no DOM beyond the one attribute.
-    view.x -= ((e.clientX - prev.clientX) / box.width) * view.w;
-    view.y -= ((e.clientY - prev.clientY) / box.height) * view.h;
-    applyView(svg);
-    queueLabels();
+    moved += Math.abs(e.clientX - prev.clientX) + Math.abs(e.clientY - prev.clientY);
+    view.ox -= (e.clientX - prev.clientX) * view.k;
+    view.oz -= (e.clientY - prev.clientY) * view.k;
+    schedule();
   });
   const up = (e) => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
   };
-  svg.addEventListener("pointerup", up);
-  svg.addEventListener("pointercancel", up);
+  canvas.addEventListener("pointerup", up);
+  canvas.addEventListener("pointercancel", up);
 
-  svg.addEventListener(
+  canvas.addEventListener(
     "wheel",
     (e) => {
       e.preventDefault();
-      const box = svg.getBoundingClientRect();
-      zoom(
-        e.deltaY > 0 ? 1.2 : 1 / 1.2,
-        view.x + ((e.clientX - box.left) / box.width) * view.w,
-        view.y + ((e.clientY - box.top) / box.height) * view.h
-      );
+      const box = canvas.getBoundingClientRect();
+      zoomAt(e.deltaY > 0 ? 1.2 : 1 / 1.2, e.clientX - box.left, e.clientY - box.top);
     },
     { passive: false }
   );
 
-  // The pane can change shape without the map changing at all: a layout switch, a pane toggled off,
-  // a rotated phone. Refit rather than letting the map sit letterboxed.
+  // Nearest node within a thumb's reach. This is what a canvas costs in place of the browser's own
+  // hit testing, and it is cheaper than 5000 elements.
+  canvas.addEventListener("click", (e) => {
+    if (moved > 6) return;
+    const box = canvas.getBoundingClientRect();
+    const mx = e.clientX - box.left;
+    const my = e.clientY - box.top;
+    let best = null;
+    let bestD = 18 * 18;
+    for (const n of geo.nodes) {
+      const dx = sx(n.x) - mx;
+      const dy = sy(n.z) - my;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = n;
+      }
+    }
+    if (best) location.hash = `#system/${best.i}`;
+  });
+
   if (window.ResizeObserver) {
-    let t = null;
     new ResizeObserver(() => {
-      clearTimeout(t);
-      t = setTimeout(() => {
-        fitted = false;
-        fit();
-        applyView(svg);
-        drawLabels(svg);
-      }, 150);
-    }).observe(svg);
+      pal = null;
+      schedule();
+    }).observe(canvas);
   }
 }
 
-/// A snapshot push must not rebuild the map. Only the live markers move, and only when their pane
-/// revision actually changed.
 register("map", (node, snap) => {
   const first = el !== node;
   el = node;
-  if (first || !el.querySelector(".starmap")) {
-    draw();
+  if (first || !el.querySelector("canvas")) {
+    build();
     return;
   }
-  const rev = snap?.map?.rev ?? -1;
-  if (rev !== lastLiveRev) {
-    lastLiveRev = rev;
-    drawLive(el.querySelector(".starmap"));
-  }
+  // A snapshot only changes the overlays, and a repaint is one canvas frame.
+  schedule();
 });

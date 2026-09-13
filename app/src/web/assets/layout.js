@@ -194,11 +194,6 @@ function wireTabs() {
     }
     const b = e.target.closest(".tab");
     if (!b) return;
-    // A tab that is switched off comes back when tapped, rather than being a dead chip.
-    if (!isOn(b.dataset.tab)) {
-      setOn(b.dataset.tab, true);
-      return;
-    }
     const i = shown().indexOf(b.dataset.tab);
     if (i < 0) return;
     if (effectiveMode() === "tabs") {

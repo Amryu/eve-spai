@@ -10,6 +10,14 @@ use std::time::{Duration, Instant};
 pub enum OverlayToMain {
     Hello,
     Click(crate::app::IntelClick),
+    /// Open a fleet ping's comms link, named by the ping's timestamp.
+    ///
+    /// A timestamp, not a URL. The page is reachable from the network, and a message that carried a
+    /// URL would be a way to make this machine open anything; naming a ping lets the app look up a
+    /// link it already has.
+    JoinComms {
+        ts: i64,
+    },
     /// Acknowledge one alert, by `IntelReport::id`. Safe to add: this enum only flows child to
     /// parent, and the parent always spawns the child from its own `current_exe`, so the parent is
     /// never the older binary.

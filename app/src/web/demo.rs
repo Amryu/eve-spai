@@ -6,7 +6,7 @@
 //! This is the same rule `harness::assert_no_live_profile` enforces for the egui renders, applied to
 //! the web surface: **the demo serves fixtures and nothing else.**
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::snapshot::*;
 use super::state::{hash_of, Pane, SharedWeb};
@@ -24,7 +24,7 @@ pub fn seed(web: &SharedWeb, tick: u64) {
 
     let mut st = web.lock().unwrap_or_else(|e| e.into_inner());
     let lookups = Lookups {
-        resolved_pilots: crate::uitest::fixtures::resolved_pilots(),
+        resolved_pilots: crate::uitest::fixtures::resolved_pilots().into_iter().collect(),
         uncertain: crate::uitest::fixtures::uncertain(),
         ..Default::default()
     };
@@ -38,7 +38,7 @@ pub fn seed(web: &SharedWeb, tick: u64) {
         let systems = crate::uitest::fixtures::systems();
         let names = systems
             .info_of(HOME)
-            .map(|i| HashMap::from([(HOME, i.name.clone())]))
+            .map(|i| BTreeMap::from([(HOME, i.name.clone())]))
             .unwrap_or_default();
         st.put_pings(PingPane { rev, pings, systems: names });
     }
@@ -115,7 +115,7 @@ fn alerts(cards: &[IntelCard]) -> crate::ipc::AlertMsg {
         chars: cards.iter().take(n).map(|c| c.chars.clone()).collect(),
         feed,
         status: Default::default(),
-        resolved_pilots: crate::uitest::fixtures::resolved_pilots(),
+        resolved_pilots: crate::uitest::fixtures::resolved_pilots().into_iter().collect(),
         uncertain: crate::uitest::fixtures::uncertain(),
         last_ship: Default::default(),
         kills: Default::default(),
@@ -143,7 +143,16 @@ fn map(cards: &[IntelCard]) -> MapLive {
     }
     intel.sort_unstable();
     intel.dedup_by_key(|(id, _, _)| *id);
-    MapLive { rev: 0, you: Some(HOME), chars: vec![(HOME, 1)], intel }
+    MapLive {
+        rev: 0,
+        you: Some(HOME),
+        chars: vec![(HOME, 1)],
+        intel,
+        sov: vec![(HOME, "#9b6fd8".to_owned())],
+        camps: vec![30_004_608],
+        holes: vec![(30_003_704, 30_000_142)],
+        upgrades: vec![(HOME, 3)],
+    }
 }
 
 fn meta() -> Meta {
@@ -159,7 +168,7 @@ fn meta() -> Meta {
         active_character: "Amryu".to_owned(),
         chars: vec![("Amryu".to_owned(), 0)],
         player_system: Some(HOME),
-        sounds: HashMap::from([
+        sounds: BTreeMap::from([
             ("Warning".to_owned(), "warning".to_owned()),
             ("Danger".to_owned(), "danger".to_owned()),
             ("Critical".to_owned(), "critical".to_owned()),

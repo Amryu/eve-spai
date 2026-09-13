@@ -30,6 +30,18 @@ export function fmtAge(secs, compact) {
 /// EVE's security ramp, indexed exactly as `security_color` indexes it.
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
 
+/// A kilometre figure, in AU once it is large enough to be meaningless in km.
+///
+/// The app shows km throughout; on a phone a seven-digit km reading is just noise, and "2.4 AU" is
+/// the number anyone actually wants.
+const KM_PER_AU = 149597870.7;
+
+export function fmtDistance(km) {
+  const au = km / KM_PER_AU;
+  if (au >= 0.1) return `${au.toFixed(1)} AU`;
+  return `${Math.round(km)} km`;
+}
+
 export function fmtIsk(v) {
   if (v >= 1e9) return `${(v / 1e9).toFixed(1)}b`;
   if (v >= 1e6) return `${(v / 1e6).toFixed(1)}m`;
@@ -59,7 +71,7 @@ function jumpText(from) {
 /// because it is a number a hostile does not face.
 const viaVar = (via) => (via === "Gates" ? "var(--corp)" : "var(--alliance)");
 
-function flagTags(r) {
+function flagTags(r, isKill) {
   const t = [];
   const add = (txt, v) => t.push(`<span class="tag" style="color:${v}">${txt}</span>`);
   if (r.status) add("STATUS?", "var(--chip-probes)");
@@ -70,7 +82,9 @@ function flagTags(r) {
   if (r.help) add("HELP", "var(--hostile)");
   if (r.bubble) add("BUBBLE", "var(--warning)");
   if (r.nullified) add("NULLIFIED", "var(--warning)");
-  if (r.killmail) add("KILL", "var(--hostile)");
+  // A zKill card is already a kill: it has the crosshair icon and its own dark card. The tag is
+  // only worth saying on a chat report that mentions one.
+  if (r.killmail && !isKill) add("KILL", "var(--hostile)");
   if (r.cyno) add("CYNO", "var(--hostile)");
   if (r.dropper) add("DROPPER", "var(--hostile)");
   if (r.cap_tackled) add("CAP TACKLED", "var(--hostile)");
@@ -127,7 +141,7 @@ export function card(c, lookups, compact, now) {
   }
   if (r.near_celestial) {
     const [label, km] = r.near_celestial;
-    parts.push(chip(`${ico("map-pin-line")} ${esc(label)} <b>${Math.round(km)} km</b>`, "var(--chip-celestial)", "var(--chip-celestial-bg)"));
+    parts.push(chip(`${ico("map-pin-line")} ${esc(label)} <b>${fmtDistance(km)}</b>`, "var(--chip-celestial)", "var(--chip-celestial-bg)"));
   }
   if (r.count != null) {
     parts.push(chip(`${ico("users")} ${r.count}${r.count_plus ? "+" : ""}`, "#fff", "var(--hostile)"));
@@ -183,7 +197,7 @@ export function card(c, lookups, compact, now) {
     const col = link.kind === "Killmail" ? "var(--hostile)" : "var(--accent)";
     parts.push(`<a class="chip lnk" style="color:${col}" href="${esc(link.url)}" target="_blank" rel="noopener">${ico(icn)} ${kind}</a>`);
   }
-  parts.push(flagTags(r));
+  parts.push(flagTags(r, isKill));
   if (r.movement) {
     const j = r.movement.jumps != null ? ` (${r.movement.jumps}j)` : "";
     parts.push(`<span class="move">${ico("arrow-left")} ${esc(r.movement.from)}${j}</span>`);

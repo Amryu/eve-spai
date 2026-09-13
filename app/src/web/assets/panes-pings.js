@@ -1,7 +1,8 @@
 // The fleet pings pane, reproducing `render_ping` (app.rs). A plain ping is not a degenerate fleet
 // ping, so it renders as its own shape.
 
-import { ico, register } from "./app.js";
+import { ico, register, state } from "./app.js";
+import { send } from "./dialogs.js";
 import { fmtAge } from "./panes-intel.js";
 
 const esc = (s) =>
@@ -32,14 +33,18 @@ function formup(list, systems) {
     .join(" ");
 }
 
-function comms(c) {
+function comms(c, ts) {
   if (!c) return "";
   if (typeof c === "object" && "Mumble" in c) {
     const { channel, link } = c.Mumble;
-    return (
-      `<a class="chip mumble" href="${esc(link)}">${ico("headset")} Join ${esc(channel)}</a>` +
-      `<a class="chip lnk" href="${esc(link)}">${ico("link")}</a>`
-    );
+    // The button asks the desktop to join, because that is where the Mumble client is. Following
+    // the link on a phone opens nothing useful, and on the host it would be the wrong machine only
+    // by accident.
+    const join = state.snapshot?.meta?.allow_writeback
+      ? `<button class="chip mumble" data-join="${ts}">${ico("headset")} Join ${esc(channel)} on the desktop</button>`
+      : `<span class="chip">${ico("headset")} ${esc(channel)}</span>`;
+    // The raw link stays, for a browser that is on the machine with the client.
+    return `${join}<a class="chip lnk" href="${esc(link)}" title="Open here instead">${ico("link")}</a>`;
   }
   const t = typeof c === "object" ? Object.values(c)[0] : c;
   return `<span>${esc(t)}</span>`;
@@ -51,6 +56,8 @@ function row(label, body) {
 
 function pingCard(entry, now, systems) {
   const p = entry.ping;
+  // A matched rule shows as the card's highlight and nothing else, the same as `render_ping`. The
+  // app never names the rule on the card.
   const matched = entry.rule && !entry.suppressed;
   const cls = `ping${matched ? " matched" : ""}`;
 
@@ -64,13 +71,12 @@ function pingCard(entry, now, systems) {
       `<span class="page">${fmtAge(now - f.timestamp, false)} ago</span></div>` +
       row("FC:", esc(f.fc)) +
       row("Formup:", formup(f.formup, systems)) +
-      row("Comms:", comms(f.comms)) +
+      row("Comms:", comms(f.comms, f.timestamp)) +
       row("Doctrine:", f.doctrine ? esc(f.doctrine) : "") +
       `<p class="pbody">${esc(f.description)}</p>` +
       (f.source || f.target
         ? `<div class="pfoot">${esc(f.source ?? "")} ${ico("arrow-right")} ${esc(f.target ?? "")}</div>`
         : "") +
-      (matched ? `<div class="pfoot">matched ${esc(entry.rule)}</div>` : "") +
       `</article>`
     );
   }
@@ -82,7 +88,6 @@ function pingCard(entry, now, systems) {
     `<span class="page">${fmtAge(now - pl.timestamp, false)} ago</span></div>` +
     `<p class="pbody">${esc(pl.text)}</p>` +
     (pl.target ? `<div class="pfoot">${ico("arrow-right")} ${esc(pl.target)}</div>` : "") +
-    (matched ? `<div class="pfoot">matched ${esc(entry.rule)}</div>` : "") +
     `</article>`
   );
 }
@@ -100,5 +105,14 @@ const renderPings = (el, snap) => {
 };
 
 const ts = (p) => ("Fleet" in p ? p.Fleet.timestamp : p.Plain.timestamp);
+
+// One listener for the pane, rather than rebinding a button every repaint.
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-join]");
+  if (!b) return;
+  b.disabled = true;
+  const ok = await send({ JoinComms: { ts: Number(b.dataset.join) } });
+  b.textContent = ok ? "Joining on the desktop…" : "Could not reach the app";
+});
 
 register("pings", renderPings);
