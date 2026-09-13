@@ -11,9 +11,10 @@ pub enum Pane {
     Pings = 2,
     Map = 3,
     Meta = 4,
+    Status = 5,
 }
 
-const PANES: usize = 5;
+const PANES: usize = 6;
 
 pub struct WebState {
     pub gen: u64,
@@ -23,6 +24,7 @@ pub struct WebState {
     pings: Option<PingPane>,
     map: Option<MapLive>,
     meta: Option<Meta>,
+    status: Option<StatusPane>,
     hashes: [Option<u64>; PANES],
     full: Option<Arc<str>>,
 }
@@ -37,6 +39,7 @@ impl Default for WebState {
             pings: None,
             map: None,
             meta: None,
+            status: None,
             hashes: [None; PANES],
             full: None,
         }
@@ -93,6 +96,9 @@ impl WebState {
     pub fn put_meta(&mut self, p: Meta) {
         self.meta = Some(p);
     }
+    pub fn put_status(&mut self, p: StatusPane) {
+        self.status = Some(p);
+    }
 
     /// Every pane that changed after `since`. `since == 0` is a client that has nothing, so it gets
     /// everything.
@@ -106,6 +112,7 @@ impl WebState {
             pings: self.pings.as_ref().filter(|p| keep(p.rev)).cloned(),
             map: self.map.as_ref().filter(|p| keep(p.rev)).cloned(),
             meta: self.meta.as_ref().filter(|p| keep(p.rev)).cloned(),
+            status: self.status.as_ref().filter(|p| keep(p.rev)).cloned(),
         }
     }
 
