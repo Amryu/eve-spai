@@ -54,6 +54,8 @@ function dragify(node) {
     node.style.right = "auto";
     node.style.bottom = "auto";
     node.style.transform = "none";
+    // Once it has been moved by hand it stays where it was put.
+    node.dataset.moved = "1";
   });
   const drop = () => {
     from = null;
@@ -66,12 +68,28 @@ export function close() {
   if (dlg) dlg.hidden = true;
 }
 
+/// Park the window at the top right of the map, not over the controls above it.
+///
+/// Fixed to the viewport it landed on whatever happened to be at that corner, which on a wide layout
+/// was the map's own toolbar.
+function place(d) {
+  if (d.dataset.moved) return;
+  const canvas = document.querySelector(".starmap");
+  const r = canvas?.getBoundingClientRect();
+  if (!r || r.width < 60) return;
+  d.style.left = "auto";
+  d.style.top = `${Math.round(r.top + 8)}px`;
+  d.style.right = `${Math.round(window.innerWidth - r.right + 8)}px`;
+  d.style.bottom = "auto";
+}
+
 function open(html) {
   const d = shell();
   d.querySelector(".mpanel").innerHTML =
     `<button class="mclose" aria-label="Close">${ico("x")}</button>${html}`;
   d.querySelector(".mclose").addEventListener("click", close);
   d.hidden = false;
+  place(d);
 }
 
 function rows(pairs) {
