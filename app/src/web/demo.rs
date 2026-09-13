@@ -228,6 +228,8 @@ fn jabber() -> crate::web::jabber::JabberSide {
 
 fn meta() -> Meta {
     Meta {
+        avoid_gate: Vec::new(),
+        avoid_jump: Vec::new(),
         rev: 0,
         version: env!("CARGO_PKG_VERSION"),
         theme: crate::theme::Theme::caldari(),

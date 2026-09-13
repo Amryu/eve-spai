@@ -792,6 +792,29 @@ function paint() {
     schedule();
   }
 
+  // Everything the route is being planned around, while it is being planned. Off the routing mode
+  // these are just systems, and marking them all the time would be marking most of the map for
+  // someone with a long list.
+  if (routeKind) {
+    const always = alwaysAvoided();
+    ctx.strokeStyle = pal.hostile;
+    ctx.lineWidth = 1.6;
+    for (const id of new Set([...always, ...avoidOnce])) {
+      const n = geo.nodes[geo.byId.get(id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      // A cross, not a ring: a ring is what this map uses for "look here", and this is the opposite.
+      const d = r * 2.2;
+      ctx.beginPath();
+      ctx.moveTo(px - d, py - d);
+      ctx.lineTo(px + d, py + d);
+      ctx.moveTo(px + d, py - d);
+      ctx.lineTo(px - d, py + d);
+      ctx.stroke();
+    }
+  }
+
   // A route with a start and nowhere to go yet. Without this the menu's "Start ... Route" looks like
   // it did nothing until a destination is picked.
   if (routeKind && anchors.length === 1) {
@@ -921,38 +944,52 @@ const CYCLES = [
   ["activity", "Activity", ["off", "k", "p", "n", "j"], ACTIVITY_LABEL],
 ];
 
-/// The layer controls live behind one button at every width.
+/// The layers, in the four things a map is actually asked about.
 ///
-/// Ten controls in a row is most of a phone's screen and a third of a pane on a desktop, and the map
-/// is the thing worth the space. Same panel either way, anchored on a desktop and a sheet on a
-/// phone, which is the pattern the layout menu already set.
-/// Wide enough for the panel to sit above the map rather than over it.
-///
-/// Measured on the pane, not the viewport: the map can be one of four columns on a wide desktop, and
-/// a viewport query would call that pane roomy when it is narrower than a phone.
-const ROOM_FOR_PANEL = 460;
+/// Eleven controls in one row is most of a phone's screen and a third of a pane on a desktop, and
+/// nothing in the row said which of them belonged together. Grouped, the row is four words and each
+/// word opens the handful of switches behind it.
+const GROUPS = [
+  ["sov", "Sov", ["sov"], ["adm", "upgrades"]],
+  ["activity", "Activity", ["activity"], ["camps", "cyno"]],
+  ["travel", "Travel", [], ["bridges", "holes", "jumprange"]],
+  ["marks", "Marks", [], ["labels", "jove"]],
+];
 
-function panelWantsOpen() {
-  return (el?.clientWidth ?? 0) >= ROOM_FOR_PANEL;
+const TOGGLE_LABEL = Object.fromEntries(TOGGLES);
+
+/// Whether anything in a group is doing something, so the button can say so without being opened.
+function groupActive(cycles, toggles) {
+  return cycles.some((k) => layers[k] && layers[k] !== "off") || toggles.some((k) => layers[k]);
 }
 
-function layerPanel() {
-  // Open by default wherever there is room: on a desktop the layers are part of reading the map, and
-  // making them a click away every time was a click every time.
-  return (
-    `<div class="mlayers"${panelWantsOpen() ? "" : " hidden"}>` +
-    CYCLES.map(
-      ([key, label, , names]) =>
-        `<div class="mlrow"><span>${label}</span>` +
-        `<button class="mlcycle" data-cycle="${key}">${names[layers[key]]}</button></div>`
-    ).join("") +
-    `<div class="mlgrid">` +
-    TOGGLES.map(
-      ([k, label]) =>
-        `<button class="ml${layers[k] ? " on" : ""}" data-layer="${k}">${label}</button>`
-    ).join("") +
-    `</div></div>`
-  );
+function layerGroups() {
+  return GROUPS.map(([id, label, cycles, toggles]) => {
+    const body =
+      cycles
+        .map((key) => {
+          const [, name, , names] = CYCLES.find(([k]) => k === key);
+          return (
+            `<div class="mlrow"><span>${name}</span>` +
+            `<button class="mlcycle" data-cycle="${key}">${names[layers[key]]}</button></div>`
+          );
+        })
+        .join("") +
+      `<div class="mlgrid">` +
+      toggles
+        .map(
+          (k) =>
+            `<button class="ml${layers[k] ? " on" : ""}" data-layer="${k}">${TOGGLE_LABEL[k]}</button>`
+        )
+        .join("") +
+      `</div>`;
+    return (
+      `<span class="mlgroup">` +
+      `<button class="mlhead${groupActive(cycles, toggles) ? " on" : ""}" data-pop="${id}">${label}</button>` +
+      `<div class="mlpop" data-panel="${id}" hidden>${body}</div>` +
+      `</span>`
+    );
+  }).join("");
 }
 
 function build() {
@@ -969,18 +1006,19 @@ function build() {
   el.innerHTML =
     `<h2>Map</h2>` +
     `<div class="maptools">` +
-    `<button data-layers>${ico("squares-four")} Layers</button>` +
+    layerGroups() +
     `<span class="maphint"></span>` +
-    layerPanel() +
     `</div>` +
-    `<div class="mapwrap"><canvas class="starmap"></canvas></div>`;
+    // The canvas and the route dock share a row, so docking takes space from the map rather than
+    // sitting on top of it. Which way the row runs is decided by the pane's shape.
+    `<div class="maprow"><div class="mapwrap"><canvas class="starmap"></canvas></div></div>`;
 
-  el.classList.toggle("wide", panelWantsOpen());
   canvas = el.querySelector("canvas");
   ctx = canvas.getContext("2d");
   pal = null;
   if (!fitted) fit();
   wire();
+  dockSide();
   // A pane can be switched on long after the map first rendered, and it arrives with no size at all.
   // Watching the canvas is what turns that into a fit and a repaint rather than a blank rectangle.
   new ResizeObserver(() => {
@@ -1007,25 +1045,53 @@ function wire() {
   window.addEventListener("hashchange", followHash);
   followHash();
 
-  const panel = el.querySelector(".mlayers");
-  // `#maplayers` opens it on load, for the same reason the dialogs and the layout menu take deep
-  // links: the harness cannot click.
-  if (location.hash === "#maplayers" && panel) panel.hidden = false;
-  el.querySelector("[data-layers]")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    panel.hidden = !panel.hidden;
-  });
-  // Only where the panel is an overlay. On a desktop it sits beside the map and closing it because
-  // the user clicked the map would be the map taking its own controls away.
+  /// Show one group's popup and close the others. `null` closes them all.
+  ///
+  /// The popup stays up while its own switches are used: a layer panel is a thing you set two or
+  /// three of at once, and closing after the first was a reopen for every one after it.
+  const openGroup = (id) => {
+    el.querySelectorAll(".mlpop").forEach((p) => {
+      p.hidden = p.dataset.panel !== id;
+    });
+    el.querySelectorAll(".mlhead").forEach((h) => {
+      h.classList.toggle("open", h.dataset.pop === id);
+    });
+    if (!id) return;
+    // Placed after it is shown, so it can be measured, and clamped to the viewport: a group at the
+    // right-hand end of a narrow pane would otherwise open off the edge of the screen.
+    const btn = el.querySelector(`.mlhead[data-pop="${id}"]`);
+    const pop = el.querySelector(`.mlpop[data-panel="${id}"]`);
+    if (!btn || !pop || getComputedStyle(pop).bottom !== "auto") return;
+    // Next frame, not this one: opened from the deep link the toolbar has not been laid out yet, so
+    // the button's rectangle is still zero and the popup lands on top of the row it belongs to.
+    requestAnimationFrame(() => {
+      const b = btn.getBoundingClientRect();
+      const p = pop.getBoundingClientRect();
+      pop.style.left = `${Math.max(4, Math.min(b.left, window.innerWidth - p.width - 4))}px`;
+      pop.style.top = `${Math.min(b.bottom + 4, window.innerHeight - p.height - 4)}px`;
+    });
+  };
+  // `#maplayers` opens the first group on load, for the same reason the dialogs and the layout menu
+  // take deep links: the harness cannot click.
+  if (location.hash === "#maplayers") openGroup(GROUPS[0][0]);
+  el.querySelectorAll("[data-pop]").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const already = !el.querySelector(`.mlpop[data-panel="${b.dataset.pop}"]`)?.hidden;
+      openGroup(already ? null : b.dataset.pop);
+    })
+  );
+  // Anywhere outside the toolbar closes whatever is open, which is the third of the three ways the
+  // user asked for: elsewhere, another button, or the same button again.
   document.addEventListener("click", (e) => {
-    if (!panel || panel.hidden || panelWantsOpen()) return;
-    if (!e.target.closest(".maptools")) panel.hidden = true;
+    if (!e.target.closest(".maptools")) openGroup(null);
   });
 
   el.querySelectorAll("[data-layer]").forEach((b) =>
     b.addEventListener("click", () => {
       layers[b.dataset.layer] = !layers[b.dataset.layer];
       b.classList.toggle("on", layers[b.dataset.layer]);
+      markGroups();
       saveLayers();
       schedule();
     })
@@ -1036,6 +1102,7 @@ function wire() {
       const next = order[(order.indexOf(layers[b.dataset.cycle]) + 1) % order.length];
       layers[b.dataset.cycle] = next;
       b.textContent = names[next];
+      markGroups();
       saveLayers();
       schedule();
     })
@@ -1277,13 +1344,7 @@ function wire() {
   if (window.ResizeObserver) {
     new ResizeObserver(() => {
       pal = null;
-      // A pane that grew past the threshold stops overlaying its own controls, and one that shrank
-      // starts.
-      const wide = panelWantsOpen();
-      if (wide !== el.classList.contains("wide")) {
-        el.classList.toggle("wide", wide);
-        if (panel) panel.hidden = !wide;
-      }
+      dockSide();
       schedule();
     }).observe(el);
   }
@@ -1326,6 +1387,13 @@ function hideLinkTip() {
   if (tip) tip.hidden = true;
 }
 
+/// The permanent avoid list for the kind of route being planned. Gate and titan routes both fly
+/// gates, so they read the same list.
+function alwaysAvoided() {
+  const m = state.snapshot?.meta;
+  return new Set((routeKind === "jump" ? m?.avoid_jump : m?.avoid_gate) ?? []);
+}
+
 /// Plan the route the anchors currently describe, and draw it.
 function replan() {
   if (!routeKind || anchors.length < 2) {
@@ -1357,8 +1425,10 @@ function menuFor(id) {
     // depends on what kind of route that is: a system you will not gate through is often perfectly
     // fine to jump over.
     items.push([avoidOnce.has(id) ? "unavoid" : "avoid", avoidOnce.has(id) ? "Stop avoiding here" : "Avoid for this route"]);
-    items.push(["avoid:always", "Avoid always"]);
-    items.push(["avoid:never", "Stop avoiding always"]);
+    // "Stop avoiding always" only where there is something to stop, which needs the app's list; it
+    // travels in the snapshot for exactly this and for the marks on the map.
+    if (alwaysAvoided().has(id)) items.push(["avoid:never", "Stop avoiding always"]);
+    else items.push(["avoid:always", "Avoid always"]);
     items.push(null);
   }
   const verb = routeKind && anchors.length ? "Restart as" : "Start";
@@ -1425,6 +1495,25 @@ function menuPick(id, kind) {
 
 function openMenu(e, n) {
   menu(e.clientX, e.clientY, menuFor(n.i), (kind) => menuPick(n.i, kind));
+}
+
+/// Light the group buttons whose layers are doing something, so the row says what is on without
+/// being opened.
+function markGroups() {
+  for (const [id, , cycles, toggles] of GROUPS) {
+    el?.querySelector(`.mlhead[data-pop="${id}"]`)?.classList.toggle(
+      "on",
+      groupActive(cycles, toggles)
+    );
+  }
+}
+
+/// Which edge the route dock takes: the long one, so neither the map nor the list ends up a sliver.
+function dockSide() {
+  if (!el) return;
+  const w = el.clientWidth;
+  const h = el.clientHeight;
+  el.classList.toggle("dockright", w >= h * 1.25 && w >= 620);
 }
 
 function nearest(e) {

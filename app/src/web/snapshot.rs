@@ -169,6 +169,10 @@ pub struct Meta {
     /// Bumped when the synthesis changes, so a browser cannot keep an immutable WAV past a tone
     /// change.
     pub sound_rev: u32,
+    /// The permanent route-avoidance lists, so the page can say "stop avoiding" only where there is
+    /// something to stop, and mark them on the map.
+    pub avoid_gate: Vec<i64>,
+    pub avoid_jump: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]

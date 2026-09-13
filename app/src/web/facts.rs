@@ -47,6 +47,9 @@ pub struct UiFacts {
     /// The Convos list, ordered by the app's own rules. Built on the UI thread because the rules
     /// read settings the publisher has no handle on: contacts, closed conversations, forgotten ones.
     pub jabber: crate::web::jabber::JabberSide,
+    /// Permanently avoided systems, one list per kind of route.
+    pub avoid_gate: Vec<i64>,
+    pub avoid_jump: Vec<i64>,
 }
 
 pub type SharedFacts = Arc<Mutex<UiFacts>>;

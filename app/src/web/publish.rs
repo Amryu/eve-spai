@@ -187,6 +187,8 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         chars: facts.chars.clone(),
         player_system: player_sys,
         sounds: sound_map(&facts.sounds),
+        avoid_gate: facts.avoid_gate.clone(),
+        avoid_jump: facts.avoid_jump.clone(),
         sound_rev: crate::sound::SYNTH_REV,
     };
     if let Some(rev) = st.changed(Pane::Meta, hash_of(&meta)) {
