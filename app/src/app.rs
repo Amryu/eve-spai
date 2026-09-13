@@ -13937,7 +13937,7 @@ impl SpaiApp {
 
         // Alternatives, one row per leg that has more than one way to fly it. Same jump count, so
         // the row reads as "these cost the same, shortest first".
-        let legs: Vec<(String, String, Vec<String>)> = self
+        let legs: Vec<(String, String, Vec<String>, bool)> = self
             .map_route_legs
             .iter()
             .map(|l| {
@@ -13948,12 +13948,15 @@ impl SpaiApp {
                     // used to be the jump count, which is the same for every one of them by
                     // construction, so the buttons were indistinguishable.
                     l.options.iter().map(|o| o.label.clone()).collect(),
+                    l.whole_route,
                 )
             })
             .collect();
         let mut pick: Option<(usize, usize)> = None;
-        for (i, (from, to, opts)) in legs.iter().enumerate() {
-            if opts.len() < 2 {
+        for (i, (from, to, opts, whole)) in legs.iter().enumerate() {
+            // A titan leg's options are the route's options, already above as the option row. A
+            // second row of the same buttons, which this leg's pick no longer feeds, is the bug.
+            if opts.len() < 2 || *whole {
                 continue;
             }
             ui.horizontal_wrapped(|ui| {

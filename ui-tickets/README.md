@@ -214,6 +214,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [UI-070 The in-game route draws bridges as straight lines](UI-070-ingame-route-arcs/) | `app.rs` map | after 69 | **Fixed** |
 | [UI-071 Routed bridge drawn twice; alternatives read the same; expiry on a setting](UI-071-routed-bridges-and-picks/) | `app.rs`, `web/route.rs` | after 70 | **Fixed** |
 | [WEB-072 Web system info far thinner than the app's; docked list stops short of the dock](WEB-072-system-info-and-dock-height/) | `web/detail.rs`, `dialogs.*`, `webshot.sh` | after 71 | **Fixed** |
+| [WEB-073 Titan route offers its alternatives twice; the second row is dead](WEB-073-titan-alt-duplicate/) | `web/route.rs`, `dialogs.js`, `app.rs` | after 72 | **Fixed** |
 
 ### Browser evidence
 
