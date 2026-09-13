@@ -83,8 +83,29 @@ pub fn start(
     inbox: super::Inbox,
 ) -> Result<Handle, String> {
     let host = if cfg.bind_lan { "0.0.0.0" } else { "127.0.0.1" };
-    let server = tiny_http::Server::http((host, cfg.port))
-        .map_err(|e| format!("could not bind {host}:{} ({e})", cfg.port))?;
+    // Retried, because the usual reason this fails is the listener that was just replaced.
+    //
+    // Dropping a `Handle` tells the workers to stop and unblocks the accept, but the socket is only
+    // closed when the last worker lets go of its `Arc<Server>`, and they wake on a 500ms timeout.
+    // Binding immediately afterwards therefore hits the old socket and the feature switched itself
+    // off, which is what a settings change looked like from the browser.
+    let mut server = None;
+    let mut last = String::new();
+    for attempt in 0..12 {
+        match tiny_http::Server::http((host, cfg.port)) {
+            Ok(s) => {
+                server = Some(s);
+                break;
+            }
+            Err(e) => {
+                last = format!("could not bind {host}:{} ({e})", cfg.port);
+                if attempt < 11 {
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+            }
+        }
+    }
+    let server = server.ok_or(last)?;
     let server = Arc::new(server);
     let running = Arc::new(AtomicBool::new(true));
     // Read back rather than echoing the setting, so port 0 resolves to what was actually bound.
@@ -263,7 +284,9 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             )
         }
         Route::ThemeCss => {
-            let theme = super::css::theme_from_query(query, &ctx.cfg.theme);
+            let live = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).theme();
+            let theme =
+                super::css::theme_from_query(query, live.as_ref().unwrap_or(&ctx.cfg.theme));
             respond(req, 200, "text/css; charset=utf-8", super::css::theme_css(&theme).as_bytes(), &[
                 ("Cache-Control", "no-store".to_owned()),
             ])
@@ -650,6 +673,54 @@ mod tests {
             .send()
             .unwrap();
         assert_eq!(again.status(), 304, "an unchanged asset is not sent twice");
+    }
+
+    /// The sheet has to track the app's current theme without the listener being replaced.
+    ///
+    /// It used to come from `Config`, which is only replaced by restarting the server, so moving a
+    /// colour slider tore the listener down and rebuilt it. The rebind then raced the socket the old
+    /// workers were still holding, failed, and switched the whole feature off: a colour change read
+    /// as the web view crashing.
+    #[test]
+    fn the_theme_sheet_follows_the_published_theme_without_a_restart() {
+        let s = serve_test();
+        let c = client();
+        let cookie = format!("spai={TOKEN}");
+        let sheet = |c: &reqwest::blocking::Client| {
+            c.get(format!("{}/api/theme.css", s.base))
+                .header("Cookie", &cookie)
+                .send()
+                .unwrap()
+                .text()
+                .unwrap()
+        };
+        assert!(sheet(&c).contains("--accent: #3fa9c9"), "the config's theme, before anything is published");
+
+        let mut theme = crate::theme::Theme::caldari();
+        theme.accent = crate::theme::Rgb::new(0xff, 0x00, 0x99);
+        {
+            let mut st = s.web.lock().unwrap();
+            let rev = st.changed(crate::web::state::Pane::Meta, 1234).unwrap();
+            st.put_meta(crate::web::snapshot::Meta {
+                rev,
+                version: "test",
+                theme,
+                compact: false,
+                intel_ttl_secs: 0,
+                intel_max_jumps: 0,
+                count_bridges: false,
+                allow_writeback: true,
+                active_character: String::new(),
+                chars: Vec::new(),
+                player_system: None,
+                sounds: Default::default(),
+                sound_rev: 0,
+            });
+        }
+        assert!(
+            sheet(&c).contains("--accent: #ff0099"),
+            "the same listener has to serve the new theme"
+        );
     }
 
     #[test]

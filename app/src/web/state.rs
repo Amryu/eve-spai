@@ -102,6 +102,16 @@ impl WebState {
     pub fn put_status(&mut self, p: StatusPane) {
         self.status = Some(p);
     }
+    /// The theme as last published, for the stylesheet route.
+    ///
+    /// Read live rather than baked into the server's config: the config is only replaced by
+    /// restarting the listener, and restarting a listener because someone moved a colour slider is
+    /// both absurd and, since the old socket is not closed the instant the handle drops, a good way
+    /// to fail the rebind and take the feature down.
+    pub fn theme(&self) -> Option<crate::theme::Theme> {
+        self.meta.as_ref().map(|m| m.theme.clone())
+    }
+
     pub fn put_jabber(&mut self, p: crate::web::jabber::JabberPane) {
         self.jabber = Some(p);
     }

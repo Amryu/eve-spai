@@ -1548,10 +1548,9 @@ impl SpaiApp {
         let want = w.enabled.then(|| {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
+            // Deliberately not the theme. It reaches the page through the published snapshot, and
+            // hashing it here meant every colour change tore the listener down and put it back.
             (w.port, w.bind_lan, w.allow_writeback, &w.token).hash(&mut h);
-            self.settings.theme.background.array().hash(&mut h);
-            self.settings.theme.foreground.array().hash(&mut h);
-            self.settings.theme.accent.array().hash(&mut h);
             h.finish()
         });
         if want == self.web_started_for {
