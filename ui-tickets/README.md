@@ -188,6 +188,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-044 The web map has no context menu](WEB-044-map-context-menu/) | `map.js`, `route.js` | after 43 | **Delivered** |
 | [WEB-045 Which end the titan is at; bridges drawn straight; unreadable warning](WEB-045-titan-end-and-intel-dialog/) | `web/route.rs`, `dialogs.*`, `app.rs` | after 44 | **Delivered** |
 | [WEB-046 No avoidance, no alternatives, no waypoint highlight](WEB-046-avoid-and-alternatives/) | `web/route.rs`, `map.js`, `dialogs.*` | after 45 | **Delivered** |
+| [WEB-047 Eleven layer buttons; floating route window; half-done avoidance](WEB-047-layer-groups-and-dock/) | `map.*`, `dialogs.*` | after 46 | **Delivered** |
 
 ### Browser evidence
 

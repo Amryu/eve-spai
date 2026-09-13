@@ -32,11 +32,14 @@ function shell(kind) {
   const had = shells.get(kind);
   if (had) return had;
   const dlg = document.createElement("div");
-  dlg.className = "float";
+  // The route window docks into the map pane rather than floating over it: it is read alongside the
+  // map, not instead of it, and a floating one covered the systems it was describing.
+  const row = kind === "route" ? document.querySelector('#panes [data-pane="map"] .maprow') : null;
+  dlg.className = row ? "rdock" : "float";
   dlg.dataset.kind = kind;
   dlg.hidden = true;
   dlg.innerHTML = `<div class="mpanel" role="dialog"></div>`;
-  document.body.append(dlg);
+  (row ?? document.body).append(dlg);
   shells.set(kind, dlg);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") close(kind);
@@ -45,10 +48,21 @@ function shell(kind) {
   // A pane that changes size moves the map with it, and the window was parked against where the map
   // used to be. Same for the map arriving after the window did.
   const repark = () => {
+    // The map pane may not exist yet when a window is first opened, and the route window belongs
+    // inside it. It says when it is ready; this is what moves the window in at that point.
+    if (kind === "route") {
+      const row = document.querySelector('#panes [data-pane="map"] .maprow');
+      if (row && dlg.parentElement !== row) {
+        dlg.className = "rdock";
+        dlg.style.cssText = "";
+        row.append(dlg);
+      }
+    }
     if (!dlg.hidden) place(dlg);
   };
   window.addEventListener("resize", repark);
   window.addEventListener("spai:map", repark);
+  repark();
   return dlg;
 }
 
@@ -98,7 +112,8 @@ export function close(kind = null) {
 /// whichever of the toolbar and the open panel reaches furthest down, so it works whether the panel
 /// is in the flow or floating.
 function place(d, tries = 10) {
-  if (d.dataset.moved || d.hidden) return;
+  // A docked window is placed by the layout, not by us.
+  if (d.classList.contains("rdock") || d.dataset.moved || d.hidden) return;
   const canvas = document.querySelector(".starmap");
   const r = canvas?.getBoundingClientRect();
   // Nothing to measure: either the map is off screen, which is what it is in tabs mode while another
@@ -461,12 +476,22 @@ function paintRoute(kind, onPick) {
           ? `<span class="rkind bridge">bridge</span>`
           : `<span class="rkind">gate</span>`) +
     warn(h.warn, h.id) +
+    // Not on the systems the user named: the endpoints are exempt from avoidance anyway, so the
+    // button would be there and do nothing.
+    (h.anchor
+      ? ""
+      : `<button class="ravoid" data-avoid="${h.id}" title="Plan around this system">${ico("eye-slash")}</button>`) +
     `</li>`;
   open(
     "route",
     `<h3>${esc(KINDS[kind] ?? "Route")}</h3>` +
       jumpControls(kind, routeReq?.out) +
       holeControl(kind, routeReq?.out) +
+      (avoidOnce.size
+        ? `<p class="ravoiding">${ico("eye-slash")} avoiding ${avoidOnce.size} ` +
+          `${avoidOnce.size === 1 ? "system" : "systems"} on this route ` +
+          `<button data-unavoid="all">clear</button></p>`
+        : "") +
       tabs +
       legs +
       `<p class="mgroup">${o.jumps} ${o.jumps === 1 ? "jump" : "jumps"}` +
@@ -483,6 +508,16 @@ function paintRoute(kind, onPick) {
       paintRoute(kind, onPick);
     })
   );
+  win?.querySelectorAll("[data-avoid]").forEach((b) =>
+    b.addEventListener("click", () => {
+      avoidOnce.add(Number(b.dataset.avoid));
+      fetchRoute();
+    })
+  );
+  win?.querySelector("[data-unavoid]")?.addEventListener("click", () => {
+    avoidOnce.clear();
+    fetchRoute();
+  });
   win?.querySelectorAll("[data-leg]").forEach((b) =>
     b.addEventListener("click", () => {
       legPick[Number(b.dataset.leg)] = Number(b.dataset.alt);

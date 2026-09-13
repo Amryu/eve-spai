@@ -829,6 +829,8 @@ mod tests {
                 player_system: None,
                 sounds: Default::default(),
                 sound_rev: 0,
+                avoid_gate: Vec::new(),
+                avoid_jump: Vec::new(),
             });
         }
         assert!(

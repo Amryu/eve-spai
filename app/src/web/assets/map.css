@@ -1,4 +1,9 @@
-.mapwrap { display: flex; min-height: 12rem; }
+.maprow { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+/* A wide pane gives the dock the right-hand edge; a tall one gives it the bottom. Either way it
+   takes space from the map instead of covering it, which is the difference between docking and
+   floating. */
+.pane.dockright .maprow { flex-direction: row; }
+.mapwrap { display: flex; min-height: 8rem; flex: 1 1 auto; min-width: 0; }
 
 .starmap {
   /* Fills whatever the pane gives it rather than a guessed height. */
@@ -44,18 +49,29 @@
   .maphint { width: 100%; margin-left: 0; }
 }
 
-/* The layer panel: anchored under its button on a desktop, a sheet on a phone. Same markup, because
-   maintaining two is how they drift. */
+/* Layer groups: a word per category in the toolbar, each with its popup anchored under it. */
 .maptools { position: relative; }
+.mlgroup { position: relative; display: inline-flex; }
+.mlhead {
+  font: inherit;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+.mlhead:hover { color: var(--fg); }
+/* On: something in this group is drawing. Open: its popup is showing. Two different facts, so two
+   different marks. */
+.mlhead.on { color: var(--fg); border-color: var(--accent); }
+.mlhead.open { background: var(--surface-active); color: var(--fg); }
 
-/* Narrow pane: an overlay anchored under its button. Wide pane: in the flow above the map, where it
-   is part of reading the map rather than a thing to go and fetch. */
-.mlayers {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 20;
-  margin-top: 0.3rem;
+/* Fixed and placed by hand, because the pane scrolls and a scrolling box clips what hangs out of
+   it: anchored inside the pane, half the popup was cut off at the edge. */
+.mlpop {
+  position: fixed;
+  z-index: 30;
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
@@ -64,35 +80,20 @@
   border-radius: 8px;
   padding: 0.5rem;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-  min-width: 14rem;
+  min-width: 13rem;
 }
-.mlayers[hidden] { display: none; }
-
-.pane.wide .mlayers {
-  position: static;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  margin: 0 0 0 0.3rem;
-  padding: 0;
-  background: none;
-  border: 0;
-  box-shadow: none;
-  min-width: 0;
-}
-.pane.wide .mlayers .mlrow > span { flex: 0 0 auto; }
-.pane.wide .mlayers .mlgrid { display: flex; flex-wrap: wrap; }
-/* With the panel always there, its own button is redundant on a wide pane. */
-.pane.wide .maptools [data-layers] { display: none; }
+.mlpop[hidden] { display: none; }
 
 .mlrow { display: flex; align-items: center; gap: 0.5rem; }
 .mlrow > span { color: var(--muted); flex: 0 0 4.5rem; }
-.mlrow .mlcycle { flex: 1; text-align: left; }
+.mlrow .mlcycle { flex: 1; text-align: left; white-space: nowrap; }
 
 .mlgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.3rem; }
 
 @media (max-width: 640px) {
-  .mlayers {
+  /* No room to hang a popup off a button on a phone, so it comes up from the bottom where a thumb
+     already is. */
+  .mlpop {
     position: fixed;
     top: auto;
     left: 0.5rem;
@@ -100,8 +101,9 @@
     bottom: calc(0.5rem + env(safe-area-inset-bottom));
     min-width: 0;
   }
+  .mlhead { min-height: 2.2rem; }
   .mlgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .mlayers button { min-height: 2.6rem; }
+  .mlpop button { min-height: 2.6rem; }
 }
 
 /* The readout beside the system a route drag is aimed at. */
@@ -175,3 +177,18 @@
 @media (max-width: 640px) {
   .ctxmenu button { padding: 0.55rem 0.6rem; }
 }
+
+/* The route window, docked. */
+.rdock {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  max-height: 45%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.pane.dockright .rdock { max-height: none; max-width: 22rem; flex: 0 0 22rem; }
+.rdock[hidden] { display: none; }

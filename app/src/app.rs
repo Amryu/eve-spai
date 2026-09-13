@@ -1879,6 +1879,8 @@ impl SpaiApp {
         f.sov_colors = self.web_sov_colors();
         f.coal_colors = self.web_coalition_colors();
         f.jabber = self.web_jabber_side();
+        f.avoid_gate = self.settings.route_avoid_gate.clone();
+        f.avoid_jump = self.settings.route_avoid_jump.clone();
         drop(f);
 
         let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());

@@ -186,5 +186,57 @@ button.rwarn {
 
 .rleg { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-bottom: 0.3rem; }
 .rleg > span { color: var(--muted); font-size: 0.8rem; margin-right: auto; }
-/* A system the user named, rather than one the route passes through. */
-.rhop .chip.anchor { outline: 1px solid var(--accent); font-weight: 600; }
+/* A system the user named, rather than one the route passes through. The whole row is tinted: an
+   outline on the chip alone read as a focus ring, which is a different thing entirely. */
+.rhop:has(.chip.anchor) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 4px;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+.rhop .chip.anchor { font-weight: 600; }
+
+.ravoid {
+  font: inherit;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  padding: 0.1rem 0.2rem;
+  cursor: pointer;
+  opacity: 0;
+}
+.rhop:hover .ravoid, .ravoid:focus { opacity: 1; }
+.ravoid:hover { color: var(--hostile); }
+.ravoiding { color: var(--muted); font-size: 0.82rem; margin: 0 0 0.4rem; }
+.ravoiding button {
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+/* A pointer that never hovers, so the button has to be there all the time. */
+@media (hover: none) {
+  .ravoid { opacity: 0.7; }
+}
+
+/* Docked, the panel is the whole box and the hop list is the part that scrolls. */
+.rdock .mpanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  box-shadow: none;
+  border: 0;
+  background: none;
+  padding: 0.6rem;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.rdock .rhop { min-width: 0; }
+.rdock .rhops { flex: 1 1 auto; max-height: none; min-height: 0; overflow-y: auto; }
