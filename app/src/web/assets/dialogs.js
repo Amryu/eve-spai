@@ -30,6 +30,13 @@ function shell() {
     if (e.key === "Escape") close();
   });
   dragify(dlg);
+  // A pane that changes size moves the map with it, and the window was parked against where the map
+  // used to be. Same for the map arriving after the window did.
+  const repark = () => {
+    if (!dlg.hidden) place(dlg);
+  };
+  window.addEventListener("resize", repark);
+  window.addEventListener("spai:map", repark);
   return dlg;
 }
 
@@ -74,13 +81,20 @@ export function close() {
 /// over the top of the canvas, so a window aligned to the canvas covers the filters. This clears
 /// whichever of the toolbar and the open panel reaches furthest down, so it works whether the panel
 /// is in the flow or floating.
-function place(d) {
-  if (d.dataset.moved) return;
+function place(d, tries = 10) {
+  if (d.dataset.moved || d.hidden) return;
   const canvas = document.querySelector(".starmap");
   const r = canvas?.getBoundingClientRect();
-  // Off screen entirely, which is what the map is in tabs mode when another pane is showing. There
-  // is nothing to align to, so the default corner stands.
-  if (!r || r.width < 60 || r.right < 0 || r.left > window.innerWidth) return;
+  // Nothing to measure: either the map is off screen, which is what it is in tabs mode while another
+  // pane is showing, or its canvas has not been drawn yet because the geometry is still on the way.
+  //
+  // Giving up here is what left the window sitting in the CSS corner *on top of the toolbar it is
+  // meant to clear*, permanently, since placement only ever ran once as the window opened. So it
+  // comes back and looks again for about a second, which is longer than the geometry takes.
+  if (!r || r.width < 60 || r.right < 0 || r.left > window.innerWidth) {
+    if (tries > 0) setTimeout(() => place(d, tries - 1), 120);
+    return;
+  }
 
   let top = r.top;
   for (const sel of [".maptools", ".mlayers:not([hidden])"]) {
@@ -238,7 +252,12 @@ document.addEventListener("click", (e) => {
 /// Worth having on its own, since a dialog is a thing you want to send someone. It is also the only
 /// way a load-time screenshot can capture one, the harness being unable to click.
 function fromHash() {
-  const m = /^#(system|ship|pilot)\/(.+)$/.exec(location.hash);
+  // The hash holds one route, and a shot of a dialog *over the map* needs two: which pane, and
+  // which dialog. `?dlg=system/30004759` is the second channel.
+  const src = /^#(system|ship|pilot)\//.test(location.hash)
+    ? location.hash.slice(1)
+    : new URLSearchParams(location.search).get("dlg") ?? "";
+  const m = /^(system|ship|pilot)\/(.+)$/.exec(src);
   if (!m) return;
   const [, kind, raw] = m;
   const arg = decodeURIComponent(raw);

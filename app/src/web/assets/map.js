@@ -24,6 +24,12 @@ let raf = null;
 
 /// Map units per pixel. One number instead of a viewBox: the projection is `screen = (map - o) / k`.
 const view = { ox: 0, oz: 0, k: 1 };
+/// Where the view is heading. Zoom writes this and the drawn `view` eases towards it; pan writes
+/// both at once, because a drag has to track the pointer exactly and easing it would feel like drag.
+const target = { ox: 0, oz: 0, k: 1 };
+/// How long a zoom takes to arrive. Long enough to read as motion rather than a jump cut, short
+/// enough that the map is where you put it by the time you have looked at it.
+const ZOOM_EASE_MS = 80;
 let fitted = false;
 /// The region the map is framed on, or null for the whole universe.
 let focused = null;
@@ -215,6 +221,7 @@ function fit(region = null) {
   view.k = Math.max((x1 - x0) / w, (z1 - z0) / h) * (1 + pad * 2) || 1;
   view.ox = (x0 + x1) / 2 - (w * view.k) / 2;
   view.oz = (z0 + z1) / 2 - (h * view.k) / 2;
+  Object.assign(target, view);
   fitted = true;
 }
 
@@ -226,10 +233,31 @@ function radius() {
   return Math.max(1.1, Math.min(3, 1.6 / Math.sqrt(view.k) * 6));
 }
 
+/// Move the drawn view towards the target, and say whether it still has distance to cover.
+///
+/// Exponential, not a fixed curve: a second wheel notch during the first one just moves the target
+/// and the same decay carries on, so a fast scroll never queues up a backlog of animations.
+function settle(dt) {
+  const a = 1 - Math.pow(0.001, Math.min(1, dt / ZOOM_EASE_MS));
+  if (Math.abs(Math.log(target.k / view.k)) < 1e-3) {
+    Object.assign(view, target);
+    return false;
+  }
+  view.ox += (target.ox - view.ox) * a;
+  view.oz += (target.oz - view.oz) * a;
+  view.k *= Math.pow(target.k / view.k, a);
+  return true;
+}
+
+let last = 0;
 function schedule() {
   if (raf) return;
-  raf = requestAnimationFrame(() => {
+  raf = requestAnimationFrame((now) => {
     raf = null;
+    const dt = last ? Math.min(100, now - last) : 16;
+    last = now;
+    if (settle(dt)) schedule();
+    else last = 0;
     paint();
   });
 }
@@ -279,18 +307,32 @@ function paint() {
   /// Each layer used to draw at the same offset above the dot, so a system with a camp and a
   /// wormhole drew both on top of each other, and nothing lined up with anything.
   const marks = new Map();
-  /// Text and markers grow with the canvas, up to a point.
+  /// How big text and markers are allowed to get, from the size of the pane.
   ///
   /// A fixed 13px name is fine in a column and lost on a full-screen map: the same map at four times
   /// the area still labelled it as though it were a sidebar. Capped, because past a certain size
-  /// bigger type stops helping and starts crowding.
+  /// bigger type stops helping and starts crowding. This is the ceiling, not the size: see `grow`.
   const uiScale = Math.min(1.9, Math.max(1, Math.min(w, h) / 620));
+  const span = view.k * w;
+  /// Names and markers start at the size they always were and reach the pane-sized one at full zoom.
+  ///
+  /// Scaled off the pane alone they were the enlarged size the moment they appeared, which at the
+  /// threshold is a wall of type over a map that is still mostly space. The pane decides how big
+  /// they can get; the zoom decides how much of that they have earned.
+  ///
+  /// Measured in `k` rather than in the span, so the two ends are the zoom stops themselves and a
+  /// wider pane does not quietly move them.
+  const kNames = geo.extent / 4 / w;
+  const zoomT = Math.min(1, Math.max(0, Math.log(kNames / view.k) / Math.log(kNames / (geo.extent / 200000))));
+  const grow = 1 + (uiScale - 1) * zoomT;
+  const namesOn = layers.labels && span < geo.extent / 4;
+  const nameSize = Math.round(13 * grow);
   const mark = (id, name, colour) => {
     const list = marks.get(id);
     if (list) list.push([name, colour]);
     else marks.set(id, [[name, colour]]);
   };
-  const ICON = Math.round(16 * uiScale);
+  const ICON = Math.round(16 * grow);
   const pad = 40;
   const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
   /// Whether a segment could cross the viewport at all.
@@ -428,7 +470,7 @@ function paint() {
   // ADM, as a number beside the system, which is how the app shows it.
   if (layers.adm) {
     ctx.fillStyle = pal.fg;
-    ctx.font = `${Math.round(10 * uiScale)}px system-ui, sans-serif`;
+    ctx.font = `${Math.round(10 * grow)}px system-ui, sans-serif`;
     ctx.textBaseline = "middle";
     for (const n of geo.nodes) {
       const adm = status[n.i]?.adm;
@@ -442,13 +484,12 @@ function paint() {
   // Sov upgrades: one mark each, coloured by level the way `level_color` does, mining marks tinted
   // to say they are ore.
   // Upgrade marks are sized in screen pixels, not from the dot radius: tied to `r` they came out
-  // under three pixels across and were unreadable at every zoom. Drawn only once the map is zoomed
-  // in enough for them to have somewhere to sit.
+  // under three pixels across and were unreadable at every zoom.
   // Upgrade marks use the app's own glyphs: a skull for ratting, a broadcast dish for exploration,
   // a gear for anything else, and the actual ore icon for a mining upgrade. Squares said only "an
   // upgrade is here", which the count already said.
   const UPGRADE_GLYPH = ["skull", "broadcast", null, "gear"];
-  if (layers.upgrades && live.upgrades?.length && r >= 1.8) {
+  if (layers.upgrades && live.upgrades?.length) {
     for (const [id, ups] of live.upgrades) {
       ups.forEach((m) => {
         const colour = m.l >= 3 ? pal.hostile : m.l === 2 ? css("--friendly") : pal.fg;
@@ -507,7 +548,11 @@ function paint() {
 
   // Every marker for a system, in one row centred above it. Drawn together so they cannot land on
   // top of each other, and clear of the dot so neither hides the other.
-  for (const [id, list] of marks) {
+  //
+  // Only while the names are up. A marker is an annotation on a system you can identify; zoomed out
+  // past the names it is a glyph floating over an anonymous dot, and a thousand of them are a mess
+  // that hides the map underneath.
+  for (const [id, list] of (namesOn ? marks : [])) {
     const n = geo.nodes[geo.byId.get(id)];
     if (!n) continue;
     const px = sx(n.x), py = sy(n.z);
@@ -539,11 +584,10 @@ function paint() {
   // sorted by system id, so whole regions silently went unlabelled while others got every name. The
   // threshold below means the visible set is small enough not to need a cap at all.
   if (layers.labels) {
-    const span = view.k * w;
     // Names come in well before the map is fully zoomed in: waiting until they cannot possibly
     // overlap meant staring at an unlabelled map through most of the useful range.
-    if (span < geo.extent / 4) {
-      const size = Math.round(13 * uiScale);
+    if (namesOn) {
+      const size = nameSize;
       ctx.fillStyle = pal.muted;
       ctx.font = `${size}px system-ui, sans-serif`;
       ctx.textBaseline = "middle";
@@ -803,6 +847,9 @@ function build() {
   if (!fitted) fit();
   wire();
   schedule();
+  // The system window parks itself against the canvas, and until this moment there was no canvas to
+  // park against: the geometry is fetched, so anything opened before it lands had nothing to measure.
+  window.dispatchEvent(new Event("spai:map"));
 }
 
 function wire() {
@@ -858,11 +905,12 @@ function wire() {
   let moved = 0;
 
   const zoomAt = (factor, px, py) => {
-    const k = Math.max(geo.extent / 200000, Math.min(geo.extent / 200, view.k * factor));
-    // Keep the map point under the cursor where it is.
-    view.ox += px * (view.k - k);
-    view.oz += py * (view.k - k);
-    view.k = k;
+    const k = Math.max(geo.extent / 200000, Math.min(geo.extent / 200, target.k * factor));
+    // Keep the map point under the cursor where it is. Worked off the target rather than the drawn
+    // view, so notches during an easing zoom compound instead of fighting it.
+    target.ox += px * (target.k - k);
+    target.oz += py * (target.k - k);
+    target.k = k;
     schedule();
   };
 
@@ -887,8 +935,12 @@ function wire() {
       return;
     }
     moved += Math.abs(e.clientX - prev.clientX) + Math.abs(e.clientY - prev.clientY);
-    view.ox -= (e.clientX - prev.clientX) * view.k;
-    view.oz -= (e.clientY - prev.clientY) * view.k;
+    const dx = (e.clientX - prev.clientX) * view.k;
+    const dz = (e.clientY - prev.clientY) * view.k;
+    view.ox -= dx;
+    view.oz -= dz;
+    target.ox -= dx;
+    target.oz -= dz;
     schedule();
   });
   const up = (e) => {
