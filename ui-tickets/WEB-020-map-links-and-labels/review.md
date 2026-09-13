@@ -47,6 +47,11 @@ visible span now, and zoomed out the map draws **region names** at each region's
 what the app shows and what is legible at that scale. With a real threshold the visible set is small
 enough not to need a cap at all.
 
+Region labels then needed one more thing that only showed against the real map: 67 names at full
+zoom-out overlap into mush. A label is drawn only where it does not collide with one already placed,
+biggest regions first so the survivors are the ones covering the most map, and each is stroked
+against the background so it reads over a dense field of dots.
+
 ## Hover
 
 A stylesheet `cursor` wins over nothing, so a hovered system looked exactly like empty space. The

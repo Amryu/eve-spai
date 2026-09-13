@@ -107,6 +107,7 @@ function palette() {
     sev: ["info", "warning", "danger", "critical"].map((s) => css(`--sev-${s}`)),
     line: css("--line"),
     surface: css("--surface"),
+    bg: css("--bg"),
     accent: css("--accent"),
     muted: css("--muted"),
     alliance: css("--alliance"),
@@ -190,8 +191,10 @@ function regionCentroids() {
   for (const [id, a] of acc) {
     const n = names.get(id);
     if (!n) continue;
-    centroids.push([id, { n, x: a.x / a.c, z: a.z / a.c }]);
+    centroids.push([id, { n, x: a.x / a.c, z: a.z / a.c, c: a.c }]);
   }
+  // Biggest first, so collision resolution keeps the regions that cover the most map.
+  centroids.sort((p, q) => q[1].c - p[1].c);
   return centroids;
 }
 
@@ -461,17 +464,31 @@ function paint() {
         ctx.fillText(s.n, px + r + 3, py);
       }
     } else {
-      ctx.fillStyle = pal.muted;
       ctx.font = "600 13px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      for (const [id, name] of regionCentroids()) {
-        const px = sx(name.x), py = sy(name.z);
+      // Sixty-seven region names at full zoom-out overlap into mush, so a label is only drawn where
+      // it does not collide with one already placed. Biggest regions first, so the ones that survive
+      // are the ones with the most map under them.
+      const placed = [];
+      for (const [, rg] of regionCentroids()) {
+        const px = sx(rg.x), py = sy(rg.z);
         if (!onScreen(px, py)) continue;
-        ctx.fillText(name.n, px, py);
-        void id;
+        const half = ctx.measureText(rg.n).width / 2 + 3;
+        const box = [px - half, py - 9, px + half, py + 9];
+        if (placed.some((q) => box[0] < q[2] && box[2] > q[0] && box[1] < q[3] && box[3] > q[1])) {
+          continue;
+        }
+        placed.push(box);
+        // Drawn over a dense field of system dots, so the name needs its own ground to sit on.
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = pal.bg;
+        ctx.strokeText(rg.n, px, py);
+        ctx.fillStyle = pal.fg;
+        ctx.fillText(rg.n, px, py);
       }
       ctx.textAlign = "left";
+      ctx.lineWidth = 1;
     }
   }
 
