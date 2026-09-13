@@ -125,6 +125,7 @@ app code changed**, and on the small tickets far more. UI-014 changed 2 lines of
 rule, and it is deliberate.
 
 | [UI-048 A direct message is easy to miss behind the sidebar's tabs](UI-048-jabber-convos/) | High | `jabber_ui` | unscheduled | **Fixed** |
+| [UI-049 Tray and taskbar say only "something is unread"](UI-049-unread-badge/) | Medium | `tray.rs`, `badge.rs` | unscheduled | **Fixed** |
 
 ## Web companion (WEB-NNN)
 

@@ -229,14 +229,14 @@ pub use other::{spawn, TrayCmd};
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
 
     #[derive(Clone, Default)]
     pub struct TrayCmd {
         show: Arc<AtomicBool>,
         exit: Arc<AtomicBool>,
-        attention: Arc<AtomicBool>,
+        attention: Arc<AtomicU32>,
     }
 
     impl TrayCmd {
@@ -246,8 +246,9 @@ mod linux {
         pub fn exit_requested(&self) -> bool {
             self.exit.load(Ordering::SeqCst)
         }
-        pub fn set_attention(&self, on: bool) {
-            self.attention.store(on, Ordering::SeqCst);
+        /// How many unread messages the icon should be showing. 0 clears the badge.
+        pub fn set_unread(&self, n: u32) {
+            self.attention.store(n, Ordering::SeqCst);
         }
     }
 
@@ -295,7 +296,7 @@ mod linux {
         }
     }
 
-    fn icon(badge: bool) -> ksni::Icon {
+    fn icon(count: u32) -> ksni::Icon {
         use std::sync::OnceLock;
         static LOGO: OnceLock<Option<(i32, i32, Vec<u8>)>> = OnceLock::new();
         let logo = LOGO.get_or_init(|| {
@@ -310,26 +311,20 @@ mod linux {
             }
             Some((w as i32, h as i32, data))
         });
-        let Some((w, h, base)) = logo else { return generated_icon(badge) };
+        let Some((w, h, base)) = logo else { return generated_icon(count) };
         let (w, h) = (*w, *h);
-        let mut data = base.clone();
-        if badge {
-            let r = (w.min(h) as f32) / 5.0;
-            let (cx, cy) = (w as f32 - r - 1.0, h as f32 - r - 1.0);
-            for y in 0..h {
-                for x in 0..w {
-                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
-                    if dx * dx + dy * dy <= r * r {
-                        let i = ((y * w + x) * 4) as usize;
-                        data[i..i + 4].copy_from_slice(&[0xFF, 0xE0, 0x4C, 0x4C]);
-                    }
-                }
-            }
-        }
+        // The badge painter works in RGBA; this buffer is ARGB, so it is converted around the call
+        // rather than the painter growing a second pixel order to know about.
+        let mut rgba: Vec<u8> = base
+            .chunks_exact(4)
+            .flat_map(|p| [p[1], p[2], p[3], p[0]])
+            .collect();
+        crate::badge::draw(&mut rgba, w as u32, h as u32, count);
+        let data = rgba.chunks_exact(4).flat_map(|p| [p[3], p[0], p[1], p[2]]).collect();
         ksni::Icon { width: w, height: h, data }
     }
 
-    fn generated_icon(badge: bool) -> ksni::Icon {
+    fn generated_icon(count: u32) -> ksni::Icon {
         let (w, h) = (24i32, 24i32);
         let mut data = vec![0u8; (w * h * 4) as usize];
         let put = |data: &mut [u8], x: i32, y: i32, argb: [u8; 4]| {
@@ -345,17 +340,10 @@ mod linux {
                 }
             }
         }
-        if badge {
-            let (bx, by, br) = (17.0f32, 7.0f32, 5.0f32);
-            for y in 0..h {
-                for x in 0..w {
-                    let (dx, dy) = (x as f32 + 0.5 - bx, y as f32 + 0.5 - by);
-                    if (dx * dx + dy * dy).sqrt() <= br {
-                        put(&mut data, x, y, [0xFF, 0xE0, 0x4C, 0x4C]);
-                    }
-                }
-            }
-        }
+        let mut rgba: Vec<u8> =
+            data.chunks_exact(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
+        crate::badge::draw(&mut rgba, w as u32, h as u32, count);
+        let data = rgba.chunks_exact(4).flat_map(|p| [p[3], p[0], p[1], p[2]]).collect();
         ksni::Icon { width: w, height: h, data }
     }
 
@@ -367,9 +355,9 @@ mod linux {
             let attention = cmd_for_thread.attention.clone();
             match (SpaiTray { cmd: cmd_for_thread, ctx }).spawn() {
                 Ok(handle) => {
-                    // Poll the unread flag and ask the host to re-fetch the icon when
-                    // it changes (the handle must stay alive for the tray to live).
-                    let mut last = false;
+                    // Poll the unread count and ask the host to re-fetch the icon when it changes
+                    // (the handle must stay alive for the tray to live).
+                    let mut last = 0u32;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(800));
                         let now = attention.load(Ordering::SeqCst);
@@ -393,7 +381,7 @@ mod linux {
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod desktop {
     use std::cell::RefCell;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{TrayIcon, TrayIconBuilder};
@@ -402,7 +390,7 @@ mod desktop {
     pub struct TrayCmd {
         show: Arc<AtomicBool>,
         exit: Arc<AtomicBool>,
-        attention: Arc<AtomicBool>,
+        attention: Arc<AtomicU32>,
     }
 
     impl TrayCmd {
@@ -412,10 +400,11 @@ mod desktop {
         pub fn exit_requested(&self) -> bool {
             self.exit.load(Ordering::SeqCst)
         }
-        pub fn set_attention(&self, on: bool) {
-            if self.attention.swap(on, Ordering::SeqCst) != on {
+        /// How many unread messages the icon should be showing. 0 clears the badge.
+        pub fn set_unread(&self, n: u32) {
+            if self.attention.swap(n, Ordering::SeqCst) != n {
                 TRAY.with(|t| {
-                    if let (Some(tray), Some(icon)) = (t.borrow().as_ref(), make_icon(on)) {
+                    if let (Some(tray), Some(icon)) = (t.borrow().as_ref(), make_icon(n)) {
                         let _ = tray.set_icon(Some(icon));
                     }
                 });
@@ -427,23 +416,11 @@ mod desktop {
         static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
     }
 
-    fn make_icon(badge: bool) -> Option<tray_icon::Icon> {
+    fn make_icon(count: u32) -> Option<tray_icon::Icon> {
         let img = image::load_from_memory(include_bytes!("../../assets/eve-spai.png")).ok()?.to_rgba8();
         let (w, h) = img.dimensions();
         let mut rgba = img.into_raw();
-        if badge {
-            let r = (w.min(h) as f32) / 5.0;
-            let (cx, cy) = (w as f32 - r - 1.0, h as f32 - r - 1.0);
-            for y in 0..h {
-                for x in 0..w {
-                    let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
-                    if dx * dx + dy * dy <= r * r {
-                        let i = ((y * w + x) * 4) as usize;
-                        rgba[i..i + 4].copy_from_slice(&[0xE0, 0x4C, 0x4C, 0xFF]);
-                    }
-                }
-            }
-        }
+        crate::badge::draw(&mut rgba, w, h, count);
         tray_icon::Icon::from_rgba(rgba, w, h).ok()
     }
 
@@ -458,7 +435,7 @@ mod desktop {
         let exit_id = exit.id().clone();
 
         let mut builder = TrayIconBuilder::new().with_tooltip("EVE Spai").with_menu(Box::new(menu));
-        if let Some(icon) = make_icon(false) {
+        if let Some(icon) = make_icon(0) {
             builder = builder.with_icon(icon);
         }
         let tray = match builder.build() {
@@ -495,7 +472,7 @@ mod other {
         pub fn exit_requested(&self) -> bool {
             false
         }
-        pub fn set_attention(&self, _on: bool) {}
+        pub fn set_unread(&self, _n: u32) {}
     }
     pub fn spawn(_ctx: egui::Context) -> Option<TrayCmd> {
         None

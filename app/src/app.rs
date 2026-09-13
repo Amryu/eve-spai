@@ -518,6 +518,8 @@ pub struct SpaiApp {
     jabber_dm_input: String,
     jabber_dm_error: String,
     jabber_pane: JabberPane,
+    /// The count currently painted on the window icon, so it is only redrawn when it moves.
+    taskbar_badge: Option<u32>,
     /// Conversations pinned into the Convos list for as long as the tab stays open, because they
     /// went unread while it was. Reading one must not make it disappear mid-click.
     jabber_sticky: std::collections::BTreeSet<String>,
@@ -1251,6 +1253,7 @@ impl SpaiApp {
             jabber_dm_input: String::new(),
             jabber_dm_error: String::new(),
             jabber_pane: JabberPane::Convos,
+            taskbar_badge: None,
             jabber_sticky: Default::default(),
             jabber_motd_expanded: std::collections::HashSet::new(),
             jabber_collapsed: std::collections::HashSet::new(),
@@ -2250,11 +2253,44 @@ impl SpaiApp {
     }
 
     fn jabber_has_unread(&self) -> bool {
-        let st = self.jabber.lock().unwrap();
-        if st.pings_unread && !self.jabber_is_muted(crate::jabber::PING_FEED_KEY) {
-            return true;
+        self.jabber_unread_total() > 0
+    }
+
+    /// Badge the taskbar icon with the same count as the tray.
+    ///
+    /// Only on a change: `ViewportCommand::Icon` hands the window manager a fresh image, and doing
+    /// that every frame would have it re-decoding an icon sixty times a second for a number that
+    /// moves every few minutes.
+    fn sync_taskbar_badge(&mut self, ctx: &egui::Context, count: u32) {
+        if self.taskbar_badge == Some(count) {
+            return;
         }
-        st.unread.iter().any(|k| !self.jabber_is_muted(k))
+        self.taskbar_badge = Some(count);
+        let base = app_icon();
+        let mut rgba = base.rgba.clone();
+        crate::badge::draw(&mut rgba, base.width, base.height, count);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(
+            egui::IconData { rgba, width: base.width, height: base.height },
+        ))));
+    }
+
+    /// Every unread message across conversations that are not muted, for the tray and taskbar badge.
+    ///
+    /// A muted conversation is one the user has said they do not want to hear about, so it does not
+    /// get to drive a number on the taskbar either. An unread ping feed counts as one: it has no
+    /// per-message count of its own.
+    fn jabber_unread_total(&self) -> u32 {
+        let st = self.jabber.lock().unwrap();
+        let mut n: u32 = st
+            .unread_counts
+            .iter()
+            .filter(|(k, _)| !self.jabber_is_muted(k))
+            .map(|(_, c)| *c)
+            .sum();
+        if st.pings_unread && !self.jabber_is_muted(crate::jabber::PING_FEED_KEY) {
+            n = n.saturating_add(1);
+        }
+        n
     }
 
     fn cache_op_links(&mut self, pings: &[crate::pings::Ping]) {
@@ -19134,8 +19170,12 @@ impl eframe::App for SpaiApp {
             if tray.exit_requested() {
                 self.really_exit = true;
             }
-            tray.set_attention(self.jabber_has_unread());
+            tray.set_unread(self.jabber_unread_total());
         }
+        // The taskbar carries the same number as the tray, for the same reason: the window is very
+        // often behind something else when a message lands.
+        let unread = self.jabber_unread_total();
+        self.sync_taskbar_badge(&ctx, unread);
         if ctx.input(|i| i.viewport().close_requested())
             && !self.really_exit
             && self.settings.minimize_to_tray
@@ -26098,6 +26138,22 @@ mod ping_link_tests {
                 ui.horizontal_wrapped(|ui| render_message_body(ui, b));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod badge_total_tests {
+    /// The badge counts messages, not conversations, and a muted conversation does not get to put a
+    /// number on the taskbar.
+    #[test]
+    fn muted_conversations_do_not_reach_the_badge() {
+        let mut counts: std::collections::BTreeMap<String, u32> = Default::default();
+        counts.insert("loud@example.com".to_owned(), 3);
+        counts.insert("muted@example.com".to_owned(), 40);
+        let muted = |k: &str| k.starts_with("muted");
+        let total: u32 =
+            counts.iter().filter(|(k, _)| !muted(k)).map(|(_, c)| *c).sum();
+        assert_eq!(total, 3);
     }
 }
 

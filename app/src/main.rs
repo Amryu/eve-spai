@@ -3,6 +3,7 @@
 mod activity;
 mod app;
 mod auth;
+mod badge;
 mod battle;
 mod breport;
 mod brshare;
