@@ -172,6 +172,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-029 No jabber in the web view](WEB-029-jabber-pane/) | `web/jabber.rs`, `panes-jabber.*` | after 28 | **Fixed** |
 | [WEB-030 Eased zoom fights the cursor; jump-range rings wrong in 2D](WEB-030-map-followups/) | `map.js` | after 29 | **Fixed** |
 | [UI-052 Dashed ground track under every bridge arc](UI-052-bridge-ground-track/) | `app.rs` map | after 51 | **Fixed** |
+| [WEB-031 A swap moves the pane and leaves the size behind](WEB-031-swap-carries-the-span/) | `layout.js` | after 30 | **Fixed** |
 
 ### Browser evidence
 
