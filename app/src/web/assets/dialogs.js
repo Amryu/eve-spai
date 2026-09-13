@@ -729,6 +729,15 @@ function hopMenu(id, at, kind) {
   const titans = titansOnce;
   const items = [];
   if (h?.warn?.sev >= 2) items.push(["intel", "Show intel"]);
+  // An anchor is a choice the user made, so the row it sits on is where taking it back belongs. Not
+  // the start: a route has to begin somewhere, and an anchor list without one means nothing.
+  const anchorAt = routeReq?.anchors?.indexOf(id) ?? -1;
+  if (h?.anchor && anchorAt > 0) {
+    items.push([
+      "drop",
+      anchorAt === routeReq.anchors.length - 1 ? "Remove destination" : "Remove waypoint",
+    ]);
+  }
   if (!h?.anchor) {
     items.push([avoidOnce.has(id) ? "unavoid" : "avoid", avoidOnce.has(id) ? "Stop avoiding" : "Avoid this system"]);
     items.push(["way", "Add waypoint here"]);
@@ -756,6 +765,12 @@ async function hopAction(pick, id, at, kind, onPick) {
     case "unavoid":
       avoidOnce.delete(id);
       return fetchRoute();
+    case "drop": {
+      const a = routeReq.anchors.filter((x) => x !== id);
+      if (a.length < 2) return;
+      routeReq.anchors = a;
+      return fetchRoute();
+    }
     case "way": {
       // Between the anchors it already sits between, so the route keeps its shape and gains a stop.
       const a = routeReq.anchors;
