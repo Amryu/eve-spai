@@ -11,7 +11,15 @@ const esc = (s) =>
 
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
 
-let dlg = null;
+/// One window per kind of thing, not one window reused.
+///
+/// A ship opened from an intel card was landing in the system window, on top of the map, replacing
+/// whatever system was being read. They are different things, opened from different places, and
+/// looking at a hull while looking at where it was seen is the normal case.
+const shells = new Map();
+/// How far each kind's window is offset from the map's corner, so three open at once cascade rather
+/// than hiding each other.
+const CASCADE = { system: 0, ship: 1, pilot: 2 };
 
 /// A floating window, not a modal.
 ///
@@ -19,15 +27,18 @@ let dlg = null;
 /// reading the map: the map is the context. This floats, can be dragged, and does not block anything
 /// behind it. Escape and its close button dismiss it; clicking the map does not, because clicking
 /// the map is how you open the next one.
-function shell() {
-  if (dlg) return dlg;
-  dlg = document.createElement("div");
+function shell(kind) {
+  const had = shells.get(kind);
+  if (had) return had;
+  const dlg = document.createElement("div");
   dlg.className = "float";
+  dlg.dataset.kind = kind;
   dlg.hidden = true;
   dlg.innerHTML = `<div class="mpanel" role="dialog"></div>`;
   document.body.append(dlg);
+  shells.set(kind, dlg);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") close(kind);
   });
   dragify(dlg);
   // A pane that changes size moves the map with it, and the window was parked against where the map
@@ -71,8 +82,10 @@ function dragify(node) {
   node.addEventListener("pointercancel", drop);
 }
 
-export function close() {
-  if (dlg) dlg.hidden = true;
+export function close(kind = null) {
+  for (const [k, d] of shells) {
+    if (kind == null || k === kind) d.hidden = true;
+  }
 }
 
 /// Park the window at the top right of the map, below whatever controls are showing.
@@ -104,18 +117,21 @@ function place(d, tries = 10) {
       top = box.bottom;
     }
   }
+  const step = 18 * (CASCADE[d.dataset.kind] ?? 0);
   d.style.left = "auto";
-  d.style.top = `${Math.round(Math.min(top + 8, r.bottom - 80))}px`;
-  d.style.right = `${Math.round(window.innerWidth - r.right + 8)}px`;
+  d.style.top = `${Math.round(Math.min(top + 8 + step, r.bottom - 80))}px`;
+  d.style.right = `${Math.round(window.innerWidth - r.right + 8 + step)}px`;
   d.style.bottom = "auto";
 }
 
-function open(html) {
-  const d = shell();
+function open(kind, html) {
+  const d = shell(kind);
   d.querySelector(".mpanel").innerHTML =
     `<button class="mclose" aria-label="Close">${ico("x")}</button>${html}`;
-  d.querySelector(".mclose").addEventListener("click", close);
+  d.querySelector(".mclose").addEventListener("click", () => close(kind));
   d.hidden = false;
+  // Whichever was opened last is the one being read, so it goes on top of the others.
+  for (const [k, o] of shells) o.style.zIndex = k === kind ? 52 : 50;
   place(d);
 }
 
@@ -127,12 +143,13 @@ function rows(pairs) {
 }
 
 async function showSystem(id) {
-  open(`<h3>System</h3><p class="placeholder">Loading.</p>`);
+  open("system", `<h3>System</h3><p class="placeholder">Loading.</p>`);
   const r = await fetch(`/api/system/${id}`);
-  if (!r.ok) return open(`<h3>System</h3><p class="placeholder">Not in the star map.</p>`);
+  if (!r.ok) return open("system", `<h3>System</h3><p class="placeholder">Not in the star map.</p>`);
   const s = await r.json();
   const jumps = s.jumps_from_you == null ? "no route" : s.jumps_from_you === 0 ? "you are here" : `${s.jumps_from_you} jumps`;
   open(
+    "system",
     `<h3 style="color:${secVar(s.security)}">${ico("planet")} ${esc(s.name)} <small>${s.security.toFixed(1)}</small></h3>` +
       rows([
         ["Region", esc(s.region)],
@@ -158,15 +175,16 @@ async function showSystem(id) {
 }
 
 async function showShip(id) {
-  open(`<h3>Ship</h3><p class="placeholder">Loading.</p>`);
+  open("ship", `<h3>Ship</h3><p class="placeholder">Loading.</p>`);
   const r = await fetch(`/api/ship/${id}`);
-  if (!r.ok) return open(`<h3>Ship</h3><p class="placeholder">Not in the static data.</p>`);
+  if (!r.ok) return open("ship", `<h3>Ship</h3><p class="placeholder">Not in the static data.</p>`);
   const s = await r.json();
   const res = (label, v) =>
     `<div class="mrow"><span>${label}</span><span class="mres">` +
     ["EM", "Th", "Ki", "Ex"].map((t, i) => `<b>${t} ${v[i]}%</b>`).join("") +
     `</span></div>`;
   open(
+    "ship",
     `<h3><img class="mhull" src="https://images.evetech.net/types/${s.id}/render?size=128" alt=""> ${esc(s.name)}</h3>` +
       `<p class="mgroup">${esc(s.group)}</p>` +
       rows([
@@ -189,6 +207,7 @@ async function showShip(id) {
 /// which is the failure the whole "?" mechanism exists to avoid.
 function showVerdict(name) {
   open(
+    "pilot",
     `<h3>Uncertain pilot (?)</h3>` +
       `<p>This name was parsed out of chat but could not be confirmed as a character. ` +
       `Marking it correctly keeps the feed honest.</p>` +
@@ -198,10 +217,10 @@ function showVerdict(name) {
       `<button class="mno" data-verdict="hide">Not a pilot (hide)</button>` +
       `</div>`
   );
-  dlg.querySelectorAll("[data-verdict]").forEach((b) =>
+  shells.get("pilot").querySelectorAll("[data-verdict]").forEach((b) =>
     b.addEventListener("click", async () => {
       await send({ Verdict: { name, hidden: b.dataset.verdict === "hide" } });
-      close();
+      close("pilot");
     })
   );
 }
@@ -213,6 +232,7 @@ async function showPilot(name) {
   if (un.has(name.toLowerCase())) return showVerdict(name);
   const id = state.snapshot?.intel?.lookups?.resolved_pilots?.[name];
   open(
+    "pilot",
     `<h3>${ico("user")} ${esc(name)}</h3>` +
       (id
         ? `<img class="mport" src="https://images.evetech.net/characters/${id}/portrait?size=256" alt="">` +

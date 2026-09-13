@@ -60,6 +60,16 @@ export function isOn(pane) {
   return !layout.off.includes(pane);
 }
 
+/// Switch a pane off from its own corner, and give up its extra cell while it goes.
+///
+/// A pane that comes back later comes back as one cell. Keeping the span would mean switching a pane
+/// on and having it arrive two cells wide, pushing something else out to pay for a size nobody asked
+/// for in this layout.
+export function hide(pane) {
+  delete layout.span[pane];
+  setOn(pane, false);
+}
+
 export function setOn(pane, on) {
   const off = new Set(layout.off);
   if (on) off.delete(pane);
@@ -231,7 +241,8 @@ function paneChrome(mode) {
               `<button class="pbtn pspan${now === kind ? " on" : ""}" data-span-btn="${name}" data-kind="${kind}" title="${now === kind ? "Back to one cell" : tip}">${ico(glyph)}</button>`
           ).join("")
         : "") +
-      `<button class="pbtn pdrag" data-drag="${name}" title="Drag to rearrange">${ico("dots-six-vertical")}</button>`;
+      `<button class="pbtn pdrag" data-drag="${name}" title="Drag to rearrange">${ico("dots-six-vertical")}</button>` +
+      `<button class="pbtn pclose" data-close="${name}" title="Hide this view">${ico("x")}</button>`;
     // Rewriting identical HTML would destroy the node a drag is holding on to.
     if (bar.innerHTML !== want) bar.innerHTML = want;
   }
@@ -286,7 +297,9 @@ function wirePanes() {
 
   main.addEventListener("click", (e) => {
     const b = e.target.closest("[data-span-btn]");
-    if (b) setSpan(b.dataset.spanBtn, b.dataset.kind);
+    if (b) return setSpan(b.dataset.spanBtn, b.dataset.kind);
+    const x = e.target.closest("[data-close]");
+    if (x) return hide(x.dataset.close);
   });
 }
 
