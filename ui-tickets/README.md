@@ -164,6 +164,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-021 Map controls: layer panel, upgrade marks, jump range, system window](WEB-021-map-controls/) | `map.js`, `dialogs.js` | after 20 | **Fixed** |
 | [WEB-023 Map markers are squares, not the app's icons](WEB-023-map-marker-icons/) | `map.js`, `web/icons.rs` | after 22 | **Fixed** |
 | [WEB-024 Markers tiny and stacked; system window over the filters](WEB-024-markers-and-float/) | `map.js`, `dialogs.js` | after 23 | **Fixed** |
+| [WEB-025 Map text stays sidebar-sized on a full-screen map](WEB-025-map-scale/) | `map.js` | after 24 | **Fixed** |
 
 ### Browser evidence
 
