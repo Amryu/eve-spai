@@ -14283,6 +14283,7 @@ impl SpaiApp {
         let mut unavoid_now: Option<i64> = None;
         let mut waypoint_now: Option<i64> = None;
         let mut titan_now: Option<(i64, bool)> = None;
+        let mut drop_anchor_row: Option<usize> = None;
         let mut show_intel: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
@@ -14320,6 +14321,19 @@ impl SpaiApp {
                             {
                                 show_intel = Some(h.id);
                                 ui.close();
+                            }
+                            // An anchor is a choice the user made, so the row it sits on is where
+                            // taking it back belongs. Not the start: a route has to begin somewhere.
+                            let anchor_at =
+                                self.map_route_anchors.iter().position(|&a| a == h.id);
+                            if let Some(i) = anchor_at.filter(|&i| i > 0) {
+                                let last = i == self.map_route_anchors.len() - 1;
+                                let label =
+                                    if last { "Remove destination" } else { "Remove waypoint" };
+                                if ui.button(label).clicked() {
+                                    drop_anchor_row = Some(i);
+                                    ui.close();
+                                }
                             }
                             if !h.anchor {
                                 let on = self.map_avoid_once.contains(&h.id);
@@ -14386,6 +14400,12 @@ impl SpaiApp {
         }
         if let Some(id) = waypoint_now {
             self.map_route_add_waypoint(id);
+        }
+        if let Some(i) = drop_anchor_row {
+            if self.map_route_anchors.len() > 2 || i == self.map_route_anchors.len() - 1 {
+                self.map_route_anchors.remove(i);
+                self.map_replan_route();
+            }
         }
         if let Some((id, on)) = titan_now {
             self.map_titans.retain(|&t| t != id);
