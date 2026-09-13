@@ -10435,56 +10435,65 @@ impl SpaiApp {
 
     /// The four things a finished route drag can mean, arranged around where it was let go.
     ///
-    /// Radial rather than a list: the hand is already at the drop point, and every option is the
-    /// same distance away, which is the whole argument for one.
+    /// One area with one disc and four buttons placed on it, rather than four popups: four separate
+    /// frames overlapped each other and looked like a mistake.
     fn map_link_menu_ui(&mut self, ui: &mut egui::Ui) {
         let Some((from, to, at)) = self.map_link_menu else { return };
-        // The menu asks what kind of route this is, which is one answer per route rather than one
-        // per leg. A drag off the current destination is adding a waypoint to a route that already
-        // has an answer, so it just extends it.
-        if self.map_route_anchors.len() > 1 && self.map_route_anchors.last() == Some(&from) {
+        // A drag off the current destination is adding a waypoint to a route that already has a
+        // kind, and the kind is one answer per route rather than one per leg.
+        if self.map_route_anchors.len() > 1 && self.map_route_anchors.contains(&from) {
             self.map_link_menu = None;
             let kind = self.map_route_kind;
             self.map_take_route(kind, from, to);
             return;
         }
         use egui_phosphor::regular as i;
-        const R: f32 = 68.0;
+        const R: f32 = 58.0;
+        const BTN: egui::Vec2 = egui::vec2(96.0, 28.0);
         let opts: [(&str, &str, &str); 4] = [
             ("gate", i::SIGN_IN, "Gate route"),
             ("jump", i::SPIRAL, "Jump route"),
             ("titan", i::CROSSHAIR_SIMPLE, "Titan route"),
             ("cancel", i::X, "Cancel"),
         ];
+        let half = egui::vec2(R + BTN.x / 2.0 + 8.0, R + BTN.y / 2.0 + 8.0);
         let mut chose: Option<&str> = None;
-        let mut any_hovered = false;
-        for (i, (kind, glyph, label)) in opts.iter().enumerate() {
-            let a = (i as f32 / opts.len() as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-            let p = at + egui::vec2(a.cos() * R, a.sin() * R);
-            let r = egui::Area::new(egui::Id::new(("map_link_opt", i)))
-                .order(egui::Order::Foreground)
-                .fixed_pos(p - egui::vec2(44.0, 18.0))
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_width(72.0);
-                        ui.vertical_centered(|ui| {
-                            let c = if *kind == "cancel" {
-                                ui.visuals().weak_text_color()
-                            } else {
-                                ui.visuals().hyperlink_color
-                            };
-                            ui.label(egui::RichText::new(*glyph).size(18.0).color(c));
-                            if ui.button(*label).clicked() {
-                                chose = Some(kind);
-                            }
-                        });
-                    });
-                });
-            any_hovered |= r.response.hovered();
-        }
-        // Anywhere else dismisses it, which is what a menu with no frame around it has to do.
-        if ui.input(|i| i.pointer.any_pressed()) && !any_hovered {
-            self.map_link_menu = None;
+        let area = egui::Area::new(egui::Id::new("map_link_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at - half)
+            .show(ui.ctx(), |ui| {
+                let (rect, _) = ui.allocate_exact_size(half * 2.0, egui::Sense::hover());
+                let c = rect.center();
+                let v = ui.visuals().clone();
+                let p = ui.painter();
+                p.circle_filled(c, R + 16.0, v.window_fill.gamma_multiply(0.94));
+                p.circle_stroke(c, R + 16.0, egui::Stroke::new(1.0, v.window_stroke.color));
+                p.circle_filled(c, 3.5, v.hyperlink_color);
+                for (idx, (kind, glyph, label)) in opts.iter().enumerate() {
+                    let a = (idx as f32 / opts.len() as f32) * std::f32::consts::TAU
+                        - std::f32::consts::FRAC_PI_2;
+                    let bc = c + egui::vec2(a.cos() * R, a.sin() * R);
+                    let br = egui::Rect::from_center_size(bc, BTN);
+                    let text = if *kind == "cancel" {
+                        egui::RichText::new(format!("{glyph}  {label}")).color(v.weak_text_color())
+                    } else {
+                        egui::RichText::new(format!("{glyph}  {label}"))
+                    };
+                    if ui.put(br, egui::Button::new(text)).clicked() {
+                        chose = Some(kind);
+                    }
+                }
+                rect
+            });
+        // On release, not on press: clearing the menu the moment a button was pressed took the
+        // button away before its own click could land, which is why none of them worked.
+        if chose.is_none() && ui.input(|i| i.pointer.any_click()) {
+            let inside = ui
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|p| area.inner.contains(p));
+            if !inside {
+                self.map_link_menu = None;
+            }
         }
         if let Some(kind) = chose {
             self.map_link_menu = None;
@@ -10499,19 +10508,37 @@ impl SpaiApp {
     fn map_take_route(&mut self, kind: &str, from: i64, to: i64) {
         self.map_route_opts.clear();
         self.map_route_at = 0;
-        // A drag off the current destination adds to the route: the old destination becomes a
-        // waypoint and the new system becomes the destination. Starting anywhere else is a new
-        // route, which is the only way to abandon one.
-        if self.map_route_anchors.len() > 1 && self.map_route_anchors.last() == Some(&from) {
-            self.map_route_anchors.push(to);
-        } else {
-            self.map_route_anchors = vec![from, to];
+        // A drag off a system already on the route rewrites it from there: everything after that
+        // system goes, and the new target becomes the destination. Off the destination that is the
+        // same thing as appending a waypoint. Starting anywhere else is a new route, which is the
+        // only way to abandon one.
+        match self.map_route_anchors.iter().position(|&a| a == from) {
+            Some(at) if self.map_route_anchors.len() > 1 => {
+                self.map_route_anchors.truncate(at + 1);
+                self.map_route_anchors.push(to);
+            }
+            _ => self.map_route_anchors = vec![from, to],
         }
         if kind == "gate" {
             self.web_set_destination(to);
             self.route_destination = Some(to);
         }
         self.ensure_jump_systems();
+        // The jump planner is the app's own answer to this question and it is a panel, not a
+        // read-only list: it has the hull, the skills and the waypoint editing already. So the map
+        // hands the route over to it rather than showing a second, worse copy beside it.
+        if kind == "jump" {
+            let anchors = self.map_route_anchors.clone();
+            self.jump_plan_from = anchors.first().copied();
+            self.jump_plan_to = anchors.last().copied();
+            self.jump_waypoints =
+                anchors.get(1..anchors.len().saturating_sub(1)).unwrap_or_default().to_vec();
+            self.map_mode = MapMode::JumpPlan;
+            self.jump_route_key = None;
+            self.recompute_jump_route();
+            self.map_route_opts.clear();
+            return;
+        }
         let Some(graph) = self.systems.clone() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
         // A titan at JDC V. The same figure the rescue planner uses, stated here because that one is
@@ -10528,6 +10555,9 @@ impl SpaiApp {
             &coords,
             &self.map_route_anchors,
             self.map_route_kind,
+            &crate::jumproute::SHIP_CLASSES[self.jump_ship.min(crate::jumproute::SHIP_CLASSES.len() - 1)],
+            self.jump_jdc,
+            self.jump_jfc,
             TITAN_LY,
             bridges,
         );
@@ -13872,6 +13902,9 @@ impl SpaiApp {
                 ui.label(format!("Total jump delay: {}", fmt_min(cost.total_delay_min)));
                 ui.separator();
                 ui.label(egui::RichText::new("Hops").strong());
+                // Per jump, not just the totals: fatigue compounds, so the interesting number is
+                // which jump takes the timer past what you are willing to wait for.
+                let per = crate::jumproute::hop_costs(&systems, &self.jump_route, &class, self.jump_jfc);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let route = self.jump_route.clone();
                     for (i, sid) in route.iter().enumerate() {
@@ -13888,6 +13921,21 @@ impl SpaiApp {
                                 .clicked()
                             {
                                 self.dock_system(*sid);
+                            }
+                            if let Some(c) = i.checked_sub(1).and_then(|k| per.get(k)) {
+                                ui.indent(("hopcost", i), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.2} ly · {} iso · fatigue {} · ready in {}",
+                                            c.ly,
+                                            c.fuel.round() as i64,
+                                            fmt_min(c.fatigue_min),
+                                            fmt_min(c.reactivation_min)
+                                        ))
+                                        .weak()
+                                        .size(11.5),
+                                    );
+                                });
                             }
                         }
                     }

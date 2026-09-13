@@ -119,3 +119,20 @@
 .rkind { color: var(--muted); font-size: 0.8rem; }
 .rkind.jump { color: #e07be0; }
 .rkind.bridge { color: #5ac86a; }
+
+.jumpcfg { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-bottom: 0.5rem; }
+.jumpcfg select, .jumpcfg input {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.25rem;
+}
+.jumpcfg select { flex: 1 1 9rem; min-width: 0; }
+.jumpcfg input { width: 3rem; }
+.jumpcfg label { color: var(--muted); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; }
+.jumpmax { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
+.rhop { flex-wrap: wrap; }
+.rcost { flex: 1 1 100%; color: var(--muted); font-size: 0.78rem; padding-left: 0.3rem; }

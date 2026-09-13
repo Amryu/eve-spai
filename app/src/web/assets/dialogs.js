@@ -290,17 +290,35 @@ async function showPilot(name) {
 /// the map the same way a system is, and two windows in the same place would be two windows to move.
 let routeOpts = [];
 let routeAt = 0;
+/// What the window is showing, kept so the hull and skill controls can ask again without the map
+/// having to hand the anchors over a second time.
+let routeReq = null;
+/// The jump setup, per device. Skills default to five, which is what anyone flying a capital has.
+const JUMP_KEY = "spai_jump";
+let jump = { hull: 0, jdc: 5, jfc: 5 };
+try {
+  jump = { ...jump, ...JSON.parse(localStorage.getItem(JUMP_KEY) ?? "{}") };
+} catch {
+  // Private browsing. The setup then lasts one session.
+}
 
 export async function showRoute(kind, anchors, onPick) {
   if (kind === "cancel") return;
+  routeReq = { kind, anchors, onPick };
   open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
+  await fetchRoute();
+}
+
+async function fetchRoute() {
+  const { kind, anchors, onPick } = routeReq;
   const from = anchors[0];
   const to = anchors[anchors.length - 1];
   const via = anchors.slice(1, -1).join(",");
   let out;
   try {
     const r = await fetch(
-      `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}`
+      `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}` +
+        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}`
     );
     out = await r.json();
   } catch {
@@ -308,10 +326,37 @@ export async function showRoute(kind, anchors, onPick) {
   }
   routeOpts = out.options ?? [];
   routeAt = 0;
+  routeReq.out = out;
   if (!routeOpts.length) {
-    return open("route", `<h3>Route</h3><p class="placeholder">${esc(out.error ?? "No route.")}</p>`);
+    return open(
+      "route",
+      `<h3>Route</h3>${jumpControls(kind, out)}<p class="placeholder">${esc(out.error ?? "No route.")}</p>`
+    );
   }
   paintRoute(kind, onPick);
+}
+
+/// The hull and the two skills, for the routes where they change the answer.
+///
+/// Names and ranges come from the app's own `SHIP_CLASSES` rather than a second copy in here: a
+/// picker that disagrees with the planner about what a jump freighter can do is worse than no picker.
+function jumpControls(kind, out) {
+  if (kind !== "jump" || !out?.hulls?.length) return "";
+  return (
+    `<div class="jumpcfg">` +
+    `<select data-jump="hull">` +
+    out.hulls
+      .map(
+        (h, i) =>
+          `<option value="${i}"${i === jump.hull ? " selected" : ""}>${esc(h.name)}</option>`
+      )
+      .join("") +
+    `</select>` +
+    `<label>JDC <input data-jump="jdc" type="number" min="0" max="5" value="${jump.jdc}"></label>` +
+    `<label>JFC <input data-jump="jfc" type="number" min="0" max="5" value="${jump.jfc}"></label>` +
+    `<span class="jumpmax">${out.max_ly.toFixed(1)} ly</span>` +
+    `</div>`
+  );
 }
 
 const KINDS = { gate: "Gate route", jump: "Jump route", titan: "Titan route" };
@@ -334,13 +379,18 @@ function paintRoute(kind, onPick) {
           .join("") +
         `</div>`
       : "";
+  const mins = (m) => (m >= 60 ? `${(m / 60).toFixed(1)}h` : `${Math.round(m)}m`);
   const line = (h, i) =>
     `<li class="rhop k${h.kind}">` +
     `<button class="chip" data-system="${h.id}" style="color:${secCol(h.security)}">${esc(h.name)}</button>` +
     (i === 0
       ? `<span class="rkind">start</span>`
       : h.kind === 2
-        ? `<span class="rkind jump">jump ${h.ly?.toFixed(1) ?? "?"} ly</span>`
+        ? `<span class="rkind jump">jump ${h.ly?.toFixed(1) ?? "?"} ly</span>` +
+          (h.fuel == null
+            ? ""
+            : `<span class="rcost">${Math.round(h.fuel).toLocaleString("en-US")} iso` +
+              ` · fatigue ${mins(h.fatigue_min)} · ready in ${mins(h.reactivation_min)}</span>`)
         : h.kind === 1
           ? `<span class="rkind bridge">bridge</span>`
           : `<span class="rkind">gate</span>`) +
@@ -348,6 +398,7 @@ function paintRoute(kind, onPick) {
   open(
     "route",
     `<h3>${esc(KINDS[kind] ?? "Route")}</h3>` +
+      jumpControls(kind, routeReq?.out) +
       tabs +
       `<p class="mgroup">${o.jumps} ${o.jumps === 1 ? "jump" : "jumps"}` +
       (o.gates ? ` · ${o.gates} ${o.gates === 1 ? "gate" : "gates"}` : "") +
@@ -356,15 +407,25 @@ function paintRoute(kind, onPick) {
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
       `<ol class="rhops">${o.hops.map(line).join("")}</ol>`
   );
-  shells
-    .get("route")
-    ?.querySelectorAll("[data-ropt]")
-    .forEach((b) =>
-      b.addEventListener("click", () => {
-        routeAt = Number(b.dataset.ropt);
-        paintRoute(kind, onPick);
-      })
-    );
+  const win = shells.get("route");
+  win?.querySelectorAll("[data-ropt]").forEach((b) =>
+    b.addEventListener("click", () => {
+      routeAt = Number(b.dataset.ropt);
+      paintRoute(kind, onPick);
+    })
+  );
+  win?.querySelectorAll("[data-jump]").forEach((c) =>
+    c.addEventListener("change", () => {
+      const v = Number(c.value);
+      jump[c.dataset.jump] = c.dataset.jump === "hull" ? v : Math.max(0, Math.min(5, v));
+      try {
+        localStorage.setItem(JUMP_KEY, JSON.stringify(jump));
+      } catch {
+        /* private browsing */
+      }
+      fetchRoute();
+    })
+  );
 }
 
 export async function send(action) {
