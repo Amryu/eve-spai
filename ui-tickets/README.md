@@ -202,6 +202,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-058 A waypoint can be added from the row menu but not taken back](WEB-058-remove-waypoint/) | `dialogs.js`, `app.rs` | after 57 | **Fixed** |
 | [WEB-059 Layer popups clipped; warnings wrap; list stops short](WEB-059-popups-and-list/) | `map.js`, `dialogs.css` | after 58 | **Fixed** |
 | [WEB-060 Titan repositions for its own convenience; jump runs backwards](WEB-060-titan-reposition/) | `web/route.rs`, `map.js`, `app.rs` | after 59 | **Fixed** |
+| [WEB-061 A titan route does not say whether it is worth taking](WEB-061-titan-saving/) | `web/route.rs`, `dialogs.*`, `app.rs` | after 60 | **Fixed** |
 
 ### Browser evidence
 

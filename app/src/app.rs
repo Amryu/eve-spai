@@ -14209,6 +14209,18 @@ impl SpaiApp {
             head.push_str(&format!(" · {:.1} ly", o.total_ly));
         }
         ui.label(egui::RichText::new(head).strong());
+        if let Some(saved) = o.saved {
+            let thin = saved <= 2;
+            let mut line = format!("saves {saved} gate{}", if saved == 1 { "" } else { "s" });
+            if thin {
+                line.push_str(" — barely worth the cyno, a direct route may be simpler");
+            }
+            ui.label(egui::RichText::new(line).color(if thin {
+                crate::theme::standing::WARNING
+            } else {
+                crate::theme::standing::FRIENDLY
+            }));
+        }
         if let Some(n) = &o.note {
             ui.label(egui::RichText::new(n).weak());
         }
@@ -24934,8 +24946,10 @@ fn warn_text(w: &crate::web::route::HopWarning) -> Option<(String, egui::Color32
         let age = fmt_age((chrono::Utc::now().timestamp() - w.at).max(0));
         bits.push(format!("{} intel {age}", if w.sev >= 3 { "Critical" } else { "Danger" }));
     }
+    // No "this hour": the figures are hourly and every row saying so is three words of the same
+    // thing on every row.
     if w.kills > 0 || w.pods > 0 {
-        let mut k = format!("{} kills this hour", w.kills);
+        let mut k = format!("{} kills", w.kills);
         if w.pods > 0 {
             k.push_str(&format!(" · {} pods", w.pods));
         }

@@ -182,6 +182,10 @@ pub struct RouteOption {
     /// Not a hop, because the fleet does not fly it; the fleet gates to where the titan lands.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub titan_jump: Option<TitanJump>,
+    /// Gates this saves over flying it without the titan. The whole point of the question, and the
+    /// number that says whether the answer is worth the fuel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved: Option<usize>,
 }
 
 #[derive(Serialize, Clone)]
@@ -314,6 +318,7 @@ pub fn gate(
         note: None,
         detour: None,
         titan_jump: None,
+        saved: None,
         path,
         hops,
     })
@@ -374,6 +379,7 @@ pub fn jump(
         total_ly,
         detour: None,
         titan_jump: None,
+        saved: None,
         note: Some(format!(
             "{} isotopes · {:.0} min fatigue at the end",
             (fuel.round() as i64).to_string(),
@@ -486,6 +492,7 @@ pub fn titan(
                 note: Some(format!("{ly:.1} ly jump, then {} gates", rest.gates)),
                 detour: rest.detour,
                 titan_jump: None,
+                saved: None,
                 path,
                 hops,
             })
@@ -507,6 +514,7 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
         note: tail.note,
         detour: head.detour.or(tail.detour),
         titan_jump: head.titan_jump.or(tail.titan_jump),
+        saved: head.saved.or(tail.saved),
         path,
         hops,
     }
@@ -749,6 +757,7 @@ fn titan_self_jump(
                     to_titan.gates + tail.gates
                 )),
                 detour: None,
+                saved: baseline.checked_sub(to_titan.gates + tail.gates),
                 titan_jump: Some(TitanJump {
                     from,
                     to: land,
@@ -834,6 +843,7 @@ fn titan_via(
             note: Some(format!("{} gates to {tname}, {ly:.1} ly to {hname}, {} gates in", head.gates, tail.gates)),
             detour: None,
             titan_jump: None,
+            saved: baseline.checked_sub(gates),
             path,
             hops,
         });
@@ -889,6 +899,7 @@ fn reverse(o: RouteOption) -> RouteOption {
         note: o.note,
         detour: o.detour,
         titan_jump: o.titan_jump,
+        saved: o.saved,
     }
 }
 
@@ -919,6 +930,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
         note: o.note.clone(),
         detour: o.detour.clone(),
         titan_jump: o.titan_jump.clone(),
+        saved: o.saved,
     }
 }
 
