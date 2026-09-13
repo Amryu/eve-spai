@@ -583,8 +583,10 @@ function paintRoute(kind, onPick) {
     if (!w) return "";
     const bits = [];
     if (w.sev >= 2) bits.push(`${SEV[w.sev]} intel ${fmtAge(Math.max(0, Date.now() / 1000 - w.at))}`);
+    // No "this hour": the figures are hourly and every one of them says so, which is three words per
+    // row saying the same thing.
     if (w.kills || w.pods) {
-      bits.push(`${w.kills} ${w.kills === 1 ? "kill" : "kills"}${w.pods ? ` · ${w.pods} pods` : ""} this hour`);
+      bits.push(`${w.kills} ${w.kills === 1 ? "kill" : "kills"}${w.pods ? ` · ${w.pods} pods` : ""}`);
     }
     if (!bits.length) return "";
     // Clickable when there is intel behind it, because "Danger intel 4m" is a summary of something
@@ -626,6 +628,12 @@ function paintRoute(kind, onPick) {
       `</p>` +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
       (o.detour ? `<p class="rdetour">${ico("eye-slash")} ${esc(o.detour)}</p>` : "") +
+      (o.saved != null
+        ? `<p class="rsaved${o.saved <= 2 ? " thin" : ""}">${ico("sign-in")} saves ${o.saved} ` +
+          `${o.saved === 1 ? "gate" : "gates"}` +
+          (o.saved <= 2 ? ` — barely worth the cyno, a direct route may be simpler` : "") +
+          `</p>`
+        : "") +
       (o.titan_jump
         ? `<p class="rtitan">${ico("star-four")} Titan jumps ${esc(o.titan_jump.from_name)} → ` +
           `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`

@@ -314,3 +314,6 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .altdlg .ravoidrows button:hover { background: var(--surface-hi); }
 
 .rtitan { color: #ff7a3d; font-size: 0.82rem; margin: 0 0 0.4rem; }
+
+.rsaved { color: var(--friendly, #3fb950); font-size: 0.82rem; margin: 0 0 0.4rem; }
+.rsaved.thin { color: var(--warning); }
