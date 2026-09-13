@@ -48,6 +48,8 @@
    maintaining two is how they drift. */
 .maptools { position: relative; }
 
+/* Narrow pane: an overlay anchored under its button. Wide pane: in the flow above the map, where it
+   is part of reading the map rather than a thing to go and fetch. */
 .mlayers {
   position: absolute;
   top: 100%;
@@ -65,6 +67,23 @@
   min-width: 14rem;
 }
 .mlayers[hidden] { display: none; }
+
+.pane.wide .mlayers {
+  position: static;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0 0 0 0.3rem;
+  padding: 0;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  min-width: 0;
+}
+.pane.wide .mlayers .mlrow > span { flex: 0 0 auto; }
+.pane.wide .mlayers .mlgrid { display: flex; flex-wrap: wrap; }
+/* With the panel always there, its own button is redundant on a wide pane. */
+.pane.wide .maptools [data-layers] { display: none; }
 
 .mlrow { display: flex; align-items: center; gap: 0.5rem; }
 .mlrow > span { color: var(--muted); flex: 0 0 4.5rem; }

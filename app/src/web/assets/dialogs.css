@@ -1,12 +1,31 @@
-.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
-/* Without this the dialog cannot be closed at all. `hidden` is a UA rule of the same specificity as
-   `.modal`, and an author rule wins, so `display: flex` kept it on screen however many times the
-   close button was pressed. */
-.modal[hidden] { display: none; }
-.mback { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
+/* A floating window rather than a modal: it is opened while reading the map, and the map is the
+   context, so nothing behind it is blocked or dimmed. */
+.float {
+  position: fixed;
+  top: 4rem;
+  right: 1.5rem;
+  z-index: 50;
+  touch-action: none;
+  cursor: grab;
+}
+/* `hidden` is a UA rule of the same specificity as the class, and an author rule wins, so without
+   this the window could not be closed at all. */
+.float[hidden] { display: none; }
+.float:active { cursor: grabbing; }
+
+@media (max-width: 640px) {
+  /* No room to float on a phone: it sits over the bottom of the screen where a thumb reaches. */
+  .float {
+    top: auto;
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  }
+}
 
 .mpanel {
   position: relative;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;

@@ -13,18 +13,53 @@ const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 1
 
 let dlg = null;
 
+/// A floating window, not a modal.
+///
+/// A modal takes the whole page to show one system, which is wrong for something you open while
+/// reading the map: the map is the context. This floats, can be dragged, and does not block anything
+/// behind it. Escape and its close button dismiss it; clicking the map does not, because clicking
+/// the map is how you open the next one.
 function shell() {
   if (dlg) return dlg;
   dlg = document.createElement("div");
-  dlg.className = "modal";
+  dlg.className = "float";
   dlg.hidden = true;
-  dlg.innerHTML = `<div class="mback"></div><div class="mpanel" role="dialog" aria-modal="true"></div>`;
-  dlg.querySelector(".mback").addEventListener("click", close);
+  dlg.innerHTML = `<div class="mpanel" role="dialog"></div>`;
   document.body.append(dlg);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") close();
   });
+  dragify(dlg);
   return dlg;
+}
+
+/// Drag by the panel's own chrome. Pointer events so a phone can move it too, and clamped on release
+/// so it cannot be parked off screen.
+function dragify(node) {
+  let from = null;
+  node.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button, a, input")) return;
+    const r = node.getBoundingClientRect();
+    from = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
+    node.setPointerCapture(e.pointerId);
+  });
+  node.addEventListener("pointermove", (e) => {
+    if (!from) return;
+    const w = node.offsetWidth;
+    const h = node.offsetHeight;
+    const left = Math.min(window.innerWidth - 40, Math.max(40 - w, from.left + e.clientX - from.x));
+    const top = Math.min(window.innerHeight - 40, Math.max(0, from.top + e.clientY - from.y));
+    node.style.left = `${left}px`;
+    node.style.top = `${top}px`;
+    node.style.right = "auto";
+    node.style.bottom = "auto";
+    node.style.transform = "none";
+  });
+  const drop = () => {
+    from = null;
+  };
+  node.addEventListener("pointerup", drop);
+  node.addEventListener("pointercancel", drop);
 }
 
 export function close() {

@@ -10,6 +10,14 @@ use std::time::{Duration, Instant};
 pub enum OverlayToMain {
     Hello,
     Click(crate::app::IntelClick),
+    /// Select a system on the app's map and bring it into view.
+    ///
+    /// Distinct from `Click(IntelClick::System)`, which opens the system window: tapping a system on
+    /// the phone's map should move the desktop map to it, not put a dialog in front of whoever is
+    /// sitting at it.
+    SelectSystem {
+        id: i64,
+    },
     /// Open a fleet ping's comms link, named by the ping's timestamp.
     ///
     /// A timestamp, not a URL. The page is reachable from the network, and a message that carried a

@@ -35,6 +35,16 @@ pub struct Geometry {
     /// gate says where a boundary runs as much as where you can go, and on a map of identical lines
     /// none of those boundaries were visible.
     pub edges: Vec<(usize, usize, u8)>,
+    /// Real positions in hundredths of a light year, parallel to `nodes`.
+    ///
+    /// The drawn coordinates are a projection quantised into a 0..4096 box, which cannot answer "is
+    /// this within 6 ly", so jump range needs the real thing. Three small integers per system rather
+    /// than three floats: at 0.01 ly the whole galaxy fits in about a million units and the error is
+    /// far below anything a range band cares about.
+    pub pos3: Vec<[i32; 3]>,
+    /// Map units per light year, for drawing a range band at the right size. Exact for a geographic
+    /// layout, and the same approximation the app makes for any other.
+    pub units_per_ly: f64,
     /// Region id to name, for the labels the map draws when it is zoomed out too far for system
     /// names to be readable. About a hundred entries, so it rides with the geometry.
     pub regions: Vec<(i64, String)>,
@@ -112,6 +122,14 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
                 j: crate::jove::has(s.id),
             })
             .collect(),
+        pos3: nodes
+            .iter()
+            .map(|s| {
+                let ly = |v: f64| (v / crate::map::LY_METERS * 100.0).round() as i32;
+                [ly(s.x), ly(s.y), ly(s.z)]
+            })
+            .collect(),
+        units_per_ly: EXTENT * crate::map::LY_METERS / span,
         edges,
         bridges,
         regions: {
@@ -253,6 +271,20 @@ mod tests {
         assert_eq!(edge_style(&g, 30_003_704, 30_004_608), 2);
         // A system the graph has never heard of falls back to interior rather than guessing.
         assert_eq!(edge_style(&g, 30_009_999, 30_004_608), 0);
+    }
+
+    /// A range band is only meaningful if the positions behind it are the real ones. The drawn
+    /// coordinates are projected and quantised, so they cannot answer a distance question.
+    #[test]
+    fn real_positions_ride_alongside_the_drawn_ones() {
+        let (s, g) = fixture();
+        let geo = build(&s, &g);
+        assert_eq!(geo.pos3.len(), geo.nodes.len(), "one per node, in the same order");
+        assert!(geo.units_per_ly > 0.0);
+        // The fixture systems are metres apart, which is a rounding error in light years, so every
+        // real position lands on the origin. That is correct: it is the same number the app would
+        // compute, not a placeholder.
+        assert!(geo.pos3.iter().all(|p| p == &[0, 0, 0]), "{:?}", geo.pos3);
     }
 
     #[test]

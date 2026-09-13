@@ -13,6 +13,7 @@
 // Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
 import { ico, register, state } from "./app.js";
+import { send } from "./dialogs.js";
 
 let geo = null;
 let loading = false;
@@ -38,6 +39,7 @@ function load() {
     // "off" | "k" | "p" | "n" | "j", matching ActivityMode: ship kills, pod kills, NPC kills, jumps.
     activity: "off",
     adm: false,
+    jumprange: false,
     bridges: true,
     holes: true,
     camps: true,
@@ -52,6 +54,16 @@ function load() {
     return dflt;
   }
 }
+
+/// Jump ranges at maxed skills, and their band colours, both as `map::JUMP_RANGES` and the app's
+/// own palette have them.
+const JUMP_RANGES = [
+  ["Super / Titan", 6],
+  ["Capital", 7],
+  ["Black Ops", 8],
+  ["Jump Freighter", 10],
+];
+const RANGE_COLOURS = ["#5ac86a", "#e0a43a", "#4f9bd8", "#d84c4c"];
 
 /// The same green the app draws a bridge in.
 const BRIDGE_GREEN = "#3ad06a";
@@ -364,7 +376,10 @@ function paint() {
 
   // Sov upgrades: one mark each, coloured by level the way `level_color` does, mining marks tinted
   // to say they are ore.
-  if (layers.upgrades && live.upgrades?.length) {
+  // Upgrade marks are sized in screen pixels, not from the dot radius: tied to `r` they came out
+  // under three pixels across and were unreadable at every zoom. Drawn only once the map is zoomed
+  // in enough for them to have somewhere to sit.
+  if (layers.upgrades && live.upgrades?.length && r >= 1.8) {
     for (const [id, marks] of live.upgrades) {
       const n = geo.nodes[geo.byId.get(id)];
       if (!n) continue;
@@ -372,18 +387,20 @@ function paint() {
       if (!onScreen(px, py)) continue;
       marks.forEach((m, i) => {
         ctx.fillStyle = m.l >= 3 ? pal.hostile : m.l === 2 ? css("--friendly") : pal.fg;
-        const w = Math.max(2, r * 0.9);
-        const x = px - r + i * (w + 1.5);
+        const w = 6;
+        const x = px - r + i * (w + 2);
         // Mining marks are drawn as a diamond so a glance tells them apart without an ore icon.
+        const top = py - r - w - 2;
         if (m.k === 2) {
+          // Mining reads as a diamond, so a glance separates ore from the rest without an icon.
           ctx.beginPath();
-          ctx.moveTo(x + w / 2, py - r - w);
-          ctx.lineTo(x + w, py - r - w / 2);
-          ctx.lineTo(x + w / 2, py - r);
-          ctx.lineTo(x, py - r - w / 2);
+          ctx.moveTo(x + w / 2, top);
+          ctx.lineTo(x + w, top + w / 2);
+          ctx.lineTo(x + w / 2, top + w);
+          ctx.lineTo(x, top + w / 2);
           ctx.fill();
         } else {
-          ctx.fillRect(x, py - r - w, w, w);
+          ctx.fillRect(x, top, w, w);
         }
       });
     }
@@ -544,6 +561,49 @@ function paint() {
     ctx.setLineDash([]);
   }
 
+  // Jump range around the hovered system, as the app draws it: a band per hull class, and every
+  // system inside the smallest band it falls in tinted to match.
+  if (layers.jumprange && hovered && geo.pos3) {
+    const i = geo.byId.get(hovered.i);
+    const home = geo.pos3[i];
+    if (home) {
+      const hx = sx(hovered.x);
+      const hy = sy(hovered.z);
+      const perLy = (geo.units_per_ly ?? 0) / view.k;
+      ctx.lineWidth = 1.5;
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      for (let b = JUMP_RANGES.length - 1; b >= 0; b--) {
+        const [label, ly] = JUMP_RANGES[b];
+        ctx.strokeStyle = RANGE_COLOURS[b];
+        ctx.beginPath();
+        ctx.arc(hx, hy, ly * perLy, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = RANGE_COLOURS[b];
+        ctx.fillText(`${label} ${ly} ly`, hx, hy - ly * perLy - 3);
+      }
+      ctx.textAlign = "left";
+      // In-range systems, using the real positions rather than the drawn ones.
+      for (let k = 0; k < geo.nodes.length; k++) {
+        if (k === i) continue;
+        const p = geo.pos3[k];
+        const d =
+          Math.hypot(p[0] - home[0], p[1] - home[1], p[2] - home[2]) / 100;
+        const band = JUMP_RANGES.findIndex(([, ly]) => d <= ly);
+        if (band < 0) continue;
+        const n = geo.nodes[k];
+        const px = sx(n.x), py = sy(n.z);
+        if (!onScreen(px, py)) continue;
+        ctx.fillStyle = RANGE_COLOURS[band];
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+        ctx.arc(px, py, r + 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
   // The system under the pointer: a ring, and its name where it can be read. A cursor change alone
   // is easy to miss on a dense map, and on a touch screen there is no cursor at all.
   if (hovered) {
@@ -585,6 +645,7 @@ function paint() {
 }
 
 const TOGGLES = [
+  ["jumprange", "Jump range"],
   ["adm", "ADM"],
   ["bridges", "Bridges"],
   ["holes", "Wormholes"],
@@ -605,9 +666,21 @@ const CYCLES = [
 /// Ten controls in a row is most of a phone's screen and a third of a pane on a desktop, and the map
 /// is the thing worth the space. Same panel either way, anchored on a desktop and a sheet on a
 /// phone, which is the pattern the layout menu already set.
+/// Wide enough for the panel to sit above the map rather than over it.
+///
+/// Measured on the pane, not the viewport: the map can be one of four columns on a wide desktop, and
+/// a viewport query would call that pane roomy when it is narrower than a phone.
+const ROOM_FOR_PANEL = 460;
+
+function panelWantsOpen() {
+  return (el?.clientWidth ?? 0) >= ROOM_FOR_PANEL;
+}
+
 function layerPanel() {
+  // Open by default wherever there is room: on a desktop the layers are part of reading the map, and
+  // making them a click away every time was a click every time.
   return (
-    `<div class="mlayers" hidden>` +
+    `<div class="mlayers"${panelWantsOpen() ? "" : " hidden"}>` +
     CYCLES.map(
       ([key, label, , names]) =>
         `<div class="mlrow"><span>${label}</span>` +
@@ -636,13 +709,13 @@ function build() {
   el.innerHTML =
     `<h2>Map</h2>` +
     `<div class="maptools">` +
-    `<button data-fit>${ico("crosshair")} Fit</button>` +
     `<button data-layers>${ico("squares-four")} Layers</button>` +
     `<span class="maphint"></span>` +
     layerPanel() +
     `</div>` +
     `<div class="mapwrap"><canvas class="starmap"></canvas></div>`;
 
+  el.classList.toggle("wide", panelWantsOpen());
   canvas = el.querySelector("canvas");
   ctx = canvas.getContext("2d");
   pal = null;
@@ -652,11 +725,6 @@ function build() {
 }
 
 function wire() {
-  el.querySelector("[data-fit]")?.addEventListener("click", () => {
-    focused = null;
-    fit();
-    schedule();
-  });
   // A `#system/<id>` link highlights that system on the map as well as opening its dialog, so a link
   // someone sends points at something visible rather than just naming it.
   const followHash = () => {
@@ -678,9 +746,11 @@ function wire() {
     e.stopPropagation();
     panel.hidden = !panel.hidden;
   });
-  // Anywhere else closes it, the same as the layout menu.
+  // Only where the panel is an overlay. On a desktop it sits beside the map and closing it because
+  // the user clicked the map would be the map taking its own controls away.
   document.addEventListener("click", (e) => {
-    if (panel && !panel.hidden && !e.target.closest(".maptools")) panel.hidden = true;
+    if (!panel || panel.hidden || panelWantsOpen()) return;
+    if (!e.target.closest(".maptools")) panel.hidden = true;
   });
 
   el.querySelectorAll("[data-layer]").forEach((b) =>
@@ -802,14 +872,25 @@ function wire() {
     const mx = e.clientX - box.left;
     const my = e.clientY - box.top;
     const best = nearest(e);
-    if (best) location.hash = `#system/${best.i}`;
+    if (!best) return;
+    location.hash = `#system/${best.i}`;
+    // The desktop map moves to it too. Tapping a system on the phone should put it in front of
+    // whoever is sitting at the machine, not leave the two maps looking at different places.
+    send({ SelectSystem: { id: best.i } });
   });
 
   if (window.ResizeObserver) {
     new ResizeObserver(() => {
       pal = null;
+      // A pane that grew past the threshold stops overlaying its own controls, and one that shrank
+      // starts.
+      const wide = panelWantsOpen();
+      if (wide !== el.classList.contains("wide")) {
+        el.classList.toggle("wide", wide);
+        if (panel) panel.hidden = !wide;
+      }
       schedule();
-    }).observe(canvas);
+    }).observe(el);
   }
 }
 
