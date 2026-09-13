@@ -512,6 +512,8 @@ pub struct SpaiApp {
     /// Main window's cached (outer, inner) screen rects, for cross-window drop hit-testing.
     jabber_main_rect: Option<(egui::Rect, egui::Rect)>,
     jabber_join_open: bool,
+    /// Which half of the join dialog the user asked for, so it opens on the one they pressed.
+    jabber_join_rooms: bool,
     pub(crate) jabber_drafts: std::collections::HashMap<String, String>,
     jabber_room_input: String,
     jabber_contact_search: String,
@@ -1247,6 +1249,7 @@ impl SpaiApp {
             jabber_tab_drag: None,
             jabber_main_rect: None,
             jabber_join_open: false,
+            jabber_join_rooms: false,
             jabber_drafts: std::collections::HashMap::new(),
             jabber_room_input: String::new(),
             jabber_contact_search: String::new(),
@@ -2993,12 +2996,18 @@ impl SpaiApp {
         self.apply_tab_actions(out);
     }
 
-    fn jabber_join_dialog(&mut self, ctx: &egui::Context, convos: &[Convo]) {
+    fn jabber_join_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        convos: &[Convo],
+        channels: &[ChannelRow],
+    ) {
         if !self.jabber_join_open {
             return;
         }
         let mut open = true;
         let mut close = false;
+        let mut pick: Option<String> = None;
         egui::Window::new(format!(
             "{}  Join conversation",
             egui_phosphor::regular::CHAT_CIRCLE_DOTS
@@ -3026,6 +3035,26 @@ impl SpaiApp {
                     ui.button("Join").clicked() || enter
                 })
                 .inner;
+            // Recently active rooms, newest first, filtered by whatever is in the field. Typing an
+            // exact name still works; this is for the far more common case of half-remembering one.
+            let mut recent_rooms: Vec<&ChannelRow> = channels
+                .iter()
+                .filter(|c| c.last_at > 0)
+                .filter(|c| {
+                    let q = self.jabber_room_input.trim().to_lowercase();
+                    q.is_empty()
+                        || c.name.to_lowercase().contains(&q)
+                        || c.jid.to_lowercase().contains(&q)
+                })
+                .collect();
+            recent_rooms.sort_by_key(|c| std::cmp::Reverse(c.last_at));
+            recent_rooms.truncate(6);
+            for c in recent_rooms {
+                if ui.add(egui::Button::new(&c.name).frame(false)).clicked() {
+                    pick = Some(c.jid.clone());
+                }
+            }
+
             if room_go && !self.jabber_room_input.trim().is_empty() {
                 let room = self.full_room_jid(&self.jabber_room_input);
                 self.jabber_room_input.clear();
@@ -3057,6 +3086,24 @@ impl SpaiApp {
                     ui.button("Open").clicked() || enter
                 })
                 .inner;
+            let mut recent_dms: Vec<&Convo> = convos
+                .iter()
+                .filter(|c| c.last_at > 0)
+                .filter(|c| {
+                    let q = self.jabber_dm_input.trim().to_lowercase();
+                    q.is_empty()
+                        || c.name.to_lowercase().contains(&q)
+                        || c.jid.to_lowercase().contains(&q)
+                })
+                .collect();
+            recent_dms.sort_by_key(|c| std::cmp::Reverse(c.last_at));
+            recent_dms.truncate(6);
+            for c in recent_dms {
+                if ui.add(egui::Button::new(&c.name).frame(false)).clicked() {
+                    pick = Some(c.jid.clone());
+                }
+            }
+
             if dm_go && !self.jabber_dm_input.trim().is_empty() {
                 let input = self.jabber_dm_input.trim().to_owned();
                 let resolved = if input.contains('@') {
@@ -3098,6 +3145,18 @@ impl SpaiApp {
                 );
             }
         });
+        if let Some(jid) = pick {
+            self.jabber_room_input.clear();
+            self.jabber_dm_input.clear();
+            self.settings.jabber_closed_dms.retain(|j| j != &jid);
+            self.settings.jabber_closed_rooms.retain(|j| j != &jid);
+            self.jabber_unforget(&jid);
+            self.jabber_unleave(&jid);
+            self.jabber_mark_read(&jid);
+            self.needs_save = true;
+            self.jabber_open(&jid, ChatWinKey::Main);
+            close = true;
+        }
         if close || !open {
             self.jabber_join_open = false;
             self.jabber_dm_error.clear();
@@ -3349,13 +3408,17 @@ impl SpaiApp {
         let contacts: std::collections::HashSet<&String> =
             self.settings.jabber_contacts.iter().collect();
         let dm_keys: std::collections::HashSet<&String> = f.dm_keys.iter().collect();
+        // A DM the user closed stays closed. It comes back when it goes unread, which is what makes
+        // it sticky, so closing one is curation rather than a way to lose mail.
+        let closed: std::collections::HashSet<&String> =
+            self.settings.jabber_closed_dms.iter().collect();
         let mut dms: Vec<&Convo> = f
             .convos
             .iter()
             .filter(|c| {
-                dm_keys.contains(&c.jid)
-                    || contacts.contains(&c.jid)
-                    || self.jabber_sticky.contains(&c.jid)
+                self.jabber_sticky.contains(&c.jid)
+                    || (!closed.contains(&c.jid)
+                        && (dm_keys.contains(&c.jid) || contacts.contains(&c.jid)))
             })
             .filter(|c| matches(&c.name, &c.jid))
             .collect();
@@ -3379,6 +3442,7 @@ impl SpaiApp {
 
         let accent = ui.visuals().hyperlink_color;
         let mut open: Option<String> = None;
+        let mut start: Option<bool> = None;
         egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
             let w = &mut ui.visuals_mut().widgets;
             w.inactive.bg_stroke = egui::Stroke::NONE;
@@ -3419,6 +3483,9 @@ impl SpaiApp {
                     open = Some(c.jid.clone());
                 }
             }
+            if self.jabber_start_row(ui, egui_phosphor::regular::CHAT_CIRCLE_DOTS, "Start a DM") {
+                start = Some(false);
+            }
             section(ui, "Rooms", rooms.len());
             for c in &rooms {
                 if self
@@ -3437,17 +3504,59 @@ impl SpaiApp {
                     open = Some(c.jid.clone());
                 }
             }
+            if self.jabber_start_row(ui, egui_phosphor::regular::USERS_THREE, "Join a room") {
+                start = Some(true);
+            }
         });
+        if let Some(rooms) = start {
+            self.jabber_dm_error.clear();
+            self.jabber_join_rooms = rooms;
+            self.jabber_join_open = true;
+        }
         if let Some(jid) = open {
+            // Reopening has to undo every reason the conversation was hidden, not just one: a row
+            // that is listed but stays closed looks like the click did nothing.
+            self.settings.jabber_closed_dms.retain(|j| j != &jid);
+            self.settings.jabber_closed_rooms.retain(|j| j != &jid);
             self.jabber_unforget(&jid);
+            self.jabber_unleave(&jid);
+            self.jabber_mark_read(&jid);
+            self.needs_save = true;
             self.jabber_open(&jid, ChatWinKey::Main);
         }
     }
 
-    /// One row: name, an unread count, and a mention marker.
+    /// The last entry in a section: the way to start a conversation that is not listed yet.
+    fn jabber_start_row(&self, ui: &mut egui::Ui, icon: &str, label: &str) -> bool {
+        let bg = ui.painter().add(egui::Shape::Noop);
+        let inner = ui
+            .horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("{icon}  {label}"))
+                        .color(ui.visuals().hyperlink_color),
+                );
+            })
+            .response;
+        let row = egui::Rect::from_min_max(
+            egui::pos2(ui.min_rect().left(), inner.rect.top() - 1.0),
+            egui::pos2(ui.min_rect().right(), inner.rect.bottom() + 1.0),
+        );
+        let resp = ui.interact(row, ui.id().with(label), egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().set(
+                bg,
+                egui::Shape::rect_filled(row, 3.0, ui.visuals().widgets.hovered.bg_fill),
+            );
+        }
+        resp.clicked()
+    }
+
+    /// One row: a presence dot, the name, an unread count, and a mention marker.
     ///
-    /// A mention is drawn as the accent-coloured pill rather than a second badge beside the count:
-    /// the thing worth noticing is that this row is different, and two badges compete.
+    /// The whole row is the hit target and the whole row carries the hover and selection fill. A
+    /// label-sized target in a full-width list means most of the row does nothing when clicked and
+    /// nothing when pointed at, which reads as the list being dead.
     #[allow(clippy::too_many_arguments)]
     fn jabber_convo_row(
         &self,
@@ -3461,12 +3570,23 @@ impl SpaiApp {
         inaccessible: bool,
     ) -> egui::Response {
         let selected = self.jabber_chat.as_deref() == Some(jid);
-        let resp = ui
+        // Reserved now, filled in once the row's own height is known: painting a background after
+        // the content would paint over it.
+        let bg = ui.painter().add(egui::Shape::Noop);
+        let inner = ui
             .horizontal(|ui| {
-                if let Some(c) = presence {
-                    ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(c).size(9.0));
-                } else {
-                    ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).weak());
+                ui.add_space(2.0);
+                match presence {
+                    // Filled, not an outline glyph: a ring at this size reads as absent rather than
+                    // as a status, and it was invisible for anyone offline.
+                    Some(c) => {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 4.0, c);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).weak());
+                    }
                 }
                 let mut text = egui::RichText::new(truncate_to(
                     name,
@@ -3478,9 +3598,7 @@ impl SpaiApp {
                 if inaccessible {
                     text = text.strikethrough().weak();
                 }
-                let label = ui.add(
-                    egui::Label::new(text).truncate().selectable(false).sense(egui::Sense::click()),
-                );
+                ui.add(egui::Label::new(text).truncate().selectable(false));
                 if unread > 0 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (fg, bg) = if mention {
@@ -3497,22 +3615,30 @@ impl SpaiApp {
                             });
                     });
                 }
-                label
             })
-            .inner;
-        let resp = if motd.trim().is_empty() {
+            .response;
+
+        // The whole width, not just what the content happened to fill.
+        let row = egui::Rect::from_min_max(
+            egui::pos2(ui.min_rect().left(), inner.rect.top() - 1.0),
+            egui::pos2(ui.min_rect().right(), inner.rect.bottom() + 1.0),
+        );
+        let resp = ui.interact(row, ui.id().with(jid), egui::Sense::click());
+        let fill = if selected {
+            ui.visuals().selection.bg_fill
+        } else if resp.hovered() {
+            ui.visuals().widgets.hovered.bg_fill
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        if fill != egui::Color32::TRANSPARENT {
+            ui.painter().set(bg, egui::Shape::rect_filled(row, 3.0, fill));
+        }
+        if motd.trim().is_empty() {
             resp
         } else {
             resp.on_hover_text(motd)
-        };
-        if selected {
-            ui.painter().rect_filled(
-                resp.rect.expand2(egui::vec2(4.0, 2.0)),
-                3.0,
-                ui.visuals().selection.bg_fill,
-            );
         }
-        resp
     }
 
     fn jabber_frame(&self, focused: bool) -> JabberFrame {
@@ -4206,7 +4332,7 @@ impl SpaiApp {
             });
         let mut out: Vec<TabAction> = Vec::new();
         self.jabber_window_body(ui, ChatWinKey::Main, f, &mut out);
-        self.jabber_join_dialog(ui.ctx(), &f.convos);
+        self.jabber_join_dialog(ui.ctx(), &f.convos, &f.channels);
         self.apply_tab_actions(out);
     }
 

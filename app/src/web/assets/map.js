@@ -447,7 +447,7 @@ function paint() {
           ctx.drawImage(ore, cx - size / 2, cy - size / 2, size, size);
           return;
         }
-        if (!glyph(c2, UPGRADE_GLYPH[m.k] ?? "gear", cx, cy, size, colour)) {
+        if (!glyph(ctx, UPGRADE_GLYPH[m.k] ?? "gear", cx, cy, size, colour)) {
           // The font has not loaded yet; a filled dot is a better placeholder than a box.
           ctx.fillStyle = colour;
           ctx.beginPath();
