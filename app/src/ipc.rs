@@ -33,6 +33,14 @@ pub enum OverlayToMain {
         id: u64,
     },
     Verdict { name: String, hidden: bool },
+    /// Open a conversation, resolving the name the way the app's own start dialog does.
+    ///
+    /// A name and a kind, not a resolved JID: turning "Some Pilot" into a JID needs the configured
+    /// domain, and joining a room is a command to the session. Both live on the app side, and the
+    /// page should not be able to name an arbitrary JID for the app to join.
+    JabberOpen { name: String, room: bool },
+    /// Send one message to a conversation that is already open.
+    JabberSend { jid: String, body: String },
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
     PingMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
     CompactToggle(bool),

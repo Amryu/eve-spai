@@ -1828,6 +1828,7 @@ impl SpaiApp {
         f.route = self.travel_route.clone().unwrap_or_default();
         f.sov_colors = self.web_sov_colors();
         f.coal_colors = self.web_coalition_colors();
+        f.jabber = self.web_jabber_side();
         drop(f);
 
         let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
@@ -1837,6 +1838,88 @@ impl SpaiApp {
         // Cloned rather than shared: the status map is small and rewritten wholesale by its poller,
         // so holding its lock from a request thread would be the only way to block that poller.
         d.status = self.system_status.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // Shared, unlike the above: one room's backlog is bigger than every pane put together, and
+        // the page reads one conversation at a time.
+        d.jabber = Some(self.jabber.clone());
+    }
+
+    /// The Convos list as the page gets it.
+    ///
+    /// Built here rather than in the publisher because the rules read settings the publisher has no
+    /// handle on: who is a contact, which conversations were closed, which were forgotten. The order
+    /// is the app's own, so the two lists never disagree about what is at the top.
+    fn web_jabber_side(&self) -> crate::web::jabber::JabberSide {
+        use crate::web::jabber::WebConvo;
+        let st = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
+        let forgotten: std::collections::HashSet<&String> =
+            self.settings.jabber_forgotten.iter().collect();
+        let contacts: std::collections::HashSet<&String> =
+            self.settings.jabber_contacts.iter().collect();
+        let closed_dms: std::collections::HashSet<&String> =
+            self.settings.jabber_closed_dms.iter().collect();
+        let closed_rooms: std::collections::HashSet<&String> =
+            self.settings.jabber_closed_rooms.iter().collect();
+
+        let mut keys: std::collections::BTreeSet<&String> = st.chats.keys().collect();
+        keys.extend(st.roster.keys());
+        keys.extend(st.rooms.iter());
+
+        let mut convos: Vec<WebConvo> = keys
+            .into_iter()
+            .filter(|jid| !forgotten.contains(*jid))
+            .filter(|jid| jid.as_str() != crate::jabber::PING_FEED_KEY)
+            .map(|jid| {
+                let room = st.rooms.contains(jid) || st.rooms_left.contains(jid);
+                let last_at =
+                    st.chats.get(jid).and_then(|c| c.last()).map(|m| m.time).unwrap_or(0);
+                let name = st
+                    .roster
+                    .get(jid)
+                    .and_then(|c| c.name.clone())
+                    .unwrap_or_else(|| jid.split('@').next().unwrap_or(jid).to_owned());
+                let presence = (!room).then(|| {
+                    let p = st
+                        .roster
+                        .get(jid)
+                        .map(|c| c.presence)
+                        .or_else(|| st.presences.get(jid).map(|(p, _)| *p))
+                        .unwrap_or_default();
+                    let (r, g, b) = p.color();
+                    format!("#{r:02x}{g:02x}{b:02x}")
+                });
+                let listed = if room {
+                    !closed_rooms.contains(jid) && !st.rooms_left.contains(jid)
+                } else {
+                    !closed_dms.contains(jid)
+                        && (contacts.contains(jid) || st.chats.contains_key(jid))
+                };
+                WebConvo {
+                    jid: jid.clone(),
+                    name,
+                    room,
+                    listed,
+                    unread: st.unread_counts.get(jid).copied().unwrap_or(0),
+                    mention: st.mentions.contains(jid),
+                    last_at,
+                    presence,
+                }
+            })
+            .collect();
+        // DMs above rooms, unread above read, then by recency. The app's rule, stated once: an
+        // unread conversation with no history yet would sort to the bottom on recency alone, which
+        // is the one place it must not be.
+        convos.sort_by(|a, b| {
+            a.room
+                .cmp(&b.room)
+                .then((b.unread > 0).cmp(&(a.unread > 0)))
+                .then(b.last_at.cmp(&a.last_at))
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        crate::web::jabber::JabberSide {
+            configured: !self.settings.jabber_jid.trim().is_empty(),
+            connected: st.connected,
+            convos,
+        }
     }
 
     fn drain_alerts(&mut self) {
@@ -10299,8 +10382,76 @@ impl SpaiApp {
                 self.map_selected = Some(id);
                 self.map_focus = Some(id);
             }
+            crate::ipc::OverlayToMain::JabberOpen { name, room } => self.web_open_convo(&name, room),
+            crate::ipc::OverlayToMain::JabberSend { jid, body } => self.web_send_convo(&jid, &body),
             crate::ipc::OverlayToMain::Hello => {}
         }
+    }
+
+    /// Open a conversation on behalf of the page, by the same route the app's own start dialog uses.
+    ///
+    /// The page sends a name and a kind rather than a JID: resolving one needs the configured
+    /// domain, joining a room is a command to the session, and a socket on the LAN should not be
+    /// able to name an arbitrary JID for this machine to join.
+    fn web_open_convo(&mut self, name: &str, room: bool) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let jid = if room {
+            let jid = self.full_room_jid(name);
+            if let Some(tx) = &self.jabber_tx {
+                let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: jid.clone() });
+            }
+            if !self.settings.jabber_rooms.contains(&jid) {
+                self.settings.jabber_rooms.push(jid.clone());
+            }
+            self.settings.jabber_closed_rooms.retain(|r| r != &jid);
+            self.jabber_unleave(&jid);
+            jid
+        } else {
+            // An exact name already in the roster or in the history wins over a guess at the
+            // domain, which is the order the desktop dialog resolves in.
+            let known = {
+                let st = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
+                st.roster
+                    .iter()
+                    .find(|(jid, c)| {
+                        c.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))
+                            || jid.split('@').next().is_some_and(|l| l.eq_ignore_ascii_case(name))
+                    })
+                    .map(|(jid, _)| jid.clone())
+            };
+            let jid = known.unwrap_or_else(|| self.full_user_jid(name));
+            self.settings.jabber_closed_dms.retain(|j| j != &jid);
+            jid
+        };
+        self.jabber_unforget(&jid);
+        self.jabber_mark_read(&jid);
+        self.needs_save = true;
+        self.jabber_open(&jid, ChatWinKey::Main);
+    }
+
+    /// Send one message from the page. Behind `allow_writeback` like every other write, and only to
+    /// a conversation that already exists, so the page cannot start a thread with a stranger.
+    fn web_send_convo(&mut self, jid: &str, body: &str) {
+        let body = body.trim();
+        if body.is_empty() {
+            return;
+        }
+        let Some(tx) = &self.jabber_tx else { return };
+        let room = {
+            let st = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
+            if !st.chats.contains_key(jid) && !st.rooms.contains(jid) {
+                return;
+            }
+            st.rooms.contains(jid)
+        };
+        let _ = tx.send(if room {
+            crate::jabber::Cmd::SendRoom { room: jid.to_owned(), body: body.to_owned() }
+        } else {
+            crate::jabber::Cmd::Send { to: jid.to_owned(), body: body.to_owned() }
+        });
     }
 
     /// Open the comms link of the ping sent at `ts`, on this machine.
@@ -11168,7 +11319,6 @@ impl SpaiApp {
             for &(a, c) in &bridges {
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
                     if seg_visible(*p1, *p2) {
-                        arch_ground(&painter, *p1, *p2, bridge_col);
                         painter.add(egui::Shape::line(
                             arc_polyline(*p1, *p2, BRIDGE_BOW),
                             egui::Stroke::new(1.5, bridge_col),
@@ -23607,7 +23757,7 @@ pub(crate) fn notify_os(summary: &str, body: &str) {
 /// The apex rises straight up the screen rather than perpendicular to the segment. The map is a
 /// top-down projection of a plane, so "above the plane" is up, whatever direction the bridge runs;
 /// a perpendicular bow made a north-south bridge bulge sideways, which reads as a detour rather than
-/// as height. Drawn with [`arch_ground`] under it, the pair reads as a line lifted off the map.
+/// as height.
 pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::Pos2> {
     let d = b - a;
     let len = d.length();
@@ -23630,19 +23780,6 @@ pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::
 
 /// How high a bridge arch rises, as a fraction of its own length.
 pub(crate) const BRIDGE_BOW: f32 = 0.12;
-
-/// The faint straight line under an arch: where the bridge would run if it were on the map.
-///
-/// This is what makes the arch read as height rather than as a curved route. Without a ground track
-/// an arc is just a bent line.
-pub(crate) fn arch_ground(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, col: egui::Color32) {
-    painter.extend(egui::Shape::dashed_line(
-        &[a, b],
-        egui::Stroke::new(1.0, col.gamma_multiply(0.35)),
-        2.0,
-        4.0,
-    ));
-}
 
 fn open_mumble(link: String) {
     std::thread::spawn(move || {

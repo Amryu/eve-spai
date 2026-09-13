@@ -189,4 +189,6 @@ pub struct Snapshot {
     pub status: Option<StatusPane>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<Meta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jabber: Option<crate::web::jabber::JabberPane>,
 }

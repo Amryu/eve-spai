@@ -1,0 +1,121 @@
+/* Two columns inside the pane: the list decides what the other one shows. */
+.jwrap { flex: 1 1 auto; min-height: 0; display: flex; gap: 0.5rem; }
+.jlist {
+  flex: 0 0 11rem;
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  padding-right: 0.4rem;
+}
+.jchat { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+
+.jsec {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: 0.5rem 0 0.2rem;
+}
+.jrow, .jstart, .jrrow {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.22rem 0.3rem;
+  cursor: pointer;
+}
+/* The whole row, not the name. A label-sized target in a full-width list means most of the row does
+   nothing when clicked and nothing when pointed at, which reads as the list being dead. */
+.jrow:hover, .jstart:hover, .jrrow:hover { background: var(--surface-hi); }
+.jrow.on { background: var(--surface-active); }
+.jrow.mentioned .jname { color: var(--accent); font-weight: 600; }
+.jname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Drawn, not a glyph: Phosphor's circle is an outline, and a hollow dot reads as "unknown" rather
+   than as a presence. */
+.jdot { flex: 0 0 auto; width: 0.55rem; height: 0.55rem; border-radius: 50%; }
+.jico { flex: 0 0 auto; line-height: 1; }
+.jico { color: var(--muted); font-size: 0.95rem; }
+.jcount {
+  flex: 0 0 auto;
+  background: var(--surface-hi);
+  color: var(--fg);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  padding: 0 0.35rem;
+}
+.jcount.mention { background: var(--accent); color: var(--bg); font-weight: 600; }
+.jstart { color: var(--accent); }
+
+.jhead { flex: 0 0 auto; padding: 0.1rem 0 0.35rem; border-bottom: 1px solid var(--line); }
+.jlog { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0.3rem 0; }
+.jmsg { display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.1rem 0; align-items: baseline; }
+.jwho { color: var(--muted); font-weight: 600; }
+.jmsg.me .jwho { color: var(--accent); }
+.jat { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.jbody { flex: 1 1 100%; overflow-wrap: anywhere; }
+
+.jsend { flex: 0 0 auto; display: flex; gap: 0.3rem; padding-top: 0.3rem; }
+.jsend input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+}
+.jsend button {
+  font: inherit;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+/* A real modal, unlike the system window: starting a conversation is a thing you finish before you
+   go back to reading, and it is opened from a list that would otherwise be underneath it. */
+.jstartdlg {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 1rem;
+}
+.jstartdlg .mpanel { min-width: min(22rem, 90vw); }
+.jstartdlg h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.jstartdlg .jq {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.35rem 0.4rem;
+  margin-bottom: 0.4rem;
+}
+/* Capped at a hundred in the script, so this is what the rest of them live behind. */
+.jrecent { max-height: 16rem; overflow-y: auto; }
+
+/* The list costs more than it gives on a phone, so it stacks above the conversation. */
+@media (max-width: 640px) {
+  .jwrap { flex-direction: column; }
+  .jlist {
+    flex: 0 0 auto;
+    max-height: 40%;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding-right: 0;
+  }
+  .jrow, .jstart { padding: 0.45rem 0.3rem; }
+}

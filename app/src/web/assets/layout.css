@@ -43,11 +43,12 @@
 }
 #panes[data-mode="grid"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
+  /* Rows are the cells actually spent, not a fixed two, or two panes would sit in the top half of
+     an empty grid. */
+  grid-template-rows: repeat(var(--rows, 1), minmax(0, 1fr));
 }
-/* An odd number of panes leaves one cell of the last row spare. The map is the pane that gains most
-   from the width, so it takes both columns and nothing is left half empty. */
-#panes[data-mode="grid"] > .pane[data-span] { grid-column: 1 / -1; }
+#panes[data-mode="grid"] > .pane[data-span="wide"] { grid-column: span 2; }
+#panes[data-mode="grid"] > .pane[data-span="tall"] { grid-row: span 2; }
 /* Both layouts give a pane `display: flex`, and an author rule of any specificity beats the UA's
    `[hidden] { display: none }`. Without this, switching a pane off left it exactly where it was. */
 #panes[data-mode] > .pane[hidden] { display: none; }
@@ -138,4 +139,48 @@ body.sheet .modebar[hidden] { display: flex; }
     box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
   }
   .modebar button { flex: 1; min-height: 2.6rem; }
+}
+
+
+/* Per-pane chrome: the span button and the grab handle, on the pane's own heading line. */
+.pane > h2 { display: flex; align-items: center; gap: 0.4rem; }
+.pgrip { margin-left: auto; display: flex; gap: 0.15rem; }
+.pbtn {
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.15rem 0.25rem;
+  cursor: pointer;
+}
+.pbtn:hover { color: var(--fg); border-color: var(--line); background: var(--surface-hi); }
+.pdrag { cursor: grab; touch-action: none; }
+.pane.dragging .pdrag { cursor: grabbing; }
+
+/* What the drop will do. The pane being carried dims; the one under the pointer is outlined and
+   says so, because an outline alone reads as "selected" rather than as "these two trade places". */
+.pane.dragging { opacity: 0.5; }
+#panes > .pane.dropinto { outline: 2px dashed var(--accent); outline-offset: -2px; position: relative; }
+#panes > .pane.dropinto::after {
+  content: "Swap";
+  position: absolute;
+  top: 0.3rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+  pointer-events: none;
+}
+
+/* On a phone the handle is the only way to reorder without the layout menu, so it gets a real
+   target rather than a 16px glyph. */
+@media (max-width: 640px) {
+  .pbtn { padding: 0.35rem 0.45rem; font-size: 1.05rem; }
 }

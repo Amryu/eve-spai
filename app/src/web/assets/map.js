@@ -35,7 +35,8 @@ const ZOOM_EASE_MS = 180;
 /// Exponential decay spent all its speed in the first frame and then crawled in on an asymptote,
 /// which is a lurch followed by drift rather than a movement. This leaves and arrives still.
 const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
-/// The zoom in flight: where it set off from and when. Null when the map is settled.
+/// The zoom in flight: the map point pinned under the cursor, where `k` set off from, and when.
+/// Null when the map is settled.
 let anim = null;
 let fitted = false;
 /// The region the map is framed on, or null for the whole universe.
@@ -248,11 +249,17 @@ function radius() {
 function settle(now) {
   if (!anim) return false;
   const e = easeInOut(Math.min(1, (now - anim.t0) / ZOOM_EASE_MS));
-  view.ox = anim.from.ox + (target.ox - anim.from.ox) * e;
-  view.oz = anim.from.oz + (target.oz - anim.from.oz) * e;
   // Geometric in `k`, because zoom is: the halfway point of a zoom is the geometric mean, not the
   // arithmetic one, and interpolating it linearly races at one end and crawls at the other.
-  view.k = anim.from.k * Math.pow(target.k / anim.from.k, e);
+  view.k = anim.k0 * Math.pow(target.k / anim.k0, e);
+  // The pan is *derived* from the zoom rather than eased alongside it.
+  //
+  // Interpolating the origin on its own curve while `k` moved on another meant the two only agreed
+  // at the two ends: in between, the point the gesture was aimed at slid across the screen and the
+  // whole movement read as the map fighting the cursor. Solving `screen = (map - o) / k` for the
+  // anchor at each frame keeps that point under the cursor for every frame of the animation.
+  view.ox = anim.ax - anim.px * view.k;
+  view.oz = anim.az - anim.py * view.k;
   if (e < 1) return true;
   Object.assign(view, target);
   anim = null;
@@ -692,28 +699,16 @@ function paint() {
     ctx.setLineDash([]);
   }
 
-  // Jump range around the hovered system, as the app draws it: a band per hull class, and every
-  // system inside the smallest band it falls in tinted to match.
+  // Jump range around the hovered system: every system inside the smallest band it falls in, tinted
+  // to match.
   if (layers.jumprange && hovered && geo.pos3) {
     const i = geo.byId.get(hovered.i);
     const home = geo.pos3[i];
     if (home) {
-      const hx = sx(hovered.x);
-      const hy = sy(hovered.z);
-      const perLy = (geo.units_per_ly ?? 0) / view.k;
-      ctx.lineWidth = 1.5;
-      ctx.font = `${Math.round(12 * uiScale)}px system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      for (let b = JUMP_RANGES.length - 1; b >= 0; b--) {
-        const [label, ly] = JUMP_RANGES[b];
-        ctx.strokeStyle = RANGE_COLOURS[b];
-        ctx.beginPath();
-        ctx.arc(hx, hy, ly * perLy, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = RANGE_COLOURS[b];
-        ctx.fillText(`${label} ${ly} ly`, hx, hy - ly * perLy - 3);
-      }
-      ctx.textAlign = "left";
+      // No rings and no band labels: a jump range is a sphere, and a circle drawn on a top-down
+      // projection includes systems that are light years above or below it. The app can afford the
+      // ring because it is read next to the z axis; here it would just be wrong in two dimensions.
+      // The per-system tint is the part that is true either way, so that is all that is drawn.
       // In-range systems, using the real positions rather than the drawn ones.
       for (let k = 0; k < geo.nodes.length; k++) {
         if (k === i) continue;
@@ -912,12 +907,14 @@ function wire() {
 
   const zoomAt = (factor, px, py) => {
     const k = Math.max(geo.extent / 200000, Math.min(geo.extent / 200, target.k * factor));
-    // Keep the map point under the cursor where it is. Worked off the target rather than the drawn
-    // view, so notches during an easing zoom compound instead of fighting it.
-    target.ox += px * (target.k - k);
-    target.oz += py * (target.k - k);
+    // The map point under the cursor, which is what the whole gesture is about. Everything else,
+    // here and in `settle`, is derived from it, so it cannot drift.
+    const ax = view.ox + px * view.k;
+    const az = view.oz + py * view.k;
+    target.ox = ax - px * k;
+    target.oz = az - py * k;
     target.k = k;
-    anim = { from: { ox: view.ox, oz: view.oz, k: view.k }, t0: performance.now() };
+    anim = { ax, az, px, py, k0: view.k, t0: performance.now() };
     schedule();
   };
 
@@ -948,11 +945,11 @@ function wire() {
     view.oz -= dz;
     target.ox -= dx;
     target.oz -= dz;
-    // The zoom in flight is anchored to where it set off from, so a drag has to move that too or
-    // the next frame drags the map back.
+    // The zoom in flight is pinned to a map point, so a drag has to move the pin with it or the
+    // next frame drags the map back under the finger.
     if (anim) {
-      anim.from.ox -= dx;
-      anim.from.oz -= dz;
+      anim.ax -= dx;
+      anim.az -= dz;
     }
     schedule();
   });

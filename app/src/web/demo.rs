@@ -48,6 +48,10 @@ pub fn seed(web: &SharedWeb, tick: u64) {
     if let Some(rev) = st.changed(Pane::Meta, hash_of(&meta)) {
         st.put_meta(Meta { rev, ..meta });
     }
+    let jab = jabber();
+    if let Some(rev) = st.changed(Pane::Jabber, hash_of(&jab)) {
+        st.put_jabber(crate::web::jabber::JabberPane { rev, side: jab });
+    }
     let sys = BTreeMap::from([
         (
             HOME,
@@ -183,6 +187,44 @@ fn map(cards: &[IntelCard]) -> MapLive {
     }
 }
 
+/// Fake traffic, never the real roster. The screenshots go to a public repo and a contact list is
+/// operational information.
+fn jabber() -> crate::web::jabber::JabberSide {
+    use crate::web::jabber::WebConvo;
+    let dm = |name: &str, unread: u32, mention: bool, ago: i64, colour: &str| WebConvo {
+        jid: format!("{}@goonfleet.com", name.to_lowercase().replace(' ', ".")),
+        name: name.to_owned(),
+        room: false,
+        listed: true,
+        unread,
+        mention,
+        last_at: crate::uitest::fixtures::now() - ago,
+        presence: Some(colour.to_owned()),
+    };
+    let room = |name: &str, unread: u32, mention: bool, ago: i64| WebConvo {
+        jid: format!("{name}@conference.goonfleet.com"),
+        name: name.to_owned(),
+        room: true,
+        listed: true,
+        unread,
+        mention,
+        last_at: crate::uitest::fixtures::now() - ago,
+        presence: None,
+    };
+    crate::web::jabber::JabberSide {
+        configured: true,
+        connected: true,
+        convos: vec![
+            dm("Wingmate Alpha", 4, true, 40, "#3fb950"),
+            dm("Random Guy", 2, false, 300, "#8b949e"),
+            dm("Logi Lead", 0, false, 4000, "#d29922"),
+            room("delve.imperium", 12, false, 20),
+            room("corp.chat", 0, false, 900),
+            room("skirmish_commanders", 0, false, 7200),
+        ],
+    }
+}
+
 fn meta() -> Meta {
     Meta {
         rev: 0,
@@ -233,9 +275,42 @@ pub fn map_geometry() -> super::map::Geometry {
 }
 
 /// The dialog sources, from the same fixture graph as everything else.
+/// A jabber session with fake history, so the pane has something to draw. Fake, for the same reason
+/// every other fixture is: these screenshots are committed.
+fn jabber_state() -> std::sync::Arc<std::sync::Mutex<crate::jabber::JabberState>> {
+    let mut st = crate::jabber::JabberState::default();
+    st.connected = true;
+    let now = crate::uitest::fixtures::now();
+    let line = |from: &str, body: &str, at: i64, me: bool| crate::jabber::ChatMsg {
+        from: from.to_owned(),
+        body: body.to_owned(),
+        time: at,
+        outgoing: me,
+    };
+    st.chats.insert(
+        "wingmate.alpha@goonfleet.com".to_owned(),
+        vec![
+            line("Wingmate Alpha", "you on for the strat op?", now - 420, false),
+            line("me", "logging in now, give me five", now - 300, true),
+            line("Wingmate Alpha", "muninn fleet, undock in 1DQ", now - 90, false),
+            line("Wingmate Alpha", "bring logi if you have it", now - 40, false),
+        ],
+    );
+    st.rooms.insert("delve.imperium@conference.goonfleet.com".to_owned());
+    st.chats.insert(
+        "delve.imperium@conference.goonfleet.com".to_owned(),
+        vec![
+            line("Scout Bravo", "cerberus 319-3D", now - 200, false),
+            line("Scout Alpha", "clear 1DQ1-A", now - 20, false),
+        ],
+    );
+    std::sync::Arc::new(std::sync::Mutex::new(st))
+}
+
 pub fn detail() -> super::Detail {
     let d = super::detail();
     d.lock().unwrap().graph = Some(crate::uitest::fixtures::systems());
     d.lock().unwrap().player_sys = Some(HOME);
+    d.lock().unwrap().jabber = Some(jabber_state());
     d
 }

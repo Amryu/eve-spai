@@ -168,6 +168,10 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-026 Names sized off the pane; markers at every zoom; system window in the corner](WEB-026-zoom-scale-and-float/) | `map.js`, `dialogs.js` | after 25 | **Fixed** |
 | [WEB-027 Easing, AU units, hidden panes, mobile tabs, raw messages](WEB-027-easing-units-grid/) | `web/assets/*` | after 26 | **Fixed** |
 | [UI-051 One join dialog doing two jobs, with the wrong recents for both](UI-051-jabber-start-dialogs/) | `app.rs` jabber | after 50 | **Fixed** |
+| [WEB-028 Panes cannot be rearranged, resized or bounded](WEB-028-pane-layout-controls/) | `layout.js`, `layout.css` | after 27 | **Fixed** |
+| [WEB-029 No jabber in the web view](WEB-029-jabber-pane/) | `web/jabber.rs`, `panes-jabber.*` | after 28 | **Fixed** |
+| [WEB-030 Eased zoom fights the cursor; jump-range rings wrong in 2D](WEB-030-map-followups/) | `map.js` | after 29 | **Fixed** |
+| [UI-052 Dashed ground track under every bridge arc](UI-052-bridge-ground-track/) | `app.rs` map | after 51 | **Fixed** |
 
 ### Browser evidence
 

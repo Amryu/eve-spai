@@ -8,7 +8,7 @@ const CDN = "https://images.evetech.net";
 // The app snaps image requests to the CDN's own buckets rather than asking for arbitrary sizes.
 const bucket = (px) => [32, 64, 128, 256, 512].find((b) => b >= px) ?? 512;
 
-const esc = (s) =>
+export const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
   );

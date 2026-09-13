@@ -16,6 +16,7 @@ pub enum Route {
     Snapshot,
     State,
     MapGeometry,
+    JabberChat,
     SystemInfo(i64),
     ShipInfo(i64),
     Action,
@@ -47,6 +48,7 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/snapshot" => Route::Snapshot,
         "/api/state" => Route::State,
         "/api/map/geometry" => Route::MapGeometry,
+        "/api/jabber/chat" => Route::JabberChat,
         "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
         p if p.starts_with("/assets/sound/") && p.ends_with(".wav") => {
@@ -79,6 +81,41 @@ pub fn split_url(url: &str) -> (&str, &str) {
         Some((p, q)) => (p, q),
         None => (url, ""),
     }
+}
+
+/// Percent-decoding for one query value.
+///
+/// A JID's `@` and a room name's `.` arrive encoded, and a raw `%40` looks up a conversation nobody
+/// has. Only `%XX` and `+`, which is the whole of what a query value can carry.
+pub fn percent_decode(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                match u8::from_str_radix(&v[i + 1..i + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
