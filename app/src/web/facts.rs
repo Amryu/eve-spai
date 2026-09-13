@@ -50,6 +50,8 @@ pub struct UiFacts {
     /// Permanently avoided systems, one list per kind of route.
     pub avoid_gate: Vec<i64>,
     pub avoid_jump: Vec<i64>,
+    /// Filled only by an `fc-rescue` build with the mode switched on.
+    pub rescue: Option<crate::web::rescue::RescueSide>,
 }
 
 pub type SharedFacts = Arc<Mutex<UiFacts>>;

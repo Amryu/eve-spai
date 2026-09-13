@@ -48,6 +48,16 @@ pub const ASSETS: &[Asset] = &[
         body: include_str!("assets/panes-pings.js"),
     },
     Asset {
+        path: "/assets/panes-rescue.css",
+        mime: "text/css; charset=utf-8",
+        body: include_str!("assets/panes-rescue.css"),
+    },
+    Asset {
+        path: "/assets/panes-rescue.js",
+        mime: "text/javascript; charset=utf-8",
+        body: include_str!("assets/panes-rescue.js"),
+    },
+    Asset {
         path: "/assets/panes-jabber.css",
         mime: "text/css; charset=utf-8",
         body: include_str!("assets/panes-jabber.css"),

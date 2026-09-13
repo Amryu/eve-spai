@@ -205,6 +205,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-061 A titan route does not say whether it is worth taking](WEB-061-titan-saving/) | `web/route.rs`, `dialogs.*`, `app.rs` | after 60 | **Fixed** |
 | [WEB-062 No saving or loading routes in the web; hop list scrolls early](WEB-062-save-routes/) | `settings.rs`, `ipc.rs`, `dialogs.*` | after 61 | **Delivered** |
 | [UI-063 The in-app map is behind the web one; reactivation timer verified](UI-063-map-parity/) | `app.rs`, `jumproute.rs`, `map.js` | after 62 | **Delivered** |
+| [WEB-064 No rescue pane; switching a pane on switched another off](WEB-064-rescue-pane/) | `web/rescue.rs`, `panes-rescue.*`, `layout.js` | after 63 | **Delivered** |
 
 ### Browser evidence
 

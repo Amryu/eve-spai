@@ -20,9 +20,9 @@ export function ico(name) {
   return span.outerHTML;
 }
 
-export const PANES = ["intel", "alerts", "pings", "map", "jabber"];
+export const PANES = ["intel", "alerts", "pings", "map", "jabber", "rescue"];
 
-const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleets", map: "Map", jabber: "Jabber" };
+const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleets", map: "Map", jabber: "Jabber", rescue: "Rescue" };
 
 /// Each pane ticket replaces its own entry. Until then the slot says what it is waiting for, which
 /// is more honest than an empty box.
@@ -46,17 +46,24 @@ function count(pane) {
     case "pings": return s?.pings?.pings?.length ?? 0;
     case "map": return s?.map?.intel?.length ?? 0;
     case "jabber": return s?.jabber?.convos?.reduce((n, c) => n + (c.listed ? c.unread : 0), 0) ?? 0;
+    case "rescue": return s?.rescue?.pings?.length ?? 0;
   }
   return 0;
 }
 
 const MODES = [["auto", "Auto"], ["tabs", "Tabs"], ["columns", "Columns"], ["grid", "Grid"]];
 
+/// Panes this build and this user actually have. Rescue is an opt-in feature in an opt-in build, so
+/// on every other install it is not a pane that is switched off, it is a pane that does not exist.
+export function available() {
+  return PANES.filter((p) => p !== "rescue" || state.snapshot?.meta?.rescue);
+}
+
 function renderTabs() {
   // `data-tab`, not `data-pane`: the sections below already own that attribute, and a shared one
   // makes `querySelector("[data-pane=...]")` match whichever comes first in the document, which is
   // the button. Every pane then renders inside the header.
-  document.getElementById("tabs").innerHTML = PANES.map(
+  document.getElementById("tabs").innerHTML = available().map(
     (p) =>
       `<button class="tab" data-tab="${p}"><span class="tname">${TITLES[p]}</span> <b>${count(p)}</b></button>`
   ).join("");
@@ -69,9 +76,10 @@ function renderTabs() {
       MODES.map(([m, label]) => `<button data-mode="${m}">${label}</button>`).join("") +
       `</div>` +
       `<div class="mbrow mbpanes">` +
-      PANES.map(
-        (p) => `<button class="panetoggle" data-toggle="${p}">${TITLES[p]}</button>`
-      ).join("") +
+      available()
+        .filter((p) => p !== "rescue")
+        .map((p) => `<button class="panetoggle" data-toggle="${p}">${TITLES[p]}</button>`)
+        .join("") +
       `</div>`;
   }
 }
@@ -126,7 +134,7 @@ function merge(update) {
     return null; // a new generation invalidates everything
   }
   const dirty = new Set();
-  for (const pane of ["intel", "alerts", "pings", "map", "jabber", "meta"]) {
+  for (const pane of ["intel", "alerts", "pings", "map", "jabber", "rescue", "meta"]) {
     if (update[pane] !== undefined) {
       s[pane] = update[pane];
       dirty.add(pane);

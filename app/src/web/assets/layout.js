@@ -3,7 +3,7 @@
 // Per device, not in Settings: a phone and a desktop browser want different layouts, and the app
 // pushing one to both would be the app fighting the user.
 
-import { afterRender, ico, PANES, render } from "./app.js";
+import { afterRender, available, ico, PANES, render } from "./app.js";
 
 const KEY = "spai_layout";
 
@@ -53,7 +53,12 @@ function save() {
 /// without the user having picked anything.
 /// Panes the user has left switched on, in their chosen order.
 export function shown() {
-  return layout.order.filter((p) => !layout.off.includes(p));
+  const have = available();
+  // Rescue is always on where it exists: the mode is already an explicit choice made twice, in the
+  // build and in the settings, and a third switch to forget is one too many.
+  return layout.order.filter(
+    (p) => have.includes(p) && (p === "rescue" || !layout.off.includes(p))
+  );
 }
 
 export function isOn(pane) {
@@ -76,34 +81,33 @@ export function setOn(pane, on) {
   else off.add(pane);
   if (off.size >= PANES.length) return; // keep at least one
   layout.off = [...off];
-  fit(on ? pane : null);
+  fit();
   save();
   apply();
 }
 
-/// Switch off whatever does not fit in the budget, newest demand first.
+/// Which panes actually get drawn in a mode that has cells to fill.
 ///
-/// "If no space is available, the view will be disabled" is the rule, so something has to give when
-/// a fifth pane is switched on or a fourth is widened. `protect` is whatever the user just asked
-/// for: they get it, and the cost comes out of the far end of their own order instead.
-function fit(protect = null) {
-  const mode = effectiveMode();
-  let on = shown();
-  const total = () => on.reduce((n, p) => n + cost(p, mode), 0);
-  // Shrink before switching anything off. A pane that lost its second cell is still there to read;
-  // a pane that was switched off is gone, and losing one to make room for another is a worse trade
-  // than losing some width.
-  for (const p of [...on].reverse()) {
-    if (total() <= CELLS) break;
-    if (p === protect || !layout.span[p]) continue;
-    delete layout.span[p];
+/// Everything switched on stays switched on: tabs shows all of them, and grid and columns take the
+/// ones that fit in order and leave the rest where they are. Switching a pane on used to switch
+/// another off, which meant the layout quietly forgot a choice the user had made.
+export function fitting(mode = effectiveMode()) {
+  const on = shown();
+  if (mode === "tabs") return on;
+  const out = [];
+  let spent = 0;
+  for (const p of on) {
+    const c = cost(p, mode);
+    if (spent + c > CELLS) continue;
+    spent += c;
+    out.push(p);
   }
-  while (total() > CELLS && on.length > 1) {
-    const victim = [...on].reverse().find((p) => p !== protect) ?? on[on.length - 1];
-    layout.off = [...new Set([...layout.off, victim])];
-    on = shown();
-  }
-  layout.active = Math.min(layout.active, Math.max(0, on.length - 1));
+  return out;
+}
+
+/// Keep `active` inside the list and drop spans that no longer fit anywhere.
+function fit() {
+  layout.active = Math.min(layout.active, Math.max(0, shown().length - 1));
 }
 
 /// A pane's span: two columns wide, two rows tall, or neither. Both buttons are always there and
@@ -116,7 +120,7 @@ export function setSpan(pane, kind) {
   layout.autoSpan = true;
   if (layout.span[pane] === kind) delete layout.span[pane];
   else layout.span[pane] = kind;
-  fit(pane);
+  fit();
   save();
   apply();
 }
@@ -157,14 +161,15 @@ export function apply() {
   // the DOM and an input inside a pane keeps its focus.
   fit();
   const on = shown();
+  const drawn = fitting(mode);
   // An odd count leaves a spare cell and the map is the pane that gains most from the width, so it
   // starts wide. Seeded once as a real stored value rather than computed every time: computed, it
   // fought the span buttons, because clearing the span just made the rule put it straight back.
   if (
     !layout.autoSpan &&
     mode === "grid" &&
-    on.length % 2 === 1 &&
-    on.includes("map") &&
+    drawn.length % 2 === 1 &&
+    drawn.includes("map") &&
     !Object.keys(layout.span).length
   ) {
     layout.span.map = "wide";
@@ -175,18 +180,18 @@ export function apply() {
     const el = main.querySelector(`[data-pane="${name}"]`);
     if (!el) continue;
     el.style.order = String(i);
-    el.hidden = !on.includes(name);
+    el.hidden = !drawn.includes(name);
     const s = layout.span[name] ?? "";
     if (s) el.dataset.span = s;
     else delete el.dataset.span;
   }
   // Columns divide by what is actually showing, so switching one off widens the rest instead of
   // leaving a gap.
-  main.style.setProperty("--cols", String(Math.max(1, Math.min(on.length, CELLS))));
+  main.style.setProperty("--cols", String(Math.max(1, Math.min(drawn.length, CELLS))));
   // Rows are the cells actually spent, so two panes fill the height instead of sitting in the top
   // half of an empty 2x2.
-  const spent = on.reduce((n, p) => n + cost(p, mode), 0);
-  const tall = on.some((p) => layout.span[p] === "tall");
+  const spent = drawn.reduce((n, p) => n + cost(p, mode), 0);
+  const tall = drawn.some((p) => layout.span[p] === "tall");
   main.style.setProperty("--rows", String(Math.min(2, Math.max(tall ? 2 : 1, Math.ceil(spent / 2)))));
   paneChrome(mode);
   // Not during a swipe or the smooth scroll that follows a tab tap: jumping the strip to the active

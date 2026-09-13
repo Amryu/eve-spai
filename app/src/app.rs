@@ -1974,6 +1974,7 @@ impl SpaiApp {
         f.sov_colors = self.web_sov_colors();
         f.coal_colors = self.web_coalition_colors();
         f.jabber = self.web_jabber_side();
+        f.rescue = self.web_rescue_side();
         f.avoid_gate = self.settings.route_avoid_gate.clone();
         f.avoid_jump = self.settings.route_avoid_jump.clone();
         drop(f);
@@ -2007,6 +2008,56 @@ impl SpaiApp {
             .collect();
         d.holes = if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
         d.type_names = Some(self.type_names.clone());
+    }
+
+    /// The rescue pane, or `None` when this build has no rescue mode or the user has it off.
+    ///
+    /// Read-only by construction: the desktop's rescue window sends pings and pulls people into
+    /// comms, and a socket on the LAN should not be able to broadcast to an alliance.
+    #[cfg(feature = "fc-rescue")]
+    fn web_rescue_side(&self) -> Option<crate::web::rescue::RescueSide> {
+        if !self.settings.fc_rescue_enabled {
+            return None;
+        }
+        let r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
+        let pings = r
+            .recent_pings(8)
+            .into_iter()
+            .map(|e| crate::web::rescue::RescuePing {
+                seq: e.seq,
+                at: e.received,
+                author: e.author.clone(),
+                system: e.system_id,
+                system_name: e.system_name.clone(),
+                pilot: e.pilot.clone(),
+                cyno: e.cyno.clone(),
+                anomaly: e.anomaly.clone(),
+                class: e.cap_class.map(|c| format!("{c:?}")),
+                selected: r.selected_ping == Some(e.seq),
+            })
+            .collect();
+        Some(crate::web::rescue::RescueSide {
+            active: r.active,
+            test_mode: r.test_mode,
+            doctrine: r.doctrine.clone(),
+            op_channel: r.op_channel,
+            capital_system: r.capital_system_name.clone(),
+            capital_pilot: r.capital_pilot.clone(),
+            range: self.rescue_range.as_ref().map(|w| crate::web::rescue::RescueRange {
+                ly: w.ly_from_staging,
+                closest: w.closest_name.clone(),
+                ansiblex_jumps: w.ansi_jumps,
+                gate_jumps: w.gate_jumps,
+                ly_to_target: w.ly_to_target,
+            }),
+            pings,
+        })
+    }
+
+    /// Without the feature there is no rescue mode to report on.
+    #[cfg(not(feature = "fc-rescue"))]
+    fn web_rescue_side(&self) -> Option<crate::web::rescue::RescueSide> {
+        None
     }
 
     /// The Convos list as the page gets it.
