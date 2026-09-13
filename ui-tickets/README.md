@@ -185,6 +185,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-041 The radial menu asks again on every waypoint](WEB-041-menu-on-the-first-leg/) | `map.js`, `app.rs` | after 40 | **Fixed** |
 | [WEB-042 Jump planner picks any shortest path; no hull or skills in the route window](WEB-042-jump-planner/) | `jumproute.rs`, `web/route.rs`, `app.rs` | after 41 | **Fixed** |
 | [WEB-043 A route says nothing about what is waiting on it](WEB-043-route-warnings/) | `web/route.rs`, `dialogs.*`, `app.rs` | after 42 | **Fixed** |
+| [WEB-044 The web map has no context menu](WEB-044-map-context-menu/) | `map.js`, `route.js` | after 43 | **Delivered** |
 
 ### Browser evidence
 

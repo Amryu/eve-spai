@@ -14,7 +14,7 @@
 
 import { ico, register, state } from "./app.js";
 import { send, showRoute } from "./dialogs.js";
-import { lightYears, radial, reach } from "./route.js";
+import { lightYears, menu, radial, reach } from "./route.js";
 
 let geo = null;
 let loading = false;
@@ -770,6 +770,21 @@ function paint() {
     }
   }
 
+  // A route with a start and nowhere to go yet. Without this the menu's "Start ... Route" looks like
+  // it did nothing until a destination is picked.
+  if (routeKind && anchors.length === 1) {
+    const a = geo.nodes[geo.byId.get(anchors[0])];
+    if (a) {
+      ctx.strokeStyle = PICK_GATE;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.arc(sx(a.x), sy(a.z), r * 3.8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
   // The drag itself: a line from the system it started on to the pointer, snapped to whatever it is
   // over. Drawn last so nothing covers the thing being aimed.
   if (link) {
@@ -1007,6 +1022,7 @@ function wire() {
   const pointers = new Map();
   let pinch = null;
   let moved = 0;
+  let press = null;
 
   const zoomAt = (factor, px, py) => {
     // Clamped to the app's own range, and never tighter than wherever a region fit already put the
@@ -1034,6 +1050,16 @@ function wire() {
     // A drag that starts on a system is a route, not a pan. Everything else on the map is empty
     // space, so this costs the pan nothing and needs no modifier to tell the two apart.
     const on = pointers.size === 1 ? nearest(e) : null;
+    clearTimeout(press);
+    if (on && e.pointerType === "touch") {
+      press = setTimeout(() => {
+        if (moved > 8) return;
+        link = null;
+        hideLinkTip();
+        schedule();
+        openMenu(e, on);
+      }, 500);
+    }
     if (on) {
       const box = canvas.getBoundingClientRect();
       link = {
@@ -1054,6 +1080,7 @@ function wire() {
     const prev = pointers.get(e.pointerId);
     pointers.set(e.pointerId, e);
     if (link) {
+      if (moved > 8) clearTimeout(press);
       const box = canvas.getBoundingClientRect();
       link.x = e.clientX - box.left;
       link.y = e.clientY - box.top;
@@ -1107,6 +1134,7 @@ function wire() {
     schedule();
   });
   const up = (e) => {
+    clearTimeout(press);
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
     if (link) {
@@ -1128,10 +1156,7 @@ function wire() {
           routeKind = kind;
           anchors = extend ? [...anchors.slice(0, at + 1), over] : [from, over];
           if (kind === "gate") send({ SetDestination: { id: over } });
-          showRoute(kind, anchors, (r) => {
-            picked = r;
-            schedule();
-          });
+          replan();
         };
         // The menu asks what kind of route this is, which is a question with one answer per route,
         // not one per leg. Adding a waypoint to a route already being planned just extends it.
@@ -1170,6 +1195,18 @@ function wire() {
       hovered = null;
       schedule();
     }
+  });
+
+  // Right-click on a desktop, long press on a phone. The press timer is cancelled by the drag, so a
+  // press that turns into a route line never also opens a menu.
+  canvas.addEventListener("contextmenu", (e) => {
+    const n = nearest(e);
+    if (!n) return;
+    e.preventDefault();
+    link = null;
+    hideLinkTip();
+    schedule();
+    openMenu(e, n);
   });
 
   canvas.addEventListener(
@@ -1265,6 +1302,85 @@ function showLinkTip() {
 function hideLinkTip() {
   const tip = document.getElementById("linktip");
   if (tip) tip.hidden = true;
+}
+
+/// Plan the route the anchors currently describe, and draw it.
+function replan() {
+  if (!routeKind || anchors.length < 2) {
+    picked = null;
+    schedule();
+    return;
+  }
+  showRoute(routeKind, anchors, (r) => {
+    picked = r;
+    schedule();
+  });
+}
+
+/// What the context menu offers for one system, which depends entirely on whether a route is being
+/// built and whether this system is already part of it.
+function menuFor(id) {
+  const at = anchors.indexOf(id);
+  const items = [];
+  if (routeKind && anchors.length) {
+    if (at < 0) {
+      items.push(["dest", "Set as Destination"]);
+      if (anchors.length > 1) items.push(["way", "Add Waypoint"]);
+    } else if (at > 0) {
+      items.push(["drop", at === anchors.length - 1 ? "Remove Destination" : "Remove Waypoint"]);
+    }
+    items.push(["clear", "Clear Route", "warn"]);
+    items.push(null);
+  }
+  items.push(["start:gate", "Start Gate Route"]);
+  items.push(["start:jump", "Start Jump Route"]);
+  items.push(["start:titan", "Start Titan Route"]);
+  items.push(null);
+  items.push(["info", "Show info"]);
+  items.push(["focus", "Show in the app"]);
+  return items;
+}
+
+function menuPick(id, kind) {
+  const at = anchors.indexOf(id);
+  if (kind.startsWith("start:")) {
+    routeKind = kind.slice(6);
+    anchors = [id];
+    picked = null;
+    schedule();
+    return;
+  }
+  switch (kind) {
+    case "dest":
+      // One anchor is a start with nowhere to go, so this completes it; more than one replaces the
+      // destination and leaves the waypoints where they are.
+      anchors = anchors.length <= 1 ? [...anchors, id] : [...anchors.slice(0, -1), id];
+      if (routeKind === "gate") send({ SetDestination: { id } });
+      break;
+    case "way":
+      anchors = [...anchors.slice(0, -1), id, anchors[anchors.length - 1]];
+      break;
+    case "drop":
+      anchors = anchors.filter((_, i) => i !== at);
+      break;
+    case "clear":
+      anchors = [];
+      routeKind = null;
+      picked = null;
+      schedule();
+      return;
+    case "info":
+      location.hash = `#system/${id}`;
+      return;
+    case "focus":
+      send({ SelectSystem: { id } });
+      return;
+  }
+  replan();
+}
+
+function openMenu(e, n) {
+  menu(e.clientX, e.clientY, menuFor(n.i), (kind) => menuPick(n.i, kind));
 }
 
 function nearest(e) {

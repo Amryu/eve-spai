@@ -145,3 +145,33 @@
 .rbtn .ph { font-size: 1.2rem; color: var(--accent); }
 .rbtn:hover { border-color: var(--accent); background: var(--surface-hi); }
 .rbtn.cancel .ph { color: var(--muted); }
+
+/* The map's context menu. */
+.ctxmenu {
+  position: fixed;
+  z-index: 58;
+  min-width: 11rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.2rem;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+}
+.ctxmenu button {
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.ctxmenu button:hover { background: var(--surface-hi); }
+.ctxmenu button.warn { color: var(--hostile); }
+.ctxmenu hr { border: 0; border-top: 1px solid var(--line); margin: 0.2rem 0.1rem; }
+@media (max-width: 640px) {
+  .ctxmenu button { padding: 0.55rem 0.6rem; }
+}

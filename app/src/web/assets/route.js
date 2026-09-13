@@ -73,6 +73,42 @@ const OPTIONS = [
   ["cancel", "Cancel", "x", ""],
 ];
 
+/// A plain list menu at a point, for the things a radial has no room for.
+///
+/// A `null` entry is a separator. Dismissed by anything outside it, like the radial, and for the same
+/// reason: there is no backdrop to click.
+export function menu(x, y, items, pick) {
+  document.querySelector(".ctxmenu")?.remove();
+  const el = document.createElement("div");
+  el.className = "ctxmenu";
+  el.innerHTML = items
+    .map((it) =>
+      it === null
+        ? `<hr>`
+        : `<button data-pick="${it[0]}"${it[2] ? ` class="${it[2]}"` : ""}>${it[1]}</button>`
+    )
+    .join("");
+  document.body.append(el);
+  // Placed after measuring, so a menu opened near an edge comes back on screen instead of off it.
+  const r = el.getBoundingClientRect();
+  el.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`;
+  el.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
+  const done = (kind) => {
+    el.remove();
+    document.removeEventListener("pointerdown", away, true);
+    if (kind) pick(kind);
+  };
+  const away = (e) => {
+    if (!e.target.closest(".ctxmenu")) done(null);
+  };
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pick]");
+    if (b) done(b.dataset.pick);
+  });
+  setTimeout(() => document.addEventListener("pointerdown", away, true), 0);
+  return el;
+}
+
 export function radial(x, y, pick) {
   document.querySelector(".radial")?.remove();
   const el = document.createElement("div");
