@@ -301,6 +301,24 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                 "no-store".to_owned(),
             )])
         }
+        Route::JabberChat => {
+            // Percent-decoded, because a JID's `@` is encoded by the page and a raw one would look
+            // up a conversation that does not exist.
+            let jid = routes::query_param(query, "jid").map(routes::percent_decode).unwrap_or_default();
+            let state = ctx.detail.lock().unwrap_or_else(|e| e.into_inner()).jabber.clone();
+            let out = match state {
+                Some(j) => {
+                    let st = j.lock().unwrap_or_else(|e| e.into_inner());
+                    super::jabber::chat(&st, &jid, 200)
+                }
+                None => super::jabber::chat(&crate::jabber::JabberState::default(), &jid, 0),
+            };
+            let json = serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_owned());
+            respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[(
+                "Cache-Control",
+                "no-store".to_owned(),
+            )])
+        }
         Route::Snapshot => {
             let json = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).full_json();
             respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[

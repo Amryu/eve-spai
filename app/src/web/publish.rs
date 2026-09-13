@@ -171,6 +171,9 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
     if let Some(rev) = st.changed(Pane::Status, hash_of(&sysinfo)) {
         st.put_status(StatusPane { rev, systems: sysinfo });
     }
+    if let Some(rev) = st.changed(Pane::Jabber, hash_of(&facts.jabber)) {
+        st.put_jabber(crate::web::jabber::JabberPane { rev, side: facts.jabber.clone() });
+    }
     let meta = Meta {
         rev: 0,
         version: env!("CARGO_PKG_VERSION"),

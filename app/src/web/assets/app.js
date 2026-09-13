@@ -20,9 +20,9 @@ export function ico(name) {
   return span.outerHTML;
 }
 
-export const PANES = ["intel", "alerts", "pings", "map"];
+export const PANES = ["intel", "alerts", "pings", "map", "jabber"];
 
-const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleet pings", map: "Map" };
+const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleet pings", map: "Map", jabber: "Jabber" };
 
 /// Each pane ticket replaces its own entry. Until then the slot says what it is waiting for, which
 /// is more honest than an empty box.
@@ -45,6 +45,7 @@ function count(pane) {
     case "alerts": return s?.alerts?.msg?.feed?.length ?? 0;
     case "pings": return s?.pings?.pings?.length ?? 0;
     case "map": return s?.map?.intel?.length ?? 0;
+    case "jabber": return s?.jabber?.convos?.reduce((n, c) => n + (c.listed ? c.unread : 0), 0) ?? 0;
   }
   return 0;
 }
@@ -125,7 +126,7 @@ function merge(update) {
     return null; // a new generation invalidates everything
   }
   const dirty = new Set();
-  for (const pane of ["intel", "alerts", "pings", "map", "meta"]) {
+  for (const pane of ["intel", "alerts", "pings", "map", "jabber", "meta"]) {
     if (update[pane] !== undefined) {
       s[pane] = update[pane];
       dirty.add(pane);

@@ -13,6 +13,7 @@ pub mod detail;
 #[cfg(test)]
 pub mod demo;
 pub mod icons;
+pub mod jabber;
 pub mod map;
 pub mod routes;
 pub mod server;
@@ -34,6 +35,9 @@ pub struct DetailState {
     pub status: HashMap<i64, crate::systemstatus::SysFlags>,
     pub player_sys: Option<i64>,
     pub count_bridges: bool,
+    /// The live jabber session, shared rather than copied: one room's backlog is larger than every
+    /// other pane put together, and the pane reads one conversation at a time.
+    pub jabber: Option<Arc<Mutex<crate::jabber::JabberState>>>,
 }
 
 pub type Detail = Arc<Mutex<DetailState>>;

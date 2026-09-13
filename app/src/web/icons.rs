@@ -44,6 +44,16 @@ pub const ICONS: &[(&str, &str)] = &[
     ("arrows-in", icon::ARROWS_IN),
     ("arrows-out", icon::ARROWS_OUT),
     ("x", icon::X),
+    // Layout chrome: the grab handle and the span buttons on each pane.
+    ("dots-six-vertical", icon::DOTS_SIX_VERTICAL),
+    ("arrows-out-line-horizontal", icon::ARROWS_OUT_LINE_HORIZONTAL),
+    ("arrows-out-line-vertical", icon::ARROWS_OUT_LINE_VERTICAL),
+    ("arrows-in-line-horizontal", icon::ARROWS_IN_LINE_HORIZONTAL),
+    // Jabber.
+    ("chat-circle-dots", icon::CHAT_CIRCLE_DOTS),
+    ("users-three", icon::USERS_THREE),
+    ("paper-plane-right", icon::PAPER_PLANE_RIGHT),
+    ("plus", icon::PLUS),
     // Map markers, the same glyphs the app's own map draws.
     ("radioactive", icon::RADIOACTIVE),
     ("gear", icon::GEAR),

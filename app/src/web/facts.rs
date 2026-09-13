@@ -44,6 +44,9 @@ pub struct UiFacts {
     /// Alliance name to colour, and to its coalition's colour, as the app resolves them.
     pub sov_colors: std::collections::HashMap<String, String>,
     pub coal_colors: std::collections::HashMap<String, String>,
+    /// The Convos list, ordered by the app's own rules. Built on the UI thread because the rules
+    /// read settings the publisher has no handle on: contacts, closed conversations, forgotten ones.
+    pub jabber: crate::web::jabber::JabberSide,
 }
 
 pub type SharedFacts = Arc<Mutex<UiFacts>>;
