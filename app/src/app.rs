@@ -705,6 +705,8 @@ pub struct SpaiApp {
     map_leg_pick: Vec<usize>,
     /// Systems avoided for this route only, kept apart from the two persistent lists.
     map_avoid_once: std::collections::HashSet<i64>,
+    /// The system whose intel is being read from a route warning.
+    map_intel_for: Option<i64>,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1440,6 +1442,7 @@ impl SpaiApp {
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),
             map_avoid_once: std::collections::HashSet::new(),
+            map_intel_for: None,
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -10695,21 +10698,6 @@ impl SpaiApp {
         self.map_route_opts.clear();
         self.map_route_at = 0;
         self.ensure_jump_systems();
-        // The jump planner is the app's own answer to this question and it is a panel, not a
-        // read-only list: it has the hull, the skills and the waypoint editing already. So the map
-        // hands the route over to it rather than showing a second, worse copy beside it.
-        if self.map_route_kind == "jump" {
-            let anchors = self.map_route_anchors.clone();
-            self.jump_plan_from = anchors.first().copied();
-            self.jump_plan_to = anchors.last().copied();
-            self.jump_waypoints =
-                anchors.get(1..anchors.len().saturating_sub(1)).unwrap_or_default().to_vec();
-            self.map_mode = MapMode::JumpPlan;
-            self.jump_route_key = None;
-            self.recompute_jump_route();
-            self.map_route_opts.clear();
-            return;
-        }
         let Some(graph) = self.systems.clone() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
         // A titan at JDC V. The same figure the rescue planner uses, stated here because that one is
@@ -10740,6 +10728,67 @@ impl SpaiApp {
         crate::web::route::annotate(&mut self.map_route_opts, &danger);
         let anchors = self.map_route_anchors.clone();
         crate::web::route::mark_anchors(&mut self.map_route_opts, &anchors);
+    }
+
+    /// The intel behind a route warning, as its own window.
+    ///
+    /// "Danger intel 4m" is a summary of something somebody wrote, and the words are the part worth
+    /// reading. Rendered with the feed's own row, so a card here is the card there.
+    fn route_intel_window(&mut self, ctx: &egui::Context) {
+        let Some(sid) = self.map_intel_for else { return };
+        let name = self
+            .systems
+            .as_ref()
+            .and_then(|g| g.info_of(sid).map(|i| i.name.clone()))
+            .unwrap_or_default();
+        let reports: Vec<crate::intel::IntelReport> = {
+            let st = self.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+            st.reports
+                .iter()
+                .filter(|r| r.systems.iter().any(|s| s.id == sid))
+                .rev()
+                .take(30)
+                .cloned()
+                .collect()
+        };
+        let mut open = true;
+        egui::Window::new(format!("{}  {name}", egui_phosphor::regular::WARNING))
+            .id(egui::Id::new("route_intel"))
+            .collapsible(false)
+            .default_width(420.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if reports.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Nothing in the feed for this system any more.").weak(),
+                    );
+                    return;
+                }
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    for r in &reports {
+                        let sev = severity_of(r, &self.settings.severity);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  {}",
+                                fmt_age(
+                                    (chrono::Utc::now().timestamp() - r.received).max(0)
+                                ),
+                                r.text.trim()
+                            ))
+                            .color(severity_color(sev)),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("{} · {}", r.reporter, r.channel))
+                                .weak()
+                                .size(11.0),
+                        );
+                        ui.separator();
+                    }
+                });
+            });
+        if !open {
+            self.map_intel_for = None;
+        }
     }
 
     /// The route window: the hop list for whatever was picked, and the alternatives when the titan
@@ -13877,17 +13926,15 @@ impl SpaiApp {
         self.jump_ship = ship;
     }
 
+    /// The route panel: the same thing the browser's route window shows, in the sidebar.
+    ///
+    /// It used to be a jump-only planner with the hull picker, both skills and an ESI button taking
+    /// the top third before a single hop was listed. The route is the subject; everything about the
+    /// ship is one collapsed header away, and only for the kind of route that has a ship.
     fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
 
-        if self.jump_plan_from.is_none() {
-            self.jump_plan_from = self.player_system();
-        }
-        let name_of = |id: Option<i64>, sys: &Option<std::sync::Arc<crate::geo::Systems>>| -> String {
-            id.and_then(|i| sys.as_ref().and_then(|g| g.info_of(i).map(|s| s.name.clone())))
-                .unwrap_or_else(|| "—".to_string())
-        };
         let fmt_min = |m: f64| -> String {
             let t = m.round() as i64;
             if t >= 60 {
@@ -13898,205 +13945,341 @@ impl SpaiApp {
         };
 
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Jump Plan").strong());
-        ui.label(
-            egui::RichText::new("Fewest-jumps capital route. Set endpoints from the map right-click menu.")
-                .weak(),
-        );
-        ui.separator();
-
-        egui::ComboBox::from_id_salt(ui.id().with("jump_ship"))
-            .selected_text(SHIP_CLASSES[self.jump_ship].name)
-            .width(ui.available_width() - 8.0)
-            .show_ui(ui, |ui| {
-                for (i, c) in SHIP_CLASSES.iter().enumerate() {
-                    ui.selectable_value(&mut self.jump_ship, i, c.name);
+        let mut replan = false;
+        ui.horizontal(|ui| {
+            for (kind, label) in [("gate", "Gates"), ("jump", "Jumps"), ("titan", "Titan")] {
+                if ui.selectable_label(self.map_route_kind == kind, label).clicked()
+                    && self.map_route_kind != kind
+                {
+                    self.map_route_kind = match kind {
+                        "jump" => "jump",
+                        "titan" => "titan",
+                        _ => "gate",
+                    };
+                    replan = true;
                 }
-            });
-        let class = SHIP_CLASSES[self.jump_ship];
-        if let Some((jdc, jfc)) = self.jump_skills.lock().unwrap().take() {
-            self.jump_jdc = jdc.min(5);
-            self.jump_jfc = jfc.min(5);
-            self.jump_route_key = None;
-        }
-        ui.horizontal(|ui| {
-            ui.label("JDC").on_hover_text("Jump Drive Calibration (range)");
-            ui.add(egui::DragValue::new(&mut self.jump_jdc).range(0..=5));
-            ui.label("JFC").on_hover_text("Jump Fuel Conservation (fuel)");
-            ui.add(egui::DragValue::new(&mut self.jump_jfc).range(0..=5));
-            ui.label(egui::RichText::new(format!("{:.1} ly", max_range_ly(&class, self.jump_jdc))).weak());
+            }
         });
-        if self.active_character != "No character" {
-            let missing_skill =
-                self.char_missing_scope(&self.active_character, "esi-skills.read_skills.v1");
-            if ui
-                .button("Use my skills (ESI)")
-                .on_hover_text("Fetch Jump Drive Calibration / Fuel Conservation from ESI (needs the skills scope)")
-                .clicked()
-            {
-                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                crate::esi::fetch_jump_skills(
-                    cid,
-                    self.active_character.clone(),
-                    self.jump_skills.clone(),
-                    ui.ctx().clone(),
-                );
-            }
-            if missing_skill {
-                ui.label(
-                    egui::RichText::new("Re-auth this character in the Characters tab to grant the skills scope.")
-                        .color(crate::theme::standing::WARNING),
-                );
-            }
-        }
-        ui.separator();
 
-        let from_name = name_of(self.jump_plan_from, &self.systems);
-        let to_name = name_of(self.jump_plan_to, &self.systems);
-        ui.horizontal(|ui| {
-            ui.label("From");
-            ui.label(egui::RichText::new(from_name).strong());
-            if ui.small_button(icon::CROSSHAIR).on_hover_text("Set to current system").clicked() {
-                self.jump_plan_from = self.player_system();
-            }
-        });
-        let mut remove_wp: Option<usize> = None;
-        for (i, wp) in self.jump_waypoints.clone().iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label("Via");
-                ui.label(egui::RichText::new(name_of(Some(*wp), &self.systems)).strong());
-                if ui.small_button(icon::X).on_hover_text("Remove waypoint").clicked() {
-                    remove_wp = Some(i);
-                }
-            });
-        }
-        if let Some(i) = remove_wp {
-            self.jump_waypoints.remove(i);
-        }
-        ui.horizontal(|ui| {
-            ui.label("To");
-            ui.label(egui::RichText::new(to_name).strong());
-            if self.jump_plan_to.is_some() && ui.small_button(icon::X).on_hover_text("Clear").clicked() {
-                self.jump_plan_to = None;
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button(format!("{}  Swap", icon::SWAP)).clicked() {
-                std::mem::swap(&mut self.jump_plan_from, &mut self.jump_plan_to);
-            }
-            if (!self.jump_waypoints.is_empty() || self.jump_plan_to.is_some())
-                && ui.button("Clear").on_hover_text("Clear destination + waypoints").clicked()
-            {
-                self.jump_waypoints.clear();
-                self.jump_plan_to = None;
-            }
-        });
-        ui.label(
-            egui::RichText::new("Left-click the map to extend the route (the click becomes the destination); right-click for options.")
+        if self.map_route_anchors.len() < 2 {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Drag from one system to another on the map, or right-click a system to start a \
+                     route.",
+                )
                 .weak(),
-        );
-        ui.separator();
-
-        self.recompute_jump_route();
-        let any_invalid = self.jump_legs.iter().any(|l| !l.valid);
-
-        if let Some(to) = self.jump_plan_to {
-            if !self.settings.jump_dock.is_empty() && !self.jump_dockable_ids().contains(&to) {
-                ui.label(
-                    egui::RichText::new(format!("{} Destination has no marked dock for this hull.", icon::WARNING))
-                        .color(crate::theme::standing::WARNING),
-                );
+            );
+            if replan {
+                self.map_replan_route();
             }
+            return;
         }
 
-        if ui
-            .button(format!("{}  Saved routes\u{2026}", icon::FOLDER))
-            .on_hover_text("Save, load and organise routes")
-            .clicked()
+        // The systems the user named, in order, each removable. The start is not: a route has to
+        // begin somewhere, and removing it would leave an anchor list that means nothing.
+        let anchors = self.map_route_anchors.clone();
+        let name = |id: i64, g: &Option<std::sync::Arc<crate::geo::Systems>>| {
+            g.as_ref().and_then(|s| s.info_of(id).map(|i| i.name.clone())).unwrap_or_default()
+        };
+        let mut drop_anchor: Option<usize> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (i, &id) in anchors.iter().enumerate() {
+                if i > 0 {
+                    ui.label(egui::RichText::new(icon::ARROW_RIGHT).weak());
+                }
+                let txt = egui::RichText::new(name(id, &self.systems)).strong();
+                ui.label(if i == 0 || i == anchors.len() - 1 {
+                    txt.color(ui.visuals().hyperlink_color)
+                } else {
+                    txt
+                });
+                if i > 0 && ui.small_button(icon::X).on_hover_text("Remove").clicked() {
+                    drop_anchor = Some(i);
+                }
+            }
+        });
+        if let Some(i) = drop_anchor {
+            self.map_route_anchors.remove(i);
+            replan = true;
+        }
+
+        if self.map_route_kind == "titan"
+            && ui
+                .checkbox(&mut self.map_titan_at_start, "Titan is in the starting system")
+                .changed()
         {
-            self.route_kind = RouteKind::Jump;
-            self.routes_dialog_open = true;
+            replan = true;
         }
-        ui.separator();
+        if self.map_route_kind != "jump"
+            && ui
+                .checkbox(&mut self.settings.route_via_wormholes, "Route via scanned wormholes")
+                .changed()
+        {
+            self.needs_save = true;
+            replan = true;
+        }
 
-        if let Some(err) = self.jump_route_err.clone() {
-            ui.label(egui::RichText::new(err).color(crate::theme::standing::HOSTILE));
-        } else if any_invalid {
-            if let Some(bad) = self.jump_legs.iter().find(|l| !l.valid) {
-                let a = name_of(Some(bad.from), &self.systems);
-                let b = name_of(Some(bad.to), &self.systems);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} {a} {} {b} out of range. Add a closer waypoint.",
-                        icon::WARNING,
-                        icon::ARROW_RIGHT
-                    ))
-                    .color(crate::theme::standing::HOSTILE),
-                );
+        if self.map_route_kind == "jump" {
+            egui::CollapsingHeader::new(format!(
+                "{}  {} · {:.1} ly",
+                icon::SPIRAL,
+                SHIP_CLASSES[self.jump_ship].name,
+                max_range_ly(&SHIP_CLASSES[self.jump_ship], self.jump_jdc)
+            ))
+            .id_salt("route_ship")
+            .show(ui, |ui| {
+                egui::ComboBox::from_id_salt(ui.id().with("jump_ship"))
+                    .selected_text(SHIP_CLASSES[self.jump_ship].name)
+                    .width(ui.available_width() - 8.0)
+                    .show_ui(ui, |ui| {
+                        for (i, c) in SHIP_CLASSES.iter().enumerate() {
+                            if ui.selectable_value(&mut self.jump_ship, i, c.name).changed() {
+                                replan = true;
+                            }
+                        }
+                    });
+                if let Some((jdc, jfc)) = self.jump_skills.lock().unwrap().take() {
+                    self.jump_jdc = jdc.min(5);
+                    self.jump_jfc = jfc.min(5);
+                    replan = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("JDC").on_hover_text("Jump Drive Calibration (range)");
+                    replan |= ui
+                        .add(egui::DragValue::new(&mut self.jump_jdc).range(0..=5))
+                        .changed();
+                    ui.label("JFC").on_hover_text("Jump Fuel Conservation (fuel)");
+                    replan |= ui
+                        .add(egui::DragValue::new(&mut self.jump_jfc).range(0..=5))
+                        .changed();
+                });
+                if self.active_character != "No character"
+                    && ui
+                        .button("Use my skills (ESI)")
+                        .on_hover_text("Needs the skills scope on this character")
+                        .clicked()
+                {
+                    let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                    crate::esi::fetch_jump_skills(
+                        cid,
+                        self.active_character.clone(),
+                        self.jump_skills.clone(),
+                        ui.ctx().clone(),
+                    );
+                }
+            });
+        }
+
+        // What the route is being planned around, and which systems those are: a count on its own is
+        // not something anyone can check.
+        let avoid = self.route_avoid(self.map_route_kind == "jump");
+        let listed = self
+            .systems
+            .as_ref()
+            .map(|g| crate::web::route::avoided(g, &avoid))
+            .unwrap_or_default();
+        if !listed.is_empty() {
+            let mut stop: Option<(i64, bool)> = None;
+            egui::CollapsingHeader::new(format!(
+                "{}  avoiding {} system{}",
+                icon::EYE_SLASH,
+                listed.len(),
+                if listed.len() == 1 { "" } else { "s" }
+            ))
+            .id_salt("route_avoid")
+            .show(ui, |ui| {
+                for a in &listed {
+                    ui.horizontal(|ui| {
+                        ui.label(&a.name);
+                        if a.always {
+                            ui.label(egui::RichText::new("always").weak().size(11.0));
+                        }
+                        if ui.small_button(icon::X).on_hover_text("Stop avoiding").clicked() {
+                            stop = Some((a.id, a.always));
+                        }
+                    });
+                }
+            });
+            if let Some((id, always)) = stop {
+                if always {
+                    let jump = self.map_route_kind == "jump";
+                    let list = if jump {
+                        &mut self.settings.route_avoid_jump
+                    } else {
+                        &mut self.settings.route_avoid_gate
+                    };
+                    list.retain(|&s| s != id);
+                    self.needs_save = true;
+                } else {
+                    self.map_avoid_once.remove(&id);
+                }
+                replan = true;
             }
-        } else if self.jump_route.len() >= 2 {
-            if let Some(systems) = self.jump_systems.clone() {
-                let cost = crate::jumproute::route_cost(&systems, &self.jump_route, &class, self.jump_jfc);
-                ui.label(
-                    egui::RichText::new(format!("{} jumps · {:.1} ly", cost.jumps, cost.total_ly))
-                        .strong()
-                        .size(16.0),
-                );
-                ui.label(format!("{} fuel (approx)", (cost.fuel.round() as i64)));
-                ui.label(format!("Final fatigue: {}", fmt_min(cost.final_fatigue_min)));
-                ui.label(format!("Total jump delay: {}", fmt_min(cost.total_delay_min)));
-                ui.separator();
-                ui.label(egui::RichText::new("Hops").strong());
-                // Per jump, not just the totals: fatigue compounds, so the interesting number is
-                // which jump takes the timer past what you are willing to wait for.
-                let per = crate::jumproute::hop_costs(&systems, &self.jump_route, &class, self.jump_jfc);
-                let danger = self.route_danger();
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    let route = self.jump_route.clone();
-                    for (i, sid) in route.iter().enumerate() {
-                        if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(*sid)).cloned() {
-                            let sec = (info.security * 10.0).round() / 10.0;
-                            let label = format!("{}. {:.1}  {}", i + 1, sec, info.name);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(label).color(security_color(info.security)),
-                                    )
-                                    .frame(false),
-                                )
+        }
+
+        if replan {
+            self.map_replan_route();
+        }
+
+        let Some(o) = self.map_route_opts.get(self.map_route_at) else {
+            ui.separator();
+            ui.label(
+                egui::RichText::new("No route with these settings.")
+                    .color(crate::theme::standing::WARNING),
+            );
+            return;
+        };
+        ui.separator();
+        let mut head = format!("{} jumps", o.jumps);
+        if o.gates > 0 {
+            head.push_str(&format!(" · {} gates", o.gates));
+        }
+        if o.total_ly > 0.0 {
+            head.push_str(&format!(" · {:.1} ly", o.total_ly));
+        }
+        ui.label(egui::RichText::new(head).strong());
+        if let Some(n) = &o.note {
+            ui.label(egui::RichText::new(n).weak());
+        }
+
+        // Alternatives, one row per leg that has more than one way to fly it. Same jump count, so
+        // the row reads as "these cost the same, shortest first".
+        let legs: Vec<(String, String, Vec<String>)> = self
+            .map_route_legs
+            .iter()
+            .map(|l| {
+                (
+                    l.from_name.clone(),
+                    l.to_name.clone(),
+                    l.options
+                        .iter()
+                        .map(|o| {
+                            if o.total_ly > 0.0 {
+                                format!("{:.1} ly", o.total_ly)
+                            } else {
+                                format!("{}j", o.jumps)
+                            }
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut pick: Option<(usize, usize)> = None;
+        for (i, (from, to, opts)) in legs.iter().enumerate() {
+            if opts.len() < 2 {
+                continue;
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(format!("{from} → {to}")).weak().size(11.0));
+                for (k, label) in opts.iter().enumerate() {
+                    let on = self.map_leg_pick.get(i).copied().unwrap_or(0) == k;
+                    if ui.selectable_label(on, label).clicked() {
+                        pick = Some((i, k));
+                    }
+                }
+            });
+        }
+        if let Some((i, k)) = pick {
+            if self.map_leg_pick.len() <= i {
+                self.map_leg_pick.resize(i + 1, 0);
+            }
+            self.map_leg_pick[i] = k;
+            self.map_replan_route();
+            return;
+        }
+
+        ui.separator();
+        let hops: Vec<crate::web::route::Hop> = self
+            .map_route_opts
+            .get(self.map_route_at)
+            .map(|o| {
+                o.hops
+                    .iter()
+                    .map(|h| crate::web::route::Hop {
+                        id: h.id,
+                        name: h.name.clone(),
+                        security: h.security,
+                        kind: h.kind,
+                        ly: h.ly,
+                        fuel: h.fuel,
+                        fatigue_min: h.fatigue_min,
+                        reactivation_min: h.reactivation_min,
+                        warn: h.warn,
+                        anchor: h.anchor,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut avoid_now: Option<i64> = None;
+        let mut show_intel: Option<i64> = None;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for (i, h) in hops.iter().enumerate() {
+                // A system the user named gets its own ground, so the route reads as the legs it was
+                // built from rather than as one long list.
+                let frame = if h.anchor {
+                    egui::Frame::new()
+                        .fill(ui.visuals().hyperlink_color.gamma_multiply(0.16))
+                        .inner_margin(egui::Margin::symmetric(4, 1))
+                } else {
+                    egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 1))
+                };
+                frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(&h.name)
+                                .color(security_color(h.security))
+                                .strong(),
+                        );
+                        let tail = if i == 0 {
+                            "start".to_owned()
+                        } else {
+                            match h.kind {
+                                2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
+                                1 => "bridge".to_owned(),
+                                _ => "gate".to_owned(),
+                            }
+                        };
+                        ui.label(egui::RichText::new(tail).weak().size(11.0));
+                        if !h.anchor
+                            && ui
+                                .small_button(icon::EYE_SLASH)
+                                .on_hover_text("Avoid this system")
                                 .clicked()
-                            {
-                                self.dock_system(*sid);
-                            }
-                            if let Some(w) = danger.get(sid) {
-                                warn_line(ui, w);
-                            }
-                            if let Some(c) = i.checked_sub(1).and_then(|k| per.get(k)) {
-                                ui.indent(("hopcost", i), |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{:.2} ly · {} iso · fatigue {} · ready in {}",
-                                            c.ly,
-                                            c.fuel.round() as i64,
-                                            fmt_min(c.fatigue_min),
-                                            fmt_min(c.reactivation_min)
-                                        ))
-                                        .weak()
-                                        .size(11.5),
-                                    );
-                                });
-                            }
+                        {
+                            avoid_now = Some(h.id);
+                        }
+                    });
+                    if let Some(c) = h.fuel.zip(h.fatigue_min).zip(h.reactivation_min) {
+                        let ((fuel, fat), react) = c;
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} iso · fatigue {} · ready in {}",
+                                fuel.round() as i64,
+                                fmt_min(fat),
+                                fmt_min(react)
+                            ))
+                            .weak()
+                            .size(11.0),
+                        );
+                    }
+                    if let Some(w) = &h.warn {
+                        if warn_button(ui, w) {
+                            show_intel = Some(h.id);
                         }
                     }
                 });
             }
-        } else if self.jump_plan_to.is_none() {
-            ui.label(
-                egui::RichText::new("Right-click a system on the map for \"Plan Jump Route To Here\".")
-                    .weak(),
-            );
+        });
+        if let Some(id) = avoid_now {
+            self.map_avoid_once.insert(id);
+            self.map_replan_route();
+        }
+        if let Some(id) = show_intel {
+            self.map_intel_for = Some(id);
         }
     }
+
 
     fn travel_panel_content(&mut self, ui: &mut egui::Ui) {
         fn travel_field(
@@ -19908,6 +20091,7 @@ impl SpaiApp {
         self.region_window(ctx);
         self.ship_window(ctx);
         self.map_route_window(ctx);
+        self.route_intel_window(ctx);
         self.pilot_window(ctx);
         self.fit_window(ctx);
         self.battle_filter_dialog(ctx);
@@ -24587,6 +24771,46 @@ pub(crate) fn render_ping(
 ///
 /// Intel below Danger is deliberately absent: a nullsec route passes through dozens of systems
 /// someone has said something about, and a warning on all of them is a warning on none.
+/// The warning line as a button, so the intel behind it can be read.
+///
+/// Returns whether it was clicked. Only clickable when there is intel: a line that only says "3 kills
+/// this hour" has nothing to open.
+fn warn_button(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) -> bool {
+    let Some((text, col)) = warn_text(w) else { return false };
+    if w.sev < crate::web::route::WARN_SEVERITY {
+        ui.label(egui::RichText::new(text).color(col).size(11.0));
+        return false;
+    }
+    ui.add(egui::Button::new(egui::RichText::new(text).color(col).size(11.0)).frame(false))
+        .on_hover_text("Show the intel for this system")
+        .clicked()
+}
+
+/// The warning as one line, or nothing when there is nothing to warn about.
+fn warn_text(w: &crate::web::route::HopWarning) -> Option<(String, egui::Color32)> {
+    let mut bits: Vec<String> = Vec::new();
+    if w.sev >= crate::web::route::WARN_SEVERITY {
+        let age = fmt_age((chrono::Utc::now().timestamp() - w.at).max(0));
+        bits.push(format!("{} intel {age}", if w.sev >= 3 { "Critical" } else { "Danger" }));
+    }
+    if w.kills > 0 || w.pods > 0 {
+        let mut k = format!("{} kills this hour", w.kills);
+        if w.pods > 0 {
+            k.push_str(&format!(" · {} pods", w.pods));
+        }
+        bits.push(k);
+    }
+    if bits.is_empty() {
+        return None;
+    }
+    let col = if w.sev >= 3 {
+        crate::theme::standing::HOSTILE
+    } else {
+        crate::theme::standing::WARNING
+    };
+    Some((format!("{}  {}", egui_phosphor::regular::WARNING, bits.join(" · ")), col))
+}
+
 fn warn_line(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) {
     let mut bits: Vec<String> = Vec::new();
     if w.sev >= crate::web::route::WARN_SEVERITY {

@@ -284,3 +284,14 @@ button.rwarn {
   .dtab { padding: 0.45rem 0.6rem; }
   .dshut { padding: 0.1rem 0.3rem; font-size: 1.05rem; }
 }
+
+/* A baseline width for the system badge, so a column of null-sec names lines up instead of jittering
+   with the character widths. Names longer than this still grow; most do not. */
+.rhop .chip { min-width: 5.4rem; justify-content: center; }
+/* The avoid button belongs on the name's line. The costs and the warning take a full row each, so
+   without this they pushed it onto a line of its own. */
+.ravoid { order: 0; margin-left: auto; }
+.rcost, .rwarn { order: 1; }
+.rdetour { color: var(--warning); font-size: 0.82rem; margin: 0 0 0.4rem; }
+/* Docked, the hop list takes whatever height is left rather than stopping at a guess. */
+.rdock .rhops { flex: 1 1 auto; }

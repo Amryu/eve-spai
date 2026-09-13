@@ -174,6 +174,10 @@ pub struct RouteOption {
     pub total_ly: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// What avoidance cost, when it cost anything. Absent when the route is the one you would have
+    /// flown anyway, which is most of the time even with a long avoid list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detour: Option<String>,
 }
 
 /// The hulls a jump route can be planned for, so the page's picker is the app's own list rather than
@@ -295,6 +299,7 @@ pub fn gate(
         jumps: path.len().saturating_sub(1),
         total_ly: 0.0,
         note: None,
+        detour: None,
         path,
         hops,
     })
@@ -353,6 +358,7 @@ pub fn jump(
         gates: 0,
         jumps: path.len().saturating_sub(1),
         total_ly,
+        detour: None,
         note: Some(format!(
             "{} isotopes · {:.0} min fatigue at the end",
             (fuel.round() as i64).to_string(),
@@ -447,6 +453,7 @@ pub fn titan(
                 jumps: 1,
                 total_ly: ly,
                 note: Some(format!("{ly:.1} ly jump, then {} gates", rest.gates)),
+                detour: rest.detour,
                 path,
                 hops,
             })
@@ -466,6 +473,7 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
         jumps: head.jumps + tail.jumps,
         total_ly: head.total_ly + tail.total_ly,
         note: tail.note,
+        detour: head.detour.or(tail.detour),
         path,
         hops,
     }
@@ -496,8 +504,24 @@ fn leg_options(
             _ => gate(graph, a, b, bridges, extra, holes),
         }
     };
-    let Some(best) = one(avoid) else { return Vec::new() };
+    let Some(mut best) = one(avoid) else { return Vec::new() };
     let want = best.jumps;
+    // What the avoid list cost, if it cost anything. Worth one more search: a route that is three
+    // jumps longer than it needs to be is worth knowing about, and "why is this going the long way
+    // round" is otherwise unanswerable from the list.
+    if avoid.any() {
+        if let Some(free) = one(&Avoid::default()) {
+            if free.path != best.path {
+                let extra = best.jumps as i64 - free.jumps as i64;
+                best.detour = Some(match extra {
+                    0 => "avoiding systems, same length".to_owned(),
+                    1 => "1 jump longer, avoiding systems".to_owned(),
+                    n if n > 0 => format!("{n} jumps longer, avoiding systems"),
+                    _ => "avoiding systems".to_owned(),
+                });
+            }
+        }
+    }
     let mut out = vec![best];
     let mut seen: std::collections::HashSet<Vec<i64>> =
         std::collections::HashSet::from([out[0].path.clone()]);
@@ -614,6 +638,7 @@ fn reverse(o: RouteOption) -> RouteOption {
         jumps: o.jumps,
         total_ly: o.total_ly,
         note: o.note,
+        detour: o.detour,
     }
 }
 
@@ -642,6 +667,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
         jumps: o.jumps,
         total_ly: o.total_ly,
         note: o.note.clone(),
+        detour: o.detour.clone(),
     }
 }
 
