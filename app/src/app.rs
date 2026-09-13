@@ -304,13 +304,15 @@ enum RightDockTab {
     System,
 }
 
-/// Which list the Jabber left sidebar shows: everyone (Directory), starred people (Contacts), or
-/// MUC rooms (Channels).
+/// Which list the Jabber left sidebar shows.
+///
+/// `Convos` is everything you are actually talking in, DMs above rooms, newest first. It replaced a
+/// Contacts list that only showed starred people and a separate Channels list, which between them
+/// made a direct message easy to miss: it could be behind a tab you were not looking at.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JabberPane {
+    Convos,
     Directory,
-    Contacts,
-    Channels,
 }
 
 #[derive(Default)]
@@ -516,6 +518,9 @@ pub struct SpaiApp {
     jabber_dm_input: String,
     jabber_dm_error: String,
     jabber_pane: JabberPane,
+    /// Conversations pinned into the Convos list for as long as the tab stays open, because they
+    /// went unread while it was. Reading one must not make it disappear mid-click.
+    jabber_sticky: std::collections::BTreeSet<String>,
     /// Channel JIDs whose MOTD is expanded (full text) in the Channels list.
     jabber_motd_expanded: std::collections::HashSet<String>,
     jabber_collapsed: std::collections::HashSet<String>,
@@ -1245,7 +1250,8 @@ impl SpaiApp {
             jabber_contact_search: String::new(),
             jabber_dm_input: String::new(),
             jabber_dm_error: String::new(),
-            jabber_pane: JabberPane::Directory,
+            jabber_pane: JabberPane::Convos,
+            jabber_sticky: Default::default(),
             jabber_motd_expanded: std::collections::HashSet::new(),
             jabber_collapsed: std::collections::HashSet::new(),
             jabber_my_presence: crate::jabber::Presence::Online,
@@ -2232,6 +2238,7 @@ impl SpaiApp {
     fn jabber_mark_read(&self, jid: &str) {
         let mut st = self.jabber.lock().unwrap();
         st.unread.remove(jid);
+        st.unread_counts.remove(jid);
         st.mentions.remove(jid);
     }
 
@@ -2753,6 +2760,7 @@ impl SpaiApp {
             st.rooms_inaccessible.remove(jid);
             st.room_subjects.remove(jid);
             st.unread.remove(jid);
+            st.unread_counts.remove(jid);
             st.mentions.remove(jid);
         }
         self.remove_jabber_tab(jid);
@@ -3285,6 +3293,192 @@ impl SpaiApp {
 
     /// One lock, one snapshot of everything a chat window needs to draw itself. Messages stay
     /// out of it: each window borrows its own conversation under the lock while it draws.
+    /// The Convos list: direct messages above rooms, each newest first.
+    ///
+    /// DMs go on top because they are addressed to you personally and were the thing easiest to miss
+    /// when they sat in a tab beside everything else. Recency rather than name order, because the
+    /// conversation you want next is almost always the one that just moved.
+    fn jabber_convos_list_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame, search: &str) {
+        let matches = |name: &str, jid: &str| {
+            search.is_empty()
+                || name.to_lowercase().contains(search)
+                || jid.to_lowercase().contains(search)
+        };
+
+        // Anything unread joins the list and stays for as long as the tab is open.
+        for c in f.convos.iter().filter(|c| c.unread) {
+            self.jabber_sticky.insert(c.jid.clone());
+        }
+
+        let contacts: std::collections::HashSet<&String> =
+            self.settings.jabber_contacts.iter().collect();
+        let dm_keys: std::collections::HashSet<&String> = f.dm_keys.iter().collect();
+        let mut dms: Vec<&Convo> = f
+            .convos
+            .iter()
+            .filter(|c| {
+                dm_keys.contains(&c.jid)
+                    || contacts.contains(&c.jid)
+                    || self.jabber_sticky.contains(&c.jid)
+            })
+            .filter(|c| matches(&c.name, &c.jid))
+            .collect();
+        // Unread first, then most recent. An unread conversation with no history yet would sort to
+        // the bottom on recency alone, which is the one place it must not be.
+        dms.sort_by(|a, b| {
+            b.unread
+                .cmp(&a.unread)
+                .then(b.last_at.cmp(&a.last_at))
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        let mut rooms: Vec<&ChannelRow> =
+            f.channels.iter().filter(|c| matches(&c.name, &c.jid)).collect();
+        rooms.sort_by(|a, b| {
+            b.unread
+                .cmp(&a.unread)
+                .then(b.last_at.cmp(&a.last_at))
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        let accent = ui.visuals().hyperlink_color;
+        let mut open: Option<String> = None;
+        egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
+            let w = &mut ui.visuals_mut().widgets;
+            w.inactive.bg_stroke = egui::Stroke::NONE;
+            w.hovered.bg_stroke = egui::Stroke::NONE;
+            w.active.bg_stroke = egui::Stroke::NONE;
+
+            if dms.is_empty() && rooms.is_empty() {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Nothing yet. Start one from the Directory.").weak(),
+                );
+                return;
+            }
+
+            let mut section = |ui: &mut egui::Ui, title: &str, n: usize| {
+                if n == 0 {
+                    return;
+                }
+                ui.add_space(7.0);
+                ui.label(egui::RichText::new(title).strong().size(15.0).color(accent));
+            };
+            section(ui, "Direct messages", dms.len());
+            for c in &dms {
+                let (r, g, b) = c.presence.color();
+                if self
+                    .jabber_convo_row(
+                        ui,
+                        &c.jid,
+                        &c.name,
+                        c.unread_count,
+                        c.mention,
+                        Some(egui::Color32::from_rgb(r, g, b)),
+                        "",
+                        false,
+                    )
+                    .clicked()
+                {
+                    open = Some(c.jid.clone());
+                }
+            }
+            section(ui, "Rooms", rooms.len());
+            for c in &rooms {
+                if self
+                    .jabber_convo_row(
+                        ui,
+                        &c.jid,
+                        &c.name,
+                        c.unread_count,
+                        c.mention,
+                        None,
+                        &c.motd,
+                        c.inaccessible,
+                    )
+                    .clicked()
+                {
+                    open = Some(c.jid.clone());
+                }
+            }
+        });
+        if let Some(jid) = open {
+            self.jabber_unforget(&jid);
+            self.jabber_open(&jid, ChatWinKey::Main);
+        }
+    }
+
+    /// One row: name, an unread count, and a mention marker.
+    ///
+    /// A mention is drawn as the accent-coloured pill rather than a second badge beside the count:
+    /// the thing worth noticing is that this row is different, and two badges compete.
+    #[allow(clippy::too_many_arguments)]
+    fn jabber_convo_row(
+        &self,
+        ui: &mut egui::Ui,
+        jid: &str,
+        name: &str,
+        unread: u32,
+        mention: bool,
+        presence: Option<egui::Color32>,
+        motd: &str,
+        inaccessible: bool,
+    ) -> egui::Response {
+        let selected = self.jabber_chat.as_deref() == Some(jid);
+        let resp = ui
+            .horizontal(|ui| {
+                if let Some(c) = presence {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::CIRCLE).color(c).size(9.0));
+                } else {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).weak());
+                }
+                let mut text = egui::RichText::new(truncate_to(
+                    name,
+                    fit_chars(ui.available_width() - 52.0),
+                ));
+                if unread > 0 {
+                    text = text.strong();
+                }
+                if inaccessible {
+                    text = text.strikethrough().weak();
+                }
+                let label = ui.add(
+                    egui::Label::new(text).truncate().selectable(false).sense(egui::Sense::click()),
+                );
+                if unread > 0 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let (fg, bg) = if mention {
+                            (egui::Color32::WHITE, ui.visuals().hyperlink_color)
+                        } else {
+                            (ui.visuals().text_color(), ui.visuals().widgets.inactive.bg_fill)
+                        };
+                        egui::Frame::new()
+                            .fill(bg)
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(6, 1))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(badge_count(unread)).color(fg).strong());
+                            });
+                    });
+                }
+                label
+            })
+            .inner;
+        let resp = if motd.trim().is_empty() {
+            resp
+        } else {
+            resp.on_hover_text(motd)
+        };
+        if selected {
+            ui.painter().rect_filled(
+                resp.rect.expand2(egui::vec2(4.0, 2.0)),
+                3.0,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+        resp
+    }
+
     fn jabber_frame(&self, focused: bool) -> JabberFrame {
         let mut st = self.jabber.lock().unwrap();
         let configured = self.settings.jabber_enabled
@@ -3299,6 +3493,7 @@ impl SpaiApp {
             if focused {
                 if let Some(active) = self.jabber_chat.clone() {
                     st.unread.remove(&active);
+                    st.unread_counts.remove(&active);
                     st.mentions.remove(&active);
                 }
             }
@@ -3307,6 +3502,7 @@ impl SpaiApp {
             for w in self.jabber_popouts.iter().filter(|w| w.focused) {
                 if let Some(a) = &w.active {
                     st.unread.remove(a);
+                    st.unread_counts.remove(a);
                     st.mentions.remove(a);
                 }
             }
@@ -3319,6 +3515,9 @@ impl SpaiApp {
                 jid: jid.clone(),
                 name: c.name.clone().unwrap_or_else(|| jid.split('@').next().unwrap_or(jid).to_owned()),
                 unread: false,
+                unread_count: 0,
+                mention: false,
+                last_at: 0,
                 group: c.groups.first().cloned().unwrap_or_else(|| "Other".to_owned()),
                 presence: c.presence,
                 status_text: c.status_text.clone(),
@@ -3333,6 +3532,9 @@ impl SpaiApp {
                 jid: jid.clone(),
                 name: jid.split('@').next().unwrap_or(jid).to_owned(),
                 unread: false,
+                unread_count: 0,
+                mention: false,
+                last_at: 0,
                 group: "Other".to_owned(),
                 presence: pres,
                 status_text: String::new(),
@@ -3343,6 +3545,13 @@ impl SpaiApp {
             if let Some(e) = set.get_mut(jid) {
                 e.unread = true;
             }
+        }
+        for (jid, e) in set.iter_mut() {
+            e.unread_count = st.unread_counts.get(jid).copied().unwrap_or(0);
+            e.mention = st.mentions.contains(jid);
+            // Recency comes from the history rather than a separate clock: the last message is
+            // exactly what "most recent conversation" means, and it cannot drift from it.
+            e.last_at = st.chats.get(jid).and_then(|c| c.last()).map(|m| m.time).unwrap_or(0);
         }
         let convos: Vec<Convo> = set.into_values().collect();
         let rooms: Vec<String> = st.rooms.iter().cloned().collect();
@@ -3374,6 +3583,9 @@ impl SpaiApp {
                 jid: jid.clone(),
                 name: jid.split('@').next().unwrap_or(jid).to_owned(),
                 unread: st.unread.contains(jid),
+                unread_count: st.unread_counts.get(jid).copied().unwrap_or(0),
+                mention: st.mentions.contains(jid),
+                last_at: st.chats.get(jid).and_then(|c| c.last()).map(|m| m.time).unwrap_or(0),
                 inaccessible: st.rooms_inaccessible.contains(jid),
                 motd: st.room_subjects.get(jid).cloned().unwrap_or_default(),
             })
@@ -3531,9 +3743,10 @@ impl SpaiApp {
         }
     }
 
+    /// `convos` picks the Convos list; otherwise the Directory.
     #[cfg(test)]
-    pub(crate) fn jabber_sidebar_for_test(&mut self, ui: &mut egui::Ui, f: &JabberFrame, channels: bool) {
-        self.jabber_pane = if channels { JabberPane::Channels } else { JabberPane::Directory };
+    pub(crate) fn jabber_sidebar_for_test(&mut self, ui: &mut egui::Ui, f: &JabberFrame, convos: bool) {
+        self.jabber_pane = if convos { JabberPane::Convos } else { JabberPane::Directory };
         self.jabber_ui(ui, f);
     }
 
@@ -3765,28 +3978,29 @@ impl SpaiApp {
                 let contacts: std::collections::HashSet<String> =
                     self.settings.jabber_contacts.iter().cloned().collect();
                 ui.horizontal(|ui| {
+                    let con = selectable_chip(ui, self.jabber_pane == JabberPane::Convos, "Convos");
+                    if con.clicked() {
+                        self.jabber_pane = JabberPane::Convos;
+                    }
                     let dir = selectable_chip(ui, self.jabber_pane == JabberPane::Directory, "Directory");
                     if dir.clicked() {
                         self.jabber_pane = JabberPane::Directory;
                     }
-                    let con = selectable_chip(ui, self.jabber_pane == JabberPane::Contacts, "Contacts");
-                    if con.clicked() {
-                        self.jabber_pane = JabberPane::Contacts;
-                    }
-                    let chan = selectable_chip(ui, self.jabber_pane == JabberPane::Channels, "Channels");
-                    if chan.clicked() {
-                        self.jabber_pane = JabberPane::Channels;
-                    }
                 });
+                // Conversations that surfaced because they went unread stay listed until you leave
+                // the tab, so a DM you just read does not vanish out from under the pointer.
+                if self.jabber_pane != JabberPane::Convos {
+                    self.jabber_sticky.clear();
+                }
                 ui.add_sized(
                     [ui.available_width(), 20.0],
                     egui::TextEdit::singleline(&mut self.jabber_contact_search).hint_text("Search"),
                 );
                 let search = self.jabber_contact_search.to_lowercase();
-                if self.jabber_pane == JabberPane::Channels {
-                    self.jabber_channels_list_ui(ui, &f.channels, f.connected, &search);
+                if self.jabber_pane == JabberPane::Convos {
+                    self.jabber_convos_list_ui(ui, f, &search);
                 } else {
-                let show_dir = self.jabber_pane == JabberPane::Directory;
+                let show_dir = true;
                 let shown: Vec<&Convo> = f
                     .convos
                     .iter()
@@ -20073,6 +20287,12 @@ pub(crate) struct Convo {
     pub(crate) jid: String,
     pub(crate) name: String,
     pub(crate) unread: bool,
+    /// How many messages are waiting, and whether any of them named you. The list sorts on
+    /// `last_at` and badges on these.
+    pub(crate) unread_count: u32,
+    pub(crate) mention: bool,
+    /// When this conversation last carried a message, for recency ordering.
+    pub(crate) last_at: i64,
     pub(crate) group: String,
     pub(crate) presence: crate::jabber::Presence,
     pub(crate) status_text: String,
@@ -20085,6 +20305,9 @@ pub(crate) struct ChannelRow {
     pub(crate) jid: String,
     pub(crate) name: String,
     pub(crate) unread: bool,
+    pub(crate) unread_count: u32,
+    pub(crate) mention: bool,
+    pub(crate) last_at: i64,
     /// Left/kicked while online: struck-through, history-only.
     pub(crate) inaccessible: bool,
     /// Full room MOTD (MUC subject); collapsed to two lines in the list, expandable on click.
@@ -24967,6 +25190,16 @@ fn level_color(l: u8) -> egui::Color32 {
         2 => egui::Color32::from_rgb(0x5A, 0xC8, 0x6A),
         3..=5 => egui::Color32::from_rgb(0xE5, 0x4B, 0x4B),
         _ => egui::Color32::WHITE,
+    }
+}
+
+/// Discord's rule: a real number up to 99, then `99+`. Past a hundred the exact figure has stopped
+/// meaning anything and the width starts costing more than the precision is worth.
+pub(crate) fn badge_count(n: u32) -> String {
+    if n > 99 {
+        "99+".to_owned()
+    } else {
+        n.to_string()
     }
 }
 
