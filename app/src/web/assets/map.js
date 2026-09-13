@@ -1161,11 +1161,20 @@ function wire() {
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, e);
     moved = 0;
-    // A drag that starts on a system is a route, not a pan. Everything else on the map is empty
-    // space, so this costs the pan nothing and needs no modifier to tell the two apart.
-    const on = pointers.size === 1 ? nearest(e) : null;
+    // A second finger is always a pinch. Whatever the first one was doing, it stops: a route line
+    // being dragged out of a system blocked the zoom entirely, because it was handled first and
+    // returned.
+    if (pointers.size > 1) {
+      link = null;
+      hideLinkTip();
+      clearTimeout(press);
+      schedule();
+      return;
+    }
+    const touch = e.pointerType === "touch";
+    const on = nearest(e);
     clearTimeout(press);
-    if (on && e.pointerType === "touch") {
+    if (on && touch) {
       press = setTimeout(() => {
         if (moved > 8) return;
         link = null;
@@ -1175,7 +1184,10 @@ function wire() {
         openMenu(e, on);
       }, 500);
     }
-    if (on) {
+    // On a touch screen a drag off a system is a route only once there is a route: without a mouse
+    // there is no way to press somewhere else, so every pan that started on a system drew a line
+    // instead of moving the map. The long press is how a route starts there.
+    if (on && (!touch || routeKind)) {
       const box = canvas.getBoundingClientRect();
       link = {
         from: on.i,
