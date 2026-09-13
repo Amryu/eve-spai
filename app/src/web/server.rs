@@ -371,10 +371,17 @@ fn json_or_404<T: serde::Serialize>(req: tiny_http::Request, body: Option<T>) {
 
 fn cached(req: tiny_http::Request, if_none_match: Option<String>, mime: &str, body: &[u8]) {
     let tag = super::assets::etag(body);
+    // `no-cache` means "ask me first", not "do not store": the browser keeps the copy and
+    // revalidates, so an unchanged asset still costs one 304 and nothing more.
+    //
+    // Without it there is no freshness information at all, and a browser is free to apply its own
+    // heuristic and serve a stale copy without asking. That is exactly what happened: a fixed page
+    // kept rendering the old behaviour on the one machine that had loaded it before.
+    let head = [("Cache-Control", "no-cache".to_owned()), ("ETag", tag.clone())];
     if if_none_match.as_deref() == Some(tag.as_str()) {
-        return respond(req, 304, mime, b"", &[("ETag", tag)]);
+        return respond(req, 304, mime, b"", &head);
     }
-    respond(req, 200, mime, body, &[("ETag", tag)])
+    respond(req, 200, mime, body, &head)
 }
 
 fn respond(req: tiny_http::Request, status: u16, mime: &str, body: &[u8], extra: &[(&str, String)]) {
@@ -571,6 +578,21 @@ mod tests {
             assert_eq!(r.status(), 403, "{host} was allowed through");
             assert!(r.headers().get("set-cookie").is_none(), "{host} was paired");
         }
+    }
+
+    /// An asset with an `ETag` and no freshness information lets the browser decide on its own how
+    /// long to keep it, which it does, and a fixed page goes on rendering the old bug.
+    #[test]
+    fn assets_are_revalidated_rather_than_heuristically_cached() {
+        let s = serve_test();
+        let c = client();
+        let r = c
+            .get(format!("{}/assets/app.js", s.base))
+            .header("Cookie", format!("spai={TOKEN}"))
+            .send()
+            .unwrap();
+        let cc = r.headers().get("cache-control").expect("no Cache-Control at all");
+        assert_eq!(cc, "no-cache");
     }
 
     #[test]

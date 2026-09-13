@@ -154,6 +154,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-015 Map drew wormhole space, rebuilt on every push, dialogs would not close](WEB-015-map-perf-and-panes/) | `web/map.rs`, `map.js`, `layout.*` | after 14 | **Fixed** |
 | [WEB-016 Scanning the pairing QR lands on "not paired"](WEB-016-pairing-cookie/) | `web/server.rs` | after 15 | **Fixed** |
 | [WEB-017 Every pane republished every tick; map mirrored, laggy and missing layers](WEB-017-map-layers-and-churn/) | `web/map.rs`, `map.js`, `publish.rs` | after 16 | **Fixed** |
+| [WEB-018 Fixed pages kept rendering the old bug; clock stopped; swipe cut off](WEB-018-stale-assets-and-clock/) | `web/server.rs`, `pilot.rs` | after 17 | **Fixed** |
 
 ### Browser evidence
 

@@ -266,7 +266,12 @@ impl PilotCache {
 /// silently matches nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(transparent)]
-pub struct UncertainPilots(std::collections::HashSet<String>);
+/// Ordered, not hashed.
+///
+/// This is serialized into the web snapshot, which is hashed to decide whether the intel pane
+/// changed. A `HashSet` serializes in its own instance's iteration order, and this set is rebuilt
+/// every tick, so an unordered one made the pane look different every time and republish forever.
+pub struct UncertainPilots(std::collections::BTreeSet<String>);
 
 impl UncertainPilots {
     pub fn contains(&self, name: &str) -> bool {

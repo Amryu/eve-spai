@@ -108,7 +108,11 @@ export function card(c, lookups, compact, now) {
   const parts = [];
 
   parts.push(`<span class="tico" style="color:${iconVar ?? sev}">${ico(icon)}</span>`);
-  parts.push(`<span class="age">${fmtAge(now - r.received, compact)}</span>`);
+  // `data-at` lets the clock tick without a re-render: nothing else in the card changes as time
+  // passes, and rebuilding a pane every second is what this whole page has been fighting.
+  parts.push(
+    `<span class="age" data-at="${r.received}">${fmtAge(now - r.received, compact)}</span>`
+  );
 
   // The character ring only exists when there is more than one character to confuse, matching
   // `CardChars`; with one, the card draws the plain number it always did.
@@ -289,3 +293,18 @@ const renderIntel = (el, snap) => {
 };
 
 register("intel", renderIntel);
+
+/// Tick every visible age once a second, in place.
+///
+/// Ages used to move only when a pane re-rendered. Now that panes rebuild rarely, the clock would
+/// sit still for minutes; this updates the text and touches nothing else.
+setInterval(() => {
+  const now = Math.floor(Date.now() / 1000);
+  const compact = !!state.snapshot?.meta?.compact;
+  for (const el of document.querySelectorAll(".age[data-at]")) {
+    const at = Number(el.dataset.at);
+    if (!at) continue;
+    const next = fmtAge(now - at, compact);
+    if (el.textContent !== next) el.textContent = next;
+  }
+}, 1000);

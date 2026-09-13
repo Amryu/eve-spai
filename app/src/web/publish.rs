@@ -474,6 +474,35 @@ mod tests {
         );
     }
 
+    /// Every container that reaches the snapshot has to hash the same way twice, or the revision
+    /// check it feeds is decoration. Two have caught this out already: the lookup maps, and the
+    /// uncertain-pilot set inside them.
+    #[test]
+    fn a_snapshot_hashes_the_same_when_rebuilt() {
+        let lookups = || {
+            Lookups {
+                resolved_pilots: Default::default(),
+                uncertain: ["Alpha Pilot", "Bravo Pilot", "Charlie Pilot", "Delta Pilot"]
+                    .into_iter()
+                    .collect(),
+                last_ship: crate::app::build_last_ship(&[fixtures::intel_torture()])
+                    .into_iter()
+                    .collect(),
+                kills: Default::default(),
+                affil: Default::default(),
+                status: Default::default(),
+            }
+        };
+        let first = super::super::state::hash_of(&lookups());
+        for _ in 0..30 {
+            assert_eq!(
+                super::super::state::hash_of(&lookups()),
+                first,
+                "a rebuilt snapshot hashed differently; something in it is unordered"
+            );
+        }
+    }
+
     /// The reported bug: every pane republished on every tick, which reset the scroll position of
     /// whatever the user was reading.
     ///
