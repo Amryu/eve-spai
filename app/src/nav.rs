@@ -12,6 +12,9 @@ pub enum View {
     Characters,
     Alerts,
     Jabber,
+    /// FC-only capital rescue. Present in the enum unconditionally so the rest of the rail needs no
+    /// `cfg`; the caller leaves it out of the list when the build or the setting says so.
+    Rescue,
     Settings,
 }
 
@@ -27,6 +30,7 @@ impl View {
             View::Lookup,
             View::Characters,
             View::Jabber,
+            View::Rescue,
         ]
     }
 
@@ -41,6 +45,7 @@ impl View {
             View::Characters => "Characters",
             View::Alerts => "Alerts",
             View::Jabber => "Jabber",
+            View::Rescue => "Rescue",
             View::Settings => "Settings",
         }
     }
@@ -56,6 +61,7 @@ impl View {
             View::Characters => icon::USERS,
             View::Alerts => icon::BELL,
             View::Jabber => icon::CHAT_TEXT,
+            View::Rescue => icon::WARNING_OCTAGON,
             View::Settings => icon::GEAR_SIX,
         }
     }
@@ -77,6 +83,10 @@ pub fn rail(
     expanded: &mut bool,
     badges: &[View],
     warns: &[View],
+    // The rows to show. Not `View::primary()` directly: rescue is an opt-in feature in an opt-in
+    // build, and on every other install it is not a row that is disabled, it is a row that does not
+    // exist.
+    items: &[View],
 ) -> View {
     let mut selected = current;
     let accent = ui.visuals().hyperlink_color;
@@ -118,17 +128,17 @@ pub fn rail(
     ui.add_space(8.0);
 
     let spacing = ui.spacing().item_spacing.y;
-    let list_h = View::primary().len() as f32 * (ROW_HEIGHT + ROW_GAP + spacing);
+    let list_h = items.len() as f32 * (ROW_HEIGHT + ROW_GAP + spacing);
     let foot_h = FOOT_PAD + ROW_HEIGHT + FOOT_GAP + SEPARATOR_H + spacing;
     let avail = ui.available_height();
 
     if avail >= list_h + foot_h {
-        primary_items(ui, &mut selected, *expanded, badges, warns);
+        primary_items(ui, &mut selected, *expanded, badges, warns, items);
         pinned_footer(ui, &mut selected, *expanded);
     } else if avail >= list_h + ROW_HEIGHT {
         // No room under the list to pin the footer, and bottom_up would walk it back up over the
         // last nav item, so Settings joins the list as its final row instead.
-        primary_items(ui, &mut selected, *expanded, badges, warns);
+        primary_items(ui, &mut selected, *expanded, badges, warns, items);
         settings_item(ui, &mut selected, *expanded);
     } else {
         // Shorter than the rail's own rows, which the 460px minimum window height allows. The list
@@ -140,7 +150,7 @@ pub fn rail(
             .max_height((avail - foot_h).max(0.0))
             .auto_shrink([false, false])
             .show_viewport(ui, |ui, vp| {
-                scrolled_items(ui, vp, &mut selected, *expanded, badges, warns)
+                scrolled_items(ui, vp, &mut selected, *expanded, badges, warns, items)
             });
         pinned_footer(ui, &mut selected, *expanded);
     }
@@ -154,8 +164,9 @@ fn primary_items(
     expanded: bool,
     badges: &[View],
     warns: &[View],
+    items: &[View],
 ) {
-    for &v in View::primary() {
+    for &v in items {
         if nav_item(
             ui,
             v.icon(),
@@ -173,6 +184,7 @@ fn primary_items(
 
 /// Lays out only the rows that fit the viewport whole, blank space standing in for the rest. A row
 /// half under the footer would paint clipped and still claim a full-height click rect.
+#[allow(clippy::too_many_arguments)]
 fn scrolled_items(
     ui: &mut egui::Ui,
     viewport: egui::Rect,
@@ -180,8 +192,8 @@ fn scrolled_items(
     expanded: bool,
     badges: &[View],
     warns: &[View],
+    items: &[View],
 ) {
-    let items = View::primary();
     let step = ROW_HEIGHT + ROW_GAP + ui.spacing().item_spacing.y;
     let first = (viewport.min.y / step).ceil().max(0.0) as usize;
     let last = (((viewport.max.y - ROW_HEIGHT) / step).floor().max(-1.0) as isize + 1)
