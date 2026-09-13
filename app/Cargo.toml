@@ -50,6 +50,10 @@ sha2 = "0.11"
 base64 = "0.22"
 getrandom = "0.2"
 keyring = "4"
+# Already in the tree as rustls's crypto provider, so taking it directly costs no build time. Used
+# for the encrypted fallback when the OS keychain is unavailable (see `sealed.rs`): AEAD and a KDF
+# from a reviewed implementation rather than anything hand-rolled.
+ring = "0.17"
 notify-rust = "4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # gzip the battle-report JSON before uploading to the sharing server (Content-Encoding: gzip).

@@ -9618,6 +9618,27 @@ impl SpaiApp {
             AuthStatus::Idle => {}
         }
 
+        // Where the refresh token actually lives. Not a warning: the fallback works, and it is only
+        // reached when the machine has no usable keychain. But it is a real difference from what the
+        // app normally does with a credential, and not one the user chose, so it is said out loud.
+        if crate::tokens::fallback_in_use() {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  Saved logins are in EVE Spai's encrypted file, not the system keychain.",
+                    egui_phosphor::regular::LOCK_KEY
+                ))
+                .color(crate::theme::standing::WARNING),
+            )
+            .on_hover_text(
+                "No system keychain could be used on this machine, so the refresh token is \
+                 encrypted with a key derived from this user account and this machine. It cannot be \
+                 opened from another account, another machine, or a copy of the profile folder. It \
+                 cannot protect against a program already running as you — neither can an unlocked \
+                 keychain. Install or start a keychain provider and the token moves back on its own.",
+            );
+        }
+
         ui.add_space(6.0);
         if ui.button("Add character (EVE SSO)").clicked() {
             self.start_login(&ui.ctx().clone());
@@ -20367,10 +20388,10 @@ impl SpaiApp {
             });
             if keyring {
                 ui.label(
-                    "The refresh token is kept in the system keychain, and this machine has none \
-                     that can be reached. On Linux that means no Secret Service is running or no \
-                     keyring has been created: start gnome-keyring or KWallet, or install a \
-                     provider such as KeePassXC, then log in again.",
+                    "Neither the system keychain nor the encrypted fallback could give the saved \
+                     login back. If the profile directory was copied here from another machine or \
+                     another user account, the fallback cannot open it by design; logging in again \
+                     replaces it.",
                 );
             } else {
                 ui.label(

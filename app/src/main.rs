@@ -50,6 +50,7 @@ mod rats;
 #[cfg(feature = "fc-rescue")]
 mod rescue;
 mod sde;
+mod sealed;
 mod settings;
 mod shipnames;
 mod sound;
