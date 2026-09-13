@@ -239,7 +239,7 @@ fn nav_scene(name: &'static str, expanded: bool, height: f32) -> Scene {
     let mut expanded = expanded;
     let width = if expanded { crate::nav::WIDTH_EXPANDED } else { crate::nav::WIDTH_COLLAPSED };
     Scene::ui(name, [width, height], move |ui| {
-        crate::nav::rail(ui, View::Intel, &mut expanded, &[View::Alerts], &[View::Jabber]);
+        crate::nav::rail(ui, View::Intel, &mut expanded, &[View::Alerts], &[View::Jabber], crate::nav::View::primary());
     })
 }
 
@@ -2509,7 +2509,7 @@ fn uitest_nav_rail_short_reaches_every_item() {
     let sink = selected.clone();
     let mut expanded = true;
     let mut scene = Scene::ui("nav_probe_short", [crate::nav::WIDTH_EXPANDED, 460.0], move |ui| {
-        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[]);
+        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[], crate::nav::View::primary());
         *sink.borrow_mut() = got;
     });
     let mut harness = harness::build(&mut scene, false);
@@ -2562,7 +2562,7 @@ fn uitest_nav_rail_click_selects() {
     let sink = selected.clone();
     let mut expanded = true;
     let mut scene = Scene::ui("nav_probe", [crate::nav::WIDTH_EXPANDED, 560.0], move |ui| {
-        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[]);
+        let got = crate::nav::rail(ui, *sink.borrow(), &mut expanded, &[], &[], crate::nav::View::primary());
         *sink.borrow_mut() = got;
     });
     let mut harness = harness::build(&mut scene, false);

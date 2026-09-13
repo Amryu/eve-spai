@@ -159,29 +159,6 @@ struct RangeWarning {
     ly_to_target: f64,
 }
 
-impl MapOverlays {
-    /// Rescue-mode view: strip everything except ANSI bridges, the cyno-gen layer and jump range.
-    /// Staging and the capital system are drawn by a dedicated pass, not by these toggles.
-    #[cfg(feature = "fc-rescue")]
-    fn rescue_preset(self) -> Self {
-        Self {
-            sov: SovMode::Off,
-            bridges: true,
-            activity: ActivityMode::Off,
-            adm: false,
-            upgrades: false,
-            // Kept: judging a titan's reach from staging is the whole point of the map in a rescue.
-            jump_range: self.jump_range,
-            wormholes: false,
-            thera: false,
-            turnur: false,
-            camps: false,
-            cyno_gen: self.cyno_gen,
-            jove: false,
-        }
-    }
-}
-
 impl Default for MapOverlays {
     fn default() -> Self {
         Self {
@@ -6260,8 +6237,12 @@ impl SpaiApp {
         changed
     }
 
-    /// Enter or leave Rescue Mode. Entering opens the always-on-top window directly, ready to watch
-    /// delve911, with the newest unresolved ping selected. Leaving clears everything.
+    /// Open the rescue window, ready to watch delve911 with the newest unresolved ping selected.
+    ///
+    /// There is no longer a mode to enter or leave: the feature is the switch, and it is already an
+    /// explicit choice made in the build and in the settings. A second state that could be off while
+    /// the feature was on meant the window, the map and the pings each had their own idea of whether
+    /// a rescue was happening.
     #[cfg(feature = "fc-rescue")]
     fn enter_rescue_mode(&mut self, on: bool) {
         {
@@ -6374,83 +6355,6 @@ impl SpaiApp {
             .replace("{mumble}", &mumble)
     }
 
-    #[allow(deprecated)]
-    #[cfg(feature = "fc-rescue")]
-    fn show_rescue_window(&mut self, ctx: &egui::Context) {
-        if !self.rescue_window_open {
-            // Re-apply on the next open (and don't fight the user's own autopilot while closed).
-            self.rescue_dest_set = None;
-            return;
-        }
-        // Auto-set the ping's system as the ESI destination while the window is open, re-applying
-        // only when the reported system changes (never every frame).
-        let cap = self.rescue.lock().unwrap().capital_system;
-        if let Some(sid) = cap {
-            if self.rescue_dest_set != Some(sid) {
-                self.rescue_push_destination(sid);
-            }
-        }
-        let mut keep = true;
-        let mut builder = egui::ViewportBuilder::default()
-            .with_icon(app_icon())
-            .with_title("EVE Spai - Rescue")
-            .with_min_inner_size([560.0, 400.0])
-            .with_window_level(egui::WindowLevel::AlwaysOnTop);
-        // Apply the saved size/position ONLY on the first frame after opening. Re-applying every
-        // frame would fight the user dragging/resizing the window (a move/resize feedback loop).
-        if !self.rescue_geom_applied {
-            let size = self.settings.rescue_window_size.unwrap_or((960.0, 720.0));
-            builder = builder.with_inner_size([size.0, size.1]);
-            if let Some((x, y)) = self.settings.rescue_window_pos {
-                builder = builder.with_position([x, y]);
-            }
-            self.rescue_geom_applied = true;
-        }
-        let mut new_geom: WinGeom = None;
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("rescue_window"),
-            builder,
-            |ctx, _class| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    // Tight catch_unwind around the panel body: a UI panic skips one frame and
-                    // recovers next tick rather than taking down the whole app mid-rescue.
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.rescue_window_body(ui);
-                    }));
-                    if res.is_err() {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(0xE0, 0x50, 0x50),
-                            "Rescue panel hit an error this frame, recovering…",
-                        );
-                    }
-                });
-                ctx.request_repaint_after(std::time::Duration::from_millis(500));
-                // Capture this window's own geometry so it persists across restarts.
-                let sz = ctx.content_rect().size();
-                let pos = ctx.input(|i| i.viewport().outer_rect.map(|r| (r.min.x, r.min.y)));
-                if sz.x > 100.0 && sz.y > 100.0 {
-                    new_geom = Some(((sz.x, sz.y), pos));
-                }
-                if ctx.input(|i| i.viewport().close_requested()) {
-                    keep = false;
-                }
-            },
-        );
-        if let Some((sz, pos)) = new_geom {
-            if geometry_update(self.settings.rescue_window_size, sz, 2.0).is_some() {
-                self.settings.rescue_window_size = Some(sz);
-                self.needs_save = true;
-            }
-            if let Some(p) = pos.and_then(|p| geometry_update(self.settings.rescue_window_pos, p, 1.0)) {
-                self.settings.rescue_window_pos = Some(p);
-                self.needs_save = true;
-            }
-        }
-        if !keep {
-            self.rescue_window_open = false;
-        }
-    }
-
     /// (connected, status text, seconds until the next automatic retry, a worker thread is alive).
     fn jabber_conn(&self) -> (bool, String, Option<i64>, bool) {
         let s = self.jabber.lock().unwrap();
@@ -6515,6 +6419,19 @@ impl SpaiApp {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[cfg(feature = "fc-rescue")]
+    /// The rescue tab. Without the feature it is not in the rail at all, so this only says so for
+    /// the case where someone reaches the view some other way.
+    #[cfg(feature = "fc-rescue")]
+    fn rescue_view(&mut self, ui: &mut egui::Ui) {
+        self.rescue_window_body(ui);
+    }
+
+    #[cfg(not(feature = "fc-rescue"))]
+    fn rescue_view(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("This build has no rescue mode.").weak());
     }
 
     #[cfg(feature = "fc-rescue")]
@@ -11693,16 +11610,11 @@ impl SpaiApp {
         // Rescue mode strips overlays down to bridges + cyno-gen + jump range without touching the
         // user's saved toggles. `ov` is the effective set used for all gating below (no early
         // returns follow).
+        // The rescue mode no longer touches the map. Stripping the overlays down to a preset meant
+        // the map changed under whoever was reading it, for a reason they did not ask for and could
+        // not see, and the layer switches they had set were silently ignored while it lasted.
         #[cfg(feature = "fc-rescue")]
-        let rescue_active =
-            self.settings.fc_rescue_enabled && self.rescue.lock().unwrap().active;
-        #[cfg(feature = "fc-rescue")]
-        let ov = if rescue_active {
-            self.map_overlays.rescue_preset()
-        } else {
-            self.map_overlays
-        };
-        #[cfg(not(feature = "fc-rescue"))]
+        let rescue_active = self.settings.fc_rescue_enabled;
         let ov = self.map_overlays;
         let zoomed = matches!(self.map_view, MapView::Region(_)) || self.map_zoom >= 12.0;
         let show_sys_labels = zoomed;
@@ -13088,21 +13000,24 @@ impl SpaiApp {
         #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled {
             ui.separator();
-            let active = self.rescue.lock().unwrap().active;
             ui.label(egui::RichText::new("delve911 rescue").strong());
             if ui.button(format!("{}  Open delve911 feed", icon::CHAT_CENTERED_DOTS)).clicked() {
                 self.view = nav::View::Jabber;
                 self.jabber_chat = None;
             }
-            let label = if active { "Exit rescue mode" } else { "Enter rescue mode" };
-            let btn = egui::Button::new(format!("{}  {label}", icon::WARNING_OCTAGON));
-            let btn = if self.rescue_armed && !active {
+            // Opens the window. There is no mode to toggle any more: the feature being on *is* the
+            // mode, so a button that could turn it off was a second switch for one decision.
+            let btn = egui::Button::new(format!(
+                "{}  Open rescue window",
+                icon::WARNING_OCTAGON
+            ));
+            let btn = if self.rescue_armed {
                 btn.fill(egui::Color32::from_rgb(0x80, 0x30, 0x30))
             } else {
                 btn
             };
             if ui.add(btn).clicked() {
-                self.enter_rescue_mode(!active);
+                self.view = nav::View::Rescue;
             }
         }
     }
@@ -16354,7 +16269,14 @@ impl SpaiApp {
                 let mut expanded = self.settings.nav_expanded;
                 let badged: &[nav::View] = if badge { &[nav::View::Jabber] } else { &[] };
                 let warned: &[nav::View] = if jabber_down { &[nav::View::Jabber] } else { &[] };
-                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned);
+                // Rescue is a row only where the feature exists and is switched on.
+                let has_rescue = cfg!(feature = "fc-rescue") && self.settings.fc_rescue_enabled;
+                let rows: Vec<nav::View> = nav::View::primary()
+                    .iter()
+                    .copied()
+                    .filter(|v| *v != nav::View::Rescue || has_rescue)
+                    .collect();
+                let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows);
                 if selected != self.view {
                     self.view = selected;
                 }
@@ -20636,7 +20558,6 @@ impl SpaiApp {
         if self.settings.fc_rescue_enabled {
             self.rescue_doctrines_window(ctx);
             self.update_rescue_range();
-            self.show_rescue_window(ctx);
         }
     }
 
@@ -20657,6 +20578,10 @@ impl SpaiApp {
                     self.jabber_view(ui, f);
                 }
             }
+            // In the main window, not a viewport of its own: an always-on-top window that had to be
+            // opened and closed was a second place to look and a second thing to lose behind the
+            // game client.
+            View::Rescue => self.rescue_view(ui),
             View::Settings => self.settings_view(ui),
         });
     }
