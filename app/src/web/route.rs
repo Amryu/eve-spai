@@ -257,13 +257,18 @@ const TITAN_OPTIONS: usize = 5;
 /// How far the gate search will look for a way in from a jump-off point.
 const TITAN_MAX_JUMPS: u32 = 40;
 
-/// The titan answer: one jump as far in as range allows, then gates.
+/// The titan answer: one jump, and gates for the rest.
 ///
 /// This is the rescue mode's calculation, which asks the question the other way round and for the
-/// same reason: the fewest *gate* jumps from the target that a titan can still reach, not the system
+/// same reason: the fewest *gate* jumps from the far end that a titan can still reach, not the system
 /// that happens to be nearest on the map. A system four light years away and twelve gates out is a
 /// worse answer than one six light years away and two gates out, and picking by distance gets that
 /// backwards every time.
+///
+/// `at_start` says which end the titan is at. With it set, which is the default, the titan is in the
+/// system the route starts from: you jump out as far as range allows and gate the rest. Cleared, the
+/// titan is waiting at the far end: you gate out to the best system it can reach and get bridged in.
+/// The search is the same either way, run from the other end.
 pub fn titan(
     graph: &crate::geo::Systems,
     coords: &[MapSystem],
@@ -271,7 +276,16 @@ pub fn titan(
     to: i64,
     max_ly: f64,
     bridges: bool,
+    at_start: bool,
 ) -> Vec<RouteOption> {
+    if !at_start {
+        // The mirror image: plan it backwards and turn the result around. One implementation of
+        // "one jump, gates for the rest" rather than two that can disagree.
+        return titan(graph, coords, to, from, max_ly, bridges, true)
+            .into_iter()
+            .map(reverse)
+            .collect();
+    }
     let (Some(start), Some(target)) = (pos(coords, from), pos(coords, to)) else {
         return Vec::new();
     };
@@ -354,6 +368,7 @@ pub fn chain(
     jdc: u32,
     jfc: u32,
     titan_ly: f64,
+    titan_at_start: bool,
     bridges: bool,
 ) -> Vec<RouteOption> {
     if anchors.len() < 2 {
@@ -376,7 +391,7 @@ pub fn chain(
     }
     let (a, b) = (anchors[split], anchors[split + 1]);
     let last: Vec<RouteOption> = match kind {
-        "titan" => titan(graph, coords, a, b, titan_ly, bridges),
+        "titan" => titan(graph, coords, a, b, titan_ly, bridges, titan_at_start),
         _ => leg(a, b).into_iter().collect(),
     };
     match head {
@@ -385,6 +400,37 @@ pub fn chain(
             .map(|t| join(clone_option(&h), t))
             .collect(),
         None => last,
+    }
+}
+
+/// A route flown the other way.
+///
+/// The hops reverse, but a hop's `kind`, distance and fuel describe the edge *into* it, so those have
+/// to shift one place as well or the jump would be reported on the wrong system.
+fn reverse(o: RouteOption) -> RouteOption {
+    let n = o.hops.len();
+    let mut hops: Vec<Hop> = o.hops.into_iter().rev().collect();
+    let edges: Vec<(u8, Option<f64>, Option<f64>, Option<f64>, Option<f64>)> = hops
+        .iter()
+        .map(|h| (h.kind, h.ly, h.fuel, h.fatigue_min, h.reactivation_min))
+        .collect();
+    for i in 0..n {
+        let e = if i == 0 { None } else { edges.get(i - 1) };
+        let (kind, ly, fuel, fat, react) = e.copied().unwrap_or((0, None, None, None, None));
+        hops[i].kind = kind;
+        hops[i].ly = ly;
+        hops[i].fuel = fuel;
+        hops[i].fatigue_min = fat;
+        hops[i].reactivation_min = react;
+    }
+    RouteOption {
+        label: o.label,
+        path: o.path.into_iter().rev().collect(),
+        hops,
+        gates: o.gates,
+        jumps: o.jumps,
+        total_ly: o.total_ly,
+        note: o.note,
     }
 }
 
@@ -442,7 +488,8 @@ mod tests {
         let g = graph();
         let (a, b, c) = (30_004_759_i64, 30_004_608, 30_003_704);
         let direct = gate(&g, a, c, false).expect("connected");
-        let via = chain(&g, &[], &[a, b, c], "gate", &crate::jumproute::SHIP_CLASSES[1], 5, 5, 6.0, false);
+        let via =
+            chain(&g, &[], &[a, b, c], "gate", &crate::jumproute::SHIP_CLASSES[1], 5, 5, 6.0, true, false);
         let via = via.first().expect("a chained route");
         assert_eq!(via.path.iter().filter(|&&id| id == b).count(), 1, "the waypoint appears once");
         assert_eq!(via.hops.len(), via.path.len());
