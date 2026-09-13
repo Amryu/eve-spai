@@ -59,6 +59,10 @@ let fitted = false;
 let focused = null;
 /// The system under the pointer, if any. Drawn as a highlight and a readout, not just a cursor.
 let hovered = null;
+/// The system the user picked, which is the one in the hash. It keeps the jump-range tint up after
+/// the pointer has moved off it: choosing a system is a statement about what you are working on, and
+/// the app keeps the bands drawn for exactly that reason.
+let selected = null;
 
 export const layers = load();
 
@@ -732,10 +736,11 @@ function paint() {
     ctx.setLineDash([]);
   }
 
-  // Jump range around the hovered system: every system inside the smallest band it falls in, tinted
-  // to match.
-  if (layers.jumprange && hovered && geo.pos3) {
-    const i = geo.byId.get(hovered.i);
+  // Jump range around whatever is being looked at: hovering wins while it lasts, the selection holds
+  // it the rest of the time. The app behaves the same way.
+  const focus = hovered ?? selected;
+  if (layers.jumprange && focus && geo.pos3) {
+    const i = geo.byId.get(focus.i);
     const home = geo.pos3[i];
     if (home) {
       // No rings and no band labels: a jump range is a sphere, and a circle drawn on a top-down
@@ -763,11 +768,11 @@ function paint() {
     }
   }
 
-  // The system under the pointer: a ring, and its name where it can be read. A cursor change alone
-  // is easy to miss on a dense map, and on a touch screen there is no cursor at all.
-  if (hovered) {
-    const hx = sx(hovered.x);
-    const hy = sy(hovered.z);
+  // The system under the pointer, or the selected one: a ring, and its name where it can be read. A
+  // cursor change alone is easy to miss on a dense map, and on a touch screen there is no cursor.
+  if (focus) {
+    const hx = sx(focus.x);
+    const hy = sy(focus.z);
     ctx.strokeStyle = pal.fg;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -898,8 +903,8 @@ function wire() {
   const followHash = () => {
     const m = /^#system\/(\d+)$/.exec(location.hash);
     const n = m ? geo.nodes[geo.byId.get(Number(m[1]))] : null;
-    if (n !== hovered) {
-      hovered = n ?? null;
+    if (n !== selected) {
+      selected = n ?? null;
       schedule();
     }
   };

@@ -214,6 +214,7 @@ fn jabber() -> crate::web::jabber::JabberSide {
     crate::web::jabber::JabberSide {
         configured: true,
         connected: true,
+        mention_names: vec!["capsuleer".to_owned()],
         convos: vec![
             dm("Wingmate Alpha", 4, true, 40, "#3fb950"),
             dm("Random Guy", 2, false, 300, "#8b949e"),
