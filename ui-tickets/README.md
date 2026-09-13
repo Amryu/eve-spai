@@ -51,7 +51,7 @@ after, and any follow-up tickets it spawned.
 | [UI-043 Chat timestamps are minute-resolution](UI-043-chat-timestamps-need-seconds/) | Medium | `eve_time_label` | user | **Fixed** |
 | [UI-044 Chat timestamps render at 9.5px](UI-044-chat-timestamp-below-body-size/) | Low | chat timestamp labels | UI-043 | Open |
 | [UI-041 No way to forget a remembered room or private chat](UI-041-forget-known-conversation/) | Medium | sidebar panes, `jabber_frame` | user | **Fixed** |
-| [UI-042 The contacts star is a 9px hit target](UI-042-contacts-star-is-9px/) | Low | Directory pane rows | UI-041 | Open |
+| [UI-042 The contacts star is a 9px hit target](UI-042-contacts-star-is-9px/) | Low | Directory pane rows | UI-041 | **Fixed** in UI-068 |
 | [UI-040 Jump Plan mode has no command carrier](UI-040-jump-plan-command-carrier/) | Medium | `SHIP_CLASSES`, `jump_plan_content` | user | **Fixed** |
 | [UI-039 A hidden chat tab comes back, and leaving a room does not stick](UI-039-jabber-hidden-and-left-rooms-not-persisted/) | High | `jabber_reconcile`, `close_jabber_tab` | user | **Fixed** |
 | [UI-038 A full disk kills the app, with no warning before and no record after](UI-038-no-warning-or-survival-when-the-disk-fills/) | Critical | `store.rs` writes, panic hook | user | **Fixed** |
@@ -62,7 +62,7 @@ after, and any follow-up tickets it spawned.
 | [UI-033 The always-on-top pin overlays dialog content](UI-033-pin-overlays-dialog-content/) | Medium | `ontop_pin` | GAP-001 | **Fixed** |
 | [UI-032 The intel toolbar is too cramped](UI-032-intel-toolbar-too-cramped/) | Medium | `intel_view` | user | **Fixed** |
 | [UI-030 Alert rule names truncate in the default panel](UI-030-rule-names-truncate/) | Low | `alert_rules_editor` | UI-019 | **Fixed** |
-| [UI-031 Regenerate button uses a bare U+21BB](UI-031-bare-glyph-may-be-tofu/) | Low | `rescue_window_body` | UI-019 | Open |
+| [UI-031 Regenerate button uses a bare U+21BB](UI-031-bare-glyph-may-be-tofu/) | Low | `rescue_window_body` | UI-019 | **Fixed** in UI-068 |
 | [UI-016 Ping window has no chrome](UI-016-ping-window-has-no-chrome/) | Low | decision | n/a | Closed, not a defect |
 
 ## Harness coverage gaps
@@ -209,6 +209,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [UI-065 Rescue is a second switch, a second window, and a self-changing map](UI-065-rescue-is-a-tab/) | `app.rs`, `nav.rs` | after 64 | **Delivered** |
 | [UI-066 Fleet detection stopped; exit button for a mode that is gone](UI-066-rescue-poller/) | `app.rs` | after 65 | **Fixed** |
 | [UI-067 Route panel fell out of the dock; arcs do not move](UI-067-route-dock/) | `app.rs` | after 66 | **Fixed** |
+| [UI-068 Three features lost their only entry point in the menu cleanup](UI-068-orphaned-by-the-menu-cleanup/) | `app.rs` | after 67 | **Fixed** |
 
 ### Browser evidence
 

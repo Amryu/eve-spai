@@ -4615,9 +4615,12 @@ impl SpaiApp {
                                 };
                                 if ui
                                     .add(
+                                        // Not `.small()`: at 9px this was the hardest thing in the
+                                        // list to hit and the easiest to hit by accident, and it
+                                        // adds or drops a contact.
                                         egui::Button::new(
                                             egui::RichText::new(egui_phosphor::regular::STAR)
-                                                .small()
+                                                .size(15.0)
                                                 .color(star_col),
                                         )
                                         .frame(false),
@@ -5319,9 +5322,7 @@ impl SpaiApp {
                     if !grouped {
                         ui.add_space(5.0);
                         ui.label(
-                            egui::RichText::new(eve_time_label(m.time, now))
-                                .weak()
-                                .size(9.5),
+                            egui::RichText::new(eve_time_label(m.time, now)).weak().size(9.5),
                         );
                     }
                     let mentioned = !m.outgoing
@@ -5770,6 +5771,7 @@ impl SpaiApp {
 
         let now = chrono::Utc::now().timestamp();
         struct Row {
+            id: i64,
             sys_id: i64,
             sys: String,
             wh_type: String,
@@ -5812,6 +5814,7 @@ impl SpaiApp {
                     format!("reported {} ago", human_ago(now - w.reported_at))
                 };
                 Row {
+                    id: w.id,
                     sys_id: w.system_id,
                     sys,
                     wh_type: w.wh_type.clone().unwrap_or_else(|| "—".into()),
@@ -5828,6 +5831,7 @@ impl SpaiApp {
             .collect();
 
         use egui_phosphor::regular as icon;
+        let mut kill: Option<i64> = None;
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("wh_grid").striped(true).num_columns(8).spacing([16.0, 6.0]).show(
                 ui,
@@ -5839,9 +5843,21 @@ impl SpaiApp {
                     }
                     ui.end_row();
                     for r in &rows {
-                        if ui.link(&r.sys).clicked() {
-                            self.open_system(r.sys_id);
-                        }
+                        // In the first column, not the last: this grid is eight columns and scrolls
+                        // sideways, so anything at the far end is off the screen exactly when the
+                        // window is small enough to need it.
+                        ui.horizontal(|ui| {
+                            if ui
+                                .small_button(icon::X)
+                                .on_hover_text("Mark this hole dead")
+                                .clicked()
+                            {
+                                kill = Some(r.id);
+                            }
+                            if ui.link(&r.sys).clicked() {
+                                self.open_system(r.sys_id);
+                            }
+                        });
                         ui.horizontal(|ui| {
                             ui.label(&r.wh_type);
                             if r.drifter {
@@ -5871,6 +5887,9 @@ impl SpaiApp {
                 },
             );
         });
+        if let Some(id) = kill {
+            self.kill_wormhole(id);
+        }
     }
 
     fn maybe_start_watcher(&mut self, ctx: &egui::Context) {
@@ -6650,7 +6669,11 @@ impl SpaiApp {
                     ui.separator();
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
-                        if ui.small_button("↻").on_hover_text("Regenerate from template").clicked() {
+                        if ui
+                            .small_button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+                            .on_hover_text("Regenerate from template")
+                            .clicked()
+                        {
                             r.pending_ping = ping.clone();
                             r.ping_built_for =
                                 Some((r.op_channel, r.doctrine.clone(), r.selected_ping));
@@ -6699,7 +6722,8 @@ impl SpaiApp {
                     }
                     // Rebuild from the template on first show and on an op/doctrine change, but not
                     // once the FC has typed into the box: the combos sit right above it, so silently
-                    // discarding their edit is too easy to trigger. "↻" still forces a rebuild.
+                    // discarding their edit is too easy to trigger. The refresh button still forces
+                    // a rebuild.
                     let ping_key = (r.op_channel, r.doctrine.clone(), r.selected_ping);
                     let switched_ping = r
                         .ping_built_for
@@ -14237,6 +14261,7 @@ impl SpaiApp {
         let mut titan_now: Option<(i64, bool)> = None;
         let mut drop_anchor_row: Option<usize> = None;
         let mut alts_for: Option<usize> = None;
+        let mut dock_toggle: Option<(i64, bool)> = None;
         let mut show_intel: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
@@ -14320,6 +14345,18 @@ impl SpaiApp {
                                 self.right_dock_tab = RightDockTab::System;
                                 ui.close();
                             }
+                            // UI-053 took the dock entries off the map's menu, and they had no other
+                            // home: existing permits still drew their teal ring but nothing could set
+                            // or clear one. A route's own rows are where you decide where you can sit.
+                            let (caps, supers) = self.dock_permit_for(h.id);
+                            if ui.button(if caps { "Capitals cannot dock" } else { "Capitals dock here" }).clicked() {
+                                dock_toggle = Some((h.id, false));
+                                ui.close();
+                            }
+                            if ui.button(if supers { "Supers cannot dock" } else { "Supers dock here" }).clicked() {
+                                dock_toggle = Some((h.id, true));
+                                ui.close();
+                            }
                             if self.map_route_kind == "titan" {
                                 let t = self.map_titans.contains(&h.id);
                                 if ui
@@ -14384,6 +14421,9 @@ impl SpaiApp {
         if let Some(id) = show_intel {
             self.map_intel_for = Some(id);
         }
+        if let Some((id, supers)) = dock_toggle {
+            self.toggle_dock_permit(id, supers);
+        }
         if let Some(i) = alts_for {
             // The systems a capital could stop in between the two hops either side of this one.
             // Picking one inserts it as a waypoint, which is what makes it a steer rather than a
@@ -14403,6 +14443,21 @@ impl SpaiApp {
                 self.map_alts = Some(ids);
             }
         }
+    }
+
+    /// Whether capitals and supers may dock in a system, as the permit list stands.
+    fn dock_permit_for(&self, id: i64) -> (bool, bool) {
+        let name = self
+            .systems
+            .as_ref()
+            .and_then(|g| g.info_of(id).map(|i| i.name.clone()))
+            .unwrap_or_default();
+        self.settings
+            .jump_dock
+            .iter()
+            .find(|p| p.system.eq_ignore_ascii_case(&name))
+            .map(|p| (p.capitals, p.supers))
+            .unwrap_or((false, false))
     }
 
     /// Saving and loading a route, the same store the page writes to.
@@ -15381,7 +15436,8 @@ impl SpaiApp {
                         MapMode::Travel,
                         MapMode::Hunting,
                         MapMode::Safety,
-                        MapMode::JumpPlan,
+                        // No JumpPlan: the route panel replaced it and nothing fills the overlay it
+                        // used to draw, so selecting it showed an empty map mode.
                     ] {
                         ui.selectable_value(&mut mode, m, m.label());
                     }
