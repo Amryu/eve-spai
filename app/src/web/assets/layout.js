@@ -203,6 +203,19 @@ function wireTabs() {
   bar.addEventListener("pointerup", end);
   bar.addEventListener("pointercancel", end);
 
+  document.getElementById("menu")?.addEventListener("click", (e) => {
+    const m = e.target.closest("[data-mode]");
+    if (m) {
+      setMode(m.dataset.mode);
+      document.body.classList.remove("sheet");
+      return;
+    }
+    const t = e.target.closest("[data-toggle]");
+    if (t) {
+      setOn(t.dataset.toggle, !isOn(t.dataset.toggle));
+    }
+  });
+
   bar.addEventListener("click", (e) => {
     const m = e.target.closest("[data-mode]");
     if (m) {
@@ -240,15 +253,8 @@ function wireSheet() {
     e.stopPropagation();
     document.body.classList.toggle("sheet");
   });
-  // Choosing a mode ends that errand; toggling panes usually does not, so the menu stays open for
-  // those.
-  document.getElementById("tabs")?.addEventListener("click", (e) => {
-    if (e.target.closest("[data-mode]")) document.body.classList.remove("sheet");
-  });
   document.addEventListener("click", (e) => {
-    if (!e.target.closest(".modebar") && !e.target.closest("#sheet")) {
-      document.body.classList.remove("sheet");
-    }
+    if (!e.target.closest("#menu")) document.body.classList.remove("sheet");
   });
 }
 

@@ -267,6 +267,7 @@ fn map_live(
         camps: facts.camps.clone(),
         holes: facts.holes.clone(),
         cyno: facts.cyno.clone(),
+        route: facts.route.clone(),
         upgrades: facts
             .upgrades
             .iter()

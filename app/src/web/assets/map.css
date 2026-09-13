@@ -12,9 +12,11 @@
   border-radius: 4px;
   /* The canvas owns the gesture: without this a drag scrolls the page instead of panning. */
   touch-action: none;
+  /* Only the starting value. The pointer handler sets `cursor` inline as it moves, because a
+     stylesheet rule here always wins over nothing and left a hovered system looking exactly like
+     empty space. */
   cursor: grab;
 }
-.starmap:active { cursor: grabbing; }
 
 .maptools {
   display: flex;

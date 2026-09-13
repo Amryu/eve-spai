@@ -28,9 +28,16 @@ pub struct Node {
 pub struct Geometry {
     pub extent: f64,
     pub nodes: Vec<Node>,
-    /// Index pairs into `nodes`, deduped `a < b`. Ids would be eight bytes each and there are
-    /// thousands of them; indices roughly halve the payload.
-    pub edges: Vec<(usize, usize)>,
+    /// Index pairs into `nodes` with a style, deduped `a < b`. Ids would be eight bytes each and
+    /// there are thousands of them; indices roughly halve the payload.
+    ///
+    /// The third value is 0 inside a constellation, 1 across constellations, 2 across regions. A
+    /// gate says where a boundary runs as much as where you can go, and on a map of identical lines
+    /// none of those boundaries were visible.
+    pub edges: Vec<(usize, usize, u8)>,
+    /// Region id to name, for the labels the map draws when it is zoomed out too far for system
+    /// names to be readable. About a hundred entries, so it rides with the geometry.
+    pub regions: Vec<(i64, String)>,
     /// Jump bridges, same index-pair shape. Separate from `edges` because they are drawn
     /// differently and can be switched off on their own.
     pub bridges: Vec<(usize, usize)>,
@@ -66,14 +73,14 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
     let index: std::collections::HashMap<i64, usize> =
         nodes.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
-    let mut edges: Vec<(usize, usize)> = Vec::new();
+    let mut edges: Vec<(usize, usize, u8)> = Vec::new();
     let mut bridges: Vec<(usize, usize)> = Vec::new();
     for s in &nodes {
         let Some(&a) = index.get(&s.id) else { continue };
         for &nb in graph.neighbors_gates_only(s.id) {
             let Some(&b) = index.get(&nb) else { continue };
             if a < b {
-                edges.push((a, b));
+                edges.push((a, b, edge_style(graph, s.id, nb)));
             }
         }
         for &nb in graph.neighbors(s.id) {
@@ -107,6 +114,29 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
             .collect(),
         edges,
         bridges,
+        regions: {
+            let mut r: Vec<(i64, String)> = nodes
+                .iter()
+                .filter_map(|s| {
+                    graph.info_of(s.id).map(|i| (s.region_id, i.region.clone()))
+                })
+                .collect();
+            r.sort_unstable();
+            r.dedup_by_key(|(id, _)| *id);
+            r
+        },
+    }
+}
+
+/// 0 within a constellation, 1 across constellations, 2 across regions.
+fn edge_style(graph: &crate::geo::Systems, a: i64, b: i64) -> u8 {
+    let (Some(x), Some(y)) = (graph.info_of(a), graph.info_of(b)) else { return 0 };
+    if x.region != y.region {
+        2
+    } else if x.constellation != y.constellation {
+        1
+    } else {
+        0
     }
 }
 
@@ -130,11 +160,14 @@ mod tests {
     use super::*;
 
     fn sys(id: i64, name: &str, x: f64, z: f64) -> crate::store::MapSystem {
+        // 7-K5EL is in Fountain in the fixture graph, so it gets its own region id here too:
+        // a row whose `region_id` disagrees with the graph's region name is not a real row.
+        let region_id = if id == 30_003_704 { 10_000_058 } else { 10_000_060 };
         crate::store::MapSystem {
             id,
             name: name.to_owned(),
             security: -0.36,
-            region_id: 10_000_060,
+            region_id,
             x,
             y: 0.0,
             z,
@@ -171,7 +204,7 @@ mod tests {
         let geo = build(&s, &g);
         // The fixture graph is a line: 1DQ1-A to 319-3D to 7-K5EL.
         assert_eq!(geo.edges.len(), 2, "{:?}", geo.edges);
-        for &(a, b) in &geo.edges {
+        for &(a, b, _) in &geo.edges {
             assert!(a < b, "an edge must be stored once, low index first: {a},{b}");
             assert!(b < geo.nodes.len(), "an edge must index a node that exists");
         }
@@ -186,10 +219,12 @@ mod tests {
             .unwrap();
         let n = v["nodes"].as_array().unwrap().len() as u64;
         for e in v["edges"].as_array().unwrap() {
-            for side in e.as_array().unwrap() {
+            let pair = e.as_array().unwrap();
+            for side in &pair[..2] {
                 let x = side.as_u64().unwrap();
                 assert!(x < n, "{x} is not an index into {n} nodes, it looks like an id");
             }
+            assert!(pair[2].as_u64().unwrap() <= 2, "style is one of three");
         }
     }
 
@@ -204,6 +239,32 @@ mod tests {
         let geo = build(&s, &g);
         let by = |n: &str| geo.nodes.iter().find(|x| x.n == n).unwrap().z;
         assert!(by("north") < by("south"), "north {} should sit above south {}", by("north"), by("south"));
+    }
+
+    /// The fixtures straddle a real boundary: 1DQ1-A and 319-3D are both in Delve, 7-K5EL is in
+    /// Fountain, and all three share a constellation name. So one gate is interior and one leaves
+    /// the region, which is exactly the distinction being drawn.
+    #[test]
+    fn gate_style_says_which_boundary_it_crosses() {
+        let (_, g) = fixture();
+        assert_eq!(edge_style(&g, 30_004_759, 30_004_608), 0, "1DQ1-A to 319-3D, both Delve");
+        assert_eq!(edge_style(&g, 30_004_608, 30_003_704), 2, "319-3D to 7-K5EL, Delve to Fountain");
+        // Symmetric: which end you ask from cannot change the answer.
+        assert_eq!(edge_style(&g, 30_003_704, 30_004_608), 2);
+        // A system the graph has never heard of falls back to interior rather than guessing.
+        assert_eq!(edge_style(&g, 30_009_999, 30_004_608), 0);
+    }
+
+    #[test]
+    fn regions_are_named_once_each() {
+        let (s, g) = fixture();
+        let geo = build(&s, &g);
+        let names: Vec<&str> = geo.regions.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"Delve") && names.contains(&"Fountain"), "{names:?}");
+        let ids: Vec<i64> = geo.regions.iter().map(|(i, _)| *i).collect();
+        let mut uniq = ids.clone();
+        uniq.dedup();
+        assert_eq!(ids, uniq, "one entry per region");
     }
 
     #[test]
@@ -238,7 +299,7 @@ mod tests {
         let (mut s, g) = fixture();
         s.insert(0, sys(31_000_123, "J123456", 500.0, 500.0));
         let geo = build(&s, &g);
-        for &(a, b) in &geo.edges {
+        for &(a, b, _) in &geo.edges {
             assert!(a < geo.nodes.len() && b < geo.nodes.len(), "{a},{b} out of range");
         }
         assert_eq!(geo.edges.len(), 2);

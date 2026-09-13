@@ -132,6 +132,9 @@ pub struct MapLive {
     pub holes: Vec<(i64, i64)>,
     /// Configured cyno generators.
     pub cyno: Vec<i64>,
+    /// The current travel route, in order. The page draws a leg solid when the two systems are gate
+    /// neighbours and dashed otherwise, which it can tell from the geometry it already has.
+    pub route: Vec<i64>,
     /// Sov upgrades per system, classified the way the app classifies them.
     pub upgrades: Vec<(i64, Vec<UpgradeMark>)>,
 }
