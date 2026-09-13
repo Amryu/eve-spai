@@ -174,24 +174,26 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
             if let Some(ip) = peer {
                 ctx.fails.lock().unwrap_or_else(|e| e.into_inner()).remove(&ip);
             }
-            let token = query_token.unwrap_or_default();
-            // The token leaves the address bar as soon as it has been exchanged for a cookie, so it
-            // stops living in history, in a shared screenshot and in any referrer.
-            respond(
-                req,
-                302,
-                "text/plain; charset=utf-8",
-                b"",
-                &[
-                    ("Location", "/".to_owned()),
-                    (
-                        "Set-Cookie",
-                        format!(
-                            "spai={token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict"
-                        ),
-                    ),
-                ],
-            );
+            let cookie = pair_cookie(query_token.unwrap_or_default());
+            // Served directly rather than through a 302.
+            //
+            // The redirect was the bug: a phone arriving from a QR scanner has no same-site
+            // initiator, so the browser would not attach the just-set cookie to the redirect it was
+            // told to follow, and the device landed on the "not paired" page having just paired.
+            // The page strips the token from the address bar itself, which is what the redirect was
+            // for and is one fewer thing to get wrong.
+            let boot = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).full_json();
+            let page = super::assets::index_with_boot(&boot);
+            respond(req, 200, "text/html; charset=utf-8", page.as_bytes(), &[
+                ("Cache-Control", "no-store".to_owned()),
+                ("Set-Cookie", cookie),
+            ]);
+        }
+        Access::WrongToken => {
+            if let Some(ip) = peer {
+                note_failure(ctx, ip);
+            }
+            respond(req, 403, "text/html; charset=utf-8", STALE_PAGE.as_bytes(), &[]);
         }
         Access::Denied => {
             if let Some(ip) = peer {
@@ -395,6 +397,26 @@ fn hdr(k: &str, v: &str) -> tiny_http::Header {
         .unwrap_or_else(|()| tiny_http::Header::from_bytes(&b"X-Bad"[..], &b"1"[..]).expect("static"))
 }
 
+/// `Lax`, not `Strict`.
+///
+/// `Strict` withholds the cookie on any navigation that did not start on this site, and a QR scan
+/// starts outside the browser entirely, so the very first page load after pairing arrived without
+/// it. `Lax` attaches it to top-level GET navigations, which is exactly this case, and still
+/// withholds it from cross-site POSTs. Writes do not lean on that anyway: `/api/action` checks
+/// `Origin`, which is the defence that actually holds.
+fn pair_cookie(token: &str) -> String {
+    format!("spai={token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax")
+}
+
+const STALE_PAGE: &str = r#"<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>EVE Spai</title>
+<style>body{font-family:system-ui;background:#0b0f12;color:#c8d2d8;display:flex;height:100vh;
+margin:0;align-items:center;justify-content:center;text-align:center}p{color:#7a848b;max-width:28rem}</style>
+<div><h2>EVE Spai</h2><p>That pairing link is not valid any more. It was probably regenerated.
+Open Settings on the desktop, reveal the pairing link, and scan the new code.</p></div>
+"#;
+
 const PAIR_PAGE: &str = r#"<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>EVE Spai</title>
@@ -479,16 +501,48 @@ mod tests {
         );
 
         let paired = get(&c, &format!("{}/?t={TOKEN}", s.base));
-        assert_eq!(paired.status(), 302, "a good token is exchanged for a cookie");
-        assert_eq!(paired.headers().get("location").unwrap(), "/");
+        assert_eq!(paired.status(), 200, "a good token serves the page and sets the cookie");
         let cookie = paired.headers().get("set-cookie").unwrap().to_str().unwrap().to_owned();
         assert!(cookie.starts_with(&format!("spai={TOKEN}")));
         assert!(cookie.contains("HttpOnly"), "script must not be able to read the token");
-        assert!(cookie.contains("SameSite=Strict"), "this is the CSRF defence");
 
         let page = c.get(&s.base).header("Cookie", &cookie).send().expect("request");
         assert_eq!(page.status(), 200);
         assert!(page.text().unwrap().contains("EVE Spai"));
+    }
+
+    /// The reported bug: a phone scanned the QR, reached the server, and was told it was not paired.
+    ///
+    /// Pairing used to answer 302 with a `SameSite=Strict` cookie. A QR scan has no same-site
+    /// initiator, so the browser withheld the cookie from the redirect it had just been told to
+    /// follow, and the device landed on the pair page having just paired.
+    #[test]
+    fn pairing_serves_the_page_itself_rather_than_a_redirect() {
+        let s = serve_test();
+        let c = client();
+        let r = get(&c, &format!("{}/?t={TOKEN}", s.base));
+
+        assert_eq!(r.status(), 200, "pairing must not depend on a redirect being followed");
+        let cookie = r.headers().get("set-cookie").unwrap().to_str().unwrap().to_owned();
+        assert!(cookie.contains("SameSite=Lax"), "Strict is withheld on a scan: {cookie}");
+        assert!(cookie.contains("HttpOnly"), "script must not be able to read the token");
+        assert!(!cookie.contains("SameSite=Strict"));
+        assert!(r.text().unwrap().contains("EVE Spai"), "the page itself has to come back");
+    }
+
+    /// A regenerated link and a device that never paired are different problems, and the page says
+    /// which.
+    #[test]
+    fn a_stale_token_says_so() {
+        let s = serve_test();
+        let c = client();
+        let stale = get(&c, &format!("{}/?t=an-old-token", s.base));
+        assert_eq!(stale.status(), 403);
+        assert!(stale.text().unwrap().contains("not valid any more"));
+
+        let never = get(&c, &s.base);
+        assert_eq!(never.status(), 403);
+        assert!(never.text().unwrap().contains("not paired"));
     }
 
     #[test]

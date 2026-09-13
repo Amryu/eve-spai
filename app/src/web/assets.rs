@@ -236,6 +236,15 @@ mod tests {
         );
     }
 
+    /// The token has to leave the address bar, and after the pairing redirect was removed the page
+    /// is the only thing left that can do it.
+    #[test]
+    fn the_page_strips_the_token_from_the_url() {
+        let js = find("/assets/app.js").expect("app.js").body;
+        assert!(js.contains("scrubToken"), "nothing removes the token from the bar");
+        assert!(js.contains("searchParams.delete(\"t\")"));
+    }
+
     /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as
     /// `.modal`, an author rule wins, and `display: flex` kept it on screen.
     #[test]

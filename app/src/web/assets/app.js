@@ -174,7 +174,25 @@ function boot() {
   }
 }
 
+/// Take the token out of the address bar.
+///
+/// It used to leave via a redirect, which cost the first page load its cookie on any device that
+/// arrived from outside the browser. Doing it here means the token is gone from the bar, from
+/// history and from any screenshot of the page, without the pairing response having to be a
+/// redirect at all.
+function scrubToken() {
+  if (!location.search.includes("t=")) return;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete("t");
+    history.replaceState(null, "", url.pathname + (url.search || "") + url.hash);
+  } catch {
+    // An address bar that cannot be rewritten is cosmetic, not fatal.
+  }
+}
+
 function main() {
+  scrubToken();
   boot();
   render();
   connect();

@@ -136,9 +136,11 @@ pub fn origin_allowed(origin: Option<&str>) -> bool {
 pub enum Access {
     /// Already paired: serve it.
     Granted,
-    /// A valid token arrived in the query. Set the cookie and redirect, so the token stops being in
-    /// the address bar, in history and in any screenshot of the page.
+    /// A valid token arrived in the query. Serve the page and set the cookie.
     Pair,
+    /// A token arrived and did not match. Worth telling apart from no token at all: it means a
+    /// rotated link or a stale bookmark, not a device that was never paired.
+    WrongToken,
     Denied,
     RebindBlocked,
     RateLimited,
@@ -167,10 +169,11 @@ pub fn authorize(
     if rate_limited {
         return Access::RateLimited;
     }
-    if query_token.is_some_and(|t| super::auth::ct_eq(t, expected)) {
-        return Access::Pair;
+    match query_token {
+        Some(t) if super::auth::ct_eq(t, expected) => Access::Pair,
+        Some(_) => Access::WrongToken,
+        None => Access::Denied,
     }
-    Access::Denied
 }
 
 #[cfg(test)]
@@ -304,7 +307,8 @@ mod tests {
         assert_eq!(authorize(&Route::Index, None, None, host, tok, false), Access::Denied);
         assert_eq!(
             authorize(&Route::Index, Some("wrong"), None, host, tok, false),
-            Access::Denied
+            Access::WrongToken,
+            "a stale link is a different problem from never having paired"
         );
         assert_eq!(authorize(&Route::Index, Some(tok), None, host, tok, false), Access::Pair);
         assert_eq!(authorize(&Route::Index, None, Some(tok), host, tok, false), Access::Granted);
