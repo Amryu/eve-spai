@@ -106,3 +106,19 @@
 .toolbar .qf input { width: 100%; }
 
 .count { color: var(--muted); margin: 0 0 0.5rem; }
+
+/* The original message behind a card, shown when the card itself is clicked.
+   `display: contents` on the header means wrapping it costs the layout nothing: its children stay
+   direct flex items of the card, so a card looks identical until it is opened. */
+.card .hdr { display: contents; }
+.card .rawmsg { display: none; }
+.card.showraw > :not(.hdr):not(.rawmsg):not(.rep) { display: none; }
+.card.showraw .rawmsg {
+  display: block;
+  flex: 1 1 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 0.15rem;
+}
+.card[data-raw] { cursor: pointer; }

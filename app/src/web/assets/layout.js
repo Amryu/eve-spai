@@ -69,11 +69,15 @@ export function apply() {
   // Order is applied with `order` rather than by moving nodes, so a re-render never has to rebuild
   // the DOM and an input inside a pane keeps its focus.
   const on = shown();
+  // An odd count leaves a spare cell in the grid's last row, and the map is the pane that gains most
+  // from the extra width, so it takes both columns.
+  const span = mode === "grid" && on.length % 2 === 1 && on.includes("map") ? "map" : null;
   for (const [i, name] of layout.order.entries()) {
     const el = main.querySelector(`[data-pane="${name}"]`);
     if (!el) continue;
     el.style.order = String(i);
     el.hidden = !on.includes(name);
+    el.toggleAttribute("data-span", name === span);
   }
   // Columns divide by what is actually showing, so switching one off widens the rest instead of
   // leaving a gap.

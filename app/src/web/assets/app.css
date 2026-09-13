@@ -149,11 +149,21 @@ body {
   /* The status word costs a whole column on a phone; the tab counts and the feed already say
      whether anything is arriving. */
   .status { display: none; }
-  #tabs { grid-area: tabs; margin-right: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  #tabs::-webkit-scrollbar { display: none; }
+  /* One row, the full width, split evenly. A scrolling strip of differently sized buttons put the
+     last pane off the edge of the screen, where nothing says it is there. */
+  #tabs { grid-area: tabs; margin-right: 0; flex-wrap: nowrap; overflow-x: hidden; }
 
   /* 44px is the smallest target a thumb hits reliably. */
-  .tab { min-height: 2.4rem; padding: 0 0.7rem; flex: 0 0 auto; }
+  .tab {
+    min-height: 2.4rem;
+    padding: 0 0.3rem;
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .soundbar .armbtn, .soundbar .mutebtn { min-height: 2.4rem; }
 }
 

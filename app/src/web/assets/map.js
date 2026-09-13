@@ -29,7 +29,14 @@ const view = { ox: 0, oz: 0, k: 1 };
 const target = { ox: 0, oz: 0, k: 1 };
 /// How long a zoom takes to arrive. Long enough to read as motion rather than a jump cut, short
 /// enough that the map is where you put it by the time you have looked at it.
-const ZOOM_EASE_MS = 80;
+const ZOOM_EASE_MS = 180;
+/// The shape of a movement that starts at rest and stops at rest.
+///
+/// Exponential decay spent all its speed in the first frame and then crawled in on an asymptote,
+/// which is a lurch followed by drift rather than a movement. This leaves and arrives still.
+const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+/// The zoom in flight: where it set off from and when. Null when the map is settled.
+let anim = null;
 let fitted = false;
 /// The region the map is framed on, or null for the whole universe.
 let focused = null;
@@ -222,6 +229,7 @@ function fit(region = null) {
   view.ox = (x0 + x1) / 2 - (w * view.k) / 2;
   view.oz = (z0 + z1) / 2 - (h * view.k) / 2;
   Object.assign(target, view);
+  anim = null;
   fitted = true;
 }
 
@@ -233,31 +241,29 @@ function radius() {
   return Math.max(1.1, Math.min(3, 1.6 / Math.sqrt(view.k) * 6));
 }
 
-/// Move the drawn view towards the target, and say whether it still has distance to cover.
+/// Advance the zoom in flight, and say whether it still has distance to cover.
 ///
-/// Exponential, not a fixed curve: a second wheel notch during the first one just moves the target
-/// and the same decay carries on, so a fast scroll never queues up a backlog of animations.
-function settle(dt) {
-  const a = 1 - Math.pow(0.001, Math.min(1, dt / ZOOM_EASE_MS));
-  if (Math.abs(Math.log(target.k / view.k)) < 1e-3) {
-    Object.assign(view, target);
-    return false;
-  }
-  view.ox += (target.ox - view.ox) * a;
-  view.oz += (target.oz - view.oz) * a;
-  view.k *= Math.pow(target.k / view.k, a);
-  return true;
+/// A notch arriving mid-flight restarts the curve from wherever the view has got to, so a fast
+/// scroll is one continuous movement rather than a queue of animations fighting each other.
+function settle(now) {
+  if (!anim) return false;
+  const e = easeInOut(Math.min(1, (now - anim.t0) / ZOOM_EASE_MS));
+  view.ox = anim.from.ox + (target.ox - anim.from.ox) * e;
+  view.oz = anim.from.oz + (target.oz - anim.from.oz) * e;
+  // Geometric in `k`, because zoom is: the halfway point of a zoom is the geometric mean, not the
+  // arithmetic one, and interpolating it linearly races at one end and crawls at the other.
+  view.k = anim.from.k * Math.pow(target.k / anim.from.k, e);
+  if (e < 1) return true;
+  Object.assign(view, target);
+  anim = null;
+  return false;
 }
 
-let last = 0;
 function schedule() {
   if (raf) return;
   raf = requestAnimationFrame((now) => {
     raf = null;
-    const dt = last ? Math.min(100, now - last) : 16;
-    last = now;
-    if (settle(dt)) schedule();
-    else last = 0;
+    if (settle(now)) schedule();
     paint();
   });
 }
@@ -911,6 +917,7 @@ function wire() {
     target.ox += px * (target.k - k);
     target.oz += py * (target.k - k);
     target.k = k;
+    anim = { from: { ox: view.ox, oz: view.oz, k: view.k }, t0: performance.now() };
     schedule();
   };
 
@@ -941,6 +948,12 @@ function wire() {
     view.oz -= dz;
     target.ox -= dx;
     target.oz -= dz;
+    // The zoom in flight is anchored to where it set off from, so a drag has to move that too or
+    // the next frame drags the map back.
+    if (anim) {
+      anim.from.ox -= dx;
+      anim.from.oz -= dz;
+    }
     schedule();
   });
   const up = (e) => {

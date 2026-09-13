@@ -30,16 +30,19 @@ export function fmtAge(secs, compact) {
 /// EVE's security ramp, indexed exactly as `security_color` indexes it.
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
 
-/// A kilometre figure, in AU once it is large enough to be meaningless in km.
+/// A distance in **metres**, which is the unit `near_celestial` carries.
 ///
-/// The app shows km throughout; on a phone a seven-digit km reading is just noise, and "2.4 AU" is
-/// the number anyone actually wants.
+/// It was being read as kilometres, so every reading was a thousand times too far and the AU figures
+/// were nonsense. The app divides by 1000 and groups the thousands, and this now matches it, down to
+/// dropping anything past 15,000 km the way the app's own ceiling does.
 const KM_PER_AU = 149597870.7;
+export const CELESTIAL_MAX_M = 15_000_000;
 
-export function fmtDistance(km) {
+export function fmtDistance(metres) {
+  const km = Math.round(metres / 1000);
   const au = km / KM_PER_AU;
   if (au >= 0.1) return `${au.toFixed(1)} AU`;
-  return `${Math.round(km)} km`;
+  return `${km.toLocaleString("en-US")} km`;
 }
 
 export function fmtIsk(v) {
@@ -98,6 +101,23 @@ function flagTags(r, isKill) {
   return t.join("");
 }
 
+/// Cards showing their original message, by report id.
+///
+/// Module state rather than a class on the node: a pane rebuilds its HTML whenever the snapshot
+/// moves, and anything living only in the DOM is gone on the next tick.
+const raw = new Set();
+
+// One listener for every card there will ever be. A click on the card itself, not on a badge, shows
+// the message the card was parsed from, which is what the app does with the same click.
+document.addEventListener("click", (e) => {
+  const art = e.target.closest("article.card[data-raw]");
+  if (!art || e.target.closest("button, a")) return;
+  const id = art.dataset.raw;
+  if (raw.has(id)) raw.delete(id);
+  else raw.add(id);
+  art.classList.toggle("showraw", raw.has(id));
+});
+
 export function card(c, lookups, compact, now) {
   const r = c.report;
   const isKill = r.channel === "zKill" || r.channel === "zkill";
@@ -107,6 +127,9 @@ export function card(c, lookups, compact, now) {
   const sev = `var(--sev-${String(c.severity).toLowerCase()})`;
   const parts = [];
 
+  // The header stays put when the message is revealed, so the card does not jump: `display: contents`
+  // means wrapping it changes nothing about the layout.
+  parts.push(`<span class="hdr">`);
   parts.push(`<span class="tico" style="color:${iconVar ?? sev}">${ico(icon)}</span>`);
   // `data-at` lets the clock tick without a re-render: nothing else in the card changes as time
   // passes, and rebuilding a pane every second is what this whole page has been fighting.
@@ -143,9 +166,10 @@ export function card(c, lookups, compact, now) {
       `<button class="chip sys" data-system="${sys.id}" style="color:${col};background:color-mix(in srgb, ${col} 28%, var(--bg))">${ico("planet")} ${esc(sys.name)}</button>`
     );
   }
-  if (r.near_celestial) {
-    const [label, km] = r.near_celestial;
-    parts.push(chip(`${ico("map-pin-line")} ${esc(label)} <b>${fmtDistance(km)}</b>`, "var(--chip-celestial)", "var(--chip-celestial-bg)"));
+  parts.push(`</span>`);
+  if (r.near_celestial && r.near_celestial[1] <= CELESTIAL_MAX_M) {
+    const [label, m] = r.near_celestial;
+    parts.push(chip(`${ico("map-pin-line")} ${esc(label)} <b>${fmtDistance(m)}</b>`, "var(--chip-celestial)", "var(--chip-celestial-bg)"));
   }
   if (r.count != null) {
     parts.push(chip(`${ico("users")} ${r.count}${r.count_plus ? "+" : ""}`, "#fff", "var(--hostile)"));
@@ -215,7 +239,14 @@ export function card(c, lookups, compact, now) {
     !isKill && r.reporter
       ? `<div class="rep">${esc(r.reporter)} · ${esc(r.channel)}</div>`
       : "";
-  return `<article class="card" style="background:${fill}">${parts.join("")}${footer}</article>`;
+  // A kill card is generated, not reported: there is no original message behind it, which is why the
+  // app leaves those alone too.
+  const id = String(r.id);
+  const body = isKill
+    ? ""
+    : `<div class="rawmsg">${esc(r.text.trim() || "(no message text)")}</div>`;
+  const attrs = isKill ? "" : ` data-raw="${esc(id)}"`;
+  return `<article class="card${!isKill && raw.has(id) ? " showraw" : ""}" style="background:${fill}"${attrs}>${parts.join("")}${body}${footer}</article>`;
 }
 
 /// The app's own filters: type, free text, and a jump ceiling.

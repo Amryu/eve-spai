@@ -3008,10 +3008,16 @@ impl SpaiApp {
         let mut open = true;
         let mut close = false;
         let mut pick: Option<String> = None;
-        egui::Window::new(format!(
-            "{}  Join conversation",
-            egui_phosphor::regular::CHAT_CIRCLE_DOTS
-        ))
+        // Rooms are in `channels`, but `convos` is built from every chat there is history for, which
+        // includes the rooms. Without this the DM list offers rooms and the room list offers people.
+        let room_jids: std::collections::HashSet<&str> =
+            channels.iter().map(|c| c.jid.as_str()).collect();
+        let rooms_mode = self.jabber_join_rooms;
+        egui::Window::new(if rooms_mode {
+            format!("{}  Join a room", egui_phosphor::regular::USERS_THREE)
+        } else {
+            format!("{}  Start a DM", egui_phosphor::regular::CHAT_CIRCLE_DOTS)
+        })
         .collapsible(false)
         .resizable(false)
         .open(&mut open)
@@ -3021,8 +3027,11 @@ impl SpaiApp {
             // into itself and the dialog creeps wider every frame.
             const DIALOG_W: f32 = 320.0;
             const FIELD_W: f32 = DIALOG_W - 70.0;
+            // Six was a guess that hid everything older. A hundred with a scroll bar is the whole
+            // recent history without the dialog growing past the screen.
+            const RECENT_CAP: usize = 100;
             ui.set_min_width(DIALOG_W);
-            ui.label(egui::RichText::new("Join room").strong());
+            if rooms_mode {
             let room_go = ui
                 .horizontal(|ui| {
                     let resp = ui.add_sized(
@@ -3048,12 +3057,8 @@ impl SpaiApp {
                 })
                 .collect();
             recent_rooms.sort_by_key(|c| std::cmp::Reverse(c.last_at));
-            recent_rooms.truncate(6);
-            for c in recent_rooms {
-                if ui.add(egui::Button::new(&c.name).frame(false)).clicked() {
-                    pick = Some(c.jid.clone());
-                }
-            }
+            recent_rooms.truncate(RECENT_CAP);
+            Self::jabber_recent_list(ui, "rooms", &recent_rooms.iter().map(|c| (c.jid.clone(), c.name.clone())).collect::<Vec<_>>(), egui_phosphor::regular::USERS_THREE, &mut pick);
 
             if room_go && !self.jabber_room_input.trim().is_empty() {
                 let room = self.full_room_jid(&self.jabber_room_input);
@@ -3072,8 +3077,7 @@ impl SpaiApp {
                 close = true;
             }
 
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("Message someone").strong());
+            } else {
             let dm_go = ui
                 .horizontal(|ui| {
                     let resp = ui.add_sized(
@@ -3089,6 +3093,8 @@ impl SpaiApp {
             let mut recent_dms: Vec<&Convo> = convos
                 .iter()
                 .filter(|c| c.last_at > 0)
+                .filter(|c| !room_jids.contains(c.jid.as_str()))
+                .filter(|c| c.jid != crate::jabber::PING_FEED_KEY)
                 .filter(|c| {
                     let q = self.jabber_dm_input.trim().to_lowercase();
                     q.is_empty()
@@ -3097,12 +3103,8 @@ impl SpaiApp {
                 })
                 .collect();
             recent_dms.sort_by_key(|c| std::cmp::Reverse(c.last_at));
-            recent_dms.truncate(6);
-            for c in recent_dms {
-                if ui.add(egui::Button::new(&c.name).frame(false)).clicked() {
-                    pick = Some(c.jid.clone());
-                }
-            }
+            recent_dms.truncate(RECENT_CAP);
+            Self::jabber_recent_list(ui, "dms", &recent_dms.iter().map(|c| (c.jid.clone(), c.name.clone())).collect::<Vec<_>>(), egui_phosphor::regular::CHAT_CIRCLE_DOTS, &mut pick);
 
             if dm_go && !self.jabber_dm_input.trim().is_empty() {
                 let input = self.jabber_dm_input.trim().to_owned();
@@ -3143,6 +3145,7 @@ impl SpaiApp {
                     egui::RichText::new(&self.jabber_dm_error)
                         .color(crate::theme::standing::WARNING),
                 );
+            }
             }
         });
         if let Some(jid) = pick {
@@ -3524,6 +3527,58 @@ impl SpaiApp {
             self.needs_save = true;
             self.jabber_open(&jid, ChatWinKey::Main);
         }
+    }
+
+    /// A dialog's recent list: scrollable, and every row a full-width target that lights up.
+    ///
+    /// These were frameless buttons, so the hit area and the hover were the width of the name and
+    /// the rest of the row was dead. A capped list also needs somewhere for the rest to go, which is
+    /// what the scroll area is for.
+    fn jabber_recent_list(
+        ui: &mut egui::Ui,
+        salt: &str,
+        rows: &[(String, String)],
+        icon: &str,
+        pick: &mut Option<String>,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .max_height(220.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (jid, name) in rows {
+                    let bg = ui.painter().add(egui::Shape::Noop);
+                    let inner = ui
+                        .horizontal(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(icon).weak());
+                            ui.add(egui::Label::new(name).truncate()).on_hover_text(jid);
+                        })
+                        .response;
+                    let row = egui::Rect::from_min_max(
+                        egui::pos2(ui.min_rect().left(), inner.rect.top() - 1.0),
+                        egui::pos2(ui.min_rect().right(), inner.rect.bottom() + 1.0),
+                    );
+                    let resp = ui.interact(row, ui.id().with((salt, jid)), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.painter().set(
+                            bg,
+                            egui::Shape::rect_filled(
+                                row,
+                                3.0,
+                                ui.visuals().widgets.hovered.bg_fill,
+                            ),
+                        );
+                    }
+                    if resp.clicked() {
+                        *pick = Some(jid.clone());
+                    }
+                }
+            });
     }
 
     /// The last entry in a section: the way to start a conversation that is not listed yet.
@@ -3912,6 +3967,19 @@ impl SpaiApp {
         self.jabber_ui(ui, f);
     }
 
+    /// The start dialog on its own, so each half can be screenshotted without driving a click.
+    #[cfg(test)]
+    pub(crate) fn jabber_join_dialog_for_test(
+        &mut self,
+        ctx: &egui::Context,
+        f: &JabberFrame,
+        rooms: bool,
+    ) {
+        self.jabber_join_open = true;
+        self.jabber_join_rooms = rooms;
+        self.jabber_join_dialog(ctx, &f.convos, &f.channels);
+    }
+
     fn jabber_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
         if !f.configured {
             ui.add_space(6.0);
@@ -4122,21 +4190,6 @@ impl SpaiApp {
             .default_size(210.0)
             .size_range(150.0..=460.0)
             .show_inside(ui, |ui| {
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 24.0],
-                        egui::Button::new(format!(
-                            "{}  Join conversation",
-                            egui_phosphor::regular::CHAT_CIRCLE_DOTS
-                        )),
-                    )
-                    .on_hover_text("Join a room or start a direct message")
-                    .clicked()
-                {
-                    self.jabber_dm_error.clear();
-                    self.jabber_join_open = true;
-                }
-                ui.separator();
                 let contacts: std::collections::HashSet<String> =
                     self.settings.jabber_contacts.iter().cloned().collect();
                 ui.horizontal(|ui| {
