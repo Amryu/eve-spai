@@ -48,6 +48,10 @@ pub struct LegChoice {
     pub from_name: String,
     pub to_name: String,
     pub options: Vec<RouteOption>,
+    /// This leg's options *are* the route's options, so the window must not offer them a second time
+    /// as a per-leg switcher. True for a titan route's last leg: where the titan bridges from
+    /// changes the whole route, not one hop of it.
+    pub whole_route: bool,
 }
 
 /// Where a route may not go.
@@ -655,7 +659,14 @@ pub fn chain(
         } else {
             leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes)
         };
-        legs.push(LegChoice { from: a, to: b, from_name: name(a), to_name: name(b), options });
+        legs.push(LegChoice {
+            from: a,
+            to: b,
+            from_name: name(a),
+            to_name: name(b),
+            options,
+            whole_route: false,
+        });
     }
     if legs.iter().any(|l| l.options.is_empty()) {
         return (legs, Vec::new());
@@ -681,6 +692,9 @@ pub fn chain(
         out = (0..legs[last].options.len())
             .map(|k| assemble(&move |i: usize| if i == last { k } else { pick.get(i).copied().unwrap_or(0) }))
             .collect();
+        // Chosen by the option tabs from here on, so `pick` no longer reaches this leg. A switcher
+        // for it would be the same buttons a second time, and the ones that do nothing.
+        legs[last].whole_route = true;
     }
     (legs, out)
 }
@@ -989,6 +1003,101 @@ mod tests {
         assert_eq!(r.path, vec![id]);
         assert_eq!(r.jumps, 0);
         assert_eq!(r.hops.len(), 1);
+    }
+
+    /// A titan route's alternatives belong to the whole route, so the leg that produced them is
+    /// marked and the window knows not to offer them a second time as a per-leg switcher.
+    ///
+    /// The duplicate was not merely untidy: `chain` picks that leg from the option tabs, so `pick`
+    /// no longer reaches it and the second row of buttons did nothing at all.
+    #[test]
+    fn a_titan_leg_is_marked_so_its_options_are_not_offered_twice() {
+        use crate::store::MapSystem;
+        // A line of seven, and two titans near the start that can each reach a different system far
+        // along it. The shipped fixture is three systems wide, which cannot produce two titan
+        // options at all, and a test that cannot fail is worse than none.
+        let ly = crate::map::LY_METERS;
+        let ids: Vec<i64> = (0..7).map(|i| 30_100_000 + i).collect();
+        let mut by_name = std::collections::HashMap::new();
+        let mut adjacency = std::collections::HashMap::new();
+        let mut coords: Vec<MapSystem> = Vec::new();
+        for (i, &id) in ids.iter().enumerate() {
+            let name = format!("S{i}");
+            by_name.insert(name.clone(), crate::geo::SystemInfo {
+                id,
+                name: name.clone(),
+                security: -0.4,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+            let mut near = Vec::new();
+            if i > 0 {
+                near.push(ids[i - 1]);
+            }
+            if i + 1 < ids.len() {
+                near.push(ids[i + 1]);
+            }
+            adjacency.insert(id, near);
+            coords.push(MapSystem {
+                id,
+                name,
+                security: -0.4,
+                region_id: 10_000_060,
+                // S0 and S1 sit together; S4 is 4 ly out and S5 is 6 ly out, so a titan in S0
+                // reaches both and one in S1 reaches only S4.
+                x: match i {
+                    4 => 4.0 * ly,
+                    5 => 6.0 * ly,
+                    6 => 20.0 * ly,
+                    _ => 0.0,
+                },
+                y: 0.0,
+                z: if i == 1 { 1.0 * ly } else { 0.0 },
+                x2d: 0.0,
+                z2d: 0.0,
+            });
+        }
+        let g = crate::geo::Systems::new(by_name, adjacency);
+        let (legs, out) = chain(
+            &g,
+            &coords,
+            &[ids[0], ids[6]],
+            "titan",
+            &crate::jumproute::SHIP_CLASSES[1],
+            5,
+            5,
+            6.5,
+            true,
+            &[ids[0], ids[1]],
+            false,
+            false,
+            &Avoid::default(),
+            &Default::default(),
+            &[],
+        );
+        assert_eq!(out.len(), 2, "both titans beat the plain gate route, so there are two options");
+        assert!(legs.last().expect("a leg").whole_route, "the titan leg is the route's own choice");
+
+        // A gate route's legs are per-leg choices and stay switchable.
+        let (gates, _) = chain(
+            &g,
+            &coords,
+            &[ids[0], ids[3], ids[6]],
+            "gate",
+            &crate::jumproute::SHIP_CLASSES[1],
+            5,
+            5,
+            6.5,
+            true,
+            &[],
+            false,
+            false,
+            &Avoid::default(),
+            &Default::default(),
+            &[],
+        );
+        assert!(gates.iter().all(|l| !l.whole_route), "no gate leg is the whole route");
     }
 
     /// A waypoint makes one route, not two: the leg boundary is where the first leg's last hop is,

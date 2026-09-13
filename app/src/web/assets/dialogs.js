@@ -672,7 +672,7 @@ function paintRoute(kind, onPick) {
   // "these are the same price, shortest first" rather than as a ranking.
   const legs = (routeReq?.out?.legs ?? [])
     .map((l, i) =>
-      l.options.length > 1
+      l.options.length > 1 && !l.whole_route
         ? `<div class="rleg"><span>${esc(l.from_name)} → ${esc(l.to_name)}</span>` +
           l.options
             .map(
