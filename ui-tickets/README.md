@@ -191,6 +191,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-047 Eleven layer buttons; floating route window; half-done avoidance](WEB-047-layer-groups-and-dock/) | `map.*`, `dialogs.*` | after 46 | **Delivered** |
 | [WEB-048 Only the route window docks](WEB-048-dock-tabs/) | `dialogs.*` | after 47 | **Delivered** |
 | [WEB-049 Waypoints unmarked; a linked route not drawn at all](WEB-049-waypoint-rings/) | `map.js`, `dialogs.js` | after 48 | **Fixed** |
+| [WEB-050 Long press opens the menu and the tap underneath it](WEB-050-longpress-tidy/) | `map.js`, `route.js` | after 49 | **Fixed** |
 
 ### Browser evidence
 

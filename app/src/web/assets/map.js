@@ -1134,6 +1134,9 @@ function wire() {
   let pinch = null;
   let moved = 0;
   let press = null;
+  /// A long press ends with a finger coming off the glass, and the browser sends a click for that.
+  /// Without this the menu opens and the tap underneath it opens the system window as well.
+  let swallowClick = false;
 
   const zoomAt = (factor, px, py) => {
     // Clamped to the app's own range, and never tighter than wherever a region fit already put the
@@ -1167,6 +1170,7 @@ function wire() {
         if (moved > 8) return;
         link = null;
         hideLinkTip();
+        swallowClick = true;
         schedule();
         openMenu(e, on);
       }, 500);
@@ -1351,6 +1355,10 @@ function wire() {
   });
 
   canvas.addEventListener("click", (e) => {
+    if (swallowClick) {
+      swallowClick = false;
+      return;
+    }
     if (moved > 6) return;
     const box = canvas.getBoundingClientRect();
     const mx = e.clientX - box.left;
