@@ -182,6 +182,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-038 A theme change takes the server down; range tint drops on pointer move](WEB-038-selection-and-theme-restart/) | `server.rs`, `state.rs`, `map.js` | after 37 | **Fixed** |
 | [WEB-039 Drag from a system to route to another, on both maps](WEB-039-map-routing/) | `web/route.rs`, `map.js`, `app.rs` | after 38 | **Delivered** |
 | [WEB-040 A second route drag starts over; the start dialog shrinks](WEB-040-route-waypoints/) | `web/route.rs`, `map.js`, `app.rs` | after 39 | **Fixed** |
+| [WEB-041 The radial menu asks again on every waypoint](WEB-041-menu-on-the-first-leg/) | `map.js`, `app.rs` | after 40 | **Fixed** |
 
 ### Browser evidence
 

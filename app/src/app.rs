@@ -10439,6 +10439,15 @@ impl SpaiApp {
     /// same distance away, which is the whole argument for one.
     fn map_link_menu_ui(&mut self, ui: &mut egui::Ui) {
         let Some((from, to, at)) = self.map_link_menu else { return };
+        // The menu asks what kind of route this is, which is one answer per route rather than one
+        // per leg. A drag off the current destination is adding a waypoint to a route that already
+        // has an answer, so it just extends it.
+        if self.map_route_anchors.len() > 1 && self.map_route_anchors.last() == Some(&from) {
+            self.map_link_menu = None;
+            let kind = self.map_route_kind;
+            self.map_take_route(kind, from, to);
+            return;
+        }
         use egui_phosphor::regular as i;
         const R: f32 = 68.0;
         let opts: [(&str, &str, &str); 4] = [

@@ -70,6 +70,8 @@ let link = null;
 let picked = null;
 /// The systems the drags named, in order: start, waypoints, destination.
 let anchors = [];
+/// What the route is being planned as. Chosen once, at the first drag.
+let routeKind = null;
 
 export const layers = load();
 
@@ -1117,16 +1119,20 @@ function wire() {
         // A drag off the current destination adds to the route rather than starting a new one: the
         // old destination becomes a waypoint and the new system becomes the destination. Starting
         // anywhere else is a new route, which is the only way to abandon one.
-        const extend = anchors.length > 1 && anchors[anchors.length - 1] === from;
-        const next = extend ? [...anchors, over] : [from, over];
-        radial(e.clientX, e.clientY, (kind) => {
-          anchors = next;
+        const extend = anchors.length > 1 && anchors[anchors.length - 1] === from && routeKind;
+        const take = (kind) => {
+          routeKind = kind;
+          anchors = extend ? [...anchors, over] : [from, over];
           if (kind === "gate") send({ SetDestination: { id: over } });
           showRoute(kind, anchors, (r) => {
             picked = r;
             schedule();
           });
-        });
+        };
+        // The menu asks what kind of route this is, which is a question with one answer per route,
+        // not one per leg. Adding a waypoint to a route already being planned just extends it.
+        if (extend) take(routeKind);
+        else radial(e.clientX, e.clientY, take);
         return;
       }
     }
