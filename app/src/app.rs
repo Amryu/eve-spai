@@ -11501,7 +11501,43 @@ impl SpaiApp {
         }
         if ov.bridges {
             let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
+            // A bridge a route is flying is drawn by that route, animated and in the route's colour.
+            // The plain arc underneath put two lines on one hop, one of them saying nothing.
+            let mut routed: std::collections::HashSet<(i64, i64)> = Default::default();
+            let mut note = |a: i64, b: i64| {
+                routed.insert((a.min(b), a.max(b)));
+            };
+            if let Some(o) = self.map_route_opts.get(self.map_route_at) {
+                for w in o.hops.windows(2) {
+                    if w[1].kind == 1 {
+                        note(w[0].id, w[1].id);
+                    }
+                }
+            }
+            if let Some(r) = &self.travel_route {
+                for w in r.windows(2) {
+                    note(w[0], w[1]);
+                }
+            }
+            // And the in-game destination route, which walks the same graph a few lines below.
+            if let (Some(ps), Some(dest), Some(g)) =
+                (player_sys, self.route_destination, self.systems.as_ref())
+            {
+                let holes = if self.settings.route_via_wormholes {
+                    self.wh_adjacency()
+                } else {
+                    std::collections::HashMap::new()
+                };
+                if let Some(r) = g.route_with(ps, dest, true, true, &holes, |_| true) {
+                    for w in r.windows(2) {
+                        note(w[0], w[1]);
+                    }
+                }
+            }
             for &(a, c) in &bridges {
+                if routed.contains(&(a.min(c), a.max(c))) {
+                    continue;
+                }
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
                     if seg_visible(*p1, *p2) {
                         painter.add(egui::Shape::line(
@@ -13897,16 +13933,10 @@ impl SpaiApp {
                 (
                     l.from_name.clone(),
                     l.to_name.clone(),
-                    l.options
-                        .iter()
-                        .map(|o| {
-                            if o.total_ly > 0.0 {
-                                format!("{:.1} ly", o.total_ly)
-                            } else {
-                                format!("{}j", o.jumps)
-                            }
-                        })
-                        .collect(),
+                    // The label, which now names the system that makes this option different. It
+                    // used to be the jump count, which is the same for every one of them by
+                    // construction, so the buttons were indistinguishable.
+                    l.options.iter().map(|o| o.label.clone()).collect(),
                 )
             })
             .collect();
@@ -14181,7 +14211,12 @@ impl SpaiApp {
         if self.map_save_open {
             let mut open = true;
             let mut go = false;
-            let wh = self.settings.route_via_wormholes;
+            // Whether the route flies through a hole, not whether the setting allows one: a jump
+            // route never does, and a gate route that found no hole is not on a clock either.
+            let wh = self
+                .map_route_opts
+                .get(self.map_route_at)
+                .is_some_and(|o| o.uses_wormhole);
             egui::Window::new(format!("{}  Save route", icon::COPY))
                 .id(egui::Id::new("map_save_route"))
                 .collapsible(false)
