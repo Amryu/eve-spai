@@ -30,6 +30,10 @@ pub struct JabberSide {
     pub connected: bool,
     /// Already in the order the app lists them: DMs first, unread before read, then by recency.
     pub convos: Vec<WebConvo>,
+    /// What counts as being named: the jabber username plus whatever the user added. The same list
+    /// the app highlights on, sent rather than re-derived so the two cannot disagree about what a
+    /// mention is.
+    pub mention_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

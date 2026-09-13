@@ -60,6 +60,13 @@
 .jmsg.me .jwho { color: var(--accent); }
 .jat { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .jbody { flex: 1 1 100%; overflow-wrap: anywhere; }
+.jbody a { color: var(--accent); }
+/* Being named is the one thing in a busy room worth finding by eye. */
+.jmention { color: var(--warning); background: color-mix(in srgb, var(--warning) 18%, transparent); border-radius: 2px; padding: 0 0.15rem; }
+/* A continued line sits under the one before it, indented to where the body starts rather than
+   under the name that is no longer there. */
+.jmsg.cont { padding-top: 0; }
+.jmsg.cont .jbody { padding-left: 0.2rem; }
 
 .jsend { flex: 0 0 auto; display: flex; gap: 0.3rem; padding-top: 0.3rem; }
 .jsend input {
