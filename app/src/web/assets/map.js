@@ -68,6 +68,8 @@ let selected = null;
 let link = null;
 /// The route the user picked, drawn until they pick another or clear it.
 let picked = null;
+/// The systems the drags named, in order: start, waypoints, destination.
+let anchors = [];
 
 export const layers = load();
 
@@ -1112,9 +1114,15 @@ function wire() {
       canvas.style.cursor = "";
       schedule();
       if (over != null) {
+        // A drag off the current destination adds to the route rather than starting a new one: the
+        // old destination becomes a waypoint and the new system becomes the destination. Starting
+        // anywhere else is a new route, which is the only way to abandon one.
+        const extend = anchors.length > 1 && anchors[anchors.length - 1] === from;
+        const next = extend ? [...anchors, over] : [from, over];
         radial(e.clientX, e.clientY, (kind) => {
+          anchors = next;
           if (kind === "gate") send({ SetDestination: { id: over } });
-          showRoute(kind, from, over, (r) => {
+          showRoute(kind, anchors, (r) => {
             picked = r;
             schedule();
           });

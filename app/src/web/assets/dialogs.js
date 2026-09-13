@@ -291,12 +291,17 @@ async function showPilot(name) {
 let routeOpts = [];
 let routeAt = 0;
 
-export async function showRoute(kind, from, to, onPick) {
+export async function showRoute(kind, anchors, onPick) {
   if (kind === "cancel") return;
   open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
+  const from = anchors[0];
+  const to = anchors[anchors.length - 1];
+  const via = anchors.slice(1, -1).join(",");
   let out;
   try {
-    const r = await fetch(`/api/route?from=${from}&to=${to}&kind=${encodeURIComponent(kind)}`);
+    const r = await fetch(
+      `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}`
+    );
     out = await r.json();
   } catch {
     return open("route", `<h3>Route</h3><p class="placeholder">Could not reach the app.</p>`);

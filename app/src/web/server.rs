@@ -340,15 +340,23 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         to,
                         ..Default::default()
                     };
-                    out.options = match kind.as_str() {
-                        "jump" => super::route::jump(graph, coords, from, to, TITAN_LY)
-                            .into_iter()
-                            .collect(),
-                        "titan" => super::route::titan(graph, coords, from, to, TITAN_LY, d.count_bridges),
-                        _ => super::route::gate(graph, from, to, d.count_bridges)
-                            .into_iter()
-                            .collect(),
-                    };
+                    // `from`, the waypoints, then `to`: the systems the drags named, in order.
+                    let mut anchors = vec![from];
+                    anchors.extend(
+                        routes::query_param(query, "via")
+                            .unwrap_or("")
+                            .split(',')
+                            .filter_map(|v| v.parse::<i64>().ok()),
+                    );
+                    anchors.push(to);
+                    out.options = super::route::chain(
+                        graph,
+                        coords,
+                        &anchors,
+                        &kind,
+                        TITAN_LY,
+                        d.count_bridges,
+                    );
                     if out.options.is_empty() {
                         out.error = Some(match kind.as_str() {
                             "jump" => "No capital route: every path needs a cyno-able system in range."
