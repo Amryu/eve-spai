@@ -190,6 +190,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-046 No avoidance, no alternatives, no waypoint highlight](WEB-046-avoid-and-alternatives/) | `web/route.rs`, `map.js`, `dialogs.*` | after 45 | **Delivered** |
 | [WEB-047 Eleven layer buttons; floating route window; half-done avoidance](WEB-047-layer-groups-and-dock/) | `map.*`, `dialogs.*` | after 46 | **Delivered** |
 | [WEB-048 Only the route window docks](WEB-048-dock-tabs/) | `dialogs.*` | after 47 | **Delivered** |
+| [WEB-049 Waypoints unmarked; a linked route not drawn at all](WEB-049-waypoint-rings/) | `map.js`, `dialogs.js` | after 48 | **Fixed** |
 
 ### Browser evidence
 
