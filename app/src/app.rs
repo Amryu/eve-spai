@@ -10080,6 +10080,10 @@ impl SpaiApp {
             }
             crate::ipc::OverlayToMain::AlertAck { id } => self.ack_alert(id),
             crate::ipc::OverlayToMain::JoinComms { ts } => self.join_comms(ts),
+            crate::ipc::OverlayToMain::SelectSystem { id } => {
+                self.map_selected = Some(id);
+                self.map_focus = Some(id);
+            }
             crate::ipc::OverlayToMain::Hello => {}
         }
     }

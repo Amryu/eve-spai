@@ -257,12 +257,13 @@ mod tests {
         assert!(js.contains("hovered"), "and nothing highlights what is under it");
     }
 
-    /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as
-    /// `.modal`, an author rule wins, and `display: flex` kept it on screen.
+    /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as the
+    /// class next to it, an author rule wins, and the display rule kept it on screen. It is a
+    /// floating window now, and the same trap applies to it.
     #[test]
-    fn a_hidden_modal_is_actually_hidden() {
+    fn a_hidden_window_is_actually_hidden() {
         let css = find("/assets/dialogs.css").expect("dialogs.css").body;
-        assert!(css.contains(".modal[hidden]"), "nothing overrides display for a hidden modal");
+        assert!(css.contains(".float[hidden]"), "nothing overrides display for a hidden window");
     }
 
     /// A pane may scroll; the page may not. Four independently long panes in grid mode otherwise

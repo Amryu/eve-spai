@@ -820,6 +820,20 @@ mod tests {
         assert_eq!(s.inbox.lock().unwrap().len(), 1);
     }
 
+    /// Selecting a system on the phone moves the desktop map. Like `JoinComms`, it names a thing the
+    /// app already has rather than carrying anything the app then acts on blindly.
+    #[test]
+    fn select_system_names_an_id() {
+        let s = serve_test();
+        let c = client();
+        let origin = Some(s.base.as_str());
+        assert_eq!(post(&c, &s.base, origin, r#"{"SelectSystem":{"id":30004759}}"#).status(), 204);
+        assert!(matches!(
+            &s.inbox.lock().unwrap()[0],
+            crate::ipc::OverlayToMain::SelectSystem { id: 30_004_759 }
+        ));
+    }
+
     #[test]
     fn a_post_from_somewhere_else_is_refused() {
         let s = serve_test();
