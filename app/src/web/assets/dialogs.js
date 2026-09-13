@@ -857,25 +857,47 @@ async function showAlternatives(at, kind, onPick) {
 /// The whole thing, not just the endpoints: a route is the anchors and what you told the planner
 /// about them, and one that came back without its avoid list or its titans would be a different
 /// route with the same name. It lives in the app's settings, so it reaches the desktop too.
-async function saveRoute(kind) {
-  const name = prompt("Save this route as");
-  if (!name?.trim()) return;
+function saveRoute(kind) {
   const a = routeReq?.anchors ?? [];
   if (a.length < 2) return;
   const wh = !!routeReq?.out?.via_wormholes;
-  if (
-    wh &&
-    !confirm(
-      "This route was planned through scanned wormholes. Those chains move, so it is deleted a day " +
-        "after saving rather than quietly becoming wrong.\n\nSave it anyway?"
-    )
-  ) {
-    return;
-  }
+  // The page's own dialog, not the browser's. `prompt` blocks the whole tab, looks like a phishing
+  // box on a phone, and cannot say the one thing that matters here, which is the expiry.
+  const wrap = document.createElement("div");
+  wrap.className = "jstartdlg altdlg";
+  wrap.innerHTML =
+    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+    `<h3>Save route</h3>` +
+    `<input class="jq" placeholder="Name" autocomplete="off">` +
+    (wh
+      ? `<p class="rdetour">${ico("warning")} Planned through scanned wormholes. Those chains move, ` +
+        `so this is deleted a day after saving rather than quietly becoming wrong.</p>`
+      : "") +
+    `<p class="rsave"><button data-do-save>Save</button></p></div>`;
+  document.body.append(wrap);
+  const field = wrap.querySelector(".jq");
+  field.focus();
+  const go = () => {
+    const name = field.value.trim();
+    if (!name) return;
+    wrap.remove();
+    commitSave(name, kind, a, wh);
+  };
+  field.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") go();
+    if (e.key === "Escape") wrap.remove();
+  });
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target.closest(".mclose")) return wrap.remove();
+    if (e.target.closest("[data-do-save]")) go();
+  });
+}
+
+async function commitSave(name, kind, a, wh) {
   await send({
     SaveRoute: {
       route: {
-        name: name.trim(),
+        name,
         kind,
         anchors: a,
         avoid: [...avoidOnce],
