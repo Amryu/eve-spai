@@ -124,6 +124,8 @@ app code changed**, and on the small tickets far more. UI-014 changed 2 lines of
 25 lines of test. That is the cost of the "a fix is not done until a screenshot shows it fixed"
 rule, and it is deliberate.
 
+| [UI-048 A direct message is easy to miss behind the sidebar's tabs](UI-048-jabber-convos/) | High | `jabber_ui` | unscheduled | **Fixed** |
+
 ## Web companion (WEB-NNN)
 
 A feature series, not defects: an opt-in local web server in the app serving a responsive page that

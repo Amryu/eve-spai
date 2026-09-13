@@ -639,14 +639,14 @@ fn map_layers_scene(name: &'static str, size: [f32; 2]) -> Scene {
 /// The chat sidebar, one scene per pane. UI-041 lives on the rows: the Channels pane lists
 /// remembered rooms with their MOTDs, the Directory pane files anything remembered but not on the
 /// roster under "Other", and both now carry a remove button.
-fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], channels: bool) -> Scene {
-    jabber_sidebar_scene_cfg(name, size, channels, false)
+fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], convos: bool) -> Scene {
+    jabber_sidebar_scene_cfg(name, size, convos, false)
 }
 
 fn jabber_sidebar_scene_cfg(
     name: &'static str,
     size: [f32; 2],
-    channels: bool,
+    convos: bool,
     rescue: bool,
 ) -> Scene {
     harness::scratch_profile();
@@ -659,7 +659,7 @@ fn jabber_sidebar_scene_cfg(
             a.settings.fc_rescue_enabled = rescue;
             a
         });
-        app.jabber_sidebar_for_test(ui, &f, channels);
+        app.jabber_sidebar_for_test(ui, &f, convos);
     })
 }
 
@@ -701,7 +701,7 @@ pub(crate) fn all() -> Vec<Scene> {
         // UI-043: the timestamp is the subject, so the messages sit seconds apart.
         jabber_popout_scene("jabber_popout_stamps", [520.0, 480.0], fixtures::JABBER_ROOM, ""),
         // UI-041: both panes, because the remove button has to read the same in each.
-        jabber_sidebar_scene("jabber_sidebar_channels", [900.0, 560.0], true),
+        jabber_sidebar_scene("jabber_sidebar_convos", [900.0, 560.0], true),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
         // UI-040: the class list is the subject, so the panel is sized to show the picker and the
         // range readout that moves with it.

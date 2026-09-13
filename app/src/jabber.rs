@@ -275,6 +275,9 @@ pub struct JabberState {
     pub pings_unread: bool,
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     pub unread: std::collections::BTreeSet<String>,
+    /// How many unread messages each conversation is carrying. A boolean was enough for a dot; a
+    /// list that sorts by recency and shows a count needs the number.
+    pub unread_counts: std::collections::BTreeMap<String, u32>,
     /// Conversations carrying an unread message that named us.
     pub mentions: std::collections::BTreeSet<String>,
     pub pings: Vec<Ping>,
@@ -465,6 +468,7 @@ fn push_msg(
         }
         if mark_unread {
             s.unread.insert(key.to_owned());
+            *s.unread_counts.entry(key.to_owned()).or_default() += 1;
             if mention {
                 s.mentions.insert(key.to_owned());
             }

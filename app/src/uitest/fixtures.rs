@@ -531,6 +531,11 @@ fn convo(
         jid: jid.to_owned(),
         name: name.to_owned(),
         unread,
+        // Enough to exercise the badge and the recency sort: a scene with every count at zero would
+        // render the same list whatever the ordering rule was.
+        unread_count: if unread { 4 } else { 0 },
+        mention: false,
+        last_at: now() - 60,
         group: "Fleet".to_owned(),
         presence,
         status_text: String::new(),
@@ -543,6 +548,9 @@ fn channel(jid: &str, unread: bool, motd: &str) -> crate::app::ChannelRow {
         jid: jid.to_owned(),
         name: jid.split('@').next().unwrap_or(jid).to_owned(),
         unread,
+        unread_count: if unread { 12 } else { 0 },
+        mention: false,
+        last_at: now() - 300,
         inaccessible: false,
         motd: motd.to_owned(),
     }
@@ -584,7 +592,11 @@ pub(crate) fn jabber_sidebar_frame() -> crate::app::JabberFrame {
     f.convos.push(crate::app::Convo {
         jid: "randomguy@goonfleet.com".to_owned(),
         name: "Random Guy".to_owned(),
-        unread: false,
+        unread: true,
+        // A DM that named you: the one row in the list that has to look different from the rest.
+        unread_count: 2,
+        mention: true,
+        last_at: now() - 15,
         group: "Other".to_owned(),
         presence: crate::jabber::Presence::Offline,
         status_text: String::new(),
@@ -594,6 +606,9 @@ pub(crate) fn jabber_sidebar_frame() -> crate::app::JabberFrame {
         jid: JABBER_ROOM_QUIET.to_owned(),
         name: "corp.chat".to_owned(),
         unread: false,
+        unread_count: 0,
+        mention: false,
+        last_at: now() - 4000,
         group: "Other".to_owned(),
         presence: crate::jabber::Presence::Offline,
         status_text: String::new(),
