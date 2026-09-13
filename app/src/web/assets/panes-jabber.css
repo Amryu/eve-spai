@@ -115,8 +115,10 @@
   padding: 0.35rem 0.4rem;
   margin-bottom: 0.4rem;
 }
-/* Capped at a hundred in the script, so this is what the rest of them live behind. */
-.jrecent { max-height: 16rem; overflow-y: auto; }
+/* A fixed height, not a cap: a dialog that shrinks as you type moves the thing you are reaching for
+   out from under the pointer. Capped at a hundred in the script, so this is what the rest live
+   behind. */
+.jrecent { height: 16rem; overflow-y: auto; }
 
 /* The list costs more than it gives on a phone, so it stacks above the conversation. */
 @media (max-width: 640px) {

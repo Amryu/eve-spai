@@ -696,6 +696,8 @@ pub struct SpaiApp {
     map_route_opts: Vec<crate::web::route::RouteOption>,
     map_route_at: usize,
     map_route_kind: &'static str,
+    /// The systems the drags named, in order: start, waypoints, destination.
+    map_route_anchors: Vec<i64>,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1426,6 +1428,7 @@ impl SpaiApp {
             map_route_opts: Vec::new(),
             map_route_at: 0,
             map_route_kind: "gate",
+            map_route_anchors: Vec::new(),
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -3671,6 +3674,9 @@ impl SpaiApp {
             .max_height(220.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // A fixed box, not a cap. A dialog that shrinks as the search narrows moves the row
+                // you were reaching for out from under the pointer.
+                ui.set_min_height(220.0);
                 for (jid, name) in rows {
                     let bg = ui.painter().add(egui::Shape::Noop);
                     let inner = ui
@@ -10484,6 +10490,14 @@ impl SpaiApp {
     fn map_take_route(&mut self, kind: &str, from: i64, to: i64) {
         self.map_route_opts.clear();
         self.map_route_at = 0;
+        // A drag off the current destination adds to the route: the old destination becomes a
+        // waypoint and the new system becomes the destination. Starting anywhere else is a new
+        // route, which is the only way to abandon one.
+        if self.map_route_anchors.len() > 1 && self.map_route_anchors.last() == Some(&from) {
+            self.map_route_anchors.push(to);
+        } else {
+            self.map_route_anchors = vec![from, to];
+        }
         if kind == "gate" {
             self.web_set_destination(to);
             self.route_destination = Some(to);
@@ -10500,13 +10514,14 @@ impl SpaiApp {
             "titan" => "titan",
             _ => "gate",
         };
-        self.map_route_opts = match self.map_route_kind {
-            "jump" => crate::web::route::jump(&graph, &coords, from, to, TITAN_LY)
-                .into_iter()
-                .collect(),
-            "titan" => crate::web::route::titan(&graph, &coords, from, to, TITAN_LY, bridges),
-            _ => crate::web::route::gate(&graph, from, to, bridges).into_iter().collect(),
-        };
+        self.map_route_opts = crate::web::route::chain(
+            &graph,
+            &coords,
+            &self.map_route_anchors,
+            self.map_route_kind,
+            TITAN_LY,
+            bridges,
+        );
     }
 
     /// The route window: the hop list for whatever was picked, and the alternatives when the titan
@@ -10574,6 +10589,7 @@ impl SpaiApp {
         self.map_route_at = pick;
         if !open {
             self.map_route_opts.clear();
+            self.map_route_anchors.clear();
         }
     }
 

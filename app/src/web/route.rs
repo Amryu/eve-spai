@@ -195,6 +195,92 @@ pub fn titan(
         .collect()
 }
 
+/// Two legs end to end. The second's first hop is the first's last, so it is dropped.
+fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
+    let mut hops = head.hops;
+    hops.extend(tail.hops.into_iter().skip(1));
+    let mut path = head.path;
+    path.extend(tail.path.into_iter().skip(1));
+    RouteOption {
+        label: tail.label,
+        gates: head.gates + tail.gates,
+        jumps: head.jumps + tail.jumps,
+        total_ly: head.total_ly + tail.total_ly,
+        note: tail.note,
+        path,
+        hops,
+    }
+}
+
+/// A route through waypoints.
+///
+/// The anchors are the systems the drags named, in order. Every leg but the last is a plain gate or
+/// jump leg; only the last one can have alternatives, which is what the option list is for. A titan
+/// route chains as gates up to the last leg, because a titan route *is* one jump and then gates, and
+/// chaining several jumps is what the jump route already does.
+pub fn chain(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    anchors: &[i64],
+    kind: &str,
+    max_ly: f64,
+    bridges: bool,
+) -> Vec<RouteOption> {
+    if anchors.len() < 2 {
+        return Vec::new();
+    }
+    let leg = |a: i64, b: i64| -> Option<RouteOption> {
+        match kind {
+            "jump" => jump(graph, coords, a, b, max_ly),
+            _ => gate(graph, a, b, bridges),
+        }
+    };
+    let split = anchors.len() - 2;
+    let mut head: Option<RouteOption> = None;
+    for w in anchors[..=split].windows(2) {
+        let Some(next) = leg(w[0], w[1]) else { return Vec::new() };
+        head = Some(match head {
+            Some(h) => join(h, next),
+            None => next,
+        });
+    }
+    let (a, b) = (anchors[split], anchors[split + 1]);
+    let last: Vec<RouteOption> = match kind {
+        "titan" => titan(graph, coords, a, b, max_ly, bridges),
+        _ => leg(a, b).into_iter().collect(),
+    };
+    match head {
+        Some(h) => last
+            .into_iter()
+            .map(|t| join(clone_option(&h), t))
+            .collect(),
+        None => last,
+    }
+}
+
+/// `RouteOption` is not `Clone` by derive because `Hop` is not; this is the one place that needs it.
+fn clone_option(o: &RouteOption) -> RouteOption {
+    RouteOption {
+        label: o.label.clone(),
+        path: o.path.clone(),
+        hops: o
+            .hops
+            .iter()
+            .map(|h| Hop {
+                id: h.id,
+                name: h.name.clone(),
+                security: h.security,
+                kind: h.kind,
+                ly: h.ly,
+            })
+            .collect(),
+        gates: o.gates,
+        jumps: o.jumps,
+        total_ly: o.total_ly,
+        note: o.note.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +299,20 @@ mod tests {
         assert_eq!(r.path, vec![id]);
         assert_eq!(r.jumps, 0);
         assert_eq!(r.hops.len(), 1);
+    }
+
+    /// A waypoint makes one route, not two: the leg boundary is where the first leg's last hop is,
+    /// and repeating it would draw a doubled system and count an extra jump.
+    #[test]
+    fn a_chain_joins_at_the_waypoint_without_repeating_it() {
+        let g = graph();
+        let (a, b, c) = (30_004_759_i64, 30_004_608, 30_003_704);
+        let direct = gate(&g, a, c, false).expect("connected");
+        let via = chain(&g, &[], &[a, b, c], "gate", 6.0, false);
+        let via = via.first().expect("a chained route");
+        assert_eq!(via.path.iter().filter(|&&id| id == b).count(), 1, "the waypoint appears once");
+        assert_eq!(via.hops.len(), via.path.len());
+        assert!(via.jumps >= direct.jumps, "a detour is never shorter than the direct route");
     }
 
     /// Every hop names a real system. An id that fell out of the graph would render as a number.
