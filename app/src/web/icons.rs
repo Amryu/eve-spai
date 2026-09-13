@@ -44,6 +44,11 @@ pub const ICONS: &[(&str, &str)] = &[
     ("arrows-in", icon::ARROWS_IN),
     ("arrows-out", icon::ARROWS_OUT),
     ("x", icon::X),
+    // Map markers, the same glyphs the app's own map draws.
+    ("radioactive", icon::RADIOACTIVE),
+    ("gear", icon::GEAR),
+    ("cell-tower", icon::CELL_TOWER),
+    ("crosshair-simple", icon::CROSSHAIR_SIMPLE),
 ];
 
 pub fn json() -> String {

@@ -66,6 +66,46 @@ const JUMP_RANGES = [
 const RANGE_COLOURS = ["#5ac86a", "#e0a43a", "#4f9bd8", "#d84c4c"];
 
 /// The same green the app draws a bridge in.
+/// Canvas cannot use a webfont until it has loaded, and falls back silently if asked early, which is
+/// what draws a box instead of a glyph. Repaint once it is in.
+let iconFontReady = false;
+if (document.fonts?.load) {
+  document.fonts.load('16px phosphor, "phosphor"').then(() => {
+    iconFontReady = true;
+    schedule();
+  }).catch(() => {});
+} else {
+  iconFontReady = true;
+}
+
+/// EVE type icons, for the ore an upgrade yields. Fetched once each and repainted on arrival.
+const oreIcons = new Map();
+function oreIcon(id) {
+  let img = oreIcons.get(id);
+  if (img === undefined) {
+    img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => schedule();
+    img.src = `https://images.evetech.net/types/${id}/icon?size=32`;
+    oreIcons.set(id, img);
+  }
+  return img.complete && img.naturalWidth ? img : null;
+}
+
+/// Draw one of the app's own phosphor glyphs, centred on a point.
+function glyph(c, name, x, y, size, colour) {
+  const ch = state.icons?.[name];
+  if (!ch || !iconFontReady) return false;
+  c.save();
+  c.font = `${size}px phosphor`;
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  c.fillStyle = colour;
+  c.fillText(ch, x, y);
+  c.restore();
+  return true;
+}
+
 const BRIDGE_GREEN = "#3ad06a";
 /// Route colours, matching `Leg::color` in the app: gates cyan, bridges green, holes purple.
 const ROUTE_CYAN = "#4fc3f7";
@@ -298,6 +338,14 @@ function paint() {
     }
     ctx.stroke();
     ctx.setLineDash([]);
+    for (const [a, b] of live.holes) {
+      for (const id of [a, b]) {
+        const n = geo.nodes[geo.byId.get(id)];
+        if (!n) continue;
+        const px = sx(n.x), py = sy(n.z);
+        if (onScreen(px, py)) glyph(ctx, "spiral", px, py - r - 7, 12, pal.accent);
+      }
+    }
   }
 
   // Sovereignty sits under the systems as a soft wash, the way the app shades it.
@@ -379,28 +427,32 @@ function paint() {
   // Upgrade marks are sized in screen pixels, not from the dot radius: tied to `r` they came out
   // under three pixels across and were unreadable at every zoom. Drawn only once the map is zoomed
   // in enough for them to have somewhere to sit.
+  // Upgrade marks use the app's own glyphs: a skull for ratting, a broadcast dish for exploration,
+  // a gear for anything else, and the actual ore icon for a mining upgrade. Squares said only "an
+  // upgrade is here", which the count already said.
+  const UPGRADE_GLYPH = ["skull", "broadcast", null, "gear"];
   if (layers.upgrades && live.upgrades?.length && r >= 1.8) {
+    const size = 13;
     for (const [id, marks] of live.upgrades) {
       const n = geo.nodes[geo.byId.get(id)];
       if (!n) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
       marks.forEach((m, i) => {
-        ctx.fillStyle = m.l >= 3 ? pal.hostile : m.l === 2 ? css("--friendly") : pal.fg;
-        const w = 6;
-        const x = px - r + i * (w + 2);
-        // Mining marks are drawn as a diamond so a glance tells them apart without an ore icon.
-        const top = py - r - w - 2;
-        if (m.k === 2) {
-          // Mining reads as a diamond, so a glance separates ore from the rest without an icon.
+        const cx = px - r + i * (size + 2) + size / 2;
+        const cy = py - r - size / 2 - 2;
+        const colour = m.l >= 3 ? pal.hostile : m.l === 2 ? css("--friendly") : pal.fg;
+        const ore = m.k === 2 ? oreIcon(m.ore) : null;
+        if (ore) {
+          ctx.drawImage(ore, cx - size / 2, cy - size / 2, size, size);
+          return;
+        }
+        if (!glyph(c2, UPGRADE_GLYPH[m.k] ?? "gear", cx, cy, size, colour)) {
+          // The font has not loaded yet; a filled dot is a better placeholder than a box.
+          ctx.fillStyle = colour;
           ctx.beginPath();
-          ctx.moveTo(x + w / 2, top);
-          ctx.lineTo(x + w, top + w / 2);
-          ctx.lineTo(x + w / 2, top + w);
-          ctx.lineTo(x, top + w / 2);
+          ctx.arc(cx, cy, size / 4, 0, Math.PI * 2);
           ctx.fill();
-        } else {
-          ctx.fillRect(x, top, w, w);
         }
       });
     }
@@ -408,46 +460,38 @@ function paint() {
 
   // Cyno generators.
   if (layers.cyno && live.cyno?.length) {
-    ctx.strokeStyle = pal.warning;
-    ctx.lineWidth = 1.5;
     for (const id of live.cyno) {
       const n = geo.nodes[geo.byId.get(id)];
       if (!n) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
-      ctx.beginPath();
-      ctx.moveTo(px - r * 2, py);
-      ctx.lineTo(px + r * 2, py);
-      ctx.moveTo(px, py - r * 2);
-      ctx.lineTo(px, py + r * 2);
-      ctx.stroke();
+      glyph(ctx, "crosshair-simple", px, py, 13, pal.warning);
     }
   }
 
   if (layers.jove) {
-    ctx.strokeStyle = pal.muted;
-    ctx.lineWidth = 1;
     for (const n of geo.nodes) {
       if (!n.j) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
-      ctx.beginPath();
-      ctx.rect(px - r * 1.8, py - r * 1.8, r * 3.6, r * 3.6);
-      ctx.stroke();
+      glyph(ctx, "cell-tower", px, py - r - 7, 13, pal.muted);
     }
   }
 
   if (layers.camps && live.camps?.length) {
-    ctx.strokeStyle = pal.hostile;
-    ctx.lineWidth = 2;
     for (const id of live.camps) {
       const n = geo.nodes[geo.byId.get(id)];
       if (!n) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
+      // The ring stays as well: a campfire glyph alone disappears against a dense field, and the
+      // ring is what carries at a glance.
+      ctx.strokeStyle = pal.hostile;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(px, py, r * 2, 0, Math.PI * 2);
       ctx.stroke();
+      glyph(ctx, "campfire", px, py - r - 7, 12, pal.hostile);
     }
   }
 

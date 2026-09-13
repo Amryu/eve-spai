@@ -257,6 +257,15 @@ mod tests {
         assert!(js.contains("hovered"), "and nothing highlights what is under it");
     }
 
+    /// Canvas falls back silently when asked for a webfont it has not loaded, which draws a box
+    /// instead of the glyph. The map must wait for the font before drawing any.
+    #[test]
+    fn the_map_waits_for_the_icon_font() {
+        let js = find("/assets/map.js").expect("map.js").body;
+        assert!(js.contains("document.fonts"), "nothing waits for the font to load");
+        assert!(js.contains("iconFontReady"), "and nothing gates drawing on it");
+    }
+
     /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as the
     /// class next to it, an author rule wins, and the display rule kept it on screen. It is a
     /// floating window now, and the same trap applies to it.

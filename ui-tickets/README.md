@@ -161,6 +161,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-019 Map missing the app's read-only layers; snapshot 2.9 MB](WEB-019-map-parity/) | `web/snapshot.rs`, `map.js` | after 18 | **Fixed** |
 | [WEB-020 Map link styling, labels, hover, and the Mumble link](WEB-020-map-links-and-labels/) | `app.rs` map, `map.js` | after 19 | **Fixed** |
 | [WEB-021 Map controls: layer panel, upgrade marks, jump range, system window](WEB-021-map-controls/) | `map.js`, `dialogs.js` | after 20 | **Fixed** |
+| [WEB-023 Map markers are squares, not the app's icons](WEB-023-map-marker-icons/) | `map.js`, `web/icons.rs` | after 22 | **Fixed** |
 
 ### Browser evidence
 
