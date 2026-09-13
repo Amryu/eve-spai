@@ -18,6 +18,16 @@ const TICK: std::time::Duration = std::time::Duration::from_millis(500);
 /// desktop run out of feed at the same point.
 const CARD_CAP: usize = 250;
 
+/// Fleet pings carried to the page. The app keeps its whole history; a phone wants the recent ones.
+const PING_CAP: usize = 80;
+
+fn ping_time(p: &crate::pings::Ping) -> i64 {
+    match p {
+        crate::pings::Ping::Fleet { timestamp, .. } => *timestamp,
+        crate::pings::Ping::Plain { timestamp, .. } => *timestamp,
+    }
+}
+
 pub struct Deps {
     pub facts: SharedFacts,
     pub web: SharedWeb,
@@ -112,6 +122,11 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
     // order, and an amended report keeps its original slot, so the two are not the same thing.
     cards.sort_by(|a, b| b.report.received.cmp(&a.report.received));
 
+    // Newest first and capped. The jabber state holds every ping it has ever seen, which on a live
+    // profile was 1163 of them and 738 KB of snapshot.
+    let mut pings = pings;
+    pings.sort_by_key(|p| std::cmp::Reverse(ping_time(p)));
+    pings.truncate(PING_CAP);
     let ping_cards: Vec<PingCard> = pings
         .iter()
         .map(|p| {
@@ -126,6 +141,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
 
     let formup_names = formup_names(&ping_cards, &systems);
     let map = map_live(&cards, player_sys, &locations, facts, &status);
+    let sysinfo = status_pane(&status, facts);
 
     // Phase 3, publish. Only the hash comparison happens under the web lock.
     let mut st = deps.web.lock().unwrap_or_else(|e| e.into_inner());
@@ -135,19 +151,25 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         last_ship: last_ship.into_iter().collect(),
         kills: alerts.kills.clone().into_iter().collect(),
         affil: alerts.affil.clone().into_iter().collect(),
-        status: status.iter().map(|(k, v)| (*k, v.clone())).collect(),
     };
     if let Some(rev) = st.changed(Pane::Intel, hash_of(&(&cards, &lookups))) {
         st.put_intel(IntelPane { rev, cards, lookups });
     }
     if let Some(rev) = st.changed(Pane::Alerts, hash_of(&alerts.feed)) {
-        st.put_alerts(AlertPane { rev, msg: alerts.clone() });
+        // The overlay needs `status` in its own message; the page reads the shared status pane, so
+        // carrying it here was a second megabyte of the same data.
+        let mut msg = alerts.clone();
+        msg.status = Default::default();
+        st.put_alerts(AlertPane { rev, msg });
     }
     if let Some(rev) = st.changed(Pane::Pings, hash_of(&(&ping_cards, &formup_names))) {
         st.put_pings(PingPane { rev, pings: ping_cards, systems: formup_names });
     }
     if let Some(rev) = st.changed(Pane::Map, hash_of(&map)) {
         st.put_map(MapLive { rev, ..map });
+    }
+    if let Some(rev) = st.changed(Pane::Status, hash_of(&sysinfo)) {
+        st.put_status(StatusPane { rev, systems: sysinfo });
     }
     let meta = Meta {
         rev: 0,
@@ -237,25 +259,48 @@ fn map_live(
     let mut chars: Vec<(i64, u32)> = counts.into_iter().collect();
     chars.sort_unstable();
 
-    let mut sov: Vec<(i64, String)> = status
-        .iter()
-        .filter_map(|(id, f)| {
-            let name = f.sov.as_ref()?;
-            Some((*id, facts.sov_colors.get(name).cloned()?))
-        })
-        .collect();
-    sov.sort_unstable();
-
     MapLive {
         rev: 0,
         you,
         chars,
         intel,
-        sov,
         camps: facts.camps.clone(),
         holes: facts.holes.clone(),
-        upgrades: facts.upgrades.clone(),
+        cyno: facts.cyno.clone(),
+        upgrades: facts
+            .upgrades
+            .iter()
+            .map(|(id, ups)| {
+                (*id, ups.iter().map(|(k, l, ore)| UpgradeMark { k: *k, l: *l, ore: *ore }).collect())
+            })
+            .collect(),
     }
+}
+
+/// Every system ESI has anything to say about, in the compact form the map reads.
+fn status_pane(
+    status: &HashMap<i64, crate::systemstatus::SysFlags>,
+    facts: &super::facts::UiFacts,
+) -> BTreeMap<i64, SysInfo> {
+    status
+        .iter()
+        .map(|(id, f)| {
+            let sov = f.sov.as_ref();
+            (
+                *id,
+                SysInfo {
+                    adm: f.adm,
+                    k: f.ship_kills,
+                    p: f.pod_kills,
+                    n: f.npc_kills,
+                    j: f.jumps,
+                    sov: sov.and_then(|n| facts.sov_colors.get(n).cloned()),
+                    coal: sov.and_then(|n| facts.coal_colors.get(n).cloned()),
+                    inc: f.incursion,
+                },
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -437,6 +482,61 @@ mod tests {
         assert_eq!(meta.sound_rev, crate::sound::SYNTH_REV);
     }
 
+    /// The snapshot carried `SysFlags` whole, twice: once in the intel pane and once inside the
+    /// embedded alert message. On a live profile that was over 2 MB of a 2.86 MB snapshot, re-sent
+    /// whenever either pane changed.
+    #[test]
+    fn status_is_its_own_pane_and_is_not_duplicated() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        {
+            let mut st = d.system_status.lock().unwrap();
+            st.insert(HOME, crate::systemstatus::SysFlags { npc_kills: 7, ..Default::default() });
+        }
+        let mut alerts = empty_alerts();
+        alerts.status.insert(HOME, crate::systemstatus::SysFlags::default());
+        tick(&d, &facts(), &alerts);
+
+        let st = d.web.lock().unwrap();
+        let snap = st.snapshot_since(0);
+        assert_eq!(snap.status.expect("status pane").systems[&HOME].n, 7);
+        assert!(
+            snap.alerts.expect("alert pane").msg.status.is_empty(),
+            "the alert pane must not carry a second copy"
+        );
+    }
+
+    /// The jabber state keeps every ping it has ever seen. A live profile had 1163 of them, 738 KB
+    /// of snapshot, on a page that shows the recent ones.
+    #[test]
+    fn pings_are_capped_to_the_newest() {
+        let d = deps(vec![]);
+        {
+            let mut j = d.jabber.lock().unwrap();
+            for i in 0..(PING_CAP as i64 + 40) {
+                let mut p = fixtures::ping_plain();
+                if let crate::pings::Ping::Plain { timestamp, .. } = &mut p {
+                    *timestamp = 1_000_000 + i;
+                }
+                j.pings.push(p);
+            }
+        }
+        tick(&d, &facts(), &empty_alerts());
+
+        let st = d.web.lock().unwrap();
+        let pane = st.snapshot_since(0).pings.expect("pings pane");
+        assert_eq!(pane.pings.len(), PING_CAP);
+        let times: Vec<i64> = pane
+            .pings
+            .iter()
+            .map(|c| match &c.ping {
+                crate::pings::Ping::Plain { timestamp, .. } => *timestamp,
+                crate::pings::Ping::Fleet { timestamp, .. } => *timestamp,
+            })
+            .collect();
+        assert_eq!(times[0], 1_000_000 + PING_CAP as i64 + 39, "newest first");
+        assert!(times.windows(2).all(|w| w[0] >= w[1]), "and in order");
+    }
+
     #[test]
     fn map_live_carries_systems_and_never_coordinates() {
         let d = deps(vec![fixtures::intel_typical()]);
@@ -490,7 +590,6 @@ mod tests {
                     .collect(),
                 kills: Default::default(),
                 affil: Default::default(),
-                status: Default::default(),
             }
         };
         let first = super::super::state::hash_of(&lookups());
@@ -529,7 +628,8 @@ mod tests {
             let st = d.web.lock().unwrap();
             let pane = st.snapshot_since(0).intel.expect("intel pane");
             assert!(!pane.cards.is_empty());
-            assert!(pane.lookups.status.len() >= 12, "the lookups have to be worth hashing");
+            let status = st.snapshot_since(0).status.expect("status pane");
+            assert!(status.systems.len() >= 12, "the panes have to be worth hashing");
         }
 
         for _ in 0..10 {

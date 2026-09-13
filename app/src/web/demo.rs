@@ -48,6 +48,27 @@ pub fn seed(web: &SharedWeb, tick: u64) {
     if let Some(rev) = st.changed(Pane::Meta, hash_of(&meta)) {
         st.put_meta(Meta { rev, ..meta });
     }
+    let sys = BTreeMap::from([
+        (
+            HOME,
+            super::snapshot::SysInfo {
+                adm: Some(5.8),
+                k: 3,
+                n: 140,
+                j: 62,
+                sov: Some("#9b6fd8".to_owned()),
+                coal: Some("#4f9bd8".to_owned()),
+                ..Default::default()
+            },
+        ),
+        (
+            30_004_608,
+            super::snapshot::SysInfo { adm: Some(2.1), p: 2, j: 18, ..Default::default() },
+        ),
+    ]);
+    if let Some(rev) = st.changed(Pane::Status, hash_of(&sys)) {
+        st.put_status(super::snapshot::StatusPane { rev, systems: sys });
+    }
 }
 
 /// Grows by one report per tick, then wraps. A static page proves the layout and nothing else: a
@@ -148,10 +169,16 @@ fn map(cards: &[IntelCard]) -> MapLive {
         you: Some(HOME),
         chars: vec![(HOME, 1)],
         intel,
-        sov: vec![(HOME, "#9b6fd8".to_owned())],
         camps: vec![30_004_608],
         holes: vec![(30_003_704, 30_000_142)],
-        upgrades: vec![(HOME, 3)],
+        cyno: vec![30_003_704],
+        upgrades: vec![(
+            HOME,
+            vec![
+                super::snapshot::UpgradeMark { k: 0, l: 5, ore: None },
+                super::snapshot::UpgradeMark { k: 2, l: 3, ore: Some(34) },
+            ],
+        )],
     }
 }
 

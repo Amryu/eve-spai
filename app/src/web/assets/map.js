@@ -24,17 +24,43 @@ let raf = null;
 /// Map units per pixel. One number instead of a viewBox: the projection is `screen = (map - o) / k`.
 const view = { ox: 0, oz: 0, k: 1 };
 let fitted = false;
+/// The region the map is framed on, or null for the whole universe.
+let focused = null;
 
 export const layers = load();
 
 function load() {
-  const dflt = { sov: true, bridges: true, holes: true, camps: true, jove: false, upgrades: false, labels: true };
+  const dflt = {
+    // "off" | "alliance" | "coalition", matching the app's SovMode.
+    sov: "alliance",
+    // "off" | "k" | "p" | "n" | "j", matching ActivityMode: ship kills, pod kills, NPC kills, jumps.
+    activity: "off",
+    adm: false,
+    bridges: true,
+    holes: true,
+    camps: true,
+    cyno: false,
+    upgrades: false,
+    jove: false,
+    labels: true,
+  };
   try {
     return { ...dflt, ...JSON.parse(localStorage.getItem("spai_map_layers") ?? "{}") };
   } catch {
     return dflt;
   }
 }
+
+/// The app's own heat ramp: yellow into red as the count approaches the scale.
+function activityColour(v, scale) {
+  const heat = Math.min(1, v / scale);
+  return `rgb(255, ${Math.round(192 * (1 - heat))}, 48)`;
+}
+
+/// The scale each activity mode is measured against, as the app scales them.
+const ACTIVITY_SCALE = { k: 20, p: 10, n: 400, j: 400 };
+const ACTIVITY_LABEL = { off: "Off", k: "Ship kills", p: "Pod kills", n: "NPC kills", j: "Jumps" };
+const SOV_LABEL = { off: "Off", alliance: "By alliance", coalition: "By coalition" };
 
 function saveLayers() {
   try {
@@ -81,16 +107,21 @@ async function loadGeometry() {
 const sx = (x) => (x - view.ox) / view.k;
 const sy = (z) => (z - view.oz) / view.k;
 
-function fit() {
+/// Frame a set of systems. `region` frames one region, the way the app's region view does; with no
+/// argument it frames everything, which is the universe view.
+function fit(region = null) {
   if (!geo?.nodes.length || !canvas) return;
   let [x0, x1, z0, z1] = [Infinity, -Infinity, Infinity, -Infinity];
-  for (const n of geo.nodes) {
+  const within = region == null ? geo.nodes : geo.nodes.filter((n) => n.r === region);
+  if (!within.length) return;
+  for (const n of within) {
     x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x);
     z0 = Math.min(z0, n.z); z1 = Math.max(z1, n.z);
   }
   const w = canvas.clientWidth || 1;
   const h = canvas.clientHeight || 1;
-  const pad = 0.04;
+  // A single region is a handful of systems, so it wants more air around it than the universe does.
+  const pad = region == null ? 0.04 : 0.15;
   view.k = Math.max((x1 - x0) / w, (z1 - z0) / h) * (1 + pad * 2) || 1;
   view.ox = (x0 + x1) / 2 - (w * view.k) / 2;
   view.oz = (z0 + z1) / 2 - (h * view.k) / 2;
@@ -127,6 +158,7 @@ function paint() {
   if (!pal) pal = palette();
 
   const live = state.snapshot?.map ?? {};
+  const status = state.snapshot?.status?.systems ?? {};
   const r = radius();
   const pad = 40;
   const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
@@ -178,16 +210,34 @@ function paint() {
   }
 
   // Sovereignty sits under the systems as a soft wash, the way the app shades it.
-  if (layers.sov && live.sov?.length) {
-    ctx.globalAlpha = 0.28;
-    for (const [id, colour] of live.sov) {
-      const n = geo.nodes[geo.byId.get(id)];
-      if (!n) continue;
+  if (layers.sov !== "off") {
+    const key = layers.sov === "coalition" ? "coal" : "sov";
+    ctx.globalAlpha = 0.3;
+    for (const n of geo.nodes) {
+      const colour = status[n.i]?.[key];
+      if (!colour) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
       ctx.fillStyle = colour;
       ctx.beginPath();
       ctx.arc(px, py, r * 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Activity, on the app's yellow-to-red heat ramp, sized by how busy the system is.
+  if (layers.activity !== "off") {
+    const scale = ACTIVITY_SCALE[layers.activity] ?? 100;
+    ctx.globalAlpha = 0.55;
+    for (const n of geo.nodes) {
+      const v = status[n.i]?.[layers.activity] ?? 0;
+      if (!v) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillStyle = activityColour(v, scale);
+      ctx.beginPath();
+      ctx.arc(px, py, r * (1.6 + Math.min(1, v / scale) * 2), 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -219,16 +269,62 @@ function paint() {
     ctx.fill();
   }
 
-  if (layers.upgrades && live.upgrades?.length) {
+  // ADM, as a number beside the system, which is how the app shows it.
+  if (layers.adm) {
     ctx.fillStyle = pal.fg;
-    ctx.font = `${Math.max(8, r * 2)}px system-ui, sans-serif`;
+    ctx.font = "10px system-ui, sans-serif";
     ctx.textBaseline = "middle";
-    for (const [id, count] of live.upgrades) {
+    for (const n of geo.nodes) {
+      const adm = status[n.i]?.adm;
+      if (adm == null) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillText(adm.toFixed(1), px + r + 2, py - r - 4);
+    }
+  }
+
+  // Sov upgrades: one mark each, coloured by level the way `level_color` does, mining marks tinted
+  // to say they are ore.
+  if (layers.upgrades && live.upgrades?.length) {
+    for (const [id, marks] of live.upgrades) {
       const n = geo.nodes[geo.byId.get(id)];
       if (!n) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
-      ctx.fillText(String(count), px + r * 1.4, py - r * 1.4);
+      marks.forEach((m, i) => {
+        ctx.fillStyle = m.l >= 3 ? pal.hostile : m.l === 2 ? css("--friendly") : pal.fg;
+        const w = Math.max(2, r * 0.9);
+        const x = px - r + i * (w + 1.5);
+        // Mining marks are drawn as a diamond so a glance tells them apart without an ore icon.
+        if (m.k === 2) {
+          ctx.beginPath();
+          ctx.moveTo(x + w / 2, py - r - w);
+          ctx.lineTo(x + w, py - r - w / 2);
+          ctx.lineTo(x + w / 2, py - r);
+          ctx.lineTo(x, py - r - w / 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(x, py - r - w, w, w);
+        }
+      });
+    }
+  }
+
+  // Cyno generators.
+  if (layers.cyno && live.cyno?.length) {
+    ctx.strokeStyle = pal.warning;
+    ctx.lineWidth = 1.5;
+    for (const id of live.cyno) {
+      const n = geo.nodes[geo.byId.get(id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.beginPath();
+      ctx.moveTo(px - r * 2, py);
+      ctx.lineTo(px + r * 2, py);
+      ctx.moveTo(px, py - r * 2);
+      ctx.lineTo(px, py + r * 2);
+      ctx.stroke();
     }
   }
 
@@ -292,18 +388,50 @@ function paint() {
   }
 
   const hint = el?.querySelector(".maphint");
-  if (hint) hint.textContent = `${drawn} of ${geo.nodes.length} systems`;
+  if (hint) {
+    hint.textContent = focused
+      ? `${drawn} shown, region view`
+      : `${drawn} of ${geo.nodes.length} systems`;
+  }
 }
 
-const LAYERS = [
-  ["sov", "Sov"],
+const TOGGLES = [
+  ["adm", "ADM"],
   ["bridges", "Bridges"],
-  ["holes", "Holes"],
+  ["holes", "Wormholes"],
   ["camps", "Camps"],
+  ["cyno", "Cyno"],
   ["upgrades", "Upgrades"],
   ["jove", "Jove"],
   ["labels", "Labels"],
 ];
+
+const CYCLES = [
+  ["sov", "Sov", ["off", "alliance", "coalition"], SOV_LABEL],
+  ["activity", "Activity", ["off", "k", "p", "n", "j"], ACTIVITY_LABEL],
+];
+
+/// The layer controls live behind one button at every width.
+///
+/// Ten controls in a row is most of a phone's screen and a third of a pane on a desktop, and the map
+/// is the thing worth the space. Same panel either way, anchored on a desktop and a sheet on a
+/// phone, which is the pattern the layout menu already set.
+function layerPanel() {
+  return (
+    `<div class="mlayers" hidden>` +
+    CYCLES.map(
+      ([key, label, , names]) =>
+        `<div class="mlrow"><span>${label}</span>` +
+        `<button class="mlcycle" data-cycle="${key}">${names[layers[key]]}</button></div>`
+    ).join("") +
+    `<div class="mlgrid">` +
+    TOGGLES.map(
+      ([k, label]) =>
+        `<button class="ml${layers[k] ? " on" : ""}" data-layer="${k}">${label}</button>`
+    ).join("") +
+    `</div></div>`
+  );
+}
 
 function build() {
   if (!el) return;
@@ -318,12 +446,12 @@ function build() {
   }
   el.innerHTML =
     `<h2>Map</h2>` +
-    `<div class="maptools"><button data-fit>${ico("crosshair")} Fit</button>` +
-    LAYERS.map(
-      ([k, label]) =>
-        `<button class="ml${layers[k] ? " on" : ""}" data-layer="${k}">${label}</button>`
-    ).join("") +
-    `<span class="maphint"></span></div>` +
+    `<div class="maptools">` +
+    `<button data-fit>${ico("crosshair")} Fit</button>` +
+    `<button data-layers>${ico("squares-four")} Layers</button>` +
+    `<span class="maphint"></span>` +
+    layerPanel() +
+    `</div>` +
     `<div class="mapwrap"><canvas class="starmap"></canvas></div>`;
 
   canvas = el.querySelector("canvas");
@@ -336,13 +464,37 @@ function build() {
 
 function wire() {
   el.querySelector("[data-fit]")?.addEventListener("click", () => {
+    focused = null;
     fit();
     schedule();
   });
+  const panel = el.querySelector(".mlayers");
+  // `#maplayers` opens it on load, for the same reason the dialogs and the layout menu take deep
+  // links: the harness cannot click.
+  if (location.hash === "#maplayers" && panel) panel.hidden = false;
+  el.querySelector("[data-layers]")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    panel.hidden = !panel.hidden;
+  });
+  // Anywhere else closes it, the same as the layout menu.
+  document.addEventListener("click", (e) => {
+    if (panel && !panel.hidden && !e.target.closest(".maptools")) panel.hidden = true;
+  });
+
   el.querySelectorAll("[data-layer]").forEach((b) =>
     b.addEventListener("click", () => {
       layers[b.dataset.layer] = !layers[b.dataset.layer];
       b.classList.toggle("on", layers[b.dataset.layer]);
+      saveLayers();
+      schedule();
+    })
+  );
+  el.querySelectorAll("[data-cycle]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const [, , order, names] = CYCLES.find(([k]) => k === b.dataset.cycle);
+      const next = order[(order.indexOf(layers[b.dataset.cycle]) + 1) % order.length];
+      layers[b.dataset.cycle] = next;
+      b.textContent = names[next];
       saveLayers();
       schedule();
     })
@@ -404,22 +556,21 @@ function wire() {
 
   // Nearest node within a thumb's reach. This is what a canvas costs in place of the browser's own
   // hit testing, and it is cheaper than 5000 elements.
+  // Double-click frames the region, which is the app's region view. Fit goes back to the universe.
+  canvas.addEventListener("dblclick", (e) => {
+    const n = nearest(e);
+    if (!n) return;
+    focused = n.r;
+    fit(n.r);
+    schedule();
+  });
+
   canvas.addEventListener("click", (e) => {
     if (moved > 6) return;
     const box = canvas.getBoundingClientRect();
     const mx = e.clientX - box.left;
     const my = e.clientY - box.top;
-    let best = null;
-    let bestD = 18 * 18;
-    for (const n of geo.nodes) {
-      const dx = sx(n.x) - mx;
-      const dy = sy(n.z) - my;
-      const d = dx * dx + dy * dy;
-      if (d < bestD) {
-        bestD = d;
-        best = n;
-      }
-    }
+    const best = nearest(e);
     if (best) location.hash = `#system/${best.i}`;
   });
 
@@ -429,6 +580,26 @@ function wire() {
       schedule();
     }).observe(canvas);
   }
+}
+
+/// Nearest system to a pointer event, within a thumb's reach. This is what a canvas costs in place
+/// of the browser's own hit testing, and for 5000 systems it is cheaper than 5000 hit targets.
+function nearest(e) {
+  const box = canvas.getBoundingClientRect();
+  const mx = e.clientX - box.left;
+  const my = e.clientY - box.top;
+  let best = null;
+  let bestD = 18 * 18;
+  for (const n of geo.nodes) {
+    const dx = sx(n.x) - mx;
+    const dy = sy(n.z) - my;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = n;
+    }
+  }
+  return best;
 }
 
 register("map", (node, snap) => {

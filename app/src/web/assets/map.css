@@ -41,3 +41,44 @@
   .maptools button { min-height: 2.2rem; }
   .maphint { width: 100%; margin-left: 0; }
 }
+
+/* The layer panel: anchored under its button on a desktop, a sheet on a phone. Same markup, because
+   maintaining two is how they drift. */
+.maptools { position: relative; }
+
+.mlayers {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin-top: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  min-width: 14rem;
+}
+.mlayers[hidden] { display: none; }
+
+.mlrow { display: flex; align-items: center; gap: 0.5rem; }
+.mlrow > span { color: var(--muted); flex: 0 0 4.5rem; }
+.mlrow .mlcycle { flex: 1; text-align: left; }
+
+.mlgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.3rem; }
+
+@media (max-width: 640px) {
+  .mlayers {
+    position: fixed;
+    top: auto;
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: calc(0.5rem + env(safe-area-inset-bottom));
+    min-width: 0;
+  }
+  .mlgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mlayers button { min-height: 2.6rem; }
+}

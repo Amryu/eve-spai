@@ -37,9 +37,12 @@ pub struct UiFacts {
     /// the publisher has neither the camp state, the wormhole table nor the settings.
     pub camps: Vec<i64>,
     pub holes: Vec<(i64, i64)>,
-    pub upgrades: Vec<(i64, u32)>,
-    /// Alliance name to colour, as the app resolves it.
+    pub cyno: Vec<i64>,
+    /// Per system, its sov upgrades as (kind, level, ore type id).
+    pub upgrades: Vec<(i64, Vec<(u8, u8, Option<i64>)>)>,
+    /// Alliance name to colour, and to its coalition's colour, as the app resolves them.
     pub sov_colors: std::collections::HashMap<String, String>,
+    pub coal_colors: std::collections::HashMap<String, String>,
 }
 
 pub type SharedFacts = Arc<Mutex<UiFacts>>;

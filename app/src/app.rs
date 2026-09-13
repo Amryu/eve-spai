@@ -1713,18 +1713,24 @@ impl SpaiApp {
         format!("http://{host}/?t={}", self.settings.web.token)
     }
 
-    /// Sov upgrades per system, resolved from the configured names.
-    fn web_upgrade_counts(&self) -> Vec<(i64, u32)> {
+    /// Sov upgrades per system, classified exactly as the map classifies them.
+    ///
+    /// Kind, level and ore are worked out here rather than in the browser so the page draws the same
+    /// icon for the same upgrade without carrying a copy of the keyword list.
+    fn web_upgrade_marks(&self) -> Vec<(i64, Vec<(u8, u8, Option<i64>)>)> {
         let Some(g) = &self.systems else { return Vec::new() };
-        let mut counts: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
+        let mut by_system: std::collections::BTreeMap<i64, Vec<(u8, u8, Option<i64>)>> =
+            Default::default();
         for u in &self.settings.sov_upgrades {
-            if let Some(info) = g.lookup(&u.system) {
-                *counts.entry(info.id).or_default() += 1;
-            }
+            let Some(info) = g.lookup(&u.system) else { continue };
+            let (icon, level) = upgrade_info(&u.upgrade);
+            let (kind, ore) = match icon {
+                UpgradeIcon::Mineral(id) => (UpgradeKind::Mining as u8, Some(id)),
+                UpgradeIcon::Glyph(_) => (upgrade_kind(&u.upgrade) as u8, None),
+            };
+            by_system.entry(info.id).or_default().push((kind, level, ore));
         }
-        let mut out: Vec<(i64, u32)> = counts.into_iter().collect();
-        out.sort_unstable();
-        out
+        by_system.into_iter().collect()
     }
 
     /// Alliance name to colour, resolved the way the map resolves it: the user's configured colour
@@ -1740,6 +1746,22 @@ impl SpaiApp {
             }
             let c = self.alliance_color_of(name).unwrap_or_else(|| name_color(name));
             out.insert(name.clone(), format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b()));
+        }
+        out
+    }
+
+    /// Alliance name to its coalition's colour, for the map's "by coalition" mode.
+    fn web_coalition_colors(&self) -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        for c in &self.settings.coalitions {
+            let col = c
+                .color
+                .map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
+                .unwrap_or_else(|| name_color(&c.name));
+            let hex = format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b());
+            for a in &c.alliances {
+                out.insert(a.clone(), hex.clone());
+            }
         }
         out
     }
@@ -1789,8 +1811,10 @@ impl SpaiApp {
             .iter()
             .filter_map(|w| Some((w.system_id, w.dest_system_id?)))
             .collect();
-        f.upgrades = self.web_upgrade_counts();
+        f.upgrades = self.web_upgrade_marks();
+        f.cyno = self.settings.cyno_generators.clone();
         f.sov_colors = self.web_sov_colors();
+        f.coal_colors = self.web_coalition_colors();
         drop(f);
 
         let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
