@@ -136,3 +136,36 @@
 .jumpmax { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
 .rhop { flex-wrap: wrap; }
 .rcost { flex: 1 1 100%; color: var(--muted); font-size: 0.78rem; padding-left: 0.3rem; }
+
+.rwarn {
+  flex: 1 1 100%;
+  color: var(--warning);
+  font-size: 0.78rem;
+  padding-left: 0.3rem;
+}
+.rwarn.crit { color: var(--hostile); }
+
+/* A phone gets the same windows in a bottom sheet, so everything in them has to earn its height:
+   one line per hop instead of three, and the panel scrolls rather than the lists inside it. */
+@media (max-width: 640px) {
+  .float .mpanel { max-height: 58vh; overflow-y: auto; }
+  .mpanel h3 { font-size: 0.95rem; margin-bottom: 0.35rem; }
+  .mrow { padding: 0.1rem 0; gap: 0.5rem; }
+  .mrow > span:first-child { flex: 0 0 6.5rem; font-size: 0.82rem; }
+  .mrow > span:last-child { font-size: 0.85rem; }
+  .mresists { font-size: 0.8rem; }
+  .mresists th, .mresists td { padding: 0.05rem 0.2rem; }
+  .rcell { min-width: 2.6rem; height: 1rem; }
+  .rnum { font-size: 0.7rem; line-height: 1rem; }
+  .mtraits { padding-left: 0.9rem; font-size: 0.82rem; }
+  .mhull { height: 1.6rem; width: 1.6rem; }
+  .mport { width: 5rem; }
+
+  .rhops { max-height: none; overflow: visible; }
+  .rhop { padding: 0; font-size: 0.82rem; }
+  .rhop .chip { padding: 0 0.25rem; }
+  /* The costs and the warning ride on the same line as the hop, not under it. */
+  .rcost, .rwarn { flex: 1 1 auto; padding-left: 0; font-size: 0.7rem; }
+  .jumpcfg { gap: 0.25rem; }
+  .jumpcfg select { flex: 1 1 100%; }
+}

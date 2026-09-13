@@ -3,6 +3,7 @@
 // an IntelClick.
 
 import { ico, state } from "./app.js";
+import { fmtAge } from "./panes-intel.js";
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -56,7 +57,9 @@ function shell(kind) {
 function dragify(node) {
   let from = null;
   node.addEventListener("pointerdown", (e) => {
-    if (e.target.closest("button, a, input")) return;
+    // Anything interactive keeps the pointer: a drop-down or a number field is dragged sideways to
+    // use it, and the window was following the pointer instead of the control.
+    if (e.target.closest("button, a, input, select, textarea, label, option")) return;
     const r = node.getBoundingClientRect();
     from = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
     node.setPointerCapture(e.pointerId);
@@ -380,6 +383,20 @@ function paintRoute(kind, onPick) {
         `</div>`
       : "";
   const mins = (m) => (m >= 60 ? `${(m / 60).toFixed(1)}h` : `${Math.round(m)}m`);
+  const SEV = ["", "", "Danger", "Critical"];
+  // Why not to fly through here. Intel below Danger is left off on purpose: a nullsec route passes
+  // through dozens of systems someone has said something about, and a warning on all of them is a
+  // warning on none.
+  const warn = (w) => {
+    if (!w) return "";
+    const bits = [];
+    if (w.sev >= 2) bits.push(`${SEV[w.sev]} intel ${fmtAge(Math.max(0, Date.now() / 1000 - w.at))}`);
+    if (w.kills || w.pods) {
+      bits.push(`${w.kills} ${w.kills === 1 ? "kill" : "kills"}${w.pods ? ` · ${w.pods} pods` : ""} this hour`);
+    }
+    if (!bits.length) return "";
+    return `<span class="rwarn${w.sev >= 3 ? " crit" : ""}">${ico("warning")} ${esc(bits.join(" · "))}</span>`;
+  };
   const line = (h, i) =>
     `<li class="rhop k${h.kind}">` +
     `<button class="chip" data-system="${h.id}" style="color:${secCol(h.security)}">${esc(h.name)}</button>` +
@@ -394,6 +411,7 @@ function paintRoute(kind, onPick) {
         : h.kind === 1
           ? `<span class="rkind bridge">bridge</span>`
           : `<span class="rkind">gate</span>`) +
+    warn(h.warn) +
     `</li>`;
   open(
     "route",

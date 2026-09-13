@@ -10550,6 +10550,7 @@ impl SpaiApp {
             "titan" => "titan",
             _ => "gate",
         };
+        let danger = self.route_danger();
         self.map_route_opts = crate::web::route::chain(
             &graph,
             &coords,
@@ -10561,6 +10562,7 @@ impl SpaiApp {
             TITAN_LY,
             bridges,
         );
+        crate::web::route::annotate(&mut self.map_route_opts, &danger);
     }
 
     /// The route window: the hop list for whatever was picked, and the alternatives when the titan
@@ -10622,6 +10624,9 @@ impl SpaiApp {
                             };
                             ui.label(egui::RichText::new(tail).weak());
                         });
+                        if let Some(w) = &h.warn {
+                            warn_line(ui, w);
+                        }
                     }
                 });
             });
@@ -10630,6 +10635,25 @@ impl SpaiApp {
             self.map_route_opts.clear();
             self.map_route_anchors.clear();
         }
+    }
+
+    /// The danger map from the app's own state, for the route views.
+    fn route_danger(&self) -> std::collections::HashMap<i64, crate::web::route::HopWarning> {
+        let kills: Vec<(i64, u32, u32)> = self
+            .system_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, f)| (*id, f.ship_kills, f.pod_kills))
+            .collect();
+        let st = self.intel_state.lock().unwrap_or_else(|e| e.into_inner());
+        crate::web::route::danger_from_reports(
+            &st.reports,
+            &self.settings.severity,
+            self.settings.intel_ttl_secs,
+            chrono::Utc::now().timestamp(),
+            &kills,
+        )
     }
 
     /// The readout beside the system a route drag is aimed at.
@@ -13905,6 +13929,7 @@ impl SpaiApp {
                 // Per jump, not just the totals: fatigue compounds, so the interesting number is
                 // which jump takes the timer past what you are willing to wait for.
                 let per = crate::jumproute::hop_costs(&systems, &self.jump_route, &class, self.jump_jfc);
+                let danger = self.route_danger();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let route = self.jump_route.clone();
                     for (i, sid) in route.iter().enumerate() {
@@ -13921,6 +13946,9 @@ impl SpaiApp {
                                 .clicked()
                             {
                                 self.dock_system(*sid);
+                            }
+                            if let Some(w) = danger.get(sid) {
+                                warn_line(ui, w);
                             }
                             if let Some(c) = i.checked_sub(1).and_then(|k| per.get(k)) {
                                 ui.indent(("hopcost", i), |ui| {
@@ -24431,6 +24459,43 @@ pub(crate) fn render_ping(
                 }
             }
         }
+    });
+}
+
+/// One line of "why not to fly through here", under a hop.
+///
+/// Intel below Danger is deliberately absent: a nullsec route passes through dozens of systems
+/// someone has said something about, and a warning on all of them is a warning on none.
+fn warn_line(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) {
+    let mut bits: Vec<String> = Vec::new();
+    if w.sev >= crate::web::route::WARN_SEVERITY {
+        let age = fmt_age((chrono::Utc::now().timestamp() - w.at).max(0));
+        bits.push(format!(
+            "{} intel {age}",
+            if w.sev >= 3 { "Critical" } else { "Danger" }
+        ));
+    }
+    if w.kills > 0 || w.pods > 0 {
+        let mut k = format!("{} kills this hour", w.kills);
+        if w.pods > 0 {
+            k.push_str(&format!(" · {} pods", w.pods));
+        }
+        bits.push(k);
+    }
+    if bits.is_empty() {
+        return;
+    }
+    let col = if w.sev >= 3 {
+        crate::theme::standing::HOSTILE
+    } else {
+        crate::theme::standing::WARNING
+    };
+    ui.indent(("warn", w.at, w.kills), |ui| {
+        ui.label(
+            egui::RichText::new(format!("{}  {}", egui_phosphor::regular::WARNING, bits.join(" · ")))
+                .color(col)
+                .size(11.5),
+        );
     });
 }
 
