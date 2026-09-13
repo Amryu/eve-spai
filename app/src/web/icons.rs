@@ -40,6 +40,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("campfire", icon::CAMPFIRE),
     ("spiral", icon::SPIRAL),
     ("bookmark-simple", icon::BOOKMARK_SIMPLE),
+    ("article", icon::ARTICLE),
     ("arrow-up", icon::ARROW_UP),
     ("speaker-high", icon::SPEAKER_HIGH),
     ("speaker-slash", icon::SPEAKER_SLASH),

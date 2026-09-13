@@ -316,6 +316,42 @@ fn disk_scene(
     })
 }
 
+/// The banner for a character whose EVE login has stopped working.
+///
+/// Its own scene for the same reason the disk banner has one: it is chrome that appears above every
+/// view, so what it must not do is push the rest of the chrome around or overlap it.
+fn auth_scene(
+    name: &'static str,
+    problem: crate::esi::AuthProblem,
+    chars: &'static [&'static str],
+    size: [f32; 2],
+) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.view = View::Dashboard;
+            a
+        });
+        app.characters = chars
+            .iter()
+            .enumerate()
+            .map(|(i, n)| crate::store::CharacterRow {
+                id: 90_000_000 + i as i64,
+                name: (*n).to_owned(),
+                expires_at: 0,
+                scopes: crate::auth::DEFAULT_SCOPES.join(" "),
+            })
+            .collect();
+        for c in &app.characters {
+            crate::esi::set_auth_problem_for_test(c.id, problem);
+        }
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// 1DQ1-A, where [`intel_bridge_scene`] parks the player.
 const PLAYER_SYS: i64 = 30_004_759;
 
@@ -774,6 +810,20 @@ pub(crate) fn all() -> Vec<Scene> {
             None,
             true,
             [1280.0, 800.0],
+        ),
+        auth_scene(
+            "auth_banner_expired",
+            crate::esi::AuthProblem::LoggedOut,
+            &["Amryu"],
+            [1280.0, 800.0],
+        ),
+        // Narrow, because the remedy is three sentences and it has to wrap rather than clip; and
+        // two characters, because the headline changes shape when it is not naming one.
+        auth_scene(
+            "auth_banner_keychain_narrow",
+            crate::esi::AuthProblem::NoKeychain,
+            &["Amryu", "Scout"],
+            [720.0, 600.0],
         ),
         intel_scene("intel_row_typical", fixtures::intel_typical(), 520.0),
         // UI-037. Two badges and two numbers when the nearest alerting character is not the one

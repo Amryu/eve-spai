@@ -19,6 +19,12 @@ try {
 } catch {
   // Private browsing. The selection then lasts one session.
 }
+// `?jabber=<jid>` opens one, which is how a link can point at a conversation and the only way a
+// load-time screenshot can capture the chat header: the harness cannot click.
+{
+  const want = new URLSearchParams(location.search).get("jabber");
+  if (want) sel = want;
+}
 
 function remember(jid) {
   sel = jid;
@@ -128,6 +134,28 @@ const esc4rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /// room, and "@goonfleet.com" after every line in a conversation with one other person is noise.
 const who = (from) => String(from ?? "").split("@")[0];
 
+/// A MOTD is a notice board: several lines, blank ones between them, sometimes a rule of dashes.
+/// Collapsed it is a paragraph, so the separator keeps the first line reading as the headline.
+const motdOneLine = (m) =>
+  String(m ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    // A row of dashes or equals is a rule: it separates the lines above from the ones below, and on
+    // one line it separates nothing while taking a third of the bar.
+    .filter((l) => /[\p{L}\p{N}]/u.test(l))
+    .join("  ·  ");
+
+/// The first `max` non-empty lines, marked when there is more. A tooltip carrying a whole MOTD
+/// covers the conversation it is describing.
+function motdPreview(m, max) {
+  const lines = String(m ?? "")
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim());
+  return lines.slice(0, max).join("\n") + (lines.length > max ? "\n…" : "");
+}
+
 function row(c) {
   const dot = c.room
     ? `<span class="jico">${ico("users-three")}</span>`
@@ -136,7 +164,10 @@ function row(c) {
     ? `<span class="jcount${c.mention ? " mention" : ""}">${c.unread > 99 ? "99+" : c.unread}</span>`
     : "";
   return (
-    `<button class="jrow${c.jid === sel ? " on" : ""}${c.mention ? " mentioned" : ""}" data-convo="${esc(c.jid)}" title="${esc(c.jid)}">` +
+    `<button class="jrow${c.jid === sel ? " on" : ""}${c.mention ? " mentioned" : ""}" data-convo="${esc(c.jid)}" ` +
+    // A room's tooltip is its topic, capped: that is what you want off a room in a list, and the
+    // JID is the same words as the name plus a domain.
+    `title="${esc(c.motd ? motdPreview(c.motd, 6) : c.jid)}">` +
     `${dot}<span class="jname">${esc(c.name)}</span>${badge}</button>`
   );
 }
@@ -182,7 +213,14 @@ function body() {
     ? `<form class="jsend"><input name="body" autocomplete="off" placeholder="Message ${esc(c.name)}"><button type="submit">${ico("paper-plane-right")}</button></form>`
     : "";
   return (
-    `<div class="jhead">${c.room ? ico("users-three") : ico("chat-circle-dots")} <b>${esc(c.name)}</b></div>` +
+    `<div class="jhead">${c.room ? ico("users-three") : ico("chat-circle-dots")} <b>${esc(c.name)}</b>` +
+    // The room's topic on the room's own bar, one line of it. The rest is a tap away rather than
+    // wrapped into the header, which on a phone would be most of the screen before any message.
+    (c.motd
+      ? `<span class="jtopic" title="${esc(motdPreview(c.motd, 6))}">${esc(motdOneLine(c.motd))}</span>` +
+        `<button class="jmotd" data-motd="${esc(c.jid)}" title="Show the full MOTD">${ico("article")}</button>`
+      : "") +
+    `</div>` +
     `<div class="jlog">${lines || `<p class="placeholder">No messages yet.</p>`}</div>` +
     write
   );
@@ -212,8 +250,32 @@ register("jabber", (node) => {
   sync(false);
 });
 
+/// A room's MOTD in full, which is the only place it is shown whole.
+///
+/// The header shows one line of it; this is where the ping format, the comms details and the forum
+/// link actually live, so the text stays selectable and the whitespace it was written with is kept.
+function motdDialog(jid) {
+  const c = convo(jid);
+  if (!c?.motd) return;
+  const wrap = document.createElement("div");
+  wrap.className = "jstartdlg motddlg";
+  wrap.innerHTML =
+    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+    `<h3>${ico("article")} ${esc(c.name)} MOTD</h3>` +
+    `<pre class="jmotdtext">${esc(c.motd)}</pre></div>`;
+  document.body.append(wrap);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target.closest(".mclose")) wrap.remove();
+  });
+}
+
 /// One listener, on the pane, for every row there will ever be: the list is rebuilt on every push.
 document.addEventListener("click", (e) => {
+  const m = e.target.closest("[data-motd]");
+  if (m) {
+    motdDialog(m.dataset.motd);
+    return;
+  }
   const r = e.target.closest("[data-convo]");
   if (r) {
     open(r.dataset.convo);

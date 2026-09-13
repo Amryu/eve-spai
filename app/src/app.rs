@@ -506,7 +506,8 @@ pub struct SpaiApp {
     /// went unread while it was. Reading one must not make it disappear mid-click.
     jabber_sticky: std::collections::BTreeSet<String>,
     /// Channel JIDs whose MOTD is expanded (full text) in the Channels list.
-    jabber_motd_expanded: std::collections::HashSet<String>,
+    /// The room whose MOTD is open in its own window, if any.
+    jabber_motd_window: Option<String>,
     jabber_collapsed: std::collections::HashSet<String>,
     jabber_my_presence: crate::jabber::Presence,
     jabber_my_status: String,
@@ -1264,7 +1265,7 @@ impl SpaiApp {
             jabber_pane: JabberPane::Convos,
             taskbar_badge: None,
             jabber_sticky: Default::default(),
-            jabber_motd_expanded: std::collections::HashSet::new(),
+            jabber_motd_window: None,
             jabber_collapsed: std::collections::HashSet::new(),
             jabber_my_presence: crate::jabber::Presence::Online,
             jabber_my_status: String::new(),
@@ -2091,6 +2092,11 @@ impl SpaiApp {
                     mention: st.mentions.contains(jid),
                     last_at,
                     presence,
+                    motd: if room {
+                        st.room_subjects.get(jid).cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
                 }
             })
             .collect();
@@ -3076,7 +3082,9 @@ impl SpaiApp {
             st.mentions.remove(jid);
         }
         self.remove_jabber_tab(jid);
-        self.jabber_motd_expanded.remove(jid);
+        if self.jabber_motd_window.as_deref() == Some(jid) {
+            self.jabber_motd_window = None;
+        }
         if self.jabber_chat.as_deref() == Some(jid) {
             self.jabber_chat = None;
         }
@@ -3267,6 +3275,46 @@ impl SpaiApp {
             }
         }
         self.apply_tab_actions(out);
+    }
+
+    /// A room's MOTD in full, which is the only place it is shown whole.
+    ///
+    /// Selectable, because a MOTD is where the fleet ping format, the comms details and the forum
+    /// link live and those get copied out. Scrolled rather than grown: some of them are very long.
+    fn jabber_motd_dialog(&mut self, ctx: &egui::Context, channels: &[ChannelRow]) {
+        let Some(jid) = self.jabber_motd_window.clone() else {
+            return;
+        };
+        let Some(motd) = channels
+            .iter()
+            .find(|c| c.jid == jid)
+            .map(|c| c.motd.clone())
+            .filter(|m| !m.trim().is_empty())
+        else {
+            self.jabber_motd_window = None;
+            return;
+        };
+        let name = jid.split('@').next().unwrap_or(&jid).to_owned();
+        let mut open = true;
+        egui::Window::new(format!("{}  {name} MOTD", egui_phosphor::regular::ARTICLE))
+            .id(egui::Id::new("jabber_motd"))
+            .collapsible(false)
+            .resizable(true)
+            .default_size([420.0, 320.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                if ui.button(format!("{}  Copy", egui_phosphor::regular::COPY)).clicked() {
+                    ui.ctx().copy_text(motd.clone());
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add(egui::Label::new(&motd).wrap());
+                });
+            });
+        if !open {
+            self.jabber_motd_window = None;
+        }
     }
 
     fn jabber_join_dialog(
@@ -3501,6 +3549,8 @@ impl SpaiApp {
         let accent = ui.visuals().hyperlink_color;
         let mut open: Option<String> = None;
         let mut start: Option<bool> = None;
+        // Collected rather than applied inside the closure: the row renderer borrows `self`.
+        let mut motd: Option<String> = None;
         egui::ScrollArea::vertical().id_salt("convos").auto_shrink([false, false]).show(ui, |ui| {
             let w = &mut ui.visuals_mut().widgets;
             w.inactive.bg_stroke = egui::Stroke::NONE;
@@ -3546,19 +3596,25 @@ impl SpaiApp {
             }
             section(ui, "Rooms", rooms.len());
             for c in &rooms {
-                if self
-                    .jabber_convo_row(
-                        ui,
-                        &c.jid,
-                        &c.name,
-                        c.unread_count,
-                        c.mention,
-                        None,
-                        &c.motd,
-                        c.inaccessible,
-                    )
-                    .clicked()
-                {
+                let row = self.jabber_convo_row(
+                    ui,
+                    &c.jid,
+                    &c.name,
+                    c.unread_count,
+                    c.mention,
+                    None,
+                    &c.motd,
+                    c.inaccessible,
+                );
+                if !c.motd.trim().is_empty() {
+                    row.context_menu(|ui| {
+                        if ui.button("Show MOTD").clicked() {
+                            motd = Some(c.jid.clone());
+                            ui.close();
+                        }
+                    });
+                }
+                if row.clicked() {
                     open = Some(c.jid.clone());
                 }
             }
@@ -3566,6 +3622,9 @@ impl SpaiApp {
                 start = Some(true);
             }
         });
+        if let Some(jid) = motd {
+            self.jabber_motd_window = Some(jid);
+        }
         if let Some(rooms) = start {
             self.jabber_dm_error.clear();
             self.jabber_join_rooms = rooms;
@@ -3750,7 +3809,9 @@ impl SpaiApp {
         if motd.trim().is_empty() {
             resp
         } else {
-            resp.on_hover_text(motd)
+            // Six lines, not the whole notice board: a full MOTD tooltip is taller than the sidebar
+            // it hangs off and covers the list it is describing.
+            resp.on_hover_text(motd_preview(motd, 6))
         }
     }
 
@@ -4036,6 +4097,7 @@ impl SpaiApp {
         self.jabber_join_open = true;
         self.jabber_join_rooms = rooms;
         self.jabber_join_dialog(ctx, &f.convos, &f.channels);
+        self.jabber_motd_dialog(ctx, &f.channels);
     }
 
     fn jabber_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
@@ -4447,6 +4509,7 @@ impl SpaiApp {
         let mut out: Vec<TabAction> = Vec::new();
         self.jabber_window_body(ui, ChatWinKey::Main, f, &mut out);
         self.jabber_join_dialog(ui.ctx(), &f.convos, &f.channels);
+        self.jabber_motd_dialog(ui.ctx(), &f.channels);
         self.apply_tab_actions(out);
     }
 
@@ -4953,6 +5016,13 @@ impl SpaiApp {
         // A kicked room is history only: its composer is disabled.
         let sel_accessible = f.accessible(&jid);
         let muted = self.jabber_is_muted(&jid);
+        let motd = f
+            .channels
+            .iter()
+            .find(|c| c.jid == jid)
+            .map(|c| c.motd.clone())
+            .filter(|m| !m.trim().is_empty());
+        let mut show_motd = false;
         ui.horizontal(|ui| {
             let name = jid.split('@').next().unwrap_or(&jid);
             let glyph = if is_room { icon::USERS_THREE } else { icon::USER };
@@ -4960,6 +5030,30 @@ impl SpaiApp {
             if muted {
                 ui.label(egui::RichText::new(icon::BELL_SLASH).weak())
                     .on_hover_text("Muted");
+            }
+            // The room's topic, on the bar the room's name is on. Width-bounded and truncated
+            // rather than allowed to take what it likes: a MOTD is a paragraph, and a label that
+            // wraps here pushes the mute and close controls off the end of the bar.
+            if let Some(m) = &motd {
+                ui.separator();
+                let keep = 76.0;
+                let w = (ui.available_width() - keep).clamp(40.0, ui.available_width().max(40.0));
+                ui.scope(|ui| {
+                    ui.set_max_width(w);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(motd_one_line(m)).weak())
+                            .truncate()
+                            .selectable(false),
+                    )
+                    .on_hover_text(motd_preview(m, 6));
+                });
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(icon::ARTICLE)).frame(false))
+                    .on_hover_text("Show the full MOTD")
+                    .clicked()
+                {
+                    show_motd = true;
+                }
             }
             ui.with_layout(
                 egui::Layout::right_to_left(egui::Align::Center),
@@ -5019,6 +5113,9 @@ impl SpaiApp {
                 },
             );
         });
+        if show_motd {
+            self.jabber_motd_window = Some(jid.clone());
+        }
         ui.separator();
         let body_h = ui.available_height();
         let composer_h = if is_room && !sel_accessible {
@@ -9531,16 +9628,23 @@ impl SpaiApp {
             let scope_count = have.iter().filter(|s| !s.is_empty()).count();
             let missing: Vec<&str> =
                 auth::DEFAULT_SCOPES.iter().copied().filter(|s| !have.contains(s)).collect();
-            let token_ok = c.expires_at > now;
+            // The real question is whether the saved *login* still works, not whether the
+            // twenty-minute access token happens to be fresh this second. The old check read the
+            // latter, so a perfectly healthy character showed "token expired" between refreshes and
+            // a dead one showed nothing until the next call happened to run.
+            let problem = crate::esi::auth_problem(c.id);
+            let token_ok = problem.is_none() && (c.expires_at > now || crate::tokens::load_refresh(c.id).is_some());
             let mut intel_on =
                 !self.settings.intel_disabled_chars.iter().any(|d| d.eq_ignore_ascii_case(&c.name));
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(&c.name).strong());
                 ui.label(egui::RichText::new(format!("· {scope_count} scopes")).weak());
                 let (col, txt) = if token_ok {
-                    (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "token valid")
+                    (egui::Color32::from_rgb(0x5A, 0xC8, 0x6A), "signed in")
+                } else if problem == Some(crate::esi::AuthProblem::NoKeychain) {
+                    (crate::theme::standing::HOSTILE, "keychain unavailable")
                 } else {
-                    (crate::theme::standing::WARNING, "token expired")
+                    (crate::theme::standing::WARNING, "login expired")
                 };
                 ui.label(egui::RichText::new("·").weak());
                 ui.label(egui::RichText::new(txt).color(col));
@@ -20143,6 +20247,7 @@ impl SpaiApp {
         // Between the two so it spans the full width above the nav rail, and so every view gets
         // it without any of them knowing about it.
         self.disk_banner(ui);
+        self.auth_banner(ui);
         self.status_bar(ui);
         self.nav_rail(ui);
     }
@@ -20212,6 +20317,68 @@ impl SpaiApp {
             });
             ui.add_space(4.0);
         });
+    }
+
+    /// A character whose EVE login has stopped working, said out loud.
+    ///
+    /// This is the one that went unreported for days: a refresh token expires, every ESI call
+    /// quietly returns nothing, and the symptom the user sees is the map no longer showing where
+    /// they are. Nothing was broken enough to log, so nothing was said. No dismiss, because it does
+    /// not clear itself — logging in again is what clears it.
+    pub(crate) fn auth_banner(&mut self, ui: &mut egui::Ui) {
+        let hurt: Vec<(i64, String, crate::esi::AuthProblem)> = self
+            .characters
+            .iter()
+            .filter_map(|c| crate::esi::auth_problem(c.id).map(|p| (c.id, c.name.clone(), p)))
+            .collect();
+        if hurt.is_empty() {
+            return;
+        }
+        let warn = crate::theme::standing::WARNING;
+        let keyring = hurt.iter().any(|(_, _, p)| *p == crate::esi::AuthProblem::NoKeychain);
+        let mut login = false;
+        egui::Panel::top("auth_banner").show_inside(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).color(warn).strong());
+                let head = if hurt.len() == 1 {
+                    hurt[0].2.message(&hurt[0].1)
+                } else {
+                    format!("{} characters have lost their EVE login.", hurt.len())
+                };
+                ui.label(egui::RichText::new(head).color(warn).strong());
+            });
+            if keyring {
+                ui.label(
+                    "The refresh token is kept in the system keychain, and this machine has none \
+                     that can be reached. On Linux that means no Secret Service is running or no \
+                     keyring has been created: start gnome-keyring or KWallet, or install a \
+                     provider such as KeePassXC, then log in again.",
+                );
+            } else {
+                ui.label(
+                    "Location, fleet membership and in-game routes stay blank until the character \
+                     is logged in again. Intel, alerts and jabber are unaffected.",
+                );
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Log in again").clicked() {
+                    login = true;
+                }
+                if hurt.len() > 1 {
+                    ui.label(
+                        egui::RichText::new(
+                            hurt.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+                        )
+                        .weak(),
+                    );
+                }
+            });
+            ui.add_space(4.0);
+        });
+        if login {
+            self.start_login(&ui.ctx().clone());
+        }
     }
 
     /// Every dialog and secondary window, split out of `App::ui` for the same reason as
@@ -21774,6 +21941,36 @@ fn truncate_to(s: &str, max: usize) -> String {
 
 fn short_chip(s: &str) -> String {
     truncate_to(s, 20)
+}
+
+/// A room's MOTD as one line, for a title bar that has one line to give it.
+///
+/// A MOTD is written as a notice board: several lines, blank lines between them, sometimes a rule
+/// made of dashes. Collapsed, that is a paragraph; the separator keeps the parts from running into
+/// each other so the first line still reads as the headline.
+fn motd_one_line(motd: &str) -> String {
+    let parts: Vec<&str> = motd
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        // A row of dashes or equals is a rule: it separates the lines above from the ones below,
+        // and on one line it separates nothing while taking a third of the bar.
+        .filter(|l| l.chars().any(|c| c.is_alphanumeric()))
+        .collect();
+    parts.join("  ·  ")
+}
+
+/// The first `max` non-empty lines, with a marker when there is more behind them.
+///
+/// A tooltip carrying a whole MOTD covered the window it was explaining. The cap is what makes it a
+/// preview; the marker is what says a preview is what you are looking at.
+fn motd_preview(motd: &str, max: usize) -> String {
+    let lines: Vec<&str> = motd.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let mut out = lines.iter().take(max).copied().collect::<Vec<_>>().join("\n");
+    if lines.len() > max {
+        out.push_str("\n…");
+    }
+    out
 }
 
 fn fit_chars(width: f32) -> usize {
@@ -29206,7 +29403,7 @@ mod jabber_force_join_tests {
 
 #[cfg(test)]
 mod active_character_tests {
-    use super::{CharacterRow, resolve_active_character};
+    use super::{CharacterRow, motd_one_line, motd_preview, resolve_active_character};
 
     fn rows(names: &[&str]) -> Vec<CharacterRow> {
         names
@@ -29249,5 +29446,46 @@ mod active_character_tests {
     fn no_character_picks_the_first_authed_one() {
         let chars = rows(&["Amryu", "Scout"]);
         assert_eq!(resolve_active_character("No character", &chars), "Amryu");
+    }
+
+    const SAMPLE_MOTD: &str = "DEFENCE FLEETS FORM IN 1DQ1-A\n\
+                               \n\
+                               ------------------------------\n\
+                               Ping format: [FLEET] FC / staging\n\
+                               Comms: Mumble\n\
+                               Doctrines: https://example.invalid\n\
+                               No AFK cloaking";
+
+    /// The title bar has one line, and a MOTD is a notice board. Blank lines and the rule of dashes
+    /// carry nothing once it is one line, and the rule took a third of the bar when it was kept.
+    #[test]
+    fn one_line_drops_the_blank_lines_and_the_rule() {
+        let one = motd_one_line(SAMPLE_MOTD);
+        assert!(one.starts_with("DEFENCE FLEETS FORM IN 1DQ1-A"), "{one}");
+        assert!(!one.contains("---"), "the rule is not content: {one}");
+        assert!(!one.contains("  ·    ·"), "no empty piece between separators: {one}");
+        assert!(one.contains("No AFK cloaking"), "the last line survives: {one}");
+    }
+
+    /// The tooltip is a preview, and has to say so: without the marker a capped MOTD reads as the
+    /// whole thing, which is worse than not showing it.
+    #[test]
+    fn the_preview_caps_the_lines_and_says_there_are_more() {
+        let p = motd_preview(SAMPLE_MOTD, 3);
+        assert_eq!(p.lines().count(), 4, "three lines plus the marker: {p:?}");
+        assert!(p.ends_with('…'), "{p:?}");
+        assert!(!p.contains("Comms: Mumble"), "the fourth line is behind the cap: {p:?}");
+
+        // Under the cap there is nothing behind it, so there is no marker.
+        let short = motd_preview("one\ntwo", 6);
+        assert_eq!(short, "one\ntwo");
+    }
+
+    /// A room with no subject must not draw an empty separator and a dead button.
+    #[test]
+    fn an_empty_motd_is_empty_not_a_separator() {
+        assert_eq!(motd_one_line(""), "");
+        assert_eq!(motd_one_line("\n\n   \n"), "");
+        assert_eq!(motd_preview("   \n\n", 6), "");
     }
 }

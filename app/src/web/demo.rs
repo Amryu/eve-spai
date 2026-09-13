@@ -200,6 +200,7 @@ fn jabber() -> crate::web::jabber::JabberSide {
         mention,
         last_at: crate::uitest::fixtures::now() - ago,
         presence: Some(colour.to_owned()),
+        motd: String::new(),
     };
     let room = |name: &str, unread: u32, mention: bool, ago: i64| WebConvo {
         jid: format!("{name}@conference.goonfleet.com"),
@@ -210,6 +211,15 @@ fn jabber() -> crate::web::jabber::JabberSide {
         mention,
         last_at: crate::uitest::fixtures::now() - ago,
         presence: None,
+        // A real one: several lines, a rule, and a link, which is the shape the header has to cope
+        // with in one line and the dialog has to keep whole.
+        motd: "DEFENCE FLEETS FORM IN 1DQ1-A\n\
+               ------------------------------\n\
+               Ping format: [FLEET] FC name / staging / doctrine\n\
+               Comms: Mumble, Delve channel\n\
+               Doctrines: https://goonfleet.com/doctrines\n\
+               No AFK cloaking in staging."
+            .to_owned(),
     };
     crate::web::jabber::JabberSide {
         configured: true,

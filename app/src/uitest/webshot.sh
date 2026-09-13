@@ -46,6 +46,9 @@ curl -sf --max-time 2 http://127.0.0.1:6799/healthz >/dev/null || { echo "demo s
 for size in "${sizes[@]}"; do
   name="${size%%,*}"
   echo "shooting ${size}"
+  # Cleared first: a shot that fails leaves the previous run's PNG here, and the copy below would
+  # then hand back an image of the wrong page with no error anywhere.
+  rm -f "$stage/w-$name.png"
   # --no-remote plus its own profile: without them a running Firefox swallows the URL and exits 0
   # having screenshotted nothing.
   timeout 120 flatpak run --command=firefox org.mozilla.firefox \

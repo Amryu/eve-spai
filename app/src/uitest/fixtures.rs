@@ -514,12 +514,17 @@ pub(crate) fn jabber_state() -> crate::jabber::JabberState {
     st.unread.insert(JABBER_ROOM_QUIET.to_owned());
     st.unread.insert(JABBER_DM.to_owned());
     st.mentions.insert(JABBER_DM.to_owned());
-    st.room_subjects.insert(
-        JABBER_ROOM.to_owned(),
-        "Delve intel. Report hostiles with system first.".to_owned(),
-    );
+    // Several lines, because that is what a real MOTD is: the one-line header has to collapse it and
+    // the tooltip has to cap it, and a single short line exercises neither.
+    st.room_subjects.insert(JABBER_ROOM.to_owned(), MOTD.to_owned());
     st
 }
+
+const MOTD: &str = "Delve intel. Report hostiles with system first.\n\
+         ------------------------------\n\
+         Ping format: [FLEET] FC / staging / doctrine\n\
+         Comms: Mumble, Delve channel\n\
+         No AFK cloaking in staging.";
 
 fn convo(
     jid: &str,
@@ -577,7 +582,7 @@ pub(crate) fn jabber_frame() -> crate::app::JabberFrame {
         mentions: st.mentions.clone(),
         pings_unread: true,
         channels: vec![
-            channel(JABBER_ROOM, false, "Delve intel. Report hostiles with system first."),
+            channel(JABBER_ROOM, false, MOTD),
             channel(JABBER_ROOM_QUIET, true, ""),
         ],
         inaccessible: Vec::new(),
