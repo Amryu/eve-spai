@@ -46,6 +46,8 @@ pub enum OverlayToMain {
     SetDestination { id: i64 },
     /// Add or remove a system from a permanent route-avoidance list.
     AvoidSystem { id: i64, jump: bool, on: bool },
+    /// Bookmark a system, or forget it. The same list the app's star writes to.
+    Bookmark { id: i64, on: bool },
     /// Save the route the page has built, or replace one of the same name.
     SaveRoute { route: crate::settings::SavedMapRoute },
     /// Forget a saved route by name.
