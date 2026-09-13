@@ -27,14 +27,30 @@ const view = { ox: 0, oz: 0, k: 1 };
 /// Where the view is heading. Zoom writes this and the drawn `view` eases towards it; pan writes
 /// both at once, because a drag has to track the pointer exactly and easing it would feel like drag.
 const target = { ox: 0, oz: 0, k: 1 };
-/// How long a zoom takes to arrive. Long enough to read as motion rather than a jump cut, short
-/// enough that the map is where you put it by the time you have looked at it.
+/// How long a zoom takes to arrive, at most.
+///
+/// Proportional to the size of the jump rather than fixed: a wheel notch and a double-click that
+/// frames a region are the same operation at very different scales, and a fixed duration either
+/// makes the notch feel gluey or makes the reframe a jump cut. A trackpad's stream of tiny deltas
+/// works out at a couple of milliseconds, which is to say immediate, which is what a gesture that
+/// tracks the fingers has to be.
 const ZOOM_EASE_MS = 180;
+/// Milliseconds per e-fold of zoom. 180ms is reached at a factor of about two.
+const ZOOM_EASE_PER_LN = 260;
 /// The shape of a movement that starts at rest and stops at rest.
 ///
 /// Exponential decay spent all its speed in the first frame and then crawled in on an asymptote,
 /// which is a lurch followed by drift rather than a movement. This leaves and arrives still.
 const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+
+/// The app's zoom limits, as multiples of the framed universe: `map_zoom.clamp(0.7, 60.0)`.
+///
+/// The web map had its own, five times out and a thousand times in, which is a different map to
+/// drive. Held as multiples rather than as values of `k` so the two agree whatever the pane's size.
+const ZOOM_MIN = 0.7;
+const ZOOM_MAX = 60;
+/// `k` for the framed universe: the app's zoom of 1. Set by the universe fit.
+let fitK = 0;
 /// The zoom in flight: the map point pinned under the cursor, where `k` set off from, and when.
 /// Null when the map is settled.
 let anim = null;
@@ -222,6 +238,14 @@ function fit(region = null) {
   // is somewhere off the edge of a blank canvas. `fitted` is deliberately not set, so the first
   // paint with a real size does the job properly.
   if (w < 2 || h < 2) return;
+  if (region == null) {
+    let [a0, a1, b0, b1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (const n of geo.nodes) {
+      a0 = Math.min(a0, n.x); a1 = Math.max(a1, n.x);
+      b0 = Math.min(b0, n.z); b1 = Math.max(b1, n.z);
+    }
+    fitK = Math.max((a1 - a0) / w, (b1 - b0) / h) * 1.08 || 1;
+  }
   let [x0, x1, z0, z1] = [Infinity, -Infinity, Infinity, -Infinity];
   const within = region == null ? geo.nodes : geo.nodes.filter((n) => n.r === region);
   if (!within.length) return;
@@ -253,7 +277,7 @@ function radius() {
 /// scroll is one continuous movement rather than a queue of animations fighting each other.
 function settle(now) {
   if (!anim) return false;
-  const e = easeInOut(Math.min(1, (now - anim.t0) / ZOOM_EASE_MS));
+  const e = easeInOut(Math.min(1, (now - anim.t0) / anim.dur));
   // Geometric in `k`, because zoom is: the halfway point of a zoom is the geometric mean, not the
   // arithmetic one, and interpolating it linearly races at one end and crawls at the other.
   view.k = anim.k0 * Math.pow(target.k / anim.k0, e);
@@ -921,7 +945,12 @@ function wire() {
   let moved = 0;
 
   const zoomAt = (factor, px, py) => {
-    const k = Math.max(geo.extent / 200000, Math.min(geo.extent / 200, target.k * factor));
+    // Clamped to the app's own range, and never tighter than wherever a region fit already put the
+    // view: framing a small region is allowed to go past the limit, and being unable to zoom back
+    // out of it would not be.
+    const lo = Math.min(view.k, (fitK || geo.extent / canvas.clientWidth) / ZOOM_MAX);
+    const hi = Math.max(view.k, (fitK || geo.extent / canvas.clientWidth) / ZOOM_MIN);
+    const k = Math.max(lo, Math.min(hi, target.k * factor));
     // The map point under the cursor, which is what the whole gesture is about. Everything else,
     // here and in `settle`, is derived from it, so it cannot drift.
     const ax = view.ox + px * view.k;
@@ -929,7 +958,8 @@ function wire() {
     target.ox = ax - px * k;
     target.oz = az - py * k;
     target.k = k;
-    anim = { ax, az, px, py, k0: view.k, t0: performance.now() };
+    const dur = Math.min(ZOOM_EASE_MS, ZOOM_EASE_PER_LN * Math.abs(Math.log(k / view.k)));
+    anim = { ax, az, px, py, k0: view.k, dur: Math.max(1, dur), t0: performance.now() };
     schedule();
   };
 
@@ -946,11 +976,28 @@ function wire() {
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-      if (pinch) {
-        const box = canvas.getBoundingClientRect();
-        zoomAt(pinch / dist, (a.clientX + b.clientX) / 2 - box.left, (a.clientY + b.clientY) / 2 - box.top);
+      const box = canvas.getBoundingClientRect();
+      const mx = (a.clientX + b.clientX) / 2 - box.left;
+      const my = (a.clientY + b.clientY) / 2 - box.top;
+      if (pinch && dist > 0) {
+        // Two fingers pan as well as pinch. The midpoint moving is a drag, and a pinch that only
+        // scales leaves the map sliding out from under the hand doing it.
+        const dx = (mx - pinch.mx) * view.k;
+        const dz = (my - pinch.my) * view.k;
+        view.ox -= dx;
+        view.oz -= dz;
+        target.ox -= dx;
+        target.oz -= dz;
+        if (anim) {
+          anim.ax -= dx;
+          anim.az -= dz;
+        }
+        // Counts as movement, or lifting off after a pinch lands as a tap and selects whatever was
+        // under the last finger.
+        moved += Math.abs(mx - pinch.mx) + Math.abs(my - pinch.my) + Math.abs(dist - pinch.d);
+        zoomAt(pinch.d / dist, mx, my);
       }
-      pinch = dist;
+      pinch = { d: dist, mx, my };
       return;
     }
     moved += Math.abs(e.clientX - prev.clientX) + Math.abs(e.clientY - prev.clientY);
@@ -1008,7 +1055,14 @@ function wire() {
     (e) => {
       e.preventDefault();
       const box = canvas.getBoundingClientRect();
-      zoomAt(e.deltaY > 0 ? 1.2 : 1 / 1.2, e.clientX - box.left, e.clientY - box.top);
+      // The app's curve: `zoom * exp(scroll * 0.003)`, continuous in the scroll rather than a fixed
+      // step per notch, which is what makes a trackpad feel like a trackpad instead of a ratchet.
+      //
+      // Normalised to pixels first. A wheel reports lines in Firefox and pixels in Chrome, and the
+      // same gesture zoomed six times as far in one of them.
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
+      const px = Math.max(-240, Math.min(240, e.deltaY * unit));
+      zoomAt(Math.exp(-px * 0.003), e.clientX - box.left, e.clientY - box.top);
     },
     { passive: false }
   );

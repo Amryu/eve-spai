@@ -174,6 +174,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [UI-052 Dashed ground track under every bridge arc](UI-052-bridge-ground-track/) | `app.rs` map | after 51 | **Fixed** |
 | [WEB-031 A swap moves the pane and leaves the size behind](WEB-031-swap-carries-the-span/) | `layout.js` | after 30 | **Fixed** |
 | [WEB-032 Re-adding a pane disables another; one cycling span button; map broken when added late](WEB-032-span-toggles-and-late-map/) | `layout.js`, `map.js` | after 31 | **Fixed** |
+| [WEB-033 A different zoom to the app's; pinch only scales; span would not clear](WEB-033-app-zoom-and-pinch/) | `map.js`, `layout.js` | after 32 | **Fixed** |
 
 ### Browser evidence
 

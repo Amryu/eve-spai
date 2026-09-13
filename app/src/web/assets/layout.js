@@ -102,6 +102,8 @@ function fit(protect = null) {
 /// A single cycling button meant reaching "tall" by passing through "wide", which rearranged the
 /// whole grid on the way past for no reason the user asked for.
 export function setSpan(pane, kind) {
+  // Any deliberate choice retires the seeded default for good.
+  layout.autoSpan = true;
   if (layout.span[pane] === kind) delete layout.span[pane];
   else layout.span[pane] = kind;
   fit(pane);
@@ -145,19 +147,26 @@ export function apply() {
   // the DOM and an input inside a pane keeps its focus.
   fit();
   const on = shown();
-  // With nothing set by hand, an odd count still leaves a spare cell and the map is the pane that
-  // gains most from the width. Once the user has spanned anything themselves, their choice stands
-  // and this stays out of it.
-  const auto =
-    mode === "grid" && !Object.keys(layout.span).length && on.length % 2 === 1 && on.includes("map")
-      ? "map"
-      : null;
+  // An odd count leaves a spare cell and the map is the pane that gains most from the width, so it
+  // starts wide. Seeded once as a real stored value rather than computed every time: computed, it
+  // fought the span buttons, because clearing the span just made the rule put it straight back.
+  if (
+    !layout.autoSpan &&
+    mode === "grid" &&
+    on.length % 2 === 1 &&
+    on.includes("map") &&
+    !Object.keys(layout.span).length
+  ) {
+    layout.span.map = "wide";
+    layout.autoSpan = true;
+    save();
+  }
   for (const [i, name] of layout.order.entries()) {
     const el = main.querySelector(`[data-pane="${name}"]`);
     if (!el) continue;
     el.style.order = String(i);
     el.hidden = !on.includes(name);
-    const s = name === auto ? "wide" : layout.span[name] ?? "";
+    const s = layout.span[name] ?? "";
     if (s) el.dataset.span = s;
     else delete el.dataset.span;
   }
