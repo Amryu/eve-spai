@@ -75,6 +75,55 @@ const stamp = (at) => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 };
 
+/// A roll-call collapsed to a count, the way `condense_attention_list` does it.
+///
+/// The ping bot echoes every broadcast back with every recipient named, which is a multi-kilobyte
+/// line that buries the conversation it is in.
+function condense(body) {
+  const marker = "requests the attention of:";
+  const at = body.toLowerCase().indexOf(marker);
+  if (at < 0) return body;
+  const after = at + marker.length;
+  const list = body.slice(after).trim();
+  if (!list) return body;
+  const n = list.split(",").filter((p) => p.trim()).length;
+  return `${body.slice(0, after).trimEnd()} [${n} ${n === 1 ? "user" : "users"}]`;
+}
+
+/// Trailing sentence punctuation is not part of a URL: a copied link with a full stop on the end
+/// fails when it is pasted. The same set `trim_url_tail` strips.
+const TAIL = /[.,;:!?)\]}>"']+$/;
+
+/// The message body as HTML: links clickable, mentions marked, everything else escaped.
+///
+/// Tokenised rather than escaped-then-regexed. Escaping first turns an `&` inside a URL into
+/// `&amp;` and the href stops working; linkifying first means the surrounding text never gets
+/// escaped at all.
+function bodyHtml(text, names) {
+  const rx = names.length
+    ? new RegExp(`(^|[^\\w])(${names.map(esc4rx).join("|")})(?![\\w])`, "gi")
+    : null;
+  const mark = (t) => {
+    const e = esc(t);
+    return rx ? e.replace(rx, (_, pre, hit) => `${pre}<b class="jmention">${hit}</b>`) : e;
+  };
+  let out = "";
+  let rest = condense(text);
+  for (;;) {
+    const at = rest.search(/https?:\/\//);
+    if (at < 0) break;
+    out += mark(rest.slice(0, at));
+    const end = rest.slice(at).search(/\s/);
+    const raw = end < 0 ? rest.slice(at) : rest.slice(at, at + end);
+    const url = raw.replace(TAIL, "");
+    out += `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
+    rest = rest.slice(at + url.length);
+  }
+  return out + mark(rest);
+}
+
+const esc4rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /// The part of a JID anyone says out loud. A sender arrives as a bare JID in a DM and as a nick in a
 /// room, and "@goonfleet.com" after every line in a conversation with one other person is noise.
 const who = (from) => String(from ?? "").split("@")[0];
@@ -110,14 +159,24 @@ function body() {
   if (!c) {
     return `<p class="placeholder">Pick a conversation.</p>`;
   }
+  const names = side().mention_names ?? [];
+  // One person talking for a while is one block. Repeating the same name and the same minute on
+  // every line is the noise a chat client exists to remove; five minutes, and only while nobody
+  // else has spoken, which is what makes it still a block and not a merge.
+  const GROUP_SECS = 300;
   const lines = chat.msgs
-    .map(
-      (m) =>
-        `<div class="jmsg${m.me ? " me" : ""}">` +
-        `<span class="jwho">${esc(who(m.from))}</span>` +
-        `<span class="jat" title="${esc(new Date(m.at * 1000).toLocaleString())}">${stamp(m.at)}</span>` +
-        `<span class="jbody">${esc(m.body)}</span></div>`
-    )
+    .map((m, i) => {
+      const prev = chat.msgs[i - 1];
+      const grouped = prev && prev.from === m.from && m.at - prev.at <= GROUP_SECS;
+      return (
+        `<div class="jmsg${m.me ? " me" : ""}${grouped ? " cont" : ""}">` +
+        (grouped
+          ? ""
+          : `<span class="jwho">${esc(who(m.from))}</span>` +
+            `<span class="jat" title="${esc(new Date(m.at * 1000).toLocaleString())}">${stamp(m.at)}</span>`) +
+        `<span class="jbody">${bodyHtml(m.body, names)}</span></div>`
+      );
+    })
     .join("");
   const write = state.snapshot?.meta?.allow_writeback
     ? `<form class="jsend"><input name="body" autocomplete="off" placeholder="Message ${esc(c.name)}"><button type="submit">${ico("paper-plane-right")}</button></form>`

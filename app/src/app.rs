@@ -1933,6 +1933,7 @@ impl SpaiApp {
             configured: !self.settings.jabber_jid.trim().is_empty(),
             connected: st.connected,
             convos,
+            mention_names: self.mention_names(),
         }
     }
 
