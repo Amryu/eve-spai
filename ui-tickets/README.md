@@ -211,6 +211,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [UI-067 Route panel fell out of the dock; arcs do not move](UI-067-route-dock/) | `app.rs` | after 66 | **Fixed** |
 | [UI-068 Three features lost their only entry point in the menu cleanup](UI-068-orphaned-by-the-menu-cleanup/) | `app.rs` | after 67 | **Fixed** |
 | [UI-069 Dead code left by this round of reworks](UI-069-dead-code/) | `app.rs`, `jumproute.rs` | after 68 | **Done** |
+| [UI-070 The in-game route draws bridges as straight lines](UI-070-ingame-route-arcs/) | `app.rs` map | after 69 | **Fixed** |
 
 ### Browser evidence
 

@@ -11720,8 +11720,20 @@ impl SpaiApp {
                             continue;
                         };
                         if let Some((prev_id, prev_p)) = last {
-                            let col = self.leg_kind(prev_id, id, jumped_hole).color();
-                            dashed_flow(&painter, prev_p, p, col, phase);
+                            let leg = self.leg_kind(prev_id, id, jumped_hole);
+                            // A bridge arcs here too. This route was the last place drawing one as a
+                            // straight line, which on a map where every other layer arcs them said
+                            // this particular hop was a gate.
+                            if leg == Leg::Bridge {
+                                polyline_flow(
+                                    &painter,
+                                    &arc_polyline(prev_p, p, BRIDGE_BOW),
+                                    leg.color(),
+                                    phase,
+                                );
+                            } else {
+                                dashed_flow(&painter, prev_p, p, leg.color(), phase);
+                            }
                         }
                         last = Some((id, p));
                         jumped_hole = false;
