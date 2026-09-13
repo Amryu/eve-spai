@@ -208,6 +208,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-064 No rescue pane; switching a pane on switched another off](WEB-064-rescue-pane/) | `web/rescue.rs`, `panes-rescue.*`, `layout.js` | after 63 | **Delivered** |
 | [UI-065 Rescue is a second switch, a second window, and a self-changing map](UI-065-rescue-is-a-tab/) | `app.rs`, `nav.rs` | after 64 | **Delivered** |
 | [UI-066 Fleet detection stopped; exit button for a mode that is gone](UI-066-rescue-poller/) | `app.rs` | after 65 | **Fixed** |
+| [UI-067 Route panel fell out of the dock; arcs do not move](UI-067-route-dock/) | `app.rs` | after 66 | **Fixed** |
 
 ### Browser evidence
 
