@@ -685,6 +685,17 @@ pub struct SpaiApp {
     map_overlay_locked: bool,
     map_vp_props: Option<(bool, bool)>,
     map_overlay_drag: bool,
+    /// A route drag in flight: the system it started on.
+    map_link: Option<i64>,
+    /// Where the last frame put each system, so a drag can be hit-tested against where the user
+    /// actually pressed rather than against positions the same frame's pan has already moved.
+    map_pos_prev: std::collections::HashMap<i64, egui::Pos2>,
+    /// The radial menu a finished route drag left behind: (from, to) and where to draw it.
+    map_link_menu: Option<(i64, i64, egui::Pos2)>,
+    /// The route the user picked, its alternatives, and which one is showing.
+    map_route_opts: Vec<crate::web::route::RouteOption>,
+    map_route_at: usize,
+    map_route_kind: &'static str,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1409,6 +1420,12 @@ impl SpaiApp {
             map_vp_props: None,
             map_overlay_locked: false,
             map_overlay_drag: false,
+            map_link: None,
+            map_pos_prev: std::collections::HashMap::new(),
+            map_link_menu: None,
+            map_route_opts: Vec::new(),
+            map_route_at: 0,
+            map_route_kind: "gate",
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -1578,6 +1595,13 @@ impl SpaiApp {
                 match crate::store::Store::open() {
                     Ok(s) => d.store = Some(s),
                     Err(e) => eprintln!("[web] no store for the dialogs: {e}"),
+                }
+            }
+            // Coordinates for the jump maths, loaded once here rather than pushed each frame: the
+            // app's own copy is behind the rescue feature, and `all_map_systems` is 5000 rows.
+            if d.coords.is_none() {
+                if let Some(store) = d.store.as_ref() {
+                    d.coords = Some(std::sync::Arc::new(store.all_map_systems()));
                 }
             }
         }
@@ -10396,10 +10420,216 @@ impl SpaiApp {
                 self.map_selected = Some(id);
                 self.map_focus = Some(id);
             }
+            crate::ipc::OverlayToMain::SetDestination { id } => self.web_set_destination(id),
             crate::ipc::OverlayToMain::JabberOpen { name, room } => self.web_open_convo(&name, room),
             crate::ipc::OverlayToMain::JabberSend { jid, body } => self.web_send_convo(&jid, &body),
             crate::ipc::OverlayToMain::Hello => {}
         }
+    }
+
+    /// The four things a finished route drag can mean, arranged around where it was let go.
+    ///
+    /// Radial rather than a list: the hand is already at the drop point, and every option is the
+    /// same distance away, which is the whole argument for one.
+    fn map_link_menu_ui(&mut self, ui: &mut egui::Ui) {
+        let Some((from, to, at)) = self.map_link_menu else { return };
+        use egui_phosphor::regular as i;
+        const R: f32 = 68.0;
+        let opts: [(&str, &str, &str); 4] = [
+            ("gate", i::SIGN_IN, "Gate route"),
+            ("jump", i::SPIRAL, "Jump route"),
+            ("titan", i::CROSSHAIR_SIMPLE, "Titan route"),
+            ("cancel", i::X, "Cancel"),
+        ];
+        let mut chose: Option<&str> = None;
+        let mut any_hovered = false;
+        for (i, (kind, glyph, label)) in opts.iter().enumerate() {
+            let a = (i as f32 / opts.len() as f32) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+            let p = at + egui::vec2(a.cos() * R, a.sin() * R);
+            let r = egui::Area::new(egui::Id::new(("map_link_opt", i)))
+                .order(egui::Order::Foreground)
+                .fixed_pos(p - egui::vec2(44.0, 18.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_width(72.0);
+                        ui.vertical_centered(|ui| {
+                            let c = if *kind == "cancel" {
+                                ui.visuals().weak_text_color()
+                            } else {
+                                ui.visuals().hyperlink_color
+                            };
+                            ui.label(egui::RichText::new(*glyph).size(18.0).color(c));
+                            if ui.button(*label).clicked() {
+                                chose = Some(kind);
+                            }
+                        });
+                    });
+                });
+            any_hovered |= r.response.hovered();
+        }
+        // Anywhere else dismisses it, which is what a menu with no frame around it has to do.
+        if ui.input(|i| i.pointer.any_pressed()) && !any_hovered {
+            self.map_link_menu = None;
+        }
+        if let Some(kind) = chose {
+            self.map_link_menu = None;
+            self.map_take_route(kind, from, to);
+        }
+    }
+
+    /// Act on a route the user picked off the map.
+    ///
+    /// The same `web::route` the phone calls, so the two maps answer the question identically rather
+    /// than each having its own idea of what a titan route is.
+    fn map_take_route(&mut self, kind: &str, from: i64, to: i64) {
+        self.map_route_opts.clear();
+        self.map_route_at = 0;
+        if kind == "gate" {
+            self.web_set_destination(to);
+            self.route_destination = Some(to);
+        }
+        self.ensure_jump_systems();
+        let Some(graph) = self.systems.clone() else { return };
+        let coords = self.jump_systems.clone().unwrap_or_default();
+        // A titan at JDC V. The same figure the rescue planner uses, stated here because that one is
+        // behind a feature flag and this is not.
+        const TITAN_LY: f64 = 6.0;
+        let bridges = self.settings.intel_count_bridges;
+        self.map_route_kind = match kind {
+            "jump" => "jump",
+            "titan" => "titan",
+            _ => "gate",
+        };
+        self.map_route_opts = match self.map_route_kind {
+            "jump" => crate::web::route::jump(&graph, &coords, from, to, TITAN_LY)
+                .into_iter()
+                .collect(),
+            "titan" => crate::web::route::titan(&graph, &coords, from, to, TITAN_LY, bridges),
+            _ => crate::web::route::gate(&graph, from, to, bridges).into_iter().collect(),
+        };
+    }
+
+    /// The route window: the hop list for whatever was picked, and the alternatives when the titan
+    /// search found more than one way in.
+    fn map_route_window(&mut self, ctx: &egui::Context) {
+        if self.map_route_opts.is_empty() {
+            return;
+        }
+        let title = match self.map_route_kind {
+            "jump" => "Jump route",
+            "titan" => "Titan route",
+            _ => "Gate route",
+        };
+        let mut open = true;
+        let mut pick = self.map_route_at;
+        egui::Window::new(format!("{}  {title}", egui_phosphor::regular::SIGN_IN))
+            .id(egui::Id::new("map_route_window"))
+            .collapsible(false)
+            .default_width(280.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if self.map_route_opts.len() > 1 {
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, o) in self.map_route_opts.iter().enumerate() {
+                            if ui.selectable_label(i == self.map_route_at, &o.label).clicked() {
+                                pick = i;
+                            }
+                        }
+                    });
+                    ui.separator();
+                }
+                let Some(o) = self.map_route_opts.get(self.map_route_at) else { return };
+                let mut line = format!("{} jumps", o.jumps);
+                if o.gates > 0 {
+                    line.push_str(&format!(" · {} gates", o.gates));
+                }
+                if o.total_ly > 0.0 {
+                    line.push_str(&format!(" · {:.1} ly", o.total_ly));
+                }
+                ui.label(egui::RichText::new(line).strong());
+                if let Some(n) = &o.note {
+                    ui.label(egui::RichText::new(n).weak());
+                }
+                ui.separator();
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (i, h) in o.hops.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&h.name).color(security_color(h.security)).strong(),
+                            );
+                            let tail = if i == 0 {
+                                "start".to_owned()
+                            } else {
+                                match h.kind {
+                                    2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
+                                    1 => "bridge".to_owned(),
+                                    _ => "gate".to_owned(),
+                                }
+                            };
+                            ui.label(egui::RichText::new(tail).weak());
+                        });
+                    }
+                });
+            });
+        self.map_route_at = pick;
+        if !open {
+            self.map_route_opts.clear();
+        }
+    }
+
+    /// The readout beside the system a route drag is aimed at.
+    ///
+    /// Three numbers, because they answer different questions and are often far apart: a system four
+    /// light years away can be twenty gates out.
+    fn map_link_tip(&self, ui: &mut egui::Ui, at: egui::Pos2, from: i64, to: i64) {
+        let Some(graph) = &self.systems else { return };
+        let ly = self.jump_systems.as_ref().and_then(|c| {
+            let find = |id: i64| c.iter().find(|s| s.id == id);
+            find(from).zip(find(to)).map(|(a, b)| crate::map::ly_distance(a, b))
+        });
+        let gates = graph.jumps_gates_only(from, to, JUMP_SCAN_CAP);
+        let bridged = graph.jumps(from, to, JUMP_SCAN_CAP);
+        let jumps = |n: Option<u32>| match n {
+            Some(1) => "1 jump".to_owned(),
+            Some(n) => format!("{n} jumps"),
+            None => "no route".to_owned(),
+        };
+        egui::Area::new(egui::Id::new("map_link_tip"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(at + egui::vec2(14.0, 14.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        if let Some(i) = graph.info_of(to) {
+                            ui.label(egui::RichText::new(&i.name).strong());
+                        }
+                        if let Some(ly) = ly {
+                            ui.label(egui::RichText::new(format!("{ly:.1} ly")).weak());
+                        }
+                        ui.label(egui::RichText::new(format!("{} by gate", jumps(gates))).weak());
+                        if bridged.is_some() && bridged != gates {
+                            ui.label(
+                                egui::RichText::new(format!("{} with bridges", jumps(bridged)))
+                                    .weak(),
+                            );
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Route the selected character to a system, from the map on the phone.
+    ///
+    /// The same two things the map's own context menu does: the in-game destination, and the app's
+    /// route overlay, so whoever is sitting at the machine sees where the phone just sent them.
+    fn web_set_destination(&mut self, id: i64) {
+        if self.active_character == "No character" {
+            return;
+        }
+        let cid = crate::auth::DEFAULT_CLIENT_ID.to_owned();
+        let cname = self.active_character.clone();
+        self.set_destination_esi(cid, cname, id);
+        self.route_destination = Some(id);
     }
 
     /// Open a conversation on behalf of the page, by the same route the app's own start dialog uses.
@@ -10824,7 +11054,19 @@ impl SpaiApp {
         if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Extra2)) {
             self.map_forward_nav();
         }
-        if resp.dragged() && !self.map_overlay_drag {
+        // A drag that starts on a system draws a route, not a pan. Hit-tested against last frame's
+        // positions, which is where the user pressed: this frame's have already moved under them.
+        if resp.drag_started_by(egui::PointerButton::Primary) && !self.map_overlay_mode {
+            self.map_link = ui
+                .input(|i| i.pointer.press_origin())
+                .and_then(|p| nearest_system(p, &self.map_pos_prev, 12.0));
+            // The coordinates the light-year readout and the jump routes need. Loaded lazily for the
+            // jump planner already; a route drag is the other thing that wants them.
+            if self.map_link.is_some() {
+                self.ensure_jump_systems();
+            }
+        }
+        if resp.dragged() && !self.map_overlay_drag && self.map_link.is_none() {
             self.map_pan += resp.drag_delta();
             self.map_follow = false;
         }
@@ -10854,6 +11096,8 @@ impl SpaiApp {
         for s in &self.map_draw {
             pos.insert(s.id, crate::map::project(s.x, s.z, &bounds, rect, self.map_zoom, self.map_pan));
         }
+
+        self.map_pos_prev = pos.clone();
 
         if let Some(fid) = self.map_focus.take() {
             if let Some(s) = self.map_draw.iter().find(|s| s.id == fid) {
@@ -11718,6 +11962,67 @@ impl SpaiApp {
                 painter.circle_stroke(*p, 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0xFF, 0xA7, 0x26)));
             }
         }
+
+        // The route the drag settled on, in its own colours so it does not read as the travel route.
+        if let Some(o) = self.map_route_opts.get(self.map_route_at) {
+            const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
+            const PICK_JUMP: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
+            const PICK_BRIDGE: egui::Color32 = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
+            for (i, h) in o.hops.iter().enumerate().skip(1) {
+                let (Some(&a), Some(&b)) = (pos.get(&o.hops[i - 1].id), pos.get(&h.id)) else {
+                    continue;
+                };
+                match h.kind {
+                    2 | 1 => {
+                        let col = if h.kind == 2 { PICK_JUMP } else { PICK_BRIDGE };
+                        let _ = painter.add(egui::Shape::line(
+                            arc_polyline(a, b, BRIDGE_BOW),
+                            egui::Stroke::new(2.5, col),
+                        ));
+                    }
+                    _ => {
+                        painter.line_segment([a, b], egui::Stroke::new(2.5, PICK_GATE));
+                    }
+                }
+            }
+        }
+
+        // The route drag: a line from where it started to the pointer, snapped to whatever it is
+        // over, with the three distances beside it. Drawn before the hover ring so the ring lands on
+        // top of the endpoint rather than under it.
+        if let Some(from) = self.map_link {
+            let cursor = ui.input(|i| i.pointer.interact_pos());
+            if let (Some(&a), Some(c)) = (pos.get(&from), cursor) {
+                let over = nearest_system(c, &pos, 14.0).filter(|id| *id != from);
+                let b = over.and_then(|id| pos.get(&id).copied()).unwrap_or(c);
+                let col = ui.visuals().hyperlink_color;
+                if over.is_some() {
+                    painter.line_segment([a, b], egui::Stroke::new(2.5, col));
+                    painter.circle_stroke(b, 10.0, egui::Stroke::new(2.0, col));
+                } else {
+                    painter.extend(egui::Shape::dashed_line(
+                        &[a, b],
+                        egui::Stroke::new(1.5, col),
+                        5.0,
+                        4.0,
+                    ));
+                }
+                if let Some(to) = over {
+                    self.map_link_tip(ui, b, from, to);
+                }
+                if resp.drag_stopped() {
+                    self.map_link = None;
+                    if let Some(to) = over {
+                        self.map_link_menu = Some((from, to, b));
+                    }
+                }
+            }
+            if resp.drag_stopped() {
+                self.map_link = None;
+            }
+        }
+
+        self.map_link_menu_ui(ui);
 
         let hovered_id = ui
             .input(|i| i.pointer.hover_pos())
@@ -19380,6 +19685,7 @@ impl SpaiApp {
         self.constellation_window(ctx);
         self.region_window(ctx);
         self.ship_window(ctx);
+        self.map_route_window(ctx);
         self.pilot_window(ctx);
         self.fit_window(ctx);
         self.battle_filter_dialog(ctx);

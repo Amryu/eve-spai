@@ -19,7 +19,7 @@ const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 1
 const shells = new Map();
 /// How far each kind's window is offset from the map's corner, so three open at once cascade rather
 /// than hiding each other.
-const CASCADE = { system: 0, ship: 1, pilot: 2 };
+const CASCADE = { system: 0, ship: 1, pilot: 2, route: 0 };
 
 /// A floating window, not a modal.
 ///
@@ -282,6 +282,84 @@ async function showPilot(name) {
           `${ico("arrow-square-out")} zKillboard</a></p>`
         : `<p class="placeholder">Not resolved.</p>`)
   );
+}
+
+/// The route window: the jump planner, for a route picked off the map.
+///
+/// It takes the system window's corner, which is what the user asked for: a route is read against
+/// the map the same way a system is, and two windows in the same place would be two windows to move.
+let routeOpts = [];
+let routeAt = 0;
+
+export async function showRoute(kind, from, to, onPick) {
+  if (kind === "cancel") return;
+  open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
+  let out;
+  try {
+    const r = await fetch(`/api/route?from=${from}&to=${to}&kind=${encodeURIComponent(kind)}`);
+    out = await r.json();
+  } catch {
+    return open("route", `<h3>Route</h3><p class="placeholder">Could not reach the app.</p>`);
+  }
+  routeOpts = out.options ?? [];
+  routeAt = 0;
+  if (!routeOpts.length) {
+    return open("route", `<h3>Route</h3><p class="placeholder">${esc(out.error ?? "No route.")}</p>`);
+  }
+  paintRoute(kind, onPick);
+}
+
+const KINDS = { gate: "Gate route", jump: "Jump route", titan: "Titan route" };
+
+function paintRoute(kind, onPick) {
+  const o = routeOpts[routeAt];
+  onPick?.(o);
+  const secCol = (v) => `var(--sec-${Math.min(10, Math.max(0, Math.round(v * 10)))})`;
+  // More than one way to do it, so the window offers them rather than picking one silently. This is
+  // the titan case: several systems are the same number of gates out and only the pilot knows which
+  // staging they would rather burn.
+  const tabs =
+    routeOpts.length > 1
+      ? `<div class="ropts">` +
+        routeOpts
+          .map(
+            (x, i) =>
+              `<button class="ropt${i === routeAt ? " on" : ""}" data-ropt="${i}">${esc(x.label)}</button>`
+          )
+          .join("") +
+        `</div>`
+      : "";
+  const line = (h, i) =>
+    `<li class="rhop k${h.kind}">` +
+    `<button class="chip" data-system="${h.id}" style="color:${secCol(h.security)}">${esc(h.name)}</button>` +
+    (i === 0
+      ? `<span class="rkind">start</span>`
+      : h.kind === 2
+        ? `<span class="rkind jump">jump ${h.ly?.toFixed(1) ?? "?"} ly</span>`
+        : h.kind === 1
+          ? `<span class="rkind bridge">bridge</span>`
+          : `<span class="rkind">gate</span>`) +
+    `</li>`;
+  open(
+    "route",
+    `<h3>${esc(KINDS[kind] ?? "Route")}</h3>` +
+      tabs +
+      `<p class="mgroup">${o.jumps} ${o.jumps === 1 ? "jump" : "jumps"}` +
+      (o.gates ? ` · ${o.gates} ${o.gates === 1 ? "gate" : "gates"}` : "") +
+      (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
+      `</p>` +
+      (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
+      `<ol class="rhops">${o.hops.map(line).join("")}</ol>`
+  );
+  shells
+    .get("route")
+    ?.querySelectorAll("[data-ropt]")
+    .forEach((b) =>
+      b.addEventListener("click", () => {
+        routeAt = Number(b.dataset.ropt);
+        paintRoute(kind, onPick);
+      })
+    );
 }
 
 export async function send(action) {

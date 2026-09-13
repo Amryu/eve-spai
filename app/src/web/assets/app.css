@@ -35,7 +35,11 @@ body {
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
-  z-index: 10;
+  /* Above every pane, because the header's own z-index is a stacking context: the layout menu
+     inside it is z-index 30, but that 30 is measured against its siblings in here, and the map's
+     layer panel at 20 sits in the root context. At 10 the header lost, and the map's filter buttons
+     came out in front of the menu. */
+  z-index: 40;
 }
 
 .brand {

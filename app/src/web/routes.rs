@@ -17,6 +17,7 @@ pub enum Route {
     State,
     MapGeometry,
     JabberChat,
+    Route,
     SystemInfo(i64),
     ShipInfo(i64),
     Action,
@@ -49,6 +50,7 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/state" => Route::State,
         "/api/map/geometry" => Route::MapGeometry,
         "/api/jabber/chat" => Route::JabberChat,
+        "/api/route" => Route::Route,
         "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
         p if p.starts_with("/assets/sound/") && p.ends_with(".wav") => {

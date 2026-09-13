@@ -13,7 +13,8 @@
 // Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
 import { ico, register, state } from "./app.js";
-import { send } from "./dialogs.js";
+import { send, showRoute } from "./dialogs.js";
+import { lightYears, radial, reach } from "./route.js";
 
 let geo = null;
 let loading = false;
@@ -63,6 +64,10 @@ let hovered = null;
 /// the pointer has moved off it: choosing a system is a statement about what you are working on, and
 /// the app keeps the bands drawn for exactly that reason.
 let selected = null;
+/// A route drag in flight: where it started, where the pointer is, and what it would land on.
+let link = null;
+/// The route the user picked, drawn until they pick another or clear it.
+let picked = null;
 
 export const layers = load();
 
@@ -145,6 +150,9 @@ const BRIDGE_GREEN = "#3ad06a";
 const ROUTE_CYAN = "#4fc3f7";
 const ROUTE_BRIDGE = "#5ac86a";
 const ROUTE_HOLE = "#b07ce8";
+/// A route the user asked for, in its own colours so it does not read as the app's travel route.
+const PICK_GATE = "#f2b134";
+const PICK_JUMP = "#e07be0";
 /// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
 const BRIDGE_BOW = 0.12;
 
@@ -736,6 +744,53 @@ function paint() {
     ctx.setLineDash([]);
   }
 
+  // A route the user picked from the drag menu, on top of everything, in its own colour so it does
+  // not read as the app's travel route.
+  if (picked?.path?.length > 1) {
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    for (let i = 1; i < picked.path.length; i++) {
+      const p = geo.nodes[geo.byId.get(picked.path[i - 1])];
+      const q = geo.nodes[geo.byId.get(picked.path[i])];
+      if (!p || !q) continue;
+      const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
+      const kind = picked.hops?.[i]?.kind ?? 0;
+      ctx.strokeStyle = kind === 2 ? PICK_JUMP : kind === 1 ? ROUTE_BRIDGE : PICK_GATE;
+      ctx.beginPath();
+      if (kind === 2) arc(ctx, px, py, qx, qy);
+      else {
+        ctx.moveTo(px, py);
+        ctx.lineTo(qx, qy);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // The drag itself: a line from the system it started on to the pointer, snapped to whatever it is
+  // over. Drawn last so nothing covers the thing being aimed.
+  if (link) {
+    const a = geo.nodes[geo.byId.get(link.from)];
+    if (a) {
+      const ax = sx(a.x), ay = sy(a.z);
+      const t = link.over ? geo.nodes[geo.byId.get(link.over)] : null;
+      const bx = t ? sx(t.x) : link.x;
+      const by = t ? sy(t.z) : link.y;
+      ctx.strokeStyle = pal.accent;
+      ctx.lineWidth = t ? 2.5 : 1.5;
+      ctx.setLineDash(t ? [] : [5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (t) {
+        ctx.beginPath();
+        ctx.arc(bx, by, r * 3.4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
+
   // Jump range around whatever is being looked at: hovering wins while it lasts, the selection holds
   // it the rest of the time. The app behaves the same way.
   const focus = hovered ?? selected;
@@ -972,12 +1027,39 @@ function wire() {
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, e);
     moved = 0;
+    // A drag that starts on a system is a route, not a pan. Everything else on the map is empty
+    // space, so this costs the pan nothing and needs no modifier to tell the two apart.
+    const on = pointers.size === 1 ? nearest(e) : null;
+    if (on) {
+      const box = canvas.getBoundingClientRect();
+      link = {
+        from: on.i,
+        x: e.clientX - box.left,
+        y: e.clientY - box.top,
+        over: null,
+        reach: reach(geo, geo.byId.get(on.i)),
+      };
+      canvas.style.cursor = "crosshair";
+      schedule();
+      return;
+    }
     canvas.style.cursor = "grabbing";
   });
   canvas.addEventListener("pointermove", (e) => {
     if (!pointers.has(e.pointerId)) return;
     const prev = pointers.get(e.pointerId);
     pointers.set(e.pointerId, e);
+    if (link) {
+      const box = canvas.getBoundingClientRect();
+      link.x = e.clientX - box.left;
+      link.y = e.clientY - box.top;
+      const t = nearest(e);
+      link.over = t && t.i !== link.from ? t.i : null;
+      moved += 4;
+      showLinkTip();
+      schedule();
+      return;
+    }
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -1023,6 +1105,23 @@ function wire() {
   const up = (e) => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
+    if (link) {
+      const { from, over } = link;
+      link = null;
+      hideLinkTip();
+      canvas.style.cursor = "";
+      schedule();
+      if (over != null) {
+        radial(e.clientX, e.clientY, (kind) => {
+          if (kind === "gate") send({ SetDestination: { id: over } });
+          showRoute(kind, from, over, (r) => {
+            picked = r;
+            schedule();
+          });
+        });
+        return;
+      }
+    }
     if (!pointers.size) {
       // A tap on a touch screen leaves the system under the finger highlighted, which is the only
       // hover feedback a touch screen can give.
@@ -1115,6 +1214,41 @@ function wire() {
 
 /// Nearest system to a pointer event, within a thumb's reach. This is what a canvas costs in place
 /// of the browser's own hit testing, and for 5000 systems it is cheaper than 5000 hit targets.
+/// The readout beside the system a route drag is over: light years, gates, and gates with bridges.
+///
+/// Three numbers rather than one because they answer different questions and are often far apart.
+/// A DOM node rather than canvas text: it has to be readable over a dense field and the browser
+/// already knows how to put a box behind a line of type.
+function showLinkTip() {
+  if (!link?.over) return hideLinkTip();
+  let tip = document.getElementById("linktip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "linktip";
+    document.body.append(tip);
+  }
+  const t = geo.nodes[geo.byId.get(link.over)];
+  const k = geo.byId.get(link.over);
+  const ly = lightYears(geo, geo.byId.get(link.from), k);
+  const g = link.reach.gates[k];
+  const b = link.reach.bridged[k];
+  const jumps = (n) => (n < 0 ? "no route" : n === 1 ? "1 jump" : `${n} jumps`);
+  tip.innerHTML =
+    `<b>${t?.n ?? ""}</b>` +
+    `<span>${ly == null ? "" : `${ly.toFixed(1)} ly`}</span>` +
+    `<span>${jumps(g)} by gate</span>` +
+    (b >= 0 && b !== g ? `<span>${jumps(b)} with bridges</span>` : "");
+  const box = canvas.getBoundingClientRect();
+  tip.style.left = `${box.left + sx(t.x) + 14}px`;
+  tip.style.top = `${box.top + sy(t.z) + 14}px`;
+  tip.hidden = false;
+}
+
+function hideLinkTip() {
+  const tip = document.getElementById("linktip");
+  if (tip) tip.hidden = true;
+}
+
 function nearest(e) {
   const box = canvas.getBoundingClientRect();
   const mx = e.clientX - box.left;

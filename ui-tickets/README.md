@@ -180,6 +180,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-036 Ship window a fraction of the app's; chips without affiliation; jabber reads badly](WEB-036-detail-parity/) | `detail.rs`, `dialogs.*`, `panes-*` | after 35 | **Fixed** |
 | [WEB-037 Jabber messages are flat text](WEB-037-jabber-messages/) | `panes-jabber.*`, `web/jabber.rs` | after 36 | **Fixed** |
 | [WEB-038 A theme change takes the server down; range tint drops on pointer move](WEB-038-selection-and-theme-restart/) | `server.rs`, `state.rs`, `map.js` | after 37 | **Fixed** |
+| [WEB-039 Drag from a system to route to another, on both maps](WEB-039-map-routing/) | `web/route.rs`, `map.js`, `app.rs` | after 38 | **Delivered** |
 
 ### Browser evidence
 

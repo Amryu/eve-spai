@@ -100,3 +100,22 @@
 .mroles { margin: 0 0 0.5rem; display: flex; gap: 0.4rem; font-size: 1.15rem; color: var(--accent); }
 .mskill { margin: 0.6rem 0 0.1rem; font-weight: 600; }
 .mtraits li b { color: var(--accent); }
+
+/* The route window's hop list: the jump planner, one line per system. */
+.ropts { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.5rem; }
+.ropt {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+.ropt.on { color: var(--fg); border-color: var(--accent); }
+.rhops { list-style: none; margin: 0.3rem 0 0; padding: 0; max-height: 18rem; overflow-y: auto; }
+.rhop { display: flex; align-items: center; gap: 0.4rem; padding: 0.1rem 0; }
+.rkind { color: var(--muted); font-size: 0.8rem; }
+.rkind.jump { color: #e07be0; }
+.rkind.bridge { color: #5ac86a; }

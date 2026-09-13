@@ -103,3 +103,45 @@
   .mlgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .mlayers button { min-height: 2.6rem; }
 }
+
+/* The readout beside the system a route drag is aimed at. */
+#linktip {
+  position: fixed;
+  z-index: 55;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+#linktip b { color: var(--fg); font-size: 0.95rem; }
+#linktip[hidden] { display: none; }
+
+/* The radial menu at the end of a route drag. */
+.radial { position: fixed; z-index: 58; width: 0; height: 0; }
+.rbtn {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  width: 5.2rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.35rem 0.2rem;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.rbtn .ph { font-size: 1.2rem; color: var(--accent); }
+.rbtn:hover { border-color: var(--accent); background: var(--surface-hi); }
+.rbtn.cancel .ph { color: var(--muted); }

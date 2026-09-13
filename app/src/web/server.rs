@@ -324,6 +324,54 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                 "no-store".to_owned(),
             )])
         }
+        Route::Route => {
+            let num = |k: &str| routes::query_param(query, k).and_then(|v| v.parse::<i64>().ok());
+            let kind = routes::query_param(query, "kind").unwrap_or("gate").to_owned();
+            let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
+            let out = match (num("from"), num("to"), d.graph.as_ref()) {
+                (Some(from), Some(to), Some(graph)) => {
+                    let coords: &[crate::store::MapSystem] =
+                        d.coords.as_ref().map(|c| c.as_slice()).unwrap_or(&[]);
+                    // Titan range at JDC V, the same number the rescue mode plans with.
+                    const TITAN_LY: f64 = 6.0;
+                    let mut out = super::route::RouteOut {
+                        kind: kind.clone(),
+                        from,
+                        to,
+                        ..Default::default()
+                    };
+                    out.options = match kind.as_str() {
+                        "jump" => super::route::jump(graph, coords, from, to, TITAN_LY)
+                            .into_iter()
+                            .collect(),
+                        "titan" => super::route::titan(graph, coords, from, to, TITAN_LY, d.count_bridges),
+                        _ => super::route::gate(graph, from, to, d.count_bridges)
+                            .into_iter()
+                            .collect(),
+                    };
+                    if out.options.is_empty() {
+                        out.error = Some(match kind.as_str() {
+                            "jump" => "No capital route: every path needs a cyno-able system in range."
+                                .to_owned(),
+                            "titan" => "Nothing in titan range can reach it by gates.".to_owned(),
+                            _ => "No gate route.".to_owned(),
+                        });
+                    }
+                    out
+                }
+                _ => super::route::RouteOut {
+                    kind,
+                    error: Some("The star map has not loaded yet.".to_owned()),
+                    ..Default::default()
+                },
+            };
+            drop(d);
+            let json = serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_owned());
+            respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[(
+                "Cache-Control",
+                "no-store".to_owned(),
+            )])
+        }
         Route::JabberChat => {
             // Percent-decoded, because a JID's `@` is encoded by the page and a raw one would look
             // up a conversation that does not exist.
