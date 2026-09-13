@@ -12241,7 +12241,7 @@ impl SpaiApp {
 
         // Where the ships are, whether or not the route currently goes near them.
         if self.map_route_kind == "titan" {
-            const TITAN_COL: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
+            const TITAN_COL: egui::Color32 = egui::Color32::from_rgb(0xFF, 0x7A, 0x3D);
             for t in &self.map_titans {
                 if let Some(&p) = pos.get(t) {
                     painter.circle_filled(p, 11.0, TITAN_COL.gamma_multiply(0.22));
@@ -12282,9 +12282,11 @@ impl SpaiApp {
             // so it reads as a second ship moving rather than as part of the route.
             if let Some(tj) = &o.titan_jump {
                 if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
+                    // Its own colour: a different ship doing a different thing, and sharing the
+                    // capital-jump colour said they were the same move.
                     painter.extend(egui::Shape::dashed_line(
                         &arc_polyline(a, b, BRIDGE_BOW),
-                        egui::Stroke::new(2.5, PICK_JUMP),
+                        egui::Stroke::new(2.5, egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)),
                         10.0,
                         7.0,
                     ));

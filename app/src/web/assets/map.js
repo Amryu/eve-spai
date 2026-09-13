@@ -157,6 +157,9 @@ const ROUTE_HOLE = "#b07ce8";
 /// A route the user asked for, in its own colours so it does not read as the app's travel route.
 const PICK_GATE = "#f2b134";
 const PICK_JUMP = "#e07be0";
+/// The titan: its own colour, because its jump is a different ship doing a different thing and
+/// sharing the capital-jump colour said they were the same move.
+const TITAN_COL = "#ff7a3d";
 /// Dash and gap, matching `dashed_flow` in the app.
 const DASH = [6, 6];
 /// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
@@ -782,10 +785,12 @@ function paint() {
       const a = geo.nodes[geo.byId.get(tj.from)];
       const b = geo.nodes[geo.byId.get(tj.to)];
       if (a && b) {
-        ctx.strokeStyle = PICK_JUMP;
+        ctx.strokeStyle = TITAN_COL;
         ctx.lineWidth = 2.5;
         ctx.setLineDash([12, 8]);
-        ctx.lineDashOffset = (performance.now() / 35) % 20;
+        // Negative, like the route's: a positive offset runs the dashes backwards, so the titan
+        // appeared to be jumping to where it already was.
+        ctx.lineDashOffset = -((performance.now() / 35) % 20);
         ctx.beginPath();
         arc(ctx, sx(a.x), sy(a.z), sx(b.x), sy(b.z));
         ctx.stroke();
@@ -830,13 +835,13 @@ function paint() {
       if (!n) continue;
       const px = sx(n.x), py = sy(n.z);
       if (!onScreen(px, py)) continue;
-      ctx.fillStyle = PICK_JUMP;
+      ctx.fillStyle = TITAN_COL;
       ctx.globalAlpha = 0.22;
       ctx.beginPath();
       ctx.arc(px, py, r * 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
-      glyph(ctx, "star-four", px, py - r * 5 - 2, Math.round(14 * grow), PICK_JUMP);
+      glyph(ctx, "star-four", px, py - r * 5 - 2, Math.round(14 * grow), TITAN_COL);
     }
   }
 
