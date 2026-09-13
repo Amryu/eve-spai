@@ -259,6 +259,16 @@ function wireSheet() {
 }
 
 export function wire() {
+  // `#pane/<name>` selects a pane on load, so a link can point at one. Also the only way a
+  // load-time screenshot can reach a pane that is not the first.
+  const deep = /^#pane\/(\w+)$/.exec(location.hash);
+  if (deep) {
+    const i = shown().indexOf(deep[1]);
+    if (i >= 0) {
+      layout.active = i;
+      save();
+    }
+  }
   // `#layout` opens the menu on load. Same reason the dialogs take deep links: the harness cannot
   // click, so without this the menu is the one control no screenshot can show.
   if (location.hash === "#layout") document.body.classList.add("sheet");

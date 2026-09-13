@@ -279,12 +279,18 @@ function paint() {
   /// Each layer used to draw at the same offset above the dot, so a system with a camp and a
   /// wormhole drew both on top of each other, and nothing lined up with anything.
   const marks = new Map();
+  /// Text and markers grow with the canvas, up to a point.
+  ///
+  /// A fixed 13px name is fine in a column and lost on a full-screen map: the same map at four times
+  /// the area still labelled it as though it were a sidebar. Capped, because past a certain size
+  /// bigger type stops helping and starts crowding.
+  const uiScale = Math.min(1.9, Math.max(1, Math.min(w, h) / 620));
   const mark = (id, name, colour) => {
     const list = marks.get(id);
     if (list) list.push([name, colour]);
     else marks.set(id, [[name, colour]]);
   };
-  const ICON = 16;
+  const ICON = Math.round(16 * uiScale);
   const pad = 40;
   const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
   /// Whether a segment could cross the viewport at all.
@@ -422,7 +428,7 @@ function paint() {
   // ADM, as a number beside the system, which is how the app shows it.
   if (layers.adm) {
     ctx.fillStyle = pal.fg;
-    ctx.font = "10px system-ui, sans-serif";
+    ctx.font = `${Math.round(10 * uiScale)}px system-ui, sans-serif`;
     ctx.textBaseline = "middle";
     for (const n of geo.nodes) {
       const adm = status[n.i]?.adm;
@@ -537,16 +543,35 @@ function paint() {
     // Names come in well before the map is fully zoomed in: waiting until they cannot possibly
     // overlap meant staring at an unlabelled map through most of the useful range.
     if (span < geo.extent / 4) {
+      const size = Math.round(13 * uiScale);
       ctx.fillStyle = pal.muted;
-      ctx.font = "13px system-ui, sans-serif";
+      ctx.font = `${size}px system-ui, sans-serif`;
       ctx.textBaseline = "middle";
-      for (const s of geo.nodes) {
-        const px = sx(s.x), py = sy(s.z);
-        if (!onScreen(px, py)) continue;
-        ctx.fillText(s.n, px + r + 4, py);
+      // Bigger type collides more, so names are placed rather than just drawn: one that would land
+      // on a name already down is skipped. Nearest the centre of the view first, so what survives
+      // is what the user is looking at.
+      const cx = view.x + view.w / 2;
+      const cz = view.y + view.h / 2;
+      const near = geo.nodes
+        .filter((n) => onScreen(sx(n.x), sy(n.z)))
+        .sort(
+          (a, b) =>
+            (a.x - cx) ** 2 + (a.z - cz) ** 2 - ((b.x - cx) ** 2 + (b.z - cz) ** 2)
+        );
+      const placed = [];
+      for (const n of near) {
+        const px = sx(n.x) + r + 4;
+        const py = sy(n.z);
+        const tw = ctx.measureText(n.n).width;
+        const box = [px, py - size / 2, px + tw, py + size / 2];
+        if (placed.some((q) => box[0] < q[2] && box[2] > q[0] && box[1] < q[3] && box[3] > q[1])) {
+          continue;
+        }
+        placed.push(box);
+        ctx.fillText(n.n, px, py);
       }
     } else {
-      ctx.font = "600 13px system-ui, sans-serif";
+      ctx.font = `600 ${Math.round(13 * uiScale)}px system-ui, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       // Sixty-seven region names at full zoom-out overlap into mush, so a label is only drawn where
@@ -557,7 +582,8 @@ function paint() {
         const px = sx(rg.x), py = sy(rg.z);
         if (!onScreen(px, py)) continue;
         const half = ctx.measureText(rg.n).width / 2 + 3;
-        const box = [px - half, py - 9, px + half, py + 9];
+        const lh = 9 * uiScale;
+        const box = [px - half, py - lh, px + half, py + lh];
         if (placed.some((q) => box[0] < q[2] && box[2] > q[0] && box[1] < q[3] && box[3] > q[1])) {
           continue;
         }
@@ -626,7 +652,7 @@ function paint() {
       const hy = sy(hovered.z);
       const perLy = (geo.units_per_ly ?? 0) / view.k;
       ctx.lineWidth = 1.5;
-      ctx.font = "12px system-ui, sans-serif";
+      ctx.font = `${Math.round(12 * uiScale)}px system-ui, sans-serif`;
       ctx.textAlign = "center";
       for (let b = JUMP_RANGES.length - 1; b >= 0; b--) {
         const [label, ly] = JUMP_RANGES[b];
