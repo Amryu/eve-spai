@@ -68,17 +68,30 @@ export function close() {
   if (dlg) dlg.hidden = true;
 }
 
-/// Park the window at the top right of the map, not over the controls above it.
+/// Park the window at the top right of the map, below whatever controls are showing.
 ///
-/// Fixed to the viewport it landed on whatever happened to be at that corner, which on a wide layout
-/// was the map's own toolbar.
+/// The canvas's own top is not low enough: on a narrow pane the layer panel is an overlay sitting
+/// over the top of the canvas, so a window aligned to the canvas covers the filters. This clears
+/// whichever of the toolbar and the open panel reaches furthest down, so it works whether the panel
+/// is in the flow or floating.
 function place(d) {
   if (d.dataset.moved) return;
   const canvas = document.querySelector(".starmap");
   const r = canvas?.getBoundingClientRect();
-  if (!r || r.width < 60) return;
+  // Off screen entirely, which is what the map is in tabs mode when another pane is showing. There
+  // is nothing to align to, so the default corner stands.
+  if (!r || r.width < 60 || r.right < 0 || r.left > window.innerWidth) return;
+
+  let top = r.top;
+  for (const sel of [".maptools", ".mlayers:not([hidden])"]) {
+    const box = document.querySelector(sel)?.getBoundingClientRect();
+    // Only controls that actually overlap the map: a toolbar above it already sits clear.
+    if (box && box.height > 0 && box.bottom > top && box.top < r.bottom) {
+      top = box.bottom;
+    }
+  }
   d.style.left = "auto";
-  d.style.top = `${Math.round(r.top + 8)}px`;
+  d.style.top = `${Math.round(Math.min(top + 8, r.bottom - 80))}px`;
   d.style.right = `${Math.round(window.innerWidth - r.right + 8)}px`;
   d.style.bottom = "auto";
 }

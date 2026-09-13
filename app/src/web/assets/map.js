@@ -274,6 +274,17 @@ function paint() {
   const live = state.snapshot?.map ?? {};
   const status = state.snapshot?.status?.systems ?? {};
   const r = radius();
+  /// Markers for a system, collected across the layers and drawn in one centred row above it.
+  ///
+  /// Each layer used to draw at the same offset above the dot, so a system with a camp and a
+  /// wormhole drew both on top of each other, and nothing lined up with anything.
+  const marks = new Map();
+  const mark = (id, name, colour) => {
+    const list = marks.get(id);
+    if (list) list.push([name, colour]);
+    else marks.set(id, [[name, colour]]);
+  };
+  const ICON = 16;
   const pad = 40;
   const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
   /// Whether a segment could cross the viewport at all.
@@ -432,28 +443,10 @@ function paint() {
   // upgrade is here", which the count already said.
   const UPGRADE_GLYPH = ["skull", "broadcast", null, "gear"];
   if (layers.upgrades && live.upgrades?.length && r >= 1.8) {
-    const size = 13;
-    for (const [id, marks] of live.upgrades) {
-      const n = geo.nodes[geo.byId.get(id)];
-      if (!n) continue;
-      const px = sx(n.x), py = sy(n.z);
-      if (!onScreen(px, py)) continue;
-      marks.forEach((m, i) => {
-        const cx = px - r + i * (size + 2) + size / 2;
-        const cy = py - r - size / 2 - 2;
+    for (const [id, ups] of live.upgrades) {
+      ups.forEach((m) => {
         const colour = m.l >= 3 ? pal.hostile : m.l === 2 ? css("--friendly") : pal.fg;
-        const ore = m.k === 2 ? oreIcon(m.ore) : null;
-        if (ore) {
-          ctx.drawImage(ore, cx - size / 2, cy - size / 2, size, size);
-          return;
-        }
-        if (!glyph(ctx, UPGRADE_GLYPH[m.k] ?? "gear", cx, cy, size, colour)) {
-          // The font has not loaded yet; a filled dot is a better placeholder than a box.
-          ctx.fillStyle = colour;
-          ctx.beginPath();
-          ctx.arc(cx, cy, size / 4, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        mark(id, m.k === 2 ? { ore: m.ore } : UPGRADE_GLYPH[m.k] ?? "gear", colour);
       });
     }
   }
@@ -461,20 +454,13 @@ function paint() {
   // Cyno generators.
   if (layers.cyno && live.cyno?.length) {
     for (const id of live.cyno) {
-      const n = geo.nodes[geo.byId.get(id)];
-      if (!n) continue;
-      const px = sx(n.x), py = sy(n.z);
-      if (!onScreen(px, py)) continue;
-      glyph(ctx, "crosshair-simple", px, py, 13, pal.warning);
+      mark(id, "crosshair-simple", pal.warning);
     }
   }
 
   if (layers.jove) {
     for (const n of geo.nodes) {
-      if (!n.j) continue;
-      const px = sx(n.x), py = sy(n.z);
-      if (!onScreen(px, py)) continue;
-      glyph(ctx, "cell-tower", px, py - r - 7, 13, pal.muted);
+      if (n.j) mark(n.i, "cell-tower", pal.muted);
     }
   }
 
@@ -491,7 +477,7 @@ function paint() {
       ctx.beginPath();
       ctx.arc(px, py, r * 2, 0, Math.PI * 2);
       ctx.stroke();
-      glyph(ctx, "campfire", px, py - r - 7, 12, pal.hostile);
+      mark(id, "campfire", pal.hostile);
     }
   }
 
@@ -513,6 +499,31 @@ function paint() {
     ctx.stroke();
   }
 
+  // Every marker for a system, in one row centred above it. Drawn together so they cannot land on
+  // top of each other, and clear of the dot so neither hides the other.
+  for (const [id, list] of marks) {
+    const n = geo.nodes[geo.byId.get(id)];
+    if (!n) continue;
+    const px = sx(n.x), py = sy(n.z);
+    if (!onScreen(px, py)) continue;
+    const step = ICON + 3;
+    const y = py - r - ICON / 2 - 4;
+    let x = px - ((list.length - 1) * step) / 2;
+    for (const [what, colour] of list) {
+      if (typeof what === "object") {
+        const img = oreIcon(what.ore);
+        if (img) ctx.drawImage(img, x - ICON / 2, y - ICON / 2, ICON, ICON);
+      } else if (!glyph(ctx, what, x, y, ICON, colour)) {
+        // The font has not loaded yet; a filled dot beats a box.
+        ctx.fillStyle = colour;
+        ctx.beginPath();
+        ctx.arc(x, y, ICON / 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      x += step;
+    }
+  }
+
   // Labels.
   //
   // Zoomed in, system names. Zoomed out, region names, which is what the app shows and what is
@@ -527,12 +538,12 @@ function paint() {
     // overlap meant staring at an unlabelled map through most of the useful range.
     if (span < geo.extent / 4) {
       ctx.fillStyle = pal.muted;
-      ctx.font = "11px system-ui, sans-serif";
+      ctx.font = "13px system-ui, sans-serif";
       ctx.textBaseline = "middle";
       for (const s of geo.nodes) {
         const px = sx(s.x), py = sy(s.z);
         if (!onScreen(px, py)) continue;
-        ctx.fillText(s.n, px + r + 3, py);
+        ctx.fillText(s.n, px + r + 4, py);
       }
     } else {
       ctx.font = "600 13px system-ui, sans-serif";
