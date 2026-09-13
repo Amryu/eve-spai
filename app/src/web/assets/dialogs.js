@@ -305,8 +305,15 @@ try {
   // Private browsing. The setup then lasts one session.
 }
 
+/// Systems left out of the route being planned. Cleared with the route; the permanent lists live in
+/// the app's settings, where they survive a reload and reach the desktop too.
+export const avoidOnce = new Set();
+/// Which alternative is picked for each leg.
+let legPick = [];
+
 export async function showRoute(kind, anchors, onPick) {
   if (kind === "cancel") return;
+  if (routeReq?.anchors?.length !== anchors.length) legPick = [];
   routeReq = { kind, anchors, onPick };
   open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
   await fetchRoute();
@@ -321,7 +328,8 @@ async function fetchRoute() {
   try {
     const r = await fetch(
       `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}` +
-        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}`
+        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}` +
+        `&avoid=${[...avoidOnce].join(",")}&pick=${legPick.join(",")}`
     );
     out = await r.json();
   } catch {
@@ -343,6 +351,18 @@ async function fetchRoute() {
 ///
 /// Names and ranges come from the app's own `SHIP_CLASSES` rather than a second copy in here: a
 /// picker that disagrees with the planner about what a jump freighter can do is worse than no picker.
+/// The app's "route via wormholes" setting, shown and changed from here.
+///
+/// Not a per-device preference: it changes what the desktop plans as well, and a route that used a
+/// hole on the phone and not on the machine would be two different routes with one name.
+function holeControl(kind, out) {
+  if (kind === "jump" || !out) return "";
+  return (
+    `<label class="jumpcfg tflag"><input data-jump="holes" type="checkbox"${out.via_wormholes ? " checked" : ""}>` +
+    ` Route via scanned wormholes</label>`
+  );
+}
+
 function jumpControls(kind, out) {
   // Which end the titan is at. On, the default, it is in the system the route starts from: one jump
   // out and gates for the rest. Off, it is waiting at the far end and bridges you the last leg.
@@ -379,6 +399,23 @@ function paintRoute(kind, onPick) {
   // More than one way to do it, so the window offers them rather than picking one silently. This is
   // the titan case: several systems are the same number of gates out and only the pilot knows which
   // staging they would rather burn.
+  // One switcher per leg: the alternatives all cost the same number of jumps, so the list reads as
+  // "these are the same price, shortest first" rather than as a ranking.
+  const legs = (routeReq?.out?.legs ?? [])
+    .map((l, i) =>
+      l.options.length > 1
+        ? `<div class="rleg"><span>${esc(l.from_name)} → ${esc(l.to_name)}</span>` +
+          l.options
+            .map(
+              (o, k) =>
+                `<button class="ropt${(legPick[i] ?? 0) === k ? " on" : ""}" data-leg="${i}" data-alt="${k}">` +
+                `${o.total_ly ? `${o.total_ly.toFixed(1)} ly` : `${o.jumps}j`}</button>`
+            )
+            .join("") +
+          `</div>`
+        : ""
+    )
+    .join("");
   const tabs =
     routeOpts.length > 1
       ? `<div class="ropts">` +
@@ -411,7 +448,7 @@ function paintRoute(kind, onPick) {
   };
   const line = (h, i) =>
     `<li class="rhop k${h.kind}">` +
-    `<button class="chip" data-system="${h.id}" style="color:${secCol(h.security)}">${esc(h.name)}</button>` +
+    `<button class="chip${h.anchor ? " anchor" : ""}" data-system="${h.id}" style="color:${secCol(h.security)}">${esc(h.name)}</button>` +
     (i === 0
       ? `<span class="rkind">start</span>`
       : h.kind === 2
@@ -429,7 +466,9 @@ function paintRoute(kind, onPick) {
     "route",
     `<h3>${esc(KINDS[kind] ?? "Route")}</h3>` +
       jumpControls(kind, routeReq?.out) +
+      holeControl(kind, routeReq?.out) +
       tabs +
+      legs +
       `<p class="mgroup">${o.jumps} ${o.jumps === 1 ? "jump" : "jumps"}` +
       (o.gates ? ` · ${o.gates} ${o.gates === 1 ? "gate" : "gates"}` : "") +
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
@@ -444,10 +483,23 @@ function paintRoute(kind, onPick) {
       paintRoute(kind, onPick);
     })
   );
+  win?.querySelectorAll("[data-leg]").forEach((b) =>
+    b.addEventListener("click", () => {
+      legPick[Number(b.dataset.leg)] = Number(b.dataset.alt);
+      fetchRoute();
+    })
+  );
   win?.querySelectorAll("[data-jump]").forEach((c) =>
     c.addEventListener("change", () => {
       const k = c.dataset.jump;
       const v = Number(c.value);
+      if (k === "holes") {
+        // The app owns this one, so it goes back there and comes round again in the next answer.
+        send({ RouteViaWormholes: { on: c.checked } });
+        if (routeReq?.out) routeReq.out.via_wormholes = c.checked;
+        setTimeout(fetchRoute, 150);
+        return;
+      }
       jump[k] = k === "tstart" ? c.checked : k === "hull" ? v : Math.max(0, Math.min(5, v));
       try {
         localStorage.setItem(JUMP_KEY, JSON.stringify(jump));
@@ -521,6 +573,10 @@ function fromHash() {
   const src = /^#(system|ship|pilot)\//.test(location.hash)
     ? location.hash.slice(1)
     : new URLSearchParams(location.search).get("dlg") ?? "";
+  // `route/<kind>/<from>/<to>`: the route window has no hash route of its own, and this is the only
+  // way a load-time screenshot can reach it.
+  const r = /^route\/(\w+)\/(\d+)\/(\d+)$/.exec(src);
+  if (r) return showRoute(r[1], [Number(r[2]), Number(r[3])]);
   const m = /^(system|ship|pilot)\/(.+)$/.exec(src);
   if (!m) return;
   const [, kind, raw] = m;

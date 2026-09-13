@@ -187,6 +187,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-043 A route says nothing about what is waiting on it](WEB-043-route-warnings/) | `web/route.rs`, `dialogs.*`, `app.rs` | after 42 | **Fixed** |
 | [WEB-044 The web map has no context menu](WEB-044-map-context-menu/) | `map.js`, `route.js` | after 43 | **Delivered** |
 | [WEB-045 Which end the titan is at; bridges drawn straight; unreadable warning](WEB-045-titan-end-and-intel-dialog/) | `web/route.rs`, `dialogs.*`, `app.rs` | after 44 | **Delivered** |
+| [WEB-046 No avoidance, no alternatives, no waypoint highlight](WEB-046-avoid-and-alternatives/) | `web/route.rs`, `map.js`, `dialogs.*` | after 45 | **Delivered** |
 
 ### Browser evidence
 

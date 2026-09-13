@@ -13,7 +13,7 @@
 // Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
 import { ico, register, state } from "./app.js";
-import { send, showRoute } from "./dialogs.js";
+import { avoidOnce, send, showRoute } from "./dialogs.js";
 import { lightYears, menu, radial, reach } from "./route.js";
 
 let geo = null;
@@ -157,6 +157,8 @@ const ROUTE_HOLE = "#b07ce8";
 /// A route the user asked for, in its own colours so it does not read as the app's travel route.
 const PICK_GATE = "#f2b134";
 const PICK_JUMP = "#e07be0";
+/// Dash and gap, matching `dashed_flow` in the app.
+const DASH = [6, 6];
 /// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
 const BRIDGE_BOW = 0.12;
 
@@ -752,7 +754,10 @@ function paint() {
   // not read as the app's travel route.
   if (picked?.path?.length > 1) {
     ctx.lineWidth = 3;
-    ctx.setLineDash([]);
+    // Animated dashes, like the app's own route: a static line is hard to pick out of a map already
+    // full of lines, and the crawl says which way round the route runs.
+    ctx.setLineDash(DASH);
+    ctx.lineDashOffset = -((performance.now() / 45) % (DASH[0] + DASH[1]));
     for (let i = 1; i < picked.path.length; i++) {
       const p = geo.nodes[geo.byId.get(picked.path[i - 1])];
       const q = geo.nodes[geo.byId.get(picked.path[i])];
@@ -770,6 +775,21 @@ function paint() {
       }
       ctx.stroke();
     }
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+    // The systems the user named, as opposed to the ones the route happens to pass through.
+    ctx.strokeStyle = PICK_GATE;
+    ctx.lineWidth = 2;
+    for (const h of picked.hops ?? []) {
+      if (!h.anchor) continue;
+      const n = geo.nodes[geo.byId.get(h.id)];
+      if (!n) continue;
+      ctx.beginPath();
+      ctx.arc(sx(n.x), sy(n.z), r * 3.8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // A crawling dash is an animation, so the map keeps painting while one is on screen.
+    schedule();
   }
 
   // A route with a start and nowhere to go yet. Without this the menu's "Start ... Route" looks like
@@ -1333,10 +1353,18 @@ function menuFor(id) {
     }
     items.push(["clear", "Clear Route", "warn"]);
     items.push(null);
+    // Avoidance only means something while a route is being planned, and which list it lands in
+    // depends on what kind of route that is: a system you will not gate through is often perfectly
+    // fine to jump over.
+    items.push([avoidOnce.has(id) ? "unavoid" : "avoid", avoidOnce.has(id) ? "Stop avoiding here" : "Avoid for this route"]);
+    items.push(["avoid:always", "Avoid always"]);
+    items.push(["avoid:never", "Stop avoiding always"]);
+    items.push(null);
   }
-  items.push(["start:gate", "Start Gate Route"]);
-  items.push(["start:jump", "Start Jump Route"]);
-  items.push(["start:titan", "Start Titan Route"]);
+  const verb = routeKind && anchors.length ? "Restart as" : "Start";
+  items.push(["start:gate", `${verb} Gate Route`]);
+  items.push(["start:jump", `${verb} Jump Route`]);
+  items.push(["start:titan", `${verb} Titan Route`]);
   items.push(null);
   items.push(["info", "Show info"]);
   items.push(["focus", "Show in the app"]);
@@ -1349,6 +1377,7 @@ function menuPick(id, kind) {
     routeKind = kind.slice(6);
     anchors = [id];
     picked = null;
+    avoidOnce.clear();
     schedule();
     return;
   }
@@ -1365,10 +1394,23 @@ function menuPick(id, kind) {
     case "drop":
       anchors = anchors.filter((_, i) => i !== at);
       break;
+    case "avoid":
+      avoidOnce.add(id);
+      break;
+    case "unavoid":
+      avoidOnce.delete(id);
+      break;
+    case "avoid:always":
+      send({ AvoidSystem: { id, jump: routeKind === "jump", on: true } });
+      break;
+    case "avoid:never":
+      send({ AvoidSystem: { id, jump: routeKind === "jump", on: false } });
+      break;
     case "clear":
       anchors = [];
       routeKind = null;
       picked = null;
+      avoidOnce.clear();
       schedule();
       return;
     case "info":

@@ -39,6 +39,15 @@ pub struct DetailState {
     /// Type names the app has resolved, shared so the ship dialog can name the skill a hull bonus
     /// belongs to. Shared rather than copied because the request thread fills it in on a miss.
     pub type_names: Option<Arc<Mutex<std::collections::HashMap<i64, String>>>>,
+    /// Systems the planner always goes around, one list per kind of route. Pushed from settings so
+    /// the persistent half of avoidance stays in one place and the page only ever sends the
+    /// this-route-only half.
+    pub avoid_gate: Vec<i64>,
+    pub avoid_jump: Vec<i64>,
+    /// Scanned wormhole connections as extra edges, and whether routes are allowed to use them.
+    /// Both come from the app, because the app is where the chain and the setting live.
+    pub holes: HashMap<i64, Vec<i64>>,
+    pub via_wormholes: bool,
     /// Every system's real coordinates, for the light-year maths the jump routes are made of.
     /// `geo::Systems` is topology only; the positions live in `store::MapSystem`.
     pub coords: Option<Arc<Vec<crate::store::MapSystem>>>,
