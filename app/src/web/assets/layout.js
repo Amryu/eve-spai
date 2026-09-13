@@ -100,12 +100,22 @@ export function cycleSpan(pane) {
 }
 
 /// Swap two panes' places in the order, which is what a drop on top of one means.
+///
+/// The span goes with the place, not with the pane. A drop on the wide cell means "put this one
+/// there", and a pane that arrived in the wide cell and stayed narrow, pushing the other one's width
+/// along with it, is not what the grid looked like a moment before the drop.
 export function swap(a, b) {
   const i = layout.order.indexOf(a);
   const j = layout.order.indexOf(b);
   if (i < 0 || j < 0 || i === j) return;
   layout.order[i] = b;
   layout.order[j] = a;
+  const sa = layout.span[a];
+  const sb = layout.span[b];
+  if (sb) layout.span[a] = sb;
+  else delete layout.span[a];
+  if (sa) layout.span[b] = sa;
+  else delete layout.span[b];
   save();
   apply();
 }
