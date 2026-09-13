@@ -54,7 +54,9 @@
 .jhead { flex: 0 0 auto; padding: 0.1rem 0 0.35rem; border-bottom: 1px solid var(--line); }
 .jlog { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0.3rem 0; }
 .jmsg { display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.1rem 0; align-items: baseline; }
-.jwho { color: var(--muted); font-weight: 600; }
+/* Both sides of a conversation are the accent, at two strengths. Muted grey for the other person
+   made the half of the conversation you did not write the harder half to read. */
+.jwho { color: color-mix(in srgb, var(--accent) 55%, var(--fg)); font-weight: 600; }
 .jmsg.me .jwho { color: var(--accent); }
 .jat { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .jbody { flex: 1 1 100%; overflow-wrap: anywhere; }

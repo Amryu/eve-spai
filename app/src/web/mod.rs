@@ -35,6 +35,9 @@ pub struct DetailState {
     pub status: HashMap<i64, crate::systemstatus::SysFlags>,
     pub player_sys: Option<i64>,
     pub count_bridges: bool,
+    /// Type names the app has resolved, shared so the ship dialog can name the skill a hull bonus
+    /// belongs to. Shared rather than copied because the request thread fills it in on a miss.
+    pub type_names: Option<Arc<Mutex<std::collections::HashMap<i64, String>>>>,
     /// The live jabber session, shared rather than copied: one room's backlog is larger than every
     /// other pane put together, and the pane reads one conversation at a time.
     pub jabber: Option<Arc<Mutex<crate::jabber::JabberState>>>,

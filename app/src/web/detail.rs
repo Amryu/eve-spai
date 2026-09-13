@@ -80,15 +80,69 @@ pub struct ShipInfo {
     pub shield_resist: [u32; 4],
     pub armor_resist: [u32; 4],
     pub hull_resist: [u32; 4],
+    /// Effective HP per layer, with the app's own average-resist formula, so the two windows cannot
+    /// disagree about a number the user reads off both.
+    pub shield_ehp: f64,
+    pub armor_ehp: f64,
+    pub hull_ehp: f64,
     pub drone_cap: f64,
     pub drone_bw: f64,
     pub turrets: i64,
     pub launchers: i64,
-    pub traits: Vec<String>,
+    pub high_slots: i64,
+    pub mid_slots: i64,
+    pub low_slots: i64,
+    pub max_velocity: f64,
+    pub warp_speed: f64,
+    /// Phosphor glyph and label per role badge.
+    pub roles: Vec<(String, String)>,
+    pub traits: Vec<TraitGroup>,
 }
 
-pub fn ship(id: i64, store: &crate::store::Store) -> Option<ShipInfo> {
+/// One skill's worth of hull bonuses, the way the app groups them.
+#[derive(Serialize)]
+pub struct TraitGroup {
+    /// The skill's name, or "Role Bonuses" for the ones that need no skill.
+    pub skill: String,
+    /// The bonus figure and its text. Zero means the line carries no number of its own, which is
+    /// most role bonuses.
+    pub lines: Vec<(f64, String)>,
+}
+
+pub fn ship(
+    id: i64,
+    store: &crate::store::Store,
+    names: &std::collections::HashMap<i64, String>,
+) -> Option<ShipInfo> {
     let d = store.ship_details(id)?;
+    let traits = store.ship_traits(id);
+    // Grouped by skill in the order the SDE lists them, which is the order the app shows them in.
+    // Role bonuses last, under their own heading, because they apply whatever you have trained.
+    let mut skills: Vec<i64> = Vec::new();
+    for (s, _, _) in &traits {
+        if *s > 0 && !skills.contains(s) {
+            skills.push(*s);
+        }
+    }
+    let mut groups: Vec<TraitGroup> = skills
+        .iter()
+        .map(|skill| TraitGroup {
+            skill: format!(
+                "{} (per level)",
+                names.get(skill).cloned().unwrap_or_else(|| format!("Skill {skill}"))
+            ),
+            lines: traits
+                .iter()
+                .filter(|(s, _, _)| s == skill)
+                .map(|(_, b, t)| (*b, t.clone()))
+                .collect(),
+        })
+        .collect();
+    let role: Vec<(f64, String)> =
+        traits.iter().filter(|(s, _, _)| *s == -1).map(|(_, b, t)| (*b, t.clone())).collect();
+    if !role.is_empty() {
+        groups.push(TraitGroup { skill: "Role Bonuses".to_owned(), lines: role });
+    }
     Some(ShipInfo {
         id,
         name: d.name,
@@ -99,10 +153,33 @@ pub fn ship(id: i64, store: &crate::store::Store) -> Option<ShipInfo> {
         shield_resist: d.shield_resist,
         armor_resist: d.armor_resist,
         hull_resist: d.hull_resist,
+        shield_ehp: crate::app::layer_ehp(d.shield_hp, d.shield_resist),
+        armor_ehp: crate::app::layer_ehp(d.armor_hp, d.armor_resist),
+        hull_ehp: crate::app::layer_ehp(d.hull_hp, d.hull_resist),
         drone_cap: d.drone_cap,
         drone_bw: d.drone_bw,
         turrets: d.turret_hardpoints,
         launchers: d.launcher_hardpoints,
-        traits: store.ship_traits(id).into_iter().map(|(_, _, t)| t).collect(),
+        high_slots: d.high_slots,
+        mid_slots: d.mid_slots,
+        low_slots: d.low_slots,
+        max_velocity: d.max_velocity,
+        warp_speed: d.warp_speed,
+        // The glyph itself, not a name: the page is already serving the same Phosphor font the app
+        // draws with, and a second mapping from the app's constants to icon names is a second thing
+        // to keep in step.
+        roles: crate::app::derive_roles(&traits)
+            .into_iter()
+            .map(|(g, l)| (g.to_owned(), l.to_owned()))
+            .collect(),
+        traits: groups,
     })
+}
+
+/// Skill ids a ship's traits name, so the caller can resolve them before building the dialog.
+pub fn ship_skill_ids(id: i64, store: &crate::store::Store) -> Vec<i64> {
+    let mut s: Vec<i64> = store.ship_traits(id).into_iter().map(|t| t.0).filter(|&s| s > 0).collect();
+    s.sort_unstable();
+    s.dedup();
+    s
 }

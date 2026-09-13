@@ -1854,6 +1854,7 @@ impl SpaiApp {
         // Shared, unlike the above: one room's backlog is bigger than every pane put together, and
         // the page reads one conversation at a time.
         d.jabber = Some(self.jabber.clone());
+        d.type_names = Some(self.type_names.clone());
     }
 
     /// The Convos list as the page gets it.
@@ -25682,7 +25683,7 @@ impl ShipLookup {
     }
 }
 
-fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static str)> {
+pub(crate) fn derive_roles(traits: &[(i64, f64, String)]) -> Vec<(&'static str, &'static str)> {
     use egui_phosphor::regular as i;
     let t: String = traits.iter().map(|x| x.2.to_lowercase()).collect::<Vec<_>>().join(" | ");
     let has = |k: &str| t.contains(k);
@@ -25734,7 +25735,7 @@ fn role_badges(ui: &mut egui::Ui, roles: &[(&'static str, &'static str)]) {
     });
 }
 
-fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
+pub(crate) fn layer_ehp(hp: f64, r: [u32; 4]) -> f64 {
     if hp <= 0.0 {
         return 0.0;
     }

@@ -348,7 +348,26 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
         }
         Route::ShipInfo(id) => {
             let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
-            let body = d.store.as_ref().and_then(|s| super::detail::ship(id, s));
+            // Skill names come from ESI and the app caches them. A ship the app has never opened
+            // has none, so this resolves the misses itself rather than showing "Skill 3330". One
+            // blocking call per hull that has never been looked at anywhere, then never again.
+            if let (Some(store), Some(cache)) = (d.store.as_ref(), d.type_names.as_ref()) {
+                let want = super::detail::ship_skill_ids(id, store);
+                let missing: Vec<i64> = {
+                    let have = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    want.into_iter().filter(|k| !have.contains_key(k)).collect()
+                };
+                if !missing.is_empty() {
+                    let got = crate::lookup::resolve_type_names(&missing);
+                    cache.lock().unwrap_or_else(|e| e.into_inner()).extend(got);
+                }
+            }
+            let names = d
+                .type_names
+                .as_ref()
+                .map(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone())
+                .unwrap_or_default();
+            let body = d.store.as_ref().and_then(|s| super::detail::ship(id, s, &names));
             json_or_404(req, body)
         }
         Route::Action => unreachable!("answered before `serve`, which cannot read a body"),

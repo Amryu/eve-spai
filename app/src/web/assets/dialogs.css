@@ -80,3 +80,23 @@
 .mbtns button { min-height: 2.4rem; padding: 0 0.9rem; }
 .mbtns .mok { border-color: var(--friendly); }
 .mbtns .mno { border-color: var(--hostile); }
+
+/* The resist table, laid out like the app's grid: HP, one bar per damage type, EHP. */
+.mresists { width: 100%; border-collapse: collapse; margin: 0.2rem 0 0.3rem; }
+.mresists th { text-align: left; font-weight: 600; padding: 0.1rem 0.3rem; }
+.mresists td { padding: 0.1rem 0.3rem; }
+.mresists .num { text-align: right; font-variant-numeric: tabular-nums; }
+.rcell { position: relative; min-width: 3.2rem; height: 1.15rem; background: var(--bg); border-radius: 2px; }
+.rbar { position: absolute; inset: 0 auto 0 0; opacity: 0.6; border-radius: 2px; }
+.rnum {
+  position: relative;
+  display: block;
+  text-align: center;
+  font-size: 0.78rem;
+  line-height: 1.15rem;
+  color: #fff;
+}
+.mtotal { margin: 0 0 0.6rem; font-weight: 600; }
+.mroles { margin: 0 0 0.5rem; display: flex; gap: 0.4rem; font-size: 1.15rem; color: var(--accent); }
+.mskill { margin: 0.6rem 0 0.1rem; font-weight: 600; }
+.mtraits li b { color: var(--accent); }

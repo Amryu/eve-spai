@@ -179,27 +179,69 @@ async function showShip(id) {
   const r = await fetch(`/api/ship/${id}`);
   if (!r.ok) return open("ship", `<h3>Ship</h3><p class="placeholder">Not in the static data.</p>`);
   const s = await r.json();
-  const res = (label, v) =>
-    `<div class="mrow"><span>${label}</span><span class="mres">` +
-    ["EM", "Th", "Ki", "Ex"].map((t, i) => `<b>${t} ${v[i]}%</b>`).join("") +
-    `</span></div>`;
+  // The damage types carry the app's own colours. A row of four bare percentages says nothing about
+  // which hole in a resist profile you are looking at; the colour is how that is read at a glance.
+  const DMG = [
+    ["EM", "#5aa9e0"],
+    ["Th", "#d64545"],
+    ["Kin", "#9aa3a8"],
+    ["Exp", "#d6a645"],
+  ];
+  const layer = (name, hp, r, ehp) =>
+    hp <= 0
+      ? ""
+      : `<tr><th>${name}</th><td class="num">${Math.round(hp)}</td>` +
+        r
+          .map(
+            (v, i) =>
+              `<td class="rcell"><span class="rbar" style="width:${Math.max(0, Math.min(100, v))}%;background:${DMG[i][1]}"></span><span class="rnum">${v}%</span></td>`
+          )
+          .join("") +
+        `<td class="num">${Math.round(ehp)}</td></tr>`;
+  const total = Math.round(s.shield_ehp + s.armor_ehp + s.hull_ehp);
+  const hardpoints = [
+    s.turrets ? `${s.turrets} turret` : null,
+    s.launchers ? `${s.launchers} launcher` : null,
+  ].filter(Boolean);
   open(
     "ship",
     `<h3><img class="mhull" src="https://images.evetech.net/types/${s.id}/render?size=128" alt=""> ${esc(s.name)}</h3>` +
       `<p class="mgroup">${esc(s.group)}</p>` +
+      (s.roles.length
+        ? `<p class="mroles">` +
+          s.roles
+            .map(([glyph, label]) => `<span class="ph" title="${esc(label)}">${esc(glyph)}</span>`)
+            .join("") +
+          `</p>`
+        : "") +
+      `<table class="mresists"><thead><tr><th></th><th class="num">HP</th>` +
+      DMG.map(([t, c]) => `<th style="color:${c}">${t}</th>`).join("") +
+      `<th class="num">EHP</th></tr></thead><tbody>` +
+      layer("Shield", s.shield_hp, s.shield_resist, s.shield_ehp) +
+      layer("Armor", s.armor_hp, s.armor_resist, s.armor_ehp) +
+      layer("Hull", s.hull_hp, s.hull_resist, s.hull_ehp) +
+      `</tbody></table>` +
+      `<p class="mtotal">Total EHP ${total.toLocaleString("en-US")}</p>` +
       rows([
-        ["Shield", Math.round(s.shield_hp)],
-        ["Armor", Math.round(s.armor_hp)],
-        ["Hull", Math.round(s.hull_hp)],
-        ["Turrets", s.turrets || null],
-        ["Launchers", s.launchers || null],
-        ["Drone bay", s.drone_cap ? `${Math.round(s.drone_cap)} m³` : null],
-        ["Drone bandwidth", s.drone_bw ? `${Math.round(s.drone_bw)} Mbit` : null],
+        ["Hardpoints", hardpoints.join(" · ") || null],
+        ["Slots", `${s.high_slots} high · ${s.mid_slots} mid · ${s.low_slots} low`],
+        ["Drones", s.drone_cap ? `${Math.round(s.drone_cap)} m³ / ${Math.round(s.drone_bw)} Mbit` : null],
+        ["Max velocity", `${Math.round(s.max_velocity)} m/s`],
+        ["Warp speed", s.warp_speed ? `${s.warp_speed.toFixed(2)} AU/s` : null],
       ]) +
-      res("Shield resists", s.shield_resist) +
-      res("Armor resists", s.armor_resist) +
-      res("Hull resists", s.hull_resist) +
-      (s.traits.length ? `<ul class="mtraits">${s.traits.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : "")
+      s.traits
+        .map(
+          (g) =>
+            `<p class="mskill">${esc(g.skill)}</p><ul class="mtraits">` +
+            g.lines
+              .map(
+                ([bonus, text]) =>
+                  `<li>${bonus ? `<b>${bonus % 1 === 0 ? bonus : bonus.toFixed(1)}%</b> ` : ""}${esc(text)}</li>`
+              )
+              .join("") +
+            `</ul>`
+        )
+        .join("")
   );
 }
 

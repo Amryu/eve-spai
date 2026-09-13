@@ -177,6 +177,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-033 A different zoom to the app's; pinch only scales; span would not clear](WEB-033-app-zoom-and-pinch/) | `map.js`, `layout.js` | after 32 | **Fixed** |
 | [WEB-034 The wheel zooms the wrong way](WEB-034-zoom-direction/) | `map.js` | after 33 | **Fixed** |
 | [WEB-035 Ship dialog has no data and steals the map's window; no per-pane close](WEB-035-own-windows-and-ship-data/) | `dialogs.js`, `layout.js`, `app.rs` | after 34 | **Fixed** |
+| [WEB-036 Ship window a fraction of the app's; chips without affiliation; jabber reads badly](WEB-036-detail-parity/) | `detail.rs`, `dialogs.*`, `panes-*` | after 35 | **Fixed** |
 
 ### Browser evidence
 
