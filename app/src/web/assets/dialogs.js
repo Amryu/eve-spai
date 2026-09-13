@@ -595,6 +595,7 @@ function paintRoute(kind, onPick) {
       (o.total_ly ? ` · ${o.total_ly.toFixed(1)} ly` : "") +
       `</p>` +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
+      (o.detour ? `<p class="rdetour">${ico("eye-slash")} ${esc(o.detour)}</p>` : "") +
       `<ol class="rhops">${o.hops.map(line).join("")}</ol>`
   );
   const win = shells.get("route");
