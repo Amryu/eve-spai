@@ -443,6 +443,56 @@ pub fn spawn_fleet_poller(
     });
 }
 
+/// Why a character's ESI calls stopped working, when it is not something that fixes itself.
+///
+/// Kept here, beside the one place that can tell: every call site takes `Option<String>` for the
+/// access token and had no way to say whether `None` meant "not now" or "not ever again". That is
+/// how an expired login presented as the map quietly no longer showing where you are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AuthProblem {
+    /// EVE SSO rejected the saved login. Only logging in again fixes it.
+    LoggedOut,
+    /// The OS keychain holding the refresh token could not be read.
+    NoKeychain,
+}
+
+impl AuthProblem {
+    pub fn message(self, name: &str) -> String {
+        match self {
+            Self::LoggedOut => format!("{name}'s EVE login has expired. Log in again to restore location, fleet and route features."),
+            Self::NoKeychain => format!("{name}'s saved login could not be read from the system keychain."),
+        }
+    }
+}
+
+static AUTH_PROBLEMS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<i64, AuthProblem>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn note_problem(id: i64, p: AuthProblem) {
+    AUTH_PROBLEMS.lock().unwrap_or_else(|e| e.into_inner()).insert(id, p);
+}
+
+fn clear_problem(id: i64) {
+    AUTH_PROBLEMS.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+}
+
+pub fn auth_problem(id: i64) -> Option<AuthProblem> {
+    AUTH_PROBLEMS.lock().unwrap_or_else(|e| e.into_inner()).get(&id).copied()
+}
+
+/// Called when a character logs in again, so a fixed problem stops being reported.
+pub fn forget_auth_problem(id: i64) {
+    clear_problem(id);
+}
+
+/// Put a character into a failed state without an EVE login to fail. For the scene that renders the
+/// banner, which is otherwise unreachable from a test.
+#[cfg(test)]
+pub(crate) fn set_auth_problem_for_test(id: i64, p: AuthProblem) {
+    note_problem(id, p);
+}
+
 fn refresh_lock(id: i64) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<std::sync::Mutex<()>>>>,
@@ -477,8 +527,32 @@ fn current_access_token(
     }
 
     // Load the refresh token inside the lock so we pick up a rotation from another thread.
-    let refresh = tokens::load_refresh(id)?;
-    let fresh = auth::refresh_access_token(client_id, &refresh).ok()?;
+    let refresh = match tokens::try_load_refresh(id) {
+        Ok(Some(r)) => r,
+        // No entry at all: this character was never logged in, or its token was deleted. Same
+        // remedy as a rejection, and the same thing worth saying out loud.
+        Ok(None) => {
+            note_problem(id, AuthProblem::LoggedOut);
+            return None;
+        }
+        Err(e) => {
+            eprintln!("keychain unavailable for character {id}: {e:#}");
+            note_problem(id, AuthProblem::NoKeychain);
+            return None;
+        }
+    };
+    let fresh = match auth::refresh_access_token(client_id, &refresh) {
+        Ok(f) => f,
+        Err(auth::RefreshError::Rejected(msg)) => {
+            eprintln!("EVE SSO rejected the saved login for character {id}: {msg}");
+            note_problem(id, AuthProblem::LoggedOut);
+            return None;
+        }
+        // Transient: say nothing and let the next call try again. A warning that appears every time
+        // the network hiccups is a warning nobody reads.
+        Err(_) => return None,
+    };
+    clear_problem(id);
     // The refresh token may rotate — persist the new one.
     let _ = tokens::save_refresh(id, &fresh.refresh_token);
     store.kv_set(&format!("access:{id}"), &fresh.access_token);

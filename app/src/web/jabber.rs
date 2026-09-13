@@ -22,6 +22,10 @@ pub struct WebConvo {
     /// single presence to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence: Option<String>,
+    /// The room's MOTD, whole. The page shows one line of it and keeps the rest for the dialog, so
+    /// sending a preview would mean the dialog could not show what it is for.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub motd: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]

@@ -187,8 +187,46 @@ fn exchange_code(client_id: &str, code: &str, verifier: &str) -> Result<TokenRes
     resp.json().context("parsing token response")
 }
 
-pub fn refresh_access_token(client_id: &str, refresh_token: &str) -> Result<TokenResponse> {
-    let client = http_client()?;
+/// A refresh that failed, split by whether trying again could ever help.
+///
+/// The distinction is the whole point: a rejected refresh token is a logout that has already
+/// happened and only a new login fixes it, while a timeout on the way to SSO fixes itself. Treating
+/// both as "no token today" is what let an expired login look like the map quietly not working.
+#[derive(Debug)]
+pub enum RefreshError {
+    /// SSO rejected the token: expired, revoked, or the client id changed under it.
+    Rejected(String),
+    /// Network, timeout, or SSO having a bad day. Worth retrying.
+    Transient(anyhow::Error),
+}
+
+/// 4xx is SSO saying no and meaning it; 5xx is SSO being unavailable, which it regularly is.
+///
+/// The split decides whether the user is told their login is gone, so it is worth being explicit
+/// about: warning on a 503 would cry wolf every time SSO hiccups, and staying quiet on a 400 is the
+/// silence that started this.
+fn refresh_failure(status: reqwest::StatusCode, body: String) -> RefreshError {
+    if status.is_client_error() {
+        RefreshError::Rejected(format!("EVE SSO rejected the saved login ({status}): {body}"))
+    } else {
+        RefreshError::Transient(anyhow!("refresh returned {status}: {body}"))
+    }
+}
+
+impl std::fmt::Display for RefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(m) => write!(f, "{m}"),
+            Self::Transient(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+pub fn refresh_access_token(
+    client_id: &str,
+    refresh_token: &str,
+) -> std::result::Result<TokenResponse, RefreshError> {
+    let client = http_client().map_err(RefreshError::Transient)?;
     let resp = client
         .post(TOKEN_URL)
         .form(&[
@@ -196,15 +234,13 @@ pub fn refresh_access_token(client_id: &str, refresh_token: &str) -> Result<Toke
             ("refresh_token", refresh_token),
             ("client_id", client_id),
         ])
-        .send()?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        bail!(
-            "refresh returned {status}: {}",
-            resp.text().unwrap_or_default()
-        );
+        .send()
+        .map_err(|e| RefreshError::Transient(e.into()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(refresh_failure(status, resp.text().unwrap_or_default()));
     }
-    resp.json().context("parsing refresh response")
+    resp.json().map_err(|e| RefreshError::Transient(anyhow::Error::new(e).context("parsing refresh response")))
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
@@ -267,6 +303,8 @@ fn store_character(
         "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
         params![format!("access:{id}"), access_token],
     )?;
+    // This login is what the warning was asking for, so the warning goes.
+    crate::esi::forget_auth_problem(id);
     Ok(())
 }
 
@@ -278,4 +316,42 @@ fn random_bytes(n: usize) -> Result<Vec<u8>> {
     let mut buf = vec![0u8; n];
     getrandom::getrandom(&mut buf).map_err(|e| anyhow!("rng failure: {e}"))?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of the split: a rejection is a logout that already happened and is worth
+    /// telling the user about, and everything else is worth retrying in silence. Getting this
+    /// backwards either cries wolf on every SSO hiccup or says nothing when a login is gone, and
+    /// saying nothing is what left a user watching the map quietly stop working for days.
+    #[test]
+    fn only_a_refusal_from_sso_counts_as_a_lost_login() {
+        use reqwest::StatusCode;
+        for code in [StatusCode::BAD_REQUEST, StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            assert!(
+                matches!(refresh_failure(code, "invalid_grant".into()), RefreshError::Rejected(_)),
+                "{code} is SSO refusing"
+            );
+        }
+        for code in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            assert!(
+                matches!(refresh_failure(code, String::new()), RefreshError::Transient(_)),
+                "{code} is SSO being unavailable, not a logout"
+            );
+        }
+    }
+
+    /// The body is what says *why*, and it is the only clue a user has when they ask.
+    #[test]
+    fn a_rejection_carries_what_sso_said() {
+        let e = refresh_failure(reqwest::StatusCode::BAD_REQUEST, "invalid_grant".into());
+        assert!(e.to_string().contains("invalid_grant"), "{e}");
+    }
 }
