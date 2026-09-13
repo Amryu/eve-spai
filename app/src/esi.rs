@@ -452,7 +452,7 @@ pub fn spawn_fleet_poller(
 pub enum AuthProblem {
     /// EVE SSO rejected the saved login. Only logging in again fixes it.
     LoggedOut,
-    /// The OS keychain holding the refresh token could not be read.
+    /// Neither the OS keychain nor the encrypted fallback could give the token back.
     NoKeychain,
 }
 
@@ -460,7 +460,7 @@ impl AuthProblem {
     pub fn message(self, name: &str) -> String {
         match self {
             Self::LoggedOut => format!("{name}'s EVE login has expired. Log in again to restore location, fleet and route features."),
-            Self::NoKeychain => format!("{name}'s saved login could not be read from the system keychain."),
+            Self::NoKeychain => format!("{name}'s saved login could not be read back."),
         }
     }
 }

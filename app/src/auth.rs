@@ -285,8 +285,10 @@ fn store_character(
     expires_at: i64,
     scopes: &str,
 ) -> Result<()> {
-    // The long-lived refresh token (the real secret) goes to the keychain first — if that
-    // fails we abort before persisting anything, so we never silently fall back to plaintext.
+    // The long-lived refresh token (the real secret) is stored first, and nothing else is persisted
+    // if that fails: a character row without a token is a login that looks finished and is not.
+    // `save_refresh` uses the OS keychain, and an encrypted account-bound file only when there is no
+    // keychain to use. Never plaintext.
     crate::tokens::save_refresh(id, refresh_token)?;
 
     // Metadata + the short-lived access token (cached so we don't refresh on every call; it
