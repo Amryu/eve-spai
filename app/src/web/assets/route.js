@@ -77,8 +77,14 @@ const OPTIONS = [
 ///
 /// A `null` entry is a separator. Dismissed by anything outside it, like the radial, and for the same
 /// reason: there is no backdrop to click.
+/// Dismisses whatever menu is open, listener and all.
+///
+/// Held rather than found in the DOM: removing the element left its outside-click listener behind,
+/// and reopening a menu a few times left a few of them.
+let closeMenu = null;
+
 export function menu(x, y, items, pick) {
-  document.querySelector(".ctxmenu")?.remove();
+  closeMenu?.();
   const el = document.createElement("div");
   el.className = "ctxmenu";
   el.innerHTML = items
@@ -96,8 +102,11 @@ export function menu(x, y, items, pick) {
   const done = (kind) => {
     el.remove();
     document.removeEventListener("pointerdown", away, true);
+    if (closeMenu === dismiss) closeMenu = null;
     if (kind) pick(kind);
   };
+  const dismiss = () => done(null);
+  closeMenu = dismiss;
   const away = (e) => {
     if (!e.target.closest(".ctxmenu")) done(null);
   };
