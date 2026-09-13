@@ -10640,6 +10640,55 @@ impl SpaiApp {
         self.map_replan_route();
     }
 
+    /// Whether a route is being planned at all, which decides what the map's menu offers.
+    fn map_route_kind_active(&self) -> bool {
+        !self.map_route_anchors.is_empty()
+    }
+
+    /// Start a route here: this system, nowhere to go yet, and a kind chosen once for the whole
+    /// route rather than once per leg.
+    fn map_route_start(&mut self, kind: &str, sid: i64) {
+        self.map_route_kind = match kind {
+            "jump" => "jump",
+            "titan" => "titan",
+            _ => "gate",
+        };
+        self.map_route_anchors = vec![sid];
+        self.map_avoid_once.clear();
+        self.map_route_opts.clear();
+        self.map_route_legs.clear();
+    }
+
+    /// One anchor becomes the destination. With only a start that completes it; with a route it
+    /// replaces the far end and leaves the waypoints alone.
+    fn map_route_set_dest(&mut self, sid: i64) {
+        if self.map_route_anchors.len() <= 1 {
+            self.map_route_anchors.push(sid);
+        } else {
+            self.map_route_anchors.pop();
+            self.map_route_anchors.push(sid);
+        }
+        if self.map_route_kind == "gate" {
+            self.web_set_destination(sid);
+        }
+        self.map_replan_route();
+    }
+
+    /// A waypoint goes in before the destination, which is the difference between the two.
+    fn map_route_add_waypoint(&mut self, sid: i64) {
+        let at = self.map_route_anchors.len().saturating_sub(1);
+        self.map_route_anchors.insert(at, sid);
+        self.map_replan_route();
+    }
+
+    fn map_route_clear(&mut self) {
+        self.map_route_anchors.clear();
+        self.map_route_opts.clear();
+        self.map_route_legs.clear();
+        self.map_leg_pick.clear();
+        self.map_avoid_once.clear();
+    }
+
     /// Recompute the route from the anchors as they stand. Split out so a control in the window can
     /// change one input without the anchors being rebuilt around it.
     fn map_replan_route(&mut self) {
@@ -11375,7 +11424,7 @@ impl SpaiApp {
         }
         let ctx_sys = self.ctx_menu_system;
         resp.context_menu(|ui| {
-            ui.set_min_width(220.0);
+            ui.set_min_width(210.0);
             let Some(sid) = ctx_sys else {
                 ui.close();
                 return;
@@ -11383,178 +11432,93 @@ impl SpaiApp {
             if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
                 ui.label(egui::RichText::new(&info.name).strong());
             }
-            // In travel mode the map edits the planned route, not the client: sending a waypoint to
-            // the game from a planning view is not what the click looks like it does.
-            if self.map_mode == MapMode::Travel {
-                if ui.button("Set as Start").clicked() {
-                    self.travel_set(TravelEnd::Start, sid);
-                    ui.close();
-                }
-                if ui.button("Set as Destination").clicked() {
-                    self.travel_set(TravelEnd::Dest, sid);
-                    ui.close();
-                }
-                if ui.button("Add Waypoint").clicked() {
-                    if !self.travel_waypoints.contains(&sid) {
-                        self.travel_waypoints.push(sid);
-                    }
-                    self.travel_avoid.retain(|&a| a != sid);
-                    self.plan_route();
-                    ui.close();
-                }
-                let planned = self.travel_route.is_some() || self.travel_start.is_some();
-                if planned && ui.button("Clear Route").clicked() {
-                    self.clear_travel();
-                    ui.close();
-                }
-            } else {
-                let has_char = self.active_character != "No character";
-                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
-                let cname = self.active_character.clone();
-                ui.add_enabled_ui(has_char, |ui| {
-                    if ui.button("Set Destination").clicked() {
-                        self.set_destination_esi(cid.clone(), cname.clone(), sid);
-                        self.route_destination = Some(sid);
-                        ui.close();
-                    }
-                    if ui.button("Add Waypoint").clicked() {
-                        crate::esi::set_waypoint(cid.clone(), cname.clone(), sid, false);
-                        ui.close();
-                    }
-                });
-                if self.route_destination.is_some() && ui.button("Clear Route").clicked() {
-                    self.route_destination = None;
-                    ui.close();
-                }
-            }
-            let holes: Vec<(i64, String)> = self
-                .wh_cache
-                .iter()
-                .filter(|w| w.system_id == sid || w.dest_system_id == Some(sid))
-                .map(|w| {
-                    let far = if w.system_id == sid { w.dest_system_id } else { Some(w.system_id) };
-                    let dest = far
-                        .and_then(|d| self.systems.as_ref().and_then(|g| g.info_of(d)))
-                        .map(|i| i.name.clone())
-                        .unwrap_or_else(|| w.dest.label().to_owned());
-                    let sig = w.signature.clone().unwrap_or_default();
-                    let label =
-                        if sig.is_empty() { dest } else { format!("{sig} \u{2192} {dest}") };
-                    (w.id, label)
-                })
-                .collect();
-            if !holes.is_empty() {
-                ui.separator();
-                if holes.len() == 1 {
-                    if ui
-                        .button(format!("Mark hole dead ({})", holes[0].1))
-                        .on_hover_text("Drop this hole from the map and from routing")
-                        .clicked()
-                    {
-                        self.kill_wormhole(holes[0].0);
-                        ui.close();
-                    }
-                } else {
-                    ui.menu_button("Mark hole dead", |ui| {
-                        for (id, label) in &holes {
-                            if ui.button(label).clicked() {
-                                self.kill_wormhole(*id);
-                                ui.close();
-                            }
+            // The same menu the browser has, in the same order, plus the one thing the browser has
+            // no use for. Every other entry this had was a second way to do something the route
+            // drag now does, and a menu of second ways is how nobody finds the first one.
+            let anchors = self.map_route_anchors.clone();
+            let at = anchors.iter().position(|&a| a == sid);
+            let planning = self.map_route_kind_active();
+            if planning && !anchors.is_empty() {
+                match at {
+                    None => {
+                        if ui.button("Set as Destination").clicked() {
+                            self.map_route_set_dest(sid);
+                            ui.close();
                         }
-                    });
+                        if anchors.len() > 1 && ui.button("Add Waypoint").clicked() {
+                            self.map_route_add_waypoint(sid);
+                            ui.close();
+                        }
+                    }
+                    Some(i) if i > 0 => {
+                        let last = i == anchors.len() - 1;
+                        let label = if last { "Remove Destination" } else { "Remove Waypoint" };
+                        if ui.button(label).clicked() {
+                            self.map_route_anchors.remove(i);
+                            self.map_replan_route();
+                            ui.close();
+                        }
+                    }
+                    _ => {}
+                }
+                if ui
+                    .button(egui::RichText::new("Clear Route").color(crate::theme::standing::HOSTILE))
+                    .clicked()
+                {
+                    self.map_route_clear();
+                    ui.close();
+                }
+                ui.separator();
+                let once = self.map_avoid_once.contains(&sid);
+                if ui.button(if once { "Stop avoiding here" } else { "Avoid for this route" }).clicked()
+                {
+                    if once {
+                        self.map_avoid_once.remove(&sid);
+                    } else {
+                        self.map_avoid_once.insert(sid);
+                    }
+                    self.map_replan_route();
+                    ui.close();
+                }
+                let jump = self.map_route_kind == "jump";
+                let always = if jump {
+                    self.settings.route_avoid_jump.contains(&sid)
+                } else {
+                    self.settings.route_avoid_gate.contains(&sid)
+                };
+                if ui.button(if always { "Stop avoiding always" } else { "Avoid always" }).clicked() {
+                    self.apply_overlay_message(
+                        crate::ipc::OverlayToMain::AvoidSystem { id: sid, jump, on: !always },
+                        ui.ctx(),
+                    );
+                    self.map_replan_route();
+                    ui.close();
+                }
+                ui.separator();
+            }
+            let verb = if planning && !anchors.is_empty() { "Restart as" } else { "Start" };
+            for (kind, name) in [("gate", "Gate Route"), ("jump", "Jump Route"), ("titan", "Titan Route")] {
+                if ui.button(format!("{verb} {name}")).clicked() {
+                    self.map_route_start(kind, sid);
+                    ui.close();
                 }
             }
             ui.separator();
-            if ui.button("Plan Jump Route From Here").clicked() {
-                self.jump_plan_from = Some(sid);
-                self.set_map_mode(MapMode::JumpPlan);
-                ui.close();
-            }
-            if ui.button("Plan Jump Route To Here").clicked() {
-                self.jump_plan_to = Some(sid);
-                self.set_map_mode(MapMode::JumpPlan);
-                ui.close();
-            }
-            if ui.button("Add as Jump Waypoint").clicked() {
-                if Some(sid) != self.jump_plan_from
-                    && Some(sid) != self.jump_plan_to
-                    && !self.jump_waypoints.contains(&sid)
-                {
-                    self.jump_waypoints.push(sid);
-                }
-                self.set_map_mode(MapMode::JumpPlan);
+            if ui.button("Show info").clicked() {
+                self.map_selected = Some(sid);
+                self.right_dock_open = true;
+                self.right_dock_tab = RightDockTab::System;
                 ui.close();
             }
             let fav = self.jump_favourites.contains(&sid);
-            let fav_label = format!(
-                "{} {}",
-                egui_phosphor::regular::STAR,
-                if fav { "Unfavourite" } else { "Favourite" }
-            );
-            if ui.button(fav_label).clicked() {
+            if ui.button(if fav { "Unfavourite" } else { "Favourite" }).clicked() {
                 if fav {
                     self.jump_favourites.remove(&sid);
                 } else {
                     self.jump_favourites.insert(sid);
                 }
                 self.persist_jump_favourites();
-                self.jump_route_key = None;
                 ui.close();
-            }
-            if ui.button("Show Info").clicked() {
-                self.dock_system(sid);
-                ui.close();
-            }
-            let permit = self
-                .systems
-                .as_ref()
-                .and_then(|g| g.info_of(sid).map(|s| s.name.clone()))
-                .and_then(|n| self.settings.jump_dock.iter().find(|p| p.system.eq_ignore_ascii_case(&n)).cloned());
-            let caps = permit.as_ref().map(|p| p.capitals).unwrap_or(false);
-            let sups = permit.as_ref().map(|p| p.supers).unwrap_or(false);
-            if ui.selectable_label(caps, "Capitals dock here").clicked() {
-                self.toggle_dock_permit(sid, false);
-                ui.close();
-            }
-            if ui.selectable_label(sups, "Supers/titans dock here").clicked() {
-                self.toggle_dock_permit(sid, true);
-                ui.close();
-            }
-            if self.map_mode == MapMode::Travel {
-                ui.separator();
-                if ui.button("Travel: set as start").clicked() {
-                    self.travel_start = Some(sid);
-                    self.travel_start_q.clear();
-                    if Some(sid) != self.player_system() {
-                        self.travel_live = false;
-                        self.map_follow = false;
-                    }
-                    self.plan_route();
-                    ui.close();
-                }
-                if ui.button("Travel: set as destination").clicked() {
-                    self.travel_end = Some(sid);
-                    self.travel_end_q.clear();
-                    self.plan_route();
-                    ui.close();
-                }
-                if ui.button("Travel: add waypoint").clicked() {
-                    if !self.travel_waypoints.contains(&sid) {
-                        self.travel_waypoints.push(sid);
-                    }
-                    self.travel_avoid.retain(|&a| a != sid);
-                    self.plan_route();
-                    ui.close();
-                }
-                if ui.button("Travel: avoid system").clicked() {
-                    if !self.travel_avoid.contains(&sid) {
-                        self.travel_avoid.push(sid);
-                    }
-                    self.travel_waypoints.retain(|&w| w != sid);
-                    self.plan_route();
-                    ui.close();
-                }
             }
         });
 
