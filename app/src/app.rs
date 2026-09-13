@@ -1569,6 +1569,19 @@ impl SpaiApp {
             theme: self.settings.theme.clone(),
             map: self.web_map_geometry(),
         };
+        // The ship dialog reads hull stats out of the SDE and `DetailState` never had a handle, so
+        // every one of them said "not in the static data". A second connection rather than the
+        // app's: `Store` owns a rusqlite `Connection` and cannot be shared across threads, and
+        // SQLite is perfectly happy with a second reader on the same file.
+        {
+            let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
+            if d.store.is_none() {
+                match crate::store::Store::open() {
+                    Ok(s) => d.store = Some(s),
+                    Err(e) => eprintln!("[web] no store for the dialogs: {e}"),
+                }
+            }
+        }
         match crate::web::server::start(
             cfg,
             self.web.clone(),

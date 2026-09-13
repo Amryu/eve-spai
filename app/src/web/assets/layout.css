@@ -158,6 +158,7 @@ body.sheet .modebar[hidden] { display: flex; }
 }
 .pbtn:hover { color: var(--fg); border-color: var(--line); background: var(--surface-hi); }
 .pbtn.on { color: var(--accent); border-color: var(--accent); }
+.pclose:hover { color: var(--hostile); border-color: var(--hostile); }
 .pdrag { cursor: grab; touch-action: none; }
 .pane.dragging .pdrag { cursor: grabbing; }
 
