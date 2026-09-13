@@ -377,6 +377,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         jdc,
                         jfc,
                         titan_ly,
+                        routes::query_param(query, "tstart").unwrap_or("1") != "0",
                         d.count_bridges,
                     );
                     {

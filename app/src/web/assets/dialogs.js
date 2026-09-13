@@ -3,7 +3,7 @@
 // an IntelClick.
 
 import { ico, state } from "./app.js";
-import { fmtAge } from "./panes-intel.js";
+import { card, fmtAge } from "./panes-intel.js";
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -298,7 +298,7 @@ let routeAt = 0;
 let routeReq = null;
 /// The jump setup, per device. Skills default to five, which is what anyone flying a capital has.
 const JUMP_KEY = "spai_jump";
-let jump = { hull: 0, jdc: 5, jfc: 5 };
+let jump = { hull: 0, jdc: 5, jfc: 5, tstart: true };
 try {
   jump = { ...jump, ...JSON.parse(localStorage.getItem(JUMP_KEY) ?? "{}") };
 } catch {
@@ -321,7 +321,7 @@ async function fetchRoute() {
   try {
     const r = await fetch(
       `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}` +
-        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}`
+        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}`
     );
     out = await r.json();
   } catch {
@@ -344,6 +344,14 @@ async function fetchRoute() {
 /// Names and ranges come from the app's own `SHIP_CLASSES` rather than a second copy in here: a
 /// picker that disagrees with the planner about what a jump freighter can do is worse than no picker.
 function jumpControls(kind, out) {
+  // Which end the titan is at. On, the default, it is in the system the route starts from: one jump
+  // out and gates for the rest. Off, it is waiting at the far end and bridges you the last leg.
+  if (kind === "titan") {
+    return (
+      `<label class="jumpcfg tflag"><input data-jump="tstart" type="checkbox"${jump.tstart ? " checked" : ""}>` +
+      ` Titan is in the starting system</label>`
+    );
+  }
   if (kind !== "jump" || !out?.hulls?.length) return "";
   return (
     `<div class="jumpcfg">` +
@@ -387,7 +395,7 @@ function paintRoute(kind, onPick) {
   // Why not to fly through here. Intel below Danger is left off on purpose: a nullsec route passes
   // through dozens of systems someone has said something about, and a warning on all of them is a
   // warning on none.
-  const warn = (w) => {
+  const warn = (w, id) => {
     if (!w) return "";
     const bits = [];
     if (w.sev >= 2) bits.push(`${SEV[w.sev]} intel ${fmtAge(Math.max(0, Date.now() / 1000 - w.at))}`);
@@ -395,7 +403,11 @@ function paintRoute(kind, onPick) {
       bits.push(`${w.kills} ${w.kills === 1 ? "kill" : "kills"}${w.pods ? ` · ${w.pods} pods` : ""} this hour`);
     }
     if (!bits.length) return "";
-    return `<span class="rwarn${w.sev >= 3 ? " crit" : ""}">${ico("warning")} ${esc(bits.join(" · "))}</span>`;
+    // Clickable when there is intel behind it, because "Danger intel 4m" is a summary of something
+    // someone actually wrote and the words are the part worth reading.
+    const tag = w.sev >= 2 ? "button" : "span";
+    const attr = w.sev >= 2 ? ` data-intel="${id}"` : "";
+    return `<${tag} class="rwarn${w.sev >= 3 ? " crit" : ""}"${attr}>${ico("warning")} ${esc(bits.join(" · "))}</${tag}>`;
   };
   const line = (h, i) =>
     `<li class="rhop k${h.kind}">` +
@@ -411,7 +423,7 @@ function paintRoute(kind, onPick) {
         : h.kind === 1
           ? `<span class="rkind bridge">bridge</span>`
           : `<span class="rkind">gate</span>`) +
-    warn(h.warn) +
+    warn(h.warn, h.id) +
     `</li>`;
   open(
     "route",
@@ -434,8 +446,9 @@ function paintRoute(kind, onPick) {
   );
   win?.querySelectorAll("[data-jump]").forEach((c) =>
     c.addEventListener("change", () => {
+      const k = c.dataset.jump;
       const v = Number(c.value);
-      jump[c.dataset.jump] = c.dataset.jump === "hull" ? v : Math.max(0, Math.min(5, v));
+      jump[k] = k === "tstart" ? c.checked : k === "hull" ? v : Math.max(0, Math.min(5, v));
       try {
         localStorage.setItem(JUMP_KEY, JSON.stringify(jump));
       } catch {
@@ -444,6 +457,31 @@ function paintRoute(kind, onPick) {
       fetchRoute();
     })
   );
+}
+
+/// The intel behind a route warning, as a modal.
+///
+/// A modal rather than another floating window: it is opened from one and would otherwise land on top
+/// of the thing that named it, and it is read and dismissed rather than kept beside the map.
+function showIntel(id) {
+  document.querySelector(".intelmodal")?.remove();
+  const cards = (state.snapshot?.intel?.cards ?? []).filter((c) =>
+    (c.report.systems ?? []).some((s) => s.id === id)
+  );
+  const name = cards[0]?.report?.systems?.find((s) => s.id === id)?.name ?? id;
+  const wrap = document.createElement("div");
+  wrap.className = "jstartdlg intelmodal";
+  wrap.innerHTML =
+    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+    `<h3>${ico("warning")} ${esc(name)}</h3>` +
+    (cards.length
+      ? `<div class="feed">${cards.map((c) => card(c, state.snapshot?.intel?.lookups, false, Math.floor(Date.now() / 1000))).join("")}</div>`
+      : `<p class="placeholder">Nothing in the feed for this system any more.</p>`) +
+    `</div>`;
+  document.body.append(wrap);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target.closest(".mclose")) wrap.remove();
+  });
 }
 
 export async function send(action) {
@@ -463,6 +501,8 @@ export async function send(action) {
 // One listener on the document rather than one per chip: panes re-render constantly, and rebinding
 // on every repaint is how a handler ends up attached twice or not at all.
 document.addEventListener("click", (e) => {
+  const intel = e.target.closest("[data-intel]");
+  if (intel) return showIntel(Number(intel.dataset.intel));
   const sys = e.target.closest("[data-system]");
   if (sys) return showSystem(Number(sys.dataset.system));
   const ship = e.target.closest("[data-ship]");

@@ -169,3 +169,17 @@
   .jumpcfg { gap: 0.25rem; }
   .jumpcfg select { flex: 1 1 100%; }
 }
+
+button.rwarn {
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.jumpcfg.tflag { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
+.intelmodal .mpanel { min-width: min(30rem, 92vw); max-height: 70vh; overflow-y: auto; }
+.intelmodal .feed { display: flex; flex-direction: column; gap: 0.35rem; }

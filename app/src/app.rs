@@ -698,6 +698,8 @@ pub struct SpaiApp {
     map_route_kind: &'static str,
     /// The systems the drags named, in order: start, waypoints, destination.
     map_route_anchors: Vec<i64>,
+    /// Whether the titan is in the system the route starts from. Off, it is waiting at the far end.
+    map_titan_at_start: bool,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1429,6 +1431,7 @@ impl SpaiApp {
             map_route_at: 0,
             map_route_kind: "gate",
             map_route_anchors: Vec::new(),
+            map_titan_at_start: true,
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -10523,11 +10526,24 @@ impl SpaiApp {
             self.web_set_destination(to);
             self.route_destination = Some(to);
         }
+        self.map_route_kind = match kind {
+            "jump" => "jump",
+            "titan" => "titan",
+            _ => "gate",
+        };
+        self.map_replan_route();
+    }
+
+    /// Recompute the route from the anchors as they stand. Split out so a control in the window can
+    /// change one input without the anchors being rebuilt around it.
+    fn map_replan_route(&mut self) {
+        self.map_route_opts.clear();
+        self.map_route_at = 0;
         self.ensure_jump_systems();
         // The jump planner is the app's own answer to this question and it is a panel, not a
         // read-only list: it has the hull, the skills and the waypoint editing already. So the map
         // hands the route over to it rather than showing a second, worse copy beside it.
-        if kind == "jump" {
+        if self.map_route_kind == "jump" {
             let anchors = self.map_route_anchors.clone();
             self.jump_plan_from = anchors.first().copied();
             self.jump_plan_to = anchors.last().copied();
@@ -10545,11 +10561,6 @@ impl SpaiApp {
         // behind a feature flag and this is not.
         const TITAN_LY: f64 = 6.0;
         let bridges = self.settings.intel_count_bridges;
-        self.map_route_kind = match kind {
-            "jump" => "jump",
-            "titan" => "titan",
-            _ => "gate",
-        };
         let danger = self.route_danger();
         self.map_route_opts = crate::web::route::chain(
             &graph,
@@ -10560,6 +10571,7 @@ impl SpaiApp {
             self.jump_jdc,
             self.jump_jfc,
             TITAN_LY,
+            self.map_titan_at_start,
             bridges,
         );
         crate::web::route::annotate(&mut self.map_route_opts, &danger);
@@ -10578,12 +10590,24 @@ impl SpaiApp {
         };
         let mut open = true;
         let mut pick = self.map_route_at;
+        let mut replan = false;
         egui::Window::new(format!("{}  {title}", egui_phosphor::regular::SIGN_IN))
             .id(egui::Id::new("map_route_window"))
             .collapsible(false)
             .default_width(280.0)
             .open(&mut open)
             .show(ctx, |ui| {
+                if self.map_route_kind == "titan"
+                    && ui
+                        .checkbox(&mut self.map_titan_at_start, "Titan is in the starting system")
+                        .on_hover_text(
+                            "On: jump out of the start as far as range allows, then gates. Off: gate \
+                             out to the best system the titan can reach and get bridged in.",
+                        )
+                        .changed()
+                {
+                    replan = true;
+                }
                 if self.map_route_opts.len() > 1 {
                     ui.horizontal_wrapped(|ui| {
                         for (i, o) in self.map_route_opts.iter().enumerate() {
@@ -10631,6 +10655,9 @@ impl SpaiApp {
                 });
             });
         self.map_route_at = pick;
+        if replan {
+            self.map_replan_route();
+        }
         if !open {
             self.map_route_opts.clear();
             self.map_route_anchors.clear();

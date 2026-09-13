@@ -761,7 +761,9 @@ function paint() {
       const kind = picked.hops?.[i]?.kind ?? 0;
       ctx.strokeStyle = kind === 2 ? PICK_JUMP : kind === 1 ? ROUTE_BRIDGE : PICK_GATE;
       ctx.beginPath();
-      if (kind === 2) arc(ctx, px, py, qx, qy);
+      // A bridge arcs, the same as everywhere else on this map: it is a bridge whether or not a
+      // route happens to be using it, and a straight line said it was a gate.
+      if (kind === 2 || kind === 1) arc(ctx, px, py, qx, qy);
       else {
         ctx.moveTo(px, py);
         ctx.lineTo(qx, qy);
