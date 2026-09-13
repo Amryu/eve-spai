@@ -49,6 +49,8 @@ pub const ICONS: &[(&str, &str)] = &[
     ("arrows-out-line-horizontal", icon::ARROWS_OUT_LINE_HORIZONTAL),
     ("arrows-out-line-vertical", icon::ARROWS_OUT_LINE_VERTICAL),
     ("arrows-in-line-horizontal", icon::ARROWS_IN_LINE_HORIZONTAL),
+    ("dots-three", icon::DOTS_THREE),
+    ("star-four", icon::STAR_FOUR),
     // Jabber.
     ("chat-circle-dots", icon::CHAT_CIRCLE_DOTS),
     ("users-three", icon::USERS_THREE),

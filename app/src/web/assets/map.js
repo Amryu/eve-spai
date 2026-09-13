@@ -13,7 +13,7 @@
 // Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
 import { ico, register, state } from "./app.js";
-import { avoidOnce, currentRoute, send, showRoute } from "./dialogs.js";
+import { avoidOnce, currentRoute, send, showRoute, titansOnce } from "./dialogs.js";
 import { lightYears, menu, radial, reach } from "./route.js";
 
 let geo = null;
@@ -775,6 +775,22 @@ function paint() {
       }
       ctx.stroke();
     }
+    // The titan's own jump, which the fleet does not fly: a long dash running the other way, so it
+    // reads as a second ship moving rather than as part of the route.
+    const tj = picked.titan_jump;
+    if (tj) {
+      const a = geo.nodes[geo.byId.get(tj.from)];
+      const b = geo.nodes[geo.byId.get(tj.to)];
+      if (a && b) {
+        ctx.strokeStyle = PICK_JUMP;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([12, 8]);
+        ctx.lineDashOffset = (performance.now() / 35) % 20;
+        ctx.beginPath();
+        arc(ctx, sx(a.x), sy(a.z), sx(b.x), sy(b.z));
+        ctx.stroke();
+      }
+    }
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;
     // The systems the user named, as opposed to the ones the route happens to pass through. Two
@@ -804,6 +820,24 @@ function paint() {
     }
     // A crawling dash is an animation, so the map keeps painting while one is on screen.
     schedule();
+  }
+
+  // The titans. Drawn whether or not the route currently goes near them, because "where are the
+  // ships" is the question the titan route is asking and an unused one is still an answer.
+  if (routeKind === "titan" && titansOnce.size) {
+    for (const id of titansOnce) {
+      const n = geo.nodes[geo.byId.get(id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillStyle = PICK_JUMP;
+      ctx.globalAlpha = 0.22;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      glyph(ctx, "star-four", px, py - r * 5 - 2, Math.round(14 * grow), PICK_JUMP);
+    }
   }
 
   // Everything the route is being planned around, while it is being planned. Off the routing mode
@@ -1458,6 +1492,14 @@ function menuFor(id) {
     } else if (at > 0) {
       items.push(["drop", at === anchors.length - 1 ? "Remove Destination" : "Remove Waypoint"]);
     }
+    if (routeKind === "titan") {
+      // Any system, not only ones on the route: where the ships are is the question the titan route
+      // is asking, and the answer is often nowhere near the path it currently takes.
+      items.push([
+        titansOnce.has(id) ? "untitan" : "titan",
+        titansOnce.has(id) ? "Not a titan system" : "Set as titan system",
+      ]);
+    }
     items.push(["clear", "Clear Route", "warn"]);
     items.push(null);
     // Avoidance only means something while a route is being planned, and which list it lands in
@@ -1487,6 +1529,7 @@ function menuPick(id, kind) {
     anchors = [id];
     picked = null;
     avoidOnce.clear();
+    titansOnce.clear();
     schedule();
     return;
   }
@@ -1502,6 +1545,12 @@ function menuPick(id, kind) {
       break;
     case "drop":
       anchors = anchors.filter((_, i) => i !== at);
+      break;
+    case "titan":
+      titansOnce.add(id);
+      break;
+    case "untitan":
+      titansOnce.delete(id);
       break;
     case "avoid":
       avoidOnce.add(id);
@@ -1520,6 +1569,7 @@ function menuPick(id, kind) {
       routeKind = null;
       picked = null;
       avoidOnce.clear();
+      titansOnce.clear();
       schedule();
       return;
     case "info":

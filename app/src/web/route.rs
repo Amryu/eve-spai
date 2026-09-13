@@ -178,6 +178,19 @@ pub struct RouteOption {
     /// flown anyway, which is most of the time even with a long avoid list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detour: Option<String>,
+    /// The titan's own jump, when it moves itself before bridging: where from, where to, and how far.
+    /// Not a hop, because the fleet does not fly it; the fleet gates to where the titan lands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub titan_jump: Option<TitanJump>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct TitanJump {
+    pub from: i64,
+    pub to: i64,
+    pub from_name: String,
+    pub to_name: String,
+    pub ly: f64,
 }
 
 /// The hulls a jump route can be planned for, so the page's picker is the app's own list rather than
@@ -300,6 +313,7 @@ pub fn gate(
         total_ly: 0.0,
         note: None,
         detour: None,
+        titan_jump: None,
         path,
         hops,
     })
@@ -359,6 +373,7 @@ pub fn jump(
         jumps: path.len().saturating_sub(1),
         total_ly,
         detour: None,
+        titan_jump: None,
         note: Some(format!(
             "{} isotopes · {:.0} min fatigue at the end",
             (fuel.round() as i64).to_string(),
@@ -400,11 +415,27 @@ pub fn titan(
     at_start: bool,
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
+    titans: &[i64],
+    self_jump: bool,
 ) -> Vec<RouteOption> {
+    // The titan moves itself first: it is sitting with the fleet, so it can jump somewhere that
+    // bridges better and have the fleet gate out to meet it. Worth offering because a titan's range
+    // is often the difference between two gates and twenty.
+    if self_jump && at_start && titans.is_empty() {
+        let opts = titan_self_jump(graph, coords, from, to, max_ly, bridges, avoid, holes);
+        if !opts.is_empty() {
+            return opts;
+        }
+    }
+    // Named titans win over the two guesses: if the user has said where the ships actually are, that
+    // is the answer, and "at the start" is only a guess about where one might be.
+    if !titans.is_empty() {
+        return titan_via(graph, coords, from, to, max_ly, bridges, avoid, holes, titans);
+    }
     if !at_start {
         // The mirror image: plan it backwards and turn the result around. One implementation of
         // "one jump, gates for the rest" rather than two that can disagree.
-        return titan(graph, coords, to, from, max_ly, bridges, true, avoid, holes)
+        return titan(graph, coords, to, from, max_ly, bridges, true, avoid, holes, titans, false)
             .into_iter()
             .map(reverse)
             .collect();
@@ -416,7 +447,7 @@ pub fn titan(
     // this would not be a titan route, it would be one jump.
     let in_range: std::collections::HashSet<i64> = coords
         .iter()
-        .filter(|s| s.id != to && crate::jumproute::cyno_able(s.security))
+        .filter(|s| s.id != to && crate::jumproute::jumpable(s))
         .filter(|s| !avoid.blocked(s.id))
         .filter(|s| crate::map::ly_distance(start, s) <= max_ly)
         .map(|s| s.id)
@@ -454,6 +485,7 @@ pub fn titan(
                 total_ly: ly,
                 note: Some(format!("{ly:.1} ly jump, then {} gates", rest.gates)),
                 detour: rest.detour,
+                titan_jump: None,
                 path,
                 hops,
             })
@@ -474,6 +506,7 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
         total_ly: head.total_ly + tail.total_ly,
         note: tail.note,
         detour: head.detour.or(tail.detour),
+        titan_jump: head.titan_jump.or(tail.titan_jump),
         path,
         hops,
     }
@@ -560,6 +593,8 @@ pub fn chain(
     jfc: u32,
     titan_ly: f64,
     titan_at_start: bool,
+    titans: &[i64],
+    titan_self_jump: bool,
     bridges: bool,
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
@@ -576,7 +611,7 @@ pub fn chain(
     for (i, w) in anchors.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
         let options = if i == last && kind == "titan" {
-            titan(graph, coords, a, b, titan_ly, bridges, titan_at_start, avoid, holes)
+            titan(graph, coords, a, b, titan_ly, bridges, titan_at_start, avoid, holes, titans, titan_self_jump)
         } else {
             leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes)
         };
@@ -610,6 +645,205 @@ pub fn chain(
     (legs, out)
 }
 
+/// The titan jumps itself, the fleet gates out to it, and it bridges them from there.
+///
+/// Two searches deep: where the titan can usefully land, and from each landing where it can throw the
+/// fleet. Bounded by keeping only landings that are few gates from the start, since a titan that
+/// lands somewhere the fleet cannot reach quickly has helped nobody.
+#[allow(clippy::too_many_arguments)]
+fn titan_self_jump(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    from: i64,
+    to: i64,
+    max_ly: f64,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+) -> Vec<RouteOption> {
+    /// How far the fleet will gate to meet the titan. Past this it is not a shortcut any more.
+    const MAX_GATE_TO_TITAN: u32 = 6;
+    /// How many landings to try. Each one costs a second search.
+    const LANDINGS: usize = 12;
+
+    let (Some(start), Some(plain)) =
+        (pos(coords, from), gate(graph, from, to, bridges, avoid, holes))
+    else {
+        return Vec::new();
+    };
+    let baseline = plain.gates;
+    let near = graph.gate_distances_from(from, MAX_GATE_TO_TITAN);
+    let mut landings: Vec<(i64, f64)> = coords
+        .iter()
+        .filter(|s| s.id != from && crate::jumproute::jumpable(s))
+        .filter(|s| !avoid.blocked(s.id))
+        .filter(|s| near.contains_key(&s.id))
+        .filter(|s| crate::map::ly_distance(start, s) <= max_ly)
+        .map(|s| (s.id, crate::map::ly_distance(start, s)))
+        .collect();
+    // Nearest first: a shorter titan jump is less fatigue on the ship that has to do it twice.
+    landings.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    landings.truncate(LANDINGS);
+
+    let mut out: Vec<RouteOption> = Vec::new();
+    for (land, jump_ly) in landings {
+        let Some(lpos) = pos(coords, land) else { continue };
+        let Some(to_titan) = gate(graph, from, land, bridges, avoid, holes) else { continue };
+        let in_range: std::collections::HashSet<i64> = coords
+            .iter()
+            .filter(|s| s.id != to && crate::jumproute::jumpable(s))
+            .filter(|s| !avoid.blocked(s.id))
+            .filter(|s| crate::map::ly_distance(lpos, s) <= max_ly)
+            .map(|s| s.id)
+            .collect();
+        let Some((_, ring)) = graph.nearest_matching(to, TITAN_MAX_JUMPS, |id| {
+            in_range.contains(&id) && !avoid.blocked(id)
+        }) else {
+            continue;
+        };
+        let Some(&hop) = ring.first() else { continue };
+        let Some(tail) = gate(graph, hop, to, bridges, avoid, holes) else { continue };
+        let gates = to_titan.gates + tail.gates;
+        if gates >= baseline {
+            continue;
+        }
+        let bridge_ly = pos(coords, hop).map(|h| crate::map::ly_distance(lpos, h)).unwrap_or_default();
+        let name = |id: i64| graph.info_of(id).map(|i| i.name.clone()).unwrap_or_default();
+        let mut hops = to_titan.hops;
+        hops.push(named(graph, hop, 2, Some(bridge_ly)));
+        hops.extend(tail.hops.into_iter().skip(1));
+        let mut path = to_titan.path;
+        path.push(hop);
+        path.extend(tail.path.into_iter().skip(1));
+        out.push(RouteOption {
+            label: format!("titan to {}", name(land)),
+            gates,
+            jumps: 1,
+            total_ly: bridge_ly,
+            note: Some(format!(
+                "Titan jumps {jump_ly:.1} ly to {}. Fleet gates {} to meet it, then {bridge_ly:.1} ly to {}, then {} gates.",
+                name(land),
+                to_titan.gates,
+                name(hop),
+                tail.gates
+            )),
+            detour: None,
+            titan_jump: Some(TitanJump {
+                from,
+                to: land,
+                from_name: name(from),
+                to_name: name(land),
+                ly: jump_ly,
+            }),
+            path,
+            hops,
+        });
+    }
+    out.sort_by(|a, b| {
+        a.gates.cmp(&b.gates).then(
+            a.total_ly.partial_cmp(&b.total_ly).unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    out.truncate(4);
+    out
+}
+
+/// Gate to a titan, jump as far in as its range allows, gate the rest.
+///
+/// One option per titan that helps, best first. A titan that does not help is left out rather than
+/// listed as a worse choice: the point of asking is to find the one that does, and the caller says so
+/// when none of them do.
+#[allow(clippy::too_many_arguments)]
+fn titan_via(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    from: i64,
+    to: i64,
+    max_ly: f64,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+    titans: &[i64],
+) -> Vec<RouteOption> {
+    let plain = gate(graph, from, to, bridges, avoid, holes);
+    let baseline = plain.as_ref().map(|o| o.gates).unwrap_or(usize::MAX);
+    let mut out: Vec<RouteOption> = Vec::new();
+    for &t in titans {
+        let Some(tpos) = pos(coords, t) else { continue };
+        // Getting to the titan is gates, and it can be none of them if you are already there.
+        let Some(head) = gate(graph, from, t, bridges, avoid, holes) else { continue };
+        let in_range: std::collections::HashSet<i64> = coords
+            .iter()
+            .filter(|s| s.id != to && crate::jumproute::jumpable(s))
+            .filter(|s| !avoid.blocked(s.id))
+            .filter(|s| crate::map::ly_distance(tpos, s) <= max_ly)
+            .map(|s| s.id)
+            .collect();
+        if in_range.is_empty() {
+            continue;
+        }
+        let Some((_, mut ring)) = graph.nearest_matching(to, TITAN_MAX_JUMPS, |id| {
+            in_range.contains(&id) && !avoid.blocked(id)
+        }) else {
+            continue;
+        };
+        ring.sort_by(|a, b| {
+            let d = |id: i64| {
+                pos(coords, id).map(|s| crate::map::ly_distance(tpos, s)).unwrap_or(f64::MAX)
+            };
+            d(*a).partial_cmp(&d(*b)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let Some(&hop) = ring.first() else { continue };
+        let Some(tail) = gate(graph, hop, to, bridges, avoid, holes) else { continue };
+        let ly = pos(coords, hop).map(|h| crate::map::ly_distance(tpos, h)).unwrap_or_default();
+        let tname = graph.info_of(t).map(|i| i.name.clone()).unwrap_or_default();
+        let hname = graph.info_of(hop).map(|i| i.name.clone()).unwrap_or_default();
+
+        let mut hops = head.hops;
+        let mut jump_hop = named(graph, hop, 2, Some(ly));
+        jump_hop.anchor = false;
+        hops.push(jump_hop);
+        hops.extend(tail.hops.into_iter().skip(1));
+        let mut path = head.path;
+        path.push(hop);
+        path.extend(tail.path.into_iter().skip(1));
+        let gates = head.gates + tail.gates;
+        if gates >= baseline {
+            continue;
+        }
+        out.push(RouteOption {
+            label: format!("via {tname}"),
+            gates,
+            jumps: 1,
+            total_ly: ly,
+            note: Some(format!("{} gates to {tname}, {ly:.1} ly to {hname}, {} gates in", head.gates, tail.gates)),
+            detour: None,
+            titan_jump: None,
+            path,
+            hops,
+        });
+    }
+    out.sort_by(|a, b| {
+        a.gates.cmp(&b.gates).then(
+            a.total_ly.partial_cmp(&b.total_ly).unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    if out.is_empty() {
+        // No titan shortens it, so the honest answer is the route you would fly anyway, saying why.
+        return plain
+            .into_iter()
+            .map(|mut o| {
+                o.note = Some(
+                    "No titan on the list gets you there in fewer gates. This is the gate route."
+                        .to_owned(),
+                );
+                o
+            })
+            .collect();
+    }
+    out
+}
+
 /// A route flown the other way.
 ///
 /// The hops reverse, but a hop's `kind`, distance and fuel describe the edge *into* it, so those have
@@ -639,6 +873,7 @@ fn reverse(o: RouteOption) -> RouteOption {
         total_ly: o.total_ly,
         note: o.note,
         detour: o.detour,
+        titan_jump: o.titan_jump,
     }
 }
 
@@ -668,6 +903,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
         total_ly: o.total_ly,
         note: o.note.clone(),
         detour: o.detour.clone(),
+        titan_jump: o.titan_jump.clone(),
     }
 }
 
@@ -708,6 +944,8 @@ mod tests {
             5,
             6.0,
             true,
+            &[],
+            false,
             false,
             &Avoid::default(),
             &Default::default(),

@@ -700,6 +700,8 @@ pub struct SpaiApp {
     map_route_anchors: Vec<i64>,
     /// Whether the titan is in the system the route starts from. Off, it is waiting at the far end.
     map_titan_at_start: bool,
+    /// Whether the titan may move itself first and have the fleet gate out to meet it.
+    map_titan_self_jump: bool,
     /// The ways of flying each leg, and which one is picked.
     map_route_legs: Vec<crate::web::route::LegChoice>,
     map_leg_pick: Vec<usize>,
@@ -707,6 +709,9 @@ pub struct SpaiApp {
     map_avoid_once: std::collections::HashSet<i64>,
     /// The system whose intel is being read from a route warning.
     map_intel_for: Option<i64>,
+    /// Systems a titan is sitting in, for this route. Not a setting: which ships are where is a fact
+    /// about the operation you are planning, not about the installation.
+    map_titans: Vec<i64>,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1439,10 +1444,12 @@ impl SpaiApp {
             map_route_kind: "gate",
             map_route_anchors: Vec::new(),
             map_titan_at_start: true,
+            map_titan_self_jump: false,
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),
             map_avoid_once: std::collections::HashSet::new(),
             map_intel_for: None,
+            map_titans: Vec::new(),
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -10658,6 +10665,7 @@ impl SpaiApp {
         };
         self.map_route_anchors = vec![sid];
         self.map_avoid_once.clear();
+        self.map_titans.clear();
         self.map_route_opts.clear();
         self.map_route_legs.clear();
     }
@@ -10685,6 +10693,7 @@ impl SpaiApp {
     }
 
     fn map_route_clear(&mut self) {
+        self.map_titans.clear();
         self.map_route_anchors.clear();
         self.map_route_opts.clear();
         self.map_route_legs.clear();
@@ -10718,6 +10727,8 @@ impl SpaiApp {
             self.jump_jfc,
             TITAN_LY,
             self.map_titan_at_start,
+            &self.map_titans.clone(),
+            self.map_titan_self_jump,
             bridges,
             &avoid,
             &holes,
@@ -10856,7 +10867,7 @@ impl SpaiApp {
                             } else {
                                 match h.kind {
                                     2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                    1 => "bridge".to_owned(),
+                                    1 => "ansiblex".to_owned(),
                                     _ => "gate".to_owned(),
                                 }
                             };
@@ -11516,6 +11527,22 @@ impl SpaiApp {
                 {
                     self.map_route_clear();
                     ui.close();
+                }
+                if self.map_route_kind == "titan" {
+                    // Any system, not only ones on the route: where the ships are is the question
+                    // the titan route is asking, and the answer is often nowhere near the path.
+                    let t = self.map_titans.contains(&sid);
+                    if ui
+                        .button(if t { "Not a titan system" } else { "Set as titan system" })
+                        .clicked()
+                    {
+                        self.map_titans.retain(|&x| x != sid);
+                        if !t {
+                            self.map_titans.push(sid);
+                        }
+                        self.map_replan_route();
+                        ui.close();
+                    }
                 }
                 ui.separator();
                 let once = self.map_avoid_once.contains(&sid);
@@ -12212,6 +12239,23 @@ impl SpaiApp {
             }
         }
 
+        // Where the ships are, whether or not the route currently goes near them.
+        if self.map_route_kind == "titan" {
+            const TITAN_COL: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x7B, 0xE0);
+            for t in &self.map_titans {
+                if let Some(&p) = pos.get(t) {
+                    painter.circle_filled(p, 11.0, TITAN_COL.gamma_multiply(0.22));
+                    painter.text(
+                        p - egui::vec2(0.0, 14.0),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::regular::STAR_FOUR,
+                        egui::FontId::proportional(14.0),
+                        TITAN_COL,
+                    );
+                }
+            }
+        }
+
         // The route the drag settled on, in its own colours so it does not read as the travel route.
         if let Some(o) = self.map_route_opts.get(self.map_route_at) {
             const PICK_GATE: egui::Color32 = egui::Color32::from_rgb(0xF2, 0xB1, 0x34);
@@ -12232,6 +12276,18 @@ impl SpaiApp {
                     _ => {
                         painter.line_segment([a, b], egui::Stroke::new(2.5, PICK_GATE));
                     }
+                }
+            }
+            // The titan's own jump, which the fleet does not fly: a long dash the other way round,
+            // so it reads as a second ship moving rather than as part of the route.
+            if let Some(tj) = &o.titan_jump {
+                if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
+                    painter.extend(egui::Shape::dashed_line(
+                        &arc_polyline(a, b, BRIDGE_BOW),
+                        egui::Stroke::new(2.5, PICK_JUMP),
+                        10.0,
+                        7.0,
+                    ));
                 }
             }
         }
@@ -14004,12 +14060,24 @@ impl SpaiApp {
             replan = true;
         }
 
-        if self.map_route_kind == "titan"
-            && ui
+        if self.map_route_kind == "titan" {
+            if ui
                 .checkbox(&mut self.map_titan_at_start, "Titan is in the starting system")
                 .changed()
-        {
-            replan = true;
+            {
+                replan = true;
+            }
+            if self.map_titan_at_start
+                && ui
+                    .checkbox(&mut self.map_titan_self_jump, "Titan may reposition first")
+                    .on_hover_text(
+                        "The titan jumps somewhere that bridges better and the fleet gates out to \
+                         meet it. Often the difference between two gates and twenty.",
+                    )
+                    .changed()
+            {
+                replan = true;
+            }
         }
         if self.map_route_kind != "jump"
             && ui
@@ -14212,6 +14280,9 @@ impl SpaiApp {
             })
             .unwrap_or_default();
         let mut avoid_now: Option<i64> = None;
+        let mut unavoid_now: Option<i64> = None;
+        let mut waypoint_now: Option<i64> = None;
+        let mut titan_now: Option<(i64, bool)> = None;
         let mut show_intel: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
@@ -14236,19 +14307,53 @@ impl SpaiApp {
                         } else {
                             match h.kind {
                                 2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                1 => "bridge".to_owned(),
+                                1 => "ansiblex".to_owned(),
                                 _ => "gate".to_owned(),
                             }
                         };
                         ui.label(egui::RichText::new(tail).weak().size(11.0));
-                        if !h.anchor
-                            && ui
-                                .small_button(icon::EYE_SLASH)
-                                .on_hover_text("Avoid this system")
-                                .clicked()
-                        {
-                            avoid_now = Some(h.id);
-                        }
+                        // One button rather than one per action: a row is a system and a distance,
+                        // and three buttons beside that is more chrome than content.
+                        ui.menu_button(icon::DOTS_THREE, |ui| {
+                            if h.warn.is_some_and(|w| w.sev >= crate::web::route::WARN_SEVERITY)
+                                && ui.button("Show intel").clicked()
+                            {
+                                show_intel = Some(h.id);
+                                ui.close();
+                            }
+                            if !h.anchor {
+                                let on = self.map_avoid_once.contains(&h.id);
+                                if ui
+                                    .button(if on { "Stop avoiding" } else { "Avoid this system" })
+                                    .clicked()
+                                {
+                                    if on {
+                                        unavoid_now = Some(h.id);
+                                    } else {
+                                        avoid_now = Some(h.id);
+                                    }
+                                    ui.close();
+                                }
+                                if ui.button("Add waypoint here").clicked() {
+                                    waypoint_now = Some(h.id);
+                                    ui.close();
+                                }
+                            }
+                            if self.map_route_kind == "titan" {
+                                let t = self.map_titans.contains(&h.id);
+                                if ui
+                                    .button(if t {
+                                        "Not a titan system"
+                                    } else {
+                                        "Set as titan system"
+                                    })
+                                    .clicked()
+                                {
+                                    titan_now = Some((h.id, !t));
+                                    ui.close();
+                                }
+                            }
+                        });
                     });
                     if let Some(c) = h.fuel.zip(h.fatigue_min).zip(h.reactivation_min) {
                         let ((fuel, fat), react) = c;
@@ -14273,6 +14378,20 @@ impl SpaiApp {
         });
         if let Some(id) = avoid_now {
             self.map_avoid_once.insert(id);
+            self.map_replan_route();
+        }
+        if let Some(id) = unavoid_now {
+            self.map_avoid_once.remove(&id);
+            self.map_replan_route();
+        }
+        if let Some(id) = waypoint_now {
+            self.map_route_add_waypoint(id);
+        }
+        if let Some((id, on)) = titan_now {
+            self.map_titans.retain(|&t| t != id);
+            if on {
+                self.map_titans.push(id);
+            }
             self.map_replan_route();
         }
         if let Some(id) = show_intel {

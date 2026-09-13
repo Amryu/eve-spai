@@ -196,19 +196,19 @@ button.rwarn {
 }
 .rhop .chip.anchor { font-weight: 600; }
 
-.ravoid {
+.ract {
   font: inherit;
   line-height: 1;
   color: var(--muted);
   background: none;
   border: 0;
   border-radius: 3px;
-  padding: 0.1rem 0.2rem;
+  padding: 0.1rem 0.3rem;
   cursor: pointer;
-  opacity: 0;
+  order: 0;
+  margin-left: auto;
 }
-.rhop:hover .ravoid, .ravoid:focus { opacity: 1; }
-.ravoid:hover { color: var(--hostile); }
+.ract:hover { color: var(--fg); background: var(--surface-hi); }
 .ravoidbar { display: flex; gap: 0.5rem; align-items: center; margin: 0 0 0.4rem; }
 .ravoidbar button {
   font: inherit;
@@ -229,7 +229,7 @@ button.rwarn {
 .ravoidrows button:hover { color: var(--hostile); }
 /* A pointer that never hovers, so the button is always there and big enough to hit. */
 @media (hover: none) {
-  .ravoid { opacity: 0.75; padding: 0.4rem 0.5rem; font-size: 1.05rem; }
+  .ract { padding: 0.4rem 0.55rem; font-size: 1.05rem; }
 }
 
 /* Docked, the panel is the whole box and the hop list is the part that scrolls. */
@@ -290,8 +290,14 @@ button.rwarn {
 .rhop .chip { min-width: 5.4rem; justify-content: center; }
 /* The avoid button belongs on the name's line. The costs and the warning take a full row each, so
    without this they pushed it onto a line of its own. */
-.ravoid { order: 0; margin-left: auto; }
 .rcost, .rwarn { order: 1; }
 .rdetour { color: var(--warning); font-size: 0.82rem; margin: 0 0 0.4rem; }
 /* Docked, the hop list takes whatever height is left rather than stopping at a guess. */
 .rdock .rhops { flex: 1 1 auto; }
+
+.altdlg .mpanel { min-width: min(20rem, 90vw); }
+.altdlg .ravoidrows { max-height: 16rem; }
+.altdlg .ravoidrows button { font: inherit; background: none; border: 0; cursor: pointer; padding: 0.25rem 0; text-align: left; width: 100%; }
+.altdlg .ravoidrows button:hover { background: var(--surface-hi); }
+
+.rtitan { color: #e07be0; font-size: 0.82rem; margin: 0 0 0.4rem; }

@@ -197,6 +197,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [UI-053 The in-app map menu still has its old entries](UI-053-map-context-menu/) | `app.rs` map | after 52 | **Fixed** |
 | [WEB-054 Avoid list cannot be inspected; controls too small to hit](WEB-054-avoid-list-and-touch/) | `web/route.rs`, `dialogs.*` | after 53 | **Fixed** |
 | [UI-055 The in-app planner is a jump-only form with the route at the bottom](UI-055-route-sidebar/) | `app.rs`, `web/route.rs` | after 54 | **Delivered** |
+| [UI-056 Titan systems, row actions, alternatives, Zarzakh](UI-056-titan-systems/) | `web/route.rs`, `jumproute.rs`, `app.rs` | after 55 | **Delivered** |
 
 ### Browser evidence
 
