@@ -113,8 +113,16 @@ function bodyHtml(text, names) {
     const e = esc(t);
     return rx ? e.replace(rx, (_, pre, hit) => `${pre}<b class="jmention">${hit}</b>`) : e;
   };
+  return linkify(condense(text), mark);
+}
+
+/// Every http(s) URL in `text` as an anchor, with `mark` escaping everything between them.
+///
+/// `mark` is the seam: a chat line also wants its mentions highlighted, a MOTD wants nothing but
+/// the links, and both want exactly one implementation of where a URL ends.
+function linkify(text, mark = esc) {
   let out = "";
-  let rest = condense(text);
+  let rest = String(text ?? "");
   for (;;) {
     const at = rest.search(/https?:\/\//);
     if (at < 0) break;
@@ -262,7 +270,9 @@ function motdDialog(jid) {
   wrap.innerHTML =
     `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
     `<h3>${ico("article")} ${esc(c.name)} MOTD</h3>` +
-    `<pre class="jmotdtext">${esc(c.motd)}</pre></div>`;
+    // Linkified, not escaped flat: a MOTD is where the doctrine and forum links live, and they are
+    // the part people actually want out of it.
+    `<pre class="jmotdtext">${linkify(c.motd)}</pre></div>`;
   document.body.append(wrap);
   wrap.addEventListener("click", (e) => {
     if (e.target === wrap || e.target.closest(".mclose")) wrap.remove();

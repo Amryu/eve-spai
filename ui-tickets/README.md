@@ -217,6 +217,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-073 Titan route offers its alternatives twice; the second row is dead](WEB-073-titan-alt-duplicate/) | `web/route.rs`, `dialogs.js`, `app.rs` | after 72 | **Fixed** |
 | [UI-074 The jabber room topic became unreachable](UI-074-jabber-motd/) | `app.rs` jabber, `panes-jabber.*`, `web/jabber.rs` | after 73 | **Fixed** |
 | [UI-075 An expired EVE login warns nobody; a missing keychain reports a D-Bus error](UI-075-auth-expiry-warning/) | `esi.rs`, `auth.rs`, `tokens.rs`, `app.rs` chrome | after 74 | **Fixed** |
+| [UI-076 Rooms listed (dead) under Direct messages; MOTD links not clickable](UI-076-dm-rooms-motd-links/) | `app.rs` jabber, `panes-jabber.js` | after 75 | **Fixed** |
 
 ### Browser evidence
 

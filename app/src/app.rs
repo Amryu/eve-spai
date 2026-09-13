@@ -3309,7 +3309,20 @@ impl SpaiApp {
                 }
                 ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.add(egui::Label::new(&motd).wrap());
+                    // Line by line, each in its own wrapping row: `render_linked_text` emits inline
+                    // widgets and knows nothing about newlines, and a MOTD's own line breaks are
+                    // half of what makes it readable. The links matter because a MOTD is where the
+                    // doctrine and forum links live.
+                    for line in motd.lines() {
+                        if line.trim().is_empty() {
+                            ui.add_space(4.0);
+                            continue;
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            render_linked_text(ui, line, false);
+                        });
+                    }
                 });
             });
         if !open {
@@ -3506,26 +3519,23 @@ impl SpaiApp {
                 || jid.to_lowercase().contains(search)
         };
 
-        // Anything unread joins the list and stays for as long as the tab is open.
-        for c in f.convos.iter().filter(|c| c.unread) {
-            self.jabber_sticky.insert(c.jid.clone());
-        }
-
         let contacts: std::collections::HashSet<&String> =
             self.settings.jabber_contacts.iter().collect();
         let dm_keys: std::collections::HashSet<&String> = f.dm_keys.iter().collect();
-        // A DM the user closed stays closed. It comes back when it goes unread, which is what makes
-        // it sticky, so closing one is curation rather than a way to lose mail.
+        let is_dm = |jid: &String| is_direct_message(jid, &dm_keys, &contacts);
+
+        // Anything unread joins the list and stays for as long as the tab is open. Rooms have their
+        // own list and must not be stuck into this one.
+        for c in f.convos.iter().filter(|c| c.unread && is_dm(&c.jid)) {
+            self.jabber_sticky.insert(c.jid.clone());
+        }
+
         let closed: std::collections::HashSet<&String> =
             self.settings.jabber_closed_dms.iter().collect();
         let mut dms: Vec<&Convo> = f
             .convos
             .iter()
-            .filter(|c| {
-                self.jabber_sticky.contains(&c.jid)
-                    || (!closed.contains(&c.jid)
-                        && (dm_keys.contains(&c.jid) || contacts.contains(&c.jid)))
-            })
+            .filter(|c| shows_in_dm_list(&c.jid, &dm_keys, &contacts, &closed, &self.jabber_sticky))
             .filter(|c| matches(&c.name, &c.jid))
             .collect();
         // Unread first, then most recent. An unread conversation with no history yet would sort to
@@ -3573,6 +3583,7 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(title).strong().size(15.0).color(accent));
             };
             section(ui, "Direct messages", dms.len());
+            ui.push_id("dmlist", |ui| {
             for c in &dms {
                 let (r, g, b) = c.presence.color();
                 if self
@@ -3591,10 +3602,12 @@ impl SpaiApp {
                     open = Some(c.jid.clone());
                 }
             }
+            });
             if self.jabber_start_row(ui, egui_phosphor::regular::CHAT_CIRCLE_DOTS, "Start a DM") {
                 start = Some(false);
             }
             section(ui, "Rooms", rooms.len());
+            ui.push_id("roomlist", |ui| {
             for c in &rooms {
                 let row = self.jabber_convo_row(
                     ui,
@@ -3618,6 +3631,7 @@ impl SpaiApp {
                     open = Some(c.jid.clone());
                 }
             }
+            });
             if self.jabber_start_row(ui, egui_phosphor::regular::USERS_THREE, "Join a room") {
                 start = Some(true);
             }
@@ -3795,6 +3809,9 @@ impl SpaiApp {
             egui::pos2(ui.min_rect().left(), inner.rect.top() - 1.0),
             egui::pos2(ui.min_rect().right(), inner.rect.bottom() + 1.0),
         );
+        // Salted with the list this row is in, not just the jid: the same conversation can legitimately
+        // appear in two lists (a search result, a contact that is also a recent chat), and two rows
+        // sharing one id means egui hit-tests one of them and the other is painted but dead.
         let resp = ui.interact(row, ui.id().with(jid), egui::Sense::click());
         let fill = if selected {
             ui.visuals().selection.bg_fill
@@ -21943,6 +21960,36 @@ fn short_chip(s: &str) -> String {
     truncate_to(s, 20)
 }
 
+/// Whether a conversation is a direct message rather than a room.
+///
+/// The frame's `convos` is built from everything with history, and a room has history, so this is
+/// the only thing separating the two lists. `dm_keys` already excludes rooms, joined or left; a
+/// contact is a person by definition.
+fn is_direct_message(
+    jid: &String,
+    dm_keys: &std::collections::HashSet<&String>,
+    contacts: &std::collections::HashSet<&String>,
+) -> bool {
+    dm_keys.contains(jid) || contacts.contains(jid)
+}
+
+/// Whether a conversation belongs in the Direct messages list.
+///
+/// Being a DM is the gate; being sticky only overrides having been closed. It used to be the other
+/// way round — sticky *or* (not closed and a DM) — so anything that ever reached `jabber_sticky`
+/// was listed as a DM whatever it actually was. Every room that went unread did, and the duplicate
+/// row was also dead: two rows with the same jid ask egui to interact with one id twice, and only
+/// one of them can win the hit test.
+fn shows_in_dm_list(
+    jid: &String,
+    dm_keys: &std::collections::HashSet<&String>,
+    contacts: &std::collections::HashSet<&String>,
+    closed: &std::collections::HashSet<&String>,
+    sticky: &std::collections::BTreeSet<String>,
+) -> bool {
+    is_direct_message(jid, dm_keys, contacts) && (sticky.contains(jid) || !closed.contains(jid))
+}
+
 /// A room's MOTD as one line, for a title bar that has one line to give it.
 ///
 /// A MOTD is written as a notice board: several lines, blank lines between them, sometimes a rule
@@ -29403,7 +29450,7 @@ mod jabber_force_join_tests {
 
 #[cfg(test)]
 mod active_character_tests {
-    use super::{CharacterRow, motd_one_line, motd_preview, resolve_active_character};
+    use super::{CharacterRow, motd_one_line, motd_preview, resolve_active_character, shows_in_dm_list};
 
     fn rows(names: &[&str]) -> Vec<CharacterRow> {
         names
@@ -29479,6 +29526,66 @@ mod active_character_tests {
         // Under the cap there is nothing behind it, so there is no marker.
         let short = motd_preview("one\ntwo", 6);
         assert_eq!(short, "one\ntwo");
+    }
+
+    /// A room is never a direct message, however it got into the sticky set.
+    ///
+    /// Reported from chat: "Direct messages in jabber shows uninteractable rooms instead (the
+    /// duplicates on the rooms work just fine)". Every room that went unread was stuck into the DM
+    /// list and listed under both headings, and the duplicate was dead because two rows sharing a
+    /// jid share an egui id and only one wins the hit test.
+    #[test]
+    fn a_room_is_never_listed_as_a_direct_message() {
+        use std::collections::{BTreeSet, HashSet};
+        let dm = "wingmate@goonfleet.com".to_owned();
+        let room = "delve.imperium@conference.goonfleet.com".to_owned();
+        let dm_keys: HashSet<&String> = HashSet::from([&dm]);
+        let contacts: HashSet<&String> = HashSet::new();
+        let closed: HashSet<&String> = HashSet::new();
+
+        // The state the bug left behind: the room went unread, so it is sticky.
+        let sticky = BTreeSet::from([dm.clone(), room.clone()]);
+        assert!(shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &sticky));
+        assert!(
+            !shows_in_dm_list(&room, &dm_keys, &contacts, &closed, &sticky),
+            "a room stays out of the DM list even while it is sticky"
+        );
+    }
+
+    /// The sticky rule exists so closing a DM is curation and not a way to lose mail. It has to keep
+    /// working, because the fix narrows what stickiness is allowed to override.
+    #[test]
+    fn a_closed_dm_comes_back_when_it_goes_unread() {
+        use std::collections::{BTreeSet, HashSet};
+        let dm = "wingmate@goonfleet.com".to_owned();
+        let dm_keys: HashSet<&String> = HashSet::from([&dm]);
+        let contacts: HashSet<&String> = HashSet::new();
+        let closed: HashSet<&String> = HashSet::from([&dm]);
+
+        assert!(
+            !shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &BTreeSet::new()),
+            "closed and quiet stays closed"
+        );
+        assert!(
+            shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &BTreeSet::from([dm.clone()])),
+            "closed but unread comes back"
+        );
+    }
+
+    /// A contact with no history is a person you have not spoken to yet, and the list is how you
+    /// start. `dm_keys` only covers conversations that already exist.
+    #[test]
+    fn a_contact_is_a_direct_message_without_any_history() {
+        use std::collections::{BTreeSet, HashSet};
+        let friend = "logilead@goonfleet.com".to_owned();
+        let contacts: HashSet<&String> = HashSet::from([&friend]);
+        assert!(shows_in_dm_list(
+            &friend,
+            &HashSet::new(),
+            &contacts,
+            &HashSet::new(),
+            &BTreeSet::new()
+        ));
     }
 
     /// A room with no subject must not draw an empty separator and a dead button.
