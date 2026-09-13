@@ -475,6 +475,33 @@ function jumpControls(kind, out) {
 
 const KINDS = { gate: "Gate route", jump: "Jump route", titan: "Titan route" };
 
+/// Whether the avoid list is expanded. "Avoiding 3 systems" is only useful if you can see which
+/// three, and a list that is always open costs the hops their room.
+let avoidOpen = false;
+
+function avoidList(out) {
+  const rows = out?.avoided ?? [];
+  if (!rows.length) return "";
+  const head =
+    `<button class="ravoiding" data-avoidlist>${ico("eye-slash")} avoiding ${rows.length} ` +
+    `${rows.length === 1 ? "system" : "systems"}</button>`;
+  if (!avoidOpen) return `<p class="ravoidbar">${head}</p>`;
+  return (
+    `<p class="ravoidbar">${head}<button data-unavoid="all">clear this route</button></p>` +
+    `<ul class="ravoidrows">` +
+    rows
+      .map(
+        (a) =>
+          `<li><span>${esc(a.name)}</span>` +
+          (a.always ? `<em>always</em>` : "") +
+          `<button data-unavoid="${a.id}" data-always="${a.always ? 1 : 0}" title="Stop avoiding">` +
+          `${ico("x")}</button></li>`
+      )
+      .join("") +
+    `</ul>`
+  );
+}
+
 function paintRoute(kind, onPick) {
   const o = routeOpts[routeAt];
   onPick?.(o);
@@ -553,18 +580,14 @@ function paintRoute(kind, onPick) {
     // button would be there and do nothing.
     (h.anchor
       ? ""
-      : `<button class="ravoid" data-avoid="${h.id}" title="Plan around this system">${ico("eye-slash")}</button>`) +
+      : `<button class="ravoid" data-avoid="${h.id}" title="Avoid this system">${ico("eye-slash")}</button>`) +
     `</li>`;
   open(
     "route",
     `<h3>${esc(KINDS[kind] ?? "Route")}</h3>` +
       jumpControls(kind, routeReq?.out) +
       holeControl(kind, routeReq?.out) +
-      (avoidOnce.size
-        ? `<p class="ravoiding">${ico("eye-slash")} avoiding ${avoidOnce.size} ` +
-          `${avoidOnce.size === 1 ? "system" : "systems"} on this route ` +
-          `<button data-unavoid="all">clear</button></p>`
-        : "") +
+      avoidList(routeReq?.out) +
       tabs +
       legs +
       `<p class="mgroup">${o.jumps} ${o.jumps === 1 ? "jump" : "jumps"}` +
@@ -587,10 +610,24 @@ function paintRoute(kind, onPick) {
       fetchRoute();
     })
   );
-  win?.querySelector("[data-unavoid]")?.addEventListener("click", () => {
-    avoidOnce.clear();
-    fetchRoute();
+  win?.querySelector("[data-avoidlist]")?.addEventListener("click", () => {
+    avoidOpen = !avoidOpen;
+    paintRoute(kind, onPick);
   });
+  win?.querySelectorAll("[data-unavoid]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const which = b.dataset.unavoid;
+      if (which === "all") avoidOnce.clear();
+      else if (b.dataset.always === "1") {
+        send({
+          AvoidSystem: { id: Number(which), jump: routeReq?.kind === "jump", on: false },
+        });
+        setTimeout(fetchRoute, 150);
+        return;
+      } else avoidOnce.delete(Number(which));
+      fetchRoute();
+    })
+  );
   win?.querySelectorAll("[data-leg]").forEach((b) =>
     b.addEventListener("click", () => {
       legPick[Number(b.dataset.leg)] = Number(b.dataset.alt);

@@ -179,16 +179,17 @@
 }
 
 /* The route window, docked. */
+/* A fixed share of the pane, not content-sized: the dock holds tabs, and a box that resizes when
+   you switch between them moves the map every time you look at something else. */
 .rdock {
-  flex: 0 0 auto;
+  flex: 0 0 45%;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  max-height: 45%;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 6px;
 }
-.pane.dockright .rdock { max-height: none; max-width: 22rem; flex: 0 0 22rem; }
+.pane.dockright .rdock { max-width: 22rem; flex: 0 0 22rem; }
 .rdock[hidden] { display: none; }

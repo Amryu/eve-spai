@@ -431,6 +431,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         &d.holes,
                         &pick,
                     );
+                    out.avoided = super::route::avoided(graph, &avoid);
                     out.legs = legs;
                     out.options = options;
                     super::route::mark_anchors(&mut out.options, &anchors);
