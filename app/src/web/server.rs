@@ -379,6 +379,15 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         titan_ly,
                         d.count_bridges,
                     );
+                    {
+                        let w = ctx.web.lock().unwrap_or_else(|e| e.into_inner());
+                        let danger = super::route::danger_from_marks(
+                            &w.intel_marks(),
+                            &w.kill_counts(),
+                        );
+                        drop(w);
+                        super::route::annotate(&mut out.options, &danger);
+                    }
                     if out.options.is_empty() {
                         out.error = Some(match kind.as_str() {
                             "jump" => "No capital route: every path needs a cyno-able system in range."

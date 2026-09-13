@@ -28,6 +28,88 @@ pub struct Hop {
     pub fatigue_min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactivation_min: Option<f64>,
+    /// Why not to fly through here, if there is a reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warn: Option<HopWarning>,
+}
+
+/// A reason to look twice at a system on the route.
+///
+/// Intel below Danger is not carried: a route through nullsec passes through dozens of systems that
+/// someone has said something about, and a warning on all of them is a warning on none.
+#[derive(Serialize, Clone, Copy, Default, PartialEq)]
+pub struct HopWarning {
+    /// Worst severity reported inside the intel TTL. 2 is Danger, 3 Critical.
+    pub sev: u8,
+    /// When that report came in, so the page can say how old it is.
+    pub at: i64,
+    /// Ship and pod kills in the last hour, from ESI.
+    pub kills: u32,
+    pub pods: u32,
+}
+
+/// Danger and above. Below that a nullsec route would be warnings end to end.
+pub const WARN_SEVERITY: u8 = 2;
+
+/// Attach the warnings to every hop of every option.
+///
+/// A pass over the finished routes rather than an argument to each builder: what counts as dangerous
+/// is a property of the moment, not of the path, and threading it through three route functions
+/// would put the same lookup in three places.
+pub fn annotate(
+    options: &mut [RouteOption],
+    danger: &std::collections::HashMap<i64, HopWarning>,
+) {
+    for o in options.iter_mut() {
+        for h in o.hops.iter_mut() {
+            h.warn = danger.get(&h.id).copied();
+        }
+    }
+}
+
+/// The warning map from what the page already has: the map pane's per-system intel and the status
+/// pane's kill counts.
+pub fn danger_from_marks(
+    intel: &[(i64, u8, i64)],
+    kills: &[(i64, u32, u32)],
+) -> std::collections::HashMap<i64, HopWarning> {
+    let mut out: std::collections::HashMap<i64, HopWarning> = std::collections::HashMap::new();
+    for &(id, sev, at) in intel {
+        if sev >= WARN_SEVERITY {
+            let e = out.entry(id).or_default();
+            e.sev = e.sev.max(sev);
+            e.at = e.at.max(at);
+        }
+    }
+    for &(id, k, p) in kills {
+        if k > 0 || p > 0 {
+            let e = out.entry(id).or_default();
+            e.kills = k;
+            e.pods = p;
+        }
+    }
+    out
+}
+
+/// The same map from the app's own state: raw reports plus the severity rules, because the desktop
+/// has no published snapshot to read when the web view is switched off.
+pub fn danger_from_reports(
+    reports: &[crate::intel::IntelReport],
+    rules: &crate::settings::SeverityRules,
+    ttl: i64,
+    now: i64,
+    kills: &[(i64, u32, u32)],
+) -> std::collections::HashMap<i64, HopWarning> {
+    let marks: Vec<(i64, u8, i64)> = reports
+        .iter()
+        .filter(|r| ttl <= 0 || now - r.received <= ttl)
+        .filter(|r| !r.clear)
+        .flat_map(|r| {
+            let sev = crate::app::severity_of(r, rules) as u8;
+            r.systems.iter().map(move |s| (s.id, sev, r.received))
+        })
+        .collect();
+    danger_from_marks(&marks, kills)
 }
 
 #[derive(Serialize)]
@@ -87,6 +169,7 @@ fn named(graph: &crate::geo::Systems, id: i64, kind: u8, ly: Option<f64>) -> Hop
         fuel: None,
         fatigue_min: None,
         reactivation_min: None,
+        warn: None,
     }
 }
 
@@ -322,6 +405,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
                 fuel: h.fuel,
                 fatigue_min: h.fatigue_min,
                 reactivation_min: h.reactivation_min,
+                warn: h.warn,
             })
             .collect(),
         gates: o.gates,

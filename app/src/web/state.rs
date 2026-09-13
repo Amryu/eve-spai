@@ -112,6 +112,19 @@ impl WebState {
         self.meta.as_ref().map(|m| m.theme.clone())
     }
 
+    /// Per-system intel severity as last published, for the route warnings.
+    pub fn intel_marks(&self) -> Vec<(i64, u8, i64)> {
+        self.map.as_ref().map(|m| m.intel.clone()).unwrap_or_default()
+    }
+
+    /// Ship and pod kills per system in the last hour, as last published.
+    pub fn kill_counts(&self) -> Vec<(i64, u32, u32)> {
+        self.status
+            .as_ref()
+            .map(|s| s.systems.iter().map(|(id, i)| (*id, i.k, i.p)).collect())
+            .unwrap_or_default()
+    }
+
     pub fn put_jabber(&mut self, p: crate::web::jabber::JabberPane) {
         self.jabber = Some(p);
     }
