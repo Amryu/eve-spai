@@ -1105,27 +1105,31 @@ function wire() {
   ///
   /// The popup stays up while its own switches are used: a layer panel is a thing you set two or
   /// three of at once, and closing after the first was a reopen for every one after it.
+  // The popups live in the body, not in the pane.
+  //
+  // A pane scrolls, and a scrolling box clips whatever hangs out of it, so anchored inside the pane
+  // they were cut off at the edge or lost entirely depending on the layout. The context menu already
+  // had to do this; doing it the same way here means one answer to "where do floating bits go".
+  document.querySelectorAll("body > .mlpop").forEach((p) => p.remove());
+  el.querySelectorAll(".mlpop").forEach((p) => document.body.append(p));
+
   const openGroup = (id) => {
-    el.querySelectorAll(".mlpop").forEach((p) => {
+    document.querySelectorAll(".mlpop").forEach((p) => {
       p.hidden = p.dataset.panel !== id;
     });
     el.querySelectorAll(".mlhead").forEach((h) => {
       h.classList.toggle("open", h.dataset.pop === id);
     });
     if (!id) return;
-    // Placed after it is shown, so it can be measured, and clamped to the viewport: a group at the
-    // right-hand end of a narrow pane would otherwise open off the edge of the screen.
     const btn = el.querySelector(`.mlhead[data-pop="${id}"]`);
-    const pop = el.querySelector(`.mlpop[data-panel="${id}"]`);
+    const pop = document.querySelector(`.mlpop[data-panel="${id}"]`);
     if (!btn || !pop || getComputedStyle(pop).bottom !== "auto") return;
-    // Next frame, not this one: opened from the deep link the toolbar has not been laid out yet, so
-    // the button's rectangle is still zero and the popup lands on top of the row it belongs to.
-    requestAnimationFrame(() => {
-      const b = btn.getBoundingClientRect();
-      const p = pop.getBoundingClientRect();
-      pop.style.left = `${Math.max(4, Math.min(b.left, window.innerWidth - p.width - 4))}px`;
-      pop.style.top = `${Math.min(b.bottom + 4, window.innerHeight - p.height - 4)}px`;
-    });
+    // Measured after it is shown and clamped to the viewport, so a group at the right-hand end of a
+    // narrow pane opens back onto the screen rather than off it.
+    const b = btn.getBoundingClientRect();
+    const p = pop.getBoundingClientRect();
+    pop.style.left = `${Math.max(4, Math.min(b.left, window.innerWidth - p.width - 4))}px`;
+    pop.style.top = `${Math.max(4, Math.min(b.bottom + 4, window.innerHeight - p.height - 4))}px`;
   };
   // `#maplayers` opens the first group on load, for the same reason the dialogs and the layout menu
   // take deep links: the harness cannot click.
@@ -1133,17 +1137,17 @@ function wire() {
   el.querySelectorAll("[data-pop]").forEach((b) =>
     b.addEventListener("click", (e) => {
       e.stopPropagation();
-      const already = !el.querySelector(`.mlpop[data-panel="${b.dataset.pop}"]`)?.hidden;
+      const already = !document.querySelector(`.mlpop[data-panel="${b.dataset.pop}"]`)?.hidden;
       openGroup(already ? null : b.dataset.pop);
     })
   );
   // Anywhere outside the toolbar closes whatever is open, which is the third of the three ways the
   // user asked for: elsewhere, another button, or the same button again.
   document.addEventListener("click", (e) => {
-    if (!e.target.closest(".maptools")) openGroup(null);
+    if (!e.target.closest(".maptools") && !e.target.closest(".mlpop")) openGroup(null);
   });
 
-  el.querySelectorAll("[data-layer]").forEach((b) =>
+  document.querySelectorAll(".mlpop [data-layer]").forEach((b) =>
     b.addEventListener("click", () => {
       layers[b.dataset.layer] = !layers[b.dataset.layer];
       b.classList.toggle("on", layers[b.dataset.layer]);
@@ -1152,7 +1156,7 @@ function wire() {
       schedule();
     })
   );
-  el.querySelectorAll("[data-cycle]").forEach((b) =>
+  document.querySelectorAll(".mlpop [data-cycle]").forEach((b) =>
     b.addEventListener("click", () => {
       const [, , order, names] = CYCLES.find(([k]) => k === b.dataset.cycle);
       const next = order[(order.indexOf(layers[b.dataset.cycle]) + 1) % order.length];

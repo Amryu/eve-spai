@@ -180,6 +180,7 @@ button.rwarn {
   text-decoration: underline dotted;
   text-underline-offset: 2px;
 }
+button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .jumpcfg.tflag { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
 .intelmodal .mpanel { min-width: min(30rem, 92vw); max-height: 70vh; overflow-y: auto; }
 .intelmodal .feed { display: flex; flex-direction: column; gap: 0.35rem; }
@@ -275,7 +276,10 @@ button.rwarn {
 .rdock .rhop { min-width: 0; }
 .rdock .rhops { flex: 1 1 auto; max-height: none; min-height: 0; overflow-y: auto; }
 /* Whatever a pane holds, the dock is a fixed box and the content is what scrolls inside it. */
-.dpane .mpanel { overflow-y: auto; }
+/* The panel is the box; the hop list is what scrolls inside it. With the panel scrolling instead,
+   the list stopped at its own content height and left the bottom of the dock empty. */
+.dpane .mpanel { overflow: hidden; }
+.dpane .rhops { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
 .rdock .mresists { font-size: 0.82rem; }
 
 /* Closing is the one control every window has, and on a phone it was a 12px glyph. */
@@ -290,7 +294,16 @@ button.rwarn {
 .rhop .chip { min-width: 5.4rem; justify-content: center; }
 /* The avoid button belongs on the name's line. The costs and the warning take a full row each, so
    without this they pushed it onto a line of its own. */
-.rcost, .rwarn { order: 1; }
+/* The costs take their own row; the warning shares the name's, truncated, so a hop is one line. */
+.rcost { order: 1; }
+.rwarn {
+  order: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rdetour { color: var(--warning); font-size: 0.82rem; margin: 0 0 0.4rem; }
 /* Docked, the hop list takes whatever height is left rather than stopping at a guess. */
 .rdock .rhops { flex: 1 1 auto; }
