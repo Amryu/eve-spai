@@ -9,7 +9,8 @@
 //! Base range and fuel come from the live SDE `jumpDriveRange` / `jumpDriveConsumptionAmount`
 //! attributes, NOT the Phoebe-era 2014 values: those were restored in later patches.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::map::{ly_distance, LY_METERS};
 use crate::store::MapSystem;
@@ -97,12 +98,23 @@ pub fn shortest_path_pref(
     let dist2 = |a: &MapSystem, b: &MapSystem| {
         (a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)
     };
+    // Dijkstra on (jumps, systems you cannot dock in, light years), in that order.
+    //
+    // A plain breadth-first search minimises jumps and nothing else, so among the many paths of the
+    // same length it returned whichever the queue reached first: on a dense map that is routinely
+    // several light years and a lot of fuel worse than the best one. Jumps still come first, because
+    // one fewer jump is worth any amount of distance; docking preference keeps the priority it had
+    // over distance; light years decide what used to be arbitrary.
+    let mut best: HashMap<usize, Key> = HashMap::new();
     let mut prev: HashMap<usize, usize> = HashMap::new();
-    let mut seen: HashSet<usize> = HashSet::new();
-    let mut q = VecDeque::new();
-    q.push_back(fi);
-    seen.insert(fi);
-    while let Some(cur) = q.pop_front() {
+    let mut heap: BinaryHeap<std::cmp::Reverse<(Key, usize)>> = BinaryHeap::new();
+    let start = Key { jumps: 0, off_pref: 0, ly: 0.0 };
+    best.insert(fi, start);
+    heap.push(std::cmp::Reverse((start, fi)));
+    while let Some(std::cmp::Reverse((k, cur))) = heap.pop() {
+        if best.get(&cur).is_some_and(|b| *b < k) {
+            continue;
+        }
         if cur == ti {
             let mut path = vec![systems[ti].id];
             let mut c = ti;
@@ -114,24 +126,59 @@ pub fn shortest_path_pref(
             return Some(path);
         }
         let s = &systems[cur];
-        let mut neighbours: Vec<usize> = grid
-            .near(s)
-            .into_iter()
-            .filter(|&n| n != cur && !seen.contains(&n))
-            .filter(|&n| cyno_able(systems[n].security) && dist2(s, &systems[n]) <= max_m2)
-            .collect();
-        // Expand favourited systems first so they win equal-length ties.
-        if !prefer.is_empty() {
-            neighbours.sort_by_key(|&n| !prefer.contains(&systems[n].id));
-        }
-        for n in neighbours {
-            if seen.insert(n) {
-                prev.insert(n, cur);
-                q.push_back(n);
+        for n in grid.near(s) {
+            if n == cur {
+                continue;
             }
+            let t = &systems[n];
+            if !cyno_able(t.security) {
+                continue;
+            }
+            let d2 = dist2(s, t);
+            if d2 > max_m2 {
+                continue;
+            }
+            let next = Key {
+                jumps: k.jumps + 1,
+                off_pref: k.off_pref + u32::from(!prefer.is_empty() && !prefer.contains(&t.id)),
+                ly: k.ly + d2.sqrt() / LY_METERS,
+            };
+            if best.get(&n).is_some_and(|b| *b <= next) {
+                continue;
+            }
+            best.insert(n, next);
+            prev.insert(n, cur);
+            heap.push(std::cmp::Reverse((next, n)));
         }
     }
     None
+}
+
+/// What a path has cost so far, ordered the way a jump route is judged.
+#[derive(Clone, Copy, PartialEq)]
+struct Key {
+    jumps: u32,
+    off_pref: u32,
+    ly: f64,
+}
+
+impl Eq for Key {}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.jumps
+            .cmp(&other.jumps)
+            .then(self.off_pref.cmp(&other.off_pref))
+            // Distances are sums of square roots and never NaN here, so an unordered pair can only
+            // come from a corrupt coordinate; calling it equal keeps the heap well-formed.
+            .then(self.ly.partial_cmp(&other.ly).unwrap_or(Ordering::Equal))
+    }
+}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Clone)]
@@ -187,29 +234,55 @@ pub struct RouteCost {
     pub total_delay_min: f64,
 }
 
-pub fn route_cost(systems: &[MapSystem], path: &[i64], class: &ShipClass, jfc: u32) -> RouteCost {
+/// One jump's bill: how far, how much fuel, and the two timers it leaves behind.
+#[derive(Clone, Copy, Default)]
+pub struct HopCost {
+    pub ly: f64,
+    pub fuel: f64,
+    /// The blue bar after this jump, in minutes.
+    pub fatigue_min: f64,
+    /// The red bar after this jump: how long before the drive can be used again.
+    pub reactivation_min: f64,
+}
+
+/// Per jump, so the planner can show where the fatigue actually comes from.
+///
+/// The totals are folded out of this rather than computed a second time: two implementations of the
+/// fatigue rules would be two chances to get them wrong, and the numbers are read side by side.
+pub fn hop_costs(
+    systems: &[MapSystem],
+    path: &[i64],
+    class: &ShipClass,
+    jfc: u32,
+) -> Vec<HopCost> {
     let idx: HashMap<i64, &MapSystem> = systems.iter().map(|s| (s.id, s)).collect();
     let fuel_mult = 1.0 - 0.10 * jfc as f64;
-    let mut total_ly = 0.0;
-    let mut fuel = 0.0;
     let mut fatigue = 0.0_f64;
-    let mut total_delay = 0.0_f64;
+    let mut out = Vec::with_capacity(path.len().saturating_sub(1));
     for w in path.windows(2) {
         let (Some(a), Some(b)) = (idx.get(&w[0]), idx.get(&w[1])) else { continue };
         let ly = ly_distance(a, b);
-        total_ly += ly;
-        fuel += ly * class.fuel_per_ly * fuel_mult * (1.0 - class.fuel_role_reduction);
         let d_eff = ly * (1.0 - class.fatigue_role_reduction);
-        total_delay += (fatigue / 10.0).max(1.0 + d_eff).min(30.0);
-        fatigue = fatigue.max(10.0) * (1.0 + d_eff);
-        fatigue = fatigue.min(300.0);
+        let reactivation = (fatigue / 10.0).max(1.0 + d_eff).min(30.0);
+        fatigue = (fatigue.max(10.0) * (1.0 + d_eff)).min(300.0);
+        out.push(HopCost {
+            ly,
+            fuel: ly * class.fuel_per_ly * fuel_mult * (1.0 - class.fuel_role_reduction),
+            fatigue_min: fatigue,
+            reactivation_min: reactivation,
+        });
     }
+    out
+}
+
+pub fn route_cost(systems: &[MapSystem], path: &[i64], class: &ShipClass, jfc: u32) -> RouteCost {
+    let hops = hop_costs(systems, path, class, jfc);
     RouteCost {
         jumps: path.len().saturating_sub(1),
-        total_ly,
-        fuel,
-        final_fatigue_min: fatigue,
-        total_delay_min: total_delay,
+        total_ly: hops.iter().map(|h| h.ly).sum(),
+        fuel: hops.iter().map(|h| h.fuel).sum(),
+        final_fatigue_min: hops.last().map(|h| h.fatigue_min).unwrap_or_default(),
+        total_delay_min: hops.iter().map(|h| h.reactivation_min).sum(),
     }
 }
 
@@ -218,6 +291,72 @@ mod tests {
     use super::*;
     fn sys(id: i64, x: f64, sec: f64) -> MapSystem {
         MapSystem { id, name: format!("S{id}"), security: sec, region_id: 0, x: x * LY_METERS, y: 0.0, z: 0.0, x2d: 0.0, z2d: 0.0 }
+    }
+
+    fn at(id: i64, x: f64, y: f64) -> MapSystem {
+        MapSystem {
+            id,
+            name: format!("S{id}"),
+            security: -0.4,
+            region_id: 0,
+            x: x * LY_METERS,
+            y: y * LY_METERS,
+            z: 0.0,
+            x2d: 0.0,
+            z2d: 0.0,
+        }
+    }
+
+    /// Same number of jumps, so the shorter one wins.
+    ///
+    /// A breadth-first search minimises jumps and stops thinking: among equal-length paths it took
+    /// whichever the queue reached first. `B` is listed before `A` here precisely so that the first
+    /// one reached is the longer one, which is what a plain BFS returned.
+    #[test]
+    fn equal_jumps_go_the_short_way() {
+        let s = vec![
+            at(1, 0.0, 0.0),   // start
+            at(2, 4.5, 3.0),   // B: two jumps, 10.8 ly
+            at(3, 4.5, 0.0),   // A: two jumps, 9.0 ly
+            at(4, 9.0, 0.0),   // target
+        ];
+        let path = shortest_path_pref(&s, 6.0, 1, 4, &HashSet::new()).unwrap();
+        assert_eq!(path, vec![1, 3, 4], "the straight line, not the detour");
+        let cost = route_cost(&s, &path, &SHIP_CLASSES[0], 5);
+        assert!((cost.total_ly - 9.0).abs() < 0.01, "9 ly, not 10.8");
+    }
+
+    /// One fewer jump beats any amount of distance: fatigue is per jump, and a shorter route that
+    /// takes an extra one is the wrong trade.
+    #[test]
+    fn fewer_jumps_beat_shorter_distance() {
+        let s = vec![
+            at(1, 0.0, 0.0),
+            at(2, 3.0, 0.0),
+            at(3, 6.0, 0.0),
+        ];
+        // 6 ly in one jump, or 3 + 3 in two. The one-jump answer is longer in neither, so widen the
+        // direct hop to make the point: the two-hop path is strictly shorter in ly.
+        let mut s2 = s.clone();
+        s2[2] = at(3, 5.9, 1.5);
+        let path = shortest_path_pref(&s2, 6.2, 1, 3, &HashSet::new()).unwrap();
+        assert_eq!(path, vec![1, 3], "one jump, even though two would be a shorter flight");
+    }
+
+    /// Per-hop fatigue is what the totals are made of, so they cannot disagree.
+    #[test]
+    fn hop_costs_add_up_to_the_route_cost() {
+        let s = vec![at(1, 0.0, 0.0), at(2, 4.0, 0.0), at(3, 8.0, 0.0), at(4, 12.0, 0.0)];
+        let path = vec![1, 2, 3, 4];
+        let hops = hop_costs(&s, &path, &SHIP_CLASSES[0], 5);
+        let total = route_cost(&s, &path, &SHIP_CLASSES[0], 5);
+        assert_eq!(hops.len(), 3);
+        assert!((hops.iter().map(|h| h.ly).sum::<f64>() - total.total_ly).abs() < 1e-9);
+        assert!((hops.iter().map(|h| h.fuel).sum::<f64>() - total.fuel).abs() < 1e-6);
+        assert!((hops.last().unwrap().fatigue_min - total.final_fatigue_min).abs() < 1e-9);
+        // Fatigue compounds, so each jump leaves more of it than the one before.
+        assert!(hops[0].fatigue_min < hops[1].fatigue_min);
+        assert!(hops[1].fatigue_min < hops[2].fatigue_min);
     }
 
     #[test]

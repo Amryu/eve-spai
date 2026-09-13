@@ -1119,10 +1119,14 @@ function wire() {
         // A drag off the current destination adds to the route rather than starting a new one: the
         // old destination becomes a waypoint and the new system becomes the destination. Starting
         // anywhere else is a new route, which is the only way to abandon one.
-        const extend = anchors.length > 1 && anchors[anchors.length - 1] === from && routeKind;
+        // Off a system already on the route, the route is rewritten from there: everything after it
+        // goes and the new target becomes the destination. Off the destination that is the same as
+        // appending. Anywhere else is a new route, which is the only way to abandon one.
+        const at = anchors.indexOf(from);
+        const extend = anchors.length > 1 && at >= 0 && routeKind;
         const take = (kind) => {
           routeKind = kind;
-          anchors = extend ? [...anchors, over] : [from, over];
+          anchors = extend ? [...anchors.slice(0, at + 1), over] : [from, over];
           if (kind === "gate") send({ SetDestination: { id: over } });
           showRoute(kind, anchors, (r) => {
             picked = r;

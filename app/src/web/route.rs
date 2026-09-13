@@ -20,6 +20,14 @@ pub struct Hop {
     /// Light years covered by a capital jump. Absent for a gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ly: Option<f64>,
+    /// Isotopes this jump burns, and the two timers it leaves behind, in minutes. Absent for a gate,
+    /// which costs neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fuel: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fatigue_min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reactivation_min: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -34,12 +42,35 @@ pub struct RouteOption {
     pub note: Option<String>,
 }
 
+/// The hulls a jump route can be planned for, so the page's picker is the app's own list rather than
+/// a second copy of it.
+#[derive(Serialize)]
+pub struct Hull {
+    pub name: &'static str,
+    pub base_ly: f64,
+}
+
+pub fn hulls() -> Vec<Hull> {
+    crate::jumproute::SHIP_CLASSES
+        .iter()
+        .map(|c| Hull { name: c.name, base_ly: c.base_ly })
+        .collect()
+}
+
 #[derive(Serialize, Default)]
 pub struct RouteOut {
     pub kind: String,
     pub from: i64,
     pub to: i64,
     pub options: Vec<RouteOption>,
+    /// What the jump figures were worked out with, echoed back so the page's controls and the
+    /// numbers beside them cannot drift apart.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hulls: Vec<Hull>,
+    pub hull: usize,
+    pub jdc: u32,
+    pub jfc: u32,
+    pub max_ly: f64,
     /// Why there is nothing to show, when there is nothing to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -53,6 +84,9 @@ fn named(graph: &crate::geo::Systems, id: i64, kind: u8, ly: Option<f64>) -> Hop
         security: info.map(|i| i.security).unwrap_or_default(),
         kind,
         ly,
+        fuel: None,
+        fatigue_min: None,
+        reactivation_min: None,
     }
 }
 
@@ -94,30 +128,39 @@ pub fn jump(
     coords: &[MapSystem],
     from: i64,
     to: i64,
-    max_ly: f64,
+    class: &crate::jumproute::ShipClass,
+    jdc: u32,
+    jfc: u32,
 ) -> Option<RouteOption> {
+    let max_ly = crate::jumproute::max_range_ly(class, jdc);
     let path =
         crate::jumproute::shortest_path_pref(coords, max_ly, from, to, &Default::default())?;
-    let mut total_ly = 0.0;
+    // The fuel and both timers come from the app's own model, per jump, so the page reports what the
+    // planner would and nothing has its own idea of how fatigue compounds.
+    let costs = crate::jumproute::hop_costs(coords, &path, class, jfc);
+    let total_ly: f64 = costs.iter().map(|c| c.ly).sum();
+    let fuel: f64 = costs.iter().map(|c| c.fuel).sum();
     let mut hops = Vec::with_capacity(path.len());
     for (i, &id) in path.iter().enumerate() {
-        let ly = if i == 0 {
-            None
-        } else {
-            let d = pos(coords, path[i - 1])
-                .zip(pos(coords, id))
-                .map(|(a, b)| crate::map::ly_distance(a, b));
-            total_ly += d.unwrap_or_default();
-            d
-        };
-        hops.push(named(graph, id, if i == 0 { 0 } else { 2 }, ly));
+        let mut h = named(graph, id, if i == 0 { 0 } else { 2 }, None);
+        if let Some(c) = i.checked_sub(1).and_then(|k| costs.get(k)) {
+            h.ly = Some(c.ly);
+            h.fuel = Some(c.fuel);
+            h.fatigue_min = Some(c.fatigue_min);
+            h.reactivation_min = Some(c.reactivation_min);
+        }
+        hops.push(h);
     }
     Some(RouteOption {
-        label: format!("{:.1} ly", total_ly),
+        label: format!("{total_ly:.1} ly"),
         gates: 0,
         jumps: path.len().saturating_sub(1),
         total_ly,
-        note: None,
+        note: Some(format!(
+            "{} isotopes · {:.0} min fatigue at the end",
+            (fuel.round() as i64).to_string(),
+            costs.last().map(|c| c.fatigue_min).unwrap_or_default()
+        )),
         path,
         hops,
     })
@@ -218,12 +261,16 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
 /// jump leg; only the last one can have alternatives, which is what the option list is for. A titan
 /// route chains as gates up to the last leg, because a titan route *is* one jump and then gates, and
 /// chaining several jumps is what the jump route already does.
+#[allow(clippy::too_many_arguments)]
 pub fn chain(
     graph: &crate::geo::Systems,
     coords: &[MapSystem],
     anchors: &[i64],
     kind: &str,
-    max_ly: f64,
+    class: &crate::jumproute::ShipClass,
+    jdc: u32,
+    jfc: u32,
+    titan_ly: f64,
     bridges: bool,
 ) -> Vec<RouteOption> {
     if anchors.len() < 2 {
@@ -231,7 +278,7 @@ pub fn chain(
     }
     let leg = |a: i64, b: i64| -> Option<RouteOption> {
         match kind {
-            "jump" => jump(graph, coords, a, b, max_ly),
+            "jump" => jump(graph, coords, a, b, class, jdc, jfc),
             _ => gate(graph, a, b, bridges),
         }
     };
@@ -246,7 +293,7 @@ pub fn chain(
     }
     let (a, b) = (anchors[split], anchors[split + 1]);
     let last: Vec<RouteOption> = match kind {
-        "titan" => titan(graph, coords, a, b, max_ly, bridges),
+        "titan" => titan(graph, coords, a, b, titan_ly, bridges),
         _ => leg(a, b).into_iter().collect(),
     };
     match head {
@@ -272,6 +319,9 @@ fn clone_option(o: &RouteOption) -> RouteOption {
                 security: h.security,
                 kind: h.kind,
                 ly: h.ly,
+                fuel: h.fuel,
+                fatigue_min: h.fatigue_min,
+                reactivation_min: h.reactivation_min,
             })
             .collect(),
         gates: o.gates,
@@ -308,7 +358,7 @@ mod tests {
         let g = graph();
         let (a, b, c) = (30_004_759_i64, 30_004_608, 30_003_704);
         let direct = gate(&g, a, c, false).expect("connected");
-        let via = chain(&g, &[], &[a, b, c], "gate", 6.0, false);
+        let via = chain(&g, &[], &[a, b, c], "gate", &crate::jumproute::SHIP_CLASSES[1], 5, 5, 6.0, false);
         let via = via.first().expect("a chained route");
         assert_eq!(via.path.iter().filter(|&&id| id == b).count(), 1, "the waypoint appears once");
         assert_eq!(via.hops.len(), via.path.len());

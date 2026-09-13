@@ -332,12 +332,31 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                 (Some(from), Some(to), Some(graph)) => {
                     let coords: &[crate::store::MapSystem] =
                         d.coords.as_ref().map(|c| c.as_slice()).unwrap_or(&[]);
-                    // Titan range at JDC V, the same number the rescue mode plans with.
-                    const TITAN_LY: f64 = 6.0;
+                    let skill = |k: &str| {
+                        routes::query_param(query, k)
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(5)
+                            .min(5)
+                    };
+                    let (jdc, jfc) = (skill("jdc"), skill("jfc"));
+                    let hull = routes::query_param(query, "hull")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|i| *i < crate::jumproute::SHIP_CLASSES.len())
+                        .unwrap_or(0);
+                    let class = &crate::jumproute::SHIP_CLASSES[hull];
+                    // The titan option is a titan whatever hull the jump planner is set to: that is
+                    // what the word means, and the two questions are asked from the same menu.
+                    let titan_ly =
+                        crate::jumproute::max_range_ly(&crate::jumproute::SHIP_CLASSES[1], jdc);
                     let mut out = super::route::RouteOut {
                         kind: kind.clone(),
                         from,
                         to,
+                        hulls: super::route::hulls(),
+                        hull,
+                        jdc,
+                        jfc,
+                        max_ly: crate::jumproute::max_range_ly(class, jdc),
                         ..Default::default()
                     };
                     // `from`, the waypoints, then `to`: the systems the drags named, in order.
@@ -354,7 +373,10 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         coords,
                         &anchors,
                         &kind,
-                        TITAN_LY,
+                        class,
+                        jdc,
+                        jfc,
+                        titan_ly,
                         d.count_bridges,
                     );
                     if out.options.is_empty() {
