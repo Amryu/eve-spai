@@ -279,6 +279,9 @@ pub enum IntelClick {
 enum RightDockTab {
     Mode,
     System,
+    /// The route being planned. Its own tab rather than the mode's: UI-063 stopped the map switching
+    /// into a jump-plan mode, and the panel went with it because it was only reachable through one.
+    Route,
 }
 
 /// Which list the Jabber left sidebar shows.
@@ -10652,6 +10655,12 @@ impl SpaiApp {
     fn map_replan_route(&mut self) {
         self.map_route_opts.clear();
         self.map_route_at = 0;
+        // The route goes where the system goes: the dock, on its own tab. Otherwise a route planned
+        // from the map has nowhere to be read without hunting for it.
+        if !self.map_route_anchors.is_empty() {
+            self.right_dock_open = true;
+            self.right_dock_tab = RightDockTab::Route;
+        }
         self.ensure_jump_systems();
         let Some(graph) = self.systems.clone() else { return };
         let coords = self.jump_systems.clone().unwrap_or_default();
@@ -10745,93 +10754,6 @@ impl SpaiApp {
             });
         if !open {
             self.map_intel_for = None;
-        }
-    }
-
-    /// The route window: the hop list for whatever was picked, and the alternatives when the titan
-    /// search found more than one way in.
-    fn map_route_window(&mut self, ctx: &egui::Context) {
-        if self.map_route_opts.is_empty() {
-            return;
-        }
-        let title = match self.map_route_kind {
-            "jump" => "Jump route",
-            "titan" => "Titan route",
-            _ => "Gate route",
-        };
-        let mut open = true;
-        let mut pick = self.map_route_at;
-        let mut replan = false;
-        egui::Window::new(format!("{}  {title}", egui_phosphor::regular::SIGN_IN))
-            .id(egui::Id::new("map_route_window"))
-            .collapsible(false)
-            .default_width(280.0)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                if self.map_route_kind == "titan"
-                    && ui
-                        .checkbox(&mut self.map_titan_at_start, "Titan is in the starting system")
-                        .on_hover_text(
-                            "On: jump out of the start as far as range allows, then gates. Off: gate \
-                             out to the best system the titan can reach and get bridged in.",
-                        )
-                        .changed()
-                {
-                    replan = true;
-                }
-                if self.map_route_opts.len() > 1 {
-                    ui.horizontal_wrapped(|ui| {
-                        for (i, o) in self.map_route_opts.iter().enumerate() {
-                            if ui.selectable_label(i == self.map_route_at, &o.label).clicked() {
-                                pick = i;
-                            }
-                        }
-                    });
-                    ui.separator();
-                }
-                let Some(o) = self.map_route_opts.get(self.map_route_at) else { return };
-                let mut line = format!("{} jumps", o.jumps);
-                if o.gates > 0 {
-                    line.push_str(&format!(" · {} gates", o.gates));
-                }
-                if o.total_ly > 0.0 {
-                    line.push_str(&format!(" · {:.1} ly", o.total_ly));
-                }
-                ui.label(egui::RichText::new(line).strong());
-                if let Some(n) = &o.note {
-                    ui.label(egui::RichText::new(n).weak());
-                }
-                ui.separator();
-                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                    for (i, h) in o.hops.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(&h.name).color(security_color(h.security)).strong(),
-                            );
-                            let tail = if i == 0 {
-                                "start".to_owned()
-                            } else {
-                                match h.kind {
-                                    2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                    1 => "ansiblex".to_owned(),
-                                    _ => "gate".to_owned(),
-                                }
-                            };
-                            ui.label(egui::RichText::new(tail).weak());
-                        });
-                        if let Some(w) = &h.warn {
-                            warn_line(ui, w);
-                        }
-                    }
-                });
-            });
-        self.map_route_at = pick;
-        if replan {
-            self.map_replan_route();
-        }
-        if !open {
-            self.map_route_opts.clear();
-            self.map_route_anchors.clear();
         }
     }
 
@@ -12242,10 +12164,9 @@ impl SpaiApp {
                 match h.kind {
                     2 | 1 => {
                         let col = if h.kind == 2 { PICK_JUMP } else { PICK_BRIDGE };
-                        let _ = painter.add(egui::Shape::line(
-                            arc_polyline(a, b, BRIDGE_BOW),
-                            egui::Stroke::new(2.5, col),
-                        ));
+                        // Dashed and crawling like the gates and like the browser's: an arc drawn
+                        // solid while the rest of the route moved read as a different kind of thing.
+                        polyline_flow(&painter, &arc_polyline(a, b, BRIDGE_BOW), col, phase);
                     }
                     // Crawling dashes, the same as the browser's and the same as this map's own
                     // travel route: a static line is hard to pick out of a map already full of them.
@@ -12268,14 +12189,14 @@ impl SpaiApp {
             // so it reads as a second ship moving rather than as part of the route.
             if let Some(tj) = &o.titan_jump {
                 if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
-                    // Its own colour: a different ship doing a different thing, and sharing the
-                    // capital-jump colour said they were the same move.
-                    painter.extend(egui::Shape::dashed_line(
+                    // Its own colour, and running the other way: a different ship doing a different
+                    // thing, and sharing the capital-jump colour said they were the same move.
+                    polyline_flow(
+                        &painter,
                         &arc_polyline(a, b, BRIDGE_BOW),
-                        egui::Stroke::new(2.5, egui::Color32::from_rgb(0xFF, 0x7A, 0x3D)),
-                        10.0,
-                        7.0,
-                    ));
+                        egui::Color32::from_rgb(0xFF, 0x7A, 0x3D),
+                        -phase,
+                    );
                 }
             }
         }
@@ -15342,7 +15263,8 @@ impl SpaiApp {
                     });
             }
             let has_mode = self.map_mode != MapMode::Standard;
-            if self.right_dock_open && (has_mode || self.map_docked_system.is_some()) {
+            let has_route = !self.map_route_anchors.is_empty();
+            if self.right_dock_open && (has_mode || has_route || self.map_docked_system.is_some()) {
                 use egui_phosphor::regular as icon;
                 let mut pending: Option<(SystemInfoOut, i64)> = None;
                 egui::Panel::right("map_mode_dock")
@@ -15351,11 +15273,17 @@ impl SpaiApp {
                     .size_range(190.0..=380.0)
                     .show_inside(ui, |ui| {
                         let has_system = self.map_docked_system.is_some();
-                        if self.right_dock_tab == RightDockTab::System && !has_system {
-                            self.right_dock_tab = RightDockTab::Mode;
-                        }
-                        if self.right_dock_tab == RightDockTab::Mode && !has_mode {
-                            self.right_dock_tab = RightDockTab::System;
+                        // Fall back to whatever this dock actually has, in that order, rather than
+                        // showing an empty tab because the thing it was on has gone.
+                        let tabs = [
+                            (RightDockTab::Route, has_route),
+                            (RightDockTab::System, has_system),
+                            (RightDockTab::Mode, has_mode),
+                        ];
+                        if !tabs.iter().any(|(t, ok)| *ok && *t == self.right_dock_tab) {
+                            if let Some((t, _)) = tabs.iter().find(|(_, ok)| *ok) {
+                                self.right_dock_tab = *t;
+                            }
                         }
                         ui.horizontal(|ui| {
                             if ui.button("\u{00BB}").on_hover_text("Minimize panel").clicked() {
@@ -15374,6 +15302,16 @@ impl SpaiApp {
                                 {
                                     self.right_dock_tab = RightDockTab::Mode;
                                 }
+                            }
+                            if has_route
+                                && ui
+                                    .selectable_label(
+                                        self.right_dock_tab == RightDockTab::Route,
+                                        "Route",
+                                    )
+                                    .clicked()
+                            {
+                                self.right_dock_tab = RightDockTab::Route;
                             }
                             if has_system {
                                 let name = self
@@ -15401,6 +15339,7 @@ impl SpaiApp {
                         });
                         ui.separator();
                         match self.right_dock_tab {
+                            RightDockTab::Route => self.jump_plan_content(ui),
                             RightDockTab::Mode => match self.map_mode {
                                 MapMode::Travel => self.travel_panel_content(ui),
                                 MapMode::Safety => self.threat_board(ui, false),
@@ -20474,7 +20413,6 @@ impl SpaiApp {
         self.constellation_window(ctx);
         self.region_window(ctx);
         self.ship_window(ctx);
-        self.map_route_window(ctx);
         self.route_intel_window(ctx);
         self.map_alts_window(ctx);
         self.map_route_store_windows(ctx);
@@ -20799,6 +20737,23 @@ fn notify(summary: String, body: String) {
             .timeout(notify_rust::Timeout::Milliseconds(8000))
             .show();
     });
+}
+
+/// `dashed_flow` along a polyline, so an arc crawls the same way a straight leg does.
+///
+/// Per segment with the phase carried forward, rather than per segment from zero: restarting the
+/// pattern at every sample of a fourteen-point arc turns a crawl into a shimmer.
+fn polyline_flow(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    color: egui::Color32,
+    phase: f32,
+) {
+    let mut walked = 0.0;
+    for w in pts.windows(2) {
+        dashed_flow(painter, w[0], w[1], color, phase - walked);
+        walked += (w[1] - w[0]).length();
+    }
 }
 
 fn dashed_flow(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, color: egui::Color32, phase: f32) {
