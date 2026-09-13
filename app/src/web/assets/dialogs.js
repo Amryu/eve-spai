@@ -556,7 +556,7 @@ function paintRoute(kind, onPick) {
             .map(
               (o, k) =>
                 `<button class="ropt${(legPick[i] ?? 0) === k ? " on" : ""}" data-leg="${i}" data-alt="${k}">` +
-                `${o.total_ly ? `${o.total_ly.toFixed(1)} ly` : `${o.jumps}j`}</button>`
+                `${esc(o.label)}</button>`
             )
             .join("") +
           `</div>`
@@ -860,7 +860,9 @@ async function showAlternatives(at, kind, onPick) {
 function saveRoute(kind) {
   const a = routeReq?.anchors ?? [];
   if (a.length < 2) return;
-  const wh = !!routeReq?.out?.via_wormholes;
+  // Whether this route actually flies through a hole, not whether the setting allows one. A jump
+  // route never does, and a gate route that happened to find no hole is not on a clock either.
+  const wh = !!routeOpts[routeAt]?.uses_wormhole;
   // The page's own dialog, not the browser's. `prompt` blocks the whole tab, looks like a phishing
   // box on a phone, and cannot say the one thing that matters here, which is the expiry.
   const wrap = document.createElement("div");

@@ -437,6 +437,19 @@ function paint() {
 
   // Jump bridges: green arches, solid. A bridge and a gate between the same pair are otherwise the
   // same stroke in a different colour, and colour alone does not survive a busy map.
+  // A bridge the route is flying is drawn by the route, animated and in the route's colour. Drawing
+  // the plain green arc under it as well put two lines on one hop, one of them saying nothing.
+  const routed = new Set();
+  const hops = picked?.hops ?? [];
+  for (let i = 1; i < hops.length; i++) {
+    if (hops[i].kind === 1) routed.add(`${hops[i - 1].id},${hops[i].id}`);
+  }
+  // The app's own travel route too: it draws its bridged legs as arcs in the route colour, and the
+  // page redraws that route from `live.route` with the same rule.
+  const live_route = live.route ?? [];
+  for (let i = 1; i < live_route.length; i++) {
+    routed.add(`${live_route[i - 1]},${live_route[i]}`);
+  }
   if (layers.bridges && geo.bridges?.length) {
     ctx.strokeStyle = BRIDGE_GREEN;
     ctx.lineWidth = 1.5;
@@ -444,6 +457,7 @@ function paint() {
     for (const [a, b] of geo.bridges) {
       const p = geo.nodes[a];
       const q = geo.nodes[b];
+      if (routed.has(`${p.i},${q.i}`) || routed.has(`${q.i},${p.i}`)) continue;
       const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
       if (!segmentVisible(px, py, qx, qy)) continue;
       arc(ctx, px, py, qx, qy);

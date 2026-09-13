@@ -186,6 +186,10 @@ pub struct RouteOption {
     /// number that says whether the answer is worth the fuel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saved: Option<usize>,
+    /// Whether the route actually flies through a scanned wormhole, as opposed to the setting merely
+    /// allowing it. Only this makes a saved route expire, and a jump route is never one of them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub uses_wormhole: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -310,7 +314,10 @@ pub fn gate(
         })
         .collect();
     let gates = hops.iter().skip(1).filter(|h| h.kind == 0).count();
+    // A step that is not in the graph's own adjacency is one the hole map let through.
+    let uses_wormhole = path.windows(2).any(|w| graph.is_hole_step(w[0], w[1]));
     Some(RouteOption {
+        uses_wormhole,
         label: "Gates".to_owned(),
         gates,
         jumps: path.len().saturating_sub(1),
@@ -380,6 +387,8 @@ pub fn jump(
         detour: None,
         titan_jump: None,
         saved: None,
+        // A capital jump is not a wormhole, whatever the setting says.
+        uses_wormhole: false,
         note: Some(format!(
             "{} isotopes · {:.0} min fatigue at the end",
             (fuel.round() as i64).to_string(),
@@ -480,6 +489,7 @@ pub fn titan(
         .filter_map(|&hop| {
             let ly = crate::map::ly_distance(start, pos(coords, hop)?);
             let rest = gate(graph, hop, to, bridges, avoid, holes)?;
+            let rest_uses_hole = rest.uses_wormhole;
             let mut hops = vec![named(graph, from, 0, None), named(graph, hop, 2, Some(ly))];
             hops.extend(rest.hops.into_iter().skip(1));
             let mut path = vec![from];
@@ -492,6 +502,7 @@ pub fn titan(
                 total_ly: ly,
                 note: Some(format!("{ly:.1} ly jump, then {} gates", rest.gates)),
                 detour: rest.detour,
+                uses_wormhole: rest_uses_hole,
                 titan_jump: None,
                 saved: None,
                 path,
@@ -516,6 +527,7 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
         detour: head.detour.or(tail.detour),
         titan_jump: head.titan_jump.or(tail.titan_jump),
         saved: head.saved.or(tail.saved),
+        uses_wormhole: head.uses_wormhole || tail.uses_wormhole,
         path,
         hops,
     }
@@ -583,6 +595,25 @@ fn leg_options(
     // Same cost, so the tie goes to the shorter flight. For a gate route that is the one with less
     // grid to cross; for a jump route it is less fuel and less fatigue.
     out.sort_by(|p, q| p.total_ly.partial_cmp(&q.total_ly).unwrap_or(std::cmp::Ordering::Equal));
+    // Name each one after the system that makes it different.
+    //
+    // A gate route has no distance to report, so every alternative was labelled with the same jump
+    // count and the buttons read identically: picking one changed the route and looked like it had
+    // done nothing.
+    let common: std::collections::HashSet<i64> = out
+        .iter()
+        .skip(1)
+        .fold(out[0].path.iter().copied().collect(), |acc: std::collections::HashSet<i64>, o| {
+            acc.intersection(&o.path.iter().copied().collect()).copied().collect()
+        });
+    for o in out.iter_mut() {
+        if let Some(&via) = o.path.iter().find(|id| !common.contains(id)) {
+            let name = graph.info_of(via).map(|i| i.name.clone()).unwrap_or_default();
+            if !name.is_empty() {
+                o.label = format!("via {name}");
+            }
+        }
+    }
     out
 }
 
@@ -759,6 +790,7 @@ fn titan_self_jump(
                 )),
                 detour: None,
                 saved: baseline.checked_sub(to_titan.gates + tail.gates),
+                uses_wormhole: to_titan.uses_wormhole || tail.uses_wormhole,
                 titan_jump: Some(TitanJump {
                     from,
                     to: land,
@@ -824,6 +856,7 @@ fn titan_via(
         let tname = graph.info_of(t).map(|i| i.name.clone()).unwrap_or_default();
         let hname = graph.info_of(hop).map(|i| i.name.clone()).unwrap_or_default();
 
+        let (head_hole, tail_hole) = (head.uses_wormhole, tail.uses_wormhole);
         let mut hops = head.hops;
         let mut jump_hop = named(graph, hop, 2, Some(ly));
         jump_hop.anchor = false;
@@ -845,6 +878,7 @@ fn titan_via(
             detour: None,
             titan_jump: None,
             saved: baseline.checked_sub(gates),
+            uses_wormhole: head_hole || tail_hole,
             path,
             hops,
         });
@@ -901,6 +935,7 @@ fn reverse(o: RouteOption) -> RouteOption {
         detour: o.detour,
         titan_jump: o.titan_jump,
         saved: o.saved,
+        uses_wormhole: o.uses_wormhole,
     }
 }
 
@@ -932,6 +967,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
         detour: o.detour.clone(),
         titan_jump: o.titan_jump.clone(),
         saved: o.saved,
+        uses_wormhole: o.uses_wormhole,
     }
 }
 
