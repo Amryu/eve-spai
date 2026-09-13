@@ -10989,6 +10989,7 @@ impl SpaiApp {
             for &(a, c) in &bridges {
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
                     if seg_visible(*p1, *p2) {
+                        arch_ground(&painter, *p1, *p2, bridge_col);
                         painter.add(egui::Shape::line(
                             arc_polyline(*p1, *p2, BRIDGE_BOW),
                             egui::Stroke::new(1.5, bridge_col),
@@ -23418,26 +23419,24 @@ pub(crate) fn notify_os(summary: &str, body: &str) {
     });
 }
 
-/// A gentle arc between two points, sampled as a polyline.
+/// An arch between two points, sampled as a polyline.
 ///
 /// Jump bridges are drawn as arches rather than straight lines: a bridge and a gate between the same
 /// pair of systems are otherwise the same stroke in a different colour, and on a busy map colour
 /// alone is not enough to tell a route you can fly from one you need a bridge for.
+///
+/// The apex rises straight up the screen rather than perpendicular to the segment. The map is a
+/// top-down projection of a plane, so "above the plane" is up, whatever direction the bridge runs;
+/// a perpendicular bow made a north-south bridge bulge sideways, which reads as a detour rather than
+/// as height. Drawn with [`arch_ground`] under it, the pair reads as a line lifted off the map.
 pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::Pos2> {
     let d = b - a;
     let len = d.length();
     if len < 0.5 {
         return vec![a, b];
     }
-    // Always bows upward, whichever way round the two ends are. The perpendicular flips with the
-    // segment's direction, so without this a bridge arched up or down depending on which of its two
-    // systems happened to sort first.
-    let mut normal = egui::vec2(-d.y, d.x) / len;
-    if normal.y > 0.0 {
-        normal = -normal;
-    }
     let mid = a + d * 0.5;
-    let ctrl = mid + normal * (len * bow);
+    let ctrl = mid - egui::vec2(0.0, len * bow * 2.0);
     (0..=14)
         .map(|i| {
             let t = i as f32 / 14.0;
@@ -23450,8 +23449,21 @@ pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::
         .collect()
 }
 
-/// How far a bridge arch bows out, as a fraction of its own length.
+/// How high a bridge arch rises, as a fraction of its own length.
 pub(crate) const BRIDGE_BOW: f32 = 0.12;
+
+/// The faint straight line under an arch: where the bridge would run if it were on the map.
+///
+/// This is what makes the arch read as height rather than as a curved route. Without a ground track
+/// an arc is just a bent line.
+pub(crate) fn arch_ground(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, col: egui::Color32) {
+    painter.extend(egui::Shape::dashed_line(
+        &[a, b],
+        egui::Stroke::new(1.0, col.gamma_multiply(0.35)),
+        2.0,
+        4.0,
+    ));
+}
 
 fn open_mumble(link: String) {
     std::thread::spawn(move || {
