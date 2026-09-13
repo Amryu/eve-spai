@@ -43,6 +43,14 @@ pub struct Settings {
     /// rules, is what a hostile who cannot use them actually has to travel.
     #[serde(default)]
     pub intel_count_bridges: bool,
+    /// Systems the route planner always goes around, kept separately for the two kinds of route: a
+    /// system you will not gate through is often perfectly fine to jump over, and the other way
+    /// round. Added with `serde(default)`, never retyped: a changed field type fails the whole parse
+    /// and resets every setting there is.
+    #[serde(default)]
+    pub route_avoid_gate: Vec<i64>,
+    #[serde(default)]
+    pub route_avoid_jump: Vec<i64>,
     #[serde(default)]
     pub verdict_explained: bool,
     #[serde(default)]
@@ -845,6 +853,8 @@ impl Default for Settings {
             kill_intel_jumps: default_kill_jumps(),
             intel_ttl_secs: 300,
             intel_count_bridges: false,
+            route_avoid_gate: Vec::new(),
+            route_avoid_jump: Vec::new(),
             verdict_explained: false,
             fit_site: String::new(),
             doctrine_url: String::new(),

@@ -31,7 +31,48 @@ pub struct Hop {
     /// Why not to fly through here, if there is a reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warn: Option<HopWarning>,
+    /// A system the user named: the start, a waypoint, or the destination. Everything else on a
+    /// route is just somewhere it passes through.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub anchor: bool,
 }
+
+/// One leg of a route, and the ways of flying it that are no worse.
+///
+/// Alternatives are the same number of jumps and sorted by total distance, so the list is "these all
+/// cost you the same; here they are from shortest to longest".
+#[derive(Serialize)]
+pub struct LegChoice {
+    pub from: i64,
+    pub to: i64,
+    pub from_name: String,
+    pub to_name: String,
+    pub options: Vec<RouteOption>,
+}
+
+/// Where a route may not go.
+#[derive(Default, Clone)]
+pub struct Avoid {
+    /// Kept for good, from settings.
+    pub always: std::collections::HashSet<i64>,
+    /// Kept for this route only, from the client.
+    pub once: std::collections::HashSet<i64>,
+}
+
+impl Avoid {
+    pub fn blocked(&self, id: i64) -> bool {
+        self.always.contains(&id) || self.once.contains(&id)
+    }
+    pub fn any(&self) -> bool {
+        !self.always.is_empty() || !self.once.is_empty()
+    }
+}
+
+/// How many ways of flying one leg are worth offering.
+///
+/// Past a handful they stop being a choice and start being a list, and every one of them costs a
+/// search.
+const LEG_OPTIONS: usize = 4;
 
 /// A reason to look twice at a system on the route.
 ///
@@ -50,6 +91,17 @@ pub struct HopWarning {
 
 /// Danger and above. Below that a nullsec route would be warnings end to end.
 pub const WARN_SEVERITY: u8 = 2;
+
+/// Mark the systems the user named, so the map and the list can pick them out of the ones the route
+/// merely passes through.
+pub fn mark_anchors(options: &mut [RouteOption], anchors: &[i64]) {
+    let set: std::collections::HashSet<i64> = anchors.iter().copied().collect();
+    for o in options.iter_mut() {
+        for h in o.hops.iter_mut() {
+            h.anchor = set.contains(&h.id);
+        }
+    }
+}
 
 /// Attach the warnings to every hop of every option.
 ///
@@ -145,6 +197,9 @@ pub struct RouteOut {
     pub from: i64,
     pub to: i64,
     pub options: Vec<RouteOption>,
+    /// The ways of flying each leg, so the window can offer them per waypoint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub legs: Vec<LegChoice>,
     /// What the jump figures were worked out with, echoed back so the page's controls and the
     /// numbers beside them cannot drift apart.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -153,6 +208,9 @@ pub struct RouteOut {
     pub jdc: u32,
     pub jfc: u32,
     pub max_ly: f64,
+    /// Whether the app is routing through scanned wormholes, echoed so the page can show the switch
+    /// rather than keep its own copy of a setting that lives in the app.
+    pub via_wormholes: bool,
     /// Why there is nothing to show, when there is nothing to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -170,6 +228,7 @@ fn named(graph: &crate::geo::Systems, id: i64, kind: u8, ly: Option<f64>) -> Hop
         fatigue_min: None,
         reactivation_min: None,
         warn: None,
+        anchor: false,
     }
 }
 
@@ -179,8 +238,18 @@ pub fn gate(
     from: i64,
     to: i64,
     bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
 ) -> Option<RouteOption> {
-    let path = graph.route(from, to, true, bridges, |_| true)?;
+    // The endpoints are exempt. Avoiding the system you are standing in, or the one you asked to go
+    // to, would just mean no route at all, which is a worse answer than an honest one.
+    //
+    // `holes` is the scanned wormhole chain, empty unless the user routes through them. They are
+    // passed as extra edges rather than as a flag because that is how the app's own planner takes
+    // them, and a second way of expressing "there is a hole here" is a second way to be wrong.
+    let path = graph.route_with(from, to, true, bridges, holes, |id| {
+        id == from || id == to || !avoid.blocked(id)
+    })?;
     let hops: Vec<Hop> = path
         .iter()
         .enumerate()
@@ -206,6 +275,7 @@ fn pos<'a>(coords: &'a [MapSystem], id: i64) -> Option<&'a MapSystem> {
 }
 
 /// The capital jump route: cyno-able systems only, one hop per jump.
+#[allow(clippy::too_many_arguments)]
 pub fn jump(
     graph: &crate::geo::Systems,
     coords: &[MapSystem],
@@ -214,10 +284,24 @@ pub fn jump(
     class: &crate::jumproute::ShipClass,
     jdc: u32,
     jfc: u32,
+    avoid: &Avoid,
 ) -> Option<RouteOption> {
     let max_ly = crate::jumproute::max_range_ly(class, jdc);
+    // Avoidance is applied by taking the systems out of the graph rather than by filtering the
+    // result: a path that goes through a banned system is not a worse path, it is not a path.
+    let filtered: Vec<MapSystem>;
+    let search: &[MapSystem] = if avoid.any() {
+        filtered = coords
+            .iter()
+            .filter(|s| s.id == from || s.id == to || !avoid.blocked(s.id))
+            .cloned()
+            .collect();
+        &filtered
+    } else {
+        coords
+    };
     let path =
-        crate::jumproute::shortest_path_pref(coords, max_ly, from, to, &Default::default())?;
+        crate::jumproute::shortest_path_pref(search, max_ly, from, to, &Default::default())?;
     // The fuel and both timers come from the app's own model, per jump, so the page reports what the
     // planner would and nothing has its own idea of how fatigue compounds.
     let costs = crate::jumproute::hop_costs(coords, &path, class, jfc);
@@ -269,6 +353,7 @@ const TITAN_MAX_JUMPS: u32 = 40;
 /// system the route starts from: you jump out as far as range allows and gate the rest. Cleared, the
 /// titan is waiting at the far end: you gate out to the best system it can reach and get bridged in.
 /// The search is the same either way, run from the other end.
+#[allow(clippy::too_many_arguments)]
 pub fn titan(
     graph: &crate::geo::Systems,
     coords: &[MapSystem],
@@ -277,11 +362,13 @@ pub fn titan(
     max_ly: f64,
     bridges: bool,
     at_start: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
 ) -> Vec<RouteOption> {
     if !at_start {
         // The mirror image: plan it backwards and turn the result around. One implementation of
         // "one jump, gates for the rest" rather than two that can disagree.
-        return titan(graph, coords, to, from, max_ly, bridges, true)
+        return titan(graph, coords, to, from, max_ly, bridges, true, avoid, holes)
             .into_iter()
             .map(reverse)
             .collect();
@@ -294,14 +381,16 @@ pub fn titan(
     let in_range: std::collections::HashSet<i64> = coords
         .iter()
         .filter(|s| s.id != to && crate::jumproute::cyno_able(s.security))
+        .filter(|s| !avoid.blocked(s.id))
         .filter(|s| crate::map::ly_distance(start, s) <= max_ly)
         .map(|s| s.id)
         .collect();
     if in_range.is_empty() {
         return Vec::new();
     }
-    let Some((_, mut ring)) =
-        graph.nearest_matching(to, TITAN_MAX_JUMPS, |id| in_range.contains(&id))
+    let Some((_, mut ring)) = graph.nearest_matching(to, TITAN_MAX_JUMPS, |id| {
+        in_range.contains(&id) && !avoid.blocked(id)
+    })
     else {
         return Vec::new();
     };
@@ -316,7 +405,7 @@ pub fn titan(
     ring.iter()
         .filter_map(|&hop| {
             let ly = crate::map::ly_distance(start, pos(coords, hop)?);
-            let rest = gate(graph, hop, to, bridges)?;
+            let rest = gate(graph, hop, to, bridges, avoid, holes)?;
             let mut hops = vec![named(graph, from, 0, None), named(graph, hop, 2, Some(ly))];
             hops.extend(rest.hops.into_iter().skip(1));
             let mut path = vec![from];
@@ -352,12 +441,60 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
     }
 }
 
-/// A route through waypoints.
+/// Every way of flying one leg that is no worse than the best one.
 ///
-/// The anchors are the systems the drags named, in order. Every leg but the last is a plain gate or
-/// jump leg; only the last one can have alternatives, which is what the option list is for. A titan
-/// route chains as gates up to the last leg, because a titan route *is* one jump and then gates, and
-/// chaining several jumps is what the jump route already does.
+/// The best path, then the best path with each of its intermediate systems banned in turn, keeping
+/// only the ones that take the same number of jumps. That is the cheap half of Yen's algorithm and it
+/// is enough here: the question is "what else costs the same", not "rank every path there is".
+#[allow(clippy::too_many_arguments)]
+fn leg_options(
+    graph: &crate::geo::Systems,
+    coords: &[MapSystem],
+    a: i64,
+    b: i64,
+    kind: &str,
+    class: &crate::jumproute::ShipClass,
+    jdc: u32,
+    jfc: u32,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+) -> Vec<RouteOption> {
+    let one = |extra: &Avoid| -> Option<RouteOption> {
+        match kind {
+            "jump" => jump(graph, coords, a, b, class, jdc, jfc, extra),
+            _ => gate(graph, a, b, bridges, extra, holes),
+        }
+    };
+    let Some(best) = one(avoid) else { return Vec::new() };
+    let want = best.jumps;
+    let mut out = vec![best];
+    let mut seen: std::collections::HashSet<Vec<i64>> =
+        std::collections::HashSet::from([out[0].path.clone()]);
+    let via: Vec<i64> = out[0].path.iter().copied().filter(|&id| id != a && id != b).collect();
+    for ban in via {
+        if out.len() >= LEG_OPTIONS {
+            break;
+        }
+        let mut extra = avoid.clone();
+        extra.once.insert(ban);
+        let Some(alt) = one(&extra) else { continue };
+        if alt.jumps != want || !seen.insert(alt.path.clone()) {
+            continue;
+        }
+        out.push(alt);
+    }
+    // Same cost, so the tie goes to the shorter flight. For a gate route that is the one with less
+    // grid to cross; for a jump route it is less fuel and less fatigue.
+    out.sort_by(|p, q| p.total_ly.partial_cmp(&q.total_ly).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// A route through waypoints, with the ways of flying each leg.
+///
+/// The anchors are the systems the drags and the menu named, in order. `pick` is which alternative to
+/// use for each leg, and the assembled route comes back alongside the choices so the client never has
+/// to join legs itself.
 #[allow(clippy::too_many_arguments)]
 pub fn chain(
     graph: &crate::geo::Systems,
@@ -370,37 +507,53 @@ pub fn chain(
     titan_ly: f64,
     titan_at_start: bool,
     bridges: bool,
-) -> Vec<RouteOption> {
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+    pick: &[usize],
+) -> (Vec<LegChoice>, Vec<RouteOption>) {
     if anchors.len() < 2 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
-    let leg = |a: i64, b: i64| -> Option<RouteOption> {
-        match kind {
-            "jump" => jump(graph, coords, a, b, class, jdc, jfc),
-            _ => gate(graph, a, b, bridges),
+    let name = |id: i64| {
+        graph.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| id.to_string())
+    };
+    let last = anchors.len() - 2;
+    let mut legs: Vec<LegChoice> = Vec::new();
+    for (i, w) in anchors.windows(2).enumerate() {
+        let (a, b) = (w[0], w[1]);
+        let options = if i == last && kind == "titan" {
+            titan(graph, coords, a, b, titan_ly, bridges, titan_at_start, avoid, holes)
+        } else {
+            leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes)
+        };
+        legs.push(LegChoice { from: a, to: b, from_name: name(a), to_name: name(b), options });
+    }
+    if legs.iter().any(|l| l.options.is_empty()) {
+        return (legs, Vec::new());
+    }
+    // Assembled here, not in the client: joining legs is where the duplicated hop lives, and one
+    // implementation of that is enough.
+    let assemble = |choice: &dyn Fn(usize) -> usize| -> RouteOption {
+        let mut acc: Option<RouteOption> = None;
+        for (i, l) in legs.iter().enumerate() {
+            let o = clone_option(&l.options[choice(i).min(l.options.len() - 1)]);
+            acc = Some(match acc {
+                Some(h) => join(h, o),
+                None => o,
+            });
         }
+        acc.expect("at least one leg")
     };
-    let split = anchors.len() - 2;
-    let mut head: Option<RouteOption> = None;
-    for w in anchors[..=split].windows(2) {
-        let Some(next) = leg(w[0], w[1]) else { return Vec::new() };
-        head = Some(match head {
-            Some(h) => join(h, next),
-            None => next,
-        });
+    let chosen = assemble(&|i: usize| pick.get(i).copied().unwrap_or(0));
+    let mut out = vec![chosen];
+    // The titan search's alternatives are alternatives for the whole route, not for one leg of it,
+    // so they stay in the option list the window already has.
+    if kind == "titan" && legs[last].options.len() > 1 {
+        out = (0..legs[last].options.len())
+            .map(|k| assemble(&move |i: usize| if i == last { k } else { pick.get(i).copied().unwrap_or(0) }))
+            .collect();
     }
-    let (a, b) = (anchors[split], anchors[split + 1]);
-    let last: Vec<RouteOption> = match kind {
-        "titan" => titan(graph, coords, a, b, titan_ly, bridges, titan_at_start),
-        _ => leg(a, b).into_iter().collect(),
-    };
-    match head {
-        Some(h) => last
-            .into_iter()
-            .map(|t| join(clone_option(&h), t))
-            .collect(),
-        None => last,
-    }
+    (legs, out)
 }
 
 /// A route flown the other way.
@@ -452,6 +605,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
                 fatigue_min: h.fatigue_min,
                 reactivation_min: h.reactivation_min,
                 warn: h.warn,
+                anchor: h.anchor,
             })
             .collect(),
         gates: o.gates,
@@ -475,7 +629,7 @@ mod tests {
     fn a_route_to_the_same_system_is_a_single_hop() {
         let g = graph();
         let id = 30_004_759;
-        let r = gate(&g, id, id, false).expect("a system can reach itself");
+        let r = gate(&g, id, id, false, &Avoid::default(), &Default::default()).expect("a system can reach itself");
         assert_eq!(r.path, vec![id]);
         assert_eq!(r.jumps, 0);
         assert_eq!(r.hops.len(), 1);
@@ -487,13 +641,46 @@ mod tests {
     fn a_chain_joins_at_the_waypoint_without_repeating_it() {
         let g = graph();
         let (a, b, c) = (30_004_759_i64, 30_004_608, 30_003_704);
-        let direct = gate(&g, a, c, false).expect("connected");
-        let via =
-            chain(&g, &[], &[a, b, c], "gate", &crate::jumproute::SHIP_CLASSES[1], 5, 5, 6.0, true, false);
-        let via = via.first().expect("a chained route");
+        let direct = gate(&g, a, c, false, &Avoid::default(), &Default::default()).expect("connected");
+        let (_, opts) = chain(
+            &g,
+            &[],
+            &[a, b, c],
+            "gate",
+            &crate::jumproute::SHIP_CLASSES[1],
+            5,
+            5,
+            6.0,
+            true,
+            false,
+            &Avoid::default(),
+            &Default::default(),
+            &[],
+        );
+        let via = opts.first().expect("a chained route");
         assert_eq!(via.path.iter().filter(|&&id| id == b).count(), 1, "the waypoint appears once");
         assert_eq!(via.hops.len(), via.path.len());
         assert!(via.jumps >= direct.jumps, "a detour is never shorter than the direct route");
+    }
+
+    /// A system on the avoid list is not routed through, and the endpoints are exempt: avoiding the
+    /// system you are standing in would mean no route at all, which is a worse answer than an honest
+    /// one.
+    #[test]
+    fn an_avoided_system_is_not_routed_through() {
+        let g = graph();
+        let (a, mid, b) = (30_004_759_i64, 30_004_608, 30_003_704);
+        let direct = gate(&g, a, b, false, &Avoid::default(), &Default::default()).expect("connected");
+        assert!(direct.path.contains(&mid), "the fixture route goes through the middle");
+        let mut avoid = Avoid::default();
+        avoid.once.insert(mid);
+        assert!(gate(&g, a, b, false, &avoid, &Default::default()).is_none(), "no other way round in this fixture");
+        // The endpoints stay reachable however they are listed.
+        avoid.once.insert(a);
+        avoid.once.insert(b);
+        avoid.once.remove(&mid);
+        let still = gate(&g, a, b, false, &avoid, &Default::default()).expect("endpoints are exempt");
+        assert_eq!(still.path, direct.path);
     }
 
     /// Every hop names a real system. An id that fell out of the graph would render as a number.
@@ -501,7 +688,7 @@ mod tests {
     fn every_hop_carries_a_name() {
         let g = graph();
         let (a, b) = (30_004_759, 30_004_608);
-        let r = gate(&g, a, b, false).expect("the fixture systems are connected");
+        let r = gate(&g, a, b, false, &Avoid::default(), &Default::default()).expect("the fixture systems are connected");
         assert!(r.hops.iter().all(|h| !h.name.is_empty() && h.name.parse::<i64>().is_err()));
         assert_eq!(r.hops.first().map(|h| h.id), Some(a));
         assert_eq!(r.hops.last().map(|h| h.id), Some(b));

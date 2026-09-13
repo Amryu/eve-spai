@@ -700,6 +700,11 @@ pub struct SpaiApp {
     map_route_anchors: Vec<i64>,
     /// Whether the titan is in the system the route starts from. Off, it is waiting at the far end.
     map_titan_at_start: bool,
+    /// The ways of flying each leg, and which one is picked.
+    map_route_legs: Vec<crate::web::route::LegChoice>,
+    map_leg_pick: Vec<usize>,
+    /// Systems avoided for this route only, kept apart from the two persistent lists.
+    map_avoid_once: std::collections::HashSet<i64>,
     map_layout: crate::map::MapLayout,
     map_threat_jumps: u32,
     map_threat_center: Option<i64>,
@@ -1432,6 +1437,9 @@ impl SpaiApp {
             map_route_kind: "gate",
             map_route_anchors: Vec::new(),
             map_titan_at_start: true,
+            map_route_legs: Vec::new(),
+            map_leg_pick: Vec::new(),
+            map_avoid_once: std::collections::HashSet::new(),
             map_layout: pv.map_layout,
             map_threat_jumps: pv.map_threat_jumps,
             map_threat_center: None,
@@ -1883,6 +1891,10 @@ impl SpaiApp {
         // Shared, unlike the above: one room's backlog is bigger than every pane put together, and
         // the page reads one conversation at a time.
         d.jabber = Some(self.jabber.clone());
+        d.avoid_gate = self.settings.route_avoid_gate.clone();
+        d.avoid_jump = self.settings.route_avoid_jump.clone();
+        d.via_wormholes = self.settings.route_via_wormholes;
+        d.holes = if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
         d.type_names = Some(self.type_names.clone());
     }
 
@@ -10430,6 +10442,22 @@ impl SpaiApp {
                 self.map_focus = Some(id);
             }
             crate::ipc::OverlayToMain::SetDestination { id } => self.web_set_destination(id),
+            crate::ipc::OverlayToMain::AvoidSystem { id, jump, on } => {
+                let list = if jump {
+                    &mut self.settings.route_avoid_jump
+                } else {
+                    &mut self.settings.route_avoid_gate
+                };
+                list.retain(|&s| s != id);
+                if on {
+                    list.push(id);
+                }
+                self.needs_save = true;
+            }
+            crate::ipc::OverlayToMain::RouteViaWormholes { on } => {
+                self.settings.route_via_wormholes = on;
+                self.needs_save = true;
+            }
             crate::ipc::OverlayToMain::JabberOpen { name, room } => self.web_open_convo(&name, room),
             crate::ipc::OverlayToMain::JabberSend { jid, body } => self.web_send_convo(&jid, &body),
             crate::ipc::OverlayToMain::Hello => {}
@@ -10562,7 +10590,10 @@ impl SpaiApp {
         const TITAN_LY: f64 = 6.0;
         let bridges = self.settings.intel_count_bridges;
         let danger = self.route_danger();
-        self.map_route_opts = crate::web::route::chain(
+        let avoid = self.route_avoid(self.map_route_kind == "jump");
+        let holes =
+            if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
+        let (legs, opts) = crate::web::route::chain(
             &graph,
             &coords,
             &self.map_route_anchors,
@@ -10573,8 +10604,15 @@ impl SpaiApp {
             TITAN_LY,
             self.map_titan_at_start,
             bridges,
+            &avoid,
+            &holes,
+            &self.map_leg_pick,
         );
+        self.map_route_legs = legs;
+        self.map_route_opts = opts;
         crate::web::route::annotate(&mut self.map_route_opts, &danger);
+        let anchors = self.map_route_anchors.clone();
+        crate::web::route::mark_anchors(&mut self.map_route_opts, &anchors);
     }
 
     /// The route window: the hop list for whatever was picked, and the alternatives when the titan
@@ -10661,6 +10699,20 @@ impl SpaiApp {
         if !open {
             self.map_route_opts.clear();
             self.map_route_anchors.clear();
+        }
+    }
+
+    /// Where a route may not go: the persistent list for this kind of route, plus whatever was
+    /// avoided for the route currently being planned.
+    fn route_avoid(&self, jump: bool) -> crate::web::route::Avoid {
+        let always = if jump {
+            &self.settings.route_avoid_jump
+        } else {
+            &self.settings.route_avoid_gate
+        };
+        crate::web::route::Avoid {
+            always: always.iter().copied().collect(),
+            once: self.map_avoid_once.clone(),
         }
     }
 

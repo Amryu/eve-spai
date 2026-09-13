@@ -357,6 +357,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         jdc,
                         jfc,
                         max_ly: crate::jumproute::max_range_ly(class, jdc),
+                        via_wormholes: d.via_wormholes,
                         ..Default::default()
                     };
                     // `from`, the waypoints, then `to`: the systems the drags named, in order.
@@ -368,7 +369,26 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                             .filter_map(|v| v.parse::<i64>().ok()),
                     );
                     anchors.push(to);
-                    out.options = super::route::chain(
+                    let ids = |k: &str| -> std::collections::HashSet<i64> {
+                        routes::query_param(query, k)
+                            .unwrap_or("")
+                            .split(',')
+                            .filter_map(|v| v.parse::<i64>().ok())
+                            .collect()
+                    };
+                    let avoid = super::route::Avoid {
+                        always: if kind == "jump" { &d.avoid_jump } else { &d.avoid_gate }
+                            .iter()
+                            .copied()
+                            .collect(),
+                        once: ids("avoid"),
+                    };
+                    let pick: Vec<usize> = routes::query_param(query, "pick")
+                        .unwrap_or("")
+                        .split(',')
+                        .map(|v| v.parse::<usize>().unwrap_or(0))
+                        .collect();
+                    let (legs, options) = super::route::chain(
                         graph,
                         coords,
                         &anchors,
@@ -379,7 +399,13 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         titan_ly,
                         routes::query_param(query, "tstart").unwrap_or("1") != "0",
                         d.count_bridges,
+                        &avoid,
+                        &d.holes,
+                        &pick,
                     );
+                    out.legs = legs;
+                    out.options = options;
+                    super::route::mark_anchors(&mut out.options, &anchors);
                     {
                         let w = ctx.web.lock().unwrap_or_else(|e| e.into_inner());
                         let danger = super::route::danger_from_marks(

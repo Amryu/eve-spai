@@ -44,6 +44,10 @@ pub enum OverlayToMain {
     /// A system id, and the app decides which character and whether the ESI scope is there. The page
     /// is on the LAN; what it can ask for is "route me here", not "call this endpoint".
     SetDestination { id: i64 },
+    /// Add or remove a system from a permanent route-avoidance list.
+    AvoidSystem { id: i64, jump: bool, on: bool },
+    /// Whether routes may use scanned wormhole connections.
+    RouteViaWormholes { on: bool },
     /// Send one message to a conversation that is already open.
     JabberSend { jid: String, body: String },
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },

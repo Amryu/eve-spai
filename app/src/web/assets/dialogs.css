@@ -183,3 +183,8 @@ button.rwarn {
 .jumpcfg.tflag { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
 .intelmodal .mpanel { min-width: min(30rem, 92vw); max-height: 70vh; overflow-y: auto; }
 .intelmodal .feed { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.rleg { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-bottom: 0.3rem; }
+.rleg > span { color: var(--muted); font-size: 0.8rem; margin-right: auto; }
+/* A system the user named, rather than one the route passes through. */
+.rhop .chip.anchor { outline: 1px solid var(--accent); font-weight: 600; }
