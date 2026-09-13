@@ -75,6 +75,10 @@ const stamp = (at) => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 };
 
+/// The part of a JID anyone says out loud. A sender arrives as a bare JID in a DM and as a nick in a
+/// room, and "@goonfleet.com" after every line in a conversation with one other person is noise.
+const who = (from) => String(from ?? "").split("@")[0];
+
 function row(c) {
   const dot = c.room
     ? `<span class="jico">${ico("users-three")}</span>`
@@ -110,8 +114,8 @@ function body() {
     .map(
       (m) =>
         `<div class="jmsg${m.me ? " me" : ""}">` +
-        `<span class="jwho">${esc(m.from)}</span>` +
-        `<span class="jat">${stamp(m.at)}</span>` +
+        `<span class="jwho">${esc(who(m.from))}</span>` +
+        `<span class="jat" title="${esc(new Date(m.at * 1000).toLocaleString())}">${stamp(m.at)}</span>` +
         `<span class="jbody">${esc(m.body)}</span></div>`
     )
     .join("");

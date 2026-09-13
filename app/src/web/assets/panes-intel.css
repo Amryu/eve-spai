@@ -122,3 +122,6 @@
   margin-top: 0.15rem;
 }
 .card[data-raw] { cursor: pointer; }
+
+/* Alliance and corp logos ride inside the pilot chip, at the portrait's size. */
+.chip.pilot .aff { border-radius: 2px; }

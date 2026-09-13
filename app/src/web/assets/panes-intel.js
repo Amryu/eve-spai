@@ -210,8 +210,15 @@ export function card(c, lookups, compact, now) {
     if (id == null) continue;
     const un = uncertain.has(name.toLowerCase());
     const px = bucket(compact ? 16 : 20);
+    // Alliance, then corp, then portrait, then the name: the app's own order, and the two logos are
+    // what makes a name in a feed readable as friendly or not without clicking it.
+    const aff = lookups?.affil?.[id];
+    const logo = (kind, lid, label) =>
+      lid ? `<img class="aff" src="${CDN}/${kind}/${lid}/logo?size=${px}" alt="" title="${esc(label ?? "")}">` : "";
     parts.push(
       `<button class="chip pilot${un ? " un" : ""}" data-pilot="${esc(name)}">` +
+        logo("alliances", aff?.alliance, aff?.alliance_name) +
+        logo("corporations", aff?.corp, aff?.corp_name) +
         `<img src="${CDN}/characters/${id}/portrait?size=${px}" alt="">${esc(name)}` +
         `${un ? '<b class="q">?</b>' : ""}</button>`
     );
