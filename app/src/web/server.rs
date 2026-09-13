@@ -471,6 +471,33 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                 "no-store".to_owned(),
             )])
         }
+        Route::SavedRoutes => {
+            let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
+            // Named, so the page can list them without a second round trip per route.
+            let named: Vec<serde_json::Value> = d
+                .saved_routes
+                .iter()
+                .map(|r| {
+                    let name_of = |id: i64| {
+                        d.graph
+                            .as_ref()
+                            .and_then(|g| g.info_of(id).map(|i| i.name.clone()))
+                            .unwrap_or_else(|| id.to_string())
+                    };
+                    serde_json::json!({
+                        "route": r,
+                        "from_name": r.anchors.first().copied().map(name_of),
+                        "to_name": r.anchors.last().copied().map(name_of),
+                    })
+                })
+                .collect();
+            drop(d);
+            let json = serde_json::to_string(&named).unwrap_or_else(|_| "[]".to_owned());
+            respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[(
+                "Cache-Control",
+                "no-store".to_owned(),
+            )])
+        }
         Route::Alternatives => {
             // Systems a capital could stop in between two hops. Picking one inserts it as a
             // waypoint, which is the only way to steer a jump route without banning things.

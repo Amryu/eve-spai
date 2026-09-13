@@ -638,9 +638,17 @@ function paintRoute(kind, onPick) {
         ? `<p class="rtitan">${ico("star-four")} Titan jumps ${esc(o.titan_jump.from_name)} → ` +
           `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
         : "") +
-      `<ol class="rhops">${o.hops.map(line).join("")}</ol>`
+      `<ol class="rhops">${o.hops.map(line).join("")}</ol>` +
+      `<p class="rsave"><button data-save>${ico("copy")} Save route</button>` +
+      `<button data-load-open>${ico("arrow-square-out")} Load…</button></p>`
   );
+  win_wire(kind, onPick);
+}
+
+function win_wire(kind, onPick) {
   const win = shells.get("route");
+  win?.querySelector("[data-save]")?.addEventListener("click", () => saveRoute(kind));
+  win?.querySelector("[data-load-open]")?.addEventListener("click", () => loadRoute(onPick));
   win?.querySelectorAll("[data-ropt]").forEach((b) =>
     b.addEventListener("click", () => {
       routeAt = Number(b.dataset.ropt);
@@ -841,6 +849,95 @@ async function showAlternatives(at, kind, onPick) {
     const anchors = routeReq.anchors;
     routeReq.anchors = [...anchors.slice(0, -1), Number(b2.dataset.alt), anchors[anchors.length - 1]];
     fetchRoute();
+  });
+}
+
+/// Saving and loading a route.
+///
+/// The whole thing, not just the endpoints: a route is the anchors and what you told the planner
+/// about them, and one that came back without its avoid list or its titans would be a different
+/// route with the same name. It lives in the app's settings, so it reaches the desktop too.
+async function saveRoute(kind) {
+  const name = prompt("Save this route as");
+  if (!name?.trim()) return;
+  const a = routeReq?.anchors ?? [];
+  if (a.length < 2) return;
+  const wh = !!routeReq?.out?.via_wormholes;
+  if (
+    wh &&
+    !confirm(
+      "This route was planned through scanned wormholes. Those chains move, so it is deleted a day " +
+        "after saving rather than quietly becoming wrong.\n\nSave it anyway?"
+    )
+  ) {
+    return;
+  }
+  await send({
+    SaveRoute: {
+      route: {
+        name: name.trim(),
+        kind,
+        anchors: a,
+        avoid: [...avoidOnce],
+        titans: [...titansOnce],
+        titan_at_start: jump.tstart,
+        titan_self_jump: jump.tself,
+        hull: jump.hull,
+        jdc: jump.jdc,
+        jfc: jump.jfc,
+        saved_at: 0,
+        via_wormholes: wh,
+      },
+    },
+  });
+}
+
+async function loadRoute(onPick) {
+  let rows = [];
+  try {
+    rows = await (await fetch("/api/routes")).json();
+  } catch {
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "jstartdlg altdlg";
+  wrap.innerHTML =
+    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+    `<h3>Saved routes</h3>` +
+    (rows.length
+      ? `<ul class="ravoidrows">` +
+        rows
+          .map(
+            (r, i) =>
+              `<li><button data-load="${i}">${esc(r.route.name)}` +
+              `<em>${esc(r.from_name ?? "")} → ${esc(r.to_name ?? "")} · ${esc(r.route.kind)}` +
+              `${r.route.via_wormholes ? " · expires" : ""}</em></button>` +
+              `<button data-forget="${esc(r.route.name)}" title="Forget">${ico("x")}</button></li>`
+          )
+          .join("") +
+        `</ul>`
+      : `<p class="placeholder">Nothing saved yet.</p>`) +
+    `</div>`;
+  document.body.append(wrap);
+  wrap.addEventListener("click", async (e) => {
+    if (e.target === wrap || e.target.closest(".mclose")) return wrap.remove();
+    const f = e.target.closest("[data-forget]");
+    if (f) {
+      await send({ DeleteRoute: { name: f.dataset.forget } });
+      wrap.remove();
+      return;
+    }
+    const b = e.target.closest("[data-load]");
+    if (!b) return;
+    const r = rows[Number(b.dataset.load)].route;
+    wrap.remove();
+    avoidOnce.clear();
+    for (const id of r.avoid ?? []) avoidOnce.add(id);
+    titansOnce.clear();
+    for (const id of r.titans ?? []) titansOnce.add(id);
+    jump = { ...jump, hull: r.hull ?? 0, jdc: r.jdc ?? 5, jfc: r.jfc ?? 5, tstart: !!r.titan_at_start, tself: !!r.titan_self_jump };
+    legPick = [];
+    showRoute(r.kind, r.anchors, onPick);
   });
 }
 

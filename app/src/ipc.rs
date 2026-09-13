@@ -46,6 +46,10 @@ pub enum OverlayToMain {
     SetDestination { id: i64 },
     /// Add or remove a system from a permanent route-avoidance list.
     AvoidSystem { id: i64, jump: bool, on: bool },
+    /// Save the route the page has built, or replace one of the same name.
+    SaveRoute { route: crate::settings::SavedMapRoute },
+    /// Forget a saved route by name.
+    DeleteRoute { name: String },
     /// Whether routes may use scanned wormhole connections.
     RouteViaWormholes { on: bool },
     /// Send one message to a conversation that is already open.

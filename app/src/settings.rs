@@ -80,6 +80,8 @@ pub struct Settings {
     #[serde(default)]
     pub saved_jump_routes: Vec<SavedJumpRoute>,
     #[serde(default)]
+    pub saved_map_routes: Vec<SavedMapRoute>,
+    #[serde(default)]
     pub jump_dock: Vec<DockPermit>,
     #[serde(default = "default_coalitions")]
     pub coalitions: Vec<Coalition>,
@@ -522,6 +524,44 @@ impl Default for WebSettings {
 }
 
 #[cfg(test)]
+mod saved_routes {
+    /// A route through a scanned wormhole goes stale, and the reader is what drops it.
+    ///
+    /// The chain it was planned on is hours old at best; a day later the route is not a route, and
+    /// silently serving it is worse than losing it. An ordinary route is kept forever.
+    #[test]
+    fn only_wormhole_routes_expire() {
+        let now = 1_700_000_000_i64;
+        let keep = |r: &super::SavedMapRoute| {
+            !r.via_wormholes || now - r.saved_at < super::WORMHOLE_ROUTE_TTL_SECS
+        };
+        let base = super::SavedMapRoute {
+            name: "x".to_owned(),
+            kind: "gate".to_owned(),
+            anchors: vec![1, 2],
+            avoid: Vec::new(),
+            titans: Vec::new(),
+            titan_at_start: true,
+            titan_self_jump: false,
+            hull: 0,
+            jdc: 5,
+            jfc: 5,
+            saved_at: now - 10 * super::WORMHOLE_ROUTE_TTL_SECS,
+            via_wormholes: false,
+        };
+        assert!(keep(&base), "a gate route from last week is still a gate route");
+        let stale = super::SavedMapRoute { via_wormholes: true, ..base.clone() };
+        assert!(!keep(&stale), "a day-old wormhole route is gone");
+        let fresh = super::SavedMapRoute {
+            via_wormholes: true,
+            saved_at: now - 60,
+            ..base
+        };
+        assert!(keep(&fresh), "a minute-old one is not");
+    }
+}
+
+#[cfg(test)]
 mod web_defaults {
     /// The three settings that can put the page on the open internet are off, and a blob written
     /// before they existed still parses to off.
@@ -682,6 +722,42 @@ pub struct SavedJumpRoute {
     #[serde(default)]
     pub jumps: usize,
 }
+
+/// A route built on the map, saved whole.
+///
+/// Everything that went into it, not just the endpoints: a route is the anchors *and* what you told
+/// the planner about them, and reloading one that lost its avoid list or its titans would be a
+/// different route with the same name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedMapRoute {
+    pub name: String,
+    pub kind: String,
+    pub anchors: Vec<i64>,
+    #[serde(default)]
+    pub avoid: Vec<i64>,
+    #[serde(default)]
+    pub titans: Vec<i64>,
+    #[serde(default)]
+    pub titan_at_start: bool,
+    #[serde(default)]
+    pub titan_self_jump: bool,
+    #[serde(default)]
+    pub hull: usize,
+    #[serde(default)]
+    pub jdc: u32,
+    #[serde(default)]
+    pub jfc: u32,
+    /// When it was saved, for the wormhole expiry.
+    #[serde(default)]
+    pub saved_at: i64,
+    /// Whether it was planned through scanned wormholes. Those move: a chain is hours old at best, so
+    /// a route that depended on one is deleted a day later rather than quietly becoming wrong.
+    #[serde(default)]
+    pub via_wormholes: bool,
+}
+
+/// How long a route through a scanned wormhole is worth keeping.
+pub const WORMHOLE_ROUTE_TTL_SECS: i64 = 24 * 60 * 60;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DockPermit {
@@ -909,6 +985,7 @@ impl Default for Settings {
             sov_upgrades: Vec::new(),
             jump_favourites: Vec::new(),
             saved_jump_routes: Vec::new(),
+            saved_map_routes: Vec::new(),
             jump_dock: Vec::new(),
             coalitions: default_coalitions(),
             view_options: String::new(),
