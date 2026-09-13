@@ -1062,7 +1062,9 @@ function wire() {
       // same gesture zoomed six times as far in one of them.
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
       const px = Math.max(-240, Math.min(240, e.deltaY * unit));
-      zoomAt(Math.exp(-px * 0.003), e.clientX - box.left, e.clientY - box.top);
+      // `k` is map units per pixel, so zooming in makes it smaller. A positive `deltaY` is a scroll
+      // away from the user, which is zoom out, which is a larger `k`.
+      zoomAt(Math.exp(px * 0.003), e.clientX - box.left, e.clientY - box.top);
     },
     { passive: false }
   );
