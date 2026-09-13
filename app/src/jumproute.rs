@@ -193,38 +193,6 @@ impl PartialOrd for Key {
     }
 }
 
-#[derive(Clone)]
-pub struct Leg {
-    pub from: i64,
-    pub to: i64,
-    pub path: Vec<i64>,
-    pub valid: bool,
-}
-
-pub fn plan(systems: &[MapSystem], max_ly: f64, anchors: &[i64], prefer: &HashSet<i64>) -> Vec<Leg> {
-    let mut legs = Vec::new();
-    for w in anchors.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        match shortest_path_pref(systems, max_ly, a, b, prefer) {
-            Some(path) => legs.push(Leg { from: a, to: b, path, valid: true }),
-            None => legs.push(Leg { from: a, to: b, path: vec![a, b], valid: false }),
-        }
-    }
-    legs
-}
-
-pub fn flatten(legs: &[Leg]) -> Vec<i64> {
-    let mut out: Vec<i64> = Vec::new();
-    for leg in legs {
-        for &s in &leg.path {
-            if out.last() != Some(&s) {
-                out.push(s);
-            }
-        }
-    }
-    out
-}
-
 pub fn alternatives(systems: &[MapSystem], max_ly: f64, a: i64, b: i64) -> Vec<i64> {
     let max_m2 = (max_ly * LY_METERS).powi(2);
     let find = |id: i64| systems.iter().find(|s| s.id == id);
@@ -238,6 +206,10 @@ pub fn alternatives(systems: &[MapSystem], max_ly: f64, a: i64, b: i64) -> Vec<i
         .collect()
 }
 
+/// Kept for the tests that pin the fatigue and fuel rules against the wiki figures. The app reads the
+/// per-hop costs directly now, so nothing in a release build calls this, and deleting it would delete
+/// the check rather than the dead weight.
+#[allow(dead_code)]
 pub struct RouteCost {
     pub jumps: usize,
     pub total_ly: f64,
@@ -287,6 +259,7 @@ pub fn hop_costs(
     out
 }
 
+#[allow(dead_code)]
 pub fn route_cost(systems: &[MapSystem], path: &[i64], class: &ShipClass, jfc: u32) -> RouteCost {
     let hops = hop_costs(systems, path, class, jfc);
     RouteCost {

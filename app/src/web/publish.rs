@@ -245,7 +245,9 @@ fn map_live(
     you: Option<i64>,
     locations: &HashMap<String, (i64, bool)>,
     facts: &super::facts::UiFacts,
-    status: &HashMap<i64, crate::systemstatus::SysFlags>,
+    // Kept in the signature: the status pane carries these to the page now, but the call site reads
+    // better naming what it has, and the map layer is the obvious place for it to come back.
+    _status: &HashMap<i64, crate::systemstatus::SysFlags>,
 ) -> MapLive {
     let ttl = facts.intel_ttl_secs;
     let now = chrono::Utc::now().timestamp();

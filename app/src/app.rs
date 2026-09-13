@@ -635,10 +635,6 @@ pub struct SpaiApp {
     jump_waypoints: Vec<i64>,
     jump_favourites: std::collections::HashSet<i64>,
     jump_systems: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
-    jump_legs: Vec<crate::jumproute::Leg>,
-    jump_route: Vec<i64>,
-    jump_alt: Vec<i64>,
-    jump_route_err: Option<String>,
     jump_route_key: Option<u64>,
     map_view: crate::map::MapView,
     map_initialized: bool,
@@ -789,7 +785,6 @@ pub struct SpaiApp {
     /// Set once the saved geometry has been applied to the rescue viewport after opening. Prevents
     /// re-asserting position/size every frame (which fights the user dragging/resizing the window).
     #[cfg(feature = "fc-rescue")]
-    rescue_geom_applied: bool,
     /// Fleet poller handle guard: `true` once `spawn_fleet_poller` has been started.
     #[cfg(feature = "fc-rescue")]
     fleet_poller_started: bool,
@@ -1393,10 +1388,6 @@ impl SpaiApp {
             jump_waypoints: Vec::new(),
             jump_favourites,
             jump_systems: None,
-            jump_legs: Vec::new(),
-            jump_route: Vec::new(),
-            jump_alt: Vec::new(),
-            jump_route_err: None,
             jump_route_key: None,
             map_view: crate::map::MapView::Universe,
             map_initialized: false,
@@ -1515,7 +1506,6 @@ impl SpaiApp {
             #[cfg(feature = "fc-rescue")]
             rescue_dest_set: None,
             #[cfg(feature = "fc-rescue")]
-            rescue_geom_applied: false,
             #[cfg(feature = "fc-rescue")]
             fleet_poller_started: false,
             rescue_cyno_input: String::new(),
@@ -3450,224 +3440,6 @@ impl SpaiApp {
         self.jabber_ui(ui, f);
     }
 
-    /// Left-sidebar Channels pane: every known MUC room as a row with its MOTD preview. Rooms we
-    /// were kicked from show struck-through but stay clickable, since history lives in `chats`.
-    fn jabber_channels_list_ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        channels: &[ChannelRow],
-        connected: bool,
-        search: &str,
-    ) {
-        let mut open: Option<String> = None;
-        let mut toggle_motd: Option<String> = None;
-        let mut join: Option<String> = None;
-        let mut forget: Option<String> = None;
-        // MUC service to browse: an explicit setting, else the domain of a room we already know,
-        // else the convention. Without the last step a user who has joined nothing yet has no known
-        // room to take a domain from, so the one button that finds rooms would sit disabled.
-        let service = if !self.settings.jabber_muc_domain.trim().is_empty() {
-            self.settings.jabber_muc_domain.trim().to_owned()
-        } else {
-            channels
-                .iter()
-                .find_map(|c| c.jid.split('@').nth(1))
-                .map(str::to_owned)
-                .unwrap_or_else(|| self.muc_domain())
-        };
-        let (dir_state, dir_rooms, dir_pending) = {
-            let st = self.jabber.lock().unwrap();
-            (st.room_directory_state.clone(), st.room_directory.clone(), st.room_directory_pending)
-        };
-        ui.horizontal(|ui| {
-            let can_browse = connected && !service.is_empty();
-            let browsing = dir_state == crate::jabber::DirState::Loading;
-            let label = if browsing { "Browsing…" } else { "Browse server rooms" };
-            let btn = ui.add_enabled(can_browse && !browsing, egui::Button::new(label));
-            let btn = if service.is_empty() {
-                btn.on_disabled_hover_text("No MUC service known. Set one in Jabber settings or join a room first.")
-            } else if !connected {
-                btn.on_disabled_hover_text("Connect to Jabber first.")
-            } else {
-                btn.on_hover_text(format!("List every room on {service}"))
-            };
-            if btn.clicked() {
-                if let Some(tx) = &self.jabber_tx {
-                    let _ = tx.send(crate::jabber::Cmd::DiscoRooms { service: service.clone() });
-                }
-            }
-        });
-        if let crate::jabber::DirState::Error(e) = &dir_state {
-            ui.colored_label(crate::theme::standing::WARNING, e);
-        }
-        ui.separator();
-        let known: std::collections::HashSet<&str> =
-            channels.iter().map(|c| c.jid.as_str()).collect();
-        let pinned = self.jabber_rescue_rooms();
-        egui::ScrollArea::vertical().id_salt("channels").auto_shrink([false, false]).show(ui, |ui| {
-            let w = &mut ui.visuals_mut().widgets;
-            w.inactive.bg_stroke = egui::Stroke::NONE;
-            w.hovered.bg_stroke = egui::Stroke::NONE;
-            w.active.bg_stroke = egui::Stroke::NONE;
-            let shown: Vec<&ChannelRow> = channels
-                .iter()
-                .filter(|c| {
-                    search.is_empty()
-                        || c.name.to_lowercase().contains(search)
-                        || c.jid.to_lowercase().contains(search)
-                })
-                .collect();
-            let accent = ui.visuals().hyperlink_color;
-            if shown.is_empty() {
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new("No channels. Join a room or browse the server.").weak());
-            }
-            for c in shown {
-                let sel = self.jabber_chat.as_deref() == Some(c.jid.as_str());
-                let struck = c.inaccessible && connected;
-                let fit = fit_chars(ui.available_width() - 54.0 - if c.unread { 16.0 } else { 0.0 });
-                let mut name = egui::RichText::new(truncate_to(&c.name, fit));
-                if struck {
-                    name = name.strikethrough();
-                }
-                name = if c.unread { name.strong() } else if struck { name.weak() } else { name };
-                let row = ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).color(accent));
-                    let clicked = ui.selectable_label(sel, name).clicked();
-                    if c.unread {
-                        ui.label(
-                            egui::RichText::new(egui_phosphor::regular::CIRCLE)
-                                .color(UNREAD_RED)
-                                .size(8.0),
-                        );
-                    }
-                    let blocked = pinned.contains(&c.jid).then_some(PINNED_ROOM_TIP);
-                    if forget_button(ui, &c.name, blocked) {
-                        forget = Some(c.jid.clone());
-                    }
-                    clicked
-                });
-                // MOTD indented under the name. Default body size (weak), never a small font.
-                // Collapsed: first two lines, each ellipsized to the real pixel width. Expanded
-                // (click to toggle): the full subject, wrapped. Clicking any MOTD line toggles it.
-                if !c.motd.trim().is_empty() {
-                    let expanded = self.jabber_motd_expanded.contains(&c.jid);
-                    let motd_clicked = ui
-                        .horizontal(|ui| {
-                            ui.add_space(20.0);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 1.0;
-                                let mut hit = false;
-                                if expanded {
-                                    let r = ui.add(
-                                        egui::Label::new(egui::RichText::new(c.motd.trim()).weak())
-                                            .wrap()
-                                            .sense(egui::Sense::click()),
-                                    );
-                                    hit |= r.clicked();
-                                } else {
-                                    for line in motd_preview(&c.motd).iter().filter(|l| !l.is_empty()) {
-                                        let r = ui.add(
-                                            egui::Label::new(egui::RichText::new(line).weak())
-                                                .truncate()
-                                                .sense(egui::Sense::click()),
-                                        );
-                                        hit |= r.clicked();
-                                    }
-                                }
-                                hit
-                            })
-                            .inner
-                        })
-                        .inner;
-                    if motd_clicked {
-                        toggle_motd = Some(c.jid.clone());
-                    }
-                }
-                let tip = if c.inaccessible {
-                    format!("{}, you're no longer in this channel (history only)", c.jid)
-                } else {
-                    c.jid.clone()
-                };
-                row.response.on_hover_text(tip);
-                if row.inner {
-                    open = Some(c.jid.clone());
-                }
-                ui.add_space(3.0);
-            }
-            // Server room-browse results (disco#items). Rooms already known are skipped; the rest
-            // get a Join button. Filtered by the same search box.
-            // Only rooms whose access probe confirmed they're joinable, and that we don't already have.
-            let dir_shown: Vec<&crate::jabber::RoomListing> = dir_rooms
-                .iter()
-                .filter(|r| r.access == crate::jabber::RoomAccess::Open)
-                .filter(|r| !known.contains(r.jid.as_str()))
-                .filter(|r| {
-                    search.is_empty()
-                        || r.name.to_lowercase().contains(search)
-                        || r.jid.to_lowercase().contains(search)
-                })
-                .collect();
-            if dir_state == crate::jabber::DirState::Ready {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("Available rooms ({})", dir_shown.len())).strong(),
-                );
-                if dir_pending > 0 {
-                    ui.label(
-                        egui::RichText::new(format!("Checking access… ({dir_pending} left)")).weak(),
-                    );
-                } else if dir_shown.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new("No joinable rooms to add.").weak());
-                }
-                for r in dir_shown {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(egui_phosphor::regular::USERS_THREE).color(accent));
-                        ui.add(
-                            egui::Label::new(truncate_to(&r.name, fit_chars(ui.available_width() - 70.0)))
-                                .truncate(),
-                        )
-                        .on_hover_text(r.jid.as_str());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Join").clicked() {
-                                join = Some(r.jid.clone());
-                            }
-                        });
-                    });
-                    ui.add_space(2.0);
-                }
-            }
-        });
-        if let Some(jid) = forget {
-            self.jabber_forget(&jid, true);
-        }
-        if let Some(jid) = join {
-            if let Some(tx) = &self.jabber_tx {
-                let _ = tx.send(crate::jabber::Cmd::JoinRoom { room: jid.clone() });
-            }
-            if !self.settings.jabber_rooms.iter().any(|r| r == &jid) {
-                self.settings.jabber_rooms.push(jid.clone());
-                self.needs_save = true;
-            }
-            self.settings.jabber_closed_rooms.retain(|j| j != &jid);
-            self.jabber_unleave(&jid);
-            self.jabber_unforget(&jid);
-            open = Some(jid);
-        }
-        if let Some(jid) = toggle_motd {
-            if !self.jabber_motd_expanded.remove(&jid) {
-                self.jabber_motd_expanded.insert(jid);
-            }
-        }
-        if let Some(jid) = open {
-            self.settings.jabber_closed_rooms.retain(|j| j != &jid);
-            self.jabber_mark_read(&jid);
-            self.jabber_open(&jid, ChatWinKey::Main);
-        }
-    }
-
     /// One lock, one snapshot of everything a chat window needs to draw itself. Messages stay
     /// out of it: each window borrows its own conversation under the lock while it draws.
     /// The Convos list: direct messages above rooms, each newest first.
@@ -3739,7 +3511,7 @@ impl SpaiApp {
                 return;
             }
 
-            let mut section = |ui: &mut egui::Ui, title: &str, n: usize| {
+            let section = |ui: &mut egui::Ui, title: &str, n: usize| {
                 if n == 0 {
                     return;
                 }
@@ -9654,14 +9426,6 @@ impl SpaiApp {
         }
     }
 
-    fn char_missing_scope(&self, name: &str, scope: &str) -> bool {
-        self.characters
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(name))
-            .map(|c| !c.scopes.split(' ').any(|s| s == scope))
-            .unwrap_or(false)
-    }
-
     fn start_login(&self, ctx: &egui::Context) {
         let client_id = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         let callback = non_empty_or(&self.settings.sso_callback, auth::DEFAULT_CALLBACK);
@@ -12079,32 +11843,10 @@ impl SpaiApp {
 
         if self.map_mode == MapMode::JumpPlan {
             let jcol = egui::Color32::from_rgb(0x9C, 0x6A, 0xF7);
-            let red = crate::theme::standing::HOSTILE;
             let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
             for d in self.jump_dockable_ids() {
                 if let Some(p) = pos.get(&d) {
                     painter.circle_stroke(*p, 9.0, egui::Stroke::new(1.5, teal));
-                }
-            }
-            for alt in &self.jump_alt {
-                if let Some(p) = pos.get(alt) {
-                    painter.circle_stroke(*p, 6.0, egui::Stroke::new(1.0, jcol.gamma_multiply(0.5)));
-                }
-            }
-            for leg in &self.jump_legs {
-                if leg.valid {
-                    for w in leg.path.windows(2) {
-                        if let (Some(p1), Some(p2)) = (pos.get(&w[0]), pos.get(&w[1])) {
-                            painter.line_segment([*p1, *p2], egui::Stroke::new(2.5, jcol));
-                        }
-                    }
-                } else if let (Some(p1), Some(p2)) = (pos.get(&leg.from), pos.get(&leg.to)) {
-                    painter.line_segment([*p1, *p2], egui::Stroke::new(2.0, red));
-                }
-            }
-            for sid in &self.jump_route {
-                if let Some(p) = pos.get(sid) {
-                    painter.circle_filled(*p, 4.0, jcol);
                 }
             }
             let gold = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
@@ -13537,7 +13279,10 @@ impl SpaiApp {
                     ship: self.jump_ship,
                     jdc: self.jump_jdc,
                     jfc: self.jump_jfc,
-                    jumps: self.jump_route.len().saturating_sub(1),
+                    // Unreachable since the route panel replaced the jump-plan mode, and the field
+                    // that counted the hops went with it. Left rather than deleted because the save
+                    // dialog's kinds are a matched set.
+                    jumps: 0,
                 });
             }
         }
@@ -13605,23 +13350,18 @@ impl SpaiApp {
         self.travel_ingame_dest = next;
     }
 
-    fn travel_set(&mut self, end: TravelEnd, id: i64) {
+    /// Set the travel route's start. Only the start: the destination is typed into the panel, and
+    /// UI-053 removed the map entry that was the only other way in, so the two-variant enum this used
+    /// to take had one variant nobody could reach.
+    fn travel_set_start(&mut self, id: i64) {
         let name = self
             .systems
             .as_ref()
             .and_then(|g| g.info_of(id))
             .map(|i| i.name.clone())
             .unwrap_or_default();
-        match end {
-            TravelEnd::Start => {
-                self.travel_start = Some(id);
-                self.travel_start_q = name;
-            }
-            TravelEnd::Dest => {
-                self.travel_end = Some(id);
-                self.travel_end_q = name;
-            }
-        }
+        self.travel_start = Some(id);
+        self.travel_start_q = name;
         self.travel_waypoints.retain(|&w| w != id);
         self.travel_avoid.retain(|&a| a != id);
         self.plan_route();
@@ -13859,47 +13599,6 @@ impl SpaiApp {
                 self.jump_systems = Some(std::sync::Arc::new(store.all_map_systems()));
             }
         }
-    }
-
-    fn recompute_jump_route(&mut self) {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.jump_plan_from.hash(&mut h);
-        self.jump_plan_to.hash(&mut h);
-        self.jump_waypoints.hash(&mut h);
-        self.jump_ship.hash(&mut h);
-        self.jump_jdc.hash(&mut h);
-        let dockable = self.jump_dockable_ids();
-        let mut prefer: std::collections::HashSet<i64> = self.jump_favourites.clone();
-        prefer.extend(dockable.iter().copied());
-        let mut pref_v: Vec<i64> = prefer.iter().copied().collect();
-        pref_v.sort_unstable();
-        pref_v.hash(&mut h);
-        let key = h.finish();
-        if self.jump_route_key == Some(key) {
-            return;
-        }
-        self.jump_route_key = Some(key);
-        self.jump_legs.clear();
-        self.jump_route.clear();
-        self.jump_route_err = None;
-        let (Some(from), Some(to)) = (self.jump_plan_from, self.jump_plan_to) else { return };
-        self.ensure_jump_systems();
-        let Some(systems) = self.jump_systems.clone() else { return };
-        let class = crate::jumproute::SHIP_CLASSES[self.jump_ship];
-        let max_ly = crate::jumproute::max_range_ly(&class, self.jump_jdc);
-        let mut anchors = vec![from];
-        anchors.extend(self.jump_waypoints.iter().copied());
-        anchors.push(to);
-        let legs = crate::jumproute::plan(&systems, max_ly, &anchors, &prefer);
-        self.jump_route = crate::jumproute::flatten(&legs);
-        self.jump_legs = legs;
-        self.jump_alt.clear();
-        for w in anchors.windows(3) {
-            self.jump_alt.extend(crate::jumproute::alternatives(&systems, max_ly, w[0], w[2]));
-        }
-        self.jump_alt.sort_unstable();
-        self.jump_alt.dedup();
     }
 
     #[cfg(test)]
@@ -14730,7 +14429,7 @@ impl SpaiApp {
             && ui.memory(|m| m.focused()).is_none()
         {
             if let Some(me) = self.player_system() {
-                self.travel_set(TravelEnd::Start, me);
+                self.travel_set_start(me);
             }
         }
         let mut wp_pick: Option<i64> = None;
@@ -21824,15 +21523,6 @@ pub(crate) struct ChannelRow {
     pub(crate) motd: String,
 }
 
-/// First two non-empty-trimmed lines of a room MOTD (MUC subject) for the collapsed list preview.
-fn motd_preview(subject: &str) -> [String; 2] {
-    let mut lines = subject.lines().map(str::trim).filter(|l| !l.is_empty());
-    [
-        lines.next().unwrap_or_default().to_owned(),
-        lines.next().unwrap_or_default().to_owned(),
-    ]
-}
-
 fn eve_time_label(ts: i64, now: i64) -> String {
     use chrono::{Datelike, TimeZone, Utc};
     let Some(t) = Utc.timestamp_opt(ts, 0).single() else {
@@ -22866,12 +22556,6 @@ fn eve_corp_logo_url(id: impl std::fmt::Display, px: f32) -> String {
 
 fn eve_alliance_logo_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/alliances/{id}/logo?size={}", eve_img_size(px))
-}
-
-#[derive(Clone, Copy)]
-enum TravelEnd {
-    Start,
-    Dest,
 }
 
 /// How a route gets from one system to the next. Each kind draws in its own colour, so a glance at
@@ -25223,39 +24907,6 @@ fn warn_text(w: &crate::web::route::HopWarning) -> Option<(String, egui::Color32
     Some((format!("{}  {}", egui_phosphor::regular::WARNING, bits.join(" · ")), col))
 }
 
-fn warn_line(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) {
-    let mut bits: Vec<String> = Vec::new();
-    if w.sev >= crate::web::route::WARN_SEVERITY {
-        let age = fmt_age((chrono::Utc::now().timestamp() - w.at).max(0));
-        bits.push(format!(
-            "{} intel {age}",
-            if w.sev >= 3 { "Critical" } else { "Danger" }
-        ));
-    }
-    if w.kills > 0 || w.pods > 0 {
-        let mut k = format!("{} kills this hour", w.kills);
-        if w.pods > 0 {
-            k.push_str(&format!(" · {} pods", w.pods));
-        }
-        bits.push(k);
-    }
-    if bits.is_empty() {
-        return;
-    }
-    let col = if w.sev >= 3 {
-        crate::theme::standing::HOSTILE
-    } else {
-        crate::theme::standing::WARNING
-    };
-    ui.indent(("warn", w.at, w.kills), |ui| {
-        ui.label(
-            egui::RichText::new(format!("{}  {}", egui_phosphor::regular::WARNING, bits.join(" · ")))
-                .color(col)
-                .size(11.5),
-        );
-    });
-}
-
 pub(crate) fn severity_of(
     r: &crate::intel::IntelReport,
     rules: &crate::settings::SeverityRules,
@@ -27377,27 +27028,6 @@ mod kill_noise_tests {
         assert!(!kill_is_noise("Stabber", 20_000_000.0));
         assert!(!kill_is_noise("Keepstar", 1e12));
         assert!(!kill_is_noise("Capsule", 500_000_000.0));
-    }
-}
-
-#[cfg(test)]
-mod motd_preview_tests {
-    use super::*;
-
-    #[test]
-    fn takes_first_two_nonempty_lines_trimmed() {
-        let s = "  Delve intel  \n\n  neuts in Querious  \n third line";
-        assert_eq!(motd_preview(s), ["Delve intel".to_owned(), "neuts in Querious".to_owned()]);
-    }
-
-    #[test]
-    fn single_line_leaves_second_empty() {
-        assert_eq!(motd_preview("Formups here"), ["Formups here".to_owned(), String::new()]);
-    }
-
-    #[test]
-    fn empty_subject_is_two_empty_lines() {
-        assert_eq!(motd_preview("   \n  "), [String::new(), String::new()]);
     }
 }
 

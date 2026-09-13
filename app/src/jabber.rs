@@ -150,6 +150,12 @@ pub enum Cmd {
     LeaveRoom { room: String },
     SetPresence { show: Presence, status: String },
     /// Browse the rooms a MUC service advertises (disco#items to the service JID).
+    ///
+    /// Nothing sends this since the Convos rework dropped the Channels pane, which held the only
+    /// "browse the server" button. Kept rather than deleted: the disco#items and per-room disco#info
+    /// handling behind it is a working piece of XMPP, and throwing it away to quiet one warning would
+    /// cost more to write again than it costs to leave.
+    #[allow(dead_code)]
     DiscoRooms { service: String },
     /// Probe one room's join policy (disco#info to the room JID).
     DiscoRoomInfo { room: String },
