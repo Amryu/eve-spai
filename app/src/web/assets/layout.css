@@ -45,6 +45,12 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: minmax(0, 1fr);
 }
+/* An odd number of panes leaves one cell of the last row spare. The map is the pane that gains most
+   from the width, so it takes both columns and nothing is left half empty. */
+#panes[data-mode="grid"] > .pane[data-span] { grid-column: 1 / -1; }
+/* Both layouts give a pane `display: flex`, and an author rule of any specificity beats the UA's
+   `[hidden] { display: none }`. Without this, switching a pane off left it exactly where it was. */
+#panes[data-mode] > .pane[hidden] { display: none; }
 #panes[data-mode="columns"] > .pane,
 #panes[data-mode="grid"] > .pane {
   min-width: 0;

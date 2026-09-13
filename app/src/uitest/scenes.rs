@@ -663,6 +663,22 @@ fn jabber_sidebar_scene_cfg(
     })
 }
 
+/// UI-051: the two halves of what used to be one "Join conversation" dialog, each with its own
+/// recent list. Sized to show the list scrolling rather than a handful of names.
+fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
+    harness::scratch_profile();
+    let f = fixtures::jabber_sidebar_frame();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, [420.0, 400.0], move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            *a.jabber.lock().unwrap() = fixtures::jabber_state();
+            a
+        });
+        app.jabber_join_dialog_for_test(ctx, &f, rooms);
+    })
+}
+
 /// The rescue feed on its own. GAP-009 leaves the rescue window itself without a scene, so this
 /// renders the chat the way `uitest_rescue_chat_lines_are_one_line_tall` drives it, which is enough
 /// to read the timestamps UI-043 changed.
@@ -703,6 +719,9 @@ pub(crate) fn all() -> Vec<Scene> {
         // UI-041: both panes, because the remove button has to read the same in each.
         jabber_sidebar_scene("jabber_sidebar_convos", [900.0, 560.0], true),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
+        // UI-051: one dialog per kind, and neither offering the other kind's conversations.
+        jabber_start_scene("jabber_start_dm", false),
+        jabber_start_scene("jabber_join_room", true),
         // UI-040: the class list is the subject, so the panel is sized to show the picker and the
         // range readout that moves with it.
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
