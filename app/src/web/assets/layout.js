@@ -80,6 +80,14 @@ function fit(protect = null) {
   const mode = effectiveMode();
   let on = shown();
   const total = () => on.reduce((n, p) => n + cost(p, mode), 0);
+  // Shrink before switching anything off. A pane that lost its second cell is still there to read;
+  // a pane that was switched off is gone, and losing one to make room for another is a worse trade
+  // than losing some width.
+  for (const p of [...on].reverse()) {
+    if (total() <= CELLS) break;
+    if (p === protect || !layout.span[p]) continue;
+    delete layout.span[p];
+  }
   while (total() > CELLS && on.length > 1) {
     const victim = [...on].reverse().find((p) => p !== protect) ?? on[on.length - 1];
     layout.off = [...new Set([...layout.off, victim])];
@@ -88,12 +96,14 @@ function fit(protect = null) {
   layout.active = Math.min(layout.active, Math.max(0, on.length - 1));
 }
 
-/// A pane's span: normal, two columns wide, or two rows tall. One button, cycled, because three
-/// states do not each deserve a control in a corner this small.
-export function cycleSpan(pane) {
-  const next = { "": "wide", wide: "tall", tall: "" }[layout.span[pane] ?? ""];
-  if (next) layout.span[pane] = next;
-  else delete layout.span[pane];
+/// A pane's span: two columns wide, two rows tall, or neither. Both buttons are always there and
+/// each is its own toggle; the two are exclusive, so setting one clears the other.
+///
+/// A single cycling button meant reaching "tall" by passing through "wide", which rearranged the
+/// whole grid on the way past for no reason the user asked for.
+export function setSpan(pane, kind) {
+  if (layout.span[pane] === kind) delete layout.span[pane];
+  else layout.span[pane] = kind;
   fit(pane);
   save();
   apply();
@@ -183,8 +193,10 @@ function paintTabs() {
   });
 }
 
-const SPAN_ICON = { "": "arrows-out-line-horizontal", wide: "arrows-out-line-vertical", tall: "arrows-in-line-horizontal" };
-const SPAN_TIP = { "": "Widen to two columns", wide: "Make it two rows tall", tall: "Back to one cell" };
+const SPANS = [
+  ["wide", "arrows-out-line-horizontal", "Two columns wide"],
+  ["tall", "arrows-out-line-vertical", "Two rows tall"],
+];
 
 /// The per-pane controls, put back after every repaint.
 ///
@@ -202,9 +214,13 @@ function paneChrome(mode) {
       bar.className = "pgrip";
       h2.append(bar);
     }
+    const now = layout.span[name] ?? "";
     const want =
       (grid
-        ? `<button class="pbtn pspan" data-span-btn="${name}" title="${SPAN_TIP[layout.span[name] ?? ""]}">${ico(SPAN_ICON[layout.span[name] ?? ""])}</button>`
+        ? SPANS.map(
+            ([kind, glyph, tip]) =>
+              `<button class="pbtn pspan${now === kind ? " on" : ""}" data-span-btn="${name}" data-kind="${kind}" title="${now === kind ? "Back to one cell" : tip}">${ico(glyph)}</button>`
+          ).join("")
         : "") +
       `<button class="pbtn pdrag" data-drag="${name}" title="Drag to rearrange">${ico("dots-six-vertical")}</button>`;
     // Rewriting identical HTML would destroy the node a drag is holding on to.
@@ -261,7 +277,7 @@ function wirePanes() {
 
   main.addEventListener("click", (e) => {
     const b = e.target.closest("[data-span-btn]");
-    if (b) cycleSpan(b.dataset.spanBtn);
+    if (b) setSpan(b.dataset.spanBtn, b.dataset.kind);
   });
 }
 
@@ -458,6 +474,9 @@ export function wire() {
   wireTabs();
   wirePanes();
   wireSheet();
+  // The map rebuilds its own pane when its geometry lands, outside `render`, which takes the heading
+  // and the controls in it with it. It says so; this puts them back.
+  window.addEventListener("spai:map", () => paneChrome(effectiveMode()));
   window.matchMedia("(min-width: 900px)").addEventListener("change", apply);
   apply();
 }

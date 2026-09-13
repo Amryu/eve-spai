@@ -215,6 +215,13 @@ const sy = (z) => (z - view.oz) / view.k;
 /// argument it frames everything, which is the universe view.
 function fit(region = null) {
   if (!geo?.nodes.length || !canvas) return;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  // A pane that is switched off has no size, and a view fitted to a zero-width canvas is a view of
+  // nothing: `k` comes out as the whole extent per pixel, so when the pane is finally shown the map
+  // is somewhere off the edge of a blank canvas. `fitted` is deliberately not set, so the first
+  // paint with a real size does the job properly.
+  if (w < 2 || h < 2) return;
   let [x0, x1, z0, z1] = [Infinity, -Infinity, Infinity, -Infinity];
   const within = region == null ? geo.nodes : geo.nodes.filter((n) => n.r === region);
   if (!within.length) return;
@@ -222,8 +229,6 @@ function fit(region = null) {
     x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x);
     z0 = Math.min(z0, n.z); z1 = Math.max(z1, n.z);
   }
-  const w = canvas.clientWidth || 1;
-  const h = canvas.clientHeight || 1;
   // A single region is a handful of systems, so it wants more air around it than the universe does.
   const pad = region == null ? 0.04 : 0.15;
   view.k = Math.max((x1 - x0) / w, (z1 - z0) / h) * (1 + pad * 2) || 1;
@@ -304,6 +309,10 @@ function paint() {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
+  // Nothing to draw on yet, and nothing worth recording: a pane switched on later arrives here once
+  // with no size and again with one.
+  if (w < 2 || h < 2) return;
+  if (!fitted) fit();
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
@@ -847,6 +856,12 @@ function build() {
   pal = null;
   if (!fitted) fit();
   wire();
+  // A pane can be switched on long after the map first rendered, and it arrives with no size at all.
+  // Watching the canvas is what turns that into a fit and a repaint rather than a blank rectangle.
+  new ResizeObserver(() => {
+    if (!fitted) fit();
+    schedule();
+  }).observe(canvas);
   schedule();
   // The system window parks itself against the canvas, and until this moment there was no canvas to
   // park against: the geometry is fetched, so anything opened before it lands had nothing to measure.
