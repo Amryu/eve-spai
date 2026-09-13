@@ -30,6 +30,10 @@ pub struct Config {
     pub bind_lan: bool,
     pub token: String,
     pub theme: crate::theme::Theme,
+    /// An address to bind instead of the one `bind_lan` picks, and whether to serve without pairing.
+    /// Both are off unless the user went into the advanced options and accepted the warning there.
+    pub bind_addr: String,
+    pub no_pairing: bool,
     /// Built once on the worker that first asks for it, then cached: the SDE does not change while
     /// the app is running, and walking 8000 systems per request would be silly.
     pub map: Option<Arc<super::map::Geometry>>,
@@ -82,7 +86,13 @@ pub fn start(
     detail: super::Detail,
     inbox: super::Inbox,
 ) -> Result<Handle, String> {
-    let host = if cfg.bind_lan { "0.0.0.0" } else { "127.0.0.1" };
+    let host: &str = if !cfg.bind_addr.trim().is_empty() {
+        cfg.bind_addr.trim()
+    } else if cfg.bind_lan {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
     // Retried, because the usual reason this fails is the listener that was just replaced.
     //
     // Dropping a `Handle` tells the workers to stop and unblocks the accept, but the socket is only
@@ -168,14 +178,20 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
     let peer = req.remote_addr().map(|a| a.ip());
 
     let limited = peer.is_some_and(|ip| is_limited(ctx, ip));
-    let access = routes::authorize(
-        &route,
-        query_token,
-        cookie_token,
-        host.as_deref(),
-        &ctx.cfg.token,
-        limited,
-    );
+    // Unpaired serving is a deliberate, warned-about choice, and it is the only thing that skips
+    // this. Everything else about the request, the DNS-rebinding host check included, still applies.
+    let access = if ctx.cfg.no_pairing {
+        routes::Access::Granted
+    } else {
+        routes::authorize(
+            &route,
+            query_token,
+            cookie_token,
+            host.as_deref(),
+            &ctx.cfg.token,
+            limited,
+        )
+    };
 
     // A write has to be read before anything else touches the request, and it is the one place
     // `Origin` matters: a cross-site form post carries the browser's own cookie.
@@ -271,6 +287,18 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                 }
                 None => respond(req, 404, "text/plain; charset=utf-8", b"not found\n", &[]),
             }
+        }
+        Route::Logo => {
+            // The app's own icon, straight out of the binary: it is already linked in for the window
+            // and the tray, so serving it costs nothing and the page cannot disagree with the app
+            // about what the app looks like.
+            respond(
+                req,
+                200,
+                "image/png",
+                super::assets::LOGO,
+                &[("Cache-Control", "public, max-age=604800".to_owned())],
+            )
         }
         Route::Font => {
             // Version-stamped in its own URL, so it can be cached forever and still change on an
@@ -632,6 +660,8 @@ mod tests {
                 bind_lan: false,
                 token: TOKEN.to_owned(),
                 theme: crate::theme::Theme::caldari(),
+                bind_addr: String::new(),
+                no_pairing: false,
                 map: None,
             },
             web.clone(),

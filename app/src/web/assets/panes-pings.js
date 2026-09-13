@@ -97,11 +97,11 @@ const renderPings = (el, snap) => {
   const systems = snap?.pings?.systems ?? {};
   const now = Math.floor(Date.now() / 1000);
   if (!pings.length) {
-    el.innerHTML = `<h2>Fleet pings</h2><p class="placeholder">No pings.</p>`;
+    el.innerHTML = `<h2>Fleets</h2><p class="placeholder">No pings.</p>`;
     return;
   }
   const newest = [...pings].sort((a, b) => ts(b.ping) - ts(a.ping));
-  el.innerHTML = `<h2>Fleet pings</h2>${newest.map((p) => pingCard(p, now, systems)).join("")}`;
+  el.innerHTML = `<h2>Fleets</h2>${newest.map((p) => pingCard(p, now, systems)).join("")}`;
 };
 
 const ts = (p) => ("Fleet" in p ? p.Fleet.timestamp : p.Plain.timestamp);

@@ -42,6 +42,7 @@ body {
   z-index: 40;
 }
 
+.brand img { vertical-align: -5px; margin-right: 0.4rem; border-radius: 3px; }
 .brand {
   color: var(--accent);
   font-weight: 700;
