@@ -426,6 +426,10 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         jfc,
                         titan_ly,
                         routes::query_param(query, "tstart").unwrap_or("1") != "0",
+                        // Per route, not a setting: which ships are where is a fact about the
+                        // operation being planned, so the client carries it like the avoid list.
+                        &ids("titans").into_iter().collect::<Vec<i64>>(),
+                        routes::query_param(query, "tself").unwrap_or("0") == "1",
                         d.count_bridges,
                         &avoid,
                         &d.holes,
@@ -462,6 +466,50 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             };
             drop(d);
             let json = serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_owned());
+            respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[(
+                "Cache-Control",
+                "no-store".to_owned(),
+            )])
+        }
+        Route::Alternatives => {
+            // Systems a capital could stop in between two hops. Picking one inserts it as a
+            // waypoint, which is the only way to steer a jump route without banning things.
+            let num = |k: &str| routes::query_param(query, k).and_then(|v| v.parse::<i64>().ok());
+            let jdc = routes::query_param(query, "jdc")
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(5)
+                .min(5);
+            let hull = routes::query_param(query, "hull")
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|i| *i < crate::jumproute::SHIP_CLASSES.len())
+                .unwrap_or(0);
+            let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
+            let mut out: Vec<serde_json::Value> = Vec::new();
+            if let (Some(a), Some(b), Some(graph), Some(coords)) =
+                (num("a"), num("b"), d.graph.as_ref(), d.coords.as_ref())
+            {
+                let max_ly =
+                    crate::jumproute::max_range_ly(&crate::jumproute::SHIP_CLASSES[hull], jdc);
+                let mut ids = crate::jumproute::alternatives(coords, max_ly, a, b);
+                ids.sort_unstable();
+                ids.dedup();
+                out = ids
+                    .into_iter()
+                    .filter_map(|id| {
+                        let i = graph.info_of(id)?;
+                        Some(serde_json::json!({
+                            "id": id,
+                            "name": i.name,
+                            "security": i.security,
+                        }))
+                    })
+                    .collect();
+                // Enough to choose from, not enough to scroll: the ring between two hops can hold
+                // dozens and they are all the same kind of answer.
+                out.truncate(40);
+            }
+            drop(d);
+            let json = serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_owned());
             respond(req, 200, "application/json; charset=utf-8", json.as_bytes(), &[(
                 "Cache-Control",
                 "no-store".to_owned(),

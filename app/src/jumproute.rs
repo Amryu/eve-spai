@@ -47,6 +47,14 @@ pub fn cyno_able(security: f64) -> bool {
     (security * 10.0).round() / 10.0 < 0.5
 }
 
+/// Whether a capital can light a cyno here at all.
+///
+/// Zarzakh is null sec and passes the security test, and nothing jumps into or out of it: no cynos,
+/// and the only ways through are the drifter gates. A jump route through it is not a route.
+pub fn jumpable(s: &MapSystem) -> bool {
+    cyno_able(s.security) && !crate::geo::is_no_transit(s.id)
+}
+
 struct Grid {
     cell: f64,
     map: HashMap<(i64, i64, i64), Vec<usize>>,
@@ -131,7 +139,7 @@ pub fn shortest_path_pref(
                 continue;
             }
             let t = &systems[n];
-            if !cyno_able(t.security) {
+            if !jumpable(t) {
                 continue;
             }
             let d2 = dist2(s, t);
@@ -220,7 +228,7 @@ pub fn alternatives(systems: &[MapSystem], max_ly: f64, a: i64, b: i64) -> Vec<i
     let d2 = |p: &MapSystem, q: &MapSystem| (p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2);
     systems
         .iter()
-        .filter(|s| s.id != a && s.id != b && cyno_able(s.security))
+        .filter(|s| s.id != a && s.id != b && jumpable(s))
         .filter(|s| d2(s, sa) <= max_m2 && d2(s, sb) <= max_m2)
         .map(|s| s.id)
         .collect()
@@ -341,6 +349,20 @@ mod tests {
         s2[2] = at(3, 5.9, 1.5);
         let path = shortest_path_pref(&s2, 6.2, 1, 3, &HashSet::new()).unwrap();
         assert_eq!(path, vec![1, 3], "one jump, even though two would be a shorter flight");
+    }
+
+    /// Zarzakh is null sec, so the security test lets it through, and nothing jumps into or out of
+    /// it. A route that went through it would be one nobody can fly.
+    #[test]
+    fn zarzakh_is_never_jumped_through() {
+        let mut mid = at(crate::geo::ZARZAKH, 4.0, 0.0);
+        mid.security = -0.9;
+        let s = vec![at(1, 0.0, 0.0), mid, at(3, 8.0, 0.0)];
+        assert!(jumpable(&s[0]), "an ordinary null system is fine");
+        assert!(!jumpable(&s[1]), "Zarzakh is not");
+        // 8 ly needs the middle hop, and the middle hop is Zarzakh, so there is no route at all.
+        assert!(shortest_path_pref(&s, 5.0, 1, 3, &HashSet::new()).is_none());
+        assert!(alternatives(&s, 5.0, 1, 3).is_empty());
     }
 
     /// Per-hop fatigue is what the totals are made of, so they cannot disagree.

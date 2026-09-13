@@ -3,6 +3,7 @@
 // an IntelClick.
 
 import { ico, state } from "./app.js";
+import { menu } from "./route.js";
 import { card, fmtAge } from "./panes-intel.js";
 
 const esc = (s) =>
@@ -375,7 +376,7 @@ let routeAt = 0;
 let routeReq = null;
 /// The jump setup, per device. Skills default to five, which is what anyone flying a capital has.
 const JUMP_KEY = "spai_jump";
-let jump = { hull: 0, jdc: 5, jfc: 5, tstart: true };
+let jump = { hull: 0, jdc: 5, jfc: 5, tstart: true, tself: false };
 try {
   jump = { ...jump, ...JSON.parse(localStorage.getItem(JUMP_KEY) ?? "{}") };
 } catch {
@@ -385,6 +386,9 @@ try {
 /// Systems left out of the route being planned. Cleared with the route; the permanent lists live in
 /// the app's settings, where they survive a reload and reach the desktop too.
 export const avoidOnce = new Set();
+/// Systems a titan is sitting in, for this route. Not a setting and not pushed from the app: which
+/// ships are where is a fact about the operation being planned, so it lives and dies with the route.
+export const titansOnce = new Set();
 /// The route currently being shown, as a live binding.
 ///
 /// The event below is how the map hears about a change, but an event has no replay: a route opened
@@ -411,8 +415,9 @@ async function fetchRoute() {
   try {
     const r = await fetch(
       `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}` +
-        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}` +
-        `&avoid=${[...avoidOnce].join(",")}&pick=${legPick.join(",")}`
+        `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}&tself=${jump.tself ? 1 : 0}` +
+        `&avoid=${[...avoidOnce].join(",")}&titans=${[...titansOnce].join(",")}` +
+        `&pick=${legPick.join(",")}`
     );
     out = await r.json();
   } catch {
@@ -452,7 +457,11 @@ function jumpControls(kind, out) {
   if (kind === "titan") {
     return (
       `<label class="jumpcfg tflag"><input data-jump="tstart" type="checkbox"${jump.tstart ? " checked" : ""}>` +
-      ` Titan is in the starting system</label>`
+      ` Titan is in the starting system</label>` +
+      (jump.tstart
+        ? `<label class="jumpcfg tflag"><input data-jump="tself" type="checkbox"${jump.tself ? " checked" : ""}>` +
+          ` Titan may reposition first</label>`
+        : "")
     );
   }
   if (kind !== "jump" || !out?.hulls?.length) return "";
@@ -573,14 +582,12 @@ function paintRoute(kind, onPick) {
             : `<span class="rcost">${Math.round(h.fuel).toLocaleString("en-US")} iso` +
               ` · fatigue ${mins(h.fatigue_min)} · ready in ${mins(h.reactivation_min)}</span>`)
         : h.kind === 1
-          ? `<span class="rkind bridge">bridge</span>`
+          ? `<span class="rkind bridge">ansiblex</span>`
           : `<span class="rkind">gate</span>`) +
     warn(h.warn, h.id) +
-    // Not on the systems the user named: the endpoints are exempt from avoidance anyway, so the
-    // button would be there and do nothing.
-    (h.anchor
-      ? ""
-      : `<button class="ravoid" data-avoid="${h.id}" title="Avoid this system">${ico("eye-slash")}</button>`) +
+    // One button rather than one per action: a row is a system and a distance, and three buttons
+    // beside that is more chrome than content.
+    `<button class="ract" data-act="${h.id}" data-at="${i}" title="Actions">${ico("dots-three")}</button>` +
     `</li>`;
   open(
     "route",
@@ -596,6 +603,10 @@ function paintRoute(kind, onPick) {
       `</p>` +
       (o.note ? `<p class="mgroup">${esc(o.note)}</p>` : "") +
       (o.detour ? `<p class="rdetour">${ico("eye-slash")} ${esc(o.detour)}</p>` : "") +
+      (o.titan_jump
+        ? `<p class="rtitan">${ico("star-four")} Titan jumps ${esc(o.titan_jump.from_name)} → ` +
+          `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
+        : "") +
       `<ol class="rhops">${o.hops.map(line).join("")}</ol>`
   );
   const win = shells.get("route");
@@ -605,10 +616,15 @@ function paintRoute(kind, onPick) {
       paintRoute(kind, onPick);
     })
   );
-  win?.querySelectorAll("[data-avoid]").forEach((b) =>
-    b.addEventListener("click", () => {
-      avoidOnce.add(Number(b.dataset.avoid));
-      fetchRoute();
+  win?.querySelectorAll("[data-act]").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      const id = Number(b.dataset.act);
+      const at = Number(b.dataset.at);
+      const r = b.getBoundingClientRect();
+      menu(r.left, r.bottom + 4, hopMenu(id, at, kind), (pick) =>
+        hopAction(pick, id, at, kind, onPick)
+      );
+      e.stopPropagation();
     })
   );
   win?.querySelector("[data-avoidlist]")?.addEventListener("click", () => {
@@ -646,7 +662,8 @@ function paintRoute(kind, onPick) {
         setTimeout(fetchRoute, 150);
         return;
       }
-      jump[k] = k === "tstart" ? c.checked : k === "hull" ? v : Math.max(0, Math.min(5, v));
+      jump[k] =
+        k === "tstart" || k === "tself" ? c.checked : k === "hull" ? v : Math.max(0, Math.min(5, v));
       try {
         localStorage.setItem(JUMP_KEY, JSON.stringify(jump));
       } catch {
@@ -679,6 +696,105 @@ function showIntel(id) {
   document.body.append(wrap);
   wrap.addEventListener("click", (e) => {
     if (e.target === wrap || e.target.closest(".mclose")) wrap.remove();
+  });
+}
+
+/// What a row offers, which depends on the kind of route and on what the system already is.
+function hopMenu(id, at, kind) {
+  const o = routeOpts[routeAt];
+  const h = o?.hops?.[at];
+  const titans = titansOnce;
+  const items = [];
+  if (h?.warn?.sev >= 2) items.push(["intel", "Show intel"]);
+  if (!h?.anchor) {
+    items.push([avoidOnce.has(id) ? "unavoid" : "avoid", avoidOnce.has(id) ? "Stop avoiding" : "Avoid this system"]);
+    items.push(["way", "Add waypoint here"]);
+  }
+  if (kind === "jump" && at > 0 && at < (o?.hops?.length ?? 0) - 1) {
+    items.push(["alts", "Other systems between…"]);
+  }
+  if (kind === "titan") {
+    items.push([titans.has(id) ? "untitan" : "titan", titans.has(id) ? "Not a titan system" : "Set as titan system"]);
+  }
+  items.push(null);
+  items.push(["info", "Show info"]);
+  return items;
+}
+
+async function hopAction(pick, id, at, kind, onPick) {
+  switch (pick) {
+    case "intel":
+      return showIntel(id);
+    case "info":
+      return showSystem(id);
+    case "avoid":
+      avoidOnce.add(id);
+      return fetchRoute();
+    case "unavoid":
+      avoidOnce.delete(id);
+      return fetchRoute();
+    case "way": {
+      // Between the anchors it already sits between, so the route keeps its shape and gains a stop.
+      const a = routeReq.anchors;
+      const before = a.findIndex((x) => routeOpts[routeAt].path.indexOf(x) > routeOpts[routeAt].path.indexOf(id));
+      routeReq.anchors = before < 0 ? [...a.slice(0, -1), id, a[a.length - 1]] : [...a.slice(0, before), id, ...a.slice(before)];
+      return fetchRoute();
+    }
+    case "titan":
+      titansOnce.add(id);
+      return fetchRoute();
+    case "untitan":
+      titansOnce.delete(id);
+      return fetchRoute();
+    case "alts":
+      return showAlternatives(at, kind, onPick);
+  }
+}
+
+/// The systems a capital could stop in between the two hops either side of this one.
+///
+/// Picking one inserts it as a waypoint rather than replacing anything: that is what makes it a
+/// steer rather than a different route.
+async function showAlternatives(at, kind, onPick) {
+  const o = routeOpts[routeAt];
+  const a = o.hops[at - 1]?.id;
+  const b = o.hops[at + 1]?.id;
+  if (a == null || b == null) return;
+  let rows = [];
+  try {
+    const r = await fetch(
+      `/api/alternatives?a=${a}&b=${b}&hull=${jump.hull}&jdc=${jump.jdc}`
+    );
+    rows = await r.json();
+  } catch {
+    return;
+  }
+  const secCol = (v) => `var(--sec-${Math.min(10, Math.max(0, Math.round(v * 10)))})`;
+  const wrap = document.createElement("div");
+  wrap.className = "jstartdlg altdlg";
+  wrap.innerHTML =
+    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+    `<h3>In range of both</h3>` +
+    (rows.length
+      ? `<ul class="ravoidrows">` +
+        rows
+          .map(
+            (s) =>
+              `<li><button data-alt="${s.id}" style="color:${secCol(s.security)}">${esc(s.name)}</button></li>`
+          )
+          .join("") +
+        `</ul>`
+      : `<p class="placeholder">Nothing else is in range of both.</p>`) +
+    `</div>`;
+  document.body.append(wrap);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target.closest(".mclose")) return wrap.remove();
+    const b2 = e.target.closest("[data-alt]");
+    if (!b2) return;
+    wrap.remove();
+    const anchors = routeReq.anchors;
+    routeReq.anchors = [...anchors.slice(0, -1), Number(b2.dataset.alt), anchors[anchors.length - 1]];
+    fetchRoute();
   });
 }
 
