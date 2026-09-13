@@ -179,6 +179,31 @@ pub struct RouteOption {
 /// The hulls a jump route can be planned for, so the page's picker is the app's own list rather than
 /// a second copy of it.
 #[derive(Serialize)]
+pub struct Avoided {
+    pub id: i64,
+    pub name: String,
+    pub always: bool,
+}
+
+/// The avoid list, named and ordered, for showing back to the user.
+pub fn avoided(graph: &crate::geo::Systems, avoid: &Avoid) -> Vec<Avoided> {
+    let mut out: Vec<Avoided> = avoid
+        .always
+        .iter()
+        .map(|id| (id, true))
+        .chain(avoid.once.iter().map(|id| (id, false)))
+        .map(|(&id, always)| Avoided {
+            id,
+            name: graph.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| id.to_string()),
+            always,
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.id == b.id);
+    out
+}
+
+#[derive(Serialize)]
 pub struct Hull {
     pub name: &'static str,
     pub base_ly: f64,
@@ -211,6 +236,11 @@ pub struct RouteOut {
     /// Whether the app is routing through scanned wormholes, echoed so the page can show the switch
     /// rather than keep its own copy of a setting that lives in the app.
     pub via_wormholes: bool,
+    /// Every system this route was planned around, named, and whether it is on the permanent list.
+    /// Sent because the ids alone are not something anyone can check: "avoiding 3 systems" is only
+    /// useful if you can see which three.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub avoided: Vec<Avoided>,
     /// Why there is nothing to show, when there is nothing to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
