@@ -13,7 +13,7 @@
 // Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
 import { ico, register, state } from "./app.js";
-import { avoidOnce, send, showRoute } from "./dialogs.js";
+import { avoidOnce, currentRoute, send, showRoute } from "./dialogs.js";
 import { lightYears, menu, radial, reach } from "./route.js";
 
 let geo = null;
@@ -777,15 +777,29 @@ function paint() {
     }
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;
-    // The systems the user named, as opposed to the ones the route happens to pass through.
-    ctx.strokeStyle = PICK_GATE;
-    ctx.lineWidth = 2;
+    // The systems the user named, as opposed to the ones the route happens to pass through. Two
+    // rings and a tint: one thin ring is lost among the highlight rings this map already draws for
+    // your characters, camps and the hovered system.
     for (const h of picked.hops ?? []) {
       if (!h.anchor) continue;
       const n = geo.nodes[geo.byId.get(h.id)];
       if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.fillStyle = PICK_GATE;
+      ctx.globalAlpha = 0.18;
       ctx.beginPath();
-      ctx.arc(sx(n.x), sy(n.z), r * 3.8, 0, Math.PI * 2);
+      ctx.arc(px, py, r * 4.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = PICK_GATE;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 4.4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 2.6, 0, Math.PI * 2);
       ctx.stroke();
     }
     // A crawling dash is an animation, so the map keeps painting while one is on screen.
@@ -1044,6 +1058,14 @@ function wire() {
   };
   window.addEventListener("hashchange", followHash);
   followHash();
+
+  // The binding first, because a route opened from a deep link was announced before this listener
+  // existed, and then the event for everything after.
+  picked = currentRoute;
+  window.addEventListener("spai:route", (e) => {
+    picked = e.detail ?? null;
+    schedule();
+  });
 
   /// Show one group's popup and close the others. `null` closes them all.
   ///
@@ -1401,10 +1423,7 @@ function replan() {
     schedule();
     return;
   }
-  showRoute(routeKind, anchors, (r) => {
-    picked = r;
-    schedule();
-  });
+  showRoute(routeKind, anchors);
 }
 
 /// What the context menu offers for one system, which depends entirely on whether a route is being

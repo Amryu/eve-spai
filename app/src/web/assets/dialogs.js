@@ -153,6 +153,10 @@ export function close(kind = null) {
   for (const [k, d] of shells) {
     if (kind == null || k === kind) d.hidden = true;
   }
+  if (kind == null || kind === "route") {
+    currentRoute = null;
+    window.dispatchEvent(new CustomEvent("spai:route", { detail: null }));
+  }
   paintTabs(null);
 }
 
@@ -381,6 +385,12 @@ try {
 /// Systems left out of the route being planned. Cleared with the route; the permanent lists live in
 /// the app's settings, where they survive a reload and reach the desktop too.
 export const avoidOnce = new Set();
+/// The route currently being shown, as a live binding.
+///
+/// The event below is how the map hears about a change, but an event has no replay: a route opened
+/// from a deep link is announced before the map has wired up its listener. So the map reads this
+/// once when it wires, and follows the event after that.
+export let currentRoute = null;
 /// Which alternative is picked for each leg.
 let legPick = [];
 
@@ -468,6 +478,11 @@ const KINDS = { gate: "Gate route", jump: "Jump route", titan: "Titan route" };
 function paintRoute(kind, onPick) {
   const o = routeOpts[routeAt];
   onPick?.(o);
+  // Announced rather than called back, so the map can draw the route without this module importing
+  // it: dialogs already imports the pane renderers, and the map imports dialogs. It also means a
+  // route opened from a deep link is drawn, which a callback the link cannot pass was not.
+  currentRoute = o;
+  window.dispatchEvent(new CustomEvent("spai:route", { detail: o }));
   const secCol = (v) => `var(--sec-${Math.min(10, Math.max(0, Math.round(v * 10)))})`;
   // More than one way to do it, so the window offers them rather than picking one silently. This is
   // the titan case: several systems are the same number of gates out and only the pilot knows which
