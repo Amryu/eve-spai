@@ -172,6 +172,7 @@ fn map(cards: &[IntelCard]) -> MapLive {
         camps: vec![30_004_608],
         holes: vec![(30_003_704, 30_000_142)],
         cyno: vec![30_003_704],
+        route: vec![HOME, 30_004_608, 30_003_704],
         upgrades: vec![(
             HOME,
             vec![

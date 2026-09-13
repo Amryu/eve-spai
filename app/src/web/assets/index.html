@@ -17,9 +17,14 @@
 <header id="bar">
   <span class="brand">EVE SPAI</span>
   <nav id="tabs"></nav>
-  <button id="sheet" aria-label="Layout"></button>
   <span id="sound" class="soundbar"></span>
   <span id="status" class="status" data-state="connecting">connecting</span>
+  <!-- The menu owns its own button, so the panel can be positioned against it rather than against
+       the bar, which is what left the two looking unrelated. -->
+  <span id="menu">
+    <button id="sheet" aria-label="Layout"></button>
+    <div class="modebar" hidden></div>
+  </span>
 </header>
 <!-- One section per pane, declared here so each pane ticket owns its own file and none of them
      have to edit this one. WEB-010 decides how they are arranged. -->

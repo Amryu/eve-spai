@@ -26,6 +26,8 @@ const view = { ox: 0, oz: 0, k: 1 };
 let fitted = false;
 /// The region the map is framed on, or null for the whole universe.
 let focused = null;
+/// The system under the pointer, if any. Drawn as a highlight and a readout, not just a cursor.
+let hovered = null;
 
 export const layers = load();
 
@@ -49,6 +51,31 @@ function load() {
   } catch {
     return dflt;
   }
+}
+
+/// The same green the app draws a bridge in.
+const BRIDGE_GREEN = "#3ad06a";
+/// Route colours, matching `Leg::color` in the app: gates cyan, bridges green, holes purple.
+const ROUTE_CYAN = "#4fc3f7";
+const ROUTE_BRIDGE = "#5ac86a";
+const ROUTE_HOLE = "#b07ce8";
+/// How far a bridge arch bows out, as a fraction of its own length. Matches `app::BRIDGE_BOW`.
+const BRIDGE_BOW = 0.12;
+
+/// Add a bowed arc to the current path, the same quadratic the app samples.
+function arc(c, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  if (len < 0.5) {
+    c.moveTo(ax, ay);
+    c.lineTo(bx, by);
+    return;
+  }
+  const cx = (ax + bx) / 2 + (-dy / len) * len * BRIDGE_BOW;
+  const cy = (ay + by) / 2 + (dx / len) * len * BRIDGE_BOW;
+  c.moveTo(ax, ay);
+  c.quadraticCurveTo(cx, cy, bx, by);
 }
 
 /// The app's own heat ramp: yellow into red as the count approaches the scale.
@@ -79,6 +106,7 @@ function palette() {
     sec: Array.from({ length: 11 }, (_, i) => css(`--sec-${i}`)),
     sev: ["info", "warning", "danger", "critical"].map((s) => css(`--sev-${s}`)),
     line: css("--line"),
+    surface: css("--surface"),
     accent: css("--accent"),
     muted: css("--muted"),
     alliance: css("--alliance"),
@@ -94,6 +122,7 @@ async function loadGeometry() {
   try {
     geo = await (await fetch("/api/map/geometry")).json();
     geo.byId = new Map(geo.nodes.map((n, idx) => [n.i, idx]));
+    centroids = null;
     fitted = false;
     build();
   } catch {
@@ -144,6 +173,28 @@ function schedule() {
   });
 }
 
+/// Region label positions, worked out once from the geometry: the centre of each region's systems.
+let centroids = null;
+function regionCentroids() {
+  if (centroids) return centroids;
+  const acc = new Map();
+  for (const n of geo.nodes) {
+    const a = acc.get(n.r) ?? { x: 0, z: 0, c: 0 };
+    a.x += n.x;
+    a.z += n.z;
+    a.c++;
+    acc.set(n.r, a);
+  }
+  const names = new Map(geo.regions ?? []);
+  centroids = [];
+  for (const [id, a] of acc) {
+    const n = names.get(id);
+    if (!n) continue;
+    centroids.push([id, { n, x: a.x / a.c, z: a.z / a.c }]);
+  }
+  return centroids;
+}
+
 function paint() {
   if (!ctx || !geo) return;
   const dpr = window.devicePixelRatio || 1;
@@ -162,36 +213,53 @@ function paint() {
   const r = radius();
   const pad = 40;
   const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
+  /// Whether a segment could cross the viewport at all.
+  ///
+  /// Testing the endpoints was wrong: a link long enough to span the screen has both ends outside it
+  /// and was dropped, which is exactly what a jump bridge is. This tests the segment's bounding box
+  /// against the viewport instead, which keeps anything that could possibly be visible.
+  const segmentVisible = (ax, ay, bx, by) =>
+    Math.max(ax, bx) >= -pad &&
+    Math.min(ax, bx) <= w + pad &&
+    Math.max(ay, by) >= -pad &&
+    Math.min(ay, by) <= h + pad;
 
-  // Gates. One path for all of them, clipped to the viewport as we go: off-screen segments still
-  // cost the rasteriser if they are in the path.
+  // Gates, in three passes so each dash pattern is set once rather than per segment. A gate says
+  // where a boundary runs as much as where you can go: solid inside a constellation, dotted across
+  // one, dashed out of the region. Same reading as the app's map.
+  const GATE_DASH = [[], [1, 3], [4, 4]];
   ctx.lineWidth = 1;
   ctx.strokeStyle = pal.line;
-  ctx.beginPath();
-  for (const [a, b] of geo.edges) {
-    const p = geo.nodes[a];
-    const q = geo.nodes[b];
-    const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
-    if (!onScreen(px, py) && !onScreen(qx, qy)) continue;
-    ctx.moveTo(px, py);
-    ctx.lineTo(qx, qy);
+  for (let style = 0; style < 3; style++) {
+    ctx.setLineDash(GATE_DASH[style]);
+    ctx.beginPath();
+    for (const [a, b, k] of geo.edges) {
+      if ((k ?? 0) !== style) continue;
+      const p = geo.nodes[a];
+      const q = geo.nodes[b];
+      const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
+      if (!segmentVisible(px, py, qx, qy)) continue;
+      ctx.moveTo(px, py);
+      ctx.lineTo(qx, qy);
+    }
+    ctx.stroke();
   }
-  ctx.stroke();
+  ctx.setLineDash([]);
 
+  // Jump bridges: green arches, solid. A bridge and a gate between the same pair are otherwise the
+  // same stroke in a different colour, and colour alone does not survive a busy map.
   if (layers.bridges && geo.bridges?.length) {
-    ctx.strokeStyle = pal.alliance;
-    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = BRIDGE_GREEN;
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (const [a, b] of geo.bridges) {
       const p = geo.nodes[a];
       const q = geo.nodes[b];
       const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
-      if (!onScreen(px, py) && !onScreen(qx, qy)) continue;
-      ctx.moveTo(px, py);
-      ctx.lineTo(qx, qy);
+      if (!segmentVisible(px, py, qx, qy)) continue;
+      arc(ctx, px, py, qx, qy);
     }
     ctx.stroke();
-    ctx.setLineDash([]);
   }
 
   if (layers.holes && live.holes?.length) {
@@ -373,18 +441,112 @@ function paint() {
     ctx.stroke();
   }
 
-  // Labels, only when they would be readable and only for what is on screen.
-  if (layers.labels && r >= 3) {
-    ctx.fillStyle = pal.muted;
-    ctx.font = "11px system-ui, sans-serif";
-    ctx.textBaseline = "middle";
-    let n = 0;
-    for (const s of geo.nodes) {
-      const px = sx(s.x), py = sy(s.z);
-      if (!onScreen(px, py)) continue;
-      ctx.fillText(s.n, px + r + 3, py);
-      if (++n > 300) break;
+  // Labels.
+  //
+  // Zoomed in, system names. Zoomed out, region names, which is what the app shows and what is
+  // actually legible at that scale.
+  //
+  // The previous version capped system labels at the first 300 nodes **in array order**, which is
+  // sorted by system id, so whole regions silently went unlabelled while others got every name. The
+  // threshold below means the visible set is small enough not to need a cap at all.
+  if (layers.labels) {
+    const span = view.k * w;
+    if (span < geo.extent / 9) {
+      ctx.fillStyle = pal.muted;
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      for (const s of geo.nodes) {
+        const px = sx(s.x), py = sy(s.z);
+        if (!onScreen(px, py)) continue;
+        ctx.fillText(s.n, px + r + 3, py);
+      }
+    } else {
+      ctx.fillStyle = pal.muted;
+      ctx.font = "600 13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const [id, name] of regionCentroids()) {
+        const px = sx(name.x), py = sy(name.z);
+        if (!onScreen(px, py)) continue;
+        ctx.fillText(name.n, px, py);
+        void id;
+      }
+      ctx.textAlign = "left";
     }
+  }
+
+  // The route, on top of everything it overrides. A leg between gate neighbours is solid; anything
+  // else is a bridge or a hole, so it takes the bridge arch or a dash.
+  const route = live.route ?? [];
+  if (route.length > 1) {
+    const gate = new Set();
+    for (const [a, b] of geo.edges) {
+      gate.add(`${geo.nodes[a].i},${geo.nodes[b].i}`);
+      gate.add(`${geo.nodes[b].i},${geo.nodes[a].i}`);
+    }
+    const bridge = new Set();
+    for (const [a, b] of geo.bridges ?? []) {
+      bridge.add(`${geo.nodes[a].i},${geo.nodes[b].i}`);
+      bridge.add(`${geo.nodes[b].i},${geo.nodes[a].i}`);
+    }
+    ctx.lineWidth = 2.5;
+    for (let i = 1; i < route.length; i++) {
+      const p = geo.nodes[geo.byId.get(route[i - 1])];
+      const q = geo.nodes[geo.byId.get(route[i])];
+      if (!p || !q) continue;
+      const px = sx(p.x), py = sy(p.z), qx = sx(q.x), qy = sy(q.z);
+      const key = `${p.i},${q.i}`;
+      ctx.beginPath();
+      if (gate.has(key)) {
+        ctx.strokeStyle = ROUTE_CYAN;
+        ctx.setLineDash([]);
+        ctx.moveTo(px, py);
+        ctx.lineTo(qx, qy);
+      } else if (bridge.has(key)) {
+        ctx.strokeStyle = ROUTE_BRIDGE;
+        ctx.setLineDash([]);
+        arc(ctx, px, py, qx, qy);
+      } else {
+        ctx.strokeStyle = ROUTE_HOLE;
+        ctx.setLineDash([7, 5]);
+        ctx.moveTo(px, py);
+        ctx.lineTo(qx, qy);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // The system under the pointer: a ring, and its name where it can be read. A cursor change alone
+  // is easy to miss on a dense map, and on a touch screen there is no cursor at all.
+  if (hovered) {
+    const hx = sx(hovered.x);
+    const hy = sy(hovered.z);
+    ctx.strokeStyle = pal.fg;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(hx, hy, r * 3.4, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const info = status[hovered.i] ?? {};
+    const bits = [hovered.n, hovered.s.toFixed(1)];
+    if (info.adm != null) bits.push(`ADM ${info.adm.toFixed(1)}`);
+    const text = bits.join("  ");
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    const tw = ctx.measureText(text).width;
+    // Flip to the other side rather than running off the edge.
+    const tx = hx + r * 4 + tw + 10 > w ? hx - r * 4 - tw - 8 : hx + r * 4;
+    const ty = Math.max(12, Math.min(h - 12, hy));
+    ctx.fillStyle = pal.surface ?? css("--surface");
+    ctx.globalAlpha = 0.92;
+    ctx.fillRect(tx - 4, ty - 10, tw + 8, 20);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = pal.line;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tx - 4, ty - 10, tw + 8, 20);
+    ctx.fillStyle = pal.fg;
+    ctx.fillText(text, tx, ty);
   }
 
   const hint = el?.querySelector(".maphint");
@@ -468,6 +630,19 @@ function wire() {
     fit();
     schedule();
   });
+  // A `#system/<id>` link highlights that system on the map as well as opening its dialog, so a link
+  // someone sends points at something visible rather than just naming it.
+  const followHash = () => {
+    const m = /^#system\/(\d+)$/.exec(location.hash);
+    const n = m ? geo.nodes[geo.byId.get(Number(m[1]))] : null;
+    if (n !== hovered) {
+      hovered = n ?? null;
+      schedule();
+    }
+  };
+  window.addEventListener("hashchange", followHash);
+  followHash();
+
   const panel = el.querySelector(".mlayers");
   // `#maplayers` opens it on load, for the same reason the dialogs and the layout menu take deep
   // links: the harness cannot click.
@@ -517,6 +692,7 @@ function wire() {
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, e);
     moved = 0;
+    canvas.style.cursor = "grabbing";
   });
   canvas.addEventListener("pointermove", (e) => {
     if (!pointers.has(e.pointerId)) return;
@@ -540,9 +716,37 @@ function wire() {
   const up = (e) => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
+    if (!pointers.size) {
+      // A tap on a touch screen leaves the system under the finger highlighted, which is the only
+      // hover feedback a touch screen can give.
+      const n = nearest(e);
+      hovered = n;
+      canvas.style.cursor = n ? "pointer" : "grab";
+      schedule();
+    }
   };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
+
+  // Hover is tracked separately from the drag handler so a pan does not fight it.
+  canvas.addEventListener("pointermove", (e) => {
+    if (pointers.size) return; // dragging: the grab cursor is the right answer
+    const n = nearest(e);
+    // `cursor` is set inline because the stylesheet's `grab` would otherwise always win, which is
+    // what made a hovered system indistinguishable from empty space.
+    canvas.style.cursor = n ? "pointer" : "grab";
+    if (n !== hovered) {
+      hovered = n;
+      schedule();
+    }
+  });
+  canvas.addEventListener("pointerleave", () => {
+    canvas.style.cursor = "";
+    if (hovered) {
+      hovered = null;
+      schedule();
+    }
+  });
 
   canvas.addEventListener(
     "wheel",

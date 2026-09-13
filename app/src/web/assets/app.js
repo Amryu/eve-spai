@@ -55,20 +55,24 @@ function renderTabs() {
   // `data-tab`, not `data-pane`: the sections below already own that attribute, and a shared one
   // makes `querySelector("[data-pane=...]")` match whichever comes first in the document, which is
   // the button. Every pane then renders inside the header.
-  document.getElementById("tabs").innerHTML =
-    PANES.map(
-      (p) =>
-        `<button class="tab" data-tab="${p}"><span class="tname">${TITLES[p]}</span> <b>${count(p)}</b></button>`
-    ).join("") +
-    `<div class="modebar">` +
-    `<div class="mbrow">` +
-    MODES.map(([m, label]) => `<button data-mode="${m}">${label}</button>`).join("") +
-    `</div>` +
-    `<div class="mbrow mbpanes">` +
-    PANES.map(
-      (p) => `<button class="panetoggle" data-toggle="${p}">${TITLES[p]}</button>`
-    ).join("") +
-    `</div></div>`;
+  document.getElementById("tabs").innerHTML = PANES.map(
+    (p) =>
+      `<button class="tab" data-tab="${p}"><span class="tname">${TITLES[p]}</span> <b>${count(p)}</b></button>`
+  ).join("");
+
+  // Rebuilt in place so the panel keeps its open/closed state across a render.
+  const menu = document.querySelector("#menu .modebar");
+  if (menu) {
+    menu.innerHTML =
+      `<div class="mbrow">` +
+      MODES.map(([m, label]) => `<button data-mode="${m}">${label}</button>`).join("") +
+      `</div>` +
+      `<div class="mbrow mbpanes">` +
+      PANES.map(
+        (p) => `<button class="panetoggle" data-toggle="${p}">${TITLES[p]}</button>`
+      ).join("") +
+      `</div>`;
+  }
 }
 
 /// `dirty` is the set of panes worth redrawing, or `null` for all of them.

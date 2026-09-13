@@ -245,6 +245,18 @@ mod tests {
         assert!(js.contains("searchParams.delete(\"t\")"));
     }
 
+    /// A stylesheet `cursor` on the canvas wins over nothing, so a hovered system read exactly like
+    /// empty space. The pointer handler has to set it, and the `:active` rule that fought it is
+    /// gone.
+    #[test]
+    fn the_map_cursor_is_driven_by_the_pointer_not_the_stylesheet() {
+        let css = find("/assets/map.css").expect("map.css").body;
+        assert!(!css.contains(".starmap:active"), "an :active rule would override the hover state");
+        let js = find("/assets/map.js").expect("map.js").body;
+        assert!(js.contains("canvas.style.cursor"), "nothing sets the cursor as the pointer moves");
+        assert!(js.contains("hovered"), "and nothing highlights what is under it");
+    }
+
     /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as
     /// `.modal`, an author rule wins, and `display: flex` kept it on screen.
     #[test]

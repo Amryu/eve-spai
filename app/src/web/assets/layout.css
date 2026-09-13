@@ -73,12 +73,13 @@
 
    `order: 99` because the tab chips are ordered by `style.order` and an unset order is 0, which
    sorted this into the middle of them. */
+/* Anchored to its own button, not to the bar. Positioned against `#bar` it sat at the far right
+   while the button was somewhere in the middle, and the two read as unrelated. */
 .modebar {
   display: none;
-  order: 99;
   position: absolute;
   top: 100%;
-  right: 0.5rem;
+  right: 0;
   z-index: 30;
   flex-direction: column;
   gap: 0.4rem;
@@ -90,6 +91,8 @@
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 body.sheet .modebar { display: flex; }
+.modebar[hidden] { display: none; }
+body.sheet .modebar[hidden] { display: flex; }
 .mbrow { display: flex; gap: 0.3rem; }
 .mbpanes { flex-wrap: wrap; }
 

@@ -48,7 +48,11 @@ body {
   white-space: nowrap;
 }
 
-.status { margin-left: auto; color: var(--muted); font-size: 0.9rem; }
+/* Tabs take the slack, so everything after them sits at the far right: sound, status, and the menu
+   button last, where a menu button belongs. */
+#tabs { margin-right: auto; }
+#menu { position: relative; display: inline-flex; }
+.status { color: var(--muted); font-size: 0.9rem; }
 .status[data-state="live"] { color: var(--friendly); }
 .status[data-state="stale"] { color: var(--warning); }
 .status[data-state="down"] { color: var(--hostile); }
@@ -103,7 +107,7 @@ body {
 .soundbar .armbtn { border-color: var(--warning); color: var(--warning); }
 .soundbar .mutebtn[aria-pressed="true"] { color: var(--muted); }
 
-.status { margin-left: 0.5rem; }
+.status { margin-left: 0.25rem; }
 
 /* The layout menu's button. Present at every width: turning a pane off has to be reachable on a
    desktop too, and a dropdown is a better home for six controls than six more chips in the bar. */
@@ -134,16 +138,18 @@ body {
     gap: 0.4rem;
     padding: 0.4rem 0.5rem;
     display: grid;
-    grid-template-columns: auto auto 1fr auto;
+    grid-template-columns: auto 1fr auto auto;
     grid-template-areas:
-      "brand sheet sound status"
-      "tabs  tabs  tabs  tabs";
+      "brand .    sound menu"
+      "tabs  tabs tabs  tabs";
   }
   .brand { grid-area: brand; }
-  #sheet { grid-area: sheet; }
+  #menu { grid-area: menu; }
   .soundbar { grid-area: sound; margin-left: auto; }
-  .status { grid-area: status; }
-  #tabs { grid-area: tabs; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  /* The status word costs a whole column on a phone; the tab counts and the feed already say
+     whether anything is arriving. */
+  .status { display: none; }
+  #tabs { grid-area: tabs; margin-right: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   #tabs::-webkit-scrollbar { display: none; }
 
   /* 44px is the smallest target a thumb hits reliably. */

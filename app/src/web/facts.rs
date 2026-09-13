@@ -38,6 +38,7 @@ pub struct UiFacts {
     pub camps: Vec<i64>,
     pub holes: Vec<(i64, i64)>,
     pub cyno: Vec<i64>,
+    pub route: Vec<i64>,
     /// Per system, its sov upgrades as (kind, level, ore type id).
     pub upgrades: Vec<(i64, Vec<(u8, u8, Option<i64>)>)>,
     /// Alliance name to colour, and to its coalition's colour, as the app resolves them.

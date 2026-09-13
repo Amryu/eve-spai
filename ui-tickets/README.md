@@ -156,6 +156,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-017 Every pane republished every tick; map mirrored, laggy and missing layers](WEB-017-map-layers-and-churn/) | `web/map.rs`, `map.js`, `publish.rs` | after 16 | **Fixed** |
 | [WEB-018 Fixed pages kept rendering the old bug; clock stopped; swipe cut off](WEB-018-stale-assets-and-clock/) | `web/server.rs`, `pilot.rs` | after 17 | **Fixed** |
 | [WEB-019 Map missing the app's read-only layers; snapshot 2.9 MB](WEB-019-map-parity/) | `web/snapshot.rs`, `map.js` | after 18 | **Fixed** |
+| [WEB-020 Map link styling, labels, hover, and the Mumble link](WEB-020-map-links-and-labels/) | `app.rs` map, `map.js` | after 19 | **Fixed** |
 
 ### Browser evidence
 

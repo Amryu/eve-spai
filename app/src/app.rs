@@ -1813,6 +1813,7 @@ impl SpaiApp {
             .collect();
         f.upgrades = self.web_upgrade_marks();
         f.cyno = self.settings.cyno_generators.clone();
+        f.route = self.travel_route.clone().unwrap_or_default();
         f.sov_colors = self.web_sov_colors();
         f.coal_colors = self.web_coalition_colors();
         drop(f);
@@ -9874,6 +9875,9 @@ impl SpaiApp {
     /// The phone cannot follow a `mumble://` link usefully; the client is here. So the page asks the
     /// app to join, and the app looks the link up in the pings it already holds rather than being
     /// handed a URL by something on the network.
+    ///
+    /// Joins through `open_mumble`, which resolves a redirect page to the real `mumble://` URL, so
+    /// this lands in the Mumble client rather than in a browser tab.
     fn join_comms(&mut self, ts: i64) {
         let link = {
             let j = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
@@ -9888,9 +9892,10 @@ impl SpaiApp {
             })
         };
         match link {
-            Some(l) => {
-                let _ = open::that(&l);
-            }
+            // `open_mumble`, not `open::that`. A ping's comms link is usually a gnf.lt page that
+            // redirects; opening it directly opens a browser, which is what the app avoids by
+            // resolving the page to its real `mumble://` URL first.
+            Some(l) => open_mumble(l),
             None => eprintln!("[web] join comms: no ping at {ts} with a mumble link"),
         }
     }
@@ -10673,6 +10678,21 @@ impl SpaiApp {
         let seg_visible = |a: egui::Pos2, b: egui::Pos2| egui::Rect::from_two_pos(a, b).intersects(cull);
 
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
+        // A gate says where you are as much as where you can go: inside a constellation, out of it,
+        // or out of the region entirely. On a map of identical solid lines none of those boundaries
+        // were visible.
+        let region_of: std::collections::HashMap<i64, i64> =
+            self.map_draw.iter().map(|s| (s.id, s.region_id)).collect();
+        let constel_of: std::collections::HashMap<i64, &str> = self
+            .systems
+            .as_ref()
+            .map(|g| {
+                self.map_draw
+                    .iter()
+                    .filter_map(|s| g.info_of(s.id).map(|i| (s.id, i.constellation.as_str())))
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(graph) = &self.systems {
             for s in &self.map_draw {
                 let p1 = pos[&s.id];
@@ -10680,7 +10700,30 @@ impl SpaiApp {
                     if s.id < n && !bridges.contains(&(s.id, n)) {
                         if let Some(p2) = pos.get(&n) {
                             if seg_visible(p1, *p2) {
-                                painter.line_segment([p1, *p2], egui::Stroke::new(1.0, line_col));
+                                let stroke = egui::Stroke::new(1.0, line_col);
+                                let other_region =
+                                    region_of.get(&n).is_some_and(|r| *r != s.region_id);
+                                let other_constel = constel_of.get(&s.id).zip(constel_of.get(&n))
+                                    .is_some_and(|(a, b)| a != b);
+                                if other_region {
+                                    painter.extend(egui::Shape::dashed_line(
+                                        &[p1, *p2],
+                                        stroke,
+                                        4.0,
+                                        4.0,
+                                    ));
+                                } else if other_constel {
+                                    // Dotted: a short dash with a wide gap reads as dots without
+                                    // needing a separate shape.
+                                    painter.extend(egui::Shape::dashed_line(
+                                        &[p1, *p2],
+                                        stroke,
+                                        1.0,
+                                        3.0,
+                                    ));
+                                } else {
+                                    painter.line_segment([p1, *p2], stroke);
+                                }
                             }
                         }
                     }
@@ -10692,7 +10735,10 @@ impl SpaiApp {
             for &(a, c) in &bridges {
                 if let (Some(p1), Some(p2)) = (pos.get(&a), pos.get(&c)) {
                     if seg_visible(*p1, *p2) {
-                        painter.line_segment([*p1, *p2], egui::Stroke::new(1.5, bridge_col));
+                        painter.add(egui::Shape::line(
+                            arc_polyline(*p1, *p2, BRIDGE_BOW),
+                            egui::Stroke::new(1.5, bridge_col),
+                        ));
                     }
                 }
             }
@@ -10965,6 +11011,15 @@ impl SpaiApp {
                         match self.leg_kind(prev_id, id, jumped_hole) {
                             Leg::Gate => {
                                 painter.line_segment([prev_p, p], egui::Stroke::new(2.5, cyan));
+                            }
+                            // A bridge leg follows the same arch the bridge itself is drawn as, in
+                            // the route colour, so the route overrides it rather than crossing it
+                            // with a second line of a different shape.
+                            Leg::Bridge => {
+                                painter.add(egui::Shape::line(
+                                    arc_polyline(prev_p, p, BRIDGE_BOW),
+                                    egui::Stroke::new(2.5, Leg::Bridge.color()),
+                                ));
                             }
                             kind => {
                                 painter.extend(egui::Shape::dashed_line(
@@ -23095,6 +23150,35 @@ pub(crate) fn notify_os(summary: &str, body: &str) {
         let _ = notify_rust::Notification::new().summary(&summary).body(&body).show();
     });
 }
+
+/// A gentle arc between two points, sampled as a polyline.
+///
+/// Jump bridges are drawn as arches rather than straight lines: a bridge and a gate between the same
+/// pair of systems are otherwise the same stroke in a different colour, and on a busy map colour
+/// alone is not enough to tell a route you can fly from one you need a bridge for.
+pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::Pos2> {
+    let d = b - a;
+    let len = d.length();
+    if len < 0.5 {
+        return vec![a, b];
+    }
+    let normal = egui::vec2(-d.y, d.x) / len;
+    let mid = a + d * 0.5;
+    let ctrl = mid + normal * (len * bow);
+    (0..=14)
+        .map(|i| {
+            let t = i as f32 / 14.0;
+            let u = 1.0 - t;
+            egui::pos2(
+                u * u * a.x + 2.0 * u * t * ctrl.x + t * t * b.x,
+                u * u * a.y + 2.0 * u * t * ctrl.y + t * t * b.y,
+            )
+        })
+        .collect()
+}
+
+/// How far a bridge arch bows out, as a fraction of its own length.
+pub(crate) const BRIDGE_BOW: f32 = 0.12;
 
 fn open_mumble(link: String) {
     std::thread::spawn(move || {
