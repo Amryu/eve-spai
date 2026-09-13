@@ -193,6 +193,7 @@ photograph. Browser screenshots come from WEB-005's fixture demo server, never f
 | [WEB-049 Waypoints unmarked; a linked route not drawn at all](WEB-049-waypoint-rings/) | `map.js`, `dialogs.js` | after 48 | **Fixed** |
 | [WEB-050 Long press opens the menu and the tap underneath it](WEB-050-longpress-tidy/) | `map.js`, `route.js` | after 49 | **Fixed** |
 | [WEB-051 A route drag eats the pinch and every pan off a system](WEB-051-mobile-gestures/) | `map.js` | after 50 | **Fixed** |
+| [WEB-052 No logo; long pane name; no bind address or unpaired mode](WEB-052-logo-and-advanced/) | `settings.rs`, `server.rs`, `app.rs` | after 51 | **Delivered** |
 
 ### Browser evidence
 

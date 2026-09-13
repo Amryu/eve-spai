@@ -24,6 +24,8 @@ fn webdemo() {
 
     let handle = crate::web::server::start(
         crate::web::server::Config {
+            bind_addr: String::new(),
+            no_pairing: false,
             port: PORT,
             allow_writeback: true,
             // Never the LAN. The token is "demo", and the whole point of this process is to be

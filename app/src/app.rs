@@ -1581,7 +1581,8 @@ impl SpaiApp {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             // Deliberately not the theme. It reaches the page through the published snapshot, and
             // hashing it here meant every colour change tore the listener down and put it back.
-            (w.port, w.bind_lan, w.allow_writeback, &w.token).hash(&mut h);
+            (w.port, w.bind_lan, w.allow_writeback, &w.token, &w.bind_addr, w.no_pairing)
+                .hash(&mut h);
             h.finish()
         });
         if want == self.web_started_for {
@@ -1597,6 +1598,8 @@ impl SpaiApp {
             allow_writeback: w.allow_writeback,
             token: w.token.clone(),
             theme: self.settings.theme.clone(),
+            bind_addr: w.bind_addr.clone(),
+            no_pairing: w.no_pairing,
             map: self.web_map_geometry(),
         };
         // The ship dialog reads hull stats out of the SDE and `DetailState` never had a handle, so
@@ -1733,6 +1736,79 @@ impl SpaiApp {
             }
         }
 
+        changed |= self.web_advanced_section(ui);
+        changed
+    }
+
+    /// The two switches that can put this on the open internet.
+    ///
+    /// Behind a collapsed header and behind a warning that has to be accepted once, because the
+    /// difference between "a phone on my wifi" and "anyone" is one checkbox and the page carries
+    /// alliance intel and private conversations. Both default off and stay off: nothing in here is
+    /// reachable without opening the section, reading the warning and saying yes.
+    fn web_advanced_section(&mut self, ui: &mut egui::Ui) -> bool {
+        use egui_phosphor::regular as icon;
+        let mut changed = false;
+        egui::CollapsingHeader::new(format!("{}  Advanced", icon::GEAR_SIX))
+            .id_salt("web_advanced")
+            .show(ui, |ui| {
+                if !self.settings.web.advanced_ack {
+                    ui.label(
+                        egui::RichText::new(format!("{}  Read this first", icon::WARNING))
+                            .color(crate::theme::standing::HOSTILE)
+                            .strong(),
+                    );
+                    ui.label(
+                        "These two settings can put this page on the public internet. Anyone who \
+                         reaches it sees everything the app sees: the intel feed, fleet pings, your \
+                         jabber conversations and any opsec channel you are in. There is no TLS and, \
+                         with pairing off, no password either.",
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Only turn these on if you understand exactly what you are exposing and \
+                             to whom.",
+                        )
+                        .strong(),
+                    );
+                    if ui.button("I understand, show the advanced settings").clicked() {
+                        self.settings.web.advanced_ack = true;
+                        changed = true;
+                    }
+                    return;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Bind address");
+                    changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.settings.web.bind_addr)
+                                .hint_text("blank = the choice above")
+                                .desired_width(160.0),
+                        )
+                        .on_hover_text(
+                            "An interface address to listen on instead. Blank uses the LAN setting \
+                             above, which is what you want unless you are binding one specific \
+                             interface, such as a VPN.",
+                        )
+                        .changed();
+                });
+                changed |= ui
+                    .checkbox(&mut self.settings.web.no_pairing, "Serve without pairing")
+                    .on_hover_text(
+                        "Anyone who can reach the port gets in, with no token and no password. Only \
+                         sensible behind something else that does the authenticating.",
+                    )
+                    .changed();
+                if self.settings.web.no_pairing {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  This page is open to anyone who can reach it.",
+                            icon::WARNING
+                        ))
+                        .color(crate::theme::standing::HOSTILE),
+                    );
+                }
+            });
         changed
     }
 

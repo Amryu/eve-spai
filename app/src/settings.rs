@@ -492,6 +492,17 @@ pub struct WebSettings {
     /// refresh tokens, which reach a player's EVE account, while this reaches a LAN page on a machine
     /// an attacker is already on. Keeping it here also means the settings export carries it.
     pub token: String,
+    /// An address to bind instead of the one `bind_lan` picks. Empty means the normal choice, which
+    /// is what every user gets unless they go looking.
+    #[serde(default)]
+    pub bind_addr: String,
+    /// Serve without pairing. Off, and it stays off unless someone reads the warning and says yes:
+    /// this is the switch that puts alliance intel and private conversations on an open socket.
+    #[serde(default)]
+    pub no_pairing: bool,
+    /// Whether the warning behind the advanced options has been shown and accepted.
+    #[serde(default)]
+    pub advanced_ack: bool,
 }
 
 impl Default for WebSettings {
@@ -503,7 +514,37 @@ impl Default for WebSettings {
             allow_writeback: true,
             default_layout: WebLayout::Auto,
             token: String::new(),
+            bind_addr: String::new(),
+            no_pairing: false,
+            advanced_ack: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod web_defaults {
+    /// The three settings that can put the page on the open internet are off, and a blob written
+    /// before they existed still parses to off.
+    ///
+    /// Worth a test of its own rather than trusting `Default`: every one of them is a way to hand
+    /// alliance intel and private conversations to anyone who can reach the port, and "it defaults
+    /// to safe" is the kind of thing that stays true until someone reorders a struct.
+    #[test]
+    fn exposure_is_never_the_default() {
+        let d = super::WebSettings::default();
+        assert!(!d.no_pairing, "pairing is required unless the user turns it off");
+        assert!(d.bind_addr.is_empty(), "no hand-picked bind address");
+        assert!(!d.advanced_ack, "the warning has not been accepted for anyone");
+        assert!(!d.enabled, "the whole feature is off");
+
+        // A blob from before these existed, which is what every upgrading user has.
+        let old = r#"{"enabled":true,"port":6767,"bind_lan":true,"allow_writeback":true,
+                      "default_layout":"Auto","token":"abc"}"#;
+        let parsed: super::WebSettings = serde_json::from_str(old).expect("old blobs still parse");
+        assert!(!parsed.no_pairing);
+        assert!(parsed.bind_addr.is_empty());
+        assert!(!parsed.advanced_ack);
+        assert_eq!(parsed.token, "abc", "and the rest of it survives");
     }
 }
 
@@ -1668,6 +1709,9 @@ mod web_settings_tests {
 
         let s = Settings {
             web: WebSettings {
+                bind_addr: String::new(),
+                no_pairing: false,
+                advanced_ack: false,
                 enabled: true,
                 port: 9000,
                 bind_lan: false,

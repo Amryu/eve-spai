@@ -106,6 +106,9 @@ pub const ASSETS: &[Asset] = &[
 
 pub const INDEX: &str = include_str!("assets/index.html");
 
+/// The app's icon, the same bytes the window and the tray use.
+pub const LOGO: &[u8] = include_bytes!("../../../assets/eve-spai.png");
+
 /// Where the first snapshot is spliced into the page.
 const BOOT_SLOT: &str = "\"__BOOT__\"";
 /// Where the icon map is spliced in.

@@ -13,6 +13,7 @@ pub enum Route {
     ThemeCss,
     Icons,
     Font,
+    Logo,
     Snapshot,
     State,
     MapGeometry,
@@ -51,6 +52,7 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/api/map/geometry" => Route::MapGeometry,
         "/api/jabber/chat" => Route::JabberChat,
         "/api/route" => Route::Route,
+        "/assets/logo.png" => Route::Logo,
         "/api/events" => Route::Events,
         p if p.starts_with("/assets/phosphor-") && p.ends_with(".ttf") => Route::Font,
         p if p.starts_with("/assets/sound/") && p.ends_with(".wav") => {

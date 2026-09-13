@@ -22,7 +22,7 @@ export function ico(name) {
 
 export const PANES = ["intel", "alerts", "pings", "map", "jabber"];
 
-const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleet pings", map: "Map", jabber: "Jabber" };
+const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleets", map: "Map", jabber: "Jabber" };
 
 /// Each pane ticket replaces its own entry. Until then the slot says what it is waiting for, which
 /// is more honest than an empty box.
