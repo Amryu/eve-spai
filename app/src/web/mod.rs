@@ -48,6 +48,8 @@ pub struct DetailState {
     /// Both come from the app, because the app is where the chain and the setting live.
     pub holes: HashMap<i64, Vec<i64>>,
     pub via_wormholes: bool,
+    /// Saved routes, already pruned of expired wormhole ones.
+    pub saved_routes: Vec<crate::settings::SavedMapRoute>,
     /// Every system's real coordinates, for the light-year maths the jump routes are made of.
     /// `geo::Systems` is topology only; the positions live in `store::MapSystem`.
     pub coords: Option<Arc<Vec<crate::store::MapSystem>>>,

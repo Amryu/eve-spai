@@ -1982,6 +1982,20 @@ impl SpaiApp {
         d.avoid_gate = self.settings.route_avoid_gate.clone();
         d.avoid_jump = self.settings.route_avoid_jump.clone();
         d.via_wormholes = self.settings.route_via_wormholes;
+        // Pruned where they are read rather than on a timer: a route through a scanned hole is wrong
+        // long before it is a day old, and a day is the point at which keeping it is worse than
+        // losing it.
+        let now = chrono::Utc::now().timestamp();
+        d.saved_routes = self
+            .settings
+            .saved_map_routes
+            .iter()
+            .filter(|r| {
+                !r.via_wormholes
+                    || now - r.saved_at < crate::settings::WORMHOLE_ROUTE_TTL_SECS
+            })
+            .cloned()
+            .collect();
         d.holes = if self.settings.route_via_wormholes { self.wh_adjacency() } else { Default::default() };
         d.type_names = Some(self.type_names.clone());
     }
@@ -10540,6 +10554,16 @@ impl SpaiApp {
                 if on {
                     list.push(id);
                 }
+                self.needs_save = true;
+            }
+            crate::ipc::OverlayToMain::SaveRoute { mut route } => {
+                route.saved_at = chrono::Utc::now().timestamp();
+                self.settings.saved_map_routes.retain(|r| r.name != route.name);
+                self.settings.saved_map_routes.push(route);
+                self.needs_save = true;
+            }
+            crate::ipc::OverlayToMain::DeleteRoute { name } => {
+                self.settings.saved_map_routes.retain(|r| r.name != name);
                 self.needs_save = true;
             }
             crate::ipc::OverlayToMain::RouteViaWormholes { on } => {
