@@ -171,6 +171,11 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
     if let Some(rev) = st.changed(Pane::Status, hash_of(&sysinfo)) {
         st.put_status(StatusPane { rev, systems: sysinfo });
     }
+    if let Some(rev) = st.changed(Pane::Rescue, hash_of(&facts.rescue)) {
+        if let Some(side) = facts.rescue.clone() {
+            st.put_rescue(crate::web::rescue::RescuePane { rev, side });
+        }
+    }
     if let Some(rev) = st.changed(Pane::Jabber, hash_of(&facts.jabber)) {
         st.put_jabber(crate::web::jabber::JabberPane { rev, side: facts.jabber.clone() });
     }
@@ -187,6 +192,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         chars: facts.chars.clone(),
         player_system: player_sys,
         sounds: sound_map(&facts.sounds),
+        rescue: facts.rescue.is_some(),
         avoid_gate: facts.avoid_gate.clone(),
         avoid_jump: facts.avoid_jump.clone(),
         sound_rev: crate::sound::SYNTH_REV,

@@ -951,8 +951,11 @@ function paint() {
     ctx.arc(hx, hy, r * 3.4, 0, Math.PI * 2);
     ctx.stroke();
 
-    const info = status[hovered.i] ?? {};
-    const bits = [hovered.n, hovered.s.toFixed(1)];
+    // `focus`, not `hovered`: WEB-038 made the ring follow the selection as well and left these
+    // three reading the pointer, so selecting a system and moving the pointer away threw on every
+    // frame after.
+    const info = status[focus.i] ?? {};
+    const bits = [focus.n, focus.s.toFixed(1)];
     if (info.adm != null) bits.push(`ADM ${info.adm.toFixed(1)}`);
     const text = bits.join("  ");
     ctx.font = "12px system-ui, sans-serif";

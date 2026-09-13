@@ -228,6 +228,7 @@ fn jabber() -> crate::web::jabber::JabberSide {
 
 fn meta() -> Meta {
     Meta {
+        rescue: false,
         avoid_gate: Vec::new(),
         avoid_jump: Vec::new(),
         rev: 0,

@@ -173,6 +173,9 @@ pub struct Meta {
     /// something to stop, and mark them on the map.
     pub avoid_gate: Vec<i64>,
     pub avoid_jump: Vec<i64>,
+    /// Whether this build has the rescue mode and the user has it switched on. The pane only exists
+    /// when both are true, and there is no point offering it otherwise.
+    pub rescue: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -195,4 +198,6 @@ pub struct Snapshot {
     pub meta: Option<Meta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jabber: Option<crate::web::jabber::JabberPane>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rescue: Option<crate::web::rescue::RescuePane>,
 }

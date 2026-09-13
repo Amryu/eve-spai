@@ -15,6 +15,7 @@ pub mod demo;
 pub mod icons;
 pub mod jabber;
 pub mod map;
+pub mod rescue;
 pub mod route;
 pub mod routes;
 pub mod server;
