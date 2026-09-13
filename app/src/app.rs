@@ -23162,7 +23162,13 @@ pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::
     if len < 0.5 {
         return vec![a, b];
     }
-    let normal = egui::vec2(-d.y, d.x) / len;
+    // Always bows upward, whichever way round the two ends are. The perpendicular flips with the
+    // segment's direction, so without this a bridge arched up or down depending on which of its two
+    // systems happened to sort first.
+    let mut normal = egui::vec2(-d.y, d.x) / len;
+    if normal.y > 0.0 {
+        normal = -normal;
+    }
     let mid = a + d * 0.5;
     let ctrl = mid + normal * (len * bow);
     (0..=14)

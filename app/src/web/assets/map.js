@@ -72,8 +72,16 @@ function arc(c, ax, ay, bx, by) {
     c.lineTo(bx, by);
     return;
   }
-  const cx = (ax + bx) / 2 + (-dy / len) * len * BRIDGE_BOW;
-  const cy = (ay + by) / 2 + (dx / len) * len * BRIDGE_BOW;
+  // Always bows upward, whichever way round the ends are: the perpendicular flips with the
+  // segment's direction, so without this a bridge arched up or down by accident of node order.
+  let nx = -dy / len;
+  let ny = dx / len;
+  if (ny > 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const cx = (ax + bx) / 2 + nx * len * BRIDGE_BOW;
+  const cy = (ay + by) / 2 + ny * len * BRIDGE_BOW;
   c.moveTo(ax, ay);
   c.quadraticCurveTo(cx, cy, bx, by);
 }
@@ -454,7 +462,9 @@ function paint() {
   // threshold below means the visible set is small enough not to need a cap at all.
   if (layers.labels) {
     const span = view.k * w;
-    if (span < geo.extent / 9) {
+    // Names come in well before the map is fully zoomed in: waiting until they cannot possibly
+    // overlap meant staring at an unlabelled map through most of the useful range.
+    if (span < geo.extent / 4) {
       ctx.fillStyle = pal.muted;
       ctx.font = "11px system-ui, sans-serif";
       ctx.textBaseline = "middle";
