@@ -19,8 +19,58 @@ const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 1
 /// looking at a hull while looking at where it was seen is the normal case.
 const shells = new Map();
 /// How far each kind's window is offset from the map's corner, so three open at once cascade rather
-/// than hiding each other.
+/// than hiding each other. Only used while they float.
 const CASCADE = { system: 0, ship: 1, pilot: 2, route: 0 };
+const TAB_NAME = { route: "Route", system: "System", ship: "Ship", pilot: "Pilot" };
+
+/// The dock in the map pane, or null when there is no map pane to dock into.
+///
+/// One box with tabs rather than one box per kind: three windows docked side by side would leave the
+/// map a sliver, and they are read one at a time anyway. Floating is the fallback, for a page with
+/// the map switched off.
+function dock() {
+  const row = document.querySelector('#panes [data-pane="map"] .maprow');
+  if (!row) return null;
+  let d = row.querySelector(":scope > .rdock");
+  if (!d) {
+    d = document.createElement("div");
+    d.className = "rdock";
+    d.hidden = true;
+    d.innerHTML = `<div class="dtabs"></div><div class="dbody"></div>`;
+    row.append(d);
+    d.addEventListener("click", (e) => {
+      const x = e.target.closest("[data-shut]");
+      if (x) return close(x.dataset.shut);
+      const t = e.target.closest("[data-tab-kind]");
+      if (t) showTab(t.dataset.tabKind);
+    });
+  }
+  return d;
+}
+
+/// Which docked panes are open, in a stable order, and which one is showing.
+function paintTabs(active) {
+  const d = dock();
+  if (!d) return;
+  const open = [...shells].filter(([, el]) => el.classList.contains("dpane") && !el.hidden);
+  d.hidden = !open.length;
+  if (!open.length) return;
+  const shown = open.some(([k]) => k === active)
+    ? active
+    : open.find(([, el]) => el.classList.contains("on"))?.[0] ?? open[0][0];
+  for (const [k, el] of open) el.classList.toggle("on", k === shown);
+  d.querySelector(".dtabs").innerHTML = open
+    .map(
+      ([k]) =>
+        `<button class="dtab${k === shown ? " on" : ""}" data-tab-kind="${k}">${TAB_NAME[k] ?? k}` +
+        `<span class="dshut" data-shut="${k}">${ico("x")}</span></button>`
+    )
+    .join("");
+}
+
+function showTab(kind) {
+  paintTabs(kind);
+}
 
 /// A floating window, not a modal.
 ///
@@ -32,14 +82,12 @@ function shell(kind) {
   const had = shells.get(kind);
   if (had) return had;
   const dlg = document.createElement("div");
-  // The route window docks into the map pane rather than floating over it: it is read alongside the
-  // map, not instead of it, and a floating one covered the systems it was describing.
-  const row = kind === "route" ? document.querySelector('#panes [data-pane="map"] .maprow') : null;
-  dlg.className = row ? "rdock" : "float";
+  const d = dock();
+  dlg.className = d ? "dpane" : "float";
   dlg.dataset.kind = kind;
   dlg.hidden = true;
   dlg.innerHTML = `<div class="mpanel" role="dialog"></div>`;
-  (row ?? document.body).append(dlg);
+  (d?.querySelector(".dbody") ?? document.body).append(dlg);
   shells.set(kind, dlg);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") close(kind);
@@ -48,15 +96,17 @@ function shell(kind) {
   // A pane that changes size moves the map with it, and the window was parked against where the map
   // used to be. Same for the map arriving after the window did.
   const repark = () => {
-    // The map pane may not exist yet when a window is first opened, and the route window belongs
-    // inside it. It says when it is ready; this is what moves the window in at that point.
-    if (kind === "route") {
-      const row = document.querySelector('#panes [data-pane="map"] .maprow');
-      if (row && dlg.parentElement !== row) {
-        dlg.className = "rdock";
-        dlg.style.cssText = "";
-        row.append(dlg);
-      }
+    // The map pane may not exist yet when a window is first opened, and these belong inside it. The
+    // map says when it is ready; this is what moves a window in at that point.
+    const body = dock()?.querySelector(".dbody");
+    if (body && dlg.parentElement !== body) {
+      dlg.className = "dpane";
+      dlg.style.cssText = "";
+      // Its own close button came with it from floating, and the tab has one: two × in one corner
+      // is one too many.
+      dlg.querySelector(".mclose")?.remove();
+      body.append(dlg);
+      paintTabs(kind);
     }
     if (!dlg.hidden) place(dlg);
   };
@@ -103,6 +153,7 @@ export function close(kind = null) {
   for (const [k, d] of shells) {
     if (kind == null || k === kind) d.hidden = true;
   }
+  paintTabs(null);
 }
 
 /// Park the window at the top right of the map, below whatever controls are showing.
@@ -113,7 +164,7 @@ export function close(kind = null) {
 /// is in the flow or floating.
 function place(d, tries = 10) {
   // A docked window is placed by the layout, not by us.
-  if (d.classList.contains("rdock") || d.dataset.moved || d.hidden) return;
+  if (d.classList.contains("dpane") || d.dataset.moved || d.hidden) return;
   const canvas = document.querySelector(".starmap");
   const r = canvas?.getBoundingClientRect();
   // Nothing to measure: either the map is off screen, which is what it is in tabs mode while another
@@ -144,11 +195,18 @@ function place(d, tries = 10) {
 
 function open(kind, html) {
   const d = shell(kind);
-  d.querySelector(".mpanel").innerHTML =
-    `<button class="mclose" aria-label="Close">${ico("x")}</button>${html}`;
-  d.querySelector(".mclose").addEventListener("click", () => close(kind));
+  const docked = d.classList.contains("dpane");
+  d.querySelector(".mpanel").innerHTML = docked
+    ? html
+    : `<button class="mclose" aria-label="Close">${ico("x")}</button>${html}`;
+  d.querySelector(".mclose")?.addEventListener("click", () => close(kind));
   d.hidden = false;
-  // Whichever was opened last is the one being read, so it goes on top of the others.
+  if (docked) {
+    // Whichever was opened last is the one being read, so it becomes the showing tab.
+    paintTabs(kind);
+    return;
+  }
+  // Floating, the newest goes on top of the others instead.
   for (const [k, o] of shells) o.style.zIndex = k === kind ? 52 : 50;
   place(d);
 }

@@ -225,6 +225,32 @@ button.rwarn {
 }
 
 /* Docked, the panel is the whole box and the hop list is the part that scrolls. */
+.rdock { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.dtabs { flex: 0 0 auto; display: flex; gap: 0.2rem; padding: 0.3rem 0.3rem 0; border-bottom: 1px solid var(--line); }
+.dtab {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+.dtab.on { color: var(--fg); background: var(--surface-hi); border-color: var(--line); }
+.dshut { color: var(--muted); line-height: 1; }
+.dshut:hover { color: var(--hostile); }
+.dbody { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; }
+/* Only the showing tab's pane takes part in the layout; the rest keep their content for when their
+   tab comes back. */
+.dpane { display: none; flex: 1 1 auto; min-height: 0; min-width: 0; }
+.dpane.on { display: flex; }
+.dpane[hidden] { display: none !important; }
+
 .rdock .mpanel {
   flex: 1 1 auto;
   min-height: 0;
@@ -240,3 +266,6 @@ button.rwarn {
 }
 .rdock .rhop { min-width: 0; }
 .rdock .rhops { flex: 1 1 auto; max-height: none; min-height: 0; overflow-y: auto; }
+/* Whatever a pane holds, the dock is a fixed box and the content is what scrolls inside it. */
+.dpane .mpanel { overflow-y: auto; }
+.rdock .mresists { font-size: 0.82rem; }
