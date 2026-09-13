@@ -30,7 +30,12 @@ const TAB_NAME = { route: "Route", system: "System", ship: "Ship", pilot: "Pilot
 /// map a sliver, and they are read one at a time anyway. Floating is the fallback, for a page with
 /// the map switched off.
 function dock() {
-  const row = document.querySelector('#panes [data-pane="map"] .maprow');
+  const pane = document.querySelector('#panes [data-pane="map"]');
+  // Only while the map pane is actually on screen. Docking into a hidden pane puts the window inside
+  // something with `display: none`, so a ship opened from the alerts pane rendered into nothing and
+  // looked like a dead click.
+  if (!pane || pane.hidden || !pane.offsetParent) return null;
+  const row = pane.querySelector(".maprow");
   if (!row) return null;
   let d = row.querySelector(":scope > .rdock");
   if (!d) {
@@ -81,7 +86,25 @@ function showTab(kind) {
 /// the map is how you open the next one.
 function shell(kind) {
   const had = shells.get(kind);
-  if (had) return had;
+  if (had) {
+    // The map pane can be switched off while a window is docked inside it. Float it again rather
+    // than leaving it in a box nobody can see.
+    if (had.classList.contains("dpane") && !dock()) {
+      had.className = "float";
+      had.style.cssText = "";
+      if (!had.querySelector(".mclose")) {
+        had
+          .querySelector(".mpanel")
+          ?.insertAdjacentHTML(
+            "afterbegin",
+            `<button class="mclose" aria-label="Close">${ico("x")}</button>`
+          );
+        had.querySelector(".mclose")?.addEventListener("click", () => close(kind));
+      }
+      document.body.append(had);
+    }
+    return had;
+  }
   const dlg = document.createElement("div");
   const d = dock();
   dlg.className = d ? "dpane" : "float";
@@ -241,9 +264,9 @@ async function showSystem(id) {
         ["From you", jumps],
         ["Incursion", s.incursion ? "yes" : null],
         ["Jove observatory", s.jove ? "yes" : null],
-        ["Ship kills, last hour", s.ship_kills || null],
-        ["Pod kills, last hour", s.pod_kills || null],
-        ["NPC kills, last hour", s.npc_kills || null],
+        ["Ship kills (1h)", s.ship_kills || null],
+        ["Pod kills (1h)", s.pod_kills || null],
+        ["NPC kills (1h)", s.npc_kills || null],
       ]) +
       (s.gates.length
         ? `<div class="mrow"><span>Gates</span><span class="mgates">` +
