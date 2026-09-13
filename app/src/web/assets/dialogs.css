@@ -313,4 +313,4 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .altdlg .ravoidrows button { font: inherit; background: none; border: 0; cursor: pointer; padding: 0.25rem 0; text-align: left; width: 100%; }
 .altdlg .ravoidrows button:hover { background: var(--surface-hi); }
 
-.rtitan { color: #e07be0; font-size: 0.82rem; margin: 0 0 0.4rem; }
+.rtitan { color: #ff7a3d; font-size: 0.82rem; margin: 0 0 0.4rem; }
