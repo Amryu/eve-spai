@@ -97,10 +97,12 @@ function fit() {
   fitted = true;
 }
 
-/// Dot radius in screen pixels, growing a little as you zoom in so a close-up is not all dots and
-/// no space, but never the runaway scaling that map units gave.
+/// Dot radius in screen pixels.
+///
+/// A star map is mostly space; the dots are markers, not planets. This tops out at 3px, which is
+/// about what the desktop draws, and the overlay rings are multiples of it so they shrink with it.
 function radius() {
-  return Math.max(1.6, Math.min(5.5, 2.2 / Math.sqrt(view.k) * 8));
+  return Math.max(1.1, Math.min(3, 1.6 / Math.sqrt(view.k) * 6));
 }
 
 function schedule() {
@@ -185,7 +187,7 @@ function paint() {
       if (!onScreen(px, py)) continue;
       ctx.fillStyle = colour;
       ctx.beginPath();
-      ctx.arc(px, py, r * 3.2, 0, Math.PI * 2);
+      ctx.arc(px, py, r * 2.6, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -200,7 +202,7 @@ function paint() {
     if (!onScreen(px, py)) continue;
     ctx.fillStyle = pal.sev[sev] ?? pal.sev[0];
     ctx.beginPath();
-    ctx.arc(px, py, r * 2.6, 0, Math.PI * 2);
+    ctx.arc(px, py, r * 2.2, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;

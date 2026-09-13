@@ -78,7 +78,9 @@ export function apply() {
   // Columns divide by what is actually showing, so switching one off widens the rest instead of
   // leaving a gap.
   main.style.setProperty("--cols", String(Math.max(1, Math.min(on.length, 4))));
-  if (mode === "tabs") scrollToActive(false);
+  // Not during a swipe or the smooth scroll that follows a tab tap: jumping the strip to the active
+  // pane mid-animation is what made the slide cut off at the end.
+  if (mode === "tabs" && !settling) scrollToActive(false);
   paintTabs();
 }
 
@@ -99,11 +101,29 @@ function paintTabs() {
   });
 }
 
+/// True while the strip is moving under its own momentum or a smooth scroll.
+let settling = false;
+let settleTimer = null;
+
+function markSettling(ms) {
+  settling = true;
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    settling = false;
+  }, ms);
+}
+
 function scrollToActive(smooth) {
   const main = document.getElementById("panes");
   const name = shown()[layout.active];
   const el = main?.querySelector(`[data-pane="${name}"]`);
-  el?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", inline: "start", block: "nearest" });
+  if (!el || !main) return;
+  const want = el.offsetLeft - main.offsetLeft;
+  // Already there, to the pixel the browser rounds to. Scrolling again would restart an animation
+  // that has just finished.
+  if (Math.abs(main.scrollLeft - want) < 2) return;
+  if (smooth) markSettling(600);
+  main.scrollTo({ left: want, behavior: smooth ? "smooth" : "auto" });
 }
 
 /// Swipe is the browser's scroll-snap, not a touch handler.
@@ -118,6 +138,8 @@ function watchScroll() {
     "scroll",
     () => {
       if (effectiveMode() !== "tabs") return;
+      // A scroll in progress, however it started.
+      markSettling(220);
       clearTimeout(t);
       t = setTimeout(() => {
         const i = Math.round(main.scrollLeft / main.clientWidth);
