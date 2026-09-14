@@ -2538,12 +2538,19 @@ impl SpaiApp {
         self.jabber_unread_total() > 0
     }
 
-    /// Badge the taskbar icon with the same count as the tray.
+    /// Badge the taskbar entry with the same count as the tray.
+    ///
+    /// Two mechanisms, because no single one covers the desktops this runs on. The badged window
+    /// icon is what Windows and anything that takes a window at its word will use. Plasma is not
+    /// one of those: it matches the window to a `.desktop` file and uses that file's `Icon=`, so the
+    /// badged icon it is handed is ignored and the count never appeared. `launcher::set_count` is
+    /// the API those desktops do implement.
     ///
     /// Only on a change: `ViewportCommand::Icon` hands the window manager a fresh image, and doing
     /// that every frame would have it re-decoding an icon sixty times a second for a number that
     /// moves every few minutes.
     fn sync_taskbar_badge(&mut self, ctx: &egui::Context, count: u32) {
+        crate::launcher::set_count(count);
         if self.taskbar_badge == Some(count) {
             return;
         }

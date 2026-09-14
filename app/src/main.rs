@@ -30,6 +30,7 @@ mod gamewatcher;
 mod geo;
 mod image_cache;
 mod instance;
+mod launcher;
 mod jabber;
 mod jove;
 mod jumproute;
