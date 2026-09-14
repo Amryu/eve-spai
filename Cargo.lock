@@ -1613,6 +1613,7 @@ dependencies = [
  "winit",
  "winresource",
  "xmpp",
+ "zbus",
  "zip",
 ]
 

@@ -81,6 +81,11 @@ egui_kittest = { version = "0.34", features = ["wgpu"] }
 # async-io (not tokio) to match accesskit/zbus in the rest of the tree — avoids
 # forcing zbus into tokio mode (which breaks keyring/notify-rust at runtime).
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+# The Unity LauncherEntry broadcast that puts the unread count on the taskbar entry (see
+# `launcher.rs`). Already in the tree via accesskit and ashpd with exactly these features, so this
+# changes no resolution — in particular it does not pull zbus into tokio mode, which is what breaks
+# keyring and notify-rust at runtime.
+zbus = "5"
 
 # Windows: also build the wgpu backend. OpenGL/glow can't get its per-pixel alpha
 # DWM-composited on Windows (transparent windows render as an opaque square), but wgpu
