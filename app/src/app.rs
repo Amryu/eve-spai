@@ -10415,6 +10415,16 @@ impl SpaiApp {
                 }
                 self.needs_save = true;
             }
+            crate::ipc::OverlayToMain::JabberRead { jid } => self.jabber_mark_read(&jid),
+            crate::ipc::OverlayToMain::JabberClose { jid } => {
+                // Which list it belongs in is the app's to decide: the page knows a conversation is
+                // a room, but the rescue-room guard and the closed lists live here.
+                let is_room = {
+                    let st = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
+                    st.rooms.contains(&jid) || st.rooms_left.contains(&jid)
+                };
+                self.close_jabber_tab(&jid, is_room, ChatWinKey::Main);
+            }
             crate::ipc::OverlayToMain::Bookmark { id, on } => {
                 self.settings.bookmarks.retain(|&b| b != id);
                 if on {

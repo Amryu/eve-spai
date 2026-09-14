@@ -178,3 +178,31 @@
   font: inherit;
   color: var(--fg);
 }
+
+/* The row and its close button, side by side. The button is a sibling because a button inside a
+   button is invalid HTML: the browser hoists it out and the row stops being clickable. */
+.jrowwrap { display: flex; align-items: center; }
+.jrowwrap > .jrow { min-width: 0; }
+.jshut {
+  flex: 0 0 auto;
+  font: inherit;
+  font-family: phosphor;
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.3rem;
+  /* Out of the way until the row is pointed at: a column of crosses down a conversation list reads
+     as clutter, and closing is not the thing you came to the list to do. */
+  opacity: 0;
+}
+.jrowwrap:hover .jshut,
+.jshut:focus-visible { opacity: 1; }
+.jshut:hover { color: var(--hostile); background: var(--surface-hi); }
+/* No hover on a touch screen, so the button is always there and thumb-sized. */
+@media (hover: none) {
+  .jshut { opacity: 1; min-width: 2.25rem; min-height: 2.25rem; }
+}

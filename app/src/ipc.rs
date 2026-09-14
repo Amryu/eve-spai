@@ -46,6 +46,12 @@ pub enum OverlayToMain {
     SetDestination { id: i64 },
     /// Add or remove a system from a permanent route-avoidance list.
     AvoidSystem { id: i64, jump: bool, on: bool },
+    /// A conversation the page is looking at, so its unread marker clears everywhere rather than
+    /// only where it was read.
+    JabberRead { jid: String },
+    /// Hide a conversation from the list. The same thing the app's tab X does: not a leave, and it
+    /// comes back on the next unread message.
+    JabberClose { jid: String },
     /// Bookmark a system, or forget it. The same list the app's star writes to.
     Bookmark { id: i64, on: bool },
     /// Save the route the page has built, or replace one of the same name.
