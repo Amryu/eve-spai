@@ -1,7 +1,9 @@
-//! NOTE (scaffold): tokens are stored in plaintext in the local SQLite DB and the
-//! JWT signature is not yet verified against EVE's JWKS — the token is trusted
-//! because it came directly from the SSO token endpoint over TLS. Hardening
-//! (OS keychain at rest, JWKS verification) is tracked as D5 in the design doc.
+//! EVE SSO login and token refresh.
+//!
+//! The refresh token lives in the OS keychain, or the encrypted fallback in `sealed` when there is
+//! none (see `tokens`). Only the access token, valid for about 20 minutes, is cached in the SQLite
+//! profile. The JWT signature is not verified against EVE's JWKS: the token is trusted because it
+//! came straight from the SSO token endpoint over TLS.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

@@ -500,16 +500,74 @@ fn refresh_lock(id: i64) -> std::sync::Arc<std::sync::Mutex<()>> {
     LOCKS.lock().unwrap().entry(id).or_default().clone()
 }
 
+/// Where the short-lived access token and its expiry are cached. The app's `Store` and the
+/// battle-report share's own connection read the same rows and must share one refresh path: two
+/// independent refreshers race the rotating refresh token and log the character out.
+pub(crate) trait AccessCache {
+    fn access(&self, id: i64) -> Option<String>;
+    fn expiry(&self, id: i64) -> Option<i64>;
+    fn put(&self, id: i64, access: &str, expires_at: i64);
+}
+
+impl AccessCache for Store {
+    fn access(&self, id: i64) -> Option<String> {
+        self.kv_get(&format!("access:{id}"))
+    }
+    fn expiry(&self, id: i64) -> Option<i64> {
+        self.token_expiry(id)
+    }
+    fn put(&self, id: i64, access: &str, expires_at: i64) {
+        self.kv_set(&format!("access:{id}"), access);
+        let _ = self.update_token_expiry(id, expires_at);
+    }
+}
+
+impl AccessCache for rusqlite::Connection {
+    fn access(&self, id: i64) -> Option<String> {
+        self.query_row("SELECT value FROM kv WHERE key = ?1", [format!("access:{id}")], |r| r.get(0))
+            .ok()
+    }
+    fn expiry(&self, id: i64) -> Option<i64> {
+        self.query_row("SELECT expires_at FROM characters WHERE id = ?1", [id], |r| {
+            r.get::<_, Option<i64>>(0)
+        })
+        .ok()
+        .flatten()
+    }
+    fn put(&self, id: i64, access: &str, expires_at: i64) {
+        let _ = self.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            rusqlite::params![format!("access:{id}"), access],
+        );
+        let _ = self.execute(
+            "UPDATE characters SET expires_at = ?1 WHERE id = ?2",
+            rusqlite::params![expires_at, id],
+        );
+    }
+}
+
 fn current_access_token(
     store: &Store,
     client_id: &str,
     id: i64,
     expires_at: i64,
 ) -> Option<String> {
+    access_token(store, client_id, id, Some(expires_at))
+}
+
+/// `expires_hint` is the caller's possibly stale copy of the expiry, which skips a query on the
+/// common path. `None` reads it from the cache.
+pub(crate) fn access_token(
+    store: &impl AccessCache,
+    client_id: &str,
+    id: i64,
+    expires_hint: Option<i64>,
+) -> Option<String> {
     let now = chrono::Utc::now().timestamp();
+    let expires_at = expires_hint.or_else(|| store.expiry(id)).unwrap_or(0);
     // 60s margin so a token doesn't expire mid-request.
     if expires_at - 60 > now {
-        if let Some(access) = store.kv_get(&format!("access:{id}")).filter(|a| !a.is_empty()) {
+        if let Some(access) = store.access(id).filter(|a| !a.is_empty()) {
             return Some(access);
         }
     }
@@ -520,8 +578,8 @@ fn current_access_token(
     let lock = refresh_lock(id);
     let _guard = lock.lock().unwrap();
     let now = chrono::Utc::now().timestamp();
-    if store.token_expiry(id).is_some_and(|exp| exp - 60 > now) {
-        if let Some(access) = store.kv_get(&format!("access:{id}")).filter(|a| !a.is_empty()) {
+    if store.expiry(id).is_some_and(|exp| exp - 60 > now) {
+        if let Some(access) = store.access(id).filter(|a| !a.is_empty()) {
             return Some(access);
         }
     }
@@ -555,7 +613,43 @@ fn current_access_token(
     clear_problem(id);
     // The refresh token may rotate — persist the new one.
     let _ = tokens::save_refresh(id, &fresh.refresh_token);
-    store.kv_set(&format!("access:{id}"), &fresh.access_token);
-    let _ = store.update_token_expiry(id, now + fresh.expires_in);
+    store.put(id, &fresh.access_token, now + fresh.expires_in);
     Some(fresh.access_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{access_token, AccessCache};
+
+    fn scratch() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE characters (id INTEGER PRIMARY KEY, name TEXT, expires_at INTEGER, scopes TEXT);
+             INSERT INTO characters (id, name, expires_at, scopes) VALUES (7, 'Scratch', NULL, '');",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn connection_cache_round_trips() {
+        let conn = scratch();
+        assert_eq!(conn.access(7), None);
+        assert_eq!(conn.expiry(7), None);
+        conn.put(7, "tok", 1234);
+        assert_eq!(conn.access(7).as_deref(), Some("tok"));
+        assert_eq!(conn.expiry(7), Some(1234));
+    }
+
+    /// Reuse needs a token that outlives the 60 s margin, read from the cache when the caller has
+    /// no expiry of its own. The refresh side reaches the keychain and SSO, so it is not run here.
+    #[test]
+    fn fresh_cached_token_is_reused_without_refresh() {
+        let conn = scratch();
+        let now = chrono::Utc::now().timestamp();
+        conn.put(7, "cached", now + 3600);
+        assert_eq!(access_token(&conn, "client", 7, None).as_deref(), Some("cached"));
+        assert_eq!(access_token(&conn, "client", 7, Some(0)).as_deref(), Some("cached"));
+    }
 }

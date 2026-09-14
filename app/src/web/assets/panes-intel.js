@@ -2,6 +2,7 @@
 // severity-tinted card. Every colour is a custom property from /api/theme.css; none are written here.
 
 import { state, ico, register, renderers } from "./app.js";
+import { chips as noteChips, queryHits, titleLines } from "./notes.js";
 
 const CDN = "https://images.evetech.net";
 
@@ -118,6 +119,19 @@ document.addEventListener("click", (e) => {
   art.classList.toggle("showraw", raw.has(id));
 });
 
+/// Mirrors `system_hover`: straight-line distance from staging and from the active character.
+function lyTitle(sys, ly) {
+  const row = (ly?.systems ?? []).find(([id]) => id === sys.id);
+  const lines = [sys.name];
+  if (row) {
+    const [, staging, you] = row;
+    if (staging != null) lines.push(`${(staging / 100).toFixed(2)} ly from staging ${ly.staging}`);
+    if (you != null) lines.push(`${(you / 100).toFixed(2)} ly from ${ly.you}`);
+  }
+  lines.push(...titleLines("system", sys.id));
+  return lines.join("\n");
+}
+
 export function card(c, lookups, compact, now) {
   const r = c.report;
   const isKill = r.channel === "zKill" || r.channel === "zkill";
@@ -160,10 +174,12 @@ export function card(c, lookups, compact, now) {
     parts.push(`<span class="jn plain" style="color:${viaVar(typeof c.via === "string" ? c.via : "Bridge")}">${jumpText(c.from_you)}</span>`);
   }
 
+  const ly = c.chars?.ly;
   for (const sys of r.systems) {
     const col = secVar(sys.security);
     parts.push(
-      `<button class="chip sys" data-system="${sys.id}" style="color:${col};background:color-mix(in srgb, ${col} 28%, var(--bg))">${ico("planet")} ${esc(sys.name)}</button>`
+      `<button class="chip sys" data-system="${sys.id}" data-name="${esc(sys.name)}" title="${esc(lyTitle(sys, ly))}" style="color:${col};background:color-mix(in srgb, ${col} 28%, var(--bg))">${ico("planet")} ${esc(sys.name)}</button>` +
+        noteChips("system", sys.id)
     );
   }
   parts.push(`</span>`);
@@ -215,12 +231,15 @@ export function card(c, lookups, compact, now) {
     const aff = lookups?.affil?.[id];
     const logo = (kind, lid, label) =>
       lid ? `<img class="aff" src="${CDN}/${kind}/${lid}/logo?size=${px}" alt="" title="${esc(label ?? "")}">` : "";
+    const noteTitle = titleLines("pilot", id).join("\n");
     parts.push(
-      `<button class="chip pilot${un ? " un" : ""}" data-pilot="${esc(name)}">` +
+      `<button class="chip pilot${un ? " un" : ""}" data-pilot="${esc(name)}" data-pid="${id}"` +
+        `${noteTitle ? ` title="${esc(noteTitle)}"` : ""}>` +
         logo("alliances", aff?.alliance, aff?.alliance_name) +
         logo("corporations", aff?.corp, aff?.corp_name) +
         `<img src="${CDN}/characters/${id}/portrait?size=${px}" alt="">${esc(name)}` +
-        `${un ? '<b class="q">?</b>' : ""}</button>`
+        `${un ? '<b class="q">?</b>' : ""}</button>` +
+        noteChips("pilot", id)
     );
   }
   for (const g of r.gates ?? []) {
@@ -279,7 +298,7 @@ export function matches(c, f) {
   if (f.q) {
     const q = f.q.toLowerCase();
     const hay = [r.text, r.channel, ...r.systems.map((s) => s.name)].join(" ").toLowerCase();
-    if (!hay.includes(q)) return false;
+    if (!hay.includes(q) && !queryHits(r, q)) return false;
   }
   return true;
 }
@@ -301,7 +320,8 @@ const renderIntel = (el, snap) => {
       (t) => `<button class="tf${t === filter.type ? " on" : ""}" data-type="${t}">${t}</button>`
     ).join("") +
     `<label class="jf">${ico("arrow-right")}<input type="number" min="0" value="${filter.jumps}" data-jumps></label>` +
-    `<label class="qf">${ico("magnifying-glass")}<input type="search" placeholder="system, text, or channel" value="${esc(filter.q)}" data-q></label>` +
+    `<button class="tf" data-notes-manage="pilot" title="Pilot tags and notes">${ico("tag")}</button>` +
+    `<label class="qf">${ico("magnifying-glass")}<input type="search" placeholder="system, text, channel, or tag" value="${esc(filter.q)}" data-q></label>` +
     `</div>` +
     `<p class="count">${cards.length} reports</p>` +
     `<div class="feed${compact ? " compact" : ""}">` +

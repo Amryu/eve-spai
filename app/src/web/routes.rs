@@ -23,6 +23,8 @@ pub enum Route {
     SavedRoutes,
     SystemInfo(i64),
     ShipInfo(i64),
+    /// One notes folder, by uuid, in both export forms.
+    NotesExport(String),
     Action,
     Sound(String),
     Events,
@@ -78,6 +80,14 @@ pub fn classify(method: &str, path: &str) -> Route {
             Ok(id) => Route::ShipInfo(id),
             Err(_) => Route::NotFound,
         },
+        p if p.starts_with("/api/notes/export/") => {
+            let id = &p["/api/notes/export/".len()..];
+            if !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+                Route::NotesExport(id.to_owned())
+            } else {
+                Route::NotFound
+            }
+        }
         p if super::assets::find(p).is_some() => Route::Asset,
         _ => Route::NotFound,
     }
@@ -239,6 +249,12 @@ mod tests {
         assert_eq!(classify("GET", "/api/system/30004759"), Route::SystemInfo(30_004_759));
         assert_eq!(classify("GET", "/api/ship/587"), Route::ShipInfo(587));
         assert_eq!(classify("GET", "/api/system/not-a-number"), Route::NotFound);
+        assert_eq!(
+            classify("GET", "/api/notes/export/0f3c9a1e-5b2d-4e7f-9a8b-1c2d3e4f5a6b"),
+            Route::NotesExport("0f3c9a1e-5b2d-4e7f-9a8b-1c2d3e4f5a6b".into())
+        );
+        assert_eq!(classify("GET", "/api/notes/export/"), Route::NotFound);
+        assert_eq!(classify("GET", "/api/notes/export/../../etc"), Route::NotFound);
         assert_eq!(classify("GET", "/assets/sound/warning-v6.wav"), Route::Sound("warning".into()));
         assert_eq!(classify("POST", "/api/action"), Route::Action);
         assert_eq!(classify("POST", "/api/snapshot"), Route::NotAllowed);
@@ -280,6 +296,7 @@ mod tests {
             Route::Action,
             Route::Events,
             Route::Font,
+            Route::NotesExport("x".into()),
         ] {
             assert!(!is_public(&r), "{r:?} must require pairing");
         }

@@ -88,6 +88,33 @@ fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
         }
     }
 
+    if let Some(s) = zkill_stats(client, id) {
+        info.ships_destroyed = s.ships_destroyed;
+        info.ships_lost = s.ships_lost;
+        info.isk_destroyed = s.isk_destroyed;
+        info.isk_lost = s.isk_lost;
+        info.danger_ratio = s.danger_ratio;
+        info.gang_ratio = s.gang_ratio;
+        info.top_ships = s.top_ships;
+        info.top_systems = s.top_systems;
+    }
+    info
+}
+
+/// A character's zKillboard summary.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ZkStats {
+    pub ships_destroyed: i64,
+    pub ships_lost: i64,
+    pub isk_destroyed: f64,
+    pub isk_lost: f64,
+    pub danger_ratio: i64,
+    pub gang_ratio: i64,
+    pub top_ships: Vec<(i64, String, i64)>,
+    pub top_systems: Vec<(String, i64)>,
+}
+
+pub fn zkill_stats(client: &reqwest::blocking::Client, id: i64) -> Option<ZkStats> {
     #[derive(Deserialize)]
     struct TopValue {
         #[serde(rename = "shipTypeID")]
@@ -123,38 +150,35 @@ fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
         #[serde(rename = "topLists", default)]
         top_lists: Vec<TopList>,
     }
-    if let Some(s) = client
+    let s = client
         .get(format!("https://zkillboard.com/api/stats/characterID/{id}/"))
         .send()
         .ok()
         .and_then(|r| r.error_for_status().ok())
-        .and_then(|r| r.json::<Stats>().ok())
-    {
-        info.ships_destroyed = s.ships_destroyed;
-        info.ships_lost = s.ships_lost;
-        info.isk_destroyed = s.isk_destroyed;
-        info.isk_lost = s.isk_lost;
-        info.danger_ratio = s.danger_ratio;
-        info.gang_ratio = s.gang_ratio;
-        for list in &s.top_lists {
-            if list.kind == "shipType" {
-                info.top_ships = list
-                    .values
-                    .iter()
-                    .filter_map(|v| Some((v.ship_type_id?, v.ship_name.clone()?, v.kills)))
-                    .take(5)
-                    .collect();
-            } else if list.kind == "solarSystem" {
-                info.top_systems = list
-                    .values
-                    .iter()
-                    .filter_map(|v| Some((v.system_name.clone()?, v.kills)))
-                    .take(5)
-                    .collect();
-            }
+        .and_then(|r| r.json::<Stats>().ok())?;
+    let mut out = ZkStats {
+        ships_destroyed: s.ships_destroyed,
+        ships_lost: s.ships_lost,
+        isk_destroyed: s.isk_destroyed,
+        isk_lost: s.isk_lost,
+        danger_ratio: s.danger_ratio,
+        gang_ratio: s.gang_ratio,
+        ..Default::default()
+    };
+    for list in &s.top_lists {
+        if list.kind == "shipType" {
+            out.top_ships = list
+                .values
+                .iter()
+                .filter_map(|v| Some((v.ship_type_id?, v.ship_name.clone()?, v.kills)))
+                .take(5)
+                .collect();
+        } else if list.kind == "solarSystem" {
+            out.top_systems =
+                list.values.iter().filter_map(|v| Some((v.system_name.clone()?, v.kills))).take(5).collect();
         }
     }
-    info
+    Some(out)
 }
 
 fn resolve_id(client: &reqwest::blocking::Client, name: &str) -> Option<i64> {
@@ -179,7 +203,7 @@ fn resolve_id(client: &reqwest::blocking::Client, name: &str) -> Option<i64> {
     v.characters?.into_iter().find(|e| e.name.eq_ignore_ascii_case(name)).map(|e| e.id)
 }
 
-fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> HashMap<i64, String> {
+pub fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> HashMap<i64, String> {
     #[derive(Deserialize)]
     struct Named {
         id: i64,

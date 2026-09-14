@@ -101,6 +101,12 @@ struct MapOverlays {
     cyno_gen: bool,
     #[serde(default)]
     jove: bool,
+    #[serde(default = "overlay_on")]
+    notes: bool,
+}
+
+fn overlay_on() -> bool {
+    true
 }
 
 /// delve911 covers a titan bridge out of staging. Past this the fleet can't be dropped on the
@@ -174,6 +180,7 @@ impl Default for MapOverlays {
             camps: true,
             cyno_gen: false,
             jove: false,
+            notes: true,
         }
     }
 }
@@ -247,6 +254,8 @@ impl MapMode {
             },
             cyno_gen: false,
             jove: false,
+            // The user's own marks, which no mode has a reason to hide.
+            notes: true,
         }
     }
 }
@@ -266,6 +275,8 @@ fn default_threat_jumps() -> u32 {
     5
 }
 
+mod notes_ui;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum IntelClick {
     System(i64),
@@ -273,6 +284,10 @@ pub enum IntelClick {
     Pilot(String),
     Dscan(String),
     PilotVerdict(String),
+    /// Open the note and tag editor for a system or pilot.
+    Annotate(crate::notes::Subject),
+    /// A quick edit from a chip's menu, applied as is.
+    Notes(crate::notes::NotesOp),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -308,6 +323,16 @@ struct SystemInfoOut {
 enum PilotSort {
     MostLost,
     Recent,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum PilotPane {
+    #[default]
+    Info,
+    Ships,
+    Kills,
+    Solo,
+    Losses,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -548,6 +573,7 @@ pub struct SpaiApp {
     lookup_cache: crate::charlookup::LookupCache,
     lookup_tx: Option<crate::charlookup::LookupSender>,
     intel_heights: std::collections::HashMap<u64, f32>,
+    intel_heights_notes_rev: u64,
     /// Rendered height per chat row, so the history can skip over off-screen ones.
     jabber_msg_heights: std::collections::HashMap<u64, f32>,
     wizard_open: bool,
@@ -746,6 +772,7 @@ pub struct SpaiApp {
     feed_cache: std::collections::HashMap<String, crate::lookup::SharedLookup>,
     pilot_window_open: bool,
     pilot_sort: PilotSort,
+    pilot_pane: PilotPane,
     pilot_tab: PilotTab,
     fit_view: Option<(i64, FitMode)>,
     fit_loss: Option<crate::lookup::Loss>,
@@ -769,6 +796,15 @@ pub struct SpaiApp {
     /// Timestamp of the newest delve911 jabber message already parsed into `rescue`.
     #[cfg(feature = "fc-rescue")]
     delve911_cursor: i64,
+    notes: std::sync::Arc<crate::notes::NoteBook>,
+    /// What `notes` means right now, rebuilt on every edit and shared with the alert engine.
+    notes_view: std::sync::Arc<crate::notes::NotesView>,
+    /// Why the last note edit was refused, shown in the editor and manager.
+    notes_error: Option<String>,
+    note_editor: Option<NoteDraft>,
+    notes_manager: Option<notes_ui::NotesManager>,
+    /// Set where `self` is still borrowed; opened on the next frame.
+    note_editor_pending: Option<crate::notes::Subject>,
     /// Every system's 3D position, for the titan-range check. Loaded once with the SDE.
     #[cfg(feature = "fc-rescue")]
     map_coords: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
@@ -859,6 +895,8 @@ impl SpaiApp {
             .as_ref()
             .and_then(|s| s.load_settings())
             .unwrap_or_default();
+        let notes = std::sync::Arc::new(store.as_ref().map(|s| s.load_notes()).unwrap_or_default());
+        let notes_view = std::sync::Arc::new(notes.view(&settings.notes_folder));
 
         settings.theme.apply(ctx);
 
@@ -1296,6 +1334,7 @@ impl SpaiApp {
             lookup_cache,
             lookup_tx,
             intel_heights: std::collections::HashMap::new(),
+            intel_heights_notes_rev: 0,
             jabber_msg_heights: std::collections::HashMap::new(),
             wizard_open: false,
             wizard_step: 0,
@@ -1475,6 +1514,7 @@ impl SpaiApp {
             feed_cache: std::collections::HashMap::new(),
             pilot_window_open: false,
             pilot_sort: PilotSort::MostLost,
+            pilot_pane: PilotPane::default(),
             pilot_tab: PilotTab::default(),
             fit_view: None,
             fit_loss: None,
@@ -1497,6 +1537,12 @@ impl SpaiApp {
             ship_groups: None,
             #[cfg(feature = "fc-rescue")]
             delve911_cursor: 0,
+            notes_view,
+            notes,
+            notes_error: None,
+            note_editor: None,
+            notes_manager: None,
+            note_editor_pending: None,
             #[cfg(feature = "fc-rescue")]
             map_coords: None,
             #[cfg(feature = "fc-rescue")]
@@ -1522,7 +1568,7 @@ impl SpaiApp {
         app
     }
 
-    fn open_system(&mut self, system_id: i64) {
+    pub(crate) fn open_system(&mut self, system_id: i64) {
         self.system_window = Some(system_id);
         self.focus_window = Some(egui::ViewportId::from_hash_of("system_window"));
     }
@@ -1922,6 +1968,9 @@ impl SpaiApp {
         f.disabled = self.settings.intel_disabled_chars.clone();
         f.only_undocked = self.settings.alert_only_undocked;
         f.count_bridges = self.settings.intel_count_bridges;
+        f.staging = self.staging_system().map(str::to_owned);
+        f.notes = self.notes.clone();
+        f.notes_view = self.notes_view.clone();
         f.intel_max_jumps = self.intel_max_jumps;
         f.intel_ttl_secs = self.settings.intel_ttl_secs;
         f.severity = self.settings.severity.clone();
@@ -1951,6 +2000,9 @@ impl SpaiApp {
         let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
         d.graph = self.systems.clone();
         d.player_sys = self.player_system();
+        d.active_character = self.active_character.clone();
+        d.staging = self.staging_system().map(str::to_owned);
+        d.notes = self.notes.clone();
         d.count_bridges = self.settings.intel_count_bridges;
         // Cloned rather than shared: the status map is small and rewritten wholesale by its poller,
         // so holding its lock from a request thread would be the only way to block that poller.
@@ -2119,6 +2171,7 @@ impl SpaiApp {
     }
 
     fn drain_alerts(&mut self) {
+        self.migrate_dock_permits();
         {
             let mut cfg = self.alerts_engine.config.lock().unwrap();
             cfg.enabled = self.settings.alert_enabled;
@@ -2134,6 +2187,8 @@ impl SpaiApp {
             cfg.kill_intel_jumps = self.settings.kill_intel_jumps;
             cfg.intel_max_jumps = self.intel_max_jumps;
             cfg.intel_count_bridges = self.settings.intel_count_bridges;
+            cfg.staging = self.staging_system().map(str::to_owned);
+            cfg.notes = self.notes_view.clone();
         }
         self.publish_ui_facts();
         self.sync_web_server();
@@ -2250,6 +2305,13 @@ impl SpaiApp {
             {
                 self.alert_rules_open = true;
             }
+            if ui
+                .button(format!("{}  Pilot notes and tags", egui_phosphor::regular::TAG))
+                .on_hover_text("Manage pilot tags, notes and their folders")
+                .clicked()
+            {
+                self.open_notes_manager(crate::notes::NoteKind::Pilot);
+            }
         });
         ui.add_space(8.0);
         ui.separator();
@@ -2310,13 +2372,13 @@ impl SpaiApp {
             let target = r.primary_system().map(|s| s.id);
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
-            let cchars = rings.card(target);
+            let cchars = rings.card_for(r);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true,
-            &affil, false, &mut None,
+            &affil, &self.notes_view, false, &mut None,
             ) {
                 click = Some(c);
             }
@@ -2340,6 +2402,7 @@ impl SpaiApp {
             }
             Some(IntelClick::Dscan(url)) => self.open_dscan(url, ui.ctx()),
             Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
+            Some(c @ (IntelClick::Annotate(_) | IntelClick::Notes(_))) => self.notes_click(c),
             None => {}
         }
     }
@@ -2406,13 +2469,13 @@ impl SpaiApp {
             let target = r.primary_system().map(|s| s.id);
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
-            let cchars = rings.card(target);
+            let cchars = rings.card_for(r);
             let kc = self.kill_cache.clone();
             let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true, &affil,
-            false, &mut None,
+            &self.notes_view, false, &mut None,
             ) {
                 click = Some(c);
             }
@@ -6863,7 +6926,7 @@ impl SpaiApp {
 
     /// The intel toolbar's search field. Its own hint text is the floor: a field too narrow to
     /// show its placeholder tells the user nothing about what it filters.
-    pub(crate) const INTEL_FILTER_HINT: &'static str = "Filter by system, text, or channel";
+    pub(crate) const INTEL_FILTER_HINT: &'static str = "Filter by system, text, channel, or tag";
     /// The hint lays out at ~187px, so a crowded row wraps the field onto its own line rather than
     /// shrinking it past what it can say.
     const INTEL_FILTER_MIN_W: f32 = 220.0;
@@ -6941,6 +7004,13 @@ impl SpaiApp {
             {
                 self.severity_open = true;
             }
+            if ui
+                .button(egui_phosphor::regular::TAG)
+                .on_hover_text("Pilot notes and tags")
+                .clicked()
+            {
+                self.open_notes_manager(crate::notes::NoteKind::Pilot);
+            }
             toolbar_sep(ui);
             if ui
                 .checkbox(&mut self.settings.kill_intel, "zKill intel")
@@ -6972,6 +7042,7 @@ impl SpaiApp {
         let max_jumps = self.intel_max_jumps;
         let bridges = self.settings.intel_count_bridges;
         let sev_rules = self.settings.severity.clone();
+        let notes_view = self.notes_view.clone();
         let state = self.intel_state.lock().unwrap();
 
         let mut matches: Vec<&crate::intel::IntelReport> = state
@@ -6984,12 +7055,7 @@ impl SpaiApp {
                     || jumps_from_you(&systems, player_sys, r.primary_system().map(|s| s.id), bridges)
                         .is_some_and(|j| j <= max_jumps)
             })
-            .filter(|r| {
-                query.is_empty()
-                    || r.text.to_lowercase().contains(&query)
-                    || r.channel.to_lowercase().contains(&query)
-                    || r.systems.iter().any(|s| s.name.to_lowercase().contains(&query))
-            })
+            .filter(|r| query.is_empty() || intel_query_matches(r, &query, &notes_view))
             .collect();
         matches.sort_by(|a, b| b.received.cmp(&a.received));
         let last_ship = build_last_ship(&state.reports);
@@ -7042,7 +7108,9 @@ impl SpaiApp {
         {
             let status = self.system_status.lock().unwrap();
             const CARD_CAP: usize = 250;
-            if self.intel_heights.len() > 2000 {
+            // A tag chip changes a card's height without changing its report.
+            if self.intel_heights.len() > 2000 || self.intel_heights_notes_rev != self.notes_view.rev {
+                self.intel_heights_notes_rev = self.notes_view.rev;
                 self.intel_heights.clear();
             }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(
@@ -7062,7 +7130,7 @@ impl SpaiApp {
                         let target = r.primary_system().map(|s| s.id);
                         let from_you = jumps_from_you(&systems, player_sys, target, bridges);
                         let via = jump_via(&systems, player_sys, target, bridges, from_you);
-                        let cchars = rings.card(target);
+                        let cchars = rings.card_for(r);
                         let sev = severity_of(r, &sev_rules);
                         let kc = self.kill_cache.clone();
                         let affil = self.affiliations.clone();
@@ -7070,7 +7138,7 @@ impl SpaiApp {
                             intel_row(
                                 ui, r, now, stale, from_you, via, &cchars, &systems, &status, &ship_details,
                                 &ship_roles, &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
-                            &affil, false, &mut None,
+                            &affil, &self.notes_view, false, &mut None,
                             )
                         });
                         if let Some(a) = inner.inner {
@@ -7106,6 +7174,7 @@ impl SpaiApp {
             }
             Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
             Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
+            Some(c @ (IntelClick::Annotate(_) | IntelClick::Notes(_))) => self.notes_click(c),
             None => {}
         }
     }
@@ -7225,13 +7294,13 @@ impl SpaiApp {
             let target = r.primary_system().map(|s| s.id);
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
-            let cchars = rings.card(target);
+            let cchars = rings.card_for(r);
             let sev = severity_of(r, &sev_rules);
             let inner = ui.scope(|ui| {
                 intel_row(
                     ui, r, now, stale, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                     &resolved_pilots, &uncertain, &last_ship, &kc, sev, true,
-                &affil, false, &mut None,
+                &affil, &self.notes_view, false, &mut None,
                 )
             });
             if let Some(a) = inner.inner {
@@ -9759,15 +9828,15 @@ impl SpaiApp {
         if !self.pilot_window_open {
             return;
         }
-        let keep = Self::dialog_viewport(ctx, "pilot_window", "EVE Spai - Pilot", [420.0, 560.0], |ui| {
+        let keep = Self::dialog_viewport(ctx, "pilot_window", "EVE Spai - Pilot", [440.0, 580.0], |ui| {
             ui.horizontal(|ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.pilot_query)
                         .hint_text("Character name")
-                        .desired_width(200.0),
+                        .desired_width(220.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button("Look up").clicked() || enter {
+                if ui.button(format!("{}  Look up", egui_phosphor::regular::MAGNIFYING_GLASS)).clicked() || enter {
                     crate::lookup::spawn_lookup(
                         self.pilot_query.clone(),
                         self.pilot_lookup.clone(),
@@ -9891,28 +9960,94 @@ impl SpaiApp {
     }
 
     fn pilot_report_ui(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport) {
+        use egui_phosphor::regular as icon;
+        let now = chrono::Utc::now().timestamp();
+        let id = report.character_id;
+        let profile = report.profile.as_ref();
+
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&report.name).strong());
-            if ui.button("zKillboard").clicked() {
-                let _ = open::that(format!("https://zkillboard.com/character/{}/", report.character_id));
+            ui.add(egui::Image::new(eve_portrait_url(id, 64.0)).fit_to_exact_size(egui::Vec2::splat(64.0)));
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&report.name).strong().size(18.0));
+                    if report.loading {
+                        ui.spinner();
+                    }
+                });
+                match profile {
+                    Some(p) => {
+                        let org = |ui: &mut egui::Ui, logo: Option<String>, name: &str, none: &str| {
+                            ui.horizontal(|ui| {
+                                if let Some(url) = logo {
+                                    ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(20.0)));
+                                }
+                                if name.is_empty() {
+                                    ui.label(egui::RichText::new(none).weak());
+                                } else {
+                                    ui.label(name);
+                                }
+                            });
+                        };
+                        org(ui, p.alliance_id.map(|a| eve_alliance_logo_url(a, 20.0)), &p.alliance_name, "No alliance");
+                        org(ui, p.corp_id.map(|c| eve_corp_logo_url(c, 20.0)), &p.corp_name, "Unknown corporation");
+                        let mut facts = Vec::new();
+                        if let Some(b) = p.birthday {
+                            facts.push(format!("{} old, born {}", span_text(now - b), day_text(b)));
+                        }
+                        if let Some(sec) = p.security {
+                            facts.push(format!("sec {sec:.1}"));
+                        }
+                        if !facts.is_empty() {
+                            ui.label(egui::RichText::new(facts.join(" · ")).weak());
+                        }
+                    }
+                    None if report.loading => {
+                        ui.label(egui::RichText::new("Loading profile…").weak());
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("Profile unavailable").weak());
+                    }
+                }
+            });
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(format!("{}  Notes and tags", icon::NOTE_PENCIL)).clicked() && id > 0 {
+                self.note_editor_pending =
+                    Some(crate::notes::Subject::Pilot { id, name: report.name.clone() });
             }
-            if report.loading {
-                ui.spinner();
-                ui.label(egui::RichText::new("loading\u{2026}").weak());
+            if ui.button(format!("{}  zKillboard", icon::ARROW_SQUARE_OUT)).clicked() {
+                let _ = open::that(format!("https://zkillboard.com/character/{id}/"));
             }
         });
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Overview, "Overview");
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Kills, format!("Kills ({})", report.kills.len()));
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Solo, format!("Solo ({})", report.solo.len()));
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Losses, format!("Losses ({})", report.losses.len()));
+        match NoteTip::of(&self.notes_view, self.notes_view.pilot(id)) {
+            Some(n) => note_tip_ui(ui, &n),
+            None => {
+                ui.label(egui::RichText::new("No notes or tags.").weak());
+            }
+        }
+
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for (pane, label) in [
+                (PilotPane::Info, "Info".to_owned()),
+                (PilotPane::Ships, "Ships".to_owned()),
+                (PilotPane::Kills, format!("Kills ({})", report.kills.len())),
+                (PilotPane::Solo, format!("Solo ({})", report.solo.len())),
+                (PilotPane::Losses, format!("Losses ({})", report.losses.len())),
+            ] {
+                if selectable_chip(ui, self.pilot_pane == pane, label).clicked() {
+                    self.pilot_pane = pane;
+                }
+            }
         });
         ui.separator();
-        match self.pilot_tab {
-            PilotTab::Kills => return self.km_list(ui, &report.kills, report.loading, true),
-            PilotTab::Solo => return self.km_list(ui, &report.solo, report.loading, true),
-            PilotTab::Losses => return self.km_list(ui, &report.losses, report.loading, true),
-            PilotTab::Overview => {}
+        match self.pilot_pane {
+            PilotPane::Kills => return self.km_list(ui, &report.kills, report.loading, true),
+            PilotPane::Solo => return self.km_list(ui, &report.solo, report.loading, true),
+            PilotPane::Losses => return self.km_list(ui, &report.losses, report.loading, true),
+            PilotPane::Info => return self.pilot_info_pane(ui, report, now),
+            PilotPane::Ships => {}
         }
         ui.horizontal(|ui| {
             ui.label("Sort:");
@@ -9960,6 +10095,75 @@ impl SpaiApp {
                     {
                         self.fit_view = Some((ship_id, FitMode::Recent));
                     }
+                });
+            }
+        });
+    }
+
+    /// zKillboard's summary and the corporation history, the two things worth knowing about a
+    /// stranger before their kill list.
+    fn pilot_info_pane(&mut self, ui: &mut egui::Ui, report: &crate::lookup::PilotReport, now: i64) {
+        egui::ScrollArea::vertical().id_salt("pilot_info").auto_shrink([false, false]).show(ui, |ui| {
+            ui.label(egui::RichText::new("zKillboard").strong());
+            match &report.stats {
+                Some(s) => {
+                    egui::Grid::new("pilot_zk_stats").num_columns(4).spacing([18.0, 4.0]).show(ui, |ui| {
+                        ui.label("Kills");
+                        ui.label(egui::RichText::new(s.ships_destroyed.to_string()).strong());
+                        ui.label("Losses");
+                        ui.label(s.ships_lost.to_string());
+                        ui.end_row();
+                        ui.label("ISK killed");
+                        ui.label(fmt_isk(s.isk_destroyed));
+                        ui.label("ISK lost");
+                        ui.label(fmt_isk(s.isk_lost));
+                        ui.end_row();
+                        ui.label("Danger");
+                        ui.label(format!("{}%", s.danger_ratio));
+                        ui.label("Gang");
+                        ui.label(format!("{}%", s.gang_ratio));
+                        ui.end_row();
+                    });
+                    if !s.top_ships.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("Flies").weak());
+                            for (tid, name, kills) in &s.top_ships {
+                                ui.add(
+                                    egui::Image::new(eve_type_icon_url(*tid, 28.0))
+                                        .fit_to_exact_size(egui::Vec2::splat(28.0)),
+                                )
+                                .on_hover_text(format!("{name}: {kills} kills"));
+                            }
+                        });
+                    }
+                    if !s.top_systems.is_empty() {
+                        let list: Vec<String> = s.top_systems.iter().map(|(n, k)| format!("{n} ({k})")).collect();
+                        ui.label(egui::RichText::new(format!("Active in {}", list.join(", "))).weak());
+                    }
+                }
+                None if report.loading => {
+                    ui.label(egui::RichText::new("Loading…").weak());
+                }
+                None => {
+                    ui.label(egui::RichText::new("No zKillboard record.").weak());
+                }
+            }
+
+            ui.add_space(8.0);
+            let history = report.profile.as_ref().map(|p| p.history.as_slice()).unwrap_or_default();
+            ui.label(egui::RichText::new(format!("Employment history ({})", history.len())).strong());
+            if history.is_empty() {
+                ui.label(egui::RichText::new(if report.loading { "Loading…" } else { "Nothing known." }).weak());
+            }
+            for (i, e) in history.iter().enumerate() {
+                let end = if i == 0 { now } else { history[i - 1].start };
+                ui.horizontal(|ui| {
+                    ui.add(egui::Image::new(eve_corp_logo_url(e.corp_id, 20.0)).fit_to_exact_size(egui::Vec2::splat(20.0)));
+                    let name = if e.corp_name.is_empty() { format!("Corporation {}", e.corp_id) } else { e.corp_name.clone() };
+                    ui.add(egui::Label::new(name).truncate());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(format!("{} · {}", day_text(e.start), span_text(end - e.start))).weak());
+                    });
                 });
             }
         });
@@ -10305,7 +10509,7 @@ impl SpaiApp {
             let rings = self.char_rings();
             let card_chars: Vec<CardChars> = feed
                 .iter()
-                .map(|(r, _)| rings.card(r.primary_system().map(|s| s.id)))
+                .map(|(r, _)| rings.card_for(r))
                 .collect();
 
             let (_active, just_opened, clicks, verdicts, moved, moved_size, compact_toggle) = {
@@ -10323,6 +10527,7 @@ impl SpaiApp {
                 st.win_size = self.settings.alerts.window_size;
                 st.feed = feed;
                 st.chars = card_chars;
+                st.notes = self.notes_view.clone();
                 st.status = status;
                 st.ship_details = ship_details;
                 st.ship_roles = ship_roles;
@@ -10384,6 +10589,81 @@ impl SpaiApp {
     ///
     /// The overlay subprocess and the web page send the same enum into the same arms, so there is a
     /// single answer to what a verdict or an acknowledgement does, rather than two that can drift.
+    /// The single place a note edit is applied, whichever window or device it came from.
+    pub(crate) fn apply_notes_op(
+        &mut self,
+        op: crate::notes::NotesOp,
+    ) -> Result<crate::notes::Applied, String> {
+        let remember = matches!(op, crate::notes::NotesOp::SetEntry { .. });
+        let systems = self.systems.clone();
+        let name = move |id: i64| systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone());
+        let now = chrono::Utc::now().timestamp();
+        let mut next = (*self.notes).clone();
+        let applied = match next.apply(op, now, &name) {
+            Ok(a) => a,
+            Err(e) => {
+                self.notes_error = Some(e.to_owned());
+                return Err(e.to_owned());
+            }
+        };
+        if let Some(store) = &self.store {
+            if let Err(e) = store.save_notes(&next) {
+                let msg = format!("could not save notes: {e:#}");
+                self.notes_error = Some(msg.clone());
+                return Err(msg);
+            }
+        }
+        self.notes = std::sync::Arc::new(next);
+        self.notes_error = None;
+        if remember {
+            if let Some(f) = &applied.folder {
+                if *f != self.settings.notes_folder {
+                    self.settings.notes_folder = f.clone();
+                    self.needs_save = true;
+                }
+            }
+        }
+        self.rebuild_notes_view();
+        Ok(applied)
+    }
+
+    pub(crate) fn open_note_editor(&mut self, subject: crate::notes::Subject) {
+        let mut d = NoteDraft {
+            subject,
+            folder: self.notes_view.target.clone(),
+            note: String::new(),
+            tags: Vec::new(),
+            new_tag: String::new(),
+            new_color: crate::notes::default_color(self.notes.all().iter().map(|f| f.tags.len()).sum()),
+        };
+        d.load(&self.notes);
+        self.note_editor = Some(d);
+        self.notes_error = None;
+        self.focus_window = Some(egui::ViewportId::from_hash_of("note_editor"));
+    }
+
+    fn notes_click(&mut self, c: IntelClick) {
+        match c {
+            IntelClick::Notes(op) => {
+                let _ = self.apply_notes_op(op);
+            }
+            IntelClick::Annotate(subject) => self.open_note_editor(subject),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn set_notes_target(&mut self, folder: String) {
+        if self.notes.find(&folder).is_some() && folder != self.settings.notes_folder {
+            self.settings.notes_folder = folder;
+            self.needs_save = true;
+            self.rebuild_notes_view();
+        }
+    }
+
+    fn rebuild_notes_view(&mut self) {
+        self.notes_view = std::sync::Arc::new(self.notes.view(&self.settings.notes_folder));
+    }
+
     fn apply_overlay_message(&mut self, m: crate::ipc::OverlayToMain, ctx: &egui::Context) {
         match m {
             crate::ipc::OverlayToMain::Click(c) => {
@@ -10393,6 +10673,10 @@ impl SpaiApp {
             crate::ipc::OverlayToMain::Verdict { name, hidden } => {
                 self.apply_pilot_verdict(&name, hidden)
             }
+            crate::ipc::OverlayToMain::Notes(op) => {
+                let _ = self.apply_notes_op(op);
+            }
+            crate::ipc::OverlayToMain::NotesTarget { folder } => self.set_notes_target(folder),
             crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
                 self.persist_alert_geometry(pos, size)
             }
@@ -10929,6 +11213,7 @@ impl SpaiApp {
             }
             IntelClick::Dscan(url) => self.open_dscan(url, ctx),
             IntelClick::PilotVerdict(name) => self.open_pilot_verdict(name),
+            c @ (IntelClick::Annotate(_) | IntelClick::Notes(_)) => self.notes_click(c),
         }
     }
 
@@ -11422,6 +11707,22 @@ impl SpaiApp {
                 self.persist_jump_favourites();
                 ui.close();
             }
+            ui.separator();
+            let view = self.notes_view.clone();
+            let label = notes_folder_label(&view);
+            let subject = crate::notes::Subject::System(sid);
+            // A long tag list under a full system menu runs off the window, so it gets its own.
+            let mut picked = None;
+            ui.menu_button(format!("{}  Tags", egui_phosphor::regular::TAG), |ui| {
+                picked = notes_tag_toggles(ui, &view, &label, &subject);
+            });
+            if ui.button(format!("{}  Edit note and tags…", egui_phosphor::regular::NOTE_PENCIL)).clicked() {
+                picked = Some(IntelClick::Annotate(subject.clone()));
+                ui.close();
+            }
+            if let Some(c) = picked {
+                self.notes_click(c);
+            }
         });
 
         let painter = ui.painter_at(rect);
@@ -11476,6 +11777,15 @@ impl SpaiApp {
                         .or_default()
                         .push((egui_phosphor::regular::CELL_TOWER, JOVE_COLOR));
                 }
+            }
+        }
+        if ov.notes {
+            for (id, m) in &self.notes_view.systems {
+                let (glyph, col) = match self.notes_view.tags_of(m).next() {
+                    Some(t) => (egui_phosphor::regular::TAG, crate::notes::color32(t.color)),
+                    None => (egui_phosphor::regular::NOTE, ui.visuals().weak_text_color()),
+                };
+                lead_icons.entry(*id).or_default().push((glyph, col));
             }
         }
         if ov.camps {
@@ -12816,6 +13126,8 @@ impl SpaiApp {
         ui.checkbox(&mut self.map_overlays.camps, format!("{}  Gate camps", icon::CAMPFIRE));
         ui.checkbox(&mut self.map_overlays.jove, format!("{}  Jove observatories", icon::CELL_TOWER))
             .on_hover_text("Marks systems that hold a Jove Observatory");
+        ui.checkbox(&mut self.map_overlays.notes, format!("{}  Notes and tags", icon::TAG))
+            .on_hover_text("Marks systems you tagged or wrote a note on, in online folders");
         if ui
             .checkbox(&mut self.settings.route_via_wormholes, format!("{}  Route via wormholes", icon::SPIRAL))
             .on_hover_text("Routes and Set Destination use scanned holes, with a waypoint at each hole entrance")
@@ -12959,6 +13271,9 @@ impl SpaiApp {
             });
         }
         system_chips_ex(ui, &self.systems, &status, id, true, false);
+        if let Some(n) = NoteTip::of(&self.notes_view, self.notes_view.system(id)) {
+            note_tip_ui(ui, &n);
+        }
         if let Some(f) = status.get(&id) {
             if f.jumps + f.ship_kills + f.pod_kills + f.npc_kills > 0 {
                 ui.label(
@@ -13095,6 +13410,14 @@ impl SpaiApp {
             self.settings.alert_only_undocked,
             self.settings.intel_count_bridges,
         )
+        .with_staging(self.staging_system())
+    }
+
+    /// The only staging system the app knows is rescue mode's, which a build without it cannot
+    /// configure, so its default must not surface there.
+    fn staging_system(&self) -> Option<&str> {
+        (cfg!(feature = "fc-rescue") && self.settings.fc_rescue_enabled)
+            .then_some(self.settings.rescue_staging_system.as_str())
     }
 
     fn set_map_mode(&mut self, new: MapMode) {
@@ -13775,39 +14098,51 @@ impl SpaiApp {
         self.needs_save = true;
     }
 
+    /// Systems tagged for docking in an online folder. A supercarrier or titan needs Super Docking; any
+    /// other capital fits either.
     fn jump_dockable_ids(&self) -> std::collections::HashSet<i64> {
         let supers = self.jump_ship == 1;
-        let Some(g) = &self.systems else { return Default::default() };
-        self.settings
-            .jump_dock
+        let wanted: &[&str] =
+            if supers { &[crate::notes::SUPER_DOCKING] } else { &[crate::notes::SUPER_DOCKING, crate::notes::CAPITAL_DOCKING] };
+        self.notes_view
+            .systems
             .iter()
-            .filter(|p| if supers { p.supers } else { p.capitals || p.supers })
-            .filter_map(|p| g.lookup(&p.system).map(|s| s.id))
+            .filter(|(_, m)| m.tags.iter().any(|t| wanted.contains(&t.as_str())))
+            .map(|(id, _)| *id)
             .collect()
     }
 
-    fn toggle_dock_permit(&mut self, sid: i64, supers: bool) {
-        let Some(name) = self.systems.as_ref().and_then(|g| g.info_of(sid).map(|s| s.name.clone())) else {
+    /// Dock permits from before the docking tags existed, turned into those tags in the quick-edit
+    /// folder once the graph can name the systems. The old list is emptied only when every permit moved.
+    fn migrate_dock_permits(&mut self) {
+        if self.settings.jump_dock.is_empty() || self.systems.is_none() {
             return;
-        };
-        let dock = &mut self.settings.jump_dock;
-        let p = match dock.iter_mut().find(|p| p.system.eq_ignore_ascii_case(&name)) {
-            Some(p) => p,
-            None => {
-                dock.push(crate::settings::DockPermit { system: name, capitals: false, supers: false });
-                dock.last_mut().unwrap()
-            }
-        };
-        if supers {
-            p.supers = !p.supers;
-            if p.supers {
-                p.capitals = true;
-            }
-        } else {
-            p.capitals = !p.capitals;
         }
-        dock.retain(|p| p.capitals || p.supers);
-        self.jump_route_key = None;
+        let permits = std::mem::take(&mut self.settings.jump_dock);
+        let mut left = Vec::new();
+        for p in permits {
+            let Some(id) = self.systems.as_ref().and_then(|g| g.lookup(&p.system)).map(|s| s.id) else {
+                left.push(p);
+                continue;
+            };
+            let folder = self.notes_view.target.clone();
+            let mut ok = true;
+            for (on, tag) in [(p.capitals, crate::notes::CAPITAL_DOCKING), (p.supers, crate::notes::SUPER_DOCKING)] {
+                if on {
+                    let op = crate::notes::NotesOp::SetTag {
+                        folder: folder.clone(),
+                        subject: crate::notes::Subject::System(id),
+                        tag: tag.to_owned(),
+                        on: true,
+                    };
+                    ok &= self.apply_notes_op(op).is_ok();
+                }
+            }
+            if !ok {
+                left.push(p);
+            }
+        }
+        self.settings.jump_dock = left;
         self.needs_save = true;
     }
 
@@ -13828,6 +14163,25 @@ impl SpaiApp {
     #[cfg(test)]
     pub(crate) fn map_layers_ui(&mut self, ui: &mut egui::Ui) {
         self.map_layers_content(ui);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn docked_system_ui(&mut self, ui: &mut egui::Ui, id: i64) {
+        self.system_info_body(ui, id, true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_pilot_report(&mut self, report: crate::lookup::PilotReport) {
+        self.pilot_query = report.name.clone();
+        *self.pilot_lookup.lock().unwrap() = crate::lookup::LookupState::Done(report);
+        self.pilot_window_open = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_notes(&mut self, book: crate::notes::NoteBook) {
+        self.systems = Some(crate::uitest::fixtures::systems());
+        self.notes = std::sync::Arc::new(book);
+        self.rebuild_notes_view();
     }
 
     #[cfg(test)]
@@ -14175,8 +14529,8 @@ impl SpaiApp {
         let mut titan_now: Option<(i64, bool)> = None;
         let mut drop_anchor_row: Option<usize> = None;
         let mut alts_for: Option<usize> = None;
-        let mut dock_toggle: Option<(i64, bool)> = None;
         let mut show_intel: Option<i64> = None;
+        let mut warn_intel: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
                 // A system the user named gets its own ground, so the route reads as the legs it was
@@ -14188,25 +14542,13 @@ impl SpaiApp {
                 } else {
                     egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 1))
                 };
-                frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(&h.name)
-                                .color(security_color(h.security))
-                                .strong(),
-                        );
-                        let tail = if i == 0 {
-                            "start".to_owned()
-                        } else {
-                            match h.kind {
-                                2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                1 => "ansiblex".to_owned(),
-                                _ => "gate".to_owned(),
-                            }
-                        };
-                        ui.label(egui::RichText::new(tail).weak().size(11.0));
-                        // One button rather than one per action: a row is a system and a distance,
-                        // and three buttons beside that is more chrome than content.
+                let cost = h.fuel.zip(h.fatigue_min).zip(h.reactivation_min);
+                let warn = h.warn.filter(|w| warn_text(w).is_some());
+                // One button rather than one per action: a row is a system and a distance, and three
+                // buttons beside that is more chrome than content. It closes the row's last line, so
+                // it sits at the far right after the costs and the warning on every kind of hop.
+                let mut menu = |ui: &mut egui::Ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button(icon::DOTS_THREE, |ui| {
                             if h.warn.is_some_and(|w| w.sev >= crate::web::route::WARN_SEVERITY)
                                 && ui.button("Show intel").clicked()
@@ -14259,18 +14601,6 @@ impl SpaiApp {
                                 self.right_dock_tab = RightDockTab::System;
                                 ui.close();
                             }
-                            // UI-053 took the dock entries off the map's menu, and they had no other
-                            // home: existing permits still drew their teal ring but nothing could set
-                            // or clear one. A route's own rows are where you decide where you can sit.
-                            let (caps, supers) = self.dock_permit_for(h.id);
-                            if ui.button(if caps { "Capitals cannot dock" } else { "Capitals dock here" }).clicked() {
-                                dock_toggle = Some((h.id, false));
-                                ui.close();
-                            }
-                            if ui.button(if supers { "Supers cannot dock" } else { "Supers dock here" }).clicked() {
-                                dock_toggle = Some((h.id, true));
-                                ui.close();
-                            }
                             if self.map_route_kind == "titan" {
                                 let t = self.map_titans.contains(&h.id);
                                 if ui
@@ -14287,27 +14617,57 @@ impl SpaiApp {
                             }
                         });
                     });
-                    if let Some(c) = h.fuel.zip(h.fatigue_min).zip(h.reactivation_min) {
-                        let ((fuel, fat), react) = c;
+                };
+                frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} iso · fatigue {} · ready in {}",
-                                fuel.round() as i64,
-                                fmt_min(fat),
-                                fmt_min(react)
-                            ))
-                            .weak()
-                            .size(11.0),
+                            egui::RichText::new(&h.name)
+                                .color(security_color(h.security))
+                                .strong(),
                         );
-                    }
-                    if let Some(w) = &h.warn {
-                        if warn_button(ui, w) {
-                            show_intel = Some(h.id);
+                        let tail = if i == 0 {
+                            "start".to_owned()
+                        } else {
+                            match h.kind {
+                                2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
+                                1 => "ansiblex".to_owned(),
+                                _ => "gate".to_owned(),
+                            }
+                        };
+                        ui.label(egui::RichText::new(tail).weak().size(11.0));
+                        if cost.is_none() && warn.is_none() {
+                            menu(ui);
                         }
+                    });
+                    if let Some(((fuel, fat), react)) = cost {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} iso · fatigue {} · ready in {}",
+                                    fuel.round() as i64,
+                                    fmt_min(fat),
+                                    fmt_min(react)
+                                ))
+                                .weak()
+                                .size(11.0),
+                            );
+                            if warn.is_none() {
+                                menu(ui);
+                            }
+                        });
+                    }
+                    if let Some(w) = &warn {
+                        ui.horizontal(|ui| {
+                            if warn_button(ui, w) {
+                                warn_intel = Some(h.id);
+                            }
+                            menu(ui);
+                        });
                     }
                 });
             }
         });
+        let show_intel = show_intel.or(warn_intel);
         if let Some(id) = avoid_now {
             self.map_avoid_once.insert(id);
             self.map_replan_route();
@@ -14335,9 +14695,6 @@ impl SpaiApp {
         if let Some(id) = show_intel {
             self.map_intel_for = Some(id);
         }
-        if let Some((id, supers)) = dock_toggle {
-            self.toggle_dock_permit(id, supers);
-        }
         if let Some(i) = alts_for {
             // The systems a capital could stop in between the two hops either side of this one.
             // Picking one inserts it as a waypoint, which is what makes it a steer rather than a
@@ -14360,20 +14717,6 @@ impl SpaiApp {
     }
 
     /// Whether capitals and supers may dock in a system, as the permit list stands.
-    fn dock_permit_for(&self, id: i64) -> (bool, bool) {
-        let name = self
-            .systems
-            .as_ref()
-            .and_then(|g| g.info_of(id).map(|i| i.name.clone()))
-            .unwrap_or_default();
-        self.settings
-            .jump_dock
-            .iter()
-            .find(|p| p.system.eq_ignore_ascii_case(&name))
-            .map(|p| (p.capitals, p.supers))
-            .unwrap_or((false, false))
-    }
-
     /// Saving and loading a route, the same store the page writes to.
     ///
     /// The whole route, not just the endpoints: a route is the anchors and what you told the planner
@@ -15450,6 +15793,11 @@ impl SpaiApp {
             }
         }
 
+        ui.separator();
+        if ui.button(format!("{}  System notes and tags", icon::TAG)).clicked() {
+            self.open_notes_manager(crate::notes::NoteKind::System);
+        }
+
         if !self.map_layout.is_threat() {
             ui.separator();
             egui::CollapsingHeader::new(format!("{}  Layers", icon::STACK_SIMPLE))
@@ -16211,6 +16559,7 @@ impl SpaiApp {
                     crate::theme::standing::HOSTILE
                 }
             };
+            let mut edit_notes = false;
             ui.horizontal(|ui| {
                 ui.label(security_badge(info.security));
                 ui.heading(&info.name);
@@ -16231,6 +16580,13 @@ impl SpaiApp {
                     }
                     self.needs_save = true;
                 }
+                let noted = self.notes_view.system(id).is_some();
+                let pencil = egui::RichText::new(egui_phosphor::regular::NOTE_PENCIL)
+                    .size(18.0)
+                    .color(if noted { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() });
+                if ui.add(egui::Button::new(pencil).frame(false)).on_hover_text("Notes and tags").clicked() {
+                    edit_notes = true;
+                }
                 if docked {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(adm) = flags.adm {
@@ -16249,6 +16605,20 @@ impl SpaiApp {
                     });
                 }
             });
+            if edit_notes {
+                self.note_editor_pending = Some(crate::notes::Subject::System(id));
+            }
+            match NoteTip::of(&self.notes_view, self.notes_view.system(id)) {
+                Some(n) => note_tip_ui(ui, &n),
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("{}  No notes or tags", egui_phosphor::regular::TAG)).weak());
+                        if ui.link("Add").clicked() {
+                            self.note_editor_pending = Some(crate::notes::Subject::System(id));
+                        }
+                    });
+                }
+            }
             if !docked && (flags.sov_alliance.is_some() || flags.adm.is_some()) {
                 egui::Area::new(egui::Id::new("sys_sov"))
                     .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-14.0, 12.0))
@@ -16444,6 +16814,9 @@ impl SpaiApp {
             ui.selectable_value(&mut self.system_kills_tab, true, "Recent kills");
         });
         ui.separator();
+        // The window's list takes the rest of the window so it is never left half empty; the dock
+        // already scrolls as a whole, where an unbounded list would push everything else away.
+        let list_h = if docked { 280.0 } else { ui.available_height().max(120.0) };
         if self.system_kills_tab {
             let feed = self
                 .system_kills_cache
@@ -16455,7 +16828,7 @@ impl SpaiApp {
                     s
                 })
                 .clone();
-            egui::ScrollArea::vertical().id_salt("syskills").max_height(280.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("syskills").max_height(list_h).auto_shrink([false, docked]).show(ui, |ui| {
                 match feed.lock().unwrap().clone() {
                     crate::lookup::LookupState::Done(report) => {
                         self.km_list(ui, &report.kills, report.loading, false);
@@ -16472,7 +16845,7 @@ impl SpaiApp {
                 }
             });
         } else {
-            egui::ScrollArea::vertical().id_salt("sysintel").max_height(280.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("sysintel").max_height(list_h).auto_shrink([false, docked]).show(ui, |ui| {
                 if sys_reports.is_empty() {
                     ui.label(egui::RichText::new("No recent intel.").weak());
                 }
@@ -16481,7 +16854,7 @@ impl SpaiApp {
                     let bridges = self.settings.intel_count_bridges;
                     let from_you = jumps_from_you(&self.systems, player_sys, target, bridges);
                     let via = jump_via(&self.systems, player_sys, target, bridges, from_you);
-                    let cchars = rings.card(target);
+                    let cchars = rings.card_for(r);
                     let sev = severity_of(r, &self.settings.severity);
                     let kc = self.kill_cache.clone();
                     let affil = self.affiliations.clone();
@@ -16490,7 +16863,7 @@ impl SpaiApp {
                         &status_snapshot,
                         &ship_details, &ship_roles, &resolved_pilots, &uncertain, &sys_last_ship,
                         &kc, sev, false,
-                    &affil, false, &mut None,
+                    &affil, &self.notes_view, false, &mut None,
                     ) {
                         intel_click = Some(c);
                     }
@@ -16534,6 +16907,7 @@ impl SpaiApp {
             }
             Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
             Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
+            Some(c @ (IntelClick::Annotate(_) | IntelClick::Notes(_))) => self.notes_click(c),
             None => {}
         }
         if out.show_on_map {
@@ -16554,7 +16928,7 @@ impl SpaiApp {
             ctx,
             "system_window",
             "EVE Spai - System info",
-            [470.0, 660.0],
+            [470.0, 620.0],
             |ui| {
                 out = self.system_info_body(ui, id, false);
             },
@@ -17920,6 +18294,7 @@ impl SpaiApp {
         ru: &mut crate::settings::AlertRule,
         i: usize,
         global_volume: f32,
+        notes: &crate::notes::NotesView,
     ) -> (bool, Option<crate::pickers::PickerKind>) {
         use crate::settings::Severity::*;
         let mut changed = false;
@@ -18019,6 +18394,8 @@ impl SpaiApp {
             if row(ui, "characters:", &ru.characters, "any enabled") {
                 want = Some(PickerKind::Characters);
             }
+            changed |= rule_tag_row(ui, ("pilot_tags", i), "pilot tags:", notes, crate::notes::NoteKind::Pilot, &mut ru.pilot_tags);
+            changed |= rule_tag_row(ui, ("system_tags", i), "system tags:", notes, crate::notes::NoteKind::System, &mut ru.system_tags);
             if let Some(kind) = want {
                 open_picker = Some(kind);
             }
@@ -18262,6 +18639,7 @@ impl SpaiApp {
                         &mut self.settings.alerts.rules[idx],
                         idx,
                         global_volume,
+                        &self.notes_view,
                     );
                     changed |= c;
                     if let Some(kind) = want {
@@ -19388,6 +19766,8 @@ struct AlertConfig {
     kill_intel_jumps: u32,
     intel_max_jumps: u32,
     intel_count_bridges: bool,
+    staging: Option<String>,
+    notes: std::sync::Arc<crate::notes::NotesView>,
 }
 
 #[derive(Default)]
@@ -19536,10 +19916,11 @@ impl AlertEngine {
                 cfg.only_undocked,
                 cfg.intel_count_bridges,
             )
+            .with_staging(cfg.staging.as_deref())
         };
         let card_chars: Vec<CardChars> = feed
             .iter()
-            .map(|(r, _)| rings.card(r.primary_system().map(|s| s.id)))
+            .map(|(r, _)| rings.card_for(r))
             .collect();
 
         let mut kills_send: std::collections::HashMap<i64, crate::kills::KillInfo> = Default::default();
@@ -19570,6 +19951,10 @@ impl AlertEngine {
             }
         }
 
+        let notes = cfg.notes.subset(
+            feed.iter().flat_map(|(r, _)| r.systems.iter().map(|s| s.id)),
+            resolved_pilots.values().copied(),
+        );
         crate::ipc::AlertMsg {
             feed,
             from_you,
@@ -19581,6 +19966,7 @@ impl AlertEngine {
             last_ship,
             kills: kills_send,
             affil: affil_send,
+            notes,
             secs: 0.0,
             focus: false,
         }
@@ -19637,6 +20023,7 @@ impl AlertEngine {
         hash_sorted_map(&mut hasher, &msg.last_ship);
         hash_sorted_map(&mut hasher, &msg.kills);
         hash_sorted_map(&mut hasher, &msg.affil);
+        serde_json::to_string(&msg.notes).unwrap_or_default().hash(&mut hasher);
         let hash = hasher.finish();
 
         {
@@ -19776,7 +20163,7 @@ impl AlertEngine {
                 for ru in acfg.rules.iter().filter(|ru| ru.enabled) {
                     let srcs = char_systems(&ru.characters);
                     let jumps = min_jumps_from(&systems, &srcs, target, ru.count_bridges);
-                    if rule_matches(ru, r, sev, jumps, &systems) {
+                    if rule_matches(ru, r, sev, jumps, &systems, &cfg.notes) {
                         chosen = Some((ru, jumps));
                         break;
                     }
@@ -20446,6 +20833,8 @@ impl SpaiApp {
         self.coalitions_window(ctx);
         self.travel_sov_dialog(ctx);
         self.severity_window(ctx);
+        self.note_editor_window(ctx);
+        self.notes_manager_window(ctx);
         self.alert_window(ctx);
         self.system_window(ctx);
         self.constellation_window(ctx);
@@ -20546,6 +20935,12 @@ impl eframe::App for SpaiApp {
 
         // The page's actions are the overlay's actions: same enum, same handlers. Drained here so
         // there is one place that decides what a verdict or an acknowledgement does.
+        if self.settings.web.enabled {
+            let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
+            if d.wake.is_none() {
+                d.wake = Some(ctx.clone());
+            }
+        }
         let from_web =
             std::mem::take(&mut *self.web_inbox.lock().unwrap_or_else(|e| e.into_inner()));
         for m in from_web {
@@ -21023,6 +21418,24 @@ pub(crate) struct CardChars {
     pub(crate) hops: Vec<CharHop>,
     /// Index into `hops` of the active character.
     pub(crate) selected: Option<usize>,
+    #[serde(default)]
+    pub(crate) ly: CardLy,
+}
+
+/// Straight-line distance from staging and from the active character to each system on a card.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CardLy {
+    pub(crate) staging: String,
+    pub(crate) you: String,
+    /// (system, from staging, from you) in hundredths of a light-year, integers so the card stays
+    /// hashable.
+    pub(crate) systems: Vec<(i64, Option<u32>, Option<u32>)>,
+}
+
+impl CardLy {
+    pub(crate) fn of(&self, system: i64) -> Option<(Option<u32>, Option<u32>)> {
+        self.systems.iter().find(|(id, ..)| *id == system).map(|&(_, st, you)| (st, you))
+    }
 }
 
 impl CardChars {
@@ -21060,6 +21473,7 @@ struct Ring {
     /// Gate-only ball, kept only while bridges count, to derive the verdict per character.
     gates: Option<std::sync::Arc<std::collections::HashMap<i64, u32>>>,
     active: bool,
+    from: i64,
 }
 
 /// Every character a card may attribute a number to this frame, each with the whole distance ball
@@ -21068,9 +21482,45 @@ struct Ring {
 #[derive(Default)]
 pub(crate) struct CharRings {
     rings: Vec<Ring>,
+    systems: Option<std::sync::Arc<crate::geo::Systems>>,
+    staging: Option<(String, i64)>,
 }
 
 impl CharRings {
+    /// Resolved against the graph, so an unknown or empty name drops the staging line.
+    pub(crate) fn with_staging(mut self, name: Option<&str>) -> Self {
+        self.staging = name
+            .and_then(|n| self.systems.as_ref()?.lookup(n.trim()))
+            .map(|i| (i.name.clone(), i.id));
+        self
+    }
+
+    pub(crate) fn card_for(&self, r: &crate::intel::IntelReport) -> CardChars {
+        let mut c = self.card(r.primary_system().map(|s| s.id));
+        let Some(sys) = self.systems.as_ref() else { return c };
+        let you = self.rings.iter().find(|r| r.active);
+        let centi = |from: i64, to: i64| sys.ly_between(from, to).map(|ly| (ly * 100.0).round() as u32);
+        let mut systems: Vec<(i64, Option<u32>, Option<u32>)> = Vec::new();
+        for s in &r.systems {
+            if systems.iter().any(|(id, ..)| *id == s.id) {
+                continue;
+            }
+            let st = self.staging.as_ref().and_then(|(_, id)| centi(*id, s.id));
+            let yo = you.and_then(|y| centi(y.from, s.id));
+            if st.is_some() || yo.is_some() {
+                systems.push((s.id, st, yo));
+            }
+        }
+        if !systems.is_empty() {
+            c.ly = CardLy {
+                staging: self.staging.as_ref().map(|(n, _)| n.clone()).unwrap_or_default(),
+                you: you.map(|y| y.name.clone()).unwrap_or_default(),
+                systems,
+            };
+        }
+        c
+    }
+
     /// N hash lookups. Nearest first, unreachable last, ties broken toward the active character so
     /// an alt sitting beside you does not take the badge off you.
     pub(crate) fn card(&self, target: Option<i64>) -> CardChars {
@@ -21104,7 +21554,7 @@ impl CharRings {
             by_dist.then(b_act.cmp(a_act)).then_with(|| a.name.cmp(&b.name))
         });
         let selected = hops.iter().position(|(_, active)| *active);
-        CardChars { hops: hops.into_iter().map(|(h, _)| h).collect(), selected }
+        CardChars { hops: hops.into_iter().map(|(h, _)| h).collect(), selected, ly: CardLy::default() }
     }
 }
 
@@ -21176,6 +21626,7 @@ pub(crate) fn build_char_rings(
         shown: distance_ball(sys, from, !use_bridges),
         gates: use_bridges.then(|| distance_ball(sys, from, true)),
         active: is_active,
+        from,
     };
     let has_active = !active.is_empty() && active != "No character";
     let mut rings: Vec<Ring> = locations
@@ -21193,7 +21644,7 @@ pub(crate) fn build_char_rings(
             rings.push(ring(active, from, true));
         }
     }
-    CharRings { rings }
+    CharRings { rings, systems: Some(sys.clone()), staging: None }
 }
 
 /// Every answer for one graph, one player position and one setting. The graph is held by `Arc`
@@ -22733,6 +23184,8 @@ pub(crate) fn dscan_view_dialog_ui(
     }
 }
 
+/// A dialog as its own normal window. Dialogs carry no always-on-top pin: the strip it needed pushed
+/// every dialog's content down, and a dialog is opened from the app, which focuses it.
 #[allow(deprecated)]
 pub(crate) fn dialog_viewport_ext(
     parent: &egui::Context,
@@ -22748,8 +23201,7 @@ pub(crate) fn dialog_viewport_ext(
         .with_icon(app_icon())
         .with_title(title)
         .with_inner_size(size)
-        .with_min_inner_size([size[0].min(380.0), size[1].min(320.0)])
-        .with_always_on_top();
+        .with_min_inner_size([size[0].min(380.0), size[1].min(320.0)]);
     if taskbar_off {
         builder = builder.with_taskbar(false);
         #[cfg(target_os = "linux")]
@@ -22762,7 +23214,6 @@ pub(crate) fn dialog_viewport_ext(
         builder,
         |ctx, _class| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                ontop_pin_strip(ui, id);
                 if let Some(c) = content.take() {
                     c(ui);
                 }
@@ -22861,6 +23312,21 @@ pub(crate) fn fmt_bytes(bytes: u64) -> String {
     } else {
         format!("{mb:.0} MB")
     }
+}
+
+/// "3y 2m", "5m 12d", "9d": the two largest units, which is all a glance needs.
+fn span_text(secs: i64) -> String {
+    let days = secs.max(0) / 86_400;
+    let (y, m, d) = (days / 365, (days % 365) / 30, (days % 365) % 30);
+    match (y, m) {
+        (0, 0) => format!("{d}d"),
+        (0, m) => format!("{m}m {d}d"),
+        (y, m) => format!("{y}y {m}m"),
+    }
+}
+
+fn day_text(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
 fn fmt_isk(isk: f64) -> String {
@@ -23481,7 +23947,7 @@ pub(crate) fn render_tip_content(
         PendingTip::Text(t) => {
             ui.label(t);
         }
-        PendingTip::System(s) => system_hover(ui, systems, status, s),
+        PendingTip::System(s, ly, n) => system_hover(ui, systems, status, s, ly, n.as_ref()),
         PendingTip::Ship(d, roles) => ship_hover(ui, d, roles),
         PendingTip::Identity {
             alliance,
@@ -23491,6 +23957,7 @@ pub(crate) fn render_tip_content(
             char_id,
             char_name,
             note,
+            notes,
         } => {
             tooltip_identity(
                 ui,
@@ -23501,6 +23968,9 @@ pub(crate) fn render_tip_content(
                 *char_id,
                 char_name.clone(),
             );
+            if let Some(n) = notes {
+                note_tip_ui(ui, n);
+            }
             if let Some(n) = note {
                 ui.label(egui::RichText::new(n).weak());
             }
@@ -23549,6 +24019,7 @@ pub(crate) fn build_alert_viewport_cb(
         let from_you_pre = st.from_you.clone();
         let via_pre = st.via.clone();
         let chars_pre = st.chars.clone();
+        let notes_view = st.notes.clone();
         let count_bridges = st.count_bridges;
         let systems = st.systems.clone();
         let status = st.status.clone();
@@ -23749,7 +24220,7 @@ pub(crate) fn build_alert_viewport_cb(
                                 ui, r, now_ts, false, from_you, via, &cchars, &systems, &status,
                                 &ship_details, &ship_roles, &resolved_pilots,
                                 &uncertain, &last_ship,
-                                kills, *sev, false, affil, compact, &mut tip,
+                                kills, *sev, false, affil, &notes_view, compact, &mut tip,
                             ) {
                                 match c {
                                     IntelClick::PilotVerdict(name) => verdict_pending = Some(name),
@@ -24085,7 +24556,7 @@ pub(crate) fn build_ping_viewport_cb(
 /// viewport so it can extend past the small alert window.
 pub(crate) enum PendingTip {
     Text(String),
-    System(crate::intel::DetectedSystem),
+    System(crate::intel::DetectedSystem, CardLy, Option<NoteTip>),
     Ship(crate::store::ShipDetails, Vec<(&'static str, &'static str)>),
     Identity {
         alliance: Option<i64>,
@@ -24095,6 +24566,7 @@ pub(crate) enum PendingTip {
         char_id: Option<i64>,
         char_name: Option<String>,
         note: Option<String>,
+        notes: Option<NoteTip>,
     },
 }
 
@@ -24108,6 +24580,7 @@ pub(crate) struct AlertWindowState {
     /// Per-card character attribution, sent over IPC for the same reason as `via`: the overlay
     /// holds neither the roster nor anyone's location.
     pub(crate) chars: Vec<CardChars>,
+    pub(crate) notes: std::sync::Arc<crate::notes::NotesView>,
     pub(crate) count_bridges: bool,
     pub(crate) secs: f32,
     pub(crate) pinned: bool,
@@ -24396,8 +24869,21 @@ fn rule_matches(
     sev: crate::settings::Severity,
     jumps: Option<u32>,
     geo: &Option<std::sync::Arc<crate::geo::Systems>>,
+    notes: &crate::notes::NotesView,
 ) -> bool {
     if sev < ru.min_severity {
+        return false;
+    }
+    // By name: the engine fires on a report's first fresh tick, usually before ESI has resolved
+    // who anyone is.
+    if !ru.pilot_tags.is_empty()
+        && !r.pilots.iter().any(|p| notes.pilot_by_name(p).is_some_and(|m| crate::notes::has_any(m, &ru.pilot_tags)))
+    {
+        return false;
+    }
+    if !ru.system_tags.is_empty()
+        && !r.systems.iter().any(|s| notes.system(s.id).is_some_and(|m| crate::notes::has_any(m, &ru.system_tags)))
+    {
         return false;
     }
     if !ru.channels.is_empty() && !r.killmail {
@@ -24483,6 +24969,83 @@ fn rule_matches(
         }
     }
     true
+}
+
+/// One alert rule condition on tags: a menu of the active tags, "any tag", and whatever ids the rule
+/// holds that no longer resolve, which can only be removed.
+fn rule_tag_row(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    label: &str,
+    notes: &crate::notes::NotesView,
+    kind: crate::notes::NoteKind,
+    list: &mut Vec<String>,
+) -> bool {
+    use crate::notes::ANY_TAG;
+    let mut changed = false;
+    let name_of = |id: &str| -> String {
+        if id == ANY_TAG {
+            "any tag".to_owned()
+        } else {
+            notes.tag(id).map(|t| t.name.clone()).unwrap_or_else(|| "deleted tag".to_owned())
+        }
+    };
+    ui.push_id(salt, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            ui.menu_button("Edit", |ui| {
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    let mut toggle = |ui: &mut egui::Ui, id: &str, text: egui::RichText| {
+                        let mut on = list.iter().any(|x| x == id);
+                        if ui.checkbox(&mut on, text).changed() {
+                            list.retain(|x| x != id);
+                            if on {
+                                list.push(id.to_owned());
+                            }
+                            changed = true;
+                        }
+                    };
+                    toggle(ui, ANY_TAG, egui::RichText::new("Any tag"));
+                    ui.separator();
+                    for t in notes.tags(kind) {
+                        toggle(ui, &t.id, egui::RichText::new(&t.name).color(crate::notes::color32(t.color)));
+                    }
+                    let dangling: Vec<String> =
+                        list.iter().filter(|id| *id != ANY_TAG && notes.tag(id).is_none()).cloned().collect();
+                    if !dangling.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Deleted or offline, matching nothing:").weak());
+                        for id in dangling {
+                            if ui.button(format!("{}  Remove", egui_phosphor::regular::X)).clicked() {
+                                list.retain(|x| *x != id);
+                                changed = true;
+                            }
+                        }
+                    }
+                });
+            });
+            let s = if list.is_empty() {
+                "any".to_owned()
+            } else if list.len() <= 3 {
+                list.iter().map(|id| name_of(id)).collect::<Vec<_>>().join(", ")
+            } else {
+                format!("{} selected", list.len())
+            };
+            ui.label(egui::RichText::new(s).weak());
+        });
+    });
+    changed
+}
+
+/// The intel search: report text, channel and system names, plus the tags and notes on its systems
+/// and pilots. `query` is already lowercased.
+pub(crate) fn intel_query_matches(r: &crate::intel::IntelReport, query: &str, notes: &crate::notes::NotesView) -> bool {
+    r.text.to_lowercase().contains(query)
+        || r.channel.to_lowercase().contains(query)
+        || r.systems.iter().any(|s| {
+            s.name.to_lowercase().contains(query) || notes.system(s.id).is_some_and(|m| notes.matches(m, query))
+        })
+        || r.pilots.iter().any(|p| notes.pilot_by_name(p).is_some_and(|m| notes.matches(m, query)))
 }
 
 fn op_key(text: &str) -> Option<String> {
@@ -24840,21 +25403,6 @@ fn ontop_pin(ctx: &egui::Context, id: &str) {
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-6.0, 6.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| ontop_pin_ui(ui, id));
-}
-
-/// The row a dialog body reserves for the pin before laying out its own content. A floating `Area`
-/// reserves nothing, so every dialog drew its first rows under the pin (UI-033), and unlike the
-/// jabber popout these dialogs have no row of their own to host it.
-fn ontop_pin_strip(ui: &mut egui::Ui, id: &str) {
-    egui::Panel::top(egui::Id::new(("ontop_strip", id)))
-        .show_separator_line(false)
-        .frame(egui::Frame::NONE)
-        .exact_size(ontop_pin_size(ui).y)
-        .show_inside(ui, |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                ontop_pin_ui(ui, id);
-            });
-        });
 }
 
 /// Width `ontop_pin_ui` takes, so a row can reserve it before laying out its own content.
@@ -25666,11 +26214,13 @@ pub(crate) fn intel_row(
     sev: crate::settings::Severity,
     show_reporter: bool,
     affil: &crate::affiliation::SharedAffil,
+    notes: &crate::notes::NotesView,
     compact: bool,
     tip: &mut Option<(egui::Pos2, PendingTip)>,
 ) -> Option<IntelClick> {
     use egui_phosphor::regular as icon;
     let age = (now - r.received).max(0);
+    let folder_label = notes_folder_label(notes);
     let green = crate::theme::chip::CLEAR;
     let warn = crate::theme::standing::WARNING;
     let red = crate::theme::standing::HOSTILE;
@@ -25824,8 +26374,9 @@ pub(crate) fn intel_row(
                         continue;
                     }
                     let scol = security_color(s.security);
-                    let text =
-                        egui::RichText::new(format!("{} {}", icon::PLANET, s.name)).color(scol).strong();
+                    let merged = notes.system(s.id);
+                    let mark = if merged.is_some_and(|m| m.has_note()) { format!(" {}", icon::NOTE) } else { String::new() };
+                    let text = egui::RichText::new(format!("{} {}{mark}", icon::PLANET, s.name)).color(scol).strong();
                     let dim = scol.gamma_multiply(0.5);
                     let fill = egui::Color32::from_rgb(
                         (dim.r() as u16 * 45 / 100 + 0x10) as u8,
@@ -25833,15 +26384,27 @@ pub(crate) fn intel_row(
                         (dim.b() as u16 * 45 / 100 + 0x10) as u8,
                     );
                     let panel = ui.add(egui::Button::new(text).fill(fill));
+                    let note_tip = NoteTip::of(notes, merged);
                     if compact {
                         if panel.hovered() {
-                            *tip = Some((panel.rect.right_top(), PendingTip::System(s.clone())));
+                            *tip = Some((panel.rect.right_top(), PendingTip::System(s.clone(), chars.ly.clone(), note_tip.clone())));
                         }
                     } else {
-                        panel.clone().on_hover_ui(|ui| system_hover(ui, systems, status, s));
+                        panel.clone().on_hover_ui(|ui| system_hover(ui, systems, status, s, &chars.ly, note_tip.as_ref()));
                     }
+                    let subject = crate::notes::Subject::System(s.id);
+                    panel.context_menu(|ui| {
+                        if let Some(c) = notes_quick_menu(ui, notes, &folder_label, &subject) {
+                            clicked = Some(c);
+                        }
+                    });
                     if panel.clicked() {
                         clicked = Some(IntelClick::System(s.id));
+                    }
+                    if let Some(m) = merged {
+                        for t in notes.tags_of(m) {
+                            tag_chip(ui, t, compact);
+                        }
                     }
                 }
 
@@ -26104,6 +26667,7 @@ pub(crate) fn intel_row(
                         c.get(cid)
                     });
                     let is_uncertain = uncertain.contains(name);
+                    let pilot_notes = char_id.and_then(|id| notes.pilot(id));
                     let amber = crate::theme::chip::UNCERTAIN;
                     let sz = egui::Vec2::splat(pilot_isz);
                     let img = |url: String| egui::Image::new(url).fit_to_exact_size(sz);
@@ -26116,6 +26680,9 @@ pub(crate) fn intel_row(
                             atoms.push_left(img(eve_alliance_logo_url(al, pilot_isz)));
                         }
                         atoms.push_right(egui::RichText::new(name));
+                        if pilot_notes.is_some_and(|m| m.has_note()) {
+                            atoms.push_right(egui::RichText::new(icon::NOTE).weak());
+                        }
                         if is_uncertain {
                             atoms.push_right(egui::RichText::new("?").color(amber).strong());
                         }
@@ -26148,6 +26715,7 @@ pub(crate) fn intel_row(
                                     char_id,
                                     char_name: Some(name.to_string()),
                                     note: Some(hint.to_string()),
+                                    notes: NoteTip::of(notes, pilot_notes),
                                 },
                             ));
                         }
@@ -26163,15 +26731,31 @@ pub(crate) fn intel_row(
                                 char_id,
                                 Some(name.to_string()),
                             );
+                            if let Some(n) = NoteTip::of(notes, pilot_notes) {
+                                note_tip_ui(ui, &n);
+                            }
                             ui.label(egui::RichText::new(hint).weak());
                         })
                     };
+                    if let Some(id) = char_id {
+                        let subject = crate::notes::Subject::Pilot { id, name: name.clone() };
+                        resp.context_menu(|ui| {
+                            if let Some(c) = notes_quick_menu(ui, notes, &folder_label, &subject) {
+                                clicked = Some(c);
+                            }
+                        });
+                    }
                     if resp.clicked() {
                         clicked = Some(if is_uncertain {
                             IntelClick::PilotVerdict(name.clone())
                         } else {
                             IntelClick::Pilot(name.clone())
                         });
+                    }
+                    if let Some(m) = pilot_notes {
+                        for t in notes.tags_of(m) {
+                            tag_chip(ui, t, compact);
+                        }
                     }
                 }
 
@@ -26333,6 +26917,7 @@ pub(crate) fn intel_row(
                                                             .as_ref()
                                                             .and_then(|i| i.char_name.clone()),
                                                         note: Some(title.to_string()),
+                                                        notes: None,
                                                     },
                                                 ));
                                             }
@@ -27019,12 +27604,172 @@ fn system_hover(
     systems: &Option<std::sync::Arc<crate::geo::Systems>>,
     status: &std::collections::HashMap<i64, crate::systemstatus::SysFlags>,
     s: &crate::intel::DetectedSystem,
+    ly: &CardLy,
+    notes: Option<&NoteTip>,
 ) {
     ui.horizontal(|ui| {
         ui.label(security_badge(s.security));
         ui.label(egui::RichText::new(&s.name).strong());
     });
     system_chips(ui, systems, status, s.id);
+    if let Some((staging, you)) = ly.of(s.id) {
+        if let Some(c) = staging {
+            ui.label(ly_line(c, &format!("staging {}", ly.staging)));
+        }
+        if let Some(c) = you {
+            ui.label(ly_line(c, &ly.you));
+        }
+    }
+    if let Some(n) = notes {
+        note_tip_ui(ui, n);
+    }
+}
+
+/// The note editor's working copy of one subject in one folder.
+pub(crate) struct NoteDraft {
+    pub(crate) subject: crate::notes::Subject,
+    /// Empty means the Default folder, which the first save creates.
+    pub(crate) folder: String,
+    pub(crate) note: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) new_tag: String,
+    pub(crate) new_color: [u8; 3],
+}
+
+impl NoteDraft {
+    /// Reads this folder's entry, so switching folders shows what is already saved there.
+    pub(crate) fn load(&mut self, book: &crate::notes::NoteBook) {
+        let e = book.find(&self.folder).and_then(|f| f.entries(self.subject.kind()).get(&self.subject.key()));
+        self.note = e.map(|e| e.note.clone()).unwrap_or_default();
+        self.tags = e.map(|e| e.tags.clone()).unwrap_or_default();
+    }
+}
+
+/// A subject's tags and notes, resolved so a compact tip can carry them into its own viewport.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NoteTip {
+    pub(crate) tags: Vec<crate::notes::Tag>,
+    /// (folder path, note), only folders that have a note.
+    pub(crate) notes: Vec<(String, String)>,
+}
+
+impl NoteTip {
+    pub(crate) fn of(view: &crate::notes::NotesView, m: Option<&crate::notes::Merged>) -> Option<Self> {
+        let m = m?;
+        Some(NoteTip {
+            tags: view.tags_of(m).cloned().collect(),
+            notes: m.parts.iter().filter(|p| !p.note.is_empty()).map(|p| (p.path.clone(), p.note.clone())).collect(),
+        })
+    }
+}
+
+pub(crate) fn note_tip_ui(ui: &mut egui::Ui, n: &NoteTip) {
+    if !n.tags.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for t in &n.tags {
+                tag_chip(ui, t, false);
+            }
+        });
+    }
+    for (path, note) in &n.notes {
+        ui.label(egui::RichText::new(format!("{}  {path}", egui_phosphor::regular::NOTE)).weak());
+        ui.add(egui::Label::new(note.as_str()).wrap());
+    }
+}
+
+/// One user tag as a chip, coloured by the tag. Hover only: the menu on the chip it follows is the
+/// way to change it.
+pub(crate) fn tag_chip(ui: &mut egui::Ui, t: &crate::notes::Tag, compact: bool) -> egui::Response {
+    let col = crate::notes::color32(t.color);
+    if compact {
+        return ui
+            .add(egui::Label::new(egui::RichText::new(egui_phosphor::regular::TAG).color(col)).sense(egui::Sense::hover()))
+            .on_hover_text(&t.name);
+    }
+    let fill = egui::Color32::from_rgba_unmultiplied(t.color[0], t.color[1], t.color[2], 40);
+    ui.add(
+        egui::Button::new(egui::RichText::new(&t.name).color(col).strong())
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0, col.gamma_multiply(0.6)))
+            .sense(egui::Sense::hover()),
+    )
+}
+
+/// The right-click menu on a system or pilot: tag toggles for the quick-edit folder and the full
+/// editor. Unticking only touches that folder, so the menu names the other folders that still set it.
+pub(crate) fn notes_quick_menu(
+    ui: &mut egui::Ui,
+    view: &crate::notes::NotesView,
+    folder_label: &str,
+    subject: &crate::notes::Subject,
+) -> Option<IntelClick> {
+    use egui_phosphor::regular as icon;
+    let mut out = notes_tag_toggles(ui, view, folder_label, subject);
+    ui.separator();
+    if ui.button(format!("{}  Edit note and tags…", icon::NOTE_PENCIL)).clicked() {
+        out = Some(IntelClick::Annotate(subject.clone()));
+        ui.close();
+    }
+    out
+}
+
+/// The tag checkboxes of [`notes_quick_menu`], alone, for menus that nest them.
+pub(crate) fn notes_tag_toggles(
+    ui: &mut egui::Ui,
+    view: &crate::notes::NotesView,
+    folder_label: &str,
+    subject: &crate::notes::Subject,
+) -> Option<IntelClick> {
+    use egui_phosphor::regular as icon;
+    let m = view.entry(subject);
+    let mine = m.and_then(|m| m.part_in(&view.target));
+    let mut out = None;
+    ui.label(egui::RichText::new(format!("{}  Tags in {folder_label}", icon::TAG)).strong());
+    // The alert window can be a couple of hundred pixels tall, and a popup is clipped to its window,
+    // so the list scrolls within whatever the window leaves after the header and the editor button.
+    let room = ui.ctx().content_rect().height() - 4.0 * ui.spacing().interact_size.y;
+    egui::ScrollArea::vertical().max_height(room.clamp(48.0, 360.0)).show(ui, |ui| {
+        for t in view.tags(subject.kind()) {
+            let mut on = mine.is_some_and(|p| p.tags.contains(&t.id));
+            let elsewhere: Vec<&str> = m
+                .map(|m| {
+                    m.parts
+                        .iter()
+                        .filter(|p| p.folder != view.target && p.tags.contains(&t.id))
+                        .map(|p| p.path.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut resp = ui.checkbox(&mut on, egui::RichText::new(&t.name).color(crate::notes::color32(t.color)));
+            if !elsewhere.is_empty() {
+                resp = resp.on_hover_text(format!("Also set in {}", elsewhere.join(", ")));
+                ui.label(egui::RichText::new(format!("also in {}", elsewhere.join(", "))).weak());
+            }
+            if resp.changed() {
+                out = Some(IntelClick::Notes(crate::notes::NotesOp::SetTag {
+                    folder: view.target.clone(),
+                    subject: subject.clone(),
+                    tag: t.id.clone(),
+                    on,
+                }));
+                ui.close();
+            }
+        }
+    });
+    out
+}
+
+/// The quick-edit folder's name for menus. Before anything is written there is no Default folder yet,
+/// and the first write makes it.
+pub(crate) fn notes_folder_label(view: &crate::notes::NotesView) -> String {
+    if view.target.is_empty() {
+        return crate::notes::DEFAULT_FOLDER.to_owned();
+    }
+    view.target_path.clone()
+}
+
+fn ly_line(centi: u32, from: &str) -> String {
+    format!("{}.{:02} ly from {from}", centi / 100, centi % 100)
 }
 
 fn non_empty_or(value: &str, fallback: &str) -> String {
@@ -28601,6 +29346,33 @@ mod char_rings_tests {
     }
 
     #[test]
+    fn card_carries_light_years_from_staging_and_you() {
+        let sys = fixtures::systems();
+        let r = fixtures::intel_typical();
+        let c = rings(&sys, &[("Amryu", K5, false)], &[], false, false)
+            .with_staging(Some(" 319-3d "))
+            .card_for(&r);
+        assert!(c.hops.is_empty(), "one character still draws the plain number");
+        assert_eq!(c.ly.staging, "319-3D");
+        assert_eq!(c.ly.you, "Amryu");
+        assert_eq!(c.ly.of(DQ), Some((Some(210), Some(533))));
+        assert_eq!(ly_line(533, "Amryu"), "5.33 ly from Amryu");
+        assert_eq!(ly_line(7, "x"), "0.07 ly from x");
+    }
+
+    #[test]
+    fn unknown_staging_keeps_only_your_distance() {
+        let sys = fixtures::systems();
+        let r = fixtures::intel_typical();
+        let c = rings(&sys, &[("Amryu", THREE, false)], &[], false, false)
+            .with_staging(Some("Nowhere"))
+            .card_for(&r);
+        assert_eq!(c.ly.of(DQ), Some((None, Some(210))));
+        let c = rings(&sys, &[], &[], false, false).with_staging(None).card_for(&r);
+        assert_eq!(c.ly, CardLy::default(), "no staging and no location, nothing to show");
+    }
+
+    #[test]
     fn one_character_leaves_the_card_alone() {
         let sys = fixtures::systems();
         let c = rings(&sys, &[("Amryu", K5, false)], &[], false, false).card(Some(DQ));
@@ -29632,5 +30404,111 @@ mod active_character_tests {
         assert_eq!(motd_one_line(""), "");
         assert_eq!(motd_one_line("\n\n   \n"), "");
         assert_eq!(motd_preview("   \n\n", 6), "");
+    }
+}
+
+#[cfg(test)]
+mod notes_behaviour_tests {
+    use super::{intel_query_matches, rule_matches};
+    use crate::notes::ANY_TAG;
+    use crate::settings::{AlertRule, Severity};
+    use crate::uitest::fixtures;
+
+    fn view() -> crate::notes::NotesView {
+        fixtures::notebook().view("")
+    }
+
+    fn rule(pilot_tags: &[&str], system_tags: &[&str]) -> AlertRule {
+        AlertRule {
+            min_severity: Severity::Info,
+            pilot_tags: pilot_tags.iter().map(|s| (*s).to_owned()).collect(),
+            system_tags: system_tags.iter().map(|s| (*s).to_owned()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn fires(ru: &AlertRule, r: &crate::intel::IntelReport, v: &crate::notes::NotesView) -> bool {
+        rule_matches(ru, r, Severity::Danger, None, &Some(fixtures::systems()), v)
+    }
+
+    #[test]
+    fn pilot_tag_condition_matches_by_name_before_resolution() {
+        let v = view();
+        let hunter = v.pilot_tags.iter().find(|t| t.name == "Hunter").unwrap().id.clone();
+        let r = fixtures::intel_typical();
+        assert!(fires(&rule(&[&hunter], &[]), &r, &v));
+        assert!(fires(&rule(&["d:pilot:cyno"], &[]), &r, &v));
+        assert!(fires(&rule(&[ANY_TAG], &[]), &r, &v));
+        assert!(!fires(&rule(&["d:pilot:titan"], &[]), &r, &v));
+        assert!(!fires(&rule(&["deleted-tag-id"], &[]), &r, &v), "a dangling id fails closed");
+    }
+
+    #[test]
+    fn system_and_pilot_tag_conditions_both_have_to_hold() {
+        let v = view();
+        let r = fixtures::intel_typical();
+        assert!(fires(&rule(&["d:pilot:cyno"], &["d:sys:staging"]), &r, &v));
+        assert!(!fires(&rule(&["d:pilot:cyno"], &["d:sys:mining"]), &r, &v));
+        let mut elsewhere = r.clone();
+        elsewhere.systems = vec![crate::intel::DetectedSystem { id: 30_000_142, name: "Jita".into(), security: 0.95 }];
+        assert!(!fires(&rule(&[], &[ANY_TAG]), &elsewhere, &v));
+    }
+
+    #[test]
+    fn empty_tag_lists_leave_a_rule_alone() {
+        let r = fixtures::intel_typical();
+        assert!(fires(&rule(&[], &[]), &r, &crate::notes::NotesView::default()));
+    }
+
+    #[test]
+    fn intel_search_finds_tags_and_notes() {
+        let v = view();
+        let r = fixtures::intel_typical();
+        assert!(intel_query_matches(&r, "hunter", &v));
+        assert!(intel_query_matches(&r, "keepstar", &v), "system note text");
+        assert!(intel_query_matches(&r, "cloaky", &v), "pilot note text");
+        assert!(intel_query_matches(&r, "delve.imp", &v), "the old channel match still works");
+        assert!(!intel_query_matches(&r, "hidden while", &v), "offline folders are not searched");
+    }
+
+    #[test]
+    fn a_rule_saved_before_tags_existed_still_parses() {
+        let mut json = serde_json::to_value(AlertRule::default()).unwrap();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("pilot_tags");
+        obj.remove("system_tags");
+        let back: AlertRule = serde_json::from_value(json).unwrap();
+        assert!(back.pilot_tags.is_empty() && back.system_tags.is_empty());
+    }
+
+    #[test]
+    fn an_alert_frame_without_notes_still_parses() {
+        let msg = crate::ipc::AlertMsg {
+            feed: Vec::new(),
+            from_you: Vec::new(),
+            via: Vec::new(),
+            chars: Vec::new(),
+            status: Default::default(),
+            resolved_pilots: Default::default(),
+            uncertain: Default::default(),
+            last_ship: Default::default(),
+            kills: Default::default(),
+            affil: Default::default(),
+            notes: view(),
+            secs: 1.0,
+            focus: false,
+        };
+        let mut json = serde_json::to_value(&msg).unwrap();
+        json.as_object_mut().unwrap().remove("notes");
+        let back: crate::ipc::AlertMsg = serde_json::from_value(json).unwrap();
+        assert!(back.notes.systems.is_empty());
+        let op = crate::ipc::OverlayToMain::Click(super::IntelClick::Notes(crate::notes::NotesOp::SetTag {
+            folder: String::new(),
+            subject: crate::notes::Subject::Pilot { id: 5, name: "Bob".into() },
+            tag: "d:pilot:cyno".into(),
+            on: true,
+        }));
+        let text = serde_json::to_string(&op).unwrap();
+        assert!(serde_json::from_str::<crate::ipc::OverlayToMain>(&text).is_ok());
     }
 }

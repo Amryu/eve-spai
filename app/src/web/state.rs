@@ -14,9 +14,10 @@ pub enum Pane {
     Status = 5,
     Jabber = 6,
     Rescue = 7,
+    Notes = 8,
 }
 
-const PANES: usize = 8;
+const PANES: usize = 9;
 
 pub struct WebState {
     pub gen: u64,
@@ -29,6 +30,7 @@ pub struct WebState {
     status: Option<StatusPane>,
     jabber: Option<crate::web::jabber::JabberPane>,
     rescue: Option<crate::web::rescue::RescuePane>,
+    notes: Option<NotesPane>,
     hashes: [Option<u64>; PANES],
     full: Option<Arc<str>>,
 }
@@ -46,6 +48,7 @@ impl Default for WebState {
             status: None,
             jabber: None,
             rescue: None,
+            notes: None,
             hashes: [None; PANES],
             full: None,
         }
@@ -134,6 +137,9 @@ impl WebState {
     pub fn put_rescue(&mut self, p: crate::web::rescue::RescuePane) {
         self.rescue = Some(p);
     }
+    pub fn put_notes(&mut self, p: NotesPane) {
+        self.notes = Some(p);
+    }
 
     /// Every pane that changed after `since`. `since == 0` is a client that has nothing, so it gets
     /// everything.
@@ -150,6 +156,7 @@ impl WebState {
             status: self.status.as_ref().filter(|p| keep(p.rev)).cloned(),
             jabber: self.jabber.as_ref().filter(|p| keep(p.rev)).cloned(),
             rescue: self.rescue.as_ref().filter(|p| keep(p.rev)).cloned(),
+            notes: self.notes.as_ref().filter(|p| keep(p.rev)).cloned(),
         }
     }
 

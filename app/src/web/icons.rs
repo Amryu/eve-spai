@@ -64,6 +64,23 @@ pub const ICONS: &[(&str, &str)] = &[
     ("gear", icon::GEAR),
     ("cell-tower", icon::CELL_TOWER),
     ("crosshair-simple", icon::CROSSHAIR_SIMPLE),
+    // Notes, tags and their folders.
+    ("tag", icon::TAG),
+    ("note", icon::NOTE),
+    ("note-pencil", icon::NOTE_PENCIL),
+    ("pencil-simple", icon::PENCIL_SIMPLE),
+    ("trash", icon::TRASH),
+    ("folder", icon::FOLDER),
+    ("folder-open", icon::FOLDER_OPEN),
+    ("folder-plus", icon::FOLDER_PLUS),
+    ("download-simple", icon::DOWNLOAD_SIMPLE),
+    ("upload-simple", icon::UPLOAD_SIMPLE),
+    ("arrow-bend-up-right", icon::ARROW_BEND_UP_RIGHT),
+    ("globe", icon::GLOBE),
+    ("globe-x", icon::GLOBE_X),
+    ("target", icon::TARGET),
+    ("check-square", icon::CHECK_SQUARE),
+    ("square", icon::SQUARE),
 ];
 
 pub fn json() -> String {

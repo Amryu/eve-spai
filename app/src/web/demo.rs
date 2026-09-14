@@ -73,6 +73,18 @@ pub fn seed(web: &SharedWeb, tick: u64) {
     if let Some(rev) = st.changed(Pane::Status, hash_of(&sys)) {
         st.put_status(super::snapshot::StatusPane { rev, systems: sys });
     }
+    let book = notebook();
+    let view = book.view("");
+    if let Some(rev) = st.changed(Pane::Notes, hash_of(&(&view, &*book))) {
+        st.put_notes(NotesPane { rev, view, book: (*book).clone() });
+    }
+}
+
+/// Built once: every folder and tag gets a fresh uuid, so a rebuilt book would republish each tick
+/// and pull the ids out from under an open editor.
+fn notebook() -> std::sync::Arc<crate::notes::NoteBook> {
+    static BOOK: std::sync::OnceLock<std::sync::Arc<crate::notes::NoteBook>> = std::sync::OnceLock::new();
+    BOOK.get_or_init(|| std::sync::Arc::new(crate::uitest::fixtures::notebook())).clone()
 }
 
 /// Grows by one report per tick, then wraps. A static page proves the layout and nothing else: a
@@ -104,7 +116,8 @@ fn cards(reports: &[crate::intel::IntelReport]) -> Vec<IntelCard> {
         &[],
         false,
         false,
-    );
+    )
+    .with_staging(Some("319-3D"));
     let severity = crate::settings::SeverityRules::default();
     let mut cards: Vec<IntelCard> = reports
         .iter()
@@ -115,7 +128,7 @@ fn cards(reports: &[crate::intel::IntelReport]) -> Vec<IntelCard> {
                 severity: crate::app::severity_of(r, &severity),
                 from_you,
                 via: crate::app::jump_via(&systems, Some(HOME), target, false, from_you),
-                chars: rings.card(target),
+                chars: rings.card_for(r),
                 report: r.clone(),
             }
         })
@@ -145,6 +158,7 @@ fn alerts(cards: &[IntelCard]) -> crate::ipc::AlertMsg {
         last_ship: Default::default(),
         kills: Default::default(),
         affil: Default::default(),
+        notes: Default::default(),
         secs: 0.0,
         focus: false,
     }
@@ -368,6 +382,7 @@ pub fn detail() -> super::Detail {
         upgrade: "Metenox Moon Drill".to_owned(),
     }];
     st.bookmarks = vec![HOME];
+    st.notes = notebook();
     drop(st);
     d
 }

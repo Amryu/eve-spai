@@ -1,7 +1,7 @@
 // The alerts pane: the cards a rule fired on, newest first, each carrying the severity that fired it.
 // The card body is the intel card, so an alert and its feed entry cannot look like different events.
 
-import { state, register } from "./app.js";
+import { ico, state, register } from "./app.js";
 import { card } from "./panes-intel.js";
 
 /// Rows this device has already seen. Per device on purpose: two people watching the same app should
@@ -31,8 +31,10 @@ const renderAlerts = (el, snap) => {
   const now = Math.floor(Date.now() / 1000);
   const compact = !!snap?.meta?.compact;
 
+  const tools =
+    `<div class="toolbar"><button class="tf" data-notes-manage="pilot">${ico("tag")} Pilot tags</button></div>`;
   if (!feed.length) {
-    el.innerHTML = `<h2>Alerts</h2><p class="placeholder">Nothing has fired.</p>`;
+    el.innerHTML = `<h2>Alerts</h2>${tools}<p class="placeholder">Nothing has fired.</p>`;
     return;
   }
 
@@ -62,7 +64,7 @@ const renderAlerts = (el, snap) => {
     })
     .join("");
 
-  el.innerHTML = `<h2>Alerts</h2><div class="feed${compact ? " compact" : ""}">${rows}</div>`;
+  el.innerHTML = `<h2>Alerts</h2>${tools}<div class="feed${compact ? " compact" : ""}">${rows}</div>`;
   markSeen(ids);
 };
 

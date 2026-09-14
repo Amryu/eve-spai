@@ -65,6 +65,10 @@ pub enum OverlayToMain {
     AlertMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
     PingMoved { pos: Option<(f32, f32)>, size: Option<(f32, f32)> },
     CompactToggle(bool),
+    /// Any edit to notes, tags or their folders. One path for the app, the overlay and the page.
+    Notes(crate::notes::NotesOp),
+    /// Where quick note and tag edits go from now on.
+    NotesTarget { folder: String },
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]
@@ -94,6 +98,9 @@ pub struct AlertMsg {
     pub last_ship: std::collections::HashMap<String, (i64, String, i64)>,
     pub kills: std::collections::HashMap<i64, crate::kills::KillInfo>,
     pub affil: std::collections::HashMap<i64, crate::affiliation::Affil>,
+    /// Notes and tags for this feed's systems and pilots only. Defaulted so older frames still parse.
+    #[serde(default)]
+    pub notes: crate::notes::NotesView,
     pub secs: f32,
     pub focus: bool,
 }
@@ -388,6 +395,7 @@ mod tests {
             last_ship: std::collections::HashMap::new(),
             kills: std::collections::HashMap::new(),
             affil: std::collections::HashMap::new(),
+            notes: Default::default(),
             secs: 10.0,
             focus: true,
         });
@@ -421,6 +429,7 @@ mod tests {
             last_ship: Default::default(),
             kills: Default::default(),
             affil: Default::default(),
+            notes: Default::default(),
             secs: 5.0,
             focus: false,
         }
@@ -488,6 +497,7 @@ mod tests {
             crate::app::CardChars {
                 hops: vec![hop("Scout", 90_000_002, Some(1)), hop("Amryu", 90_000_001, Some(4))],
                 selected: Some(1),
+                ..Default::default()
             },
             crate::app::CardChars::default(),
         ]

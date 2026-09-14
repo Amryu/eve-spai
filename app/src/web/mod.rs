@@ -36,6 +36,13 @@ pub struct DetailState {
     pub store: Option<crate::store::Store>,
     pub status: HashMap<i64, crate::systemstatus::SysFlags>,
     pub player_sys: Option<i64>,
+    pub active_character: String,
+    pub staging: Option<String>,
+    /// The folder tree, for exports.
+    pub notes: Arc<crate::notes::NoteBook>,
+    /// Wakes the UI when the page posts an action. Otherwise an idle app window drains the inbox only
+    /// on its next repaint, which made every edit from the page feel stuck.
+    pub wake: Option<egui::Context>,
     pub count_bridges: bool,
     /// Type names the app has resolved, shared so the ship dialog can name the skill a hull bonus
     /// belongs to. Shared rather than copied because the request thread fills it in on a miss.
@@ -52,7 +59,6 @@ pub struct DetailState {
     /// Saved routes, already pruned of expired wormhole ones.
     pub saved_routes: Vec<crate::settings::SavedMapRoute>,
     /// Every system's real coordinates, for the light-year maths the jump routes are made of.
-    /// `geo::Systems` is topology only; the positions live in `store::MapSystem`.
     pub coords: Option<Arc<Vec<crate::store::MapSystem>>>,
     /// Scanned wormholes, sov upgrades and bookmarks, for the system dialog. Copied: each is a
     /// handful of entries the user maintains by hand, and the request thread must not hold a lock

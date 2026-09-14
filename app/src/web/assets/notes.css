@@ -1,0 +1,185 @@
+/* Notes and tags. A tag is its own colour on a tint of itself, so one reads the same on a card, in a
+   dialog and on the map marker. */
+.ntag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+  color: var(--c);
+  background: color-mix(in srgb, var(--c) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent);
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  font-weight: 600;
+}
+.card .ntag { min-height: var(--row); }
+.card .nnote { display: inline-flex; align-items: center; min-height: var(--row); color: var(--muted); }
+.ntags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.4rem; }
+.nempty { color: var(--muted); margin: 0; list-style: none; }
+
+/* The dialog card. */
+.snotes h4 { display: flex; align-items: center; gap: 0.35rem; }
+.nedit {
+  margin-left: auto;
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--accent);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+.npart { margin: 0.3rem 0 0; }
+.npart p { margin: 0.15rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.npath { color: var(--muted); }
+.npart.ro { border-left: 2px solid var(--line); padding-left: 0.5rem; }
+
+/* The editor and the small prompts. */
+.noteeditor .mpanel,
+.nask .mpanel { width: min(32rem, calc(100vw - 2rem)); }
+.nfield { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.4rem; color: var(--muted); }
+.nfield select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.3rem;
+}
+.nta { resize: vertical; min-height: 5rem; font-family: inherit; }
+.ntogs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.5rem; max-height: 14rem; overflow-y: auto; }
+.ntog {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--c, var(--fg));
+  background: var(--surface-hi);
+  border: 1px solid color-mix(in srgb, var(--c, var(--line)) 40%, transparent);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+.ntog.on { color: var(--c); border-color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); }
+.nnew { display: flex; align-items: center; gap: 0.4rem; margin: 0.4rem 0; }
+.nnew .jq { margin: 0; flex: 1 1 auto; min-width: 0; }
+.nnew input[type="color"],
+.ntagrow input[type="color"] {
+  width: 2.2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+.nnew button,
+.nacts button,
+.nrowacts button,
+.nask .rsave button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nacts button.warn,
+.nrowacts button.warn { color: var(--hostile); }
+.nerr { color: var(--hostile); margin: 0.3rem 0; }
+.nask p { overflow-wrap: anywhere; }
+.npick button { display: flex; align-items: center; gap: 0.35rem; padding-left: calc(var(--d, 0) * 1rem); }
+
+/* The quick menu can list every tag there is, so it scrolls rather than running off the screen. */
+.ctxmenu { max-height: calc(100vh - 8px); overflow-y: auto; }
+.ctxmenu .nhead { color: var(--muted); }
+.ctxmenu .ndot {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--c);
+  margin: 0 0.35rem 0 0.2rem;
+  vertical-align: -0.05rem;
+}
+.ctxmenu .nelse { font-style: normal; color: var(--muted); }
+
+/* The manager: the folder tree beside what the chosen folder holds, stacked on a phone. */
+.notesdlg .nmgr { width: min(58rem, calc(100vw - 2rem)); max-height: min(88vh, 52rem); }
+.ntabs { display: flex; gap: 0.3rem; margin: 0 0 0.6rem; }
+.ntabs button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.3rem 0.8rem;
+  cursor: pointer;
+}
+.ntabs button.on { border-color: var(--accent); background: var(--surface-active); }
+.nmain { display: grid; grid-template-columns: minmax(12rem, 16rem) 1fr; gap: 0.8rem; align-items: start; }
+.ntree { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.ntree .nacts { margin-bottom: 0.4rem; }
+.nfold {
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem 0.3rem calc(0.4rem + var(--d, 0) * 1rem);
+  cursor: pointer;
+  min-width: 0;
+}
+.nfold span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nfold:hover { background: var(--surface-hi); }
+.nfold.on { background: var(--surface-active); }
+.nfold.off { color: var(--muted); }
+.nfold i { font-style: normal; color: var(--accent); }
+.nfold em,
+.npathhead em { font-style: normal; color: var(--warning); margin-left: auto; }
+.nside { min-width: 0; }
+.npathhead { display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.4rem; font-weight: 600; overflow-wrap: anywhere; }
+.nacts { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.6rem; }
+.ntaglist { list-style: none; margin: 0 0 0.3rem; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.ntagrow { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.ntagrow em { font-style: normal; color: var(--muted); }
+.nrowacts { display: flex; gap: 0.3rem; margin-left: auto; flex-wrap: wrap; }
+.nbuiltin summary { color: var(--muted); cursor: pointer; margin: 0.3rem 0; }
+.nentry { border-top: 1px solid var(--line); padding: 0.4rem 0; }
+.nerow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.nlink {
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--surface-hi);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+.nnotetext {
+  margin: 0.25rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.nentry .nrowacts { margin: 0.2rem 0 0; }
+
+@media (max-width: 700px) {
+  .nmain { grid-template-columns: 1fr; }
+  .notesdlg { padding: 0.5rem; }
+  .nfold, .nacts button, .nrowacts button, .ntog { min-height: 2.4rem; }
+}

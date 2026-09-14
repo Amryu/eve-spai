@@ -134,11 +134,18 @@ function merge(update) {
     return null; // a new generation invalidates everything
   }
   const dirty = new Set();
-  for (const pane of ["intel", "alerts", "pings", "map", "jabber", "rescue", "meta"]) {
+  for (const pane of ["intel", "alerts", "pings", "map", "status", "jabber", "rescue", "notes", "meta"]) {
     if (update[pane] !== undefined) {
       s[pane] = update[pane];
       dirty.add(pane);
     }
+  }
+  // Status and notes have no pane of their own; they are drawn on the cards and the map.
+  if (dirty.has("status")) dirty.add("map");
+  if (dirty.has("notes")) {
+    dirty.add("intel");
+    dirty.add("alerts");
+    dirty.add("map");
   }
   s.seq = update.seq;
   state.snapshot = s;

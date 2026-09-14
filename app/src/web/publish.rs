@@ -39,13 +39,28 @@ pub struct Deps {
 }
 
 pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'static) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(TICK);
-        let facts = deps.facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if !should_publish(&facts) {
-            continue;
+    std::thread::spawn(move || {
+        let mut last_notes = 0usize;
+        loop {
+            // A notes edit publishes on the next slice rather than waiting out the tick: the page
+            // made that change and is watching for it.
+            const SLICE: std::time::Duration = std::time::Duration::from_millis(40);
+            let mut waited = std::time::Duration::ZERO;
+            while waited < TICK {
+                std::thread::sleep(SLICE);
+                waited += SLICE;
+                let notes = Arc::as_ptr(&deps.facts.lock().unwrap_or_else(|e| e.into_inner()).notes_view) as usize;
+                if notes != last_notes {
+                    break;
+                }
+            }
+            let facts = deps.facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            last_notes = Arc::as_ptr(&facts.notes_view) as usize;
+            if !should_publish(&facts) {
+                continue;
+            }
+            tick(&deps, &facts, &alerts());
         }
-        tick(&deps, &facts, &alerts());
     });
 }
 
@@ -96,7 +111,8 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         &facts.disabled,
         facts.only_undocked,
         facts.count_bridges,
-    );
+    )
+    .with_staging(facts.staging.as_deref());
     let mut cards: Vec<IntelCard> = reports
         .iter()
         .map(|r| {
@@ -113,7 +129,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
                     facts.count_bridges,
                     from_you,
                 ),
-                chars: rings.card(target),
+                chars: rings.card_for(r),
                 report: r.clone(),
             }
         })
@@ -160,6 +176,8 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         // carrying it here was a second megabyte of the same data.
         let mut msg = alerts.clone();
         msg.status = Default::default();
+        // Same for notes: the overlay's subset would be a stale second copy of the notes pane.
+        msg.notes = Default::default();
         st.put_alerts(AlertPane { rev, msg });
     }
     if let Some(rev) = st.changed(Pane::Pings, hash_of(&(&ping_cards, &formup_names))) {
@@ -175,6 +193,13 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         if let Some(side) = facts.rescue.clone() {
             st.put_rescue(crate::web::rescue::RescuePane { rev, side });
         }
+    }
+    if let Some(rev) = st.changed(Pane::Notes, hash_of(&(&*facts.notes_view, &*facts.notes))) {
+        st.put_notes(NotesPane {
+            rev,
+            view: (*facts.notes_view).clone(),
+            book: (*facts.notes).clone(),
+        });
     }
     if let Some(rev) = st.changed(Pane::Jabber, hash_of(&facts.jabber)) {
         st.put_jabber(crate::web::jabber::JabberPane { rev, side: facts.jabber.clone() });
@@ -376,6 +401,7 @@ mod tests {
             last_ship: Default::default(),
             kills: Default::default(),
             affil: Default::default(),
+            notes: Default::default(),
             secs: 0.0,
             focus: false,
         }
@@ -508,15 +534,15 @@ mod tests {
         }
         let mut alerts = empty_alerts();
         alerts.status.insert(HOME, crate::systemstatus::SysFlags::default());
+        alerts.notes = fixtures::notebook().view("").subset([], [2_112_000_001]);
         tick(&d, &facts(), &alerts);
 
         let st = d.web.lock().unwrap();
         let snap = st.snapshot_since(0);
         assert_eq!(snap.status.expect("status pane").systems[&HOME].n, 7);
-        assert!(
-            snap.alerts.expect("alert pane").msg.status.is_empty(),
-            "the alert pane must not carry a second copy"
-        );
+        let alerts = snap.alerts.expect("alert pane");
+        assert!(alerts.msg.status.is_empty(), "the alert pane must not carry a second copy");
+        assert!(alerts.msg.notes.pilots.is_empty(), "nor a second copy of the notes");
     }
 
     /// The jabber state keeps every ping it has ever seen. A live profile had 1163 of them, 738 KB
@@ -654,6 +680,31 @@ mod tests {
             first,
             "ten idle ticks published something; the panes are not comparing equal"
         );
+    }
+
+    #[test]
+    fn a_notes_edit_moves_only_the_notes_pane() {
+        let d = deps(vec![fixtures::intel_typical()]);
+        let mut f = facts();
+        tick(&d, &f, &empty_alerts());
+        let seq = d.web.lock().unwrap().seq;
+        assert!(d.web.lock().unwrap().snapshot_since(0).notes.is_some(), "an empty book is still published");
+
+        let book = fixtures::notebook();
+        f.notes_view = Arc::new(book.view(""));
+        f.notes = Arc::new(book);
+        tick(&d, &f, &empty_alerts());
+        let st = d.web.lock().unwrap();
+        let snap = st.snapshot_since(seq);
+        let pane = snap.notes.expect("the notes pane changed");
+        assert!(!pane.view.pilots.is_empty());
+        assert!(!pane.book.folders.is_empty());
+        assert!(snap.intel.is_none() && snap.map.is_none() && snap.meta.is_none());
+        drop(st);
+
+        let seq = d.web.lock().unwrap().seq;
+        tick(&d, &f, &empty_alerts());
+        assert_eq!(d.web.lock().unwrap().seq, seq, "the same book hashes the same");
     }
 
     #[test]

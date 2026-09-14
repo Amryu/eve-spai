@@ -28,6 +28,7 @@ pub struct Systems {
     adjacency: HashMap<i64, Vec<i64>>,
     gate_adjacency: HashMap<i64, Vec<i64>>,
     stargates: HashMap<i64, Vec<[f64; 3]>>,
+    positions: HashMap<i64, [f64; 3]>,
 }
 
 impl Systems {
@@ -40,7 +41,18 @@ impl Systems {
             adjacency,
             gate_adjacency,
             stargates: HashMap::new(),
+            positions: HashMap::new(),
         }
+    }
+
+    pub fn set_positions(&mut self, positions: HashMap<i64, [f64; 3]>) {
+        self.positions = positions;
+    }
+
+    pub fn ly_between(&self, a: i64, b: i64) -> Option<f64> {
+        let (p, q) = (self.positions.get(&a)?, self.positions.get(&b)?);
+        let d2 = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2);
+        Some(d2.sqrt() / crate::map::LY_METERS)
     }
 
     pub fn set_stargates(&mut self, stargates: HashMap<i64, Vec<[f64; 3]>>) {

@@ -490,6 +490,9 @@ pub(crate) fn apply_alert(st: &mut crate::app::AlertWindowState, m: crate::ipc::
     st.resolved_pilots = m.resolved_pilots;
     st.uncertain = m.uncertain;
     st.last_ship = m.last_ship;
+    let mut notes = m.notes;
+    notes.reindex();
+    st.notes = std::sync::Arc::new(notes);
     // Countdown directive: reset to a finite value, reset to ∞, or (the negative refresh
     // sentinel) leave the overlay's own countdown running.
     if m.secs >= 0.0 {
@@ -523,6 +526,7 @@ mod push_tests {
                 via: JumpVia::Gates,
             }],
             selected: Some(0),
+            ..Default::default()
         }
     }
 

@@ -42,6 +42,7 @@ mod map;
 mod pickers;
 mod pilot;
 mod nav;
+mod notes;
 mod overlay;
 mod packs;
 mod pings;

@@ -137,8 +137,10 @@
 .jumpcfg input { width: 3rem; }
 .jumpcfg label { color: var(--muted); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; }
 .jumpmax { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
-.rhop { flex-wrap: wrap; }
-.rcost { flex: 1 1 100%; color: var(--muted); font-size: 0.78rem; padding-left: 0.3rem; }
+/* The info wraps inside its own box so the action button keeps the far right of the row's last line,
+   instead of wrapping onto a line of its own wherever the costs or the warning run long. */
+.rmain { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.rcost { flex: 1 1 auto; color: var(--muted); font-size: 0.78rem; padding-left: 0.3rem; }
 
 .rwarn {
   flex: 1 1 100%;
@@ -185,6 +187,16 @@ button.rwarn {
 }
 button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .jumpcfg.tflag { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
+/* The route checkboxes share rows instead of taking one each: three stacked cost the hop list most
+   of a bottom dock. */
+.rflags { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.9rem; row-gap: 0.15rem; margin-bottom: 0.5rem; }
+.rflags:empty { display: none; }
+.rflags > .jumpcfg { margin-bottom: 0; }
+.rflags > div.jumpcfg { flex: 1 1 100%; }
+.jumpcfg.tflag input { width: auto; margin: 0; }
+.fshort { display: none; }
+.pane:not(.dockright) .rdock .flong { display: none; }
+.pane:not(.dockright) .rdock .fshort { display: inline; }
 .intelmodal .mpanel { min-width: min(30rem, 92vw); max-height: 70vh; overflow-y: auto; }
 .intelmodal .feed { display: flex; flex-direction: column; gap: 0.35rem; }
 
@@ -209,7 +221,8 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
   border-radius: 3px;
   padding: 0.1rem 0.3rem;
   cursor: pointer;
-  order: 0;
+  flex: 0 0 auto;
+  align-self: flex-end;
   margin-left: auto;
 }
 .ract:hover { color: var(--fg); background: var(--surface-hi); }
@@ -286,6 +299,9 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 /* The panel is the box; the hop list is what scrolls inside it. With the panel scrolling instead,
    the list stopped at its own content height and left the bottom of the dock empty. */
 .dpane .mpanel { overflow: hidden; }
+/* Only the route has an inner list to scroll. Every other docked window scrolls the panel, or a tall
+   one is cut off at the bottom of the dock. */
+.dpane:not([data-kind="route"]) .mpanel { overflow-y: auto; overscroll-behavior: contain; }
 .dpane .rhops { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .rdock .mresists { font-size: 0.82rem; }
 
@@ -299,10 +315,7 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 /* A baseline width for the system badge, so a column of null-sec names lines up instead of jittering
    with the character widths. Names longer than this still grow; most do not. */
 .rhop .chip { min-width: 5.4rem; justify-content: center; }
-/* The avoid button belongs on the name's line. The costs and the warning take a full row each, so
-   without this they pushed it onto a line of its own. */
-/* The costs take their own row; the warning shares the name's, truncated, so a hop is one line. */
-.rcost { order: 1; }
+/* The warning shares the row, truncated, so a hop stays one line where the width allows. */
 .rwarn {
   order: 0;
   flex: 1 1 auto;
@@ -369,6 +382,10 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .sloc { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); margin: 0 0 0.5rem; }
 .sloc span { opacity: 0.6; }
 .sfrom { margin-left: auto; opacity: 1; font-variant-numeric: tabular-nums; }
+.sly {
+  display: flex; flex-wrap: wrap; gap: 0.15rem 1rem;
+  color: var(--muted); margin: -0.25rem 0 0.5rem; font-variant-numeric: tabular-nums;
+}
 
 .schips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.6rem; }
 .schip {
@@ -403,7 +420,18 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
   text-transform: uppercase;
   color: var(--muted);
 }
-.shint { margin: 0.4rem 0 0; font-size: 0.78rem; color: var(--muted); }
+.scard h4:has(.shint) { display: flex; align-items: baseline; gap: 0.6rem; }
+.shint {
+  margin-left: auto;
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 
 /* Four counters read at a glance, which is what they are for. */
 .sstats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; }

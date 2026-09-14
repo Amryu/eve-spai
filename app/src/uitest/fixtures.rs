@@ -41,7 +41,7 @@ fn build_systems() -> Systems {
         (30_000_142, "Jita", 0.95, "The Forge"),
     ] {
         by_name.insert(
-            name.to_owned(),
+            name.to_lowercase(),
             SystemInfo {
                 id,
                 name: name.to_owned(),
@@ -57,7 +57,82 @@ fn build_systems() -> Systems {
         (30_004_608, vec![30_004_759, 30_003_704]),
         (30_003_704, vec![30_004_608]),
     ]);
-    Systems::new(by_name, adjacency)
+    let mut s = Systems::new(by_name, adjacency);
+    let ly = crate::map::LY_METERS;
+    s.set_positions(HashMap::from([
+        (30_004_759, [0.0, 0.0, 0.0]),
+        (30_004_608, [2.1 * ly, 0.0, 0.0]),
+        (30_003_704, [3.0 * ly, 0.0, 4.4 * ly]),
+        (30_000_142, [-30.0 * ly, 1.5 * ly, 22.0 * ly]),
+    ]));
+    s
+}
+
+/// Two top-level folders, one offline, with a user tag, default tags, notes on the systems in
+/// [`intel_typical`] and on pilots from [`resolved_pilots`]. Fake names only.
+pub(crate) fn notebook() -> crate::notes::NoteBook {
+    use crate::notes::{NoteBook, NoteKind, NotesOp, Subject};
+    let mut b = NoteBook::default();
+    let name = |id: i64| systems().info_of(id).map(|i| i.name.clone());
+    let mut ok = |b: &mut NoteBook, op| b.apply(op, now() - 3600, &name).expect("fixture op");
+    let mine = ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Default".into() }).folder.unwrap();
+    let intel = ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Coalition intel".into() }).folder.unwrap();
+    let delve = ok(&mut b, NotesOp::CreateFolder { parent: Some(intel.clone()), name: "Delve".into() }).folder.unwrap();
+    let old = ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Old war".into() }).folder.unwrap();
+    let hunter = ok(&mut b, NotesOp::PutTag { folder: intel.clone(), id: None, kind: NoteKind::Pilot, name: "Hunter".into(), color: [0xEF, 0x44, 0x44] }).tag.unwrap();
+    let hotdrop = ok(&mut b, NotesOp::PutTag { folder: intel.clone(), id: None, kind: NoteKind::System, name: "Hotdrop risk".into(), color: [0xAB, 0x47, 0xBC] }).tag.unwrap();
+    let pilot = |name: &str| Subject::Pilot { id: resolved_pilots()[name], name: name.to_owned() };
+    ok(&mut b, NotesOp::SetEntry { folder: delve.clone(), subject: pilot("Hostile Pilot"), note: "Cloaky camper, lights cynos after downtime.".into(), tags: vec![hunter, "d:pilot:cyno".into()] });
+    ok(&mut b, NotesOp::SetEntry { folder: mine.clone(), subject: pilot("Second Target"), note: String::new(), tags: vec!["d:pilot:ratter".into()] });
+    ok(&mut b, NotesOp::SetEntry { folder: mine, subject: Subject::System(30_004_759), note: "Home staging, keepstar on the sun.".into(), tags: vec!["d:sys:staging".into(), "d:sys:super-docking".into()] });
+    ok(&mut b, NotesOp::SetEntry { folder: delve.clone(), subject: Subject::System(30_004_759), note: String::new(), tags: vec![hotdrop] });
+    ok(&mut b, NotesOp::SetEntry { folder: old.clone(), subject: Subject::System(30_003_704), note: "Hidden while the folder is offline.".into(), tags: vec![] });
+    ok(&mut b, NotesOp::CreateFolder { parent: Some(old.clone()), name: "Archive".into() });
+    let sub = ok(&mut b, NotesOp::CreateFolder { parent: Some(delve.clone()), name: "Staging area".into() }).folder.unwrap();
+    ok(&mut b, NotesOp::CreateFolder { parent: Some(sub), name: "Hot systems".into() });
+    ok(&mut b, NotesOp::SetOnline { id: old, on: false });
+    b
+}
+
+/// A looked-up hostile with a full profile, a long corporation history and zKillboard stats.
+pub(crate) fn pilot_report() -> crate::lookup::PilotReport {
+    use crate::lookup::{Employment, Profile};
+    let day = 86_400;
+    let corps = ["Fake Industries", "Placeholder Holdings", "Test Alliance Recruits", "Imaginary Fleet", "Sample Corp"];
+    let history = (0..11)
+        .map(|i| Employment {
+            corp_id: 98_000_000 + i,
+            corp_name: corps[i as usize % corps.len()].to_owned(),
+            start: now() - (i + 1) * 170 * day,
+        })
+        .collect();
+    crate::lookup::PilotReport {
+        name: "Hostile Pilot".into(),
+        character_id: resolved_pilots()["Hostile Pilot"],
+        losses: Vec::new(),
+        kills: Vec::new(),
+        solo: Vec::new(),
+        loading: false,
+        profile: Some(Profile {
+            birthday: Some(now() - 4020 * day),
+            security: Some(-3.4),
+            corp_id: Some(98_000_000),
+            corp_name: "Fake Industries".into(),
+            alliance_id: Some(99_000_001),
+            alliance_name: "Example Coalition Member".into(),
+            history,
+        }),
+        stats: Some(crate::charlookup::ZkStats {
+            ships_destroyed: 1843,
+            ships_lost: 212,
+            isk_destroyed: 412.5e9,
+            isk_lost: 38.2e9,
+            danger_ratio: 88,
+            gang_ratio: 71,
+            top_ships: vec![(12_005, "Muninn".into(), 400), (29_990, "Loki".into(), 120)],
+            top_systems: vec![("1DQ1-A".into(), 55), ("319-3D".into(), 31)],
+        }),
+    }
 }
 
 fn ship(id: i64, name: &str) -> DetectedShip {
@@ -273,6 +348,8 @@ pub(crate) struct IntelArgs {
     pub(crate) affil: crate::affiliation::SharedAffil,
     /// Empty is the single-character card, which is every scene that does not say otherwise.
     pub(crate) chars: crate::app::CardChars,
+    /// Empty unless a scene is about notes.
+    pub(crate) notes: crate::notes::NotesView,
 }
 
 impl Default for IntelArgs {
@@ -287,6 +364,7 @@ impl Default for IntelArgs {
             last_ship: HashMap::new(),
             kills: kills(),
             affil: affil(),
+            notes: Default::default(),
             chars: crate::app::CardChars::default(),
         }
     }
@@ -310,6 +388,7 @@ pub(crate) fn card_chars_two() -> crate::app::CardChars {
             hop("Amryu", CHAR_AMRYU, Some(4), crate::app::JumpVia::Gates),
         ],
         selected: Some(1),
+        ..Default::default()
     }
 }
 
@@ -322,6 +401,7 @@ pub(crate) fn card_chars_nearest_is_selected() -> crate::app::CardChars {
             hop("Scout Alt", CHAR_SCOUT, Some(6), crate::app::JumpVia::Gates),
         ],
         selected: Some(0),
+        ..Default::default()
     }
 }
 
@@ -334,6 +414,7 @@ pub(crate) fn card_chars_bridged() -> crate::app::CardChars {
             hop("Amryu", CHAR_AMRYU, Some(3), crate::app::JumpVia::Gates),
         ],
         selected: Some(1),
+        ..Default::default()
     }
 }
 

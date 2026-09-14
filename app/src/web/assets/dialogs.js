@@ -5,6 +5,7 @@
 import { ico, state } from "./app.js";
 import { menu } from "./route.js";
 import { card, fmtAge } from "./panes-intel.js";
+import { section as notesSection } from "./notes.js";
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -148,6 +149,8 @@ function dragify(node) {
     // Anything interactive keeps the pointer: a drop-down or a number field is dragged sideways to
     // use it, and the window was following the pointer instead of the control.
     if (e.target.closest("button, a, input, select, textarea, label, option")) return;
+    // Docked, the layout places it, and capturing the pointer fought the panel's own touch scroll.
+    if (node.classList.contains("dpane")) return;
     const r = node.getBoundingClientRect();
     from = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
     node.setPointerCapture(e.pointerId);
@@ -321,7 +324,7 @@ async function showSystem(id) {
       s.rats.weak.map((t) => `<b style="color:${DMG_COL(t)}">${esc(t)}</b>`).join(" · ") +
       `</span></div>` +
       (s.rats.ewar ? `<div class="srat"><span>EWAR</span><span>${esc(s.rats.ewar)}</span></div>` : "") +
-      `<p class="shint">Tank what they deal; bring what they are weak to.</p></section>`
+      `</section>`
     : "";
 
   const holes = s.holes.length
@@ -376,6 +379,14 @@ async function showSystem(id) {
       ? "you are here"
       : `${s.jumps_from_you} jumps`;
 
+  const lyFrom = [
+    s.ly_from_staging && [`staging ${s.ly_from_staging[0]}`, s.ly_from_staging[1]],
+    s.ly_from_you,
+  ]
+    .filter(Boolean)
+    .map(([from, ly]) => `<span>${ly.toFixed(2)} ly from ${esc(from)}</span>`)
+    .join("");
+
   open(
     "system",
     `<h3 class="shead">` +
@@ -393,14 +404,17 @@ async function showSystem(id) {
       `</h3>` +
       `<p class="sloc">${esc(s.constellation)} <span>&lsaquo;</span> ${esc(s.region)}` +
       `<span class="sfrom">${jumpsTo}</span></p>` +
+      (lyFrom ? `<p class="sly">${lyFrom}</p>` : "") +
       (chips ? `<p class="schips">${chips}</p>` : "") +
       camp +
-      `<section class="scard"><h4>Last hour</h4><div class="sstats">` +
+      notesSection("system", s.id, s.name) +
+      `<section class="scard"><h4>Last hour<span class="shint">Coloured against the ${esc(s.region)} average</span></h4>` +
+      `<div class="sstats">` +
       stat("jumps", s.jumps, s.avg_jumps) +
       stat("ship kills", s.ship_kills, s.avg_ship_kills) +
       stat("pod kills", s.pod_kills, s.avg_ship_kills) +
       stat("NPC kills", s.npc_kills, s.avg_npc_kills) +
-      `</div><p class="shint">Coloured against the ${esc(s.region)} average.</p></section>` +
+      `</div></section>` +
       rats +
       holes +
       upgrades +
@@ -505,7 +519,8 @@ async function showPilot(name) {
       (id
         ? `<img class="mport" src="https://images.evetech.net/characters/${id}/portrait?size=256" alt="">` +
           `<p><a href="https://zkillboard.com/character/${id}/" target="_blank" rel="noopener">` +
-          `${ico("arrow-square-out")} zKillboard</a></p>`
+          `${ico("arrow-square-out")} zKillboard</a></p>` +
+          notesSection("pilot", id, name)
         : `<p class="placeholder">Not resolved.</p>`)
   );
 }
@@ -592,9 +607,13 @@ function holeControl(kind, out) {
   if (kind === "jump" || !out) return "";
   return (
     `<label class="jumpcfg tflag"><input data-jump="holes" type="checkbox"${out.via_wormholes ? " checked" : ""}>` +
-    ` Route via scanned wormholes</label>`
+    ` ${flagText("Route via scanned wormholes", "Via wormholes")}</label>`
   );
 }
+
+/// Both wordings go out and CSS picks one: a bottom dock has no width for three long labels.
+const flagText = (long, short) =>
+  `<span class="flong">${long}</span><span class="fshort" title="${long}">${short}</span>`;
 
 function jumpControls(kind, out) {
   // Which end the titan is at. On, the default, it is in the system the route starts from: one jump
@@ -602,10 +621,10 @@ function jumpControls(kind, out) {
   if (kind === "titan") {
     return (
       `<label class="jumpcfg tflag"><input data-jump="tstart" type="checkbox"${jump.tstart ? " checked" : ""}>` +
-      ` Titan is in the starting system</label>` +
+      ` ${flagText("Titan is in the starting system", "Titan at start")}</label>` +
       (jump.tstart
         ? `<label class="jumpcfg tflag"><input data-jump="tself" type="checkbox"${jump.tself ? " checked" : ""}>` +
-          ` Titan may reposition first</label>`
+          ` ${flagText("Titan may reposition first", "May reposition")}</label>`
         : "")
     );
   }
@@ -718,7 +737,7 @@ function paintRoute(kind, onPick) {
     return `<${tag} class="rwarn${w.sev >= 3 ? " crit" : ""}"${attr}>${ico("warning")} ${esc(bits.join(" · "))}</${tag}>`;
   };
   const line = (h, i) =>
-    `<li class="rhop k${h.kind}">` +
+    `<li class="rhop k${h.kind}"><span class="rmain">` +
     `<button class="chip${h.anchor ? " anchor" : ""}" data-system="${h.id}" style="color:${secCol(h.security)}">${esc(h.name)}</button>` +
     (i === 0
       ? `<span class="rkind">start</span>`
@@ -732,6 +751,7 @@ function paintRoute(kind, onPick) {
           ? `<span class="rkind bridge">ansiblex</span>`
           : `<span class="rkind">gate</span>`) +
     warn(h.warn, h.id) +
+    `</span>` +
     // One button rather than one per action: a row is a system and a distance, and three buttons
     // beside that is more chrome than content.
     `<button class="ract" data-act="${h.id}" data-at="${i}" title="Actions">${ico("dots-three")}</button>` +
@@ -739,8 +759,7 @@ function paintRoute(kind, onPick) {
   open(
     "route",
     `<h3>${esc(KINDS[kind] ?? "Route")}</h3>` +
-      jumpControls(kind, routeReq?.out) +
-      holeControl(kind, routeReq?.out) +
+      `<div class="rflags">${jumpControls(kind, routeReq?.out)}${holeControl(kind, routeReq?.out)}</div>` +
       avoidList(routeReq?.out) +
       tabs +
       legs +

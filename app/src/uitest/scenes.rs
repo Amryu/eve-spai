@@ -33,9 +33,65 @@ fn intel_scene_sized(
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut tip,
         );
+    })
+}
+
+/// A card whose pilots and system carry tags and notes from two online folders, with a third
+/// offline folder that must not show.
+fn intel_notes_scene(name: &'static str, compact: bool) -> Scene {
+    let args = IntelArgs { notes: fixtures::notebook().view(""), ..IntelArgs::default() };
+    let report = fixtures::intel_typical();
+    Scene::ui(name, [if compact { 360.0 } else { 620.0 }, 260.0], move |ui| {
+        let mut tip = None;
+        crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            Some(3),
+            crate::app::JumpVia::Gates,
+            &args.chars,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            &args.notes,
+            compact,
+            &mut tip,
+        );
+    })
+}
+
+/// The map's right dock System tab, which is narrower than the window and lays its header out
+/// differently.
+fn docked_system_scene(name: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [270.0, 600.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.seed_notes(fixtures::notebook());
+            a
+        });
+        app.docked_system_ui(ui, 30_004_759);
+    })
+}
+
+fn notes_dialog_scene(name: &'static str, size: [f32; 2], open: fn(&mut crate::app::SpaiApp)) -> Scene {
+    dialog_scene(name, size, move |a| {
+        a.seed_notes(fixtures::notebook());
+        open(a);
     })
 }
 
@@ -70,6 +126,7 @@ fn intel_chars_scene(
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             size[0] < 400.0,
             &mut tip,
         );
@@ -103,6 +160,7 @@ fn resolving_phases_scene(name: &'static str) -> Scene {
                 crate::settings::Severity::Danger,
                 true,
                 &args.affil,
+                &args.notes,
                 false,
                 &mut tip,
             );
@@ -192,6 +250,7 @@ fn alert_window_ipc_chars_scene(
         last_ship: Default::default(),
         kills: Default::default(),
         affil: Default::default(),
+        notes: Default::default(),
         secs: 5.0,
         focus: false,
     };
@@ -762,6 +821,28 @@ pub(crate) fn all() -> Vec<Scene> {
         // range readout that moves with it.
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
+        docked_system_scene("map_dock_system_notes"),
+        notes_dialog_scene("dialog_system_window_notes", [470.0, 620.0], |a| {
+            a.open_system(30_004_759);
+        }),
+        notes_dialog_scene("dialog_pilot_window", [440.0, 580.0], |a| {
+            a.seed_pilot_report(fixtures::pilot_report());
+        }),
+        intel_notes_scene("intel_card_notes", false),
+        intel_notes_scene("intel_card_notes_compact", true),
+        notes_dialog_scene("dialog_note_editor_pilot", [480.0, 640.0], |a| {
+            let id = fixtures::resolved_pilots()["Hostile Pilot"];
+            a.open_note_editor(crate::notes::Subject::Pilot { id, name: "Hostile Pilot".into() });
+        }),
+        notes_dialog_scene("dialog_note_editor_system", [480.0, 640.0], |a| {
+            a.open_note_editor(crate::notes::Subject::System(30_004_759));
+        }),
+        notes_dialog_scene("dialog_notes_manager_pilot", [900.0, 660.0], |a| {
+            a.open_notes_manager(crate::notes::NoteKind::Pilot);
+        }),
+        notes_dialog_scene("dialog_notes_manager_system", [900.0, 660.0], |a| {
+            a.open_notes_manager(crate::notes::NoteKind::System);
+        }),
         alert_window_scene("alert_window_typical", vec![fixtures::intel_typical()]),
         alert_window_scene(
             "alert_window_torture",
@@ -1313,6 +1394,7 @@ fn uitest_intel_row_resolving_chip_holds_its_width() {
                 crate::settings::Severity::Danger,
                 true,
                 &args.affil,
+                &args.notes,
                 false,
                 &mut t,
             );
@@ -1358,6 +1440,7 @@ fn uitest_intel_row_resolving_chip_explains_itself_on_hover() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -1404,6 +1487,7 @@ fn uitest_intel_row_hover_sets_tip_when_compact() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             true,
             &mut t,
         );
@@ -1446,6 +1530,7 @@ fn uitest_intel_row_hover_shows_tooltip() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -1457,6 +1542,123 @@ fn uitest_intel_row_hover_shows_tooltip() {
     assert!(
         harness.query_by_label_contains("Click to look up").is_some(),
         "hovering a pilot chip showed no tooltip"
+    );
+}
+
+#[test]
+fn uitest_system_badge_tooltip_shows_light_years() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let args = IntelArgs::default();
+    let report = fixtures::intel_typical();
+    let locations = std::collections::HashMap::from([("Amryu".to_owned(), (30_003_704, false))]);
+    let chars = crate::app::build_char_rings(
+        &args.systems,
+        &[("Amryu".to_owned(), 0)],
+        &locations,
+        "Amryu",
+        None,
+        &[],
+        false,
+        false,
+    )
+    .with_staging(Some("319-3D"))
+    .card_for(&report);
+    let mut scene = Scene::ui("ly_hover_probe", [520.0, 520.0], move |ui| {
+        let mut t = None;
+        crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            None,
+            crate::app::JumpVia::Gates,
+            &chars,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            &args.notes,
+            false,
+            &mut t,
+        );
+    });
+    let mut harness = harness::build(&mut scene, false);
+    assert!(harness.query_by_label_contains("ly from").is_none());
+    let badge = format!("{} 1DQ1-A", egui_phosphor::regular::PLANET);
+    harness.get_by_label(&badge).hover();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("2.10 ly from staging 319-3D").is_some());
+    assert!(harness.query_by_label("5.33 ly from Amryu").is_some());
+}
+
+/// The quick menu edits the quick-edit folder only: Hunter is set in another folder, so it shows
+/// unticked with that folder named, and ticking it adds it to the target.
+#[test]
+fn uitest_pilot_chip_menu_toggles_a_tag_in_the_target_folder() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let book = fixtures::notebook();
+    let view = book.view("");
+    let target = view.target.clone();
+    let hunter = view.pilot_tags.iter().find(|t| t.name == "Hunter").unwrap().id.clone();
+    let args = IntelArgs { notes: view, ..IntelArgs::default() };
+    let report = fixtures::intel_typical();
+    let clicks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = clicks.clone();
+    let mut scene = Scene::ui("notes_menu_probe", [620.0, 700.0], move |ui| {
+        let mut t = None;
+        let hit = crate::app::intel_row(
+            ui,
+            &report,
+            fixtures::now(),
+            false,
+            None,
+            crate::app::JumpVia::Gates,
+            &args.chars,
+            &args.systems,
+            &args.status,
+            &args.ship_details,
+            &args.ship_roles,
+            &args.resolved_pilots,
+            &args.uncertain,
+            &args.last_ship,
+            &args.kills,
+            crate::settings::Severity::Danger,
+            true,
+            &args.affil,
+            &args.notes,
+            false,
+            &mut t,
+        );
+        if let Some(hit) = hit {
+            sink.borrow_mut().push(hit);
+        }
+    });
+    let mut harness = harness::build(&mut scene, false);
+    harness.get_by_label_contains("Hostile Pilot").click_secondary();
+    harness.run_steps(3);
+    assert!(harness.query_all_by_label_contains("also in Coalition intel / Delve").next().is_some());
+    // User tags follow the fourteen built-in pilot tags, below the menu's scroll fold.
+    harness.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Hunter").scroll_to_me();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Hunter").click();
+    harness.run_steps(2);
+    let got = clicks.borrow();
+    assert!(
+        got.iter().any(|c| matches!(
+            c,
+            crate::app::IntelClick::Notes(crate::notes::NotesOp::SetTag { folder, tag, on: true, .. })
+                if *folder == target && *tag == hunter
+        )),
+        "ticking Hunter yielded {got:?}"
     );
 }
 
@@ -1487,6 +1689,7 @@ fn intel_card_height(name: &'static str, show_reporter: bool) -> f32 {
             crate::settings::Severity::Danger,
             show_reporter,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -1525,6 +1728,7 @@ fn uitest_intel_row_reporter_is_a_footer() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -2483,6 +2687,7 @@ fn uitest_intel_row_click_returns_pilot() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -2531,6 +2736,7 @@ fn uitest_click_at_hits_the_system_chip() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -2954,6 +3160,7 @@ fn uitest_intel_row_marks_uncertain_pilot_from_display_cased_set() {
             crate::settings::Severity::Danger,
             true,
             &args.affil,
+            &args.notes,
             false,
             &mut t,
         );
@@ -4102,15 +4309,16 @@ fn uitest_character_row_buttons_match_the_view() {
     }
 }
 
-/// UI-019: the four condition `Edit` buttons are labelled controls in a form whose every other
-/// control is floored at `interact_size.y`. The `requires:` chips are the nearest peer.
+/// UI-019: the condition `Edit` buttons are labelled controls in a form whose every other control
+/// is floored at `interact_size.y`. The `requires:` chips are the nearest peer. Six since the pilot
+/// and system tag conditions.
 #[test]
 fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
     let mut scene = alert_rules_scene("alert_edit_probe", [1280.0, 800.0], None);
     let harness = harness::build(&mut scene, false);
     let chip = buttons_labelled(&harness, "bubble").first().expect("no requires chip").1;
     let edits = buttons_labelled(&harness, "Edit");
-    assert_eq!(edits.len(), 4, "expected four Edit buttons: {edits:?}");
+    assert_eq!(edits.len(), 6, "expected six Edit buttons: {edits:?}");
     for (_, r) in edits {
         assert!(
             (r.height() - chip.height()).abs() < 1.0,
@@ -4131,6 +4339,8 @@ fn uitest_dialog_scenes_render_their_dialog() {
 
     for (name, needle) in [
         ("dialog_severity", "High-threat hulls (one per line)"),
+        ("dialog_note_editor_pilot", "Cloaky camper"),
+        ("dialog_notes_manager_system", "Home staging, keepstar on the sun."),
         ("dialog_intel_channels", "Querious Intel"),
         ("dialog_jump_bridges", "1DQ1-A » O-EIMK"),
         ("dialog_coalitions", "Alliances (sov holders)"),
@@ -4198,77 +4408,23 @@ fn uitest_alert_rule_names_fit_and_clear_the_arrows() {
     }
 }
 
-/// UI-033: the pin was a floating `Area`, so it reserved no space and every `dialog_viewport`
-/// dialog laid its body out underneath it. `uitest_layout` cannot see that: its click-target pass
-/// and its text pass never compare one against the other (GAP-010), so this scene-specific check is
-/// the gate. The five names are exactly the scenes that route through `dialog_viewport_ext`; the
-/// other three dialog scenes are `Window`s or a `Modal` and carry no pin.
+/// Dialogs used to carry an always-on-top pin in a strip of their own (UI-033), which pushed every
+/// dialog's content down. They are plain windows now, so no dialog may draw one.
 #[test]
-fn uitest_dialog_pin_is_clear_of_the_dialog_body() {
+fn uitest_dialogs_carry_no_pin() {
     use egui::accesskit::Role;
     use egui_kittest::kittest::NodeT as _;
 
-    let mut failures = Vec::new();
-    for (name, viewport) in [
-        ("dialog_severity", "severity_window"),
-        ("dialog_intel_channels", "intel_channels_window"),
-        ("dialog_jump_bridges", "jump_bridges_window"),
-        ("dialog_coalitions", "coalitions_window"),
-        ("dialog_battle_filter", "battle_filter"),
-    ] {
+    for name in ["dialog_severity", "dialog_intel_channels", "dialog_jump_bridges", "dialog_coalitions", "dialog_battle_filter", "dialog_notes_manager_pilot", "dialog_pilot_window"] {
         let mut scene = all().into_iter().find(|s| s.name == name).expect("scene");
-        let size = scene.size;
-        let mut harness = harness::build(&mut scene, false);
-        let mut pin = None;
-        let mut text = Vec::new();
-        let mut hits = Vec::new();
-        for node in harness.root().children_recursive() {
+        let harness = harness::build(&mut scene, false);
+        let pinned = harness.root().children_recursive().any(|node| {
             let n = node.accesskit_node();
-            if n.is_hidden() {
-                continue;
-            }
-            let Some(b) = n.bounding_box() else { continue };
-            let r = egui::Rect {
-                min: egui::pos2(b.x0 as f32, b.y0 as f32),
-                max: egui::pos2(b.x1 as f32, b.y1 as f32),
-            };
-            let label = n.label().or_else(|| n.value()).unwrap_or_default().to_string();
-            if n.role() == Role::Button && label.contains(egui_phosphor::regular::PUSH_PIN) {
-                pin = Some(r);
-            } else if n.role() == Role::Label
-                && !label.is_empty()
-                && node.children().any(|c| c.accesskit_node().role() == Role::TextRun)
-            {
-                text.push((label, r));
-            } else if n.role() == Role::Button || n.role() == Role::TextInput {
-                hits.push((label, r));
-            }
-        }
-        let Some(pin) = pin else {
-            failures.push(format!("{name}: the dialog has no pin"));
-            continue;
-        };
-        if !egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(pin) {
-            failures.push(format!("{name}: pin {pin:?} is outside the {size:?} window"));
-        }
-        for (what, items) in [("Label", &text), ("hit target", &hits)] {
-            for (label, r) in items {
-                let hit = pin.intersect(*r);
-                if hit.width() > 1.0 && hit.height() > 1.0 {
-                    failures.push(format!("{name}: pin {pin:?} over {what} {label:?} {r:?}"));
-                }
-            }
-        }
-        let key = egui::Id::new(("ontop", viewport));
-        let before = harness.ctx.data(|d| d.get_temp::<bool>(key));
-        harness::click_at(&harness, pin.center());
-        harness.run_steps(2);
-        let after = harness.ctx.data(|d| d.get_temp::<bool>(key));
-        if after == before {
-            failures.push(format!("{name}: clicking the pin at {:?} did nothing", pin.center()));
-        }
+            n.role() == Role::Button
+                && n.label().unwrap_or_default().contains(egui_phosphor::regular::PUSH_PIN)
+        });
+        assert!(!pinned, "{name} still draws the always-on-top pin");
     }
-    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
 /// The Jove observatory layer is the only way to see the baked observatory list, so the checkbox

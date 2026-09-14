@@ -105,6 +105,9 @@ pub struct Settings {
     pub battle_break_secs: i64,
     #[serde(default)]
     pub bookmarks: Vec<i64>,
+    /// Folder uuid quick note and tag edits go to. Empty or stale falls back to the Default folder.
+    #[serde(default)]
+    pub notes_folder: String,
     #[serde(default)]
     pub work_throttle: WorkThrottle,
     #[serde(default = "default_overlay_opacity")]
@@ -331,6 +334,12 @@ pub struct AlertRule {
     pub characters: Vec<String>,
     #[serde(default)]
     pub ships: Vec<String>,
+    /// Pilot tag ids, any of which on any reported pilot. `notes::ANY_TAG` is any tag. A deleted tag's
+    /// id stays and matches nothing, so the rule fails closed.
+    #[serde(default)]
+    pub pilot_tags: Vec<String>,
+    #[serde(default)]
+    pub system_tags: Vec<String>,
     pub suppress: bool,
     #[serde(default)]
     pub severity_override: Option<Severity>,
@@ -363,6 +372,8 @@ impl Default for AlertRule {
             require: Vec::new(),
             characters: Vec::new(),
             ships: Vec::new(),
+            pilot_tags: Vec::new(),
+            system_tags: Vec::new(),
             suppress: false,
             severity_override: None,
             system_notification: true,
@@ -998,6 +1009,7 @@ impl Default for Settings {
             min_battle_isk: 0.0,
             battle_break_secs: default_battle_break(),
             bookmarks: Vec::new(),
+            notes_folder: String::new(),
             map_overlay_opacity: 0.9,
             map_overlay_smart: false,
             jabber_enabled: false,

@@ -603,6 +603,17 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             let body = d.store.as_ref().and_then(|s| super::detail::ship(id, s, &names));
             json_or_404(req, body)
         }
+        Route::NotesExport(id) => {
+            let notes = ctx.detail.lock().unwrap_or_else(|e| e.into_inner()).notes.clone();
+            let body = notes.export(&id).map(|e| {
+                serde_json::json!({
+                    "name": e.folder.name,
+                    "json": crate::notes::to_json(&e),
+                    "compressed": crate::notes::to_compressed(&e),
+                })
+            });
+            json_or_404(req, body)
+        }
         Route::Action => unreachable!("answered before `serve`, which cannot read a body"),
         Route::NotFound => respond(req, 404, "text/plain; charset=utf-8", b"not found\n", &[]),
     }
@@ -623,6 +634,9 @@ fn act(ctx: &Ctx, mut req: tiny_http::Request, origin: Option<&str>) {
     match serde_json::from_str::<crate::ipc::OverlayToMain>(&body) {
         Ok(msg) => {
             ctx.inbox.lock().unwrap_or_else(|e| e.into_inner()).push(msg);
+            if let Some(ui) = ctx.detail.lock().unwrap_or_else(|e| e.into_inner()).wake.clone() {
+                ui.request_repaint();
+            }
             respond(req, 204, "text/plain; charset=utf-8", b"", &[])
         }
         Err(_) => respond(req, 400, "text/plain; charset=utf-8", b"bad action\n", &[]),
@@ -716,11 +730,13 @@ mod tests {
         base: String,
         web: crate::web::state::SharedWeb,
         inbox: crate::web::Inbox,
+        detail: crate::web::Detail,
     }
 
     fn serve_test() -> Running {
         let web = crate::web::state::shared();
         let inbox = crate::web::inbox();
+        let detail = crate::web::detail();
         let handle = start(
             Config {
                 port: 0,
@@ -733,12 +749,12 @@ mod tests {
                 map: None,
             },
             web.clone(),
-            crate::web::detail(),
+            detail.clone(),
             inbox.clone(),
         )
         .expect("bind an ephemeral loopback port");
         let base = format!("http://{}", handle.addr);
-        Running { _handle: handle, base, web, inbox }
+        Running { _handle: handle, base, web, inbox, detail }
     }
 
     fn client() -> reqwest::blocking::Client {
@@ -1155,6 +1171,65 @@ mod tests {
             &s.inbox.lock().unwrap()[0],
             crate::ipc::OverlayToMain::SelectSystem { id: 30_004_759 }
         ));
+    }
+
+    /// Pins the exact bodies `notes.js` posts, so a renamed field on either side fails here rather
+    /// than as a silent 400 on the page.
+    #[test]
+    fn the_notes_actions_the_page_sends_are_accepted() {
+        use crate::notes::{ImportMode, NotesOp, Subject};
+        let s = serve_test();
+        let c = client();
+        let origin = Some(s.base.as_str());
+        let book = crate::uitest::fixtures::notebook();
+        let export = crate::notes::to_json(&book.export(&book.folders[0].id).unwrap());
+        let bodies = [
+            r#"{"Notes":{"SetEntry":{"folder":"f","subject":{"Pilot":{"id":5,"name":"Bob"}},"note":"hi","tags":["d:pilot:cyno"]}}}"#.to_owned(),
+            r#"{"Notes":{"SetTag":{"folder":"","subject":{"System":30004759},"tag":"d:sys:staging","on":false}}}"#.to_owned(),
+            r#"{"Notes":{"PutTag":{"folder":"f","id":null,"kind":"Pilot","name":"Hunter","color":[239,68,68]}}}"#.to_owned(),
+            r#"{"Notes":{"CreateFolder":{"parent":null,"name":"Intel"}}}"#.to_owned(),
+            r#"{"Notes":{"SetOnline":{"id":"f","on":false}}}"#.to_owned(),
+            r#"{"NotesTarget":{"folder":"f"}}"#.to_owned(),
+            format!(r#"{{"Notes":{{"Import":{{"export":{export},"mode":"Merge","parent":null}}}}}}"#),
+        ];
+        for b in &bodies {
+            assert_eq!(post(&c, &s.base, origin, b).status(), 204, "{b}");
+        }
+        let q = s.inbox.lock().unwrap();
+        assert_eq!(q.len(), bodies.len());
+        assert!(matches!(
+            &q[0],
+            crate::ipc::OverlayToMain::Notes(NotesOp::SetEntry { subject: Subject::Pilot { id: 5, .. }, .. })
+        ));
+        assert!(matches!(
+            &q[6],
+            crate::ipc::OverlayToMain::Notes(NotesOp::Import { mode: ImportMode::Merge, .. })
+        ));
+    }
+
+    #[test]
+    fn a_notes_folder_exports_in_both_forms() {
+        let s = serve_test();
+        let book = crate::uitest::fixtures::notebook();
+        let id = book.folders[1].id.clone();
+        s.detail.lock().unwrap().notes = std::sync::Arc::new(book.clone());
+        let c = client();
+        let cookie = format!("spai={TOKEN}");
+        let r = c.get(format!("{}/api/notes/export/{id}", s.base)).header("Cookie", &cookie).send().unwrap();
+        assert_eq!(r.status(), 200);
+        let v: serde_json::Value = r.json().unwrap();
+        let want = book.export(&id).unwrap();
+        for form in ["json", "compressed"] {
+            let text = v[form].as_str().unwrap();
+            assert_eq!(crate::notes::parse_export(text).unwrap(), want, "{form}");
+        }
+        assert_eq!(v["name"], "Coalition intel");
+        let r = c
+            .get(format!("{}/api/notes/export/00000000-0000-4000-8000-000000000000", s.base))
+            .header("Cookie", &cookie)
+            .send()
+            .unwrap();
+        assert_eq!(r.status(), 404);
     }
 
     #[test]

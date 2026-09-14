@@ -15,6 +15,7 @@
 import { ico, register, state } from "./app.js";
 import { avoidOnce, currentRoute, send, showRoute, titansOnce } from "./dialogs.js";
 import { lightYears, menu, radial, reach } from "./route.js";
+import { openEditor, quickMenu, rgb, tagById } from "./notes.js";
 
 let geo = null;
 let loading = false;
@@ -89,6 +90,7 @@ function load() {
     cyno: false,
     upgrades: false,
     jove: false,
+    notes: true,
     labels: true,
   };
   try {
@@ -592,6 +594,14 @@ function paint() {
     }
   }
 
+  // Noted systems: the first tag's colour, or a note glyph when there are only notes.
+  if (layers.notes) {
+    for (const [id, m] of Object.entries(state.snapshot?.notes?.view?.systems ?? {})) {
+      const t = m.tags.map(tagById).find(Boolean);
+      mark(Number(id), t ? "tag" : "note", t ? rgb(t.color) : pal.muted);
+    }
+  }
+
   if (layers.camps && live.camps?.length) {
     for (const id of live.camps) {
       const n = geo.nodes[geo.byId.get(id)];
@@ -1006,6 +1016,7 @@ const TOGGLES = [
   ["cyno", "Cyno"],
   ["upgrades", "Upgrades"],
   ["jove", "Jove"],
+  ["notes", "Notes"],
   ["labels", "Labels"],
 ];
 
@@ -1023,7 +1034,7 @@ const GROUPS = [
   ["sov", "Sov", ["sov"], ["adm", "upgrades"]],
   ["activity", "Activity", ["activity"], ["camps", "cyno"]],
   ["travel", "Travel", [], ["bridges", "holes", "jumprange"]],
-  ["marks", "Marks", [], ["labels", "jove"]],
+  ["marks", "Marks", [], ["labels", "jove", "notes"]],
 ];
 
 const TOGGLE_LABEL = Object.fromEntries(TOGGLES);
@@ -1077,6 +1088,7 @@ function build() {
     `<h2>Map</h2>` +
     `<div class="maptools">` +
     layerGroups() +
+    `<button class="mlhead" data-notes-manage="system" title="System tags and notes">${ico("tag")} Tags</button>` +
     `<span class="maphint"></span>` +
     `</div>` +
     // The canvas and the route dock share a row, so docking takes space from the map rather than
@@ -1546,6 +1558,10 @@ function menuFor(id) {
   items.push(["start:jump", `${verb} Jump Route`]);
   items.push(["start:titan", `${verb} Titan Route`]);
   items.push(null);
+  if (state.snapshot?.meta?.allow_writeback) {
+    items.push(["notes:tags", "Tags…"]);
+    items.push(["notes:edit", "Notes and tags…"]);
+  }
   items.push(["info", "Show info"]);
   items.push(["focus", "Show in the app"]);
   return items;
@@ -1607,11 +1623,24 @@ function menuPick(id, kind) {
     case "focus":
       send({ SelectSystem: { id } });
       return;
+    case "notes:tags":
+      quickMenu(menuAt.x, menuAt.y, { System: id }, nodeName(id));
+      return;
+    case "notes:edit":
+      openEditor({ System: id }, nodeName(id));
+      return;
   }
   replan();
 }
 
+/// Where the last menu opened, so a menu picked from it can open the next one in the same place.
+const menuAt = { x: 0, y: 0 };
+
+const nodeName = (id) => geo?.nodes[geo.byId.get(id)]?.n ?? String(id);
+
 function openMenu(e, n) {
+  menuAt.x = e.clientX;
+  menuAt.y = e.clientY;
   menu(e.clientX, e.clientY, menuFor(n.i), (kind) => menuPick(n.i, kind));
 }
 

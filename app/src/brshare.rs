@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use br_core::battle::BattleReportDoc;
-use crate::auth::{self, DEFAULT_CLIENT_ID};
+use crate::auth::DEFAULT_CLIENT_ID;
 
 pub const BR_API_BASE: &str = "https://eve-spai.com";
 
@@ -17,8 +17,6 @@ pub fn api_base() -> String {
         .unwrap_or_else(|| BR_API_BASE.to_string());
     raw.trim_end_matches('/').to_string()
 }
-
-const REFRESH_SKEW_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateResponse {
@@ -62,71 +60,12 @@ struct ReportPage {
     reports: Vec<ReportRow>,
 }
 
-#[derive(Debug, PartialEq)]
-enum BearerDecision {
-    Reuse(String),
-    Refresh(String),
-    None,
-}
-
-fn decide_bearer(
-    access: Option<String>,
-    refresh: Option<String>,
-    expires_at: i64,
-    now: i64,
-) -> BearerDecision {
-    let access = access.filter(|a| !a.is_empty());
-    if let Some(a) = &access {
-        if expires_at > now + REFRESH_SKEW_SECS {
-            return BearerDecision::Reuse(a.clone());
-        }
-    }
-    match refresh.filter(|r| !r.is_empty()) {
-        Some(r) => BearerDecision::Refresh(r),
-        None => BearerDecision::None,
-    }
-}
-
+/// Same refresh path as every other ESI call, so a share cannot race the location poller over the
+/// rotating refresh token.
 pub fn valid_bearer(store_path: &Path, char_id: i64) -> Option<String> {
-    use rusqlite::{params, Connection};
-
-    let conn = Connection::open(store_path).ok()?;
+    let conn = rusqlite::Connection::open(store_path).ok()?;
     crate::store::apply_pragmas(&conn);
-    let access: Option<String> = conn
-        .query_row(
-            "SELECT value FROM kv WHERE key = ?1",
-            params![format!("access:{char_id}")],
-            |r| r.get(0),
-        )
-        .ok();
-    let expires_at: i64 = conn
-        .query_row(
-            "SELECT COALESCE(expires_at, 0) FROM characters WHERE id = ?1",
-            params![char_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    let refresh = crate::tokens::load_refresh(char_id);
-    let now = chrono::Utc::now().timestamp();
-
-    match decide_bearer(access, refresh, expires_at, now) {
-        BearerDecision::Reuse(a) => Some(a),
-        BearerDecision::Refresh(r) => {
-            let tok = auth::refresh_access_token(DEFAULT_CLIENT_ID, &r).ok()?;
-            let new_expiry = now + tok.expires_in;
-            let _ = conn.execute(
-                "INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-                params![format!("access:{char_id}"), tok.access_token],
-            );
-            let _ = conn.execute(
-                "UPDATE characters SET expires_at = ?1 WHERE id = ?2",
-                params![new_expiry, char_id],
-            );
-            let _ = crate::tokens::save_refresh(char_id, &tok.refresh_token);
-            Some(tok.access_token)
-        }
-        BearerDecision::None => None,
-    }
+    crate::esi::access_token(&conn, DEFAULT_CLIENT_ID, char_id, None)
 }
 
 const SESSION_SKEW_SECS: i64 = 60;
@@ -527,29 +466,6 @@ mod tests {
             serde_json::from_str(r#"{"id":"xyz","url":"https://eve-spai.com/br/xyz"}"#).unwrap();
         assert_eq!(r.id, "xyz");
         assert_eq!(r.url, "https://eve-spai.com/br/xyz");
-    }
-
-    #[test]
-    fn bearer_decision_reuse_vs_refresh() {
-        let now = 1_000_000;
-        assert_eq!(
-            decide_bearer(Some("acc".into()), Some("ref".into()), now + 3600, now),
-            BearerDecision::Reuse("acc".into())
-        );
-        assert_eq!(
-            decide_bearer(Some("acc".into()), Some("ref".into()), now - 1, now),
-            BearerDecision::Refresh("ref".into())
-        );
-        assert_eq!(
-            decide_bearer(Some("acc".into()), Some("ref".into()), now + 30, now),
-            BearerDecision::Refresh("ref".into())
-        );
-        assert_eq!(decide_bearer(Some("acc".into()), None, now - 1, now), BearerDecision::None);
-        assert_eq!(decide_bearer(None, None, 0, now), BearerDecision::None);
-        assert_eq!(
-            decide_bearer(Some(String::new()), Some("ref".into()), now + 3600, now),
-            BearerDecision::Refresh("ref".into())
-        );
     }
 
     #[test]

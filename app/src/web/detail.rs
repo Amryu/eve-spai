@@ -25,6 +25,9 @@ pub struct SystemInfo {
     pub pod_kills: u32,
     pub npc_kills: u32,
     pub jumps_from_you: Option<u32>,
+    /// (from, light-years), the same lines the app's system tooltip shows.
+    pub ly_from_staging: Option<(String, f64)>,
+    pub ly_from_you: Option<(String, f64)>,
     /// Gate traffic in the last hour, and the region's own average for each of the four counters.
     /// The app colours a counter against its region rather than against an absolute number, because
     /// twenty kills is a quiet hour in Delve and a siege in Aridia; without the average the page
@@ -206,6 +209,15 @@ pub fn system(id: i64, d: &super::DetailState) -> Option<SystemInfo> {
                 graph.jumps_gates_only(id, from, crate::app::JUMP_SCAN_CAP)
             }
         }),
+        ly_from_staging: d
+            .staging
+            .as_deref()
+            .and_then(|n| graph.lookup(n.trim()))
+            .and_then(|st| Some((st.name.clone(), graph.ly_between(st.id, id)?))),
+        ly_from_you: d
+            .player_sys
+            .filter(|_| !d.active_character.is_empty() && d.active_character != "No character")
+            .and_then(|from| Some((d.active_character.clone(), graph.ly_between(from, id)?))),
         jumps: status.map_or(0, |s| s.jumps),
         avg_jumps: avg(&|f| f.jumps),
         avg_ship_kills: avg(&|f| f.ship_kills),
@@ -335,4 +347,27 @@ pub fn ship_skill_ids(id: i64, store: &crate::store::Store) -> Vec<i64> {
     s.sort_unstable();
     s.dedup();
     s
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn system_carries_light_years_from_staging_and_you() {
+        let d = super::super::DetailState {
+            graph: Some(crate::uitest::fixtures::systems()),
+            player_sys: Some(30_003_704),
+            active_character: "Amryu".into(),
+            staging: Some("319-3D".into()),
+            ..Default::default()
+        };
+        let s = super::system(30_004_759, &d).unwrap();
+        let (from, ly) = s.ly_from_staging.unwrap();
+        assert_eq!((from.as_str(), (ly * 100.0).round()), ("319-3D", 210.0));
+        let (from, ly) = s.ly_from_you.unwrap();
+        assert_eq!((from.as_str(), (ly * 100.0).round()), ("Amryu", 533.0));
+
+        let d = super::super::DetailState { graph: d.graph.clone(), ..Default::default() };
+        let s = super::system(30_004_759, &d).unwrap();
+        assert!(s.ly_from_staging.is_none() && s.ly_from_you.is_none());
+    }
 }

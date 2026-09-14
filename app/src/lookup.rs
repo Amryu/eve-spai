@@ -68,6 +68,30 @@ pub struct PilotReport {
     pub kills: Vec<Loss>,
     pub solo: Vec<Loss>,
     pub loading: bool,
+    #[serde(default)]
+    pub profile: Option<Profile>,
+    #[serde(default)]
+    pub stats: Option<crate::charlookup::ZkStats>,
+}
+
+/// ESI's public character sheet, with names resolved.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Profile {
+    pub birthday: Option<i64>,
+    pub security: Option<f64>,
+    pub corp_id: Option<i64>,
+    pub corp_name: String,
+    pub alliance_id: Option<i64>,
+    pub alliance_name: String,
+    /// Newest first.
+    pub history: Vec<Employment>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Employment {
+    pub corp_id: i64,
+    pub corp_name: String,
+    pub start: i64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -183,9 +207,28 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
             kills: Vec::new(),
             solo: Vec::new(),
             loading: true,
+            profile: None,
+            stats: None,
         });
         *state.lock().unwrap() = LookupState::Done(PilotReport { name: resolved, loading: true, ..base });
         ctx.request_repaint();
+
+        {
+            let client = client.clone();
+            let state = state.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let profile = fetch_profile(&client, character_id);
+                let stats = crate::charlookup::zkill_stats(&client, character_id);
+                if let LookupState::Done(r) = &mut *state.lock().unwrap() {
+                    if r.character_id == character_id {
+                        r.profile = profile.or(r.profile.take());
+                        r.stats = stats.or(r.stats.take());
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
 
         let pending = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(3));
         for (idx, category) in ["losses", "kills", "solo"].into_iter().enumerate() {
@@ -285,6 +328,55 @@ fn fetch_category(
     on_batch(&combine(&new, cached));
 }
 
+fn fetch_profile(client: &reqwest::blocking::Client, id: i64) -> Option<Profile> {
+    #[derive(serde::Deserialize)]
+    struct Sheet {
+        birthday: Option<String>,
+        corporation_id: Option<i64>,
+        alliance_id: Option<i64>,
+        security_status: Option<f64>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Row {
+        corporation_id: i64,
+        start_date: String,
+    }
+    let get = |url: String| client.get(url).send().ok()?.error_for_status().ok();
+    let sheet: Sheet = get(format!("{ESI}/characters/{id}/"))?.json().ok()?;
+    let rows: Vec<Row> =
+        get(format!("{ESI}/characters/{id}/corporationhistory/")).and_then(|r| r.json().ok()).unwrap_or_default();
+    let mut ids: Vec<i64> = rows.iter().map(|r| r.corporation_id).collect();
+    ids.extend(sheet.corporation_id);
+    ids.extend(sheet.alliance_id);
+    ids.sort_unstable();
+    ids.dedup();
+    // /universe/names/ refuses a batch over 1000 ids, far past any real corp history.
+    ids.truncate(1000);
+    let names = crate::charlookup::resolve_names(client, &ids);
+    let ts = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp());
+    let mut history: Vec<Employment> = rows
+        .iter()
+        .filter_map(|r| {
+            Some(Employment {
+                corp_id: r.corporation_id,
+                corp_name: names.get(&r.corporation_id).cloned().unwrap_or_default(),
+                start: ts(&r.start_date)?,
+            })
+        })
+        .collect();
+    history.sort_by(|a, b| b.start.cmp(&a.start));
+    let name_of = |id: Option<i64>| id.and_then(|i| names.get(&i).cloned()).unwrap_or_default();
+    Some(Profile {
+        birthday: sheet.birthday.as_deref().and_then(ts),
+        security: sheet.security_status,
+        corp_id: sheet.corporation_id,
+        corp_name: name_of(sheet.corporation_id),
+        alliance_id: sheet.alliance_id,
+        alliance_name: name_of(sheet.alliance_id),
+        history,
+    })
+}
+
 fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, String), String> {
     let body: serde_json::Value = client
         .post(format!("{ESI}/universe/ids/"))
@@ -337,6 +429,8 @@ pub fn spawn_system_kills(system_id: i64, state: SharedLookup, ctx: egui::Contex
             kills: Vec::new(),
             solo: Vec::new(),
             loading: true,
+            profile: None,
+            stats: None,
         });
         ctx.request_repaint();
         let mut kills: Vec<Loss> = Vec::new();

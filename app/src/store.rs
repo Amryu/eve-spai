@@ -177,6 +177,17 @@ CREATE TABLE IF NOT EXISTS pilot_verdict (
     name_lc TEXT PRIMARY KEY,
     hidden  INTEGER NOT NULL
 );
+-- Notes and tags, one row per folder. `items` is the folder's own tags and entries as JSON; the
+-- tree comes from `parent` and `ord`. Rewritten whole on every edit, which a user's hand-made notes
+-- never make expensive.
+CREATE TABLE IF NOT EXISTS note_folders (
+    id     TEXT PRIMARY KEY,
+    parent TEXT,
+    ord    INTEGER NOT NULL,
+    name   TEXT NOT NULL,
+    online INTEGER NOT NULL,
+    items  TEXT NOT NULL
+);
 -- Which EVE account a character sits on, needed to copy the account-wide settings file
 -- (core_user_<accountId>.dat). EVE records this nowhere on disk, so it is learned. `source` ranks
 -- the mechanisms and a weaker one never overwrites a stronger one: 'client' is exact (read off a
@@ -346,6 +357,7 @@ impl Store {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("eve-spai.db");
         let conn = Connection::open(&path)?;
+        owner_only(&dir, &path);
         apply_pragmas(&conn);
         conn.execute_batch(SCHEMA)?;
         let _ = conn.execute("ALTER TABLE sde_systems ADD COLUMN constellation_id INTEGER", []);
@@ -1211,6 +1223,108 @@ impl Store {
         );
     }
 
+    pub fn load_notes(&self) -> crate::notes::NoteBook {
+        use crate::notes::{Folder, NoteBook};
+        #[derive(serde::Deserialize, Default)]
+        struct Items {
+            #[serde(default)]
+            tags: Vec<crate::notes::Tag>,
+            #[serde(default)]
+            systems: std::collections::BTreeMap<i64, crate::notes::Entry>,
+            #[serde(default)]
+            pilots: std::collections::BTreeMap<i64, crate::notes::Entry>,
+        }
+        let mut rows: Vec<(String, Option<String>, Folder)> = Vec::new();
+        if let Ok(mut stmt) =
+            self.conn.prepare("SELECT id, parent, name, online, items FROM note_folders ORDER BY ord")
+        {
+            if let Ok(it) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)? != 0,
+                    r.get::<_, String>(4)?,
+                ))
+            }) {
+                for (id, parent, name, online, items) in it.flatten() {
+                    let items: Items = serde_json::from_str(&items).unwrap_or_default();
+                    let f = Folder {
+                        id: id.clone(),
+                        name,
+                        online,
+                        tags: items.tags,
+                        systems: items.systems,
+                        pilots: items.pilots,
+                        children: Vec::new(),
+                    };
+                    rows.push((id, parent, f));
+                }
+            }
+        }
+        fn attach(
+            parent: Option<&str>,
+            rows: &mut Vec<(String, Option<String>, Folder)>,
+            seen: &mut std::collections::HashSet<String>,
+        ) -> Vec<Folder> {
+            let mine: Vec<_> = rows
+                .iter()
+                .filter(|(_, p, _)| p.as_deref() == parent)
+                .map(|(id, ..)| id.clone())
+                .collect();
+            let mut out = Vec::new();
+            for id in mine {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let Some(i) = rows.iter().position(|(r, ..)| *r == id) else { continue };
+                let (_, _, mut f) = rows.remove(i);
+                f.children = attach(Some(&id), rows, seen);
+                out.push(f);
+            }
+            out
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut folders = attach(None, &mut rows, &mut seen);
+        // A parent that vanished leaves its children reachable at the top rather than lost.
+        while let Some((id, _, _)) = rows.first().cloned() {
+            let i = 0;
+            let (_, _, mut f) = rows.remove(i);
+            seen.insert(id.clone());
+            f.children = attach(Some(&id), &mut rows, &mut seen);
+            folders.push(f);
+        }
+        NoteBook { rev: 0, folders }
+    }
+
+    pub fn save_notes(&self, book: &crate::notes::NoteBook) -> Result<()> {
+        fn put(
+            tx: &rusqlite::Transaction,
+            f: &crate::notes::Folder,
+            parent: Option<&str>,
+            ord: &mut i64,
+        ) -> rusqlite::Result<()> {
+            let items = serde_json::json!({ "tags": f.tags, "systems": f.systems, "pilots": f.pilots });
+            tx.execute(
+                "INSERT INTO note_folders(id, parent, ord, name, online, items) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![f.id, parent, *ord, f.name, f.online as i64, items.to_string()],
+            )?;
+            *ord += 1;
+            for c in &f.children {
+                put(tx, c, Some(&f.id), ord)?;
+            }
+            Ok(())
+        }
+        let tx = self.conn.unchecked_transaction().inspect_err(crate::disk::note_sqlite_error)?;
+        tx.execute("DELETE FROM note_folders", []).inspect_err(crate::disk::note_sqlite_error)?;
+        let mut ord = 0;
+        for f in &book.folders {
+            put(&tx, f, None, &mut ord).inspect_err(crate::disk::note_sqlite_error)?;
+        }
+        tx.commit().inspect_err(crate::disk::note_sqlite_error)?;
+        Ok(())
+    }
+
     pub fn delete_chat_jid(&self, jid: &str) {
         let _ = self.conn.execute("DELETE FROM chats WHERE jid = ?1", params![jid]);
     }
@@ -1601,6 +1715,18 @@ impl Store {
             }
         }
         systems.set_stargates(stargates);
+
+        let mut positions: HashMap<i64, [f64; 3]> = HashMap::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT id, x, y, z FROM sde_systems") {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?))
+            }) {
+                for (id, x, y, z) in rows.flatten() {
+                    positions.insert(id, [x, y, z]);
+                }
+            }
+        }
+        systems.set_positions(positions);
         systems
     }
 
@@ -1890,6 +2016,31 @@ fn migrate_plaintext_tokens(conn: &Connection) {
     }
 }
 
+/// The profile holds cached ESI access tokens, alliance chat and intel, so other local accounts get
+/// no access. The directory is what actually locks them out; the file modes cover a profile copied
+/// elsewhere. SQLite gives its `-wal` and `-shm` files the database's mode.
+#[cfg(unix)]
+fn owner_only(dir: &std::path::Path, db: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let set = |p: &std::path::Path, mode: u32| {
+        if let Err(e) = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)) {
+            eprintln!("could not restrict {}: {e}", p.display());
+        }
+    };
+    set(dir, 0o700);
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = db.as_os_str().to_owned();
+        name.push(suffix);
+        let p = std::path::PathBuf::from(name);
+        if p.exists() {
+            set(&p, 0o600);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn owner_only(_dir: &std::path::Path, _db: &std::path::Path) {}
+
 pub fn data_dir() -> Result<PathBuf> {
     // Single choke point for every on-disk profile path (the DB, image_cache, esilog, lookup),
     // so the override redirects all of them at once and tests never touch the real profile.
@@ -1960,6 +2111,47 @@ fn trigrams(s: &str) -> std::collections::HashSet<[u8; 3]> {
 mod tests {
     use super::{should_vacuum, Store, ENGAGEMENT_RETENTION_SECS, SCHEMA};
     use rusqlite::{params, Connection};
+
+    #[cfg(unix)]
+    #[test]
+    fn profile_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("eve-spai-perm-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("eve-spai.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::owner_only(&dir, &db);
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&db), 0o600);
+        assert_eq!(mode(&dir.join("eve-spai.db-wal")), 0o600);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notes_survive_a_save_and_reload() {
+        use crate::notes::{NoteBook, NoteKind, NotesOp, Subject};
+        let s = mem_store();
+        let mut b = NoteBook::default();
+        let ok = |b: &mut NoteBook, op| b.apply(op, 7, &crate::notes::test_system_name).unwrap();
+        let top = ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Top".into() }).folder.unwrap();
+        let sub = ok(&mut b, NotesOp::CreateFolder { parent: Some(top.clone()), name: "Sub".into() }).folder.unwrap();
+        ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Second".into() });
+        let t = ok(&mut b, NotesOp::PutTag { folder: sub.clone(), id: None, kind: NoteKind::Pilot, name: "Hunter".into(), color: [1, 2, 3] }).tag.unwrap();
+        ok(&mut b, NotesOp::SetEntry { folder: sub, subject: Subject::Pilot { id: 5, name: "Bob".into() }, note: "hi".into(), tags: vec![t] });
+        ok(&mut b, NotesOp::SetEntry { folder: top.clone(), subject: Subject::System(30_004_759), note: "home".into(), tags: vec![] });
+        ok(&mut b, NotesOp::SetOnline { id: top, on: false });
+        s.save_notes(&b).unwrap();
+        let mut back = s.load_notes();
+        back.rev = b.rev;
+        assert_eq!(back, b);
+        s.save_notes(&NoteBook::default()).unwrap();
+        assert!(s.load_notes().folders.is_empty());
+    }
 
     fn mem_store() -> Store {
         let conn = Connection::open_in_memory().unwrap();

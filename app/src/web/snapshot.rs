@@ -178,6 +178,15 @@ pub struct Meta {
     pub rescue: bool,
 }
 
+/// Notes and tags. The view is what cards and the map draw; the tree is only for the manager, sent
+/// anyway because it changes only when someone edits it.
+#[derive(Clone, Debug, Serialize)]
+pub struct NotesPane {
+    pub rev: u64,
+    pub view: crate::notes::NotesView,
+    pub book: crate::notes::NoteBook,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
     pub seq: u64,
@@ -200,4 +209,6 @@ pub struct Snapshot {
     pub jabber: Option<crate::web::jabber::JabberPane>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rescue: Option<crate::web::rescue::RescuePane>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<NotesPane>,
 }
