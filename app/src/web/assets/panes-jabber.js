@@ -74,6 +74,24 @@ export function open(jid) {
   chat = { jid: null, msgs: [], at: 0 };
   paint();
   sync(true);
+  markRead();
+}
+
+/// Tell the app the open conversation has been looked at.
+///
+/// Reading it here had been clearing nothing: the unread marker lives in the app's jabber state, the
+/// chat endpoint is a plain read, and nothing ever said the page was looking. So a message read on a
+/// phone stayed bold on the desktop and kept its badge on both.
+///
+/// Three conditions, because "the page has this conversation selected" is not the same as "somebody
+/// is reading it": the pane has to be the one on screen, the tab has to be in the foreground, and
+/// there has to be something unread to clear. The last one is what keeps this from posting on every
+/// snapshot for the rest of the session.
+function markRead() {
+  if (!sel || document.visibilityState !== "visible") return;
+  if (!el || el.hidden || !el.offsetParent) return;
+  if (!(convo(sel)?.unread > 0)) return;
+  post({ JabberRead: { jid: sel } });
 }
 
 const stamp = (at) => {
@@ -171,12 +189,17 @@ function row(c) {
   const badge = c.unread
     ? `<span class="jcount${c.mention ? " mention" : ""}">${c.unread > 99 ? "99+" : c.unread}</span>`
     : "";
+  // The close button is a sibling, not nested: a button inside a button is invalid HTML and the
+  // browser hoists it out, which is how the row would stop being clickable at all.
   return (
+    `<div class="jrowwrap">` +
     `<button class="jrow${c.jid === sel ? " on" : ""}${c.mention ? " mentioned" : ""}" data-convo="${esc(c.jid)}" ` +
     // A room's tooltip is its topic, capped: that is what you want off a room in a list, and the
     // JID is the same words as the name plus a domain.
     `title="${esc(c.motd ? motdPreview(c.motd, 6) : c.jid)}">` +
-    `${dot}<span class="jname">${esc(c.name)}</span>${badge}</button>`
+    `${dot}<span class="jname">${esc(c.name)}</span>${badge}</button>` +
+    `<button class="jshut" data-close="${esc(c.jid)}" title="Close. It comes back on the next message.">` +
+    `${ico("x")}</button></div>`
   );
 }
 
@@ -256,7 +279,13 @@ register("jabber", (node) => {
   el = node;
   paint();
   sync(false);
+  markRead();
 });
+
+// Coming back to the tab is reading it, and so is switching to this pane. Neither goes through
+// `register`, which only fires on a snapshot.
+document.addEventListener("visibilitychange", markRead);
+window.addEventListener("spai:panes", markRead);
 
 /// A room's MOTD in full, which is the only place it is shown whole.
 ///
@@ -284,6 +313,20 @@ document.addEventListener("click", (e) => {
   const m = e.target.closest("[data-motd]");
   if (m) {
     motdDialog(m.dataset.motd);
+    return;
+  }
+  const shut = e.target.closest("[data-close]");
+  if (shut) {
+    const jid = shut.dataset.close;
+    // Hiding, not leaving: the same thing the app's tab X does, and it comes back unread.
+    post({ JabberClose: { jid } });
+    if (sel === jid) {
+      remember(null);
+      chat = { jid: null, msgs: [], at: 0 };
+    }
+    // Dropped from the list now rather than waiting for the next snapshot, so the click looks like
+    // it did something.
+    shut.closest(".jrowwrap")?.remove();
     return;
   }
   const r = e.target.closest("[data-convo]");

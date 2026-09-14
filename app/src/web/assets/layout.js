@@ -198,6 +198,9 @@ export function apply() {
   // pane mid-animation is what made the slide cut off at the end.
   if (mode === "tabs" && !settling) scrollToActive(false);
   paintTabs();
+  // Which panes are on screen has just changed. A pane that only acts while it is being looked at
+  // has no other way to learn that: `register` fires on a snapshot, not on a tab tap.
+  window.dispatchEvent(new Event("spai:panes"));
 }
 
 function paintTabs() {
