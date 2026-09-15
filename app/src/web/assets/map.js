@@ -620,8 +620,8 @@ function paint() {
       // Bigger type collides more, so names are placed rather than just drawn: one that would land
       // on a name already down is skipped. Nearest the centre of the view first, so what survives
       // is what the user is looking at.
-      const cx = view.x + view.w / 2;
-      const cz = view.y + view.h / 2;
+      const cx = view.ox + (w / 2) * view.k;
+      const cz = view.oz + (h / 2) * view.k;
       const near = geo.nodes
         .filter((n) => onScreen(sx(n.x), sy(n.z)))
         .sort(
