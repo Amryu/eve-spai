@@ -12,8 +12,8 @@
 //
 // Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
 
-import { ico, register, state } from "./app.js";
-import { avoidOnce, currentRoute, send, showRoute, titansOnce } from "./dialogs.js";
+import { ico, register, send, state } from "./app.js";
+import { avoidOnce, currentRoute, showRoute, titansOnce } from "./dialogs.js";
 import { lightYears, menu, radial, reach } from "./route.js";
 import { openEditor, quickMenu, rgb, tagById } from "./notes.js";
 
@@ -74,7 +74,7 @@ let anchors = [];
 /// What the route is being planned as. Chosen once, at the first drag.
 let routeKind = null;
 
-export const layers = load();
+const layers = load();
 
 function load() {
   const dflt = {

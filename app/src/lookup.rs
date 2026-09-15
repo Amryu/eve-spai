@@ -180,10 +180,7 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
     *state.lock().unwrap() = LookupState::Loading(name.clone());
     ctx.request_repaint();
     std::thread::spawn(move || {
-        let client = match reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; pilot lookup)"))
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
+        let client = match crate::http::client(20)
         {
             Ok(c) => c,
             Err(e) => {
@@ -192,7 +189,12 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
                 return;
             }
         };
-        let (character_id, resolved) = match resolve_name(&client, &name) {
+        let found = match crate::universe::character(&client, &name) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Err(format!("No character named \"{name}\"")),
+            Err(e) => Err(format!("name lookup: {e}")),
+        };
+        let (character_id, resolved) = match found {
             Ok(v) => v,
             Err(e) => {
                 *state.lock().unwrap() = LookupState::Failed(e);
@@ -348,11 +350,7 @@ fn fetch_profile(client: &reqwest::blocking::Client, id: i64) -> Option<Profile>
     let mut ids: Vec<i64> = rows.iter().map(|r| r.corporation_id).collect();
     ids.extend(sheet.corporation_id);
     ids.extend(sheet.alliance_id);
-    ids.sort_unstable();
-    ids.dedup();
-    // /universe/names/ refuses a batch over 1000 ids, far past any real corp history.
-    ids.truncate(1000);
-    let names = crate::charlookup::resolve_names(client, &ids);
+    let names = crate::universe::names(client, &ids);
     let ts = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp());
     let mut history: Vec<Employment> = rows
         .iter()
@@ -377,33 +375,11 @@ fn fetch_profile(client: &reqwest::blocking::Client, id: i64) -> Option<Profile>
     })
 }
 
-fn resolve_name(client: &reqwest::blocking::Client, name: &str) -> Result<(i64, String), String> {
-    let body: serde_json::Value = client
-        .post(format!("{ESI}/universe/ids/"))
-        .json(&[name])
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json())
-        .map_err(|e| format!("name lookup: {e}"))?;
-    body.get("characters")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|c| {
-            let id = c.get("id")?.as_i64()?;
-            let nm = c.get("name")?.as_str()?.to_owned();
-            Some((id, nm))
-        })
-        .ok_or_else(|| format!("No character named \"{name}\""))
-}
-
 pub fn spawn_system_kills(system_id: i64, state: SharedLookup, ctx: egui::Context) {
     *state.lock().unwrap() = LookupState::Loading(format!("system {system_id}"));
     ctx.request_repaint();
     std::thread::spawn(move || {
-        let client = match reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; system kills)"))
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
+        let client = match crate::http::client(20)
         {
             Ok(c) => c,
             Err(e) => {
@@ -493,39 +469,3 @@ fn killmail(client: &reqwest::blocking::Client, id: i64, hash: &str, value: f64)
     Some(Loss { killmail_id: id, hash: hash.to_owned(), time, ship_type_id, system_id, value, items })
 }
 
-pub fn resolve_type_names(ids: &[i64]) -> std::collections::HashMap<i64, String> {
-    let mut out = std::collections::HashMap::new();
-    // /universe/names rejects duplicate ids (HTTP 400) — dedup first.
-    let mut ids: Vec<i64> = ids.to_vec();
-    ids.sort_unstable();
-    ids.dedup();
-    if ids.is_empty() {
-        return out;
-    }
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-    else {
-        return out;
-    };
-    for chunk in ids.chunks(1000) {
-        let resp: Option<serde_json::Value> = client
-            .post(format!("{ESI}/universe/names/"))
-            .json(chunk)
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.json())
-            .ok();
-        if let Some(arr) = resp.as_ref().and_then(|v| v.as_array()) {
-            for e in arr {
-                if let (Some(id), Some(name)) =
-                    (e.get("id").and_then(|i| i.as_i64()), e.get("name").and_then(|n| n.as_str()))
-                {
-                    out.insert(id, name.to_owned());
-                }
-            }
-        }
-    }
-    out
-}

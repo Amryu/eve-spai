@@ -21,7 +21,7 @@ function cost(p, mode) {
   return mode === "grid" && layout.span[p] ? 2 : 1;
 }
 
-export const layout = load();
+const layout = load();
 
 function load() {
   try {
@@ -52,7 +52,7 @@ function save() {
 /// `auto` is a media query rather than a stored choice, so rotating a tablet does the right thing
 /// without the user having picked anything.
 /// Panes the user has left switched on, in their chosen order.
-export function shown() {
+function shown() {
   const have = available();
   // Rescue is always on where it exists: the mode is already an explicit choice made twice, in the
   // build and in the settings, and a third switch to forget is one too many.
@@ -61,7 +61,7 @@ export function shown() {
   );
 }
 
-export function isOn(pane) {
+function isOn(pane) {
   return !layout.off.includes(pane);
 }
 
@@ -70,12 +70,12 @@ export function isOn(pane) {
 /// A pane that comes back later comes back as one cell. Keeping the span would mean switching a pane
 /// on and having it arrive two cells wide, pushing something else out to pay for a size nobody asked
 /// for in this layout.
-export function hide(pane) {
+function hide(pane) {
   delete layout.span[pane];
   setOn(pane, false);
 }
 
-export function setOn(pane, on) {
+function setOn(pane, on) {
   const off = new Set(layout.off);
   if (on) off.delete(pane);
   else off.add(pane);
@@ -91,7 +91,7 @@ export function setOn(pane, on) {
 /// Everything switched on stays switched on: tabs shows all of them, and grid and columns take the
 /// ones that fit in order and leave the rest where they are. Switching a pane on used to switch
 /// another off, which meant the layout quietly forgot a choice the user had made.
-export function fitting(mode = effectiveMode()) {
+function fitting(mode = effectiveMode()) {
   const on = shown();
   if (mode === "tabs") return on;
   const out = [];
@@ -115,7 +115,7 @@ function fit() {
 ///
 /// A single cycling button meant reaching "tall" by passing through "wide", which rearranged the
 /// whole grid on the way past for no reason the user asked for.
-export function setSpan(pane, kind) {
+function setSpan(pane, kind) {
   // Any deliberate choice retires the seeded default for good.
   layout.autoSpan = true;
   if (layout.span[pane] === kind) delete layout.span[pane];
@@ -130,7 +130,7 @@ export function setSpan(pane, kind) {
 /// The span goes with the place, not with the pane. A drop on the wide cell means "put this one
 /// there", and a pane that arrived in the wide cell and stayed narrow, pushing the other one's width
 /// along with it, is not what the grid looked like a moment before the drop.
-export function swap(a, b) {
+function swap(a, b) {
   const i = layout.order.indexOf(a);
   const j = layout.order.indexOf(b);
   if (i < 0 || j < 0 || i === j) return;
@@ -146,12 +146,12 @@ export function swap(a, b) {
   apply();
 }
 
-export function effectiveMode() {
+function effectiveMode() {
   if (layout.mode !== "auto") return layout.mode;
   return window.matchMedia("(min-width: 900px)").matches ? "columns" : "tabs";
 }
 
-export function apply() {
+function apply() {
   const main = document.getElementById("panes");
   if (!main) return;
   const mode = effectiveMode();
@@ -364,7 +364,7 @@ function watchScroll() {
   );
 }
 
-export function setMode(mode) {
+function setMode(mode) {
   layout.mode = mode;
   save();
   apply();
@@ -468,7 +468,7 @@ function wireSheet() {
   });
 }
 
-export function wire() {
+function wire() {
   // `#pane/<name>` selects a pane on load, so a link can point at one. Also the only way a
   // load-time screenshot can reach a pane that is not the first.
   const deep = /^#pane\/(\w+)$/.exec(location.hash);

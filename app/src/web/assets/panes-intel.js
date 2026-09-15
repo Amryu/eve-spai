@@ -1,18 +1,13 @@
 // The intel card, reproducing `intel_row` (app.rs): a flex-wrap row of chips in a fixed order, on a
 // severity-tinted card. Every colour is a custom property from /api/theme.css; none are written here.
 
-import { state, ico, register, renderers } from "./app.js";
+import { esc, state, ico, register, renderers } from "./app.js";
 import { chips as noteChips, queryHits, titleLines } from "./notes.js";
 
 const CDN = "https://images.evetech.net";
 
 // The app snaps image requests to the CDN's own buckets rather than asking for arbitrary sizes.
 const bucket = (px) => [32, 64, 128, 256, 512].find((b) => b >= px) ?? 512;
-
-export const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-  );
 
 export function fmtAge(secs, compact) {
   const s = Math.max(0, Math.floor(secs));
@@ -37,16 +32,16 @@ const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 1
 /// were nonsense. The app divides by 1000 and groups the thousands, and this now matches it, down to
 /// dropping anything past 15,000 km the way the app's own ceiling does.
 const KM_PER_AU = 149597870.7;
-export const CELESTIAL_MAX_M = 15_000_000;
+const CELESTIAL_MAX_M = 15_000_000;
 
-export function fmtDistance(metres) {
+function fmtDistance(metres) {
   const km = Math.round(metres / 1000);
   const au = km / KM_PER_AU;
   if (au >= 0.1) return `${au.toFixed(1)} AU`;
   return `${km.toLocaleString("en-US")} km`;
 }
 
-export function fmtIsk(v) {
+function fmtIsk(v) {
   if (v >= 1e9) return `${(v / 1e9).toFixed(1)}b`;
   if (v >= 1e6) return `${(v / 1e6).toFixed(1)}m`;
   if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
@@ -276,7 +271,7 @@ export function card(c, lookups, compact, now) {
 }
 
 /// The app's own filters: type, free text, and a jump ceiling.
-export function matches(c, f) {
+function matches(c, f) {
   const r = c.report;
   if (!r.systems.length && !(r.gates ?? []).length) return false;
   switch (f.type) {
@@ -303,7 +298,7 @@ export function matches(c, f) {
   return true;
 }
 
-export const filter = { type: "All", q: "", jumps: 0 };
+const filter = { type: "All", q: "", jumps: 0 };
 
 const TYPES = ["All", "Hostile", "Clear", "Kill", "Threat"];
 

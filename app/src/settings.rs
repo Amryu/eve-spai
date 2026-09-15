@@ -788,7 +788,7 @@ fn default_intel_ttl() -> i64 {
 }
 
 fn default_battle_break() -> i64 {
-    crate::battle::BATTLE_BREAK_SECS
+    br_core::battle::BATTLE_BREAK_SECS
 }
 
 fn default_true() -> bool {

@@ -4,8 +4,7 @@
 // selected in one and showing in the other; here the list is the selection, which is the whole point
 // of the Convos rework this mirrors.
 
-import { register, state, ico } from "./app.js";
-import { esc } from "./panes-intel.js";
+import { esc, ico, modal, register, send, state } from "./app.js";
 
 const KEY = "spai_jabber";
 
@@ -69,7 +68,7 @@ async function sync(force) {
   }
 }
 
-export function open(jid) {
+function open(jid) {
   remember(jid);
   chat = { jid: null, msgs: [], at: 0 };
   paint();
@@ -91,7 +90,7 @@ function markRead() {
   if (!sel || document.visibilityState !== "visible") return;
   if (!el || el.hidden || !el.offsetParent) return;
   if (!(convo(sel)?.unread > 0)) return;
-  post({ JabberRead: { jid: sel } });
+  send({ JabberRead: { jid: sel } });
 }
 
 const stamp = (at) => {
@@ -294,18 +293,13 @@ window.addEventListener("spai:panes", markRead);
 function motdDialog(jid) {
   const c = convo(jid);
   if (!c?.motd) return;
-  const wrap = document.createElement("div");
-  wrap.className = "jstartdlg motddlg";
-  wrap.innerHTML =
-    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+  modal(
+    "motddlg",
     `<h3>${ico("article")} ${esc(c.name)} MOTD</h3>` +
-    // Linkified, not escaped flat: a MOTD is where the doctrine and forum links live, and they are
-    // the part people actually want out of it.
-    `<pre class="jmotdtext">${linkify(c.motd)}</pre></div>`;
-  document.body.append(wrap);
-  wrap.addEventListener("click", (e) => {
-    if (e.target === wrap || e.target.closest(".mclose")) wrap.remove();
-  });
+      // Linkified, not escaped flat: a MOTD is where the doctrine and forum links live, and they are
+      // the part people actually want out of it.
+      `<pre class="jmotdtext">${linkify(c.motd)}</pre>`
+  );
 }
 
 /// One listener, on the pane, for every row there will ever be: the list is rebuilt on every push.
@@ -319,7 +313,7 @@ document.addEventListener("click", (e) => {
   if (shut) {
     const jid = shut.dataset.close;
     // Hiding, not leaving: the same thing the app's tab X does, and it comes back unread.
-    post({ JabberClose: { jid } });
+    send({ JabberClose: { jid } });
     if (sel === jid) {
       remember(null);
       chat = { jid: null, msgs: [], at: 0 };
@@ -346,32 +340,21 @@ document.addEventListener("submit", (e) => {
   const text = input.value.trim();
   if (!text || !sel) return;
   input.value = "";
-  post({ JabberSend: { jid: sel, body: text } });
+  send({ JabberSend: { jid: sel, body: text } });
 });
-
-function post(action) {
-  fetch("/api/action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(action),
-  }).catch(() => {});
-}
 
 /// Start a conversation, the way the app's own dialog does: a field that takes an exact name, and
 /// the conversations you have had recently, filtered as you type.
 function startDialog(kind) {
   const room = kind === "room";
-  const wrap = document.createElement("div");
-  wrap.className = "jstartdlg";
-  wrap.innerHTML =
-    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+  const { wrap, close } = modal(
+    "",
     `<h3>${room ? "Join a room" : "Start a DM"}</h3>` +
-    `<input class="jq" autocomplete="off" placeholder="${room ? "room@conference.…" : "Name"}">` +
-    `<div class="jrecent"></div></div>`;
-  document.body.append(wrap);
+      `<input class="jq" autocomplete="off" placeholder="${room ? "room@conference.…" : "Name"}">` +
+      `<div class="jrecent"></div>`
+  );
   const q = wrap.querySelector(".jq");
   const recent = wrap.querySelector(".jrecent");
-  const close = () => wrap.remove();
 
   const draw = () => {
     const term = q.value.trim().toLowerCase();
@@ -398,7 +381,7 @@ function startDialog(kind) {
 
   const go = (name) => {
     close();
-    post({ JabberOpen: { name, room } });
+    send({ JabberOpen: { name, room } });
     // Optimistic: the app resolves the name and the next push carries the conversation. Until then
     // the list is what it was, which is better than a pane that looks broken.
     const known = side().convos.find(
@@ -408,7 +391,6 @@ function startDialog(kind) {
   };
 
   wrap.addEventListener("click", (e) => {
-    if (e.target === wrap || e.target.closest(".mclose")) return close();
     const p = e.target.closest("[data-pick]");
     if (p) go(p.dataset.name);
   });

@@ -439,7 +439,7 @@ pub struct SpaiApp {
     battle_edit_mode: bool,
     battle_kill_sel: std::collections::HashSet<i64>,
     battle_split_preview:
-        Option<(std::collections::HashSet<i64>, crate::battle::Battle, crate::battle::Battle)>,
+        Option<(std::collections::HashSet<i64>, br_core::battle::Battle, br_core::battle::Battle)>,
     battle_merge_sel: std::collections::HashSet<i64>,
     battle_add_open: bool,
     battle_add_link: String,
@@ -452,7 +452,7 @@ pub struct SpaiApp {
     battle_filter_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     // UI-side snapshots of the worker output, re-cloned only when its signature changes (never
     // per frame), so scrolling/rendering never clones the battle list or the open battle.
-    battle_cards: Vec<(i64, Option<u32>, crate::battle::Battle)>,
+    battle_cards: Vec<(i64, Option<u32>, br_core::battle::Battle)>,
     battle_cards_total: usize,
     battle_cards_filtered: usize,
     battle_cards_ready: bool,
@@ -1210,8 +1210,8 @@ impl SpaiApp {
             verdict_explainer_open: false,
             filter_add_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             battle_filter_confirm_reset: false,
-            battle_overrides: std::sync::Arc::new(std::sync::Mutex::new(crate::battle::Overrides::default())),
-            battle_break_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(crate::battle::BATTLE_BREAK_SECS)),
+            battle_overrides: std::sync::Arc::new(std::sync::Mutex::new(br_core::battle::Overrides::default())),
+            battle_break_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(br_core::battle::BATTLE_BREAK_SECS)),
             battle_overrides_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             battle_add_queue: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             battle_excluded_count: 0,
@@ -2342,27 +2342,8 @@ impl SpaiApp {
                 click = Some(c);
             }
         }
-        self.apply_intel_click(click, ui);
-    }
-
-    fn apply_intel_click(&mut self, click: Option<IntelClick>, ui: &mut egui::Ui) {
-        match click {
-            Some(IntelClick::System(id)) => self.open_system(id),
-            Some(IntelClick::Ship(id)) => self.open_ship(id),
-            Some(IntelClick::Pilot(name)) => {
-                self.pilot_query = name;
-                crate::lookup::spawn_lookup(
-                    self.pilot_query.clone(),
-                    self.pilot_lookup.clone(),
-                    ui.ctx().clone(),
-                );
-                self.pilot_window_open = true;
-                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
-            }
-            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ui.ctx()),
-            Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
-            Some(c @ (IntelClick::Annotate(_) | IntelClick::Notes(_))) => self.notes_click(c),
-            None => {}
+        if let Some(c) = click {
+            self.act_on_intel_click(c, ui.ctx());
         }
     }
 
@@ -2439,7 +2420,9 @@ impl SpaiApp {
                 click = Some(c);
             }
         }
-        self.apply_intel_click(click, ui);
+        if let Some(c) = click {
+            self.act_on_intel_click(c, ui.ctx());
+        }
     }
 
     fn maybe_start_jabber(&mut self, ctx: &egui::Context) {
@@ -6469,14 +6452,7 @@ impl SpaiApp {
                         {
                             resolve = Some(*seq);
                         }
-                        let age = (now - received).max(0);
-                        let age = if age < 60 {
-                            format!("{age}s")
-                        } else if age < 3600 {
-                            format!("{}m", age / 60)
-                        } else {
-                            format!("{}h", age / 3600)
-                        };
+                        let age = fmt_age_compact(now - received);
                         let mut text = egui::RichText::new(chip);
                         if i == 0 {
                             text = text.strong().color(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E));
@@ -7117,23 +7093,8 @@ impl SpaiApp {
             );
         }
         drop(state);
-        self.handle_intel_click(action, ui.ctx());
-    }
-
-    fn handle_intel_click(&mut self, action: Option<IntelClick>, ctx: &egui::Context) {
-        match action {
-            Some(IntelClick::System(id)) => self.open_system(id),
-            Some(IntelClick::Ship(id)) => self.open_ship(id),
-            Some(IntelClick::Pilot(name)) => {
-                self.pilot_query = name;
-                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
-                self.pilot_window_open = true;
-                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
-            }
-            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
-            Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
-            Some(c @ (IntelClick::Annotate(_) | IntelClick::Notes(_))) => self.notes_click(c),
-            None => {}
+        if let Some(c) = action {
+            self.act_on_intel_click(c, ui.ctx());
         }
     }
 
@@ -7815,13 +7776,13 @@ impl SpaiApp {
                         - crate::store::ENGAGEMENT_RETENTION_SECS;
                     let engs = s.load_engagements(since);
                     let overrides = s.load_battle_overrides();
-                    crate::battle::cluster(
+                    br_core::battle::cluster(
                         &engs,
-                        crate::battle::BATTLE_WINDOW_SECS,
-                        crate::battle::BATTLE_MAX_JUMPS,
+                        br_core::battle::BATTLE_WINDOW_SECS,
+                        br_core::battle::BATTLE_MAX_JUMPS,
                         break_gap,
                         &overrides,
-                        |a, b| systems.jumps(a, b, crate::battle::BATTLE_MAX_JUMPS),
+                        |a, b| systems.jumps(a, b, br_core::battle::BATTLE_MAX_JUMPS),
                     )
                     .into_iter()
                     .filter(|b| b.is_anchored() && b.is_two_sided())
@@ -7854,7 +7815,7 @@ impl SpaiApp {
     fn battle_edit_view(&mut self, ui: &mut egui::Ui, now: i64) {
         use egui_phosphor::regular as icon;
         let ctx = ui.ctx().clone();
-        let mut engs: Vec<crate::battle::Engagement> = self
+        let mut engs: Vec<br_core::battle::Engagement> = self
             .battle_detail_cache
             .as_ref()
             .map(|c| c.battle.engagements.clone())
@@ -7895,7 +7856,7 @@ impl SpaiApp {
         let mut do_split = false;
 
         if !splits.is_empty() {
-            let ship_count = |pred: &dyn Fn(&crate::battle::Engagement) -> bool| -> usize {
+            let ship_count = |pred: &dyn Fn(&br_core::battle::Engagement) -> bool| -> usize {
                 let mut set: std::collections::HashSet<i64> = std::collections::HashSet::new();
                 for e in engs.iter().filter(|e| pred(e)) {
                     if e.victim_char != 0 {
@@ -7953,12 +7914,12 @@ impl SpaiApp {
                 .map(|(s, _, _)| s != &sel_ids)
                 .unwrap_or(true);
             if stale {
-                let sel: Vec<crate::battle::Engagement> =
+                let sel: Vec<br_core::battle::Engagement> =
                     engs.iter().filter(|e| sel_ids.contains(&e.kill_id)).cloned().collect();
-                let rest: Vec<crate::battle::Engagement> =
+                let rest: Vec<br_core::battle::Engagement> =
                     engs.iter().filter(|e| !sel_ids.contains(&e.kill_id)).cloned().collect();
-                let pa = crate::battle::preview_battle(sel, break_gap);
-                let pb = crate::battle::preview_battle(rest, break_gap);
+                let pa = br_core::battle::preview_battle(sel, break_gap);
+                let pb = br_core::battle::preview_battle(rest, break_gap);
                 self.battle_split_preview = Some((sel_ids.clone(), pa, pb));
             }
             let (pa, pb) = self
@@ -8357,10 +8318,10 @@ impl SpaiApp {
 
     fn save_battle_report(
         &self,
-        battle: &crate::battle::Battle,
+        battle: &br_core::battle::Battle,
     ) -> anyhow::Result<Option<std::path::PathBuf>> {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name(crate::breport::default_file_name(battle))
+            .set_file_name(battle_file_name(battle))
             .add_filter("EVE Spai battle report", &["json"])
             .save_file()
         else {
@@ -8370,7 +8331,7 @@ impl SpaiApp {
         let now = chrono::Utc::now().timestamp();
         let ship_names = self.battle_ship_names(battle);
         let affiliations = self.battle_affiliations(battle);
-        let doc = crate::breport::BattleReportDoc::new(
+        let doc = br_core::battle::BattleReportDoc::new(
             battle.clone(),
             battle.engagements.clone(),
             overrides,
@@ -8409,7 +8370,7 @@ impl SpaiApp {
 
     fn battle_ship_names(
         &self,
-        battle: &crate::battle::Battle,
+        battle: &br_core::battle::Battle,
     ) -> std::collections::BTreeMap<i64, String> {
         let mut ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
         for e in &battle.engagements {
@@ -8435,8 +8396,8 @@ impl SpaiApp {
 
     fn battle_affiliations(
         &self,
-        battle: &crate::battle::Battle,
-    ) -> std::collections::BTreeMap<i64, crate::battle::Affil> {
+        battle: &br_core::battle::Battle,
+    ) -> std::collections::BTreeMap<i64, br_core::battle::Affil> {
         let mut ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
         for e in &battle.engagements {
             ids.insert(e.victim_char);
@@ -8457,7 +8418,7 @@ impl SpaiApp {
                 let corp_id = a.corp?;
                 Some((
                     id,
-                    crate::battle::Affil {
+                    br_core::battle::Affil {
                         corp_id,
                         corp_name: a.corp_name.unwrap_or_default(),
                         alliance_id: a.alliance.unwrap_or(0),
@@ -8468,12 +8429,12 @@ impl SpaiApp {
             .collect()
     }
 
-    fn build_share_doc(&self, battle: &crate::battle::Battle) -> crate::breport::BattleReportDoc {
+    fn build_share_doc(&self, battle: &br_core::battle::Battle) -> br_core::battle::BattleReportDoc {
         let overrides = self.battle_overrides.lock().unwrap().clone();
         let now = chrono::Utc::now().timestamp();
         let ship_names = self.battle_ship_names(battle);
         let affiliations = self.battle_affiliations(battle);
-        crate::breport::BattleReportDoc::new(
+        br_core::battle::BattleReportDoc::new(
             battle.clone(),
             battle.engagements.clone(),
             overrides,
@@ -8484,7 +8445,7 @@ impl SpaiApp {
         )
     }
 
-    fn start_share(&mut self, battle: &crate::battle::Battle, ctx: &egui::Context) {
+    fn start_share(&mut self, battle: &br_core::battle::Battle, ctx: &egui::Context) {
         match self.share_identity() {
             Some((char_id, path)) => {
                 let doc = self.build_share_doc(battle);
@@ -8728,13 +8689,13 @@ impl SpaiApp {
     fn load_battle_report(&mut self, path: &std::path::Path, ctx: &egui::Context) {
         let parsed = std::fs::read_to_string(path)
             .map_err(anyhow::Error::from)
-            .and_then(|s| crate::breport::BattleReportDoc::from_json(&s));
+            .and_then(|s| br_core::battle::BattleReportDoc::from_json(&s));
         match parsed {
             Ok(doc) => {
                 let b = if doc.engagements.is_empty() {
                     doc.battle
                 } else {
-                    crate::battle::preview_battle(doc.engagements, self.settings.battle_break_secs)
+                    br_core::battle::preview_battle(doc.engagements, self.settings.battle_break_secs)
                 };
                 let title = doc.title.clone().unwrap_or_else(|| {
                     b.systems.first().map(|(_, n, _)| n.clone()).unwrap_or_else(|| "Battle report".into())
@@ -8745,7 +8706,7 @@ impl SpaiApp {
         }
     }
 
-    fn show_imported_report(&mut self, b: crate::battle::Battle, title: String, ctx: &egui::Context) {
+    fn show_imported_report(&mut self, b: br_core::battle::Battle, title: String, ctx: &egui::Context) {
         let ids: Vec<i64> = b
             .engagements
             .iter()
@@ -8758,7 +8719,7 @@ impl SpaiApp {
             .collect();
         self.ensure_type_names(&ids, ctx);
         let inv = b.involvement();
-        let rosters: Vec<Vec<crate::battle::Participant>> =
+        let rosters: Vec<Vec<br_core::battle::Participant>> =
             (0..b.sides.len()).map(|i| b.roster(i)).collect();
         self.loaded_report = Some(LoadedReport {
             title,
@@ -8785,7 +8746,7 @@ impl SpaiApp {
         };
         match done {
             Some(crate::zkill::BuildFromKill::Done(engs, _seed)) => {
-                let b = crate::battle::preview_battle(engs, self.settings.battle_break_secs);
+                let b = br_core::battle::preview_battle(engs, self.settings.battle_break_secs);
                 let title = b
                     .systems
                     .first()
@@ -9862,14 +9823,7 @@ impl SpaiApp {
                             .sense(egui::Sense::click()),
                     );
                     let ship = det.as_ref().map(|d| d.name.clone()).unwrap_or_else(|| "?".to_owned());
-                    let age = now - l.time;
-                    let age_s = if age < 3600 {
-                        format!("{}m", age / 60)
-                    } else if age < 86_400 {
-                        format!("{}h", age / 3600)
-                    } else {
-                        format!("{}d", age / 86_400)
-                    };
+                    let age_s = human_ago(now - l.time);
                     // The fixed-width tail is laid out from the right, so the ship name gets whatever
                     // is left and truncates. Left to itself, a long name sets the row's minimum width
                     // and drags the whole side panel wider as the list loads.
@@ -9881,12 +9835,7 @@ impl SpaiApp {
                         }
                         ui.label(egui::RichText::new(age_s).weak());
                         if l.value > 0.0 {
-                            let isk = if l.value >= 1e9 {
-                                format!("{:.1}B", l.value / 1e9)
-                            } else {
-                                format!("{:.0}M", l.value / 1e6)
-                            };
-                            ui.label(isk);
+                            ui.label(fmt_isk(l.value));
                         }
                         if show_system {
                             if let Some(sys) =
@@ -10144,7 +10093,7 @@ impl SpaiApp {
         let loading = self.type_names_loading.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let resolved = crate::lookup::resolve_type_names(&missing);
+            let resolved = crate::universe::lookup_names(&missing);
             cache.lock().unwrap().extend(resolved);
             *loading.lock().unwrap() = false;
             ctx.request_repaint();
@@ -11169,20 +11118,20 @@ impl SpaiApp {
         st.feed.retain(|(r, _)| r.id != id);
     }
 
+    /// The pilot window, looking the name up.
+    fn open_pilot(&mut self, name: String, ctx: &egui::Context) {
+        self.pilot_query = name;
+        crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
+        self.pilot_window_open = true;
+        self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
+    }
+
+    /// Where every click out of an intel card lands, whichever view or window drew the card.
     fn act_on_intel_click(&mut self, click: IntelClick, ctx: &egui::Context) {
         match click {
             IntelClick::System(id) => self.open_system(id),
             IntelClick::Ship(id) => self.open_ship(id),
-            IntelClick::Pilot(name) => {
-                self.pilot_query = name;
-                crate::lookup::spawn_lookup(
-                    self.pilot_query.clone(),
-                    self.pilot_lookup.clone(),
-                    ctx.clone(),
-                );
-                self.pilot_window_open = true;
-                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
-            }
+            IntelClick::Pilot(name) => self.open_pilot(name, ctx),
             IntelClick::Dscan(url) => self.open_dscan(url, ctx),
             IntelClick::PilotVerdict(name) => self.open_pilot_verdict(name),
             c @ (IntelClick::Annotate(_) | IntelClick::Notes(_)) => self.notes_click(c),
@@ -15232,7 +15181,9 @@ impl SpaiApp {
                 action
             })
             .inner;
-        self.handle_intel_click(action, ui.ctx());
+        if let Some(c) = action {
+            self.act_on_intel_click(c, ui.ctx());
+        }
     }
 
     fn travel_sov_dialog(&mut self, ctx: &egui::Context) {
@@ -16687,19 +16638,8 @@ impl SpaiApp {
             self.region_window = Some(r);
             self.focus_window = Some(egui::ViewportId::from_hash_of("region_window"));
         }
-        match out.intel_click {
-            Some(IntelClick::System(sid)) => self.open_system(sid),
-            Some(IntelClick::Ship(sid)) => self.open_ship(sid),
-            Some(IntelClick::Pilot(name)) => {
-                self.pilot_query = name;
-                crate::lookup::spawn_lookup(self.pilot_query.clone(), self.pilot_lookup.clone(), ctx.clone());
-                self.pilot_window_open = true;
-                self.focus_window = Some(egui::ViewportId::from_hash_of("pilot_window"));
-            }
-            Some(IntelClick::Dscan(url)) => self.open_dscan(url, ctx),
-            Some(IntelClick::PilotVerdict(name)) => self.open_pilot_verdict(name),
-            Some(c @ (IntelClick::Annotate(_) | IntelClick::Notes(_))) => self.notes_click(c),
-            None => {}
+        if let Some(c) = out.intel_click {
+            self.act_on_intel_click(c, ctx);
         }
         if out.show_on_map {
             self.view = View::Map;
@@ -17725,7 +17665,7 @@ impl SpaiApp {
                         ui.horizontal_wrapped(|ui| {
                             // Packs with no channels exist only for battle-report coalition
                             // tagging; an "Apply" button for them would do nothing.
-                            for pack in crate::packs::PACKS.iter().filter(|p| !p.channels.is_empty())
+                            for pack in br_core::packs::PACKS.iter().filter(|p| !p.channels.is_empty())
                             {
                                 let selected = self.settings.configuration_pack == pack.name;
                                 if ui
@@ -18069,12 +18009,13 @@ impl SpaiApp {
         let out = self.filter_add_result.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let res = reqwest::blocking::Client::builder()
-                .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
+            let res = crate::http::client(15)
                 .map_err(|e| e.to_string())
-                .and_then(|c| resolve_char_name(&c, &name));
+                .and_then(|c| match crate::universe::character(&c, &name) {
+                    Ok(Some((_, found))) => Ok(found),
+                    Ok(None) => Err(format!("No pilot named \"{}\"", name.trim())),
+                    Err(e) => Err(format!("lookup failed: {e}")),
+                });
             *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(res);
             ctx.request_repaint();
         });
@@ -19414,7 +19355,7 @@ impl SpaiApp {
                     ui.label(
                         egui::RichText::new("Apply the Imperium preset intel channels.").weak(),
                     );
-                    for pack in crate::packs::PACKS.iter().filter(|p| !p.channels.is_empty()) {
+                    for pack in br_core::packs::PACKS.iter().filter(|p| !p.channels.is_empty()) {
                         ui.horizontal(|ui| {
                             if ui.button(format!("Apply {}", pack.name)).clicked() {
                                 for ch in pack.channels {
@@ -22848,10 +22789,7 @@ pub(crate) fn fetch_dscan_ships(
     ship_index: Option<&std::collections::HashMap<String, (i64, String)>>,
 ) -> Option<Vec<(i64, String, u32)>> {
     let idx = ship_index?;
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
+    let client = crate::http::client(20)
         .ok()?;
     let mut candidates = vec![url.to_string()];
     if !url.contains("/v/") {
@@ -23022,9 +22960,29 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
+/// A saved battle report's file name: its first system and start date.
+fn battle_file_name(battle: &br_core::battle::Battle) -> String {
+    let system = battle
+        .systems
+        .first()
+        .map(|(_, name, _)| name.as_str())
+        .unwrap_or("battle");
+    let safe: String = system
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .collect();
+    let date = chrono::DateTime::from_timestamp(battle.start, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("{safe}-{date}.evespai-br.json")
+}
+
+/// "45s", "12m", "3h", "9d": one unit, for ages that sit in a narrow column.
 fn human_ago(secs: i64) -> String {
     let s = secs.max(0);
-    if s < 3600 {
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
         format!("{}m", s / 60)
     } else if s < 86_400 {
         format!("{}h", s / 3600)
@@ -23119,15 +23077,7 @@ fn day_text(ts: i64) -> String {
 }
 
 fn fmt_isk(isk: f64) -> String {
-    if isk >= 1e9 {
-        format!("{:.1}B", isk / 1e9)
-    } else if isk >= 1e6 {
-        format!("{:.0}M", isk / 1e6)
-    } else if isk >= 1e3 {
-        format!("{:.0}k", isk / 1e3)
-    } else {
-        format!("{isk:.0}")
-    }
+    crate::intel::format_isk(isk.max(0.0) as u64)
 }
 
 fn side_color(i: usize) -> egui::Color32 {
@@ -23237,8 +23187,8 @@ fn eve_type_render_url(id: impl std::fmt::Display, px: f32) -> String {
     format!("https://images.evetech.net/types/{id}/render?size={}", eve_img_size(px))
 }
 
-pub(crate) fn party_badge(ui: &mut egui::Ui, p: &crate::battle::Party, size: f32, clickable: bool) {
-    use crate::battle::PartyKind;
+pub(crate) fn party_badge(ui: &mut egui::Ui, p: &br_core::battle::Party, size: f32, clickable: bool) {
+    use br_core::battle::PartyKind;
     let urls = match p.kind {
         PartyKind::Alliance => Some((
             eve_alliance_logo_url(p.id, size),
@@ -23280,7 +23230,7 @@ pub(crate) fn hull_badge(ui: &mut egui::Ui, type_id: i64, size: f32) {
     ui.add(egui::Image::new(url).fit_to_exact_size(egui::Vec2::splat(size)));
 }
 
-fn side_title(side: &crate::battle::Side) -> String {
+fn side_title(side: &br_core::battle::Side) -> String {
     side.coalition
         .clone()
         .or_else(|| side.parties.first().map(|p| p.name.clone()))
@@ -23407,7 +23357,7 @@ fn toolbar_combo<R>(
     .inner
 }
 
-fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Battle) {
+fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &br_core::battle::Battle) {
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(label).strong());
         ui.label(format!("{} kills", b.kills));
@@ -23428,7 +23378,7 @@ fn battle_preview_summary(ui: &mut egui::Ui, label: &str, b: &crate::battle::Bat
 
 pub(crate) fn battle_row(
     ui: &mut egui::Ui,
-    b: &crate::battle::Battle,
+    b: &br_core::battle::Battle,
     now: i64,
     from_you: Option<u32>,
 ) -> bool {
@@ -23489,11 +23439,11 @@ pub(crate) enum ShipHighlight {
 pub(crate) fn ship_row(
     ui: &mut egui::Ui,
     width: f32,
-    party: &crate::battle::Party,
+    party: &br_core::battle::Party,
     ship: i64,
     pilot: &str,
     name_of: &dyn Fn(i64) -> String,
-    lost: Option<&crate::battle::Lost>,
+    lost: Option<&br_core::battle::Lost>,
     red: egui::Color32,
     highlight: ShipHighlight,
     border: bool,
@@ -24423,10 +24373,10 @@ pub(crate) struct BattleHover {
 
 struct LoadedReport {
     title: String,
-    battle: crate::battle::Battle,
-    inv: crate::battle::Involvement,
-    rosters: Vec<Vec<crate::battle::Participant>>,
-    sorted: Vec<Vec<crate::battle::Participant>>,
+    battle: br_core::battle::Battle,
+    inv: br_core::battle::Involvement,
+    rosters: Vec<Vec<br_core::battle::Participant>>,
+    sorted: Vec<Vec<br_core::battle::Participant>>,
     condensed_rows: Vec<Vec<crate::brview::CondensedRow>>,
     sorted_for: Option<(RosterSort, bool)>,
     hover: Option<BattleHover>,
@@ -24434,10 +24384,10 @@ struct LoadedReport {
 
 pub(crate) fn battle_detail(
     ui: &mut egui::Ui,
-    b: &crate::battle::Battle,
+    b: &br_core::battle::Battle,
     type_names: &std::collections::HashMap<i64, String>,
-    inv: &crate::battle::Involvement,
-    rosters: &[Vec<crate::battle::Participant>],
+    inv: &br_core::battle::Involvement,
+    rosters: &[Vec<br_core::battle::Participant>],
     condensed_rows: &[Vec<crate::brview::CondensedRow>],
     condensed: bool,
     prev_hover: Option<BattleHover>,
@@ -24466,7 +24416,7 @@ pub(crate) fn battle_detail(
             ui.label(egui::RichText::new(format!("over {span_min}m")).weak());
         }
         let now = chrono::Utc::now().timestamp();
-        let remaining = crate::battle::BATTLE_WINDOW_SECS - (now - b.end);
+        let remaining = br_core::battle::BATTLE_WINDOW_SECS - (now - b.end);
         if remaining > 0 {
             let green = egui::Color32::from_rgb(0x6f, 0xcf, 0x7f);
             ui.label(egui::RichText::new(format!("{} Live", icon::BROADCAST)).color(green).strong())
@@ -24631,25 +24581,6 @@ pub(crate) fn condensed_row(
         })
         .response;
     resp.interact(egui::Sense::hover())
-}
-
-fn resolve_char_name(
-    client: &reqwest::blocking::Client,
-    name: &str,
-) -> Result<String, String> {
-    let name = name.trim();
-    let body: serde_json::Value = client
-        .post("https://esi.evetech.net/latest/universe/ids/?datasource=tranquility")
-        .json(&[name])
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json())
-        .map_err(|e| format!("lookup failed: {e}"))?;
-    body.get("characters")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.iter().find_map(|c| c.get("name").and_then(|n| n.as_str())))
-        .map(|s| s.to_owned())
-        .ok_or_else(|| format!("No pilot named \"{name}\""))
 }
 
 fn rule_matches(
@@ -25281,10 +25212,7 @@ pub(crate) const BRIDGE_BOW: f32 = 0.12;
 
 fn open_mumble(link: String) {
     std::thread::spawn(move || {
-        let resolved = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
+        let resolved = crate::http::client(10)
             .ok()
             .and_then(|client| {
                 for attempt in 1..=5 {
@@ -25407,16 +25335,7 @@ pub(crate) fn render_ping(
             .join(", ")
     };
     let now = chrono::Utc::now().timestamp();
-    let age = (now - p.timestamp()).max(0);
-    let ago = if age < 60 {
-        format!("{age}s")
-    } else if age < 3600 {
-        format!("{}m", age / 60)
-    } else if age < 86_400 {
-        format!("{}h", age / 3600)
-    } else {
-        format!("{}d", age / 86_400)
-    };
+    let ago = human_ago(now - p.timestamp());
     let frame = if highlight {
         egui::Frame::group(ui.style())
             .stroke(egui::Stroke::new(2.0, ui.visuals().hyperlink_color))

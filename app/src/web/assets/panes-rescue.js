@@ -3,8 +3,8 @@
 // No send buttons. The desktop's rescue window pings an alliance and pulls people into comms; a page
 // on the LAN should be able to watch that, not do it.
 
-import { ico, register, state } from "./app.js";
-import { esc, fmtAge } from "./panes-intel.js";
+import { esc, ico, register, state } from "./app.js";
+import { fmtAge } from "./panes-intel.js";
 
 const side = () => state.snapshot?.rescue ?? null;
 

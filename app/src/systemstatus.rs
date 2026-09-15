@@ -8,7 +8,6 @@ const INCURSIONS_URL: &str = "https://esi.evetech.net/latest/incursions/";
 const FW_URL: &str = "https://esi.evetech.net/latest/fw/systems/";
 const SOV_URL: &str = "https://esi.evetech.net/latest/sovereignty/map/";
 const SOV_STRUCT_URL: &str = "https://esi.evetech.net/latest/sovereignty/structures/";
-const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 const KILLS_URL: &str = "https://esi.evetech.net/latest/universe/system_kills/";
 const JUMPS_URL: &str = "https://esi.evetech.net/latest/universe/system_jumps/";
 const POLL: Duration = Duration::from_secs(300);
@@ -32,10 +31,7 @@ pub type SharedStatus = Arc<Mutex<HashMap<i64, SysFlags>>>;
 
 pub fn spawn(status: SharedStatus, ctx: egui::Context) {
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(30))
-            .build()
+        let Ok(client) = crate::http::client(30)
         else {
             return;
         };
@@ -129,7 +125,7 @@ fn fetch(
             .filter_map(|s| s.alliance_id)
             .filter(|id| !alliance_names.contains_key(id))
             .collect();
-        resolve_names(client, &wanted, alliance_names);
+        crate::universe::names_into(client, &wanted, alliance_names);
 
         for s in sov {
             let holder = if let Some(aid) = s.alliance_id {
@@ -188,28 +184,3 @@ fn get<T: for<'de> Deserialize<'de>>(
     client.get(url).send()?.json::<T>()
 }
 
-#[derive(Deserialize)]
-struct NameEntry {
-    id: i64,
-    name: String,
-}
-
-fn resolve_names(
-    client: &reqwest::blocking::Client,
-    ids: &[i64],
-    cache: &mut HashMap<i64, String>,
-) {
-    let mut unique: Vec<i64> = ids.to_vec();
-    unique.sort_unstable();
-    unique.dedup();
-    // /universe/names accepts up to 1000 ids per call.
-    for chunk in unique.chunks(1000) {
-        if let Ok(resp) = client.post(NAMES_URL).json(chunk).send() {
-            if let Ok(entries) = resp.json::<Vec<NameEntry>>() {
-                for e in entries {
-                    cache.insert(e.id, e.name);
-                }
-            }
-        }
-    }
-}

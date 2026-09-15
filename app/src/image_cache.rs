@@ -31,14 +31,7 @@ impl EveImageCache {
             let _ = std::fs::create_dir_all(d);
             prune_old(d);
         }
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(concat!(
-                "eve-spai/",
-                env!("CARGO_PKG_VERSION"),
-                " (EVE intel tool; image cache)"
-            ))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let client = crate::http::client(20)
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
         Self { mem: Arc::new(Mutex::new(HashMap::new())), dir, client }
     }

@@ -5,21 +5,20 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::battle::{self, Attacker, Battle, Engagement, Party, PartyKind};
+use br_core::battle::{self, Attacker, Battle, Engagement, Party, PartyKind};
 use crate::geo::Systems;
 use crate::intel::IntelState;
 use crate::settings::{BattleFilter, MatchData, ShipSize};
 
 pub type SharedBattleFilter = Arc<Mutex<BattleFilter>>;
-pub type SharedOverrides = Arc<Mutex<crate::battle::Overrides>>;
+pub type SharedOverrides = Arc<Mutex<br_core::battle::Overrides>>;
 pub type ShipSizes = Arc<HashMap<i64, ShipSize>>;
 
 const R2Z2: &str = "https://r2z2.zkillboard.com/ephemeral";
-const NAMES_URL: &str = "https://esi.evetech.net/latest/universe/names/";
 pub const ANCHOR_JUMPS: u32 = 6;
 const RECENT_WH_SECS: i64 = 600;
 pub type RecentWh = Arc<Mutex<std::collections::HashMap<i64, i64>>>;
-const CANDIDATE_JUMPS: u32 = ANCHOR_JUMPS + crate::battle::BATTLE_MAX_JUMPS;
+const CANDIDATE_JUMPS: u32 = ANCHOR_JUMPS + br_core::battle::BATTLE_MAX_JUMPS;
 const ENGAGEMENT_TTL: i64 = 86_400;
 
 const ZKILL_API: &str = "https://zkillboard.com/api";
@@ -52,10 +51,7 @@ pub fn spawn(
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(30))
-            .build()
+        let Ok(client) = crate::http::client(30)
         else {
             return;
         };
@@ -576,7 +572,7 @@ fn ingest_match_data(
     let mut max = ShipSize::Other;
     for c in std::iter::once(&km.victim).chain(km.attackers.iter()) {
         if let Some(al) = c.alliance_id {
-            if let Some(coal) = crate::packs::coalition_of(al) {
+            if let Some(coal) = br_core::packs::coalition_of(al) {
                 d.coalitions.insert(coal.to_lowercase());
             }
         }
@@ -656,12 +652,6 @@ fn attacker_ship(a: &Combatant, ship_ids: &std::collections::HashSet<i64>) -> i6
         .filter(|&s| s != 0)
         .or_else(|| a.weapon_type_id.filter(|&w| is_listed_hull(w, ship_ids)))
         .unwrap_or(0)
-}
-
-#[derive(Deserialize)]
-struct NameEntry {
-    id: i64,
-    name: String,
 }
 
 #[derive(Deserialize)]
@@ -829,57 +819,11 @@ fn resolve_names(
 ) {
     let mut wanted: Vec<i64> = Vec::new();
     let mut add = |c: &Combatant| {
-        for id in [c.alliance_id, c.corporation_id, c.character_id].into_iter().flatten() {
-            if id != 0 && !names.contains_key(&id) {
-                wanted.push(id);
-            }
-        }
+        wanted.extend([c.alliance_id, c.corporation_id, c.character_id].into_iter().flatten());
     };
     add(&km.victim);
     km.attackers.iter().for_each(&mut add);
-    wanted.sort_unstable();
-    wanted.dedup();
-    // /universe/names allows up to 1000 ids; chunk well under that. A big fleet fight can
-    // reference thousands of ids, so an un-chunked POST would overflow the limit.
-    for chunk in wanted.chunks(200) {
-        resolve_names_batch(client, chunk, names);
-    }
-}
-
-/// Resolve one batch of ids, inserting results into `names`. ESI returns 404 for the
-/// *entire* request if even one id is unresolvable (e.g. a deleted character), so on a
-/// 404 we bisect to isolate and skip the bad id instead of blanking the whole roster.
-fn resolve_names_batch(
-    client: &reqwest::blocking::Client,
-    ids: &[i64],
-    names: &mut HashMap<i64, String>,
-) {
-    if ids.is_empty() {
-        return;
-    }
-    match client.post(NAMES_URL).json(&ids).send() {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(entries) = resp.json::<Vec<NameEntry>>() {
-                for e in entries {
-                    names.insert(e.id, e.name);
-                }
-            }
-        }
-        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND && ids.len() > 1 => {
-            let mid = ids.len() / 2;
-            resolve_names_batch(client, &ids[..mid], names);
-            resolve_names_batch(client, &ids[mid..], names);
-        }
-        Ok(resp) if !resp.status().is_success() => {
-            let status = resp.status();
-            let body = resp.text().unwrap_or_default();
-            crate::esilog::record(
-                "universe/names non-2xx",
-                &format!("status: {status}\nbatch size: {}\nbody:\n{body}", ids.len()),
-            );
-        }
-        _ => {}
-    }
+    crate::universe::names_into(client, &wanted, names);
 }
 
 #[derive(Clone, Default)]
@@ -908,10 +852,7 @@ pub fn build_report_from_kill(
     systems: &Systems,
     ship_ids: &std::collections::HashSet<i64>,
 ) -> Result<(Vec<Engagement>, i64), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; battle import)"))
-        .timeout(Duration::from_secs(30))
-        .build()
+    let client = crate::http::client(30)
         .map_err(|e| e.to_string())?;
     let (seed_km, seed_value) = fetch_kill_by_id(&client, kill_id)
         .ok_or_else(|| format!("Could not fetch kill {kill_id} from zKillboard"))?;

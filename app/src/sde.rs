@@ -42,10 +42,7 @@ pub fn spawn_traits_bake(path: PathBuf, ctx: egui::Context) {
         if baked > 0 {
             return;
         }
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
+        let Ok(client) = crate::http::client(60)
         else {
             return;
         };
@@ -110,10 +107,7 @@ pub fn spawn_download(path: PathBuf, status: SharedStatus, ctx: egui::Context) {
 }
 
 fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-        .timeout(std::time::Duration::from_secs(180))
-        .build()?;
+    let client = crate::http::client(180)?;
     let fetch = |name: &str| -> Result<String> {
         set(SdeStatus::Downloading(format!("Downloading {name}…")));
         let url = format!("{BASE}/{name}");

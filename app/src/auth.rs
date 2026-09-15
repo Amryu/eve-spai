@@ -246,10 +246,7 @@ pub fn refresh_access_token(
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-        .timeout(Duration::from_secs(30))
-        .build()
+    crate::http::client(30)
         .map_err(Into::into)
 }
 

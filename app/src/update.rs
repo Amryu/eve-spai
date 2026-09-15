@@ -143,7 +143,7 @@ fn asset_name() -> &'static str {
 }
 
 fn http() -> Option<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder().user_agent("eve-spai").timeout(Duration::from_secs(20)).build().ok()
+    crate::http::client(20).ok()
 }
 
 /// `announce` marks a user-initiated check: it reports "up to date" and connection failures back to
@@ -214,10 +214,7 @@ fn is_newer(a: &str, b: &str) -> bool {
 
 pub fn download_and_replace(asset_api_url: &str) -> anyhow::Result<()> {
     use anyhow::Context;
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("eve-spai")
-        .timeout(Duration::from_secs(180))
-        .build()?;
+    let client = crate::http::client(180)?;
     let mut req = client.get(asset_api_url).header("Accept", "application/octet-stream");
     if let Some(t) = token() {
         req = req.header("Authorization", format!("token {t}"));

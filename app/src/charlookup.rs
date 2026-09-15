@@ -29,10 +29,7 @@ pub type LookupSender = Sender<String>;
 pub fn spawn_fetcher(cache: LookupCache, ctx: egui::Context) -> LookupSender {
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool; +github.com/Amryu/eve-spai)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -56,7 +53,7 @@ pub fn spawn_fetcher(cache: LookupCache, ctx: egui::Context) -> LookupSender {
 
 fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
     let mut info = LookupInfo { name: name.to_owned(), ..Default::default() };
-    let Some(id) = resolve_id(client, name) else {
+    let Some((id, _)) = crate::universe::character(client, name).ok().flatten() else {
         return info;
     };
     info.char_id = id;
@@ -79,7 +76,7 @@ fn fetch(client: &reqwest::blocking::Client, name: &str) -> LookupInfo {
         info.corp_id = c.corporation_id;
         info.alliance_id = c.alliance_id;
         let ids: Vec<i64> = [c.corporation_id, c.alliance_id].into_iter().flatten().collect();
-        let names = resolve_names(client, &ids);
+        let names = crate::universe::names(client, &ids);
         if let Some(cid) = c.corporation_id {
             info.corp = names.get(&cid).cloned().unwrap_or_default();
         }
@@ -181,44 +178,4 @@ pub fn zkill_stats(client: &reqwest::blocking::Client, id: i64) -> Option<ZkStat
     Some(out)
 }
 
-fn resolve_id(client: &reqwest::blocking::Client, name: &str) -> Option<i64> {
-    #[derive(Deserialize)]
-    struct Ids {
-        characters: Option<Vec<Entity>>,
-    }
-    #[derive(Deserialize)]
-    struct Entity {
-        id: i64,
-        name: String,
-    }
-    let v: Ids = client
-        .post("https://esi.evetech.net/latest/universe/ids/?datasource=tranquility")
-        .json(&[name])
-        .send()
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .ok()?;
-    v.characters?.into_iter().find(|e| e.name.eq_ignore_ascii_case(name)).map(|e| e.id)
-}
 
-pub fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> HashMap<i64, String> {
-    #[derive(Deserialize)]
-    struct Named {
-        id: i64,
-        name: String,
-    }
-    if ids.is_empty() {
-        return HashMap::new();
-    }
-    client
-        .post("https://esi.evetech.net/latest/universe/names/?datasource=tranquility")
-        .json(ids)
-        .send()
-        .ok()
-        .and_then(|r| r.error_for_status().ok())
-        .and_then(|r| r.json::<Vec<Named>>().ok())
-        .map(|v| v.into_iter().map(|n| (n.id, n.name)).collect())
-        .unwrap_or_default()
-}

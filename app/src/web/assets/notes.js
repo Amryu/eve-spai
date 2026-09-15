@@ -5,13 +5,9 @@
 // refused edit (a name taken, a note too long) would leave the page showing something the app does
 // not have. The next push, half a second later, is the confirmation.
 
-import { afterRender, ico, state } from "./app.js";
+import { afterRender, esc, ico, modal as shell, send, state } from "./app.js";
 import { menu } from "./route.js";
 
-const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-  );
 
 const NOTE_MAX = 2000;
 const NAME_MAX = 64;
@@ -27,23 +23,6 @@ const view = () => pane()?.view ?? null;
 const book = () => pane()?.book ?? { folders: [] };
 const canWrite = () => !!state.snapshot?.meta?.allow_writeback;
 const KIND = { system: "System", pilot: "Pilot" };
-
-/// Its own copy of `dialogs.send`: importing dialogs.js from here would close an import cycle
-/// through panes-intel.js, and dialogs.js runs a deep link at load that can reach this module before
-/// it has finished evaluating.
-async function post(action) {
-  if (!canWrite()) return false;
-  try {
-    const r = await fetch("/api/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(action),
-    });
-    return r.ok;
-  } catch {
-    return false;
-  }
-}
 
 /// Lookups rebuilt only when the snapshot hands over a new view object, which is once per edit.
 let memoFor = null;
@@ -70,7 +49,7 @@ function catalogue(kind) {
   return (kind === "system" ? v?.system_tags : v?.pilot_tags) ?? [];
 }
 
-export function entryOf(kind, id) {
+function entryOf(kind, id) {
   const v = view();
   return (kind === "system" ? v?.systems : v?.pilots)?.[id] ?? null;
 }
@@ -184,26 +163,12 @@ function subjectOf(kind, id, name) {
 /// with null when dismissed.
 function modal(cls, html, wire) {
   return new Promise((resolve) => {
-    const wrap = document.createElement("div");
-    wrap.className = `jstartdlg altdlg ${cls}`;
-    wrap.innerHTML = `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>${html}</div>`;
-    document.body.append(wrap);
-    let settled = false;
-    const done = (v) => {
-      if (settled) return;
-      settled = true;
-      wrap.remove();
-      document.removeEventListener("keydown", key);
-      resolve(v);
-    };
-    const key = (e) => {
-      if (e.key === "Escape") done(null);
-    };
-    document.addEventListener("keydown", key);
-    wrap.addEventListener("click", (e) => {
-      if (e.target === wrap || e.target.closest(".mclose")) done(null);
+    let value = null;
+    const { wrap, close } = shell(`altdlg ${cls}`, html, { escape: true, onClose: () => resolve(value) });
+    wire(wrap, (v) => {
+      value = v;
+      close();
     });
-    wire(wrap, done);
   });
 }
 
@@ -377,7 +342,7 @@ export function openEditor(subject, name, folderId = null) {
       const n = wrap.querySelector("[data-newname]");
       const nameVal = n.value.trim();
       if (!nameVal) return;
-      const ok = await post({
+      const ok = await send({
         Notes: { PutTag: { folder, id: null, kind: KIND[kind], name: nameVal, color: unhex(wrap.querySelector("[data-newcolor]").value) } },
       });
       if (!ok) return err("Could not add the tag.");
@@ -390,9 +355,9 @@ export function openEditor(subject, name, folderId = null) {
       const clear = !!e.target.closest("[data-clear]");
       const note = clear ? "" : wrap.querySelector("textarea").value;
       const tags = clear ? [] : [...draft];
-      const ok = await post({ Notes: { SetEntry: { folder, subject, note, tags } } });
+      const ok = await send({ Notes: { SetEntry: { folder, subject, note, tags } } });
       if (!ok) return err("Could not save. The web view may be read only.");
-      if (folder) post({ NotesTarget: { folder } });
+      if (folder) send({ NotesTarget: { folder } });
       close();
     }
   });
@@ -452,7 +417,7 @@ export function quickMenu(x, y, subject, name) {
     if (pick === "manage") return openManager(kind);
     if (pick.startsWith("tag:")) {
       const tag = pick.slice(4);
-      post({ Notes: { SetTag: { folder: target, subject, tag, on: !mine.has(tag) } } });
+      send({ Notes: { SetTag: { folder: target, subject, tag, on: !mine.has(tag) } } });
     }
   });
   return true;
@@ -476,7 +441,7 @@ document.addEventListener("contextmenu", (e) => {
 
 let mgr = null;
 
-export function openManager(kind = "pilot") {
+function openManager(kind = "pilot") {
   mgr?.close();
   const wrap = document.createElement("div");
   wrap.className = "jstartdlg altdlg notesdlg";
@@ -659,11 +624,11 @@ function wireManager(wrap, st, close) {
   }, true);
   wrap.addEventListener("change", (e) => {
     const d = e.target.closest("[data-dcolor]");
-    if (d) return post({ DefaultTagColor: { id: d.dataset.dcolor, color: unhex(d.value) } });
+    if (d) return send({ DefaultTagColor: { id: d.dataset.dcolor, color: unhex(d.value) } });
     const c = e.target.closest("[data-tcolor]");
     if (!c) return;
     const t = tagOf(c.dataset.tcolor);
-    if (t) post({ Notes: { PutTag: { folder: st.sel, id: t.id, kind: t.kind, name: t.name, color: unhex(c.value) } } });
+    if (t) send({ Notes: { PutTag: { folder: st.sel, id: t.id, kind: t.kind, name: t.name, color: unhex(c.value) } } });
   });
   wrap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.closest("[data-tnew]")) wrap.querySelector("[data-tadd]")?.click();
@@ -673,7 +638,7 @@ function wireManager(wrap, st, close) {
     const t = e.target;
     if (t === wrap || t.closest(".mclose")) return close();
     const dr = t.closest("[data-dreset]");
-    if (dr) return post({ DefaultTagColor: { id: dr.dataset.dreset, color: null } });
+    if (dr) return send({ DefaultTagColor: { id: dr.dataset.dreset, color: null } });
     // Going to a system or pilot opens its dialog, which sits under this modal.
     if (t.closest(".nlink")) return close();
     const k = t.closest("[data-mkind]");
@@ -690,7 +655,7 @@ function wireManager(wrap, st, close) {
     }
     if (t.closest("[data-mnew]")) {
       const name = await ask("New folder");
-      if (name) post({ Notes: { CreateFolder: { parent: null, name } } });
+      if (name) send({ Notes: { CreateFolder: { parent: null, name } } });
       return;
     }
     if (t.closest("[data-mimport]")) return openImport();
@@ -702,24 +667,24 @@ function wireManager(wrap, st, close) {
       switch (fact) {
         case "sub": {
           const name = await ask(`New folder in ${f.name}`);
-          if (name) post({ Notes: { CreateFolder: { parent: f.id, name } } });
+          if (name) send({ Notes: { CreateFolder: { parent: f.id, name } } });
           break;
         }
         case "rename": {
           const name = await ask("Rename folder", f.name);
-          if (name && name !== f.name) post({ Notes: { RenameFolder: { id: f.id, name } } });
+          if (name && name !== f.name) send({ Notes: { RenameFolder: { id: f.id, name } } });
           break;
         }
         case "move": {
           const to = await pickFolder(`Move ${f.name} into`, { top: true, skip: f.id });
-          if (to != null) post({ Notes: { MoveFolder: { id: f.id, parent: to || null } } });
+          if (to != null) send({ Notes: { MoveFolder: { id: f.id, parent: to || null } } });
           break;
         }
         case "online":
-          post({ Notes: { SetOnline: { id: f.id, on: f.online === false } } });
+          send({ Notes: { SetOnline: { id: f.id, on: f.online === false } } });
           break;
         case "target":
-          post({ NotesTarget: { folder: f.id } });
+          send({ NotesTarget: { folder: f.id } });
           break;
         case "export":
           openExport(f.id);
@@ -740,7 +705,7 @@ function wireManager(wrap, st, close) {
             `This deletes ${inside.length} folder${inside.length === 1 ? "" : "s"} and ${items} tag${items === 1 ? "" : "s"} and entr${items === 1 ? "y" : "ies"} in them. Export it first to keep a copy.`,
             [["delete", "Delete", "mno"], ["cancel", "Cancel"]]
           );
-          if (sure === "delete") post({ Notes: { DeleteFolder: { id: f.id } } });
+          if (sure === "delete") send({ Notes: { DeleteFolder: { id: f.id } } });
           break;
         }
       }
@@ -751,13 +716,13 @@ function wireManager(wrap, st, close) {
     if (rn) {
       const tag = tagOf(rn.dataset.trename);
       const name = tag && (await ask("Rename tag", tag.name));
-      if (name && name !== tag.name) post({ Notes: { PutTag: { folder: st.sel, id: tag.id, kind: tag.kind, name, color: tag.color } } });
+      if (name && name !== tag.name) send({ Notes: { PutTag: { folder: st.sel, id: tag.id, kind: tag.kind, name, color: tag.color } } });
       return;
     }
     const tm = t.closest("[data-tmove]");
     if (tm) {
       const to = await pickFolder("Move tag to");
-      if (to) post({ Notes: { MoveTag: { id: tm.dataset.tmove, to } } });
+      if (to) send({ Notes: { MoveTag: { id: tm.dataset.tmove, to } } });
       return;
     }
     const td = t.closest("[data-tdel]");
@@ -769,7 +734,7 @@ function wireManager(wrap, st, close) {
         `It comes off ${used} entr${used === 1 ? "y" : "ies"}. Alert rules naming it stop matching.`,
         [["delete", "Delete", "mno"], ["cancel", "Cancel"]]
       );
-      if (sure === "delete") post({ Notes: { DeleteTag: { id: td.dataset.tdel } } });
+      if (sure === "delete") send({ Notes: { DeleteTag: { id: td.dataset.tdel } } });
       return;
     }
     if (t.closest("[data-tadd]")) {
@@ -777,7 +742,7 @@ function wireManager(wrap, st, close) {
       const name = n.value.trim();
       if (!name) return;
       const color = unhex(wrap.querySelector("[data-tnewcolor]").value);
-      post({ Notes: { PutTag: { folder: st.sel, id: null, kind: KIND[st.kind], name, color } } });
+      send({ Notes: { PutTag: { folder: st.sel, id: null, kind: KIND[st.kind], name, color } } });
       n.value = "";
       return;
     }
@@ -790,11 +755,11 @@ function wireManager(wrap, st, close) {
     const em = t.closest("[data-emove]");
     if (em) {
       const to = await pickFolder("Move to folder", { skip: null });
-      if (to && to !== st.sel) post({ Notes: { MoveEntry: { from: st.sel, to, subject: subject(em.dataset.emove) } } });
+      if (to && to !== st.sel) send({ Notes: { MoveEntry: { from: st.sel, to, subject: subject(em.dataset.emove) } } });
       return;
     }
     const ed = t.closest("[data-edel]");
-    if (ed) post({ Notes: { RemoveEntry: { folder: st.sel, subject: subject(ed.dataset.edel) } } });
+    if (ed) send({ Notes: { RemoveEntry: { folder: st.sel, subject: subject(ed.dataset.edel) } } });
   });
 }
 
@@ -921,7 +886,7 @@ function openImport() {
           if (pick !== "Overwrite" && pick !== "Merge") return;
           mode = pick;
         }
-        const ok = await post({ Notes: { Import: { export: exp, mode, parent } } });
+        const ok = await send({ Notes: { Import: { export: exp, mode, parent } } });
         if (!ok) return err("Could not import. The web view may be read only.");
         done(true);
       });

@@ -20,6 +20,47 @@ export function ico(name) {
   return span.outerHTML;
 }
 
+export const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  );
+
+/// Posts one action to the app. Resolves false without trying when the page may not write back.
+export function send(action) {
+  if (!state.snapshot?.meta?.allow_writeback) return Promise.resolve(false);
+  return fetch("/api/action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(action),
+  })
+    .then((r) => r.ok)
+    .catch(() => false);
+}
+
+/// A dialog over the page, dismissed by its close button or a click on the backdrop. Escape closes it
+/// only when `escape` is set: most dialogs leave Escape to the field that has focus. `onClose` runs
+/// once, however it closed.
+export function modal(cls, html, { escape = false, onClose } = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = ["jstartdlg", cls].filter(Boolean).join(" ");
+  wrap.innerHTML = `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>${html}</div>`;
+  document.body.append(wrap);
+  let open = true;
+  const key = (e) => e.key === "Escape" && close();
+  const close = () => {
+    if (!open) return;
+    open = false;
+    wrap.remove();
+    document.removeEventListener("keydown", key);
+    onClose?.();
+  };
+  if (escape) document.addEventListener("keydown", key);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target.closest(".mclose")) close();
+  });
+  return { wrap, close };
+}
+
 export const PANES = ["intel", "alerts", "pings", "map", "jabber", "rescue"];
 
 const TITLES = { intel: "Intel", alerts: "Alerts", pings: "Fleets", map: "Map", jabber: "Jabber", rescue: "Rescue" };

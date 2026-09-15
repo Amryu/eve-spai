@@ -1,4 +1,3 @@
-use std::time::Duration;
 
 pub fn pushover(token: &str, user: &str, message: &str) {
     if token.trim().is_empty() || user.trim().is_empty() {
@@ -8,10 +7,7 @@ pub fn pushover(token: &str, user: &str, message: &str) {
     let user = user.trim().to_owned();
     let message = message.to_owned();
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(15))
-            .build()
+        let Ok(client) = crate::http::client(15)
         else {
             return;
         };

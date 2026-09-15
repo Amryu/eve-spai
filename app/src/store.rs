@@ -895,7 +895,7 @@ impl Store {
         );
     }
 
-    pub fn save_engagement(&self, e: &crate::battle::Engagement) {
+    pub fn save_engagement(&self, e: &br_core::battle::Engagement) {
         if let Ok(json) = serde_json::to_string(e) {
             self.exec_historic(
                 "INSERT OR REPLACE INTO engagements(kill_id, time, system_id, json)
@@ -905,7 +905,7 @@ impl Store {
         }
     }
 
-    pub fn load_engagements(&self, since: i64) -> Vec<crate::battle::Engagement> {
+    pub fn load_engagements(&self, since: i64) -> Vec<br_core::battle::Engagement> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self
             .conn
@@ -982,8 +982,8 @@ impl Store {
         };
     }
 
-    pub fn load_battle_overrides(&self) -> crate::battle::Overrides {
-        let mut o = crate::battle::Overrides::default();
+    pub fn load_battle_overrides(&self) -> br_core::battle::Overrides {
+        let mut o = br_core::battle::Overrides::default();
         if let Ok(mut stmt) =
             self.conn.prepare("SELECT kill_id, group_tag, excluded FROM battle_overrides")
         {
@@ -1010,7 +1010,7 @@ impl Store {
         o
     }
 
-    pub fn list_excluded_engagements(&self) -> Vec<crate::battle::Engagement> {
+    pub fn list_excluded_engagements(&self) -> Vec<br_core::battle::Engagement> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
             "SELECT e.json FROM engagements e JOIN battle_overrides o ON e.kill_id=o.kill_id
@@ -2145,7 +2145,7 @@ mod tests {
         s
     }
 
-    fn an_engagement(kill_id: i64, time: i64) -> crate::battle::Engagement {
+    fn an_engagement(kill_id: i64, time: i64) -> br_core::battle::Engagement {
         serde_json::from_value(serde_json::json!({
             "kill_id": kill_id,
             "time": time,

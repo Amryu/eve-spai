@@ -566,7 +566,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                     want.into_iter().filter(|k| !have.contains_key(k)).collect()
                 };
                 if !missing.is_empty() {
-                    let got = crate::lookup::resolve_type_names(&missing);
+                    let got = crate::universe::lookup_names(&missing);
                     cache.lock().unwrap_or_else(|e| e.into_inner()).extend(got);
                 }
             }

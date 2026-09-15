@@ -139,7 +139,7 @@ impl CopyState {
             if rest.is_empty() {
                 return;
             }
-            let remote = crate::lookup::resolve_type_names(&rest);
+            let remote = crate::universe::lookup_names(&rest);
             if remote.is_empty() {
                 return;
             }

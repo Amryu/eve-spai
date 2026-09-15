@@ -58,10 +58,7 @@ struct AffilResp {
 
 pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -92,7 +89,7 @@ pub fn spawn(cache: SharedAffil, ctx: egui::Context) {
                                 ids.push(al);
                             }
                         }
-                        let names = crate::lookup::resolve_type_names(&ids);
+                        let names = crate::universe::lookup_names(&ids);
                         let now = chrono::Utc::now().timestamp();
                         let mut c = cache.lock().unwrap();
                         for a in list {

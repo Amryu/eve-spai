@@ -2,15 +2,11 @@
 // raise a viewport on a machine in another room, which is why a badge tap is a plain GET and never
 // an IntelClick.
 
-import { ico, state } from "./app.js";
+import { esc, ico, modal, send, state } from "./app.js";
 import { menu } from "./route.js";
 import { card, fmtAge } from "./panes-intel.js";
 import { section as notesSection } from "./notes.js";
 
-const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-  );
 
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
 
@@ -176,7 +172,7 @@ function dragify(node) {
   node.addEventListener("pointercancel", drop);
 }
 
-export function close(kind = null) {
+function close(kind = null) {
   for (const [k, d] of shells) {
     if (kind == null || k === kind) d.hidden = true;
   }
@@ -864,19 +860,13 @@ function showIntel(id) {
     (c.report.systems ?? []).some((s) => s.id === id)
   );
   const name = cards[0]?.report?.systems?.find((s) => s.id === id)?.name ?? id;
-  const wrap = document.createElement("div");
-  wrap.className = "jstartdlg intelmodal";
-  wrap.innerHTML =
-    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+  modal(
+    "intelmodal",
     `<h3>${ico("warning")} ${esc(name)}</h3>` +
-    (cards.length
-      ? `<div class="feed">${cards.map((c) => card(c, state.snapshot?.intel?.lookups, false, Math.floor(Date.now() / 1000))).join("")}</div>`
-      : `<p class="placeholder">Nothing in the feed for this system any more.</p>`) +
-    `</div>`;
-  document.body.append(wrap);
-  wrap.addEventListener("click", (e) => {
-    if (e.target === wrap || e.target.closest(".mclose")) wrap.remove();
-  });
+      (cards.length
+        ? `<div class="feed">${cards.map((c) => card(c, state.snapshot?.intel?.lookups, false, Math.floor(Date.now() / 1000))).join("")}</div>`
+        : `<p class="placeholder">Nothing in the feed for this system any more.</p>`)
+  );
 }
 
 /// What a row offers, which depends on the kind of route and on what the system already is.
@@ -965,28 +955,24 @@ async function showAlternatives(at, kind, onPick) {
     return;
   }
   const secCol = (v) => `var(--sec-${Math.min(10, Math.max(0, Math.round(v * 10)))})`;
-  const wrap = document.createElement("div");
-  wrap.className = "jstartdlg altdlg";
-  wrap.innerHTML =
-    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+  const { wrap, close } = modal(
+    "altdlg",
     `<h3>In range of both</h3>` +
-    (rows.length
-      ? `<ul class="ravoidrows">` +
-        rows
-          .map(
-            (s) =>
-              `<li><button data-alt="${s.id}" style="color:${secCol(s.security)}">${esc(s.name)}</button></li>`
-          )
-          .join("") +
-        `</ul>`
-      : `<p class="placeholder">Nothing else is in range of both.</p>`) +
-    `</div>`;
-  document.body.append(wrap);
+      (rows.length
+        ? `<ul class="ravoidrows">` +
+          rows
+            .map(
+              (s) =>
+                `<li><button data-alt="${s.id}" style="color:${secCol(s.security)}">${esc(s.name)}</button></li>`
+            )
+            .join("") +
+          `</ul>`
+        : `<p class="placeholder">Nothing else is in range of both.</p>`)
+  );
   wrap.addEventListener("click", (e) => {
-    if (e.target === wrap || e.target.closest(".mclose")) return wrap.remove();
     const b2 = e.target.closest("[data-alt]");
     if (!b2) return;
-    wrap.remove();
+    close();
     const anchors = routeReq.anchors;
     routeReq.anchors = [...anchors.slice(0, -1), Number(b2.dataset.alt), anchors[anchors.length - 1]];
     fetchRoute();
@@ -1006,32 +992,29 @@ function saveRoute(kind) {
   const wh = !!routeOpts[routeAt]?.uses_wormhole;
   // The page's own dialog, not the browser's. `prompt` blocks the whole tab, looks like a phishing
   // box on a phone, and cannot say the one thing that matters here, which is the expiry.
-  const wrap = document.createElement("div");
-  wrap.className = "jstartdlg altdlg";
-  wrap.innerHTML =
-    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+  const { wrap, close } = modal(
+    "altdlg",
     `<h3>Save route</h3>` +
-    `<input class="jq" placeholder="Name" autocomplete="off">` +
-    (wh
-      ? `<p class="rdetour">${ico("warning")} Planned through scanned wormholes. Those chains move, ` +
-        `so this is deleted a day after saving rather than quietly becoming wrong.</p>`
-      : "") +
-    `<p class="rsave"><button data-do-save>Save</button></p></div>`;
-  document.body.append(wrap);
+      `<input class="jq" placeholder="Name" autocomplete="off">` +
+      (wh
+        ? `<p class="rdetour">${ico("warning")} Planned through scanned wormholes. Those chains move, ` +
+          `so this is deleted a day after saving rather than quietly becoming wrong.</p>`
+        : "") +
+      `<p class="rsave"><button data-do-save>Save</button></p>`
+  );
   const field = wrap.querySelector(".jq");
   field.focus();
   const go = () => {
     const name = field.value.trim();
     if (!name) return;
-    wrap.remove();
+    close();
     commitSave(name, kind, a, wh);
   };
   field.addEventListener("keydown", (e) => {
     if (e.key === "Enter") go();
-    if (e.key === "Escape") wrap.remove();
+    if (e.key === "Escape") close();
   });
   wrap.addEventListener("click", (e) => {
-    if (e.target === wrap || e.target.closest(".mclose")) return wrap.remove();
     if (e.target.closest("[data-do-save]")) go();
   });
 }
@@ -1064,38 +1047,34 @@ async function loadRoute(onPick) {
   } catch {
     return;
   }
-  const wrap = document.createElement("div");
-  wrap.className = "jstartdlg altdlg";
-  wrap.innerHTML =
-    `<div class="mpanel"><button class="mclose" aria-label="Close">${ico("x")}</button>` +
+  const { wrap, close } = modal(
+    "altdlg",
     `<h3>Saved routes</h3>` +
-    (rows.length
-      ? `<ul class="ravoidrows">` +
-        rows
-          .map(
-            (r, i) =>
-              `<li><button data-load="${i}">${esc(r.route.name)}` +
-              `<em>${esc(r.from_name ?? "")} → ${esc(r.to_name ?? "")} · ${esc(r.route.kind)}` +
-              `${r.route.via_wormholes ? " · expires" : ""}</em></button>` +
-              `<button data-forget="${esc(r.route.name)}" title="Forget">${ico("x")}</button></li>`
-          )
-          .join("") +
-        `</ul>`
-      : `<p class="placeholder">Nothing saved yet.</p>`) +
-    `</div>`;
-  document.body.append(wrap);
+      (rows.length
+        ? `<ul class="ravoidrows">` +
+          rows
+            .map(
+              (r, i) =>
+                `<li><button data-load="${i}">${esc(r.route.name)}` +
+                `<em>${esc(r.from_name ?? "")} → ${esc(r.to_name ?? "")} · ${esc(r.route.kind)}` +
+                `${r.route.via_wormholes ? " · expires" : ""}</em></button>` +
+                `<button data-forget="${esc(r.route.name)}" title="Forget">${ico("x")}</button></li>`
+            )
+            .join("") +
+          `</ul>`
+        : `<p class="placeholder">Nothing saved yet.</p>`)
+  );
   wrap.addEventListener("click", async (e) => {
-    if (e.target === wrap || e.target.closest(".mclose")) return wrap.remove();
     const f = e.target.closest("[data-forget]");
     if (f) {
       await send({ DeleteRoute: { name: f.dataset.forget } });
-      wrap.remove();
+      close();
       return;
     }
     const b = e.target.closest("[data-load]");
     if (!b) return;
     const r = rows[Number(b.dataset.load)].route;
-    wrap.remove();
+    close();
     avoidOnce.clear();
     for (const id of r.avoid ?? []) avoidOnce.add(id);
     titansOnce.clear();
@@ -1104,20 +1083,6 @@ async function loadRoute(onPick) {
     legPick = [];
     showRoute(r.kind, r.anchors, onPick);
   });
-}
-
-export async function send(action) {
-  if (!state.snapshot?.meta?.allow_writeback) return false;
-  try {
-    const r = await fetch("/api/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(action),
-    });
-    return r.ok;
-  } catch {
-    return false;
-  }
 }
 
 // One listener on the document rather than one per chip: panes re-render constantly, and rebinding

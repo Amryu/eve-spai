@@ -30,13 +30,13 @@ const write = (k, v) => {
   }
 };
 
-export const audio = { muted: read(MUTE, false), volume: read(VOL, 1) };
+const audio = { muted: read(MUTE, false), volume: read(VOL, 1) };
 
 /// A mobile browser refuses audio until a user gesture, so nothing here works before one.
 ///
 /// The silent one-sample buffer is the standard iOS unlock: resuming the context is not enough on
 /// its own. The gesture is needed once per page load, not once per device.
-export async function arm() {
+async function arm() {
   if (armed) return true;
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -77,7 +77,7 @@ function gateAllows(sev, now) {
   return now - lastAt >= COOLDOWN_MS || sev > lastSev;
 }
 
-export async function play(name, sev) {
+async function play(name, sev) {
   if (!armed || audio.muted || !name || name === "off") return;
   const now = Date.now();
   if (!gateAllows(sev, now)) return;
@@ -91,7 +91,7 @@ export async function play(name, sev) {
   src.start(0);
 }
 
-export function setMuted(m) {
+function setMuted(m) {
   audio.muted = m;
   write(MUTE, m);
   if (gain) gain.gain.value = m ? 0 : audio.volume;

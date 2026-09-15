@@ -1,14 +1,8 @@
 // The fleet pings pane, reproducing `render_ping` (app.rs). A plain ping is not a degenerate fleet
 // ping, so it renders as its own shape.
 
-import { ico, register, state } from "./app.js";
-import { send } from "./dialogs.js";
+import { esc, ico, register, send, state } from "./app.js";
 import { fmtAge } from "./panes-intel.js";
-
-const esc = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-  );
 
 /// `PapType`: strategic reads red, peacetime amber, anything else is free text and stays weak.
 function papTag(pap) {

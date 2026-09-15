@@ -473,7 +473,7 @@ fn intel_feed_scene(
 /// filled by the brview worker, and headless starts no worker, so the scene seeds the selection
 /// and the cache itself.
 fn battle_detail_scene(name: &'static str, size: [f32; 2]) -> Scene {
-    use crate::battle::{Battle, Engagement, Party, PartyKind};
+    use br_core::battle::{Battle, Engagement, Party, PartyKind};
     harness::scratch_profile();
     let battle = Battle {
         engagements: vec![Engagement {

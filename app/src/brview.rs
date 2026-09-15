@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::battle::{Battle, Involvement, Participant, PartyKind};
+use br_core::battle::{Battle, Involvement, Participant, PartyKind};
 use crate::geo::Systems;
 use crate::intel::IntelState;
 use crate::settings::{battle_decision, BattleFilter, MatchData, RuleAction, ShipSize};
@@ -121,7 +121,7 @@ fn match_data(
             match p.kind {
                 PartyKind::Alliance => {
                     d.alliances.insert(p.name.to_lowercase());
-                    if let Some(c) = crate::packs::coalition_of(p.id) {
+                    if let Some(c) = br_core::packs::coalition_of(p.id) {
                         d.coalitions.insert(c.to_lowercase());
                     }
                 }

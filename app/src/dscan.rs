@@ -63,10 +63,7 @@ pub fn looks_like_local(text: &str) -> Option<usize> {
 }
 
 pub fn upload(text: &str) -> anyhow::Result<String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("eve-spai")
-        .timeout(std::time::Duration::from_secs(20))
-        .build()?;
+    let client = crate::http::client(20)?;
     // The site's form POSTs `paste=<text>` to "/" and replies "OK;<id>" / "ERROR;<msg>".
     let body = client
         .post("https://dscan.info/")

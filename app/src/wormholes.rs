@@ -398,10 +398,7 @@ struct ScoutSig {
 
 pub fn spawn_scout(ctx: egui::Context) {
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
+        let Ok(client) = crate::http::client(30)
         else {
             return;
         };

@@ -1,7 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -136,10 +135,7 @@ pub fn valid_session(store_path: &Path, char_id: i64) -> Option<String> {
 }
 
 fn http_client() -> reqwest::Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-        .timeout(Duration::from_secs(45))
-        .build()
+    crate::http::client(45)
 }
 
 pub fn gzip_json(doc: &BattleReportDoc) -> std::io::Result<Vec<u8>> {

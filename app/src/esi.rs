@@ -22,10 +22,7 @@ pub type SharedPlayer = Arc<Mutex<Player>>;
 
 pub fn spawn_location_poller(client_id: String, player: SharedPlayer, ctx: egui::Context) {
     std::thread::spawn(move || {
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -107,10 +104,7 @@ pub fn set_waypoint(
         else {
             return;
         };
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -130,10 +124,7 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
         else {
             return;
         };
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -164,10 +155,7 @@ pub fn fetch_jump_skills(
         else {
             return;
         };
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -209,10 +197,7 @@ pub fn save_fitting(
         else {
             return;
         };
-        let Ok(client) = reqwest::blocking::Client::builder()
-            .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-            .timeout(Duration::from_secs(20))
-            .build()
+        let Ok(client) = crate::http::client(20)
         else {
             return;
         };
@@ -238,10 +223,7 @@ pub type ShipTypeMap = Arc<std::collections::HashMap<i64, (String, String)>>;
 
 #[cfg(feature = "fc-rescue")]
 fn esi_client() -> Option<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent(concat!("eve-spai/", env!("CARGO_PKG_VERSION"), " (EVE intel tool)"))
-        .timeout(Duration::from_secs(20))
-        .build()
+    crate::http::client(20)
         .ok()
 }
 
@@ -329,27 +311,6 @@ fn fleet_is_registered(
         .unwrap_or(false)
 }
 
-#[cfg(feature = "fc-rescue")]
-fn resolve_names(client: &reqwest::blocking::Client, ids: &[i64]) -> std::collections::HashMap<i64, String> {
-    #[derive(Deserialize)]
-    struct Named {
-        id: i64,
-        name: String,
-    }
-    if ids.is_empty() {
-        return std::collections::HashMap::new();
-    }
-    client
-        .post("https://esi.evetech.net/latest/universe/names/?datasource=tranquility")
-        .json(ids)
-        .send()
-        .ok()
-        .and_then(|r| r.error_for_status().ok())
-        .and_then(|r| r.json::<Vec<Named>>().ok())
-        .map(|v| v.into_iter().map(|n| (n.id, n.name)).collect())
-        .unwrap_or_default()
-}
-
 /// Poll the FC's fleet composition while Rescue Mode is active and write it into `RescueState`.
 /// Every network path degrades to keeping the previous snapshot (marked stale); it never panics.
 #[cfg(feature = "fc-rescue")]
@@ -387,7 +348,7 @@ pub fn spawn_fleet_poller(
                     continue;
                 };
                 let ids: Vec<i64> = raw.iter().map(|m| m.character_id).collect();
-                let names = resolve_names(&client, &ids);
+                let names = crate::universe::names(&client, &ids);
                 let members = raw
                     .into_iter()
                     .map(|m| {
