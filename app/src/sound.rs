@@ -438,6 +438,7 @@ mod tests {
         (voiced.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / voiced.len().max(1) as f64).sqrt()
     }
 
+    #[cfg(feature = "fc-rescue")]
     fn render(name: &str) -> Vec<i16> {
         wav(&preset(name).unwrap())[44..]
             .chunks_exact(2)
