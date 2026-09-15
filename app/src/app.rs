@@ -1724,84 +1724,26 @@ impl SpaiApp {
     }
 
     fn alert_history_ui(&mut self, ui: &mut egui::Ui) {
-        if self.alert_feed.is_empty() {
-            ui.label(egui::RichText::new("None yet.").weak());
-            return;
-        }
-        let mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> =
-            self.alert_feed.iter().rev().take(60).cloned().collect();
-        {
-            let mut cache = self.pilots.lock().unwrap_or_else(|e| e.into_inner());
-            for (r, _) in feed.iter_mut() {
-                r.pilots.retain(|p| {
-                    if crate::intel::is_pilot_stopword(p) {
-                        return false;
-                    }
-                    match cache.get(p) {
-                        Some(Some(_)) => !cache.is_hidden(p),
-                        Some(None) => false,
-                        None => {
-                            cache.queue(p);
-                            true
-                        }
-                    }
-                });
-            }
-        }
-        let ship_ids: std::collections::HashSet<i64> =
-            feed.iter().flat_map(|(r, _)| r.ships.iter().map(|s| s.id)).collect();
-        let ship_details: std::collections::HashMap<i64, crate::store::ShipDetails> =
-            ship_ids.iter().filter_map(|&i| self.ship_details_cached(i).map(|d| (i, d))).collect();
-        let ship_roles: std::collections::HashMap<i64, Vec<(&'static str, &'static str)>> =
-            ship_ids.iter().map(|&i| (i, self.ship_roles_cached(i))).collect();
-        let (resolved_pilots, uncertain) = {
-            let mut cache = self.pilots.lock().unwrap();
-            let rp = cache
-                .display_ids(feed.iter().flat_map(|(r, _)| r.pilots.iter()).map(|s| s.as_str()));
-            let unc = uncertain_set(&cache, &rp);
-            (rp, unc)
-        };
-        let status = self.system_status.lock().unwrap().clone();
-        let last_ship = build_last_ship(&self.intel_state.lock().unwrap().reports);
-        let systems = self.systems.clone();
-        let player_sys = self.player_system();
-        let rings = self.char_rings();
-        let bridges = self.settings.intel_count_bridges;
-        let now = chrono::Utc::now().timestamp();
-        let mut click: Option<IntelClick> = None;
-        for (r, sev) in &feed {
-            let target = r.primary_system().map(|s| s.id);
-            let from_you = jumps_from_you(&systems, player_sys, target, bridges);
-            let via = jump_via(&systems, player_sys, target, bridges, from_you);
-            let cchars = rings.card_for(r);
-            let kc = self.kill_cache.clone();
-            let affil = self.affiliations.clone();
-            if let Some(c) = intel_row(
-                ui, r, now, false, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
-                &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true,
-            &affil, &self.notes_view, false, &mut None,
-            ) {
-                click = Some(c);
-            }
-        }
-        if let Some(c) = click {
-            self.act_on_intel_click(c, ui.ctx());
-        }
+        let feed = self.alert_feed.iter().rev().take(60).map(|(r, sev)| (r.clone(), *sev, false)).collect();
+        self.alert_cards_ui(ui, feed);
     }
 
-    /// Render one rule's "Recent matches" feed. Mirrors `alert_history_ui` but sources from
-    /// `rule_feeds` and tags each card as allowed or suppressed.
+    /// One rule's "Recent matches", each card marked when the rule suppressed it.
     fn rule_feed_ui(&mut self, ui: &mut egui::Ui, rule_id: u64) {
-        let entries: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)> = self
+        let feed = self
             .rule_feeds
             .get(&rule_id)
             .map(|f| f.iter().rev().take(60).cloned().collect())
             .unwrap_or_default();
-        if entries.is_empty() {
+        self.alert_cards_ui(ui, feed);
+    }
+
+    /// Alert cards, newest first, as (report, severity, suppressed).
+    fn alert_cards_ui(&mut self, ui: &mut egui::Ui, mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>) {
+        if feed.is_empty() {
             ui.label(egui::RichText::new("None yet.").weak());
             return;
         }
-        let mut feed: Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)> = entries;
         {
             let mut cache = self.pilots.lock().unwrap_or_else(|e| e.into_inner());
             for (r, _, _) in feed.iter_mut() {
@@ -1840,6 +1782,8 @@ impl SpaiApp {
         let rings = self.char_rings();
         let bridges = self.settings.intel_count_bridges;
         let now = chrono::Utc::now().timestamp();
+        let kc = self.kill_cache.clone();
+        let affil = self.affiliations.clone();
         let mut click: Option<IntelClick> = None;
         for (r, sev, suppressed) in &feed {
             if *suppressed {
@@ -1852,12 +1796,10 @@ impl SpaiApp {
             let from_you = jumps_from_you(&systems, player_sys, target, bridges);
             let via = jump_via(&systems, player_sys, target, bridges, from_you);
             let cchars = rings.card_for(r);
-            let kc = self.kill_cache.clone();
-            let affil = self.affiliations.clone();
             if let Some(c) = intel_row(
                 ui, r, now, false, from_you, via, &cchars, &systems, &status, &ship_details, &ship_roles,
                 &resolved_pilots, &uncertain, &last_ship, &kc, *sev, true, &affil,
-            &self.notes_view, false, &mut None,
+                &self.notes_view, false, &mut None,
             ) {
                 click = Some(c);
             }
