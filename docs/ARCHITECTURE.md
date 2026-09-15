@@ -40,7 +40,7 @@ own thread and shares results through `Arc<Mutex<..>>` state that the UI reads e
 | Jabber | `jabber.rs` | The XMPP connection: rooms, direct messages and fleet pings. |
 | Web publisher | `web/publish.rs` | Builds the web view's snapshot panes from shared state. |
 | Web server | `web/server.rs`, `web/sse.rs` | Serves the page, dialogs and actions, and streams snapshot changes. |
-| One-shot jobs | `sde.rs`, `lookup.rs`, `charlookup.rs`, `brshare.rs`, `update.rs`, `auth.rs` | Static data download, pilot lookups, battle report sharing, update checks, SSO login. |
+| One-shot jobs | `sde.rs`, `lookup.rs`, `brshare.rs`, `update.rs`, `auth.rs` | Static data download, pilot lookups, battle report sharing, update checks, SSO login. |
 
 Outbound HTTP goes through `http::client`, and ESI name and id lookups through `universe.rs`, so
 every request carries the same user agent and batches the same way.

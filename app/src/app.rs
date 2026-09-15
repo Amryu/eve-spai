@@ -354,15 +354,6 @@ pub(crate) enum PilotPane {
     Losses,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum PilotTab {
-    #[default]
-    Overview,
-    Kills,
-    Solo,
-    Losses,
-}
-
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum FitMode {
     Recent,
@@ -585,8 +576,6 @@ pub struct SpaiApp {
     lookup_input: String,
     lookup_tabs: Vec<String>,
     lookup_active: usize,
-    lookup_cache: crate::charlookup::LookupCache,
-    lookup_tx: Option<crate::charlookup::LookupSender>,
     intel_heights: std::collections::HashMap<u64, f32>,
     intel_heights_notes_rev: u64,
     /// Rendered height per chat row, so the history can skip over off-screen ones.
@@ -782,7 +771,6 @@ pub struct SpaiApp {
     pilot_window_open: bool,
     pilot_sort: PilotSort,
     pilot_pane: PilotPane,
-    pilot_tab: PilotTab,
     fit_view: Option<(i64, FitMode)>,
     fit_loss: Option<crate::lookup::Loss>,
     ping_shared: SharedPingWindow,
@@ -1022,9 +1010,6 @@ impl SpaiApp {
         let kill_cache: crate::kills::KillCache =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let kill_tx = (!headless).then(|| crate::kills::spawn_fetcher(kill_cache.clone(), ctx.clone()));
-        let lookup_cache: crate::charlookup::LookupCache = Default::default();
-        let lookup_tx =
-            (!headless).then(|| crate::charlookup::spawn_fetcher(lookup_cache.clone(), ctx.clone()));
 
         let activity: crate::activity::SharedActivity = {
             let mut c = crate::activity::ActivityCache::default();
@@ -1325,8 +1310,6 @@ impl SpaiApp {
             lookup_input: String::new(),
             lookup_tabs: Vec::new(),
             lookup_active: 0,
-            lookup_cache,
-            lookup_tx,
             intel_heights: std::collections::HashMap::new(),
             intel_heights_notes_rev: 0,
             jabber_msg_heights: std::collections::HashMap::new(),
@@ -1503,7 +1486,6 @@ impl SpaiApp {
             pilot_window_open: false,
             pilot_sort: PilotSort::MostLost,
             pilot_pane: PilotPane::default(),
-            pilot_tab: PilotTab::default(),
             fit_view: None,
             fit_loss: None,
             ping_shared,
@@ -2729,6 +2711,13 @@ impl SpaiApp {
     #[cfg(test)]
     pub(crate) fn docked_system_ui(&mut self, ui: &mut egui::Ui, id: i64) {
         self.system_info_body(ui, id, true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_lookup_tab(&mut self, report: crate::lookup::PilotReport) {
+        self.lookup_tabs.push(report.name.clone());
+        let state = crate::lookup::LookupState::Done(report.clone());
+        self.feed_cache.insert(report.name, std::sync::Arc::new(std::sync::Mutex::new(state)));
     }
 
     #[cfg(test)]

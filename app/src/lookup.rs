@@ -71,7 +71,7 @@ pub struct PilotReport {
     #[serde(default)]
     pub profile: Option<Profile>,
     #[serde(default)]
-    pub stats: Option<crate::charlookup::ZkStats>,
+    pub stats: Option<ZkStats>,
 }
 
 /// ESI's public character sheet, with names resolved.
@@ -220,7 +220,7 @@ pub fn spawn_lookup(name: String, state: SharedLookup, ctx: egui::Context) {
             let ctx = ctx.clone();
             std::thread::spawn(move || {
                 let profile = fetch_profile(&client, character_id);
-                let stats = crate::charlookup::zkill_stats(&client, character_id);
+                let stats = zkill_stats(&client, character_id);
                 if let LookupState::Done(r) = &mut *state.lock().unwrap() {
                     if r.character_id == character_id {
                         r.profile = profile.or(r.profile.take());
@@ -327,6 +327,86 @@ fn fetch_category(
         std::thread::sleep(std::time::Duration::from_millis(1100));
     }
     on_batch(&combine(&new, cached));
+}
+
+/// A character's zKillboard summary.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ZkStats {
+    pub ships_destroyed: i64,
+    pub ships_lost: i64,
+    pub isk_destroyed: f64,
+    pub isk_lost: f64,
+    pub danger_ratio: i64,
+    pub gang_ratio: i64,
+    pub top_ships: Vec<(i64, String, i64)>,
+    pub top_systems: Vec<(String, i64)>,
+}
+
+pub fn zkill_stats(client: &reqwest::blocking::Client, id: i64) -> Option<ZkStats> {
+    #[derive(serde::Deserialize)]
+    struct TopValue {
+        #[serde(rename = "shipTypeID")]
+        ship_type_id: Option<i64>,
+        #[serde(rename = "shipName")]
+        ship_name: Option<String>,
+        #[serde(rename = "solarSystemName")]
+        system_name: Option<String>,
+        #[serde(default)]
+        kills: i64,
+    }
+    #[derive(serde::Deserialize)]
+    struct TopList {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(default)]
+        values: Vec<TopValue>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Stats {
+        #[serde(rename = "shipsDestroyed", default)]
+        ships_destroyed: i64,
+        #[serde(rename = "shipsLost", default)]
+        ships_lost: i64,
+        #[serde(rename = "iskDestroyed", default)]
+        isk_destroyed: f64,
+        #[serde(rename = "iskLost", default)]
+        isk_lost: f64,
+        #[serde(rename = "dangerRatio", default)]
+        danger_ratio: i64,
+        #[serde(rename = "gangRatio", default)]
+        gang_ratio: i64,
+        #[serde(rename = "topLists", default)]
+        top_lists: Vec<TopList>,
+    }
+    let s = client
+        .get(format!("https://zkillboard.com/api/stats/characterID/{id}/"))
+        .send()
+        .ok()
+        .and_then(|r| r.error_for_status().ok())
+        .and_then(|r| r.json::<Stats>().ok())?;
+    let mut out = ZkStats {
+        ships_destroyed: s.ships_destroyed,
+        ships_lost: s.ships_lost,
+        isk_destroyed: s.isk_destroyed,
+        isk_lost: s.isk_lost,
+        danger_ratio: s.danger_ratio,
+        gang_ratio: s.gang_ratio,
+        ..Default::default()
+    };
+    for list in &s.top_lists {
+        if list.kind == "shipType" {
+            out.top_ships = list
+                .values
+                .iter()
+                .filter_map(|v| Some((v.ship_type_id?, v.ship_name.clone()?, v.kills)))
+                .take(5)
+                .collect();
+        } else if list.kind == "solarSystem" {
+            out.top_systems =
+                list.values.iter().filter_map(|v| Some((v.system_name.clone()?, v.kills))).take(5).collect();
+        }
+    }
+    Some(out)
 }
 
 fn fetch_profile(client: &reqwest::blocking::Client, id: i64) -> Option<Profile> {

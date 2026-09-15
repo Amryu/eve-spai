@@ -88,6 +88,23 @@ fn docked_system_scene(name: &'static str) -> Scene {
     })
 }
 
+/// The Lookup view with one pilot's tab open, rendered through the same report UI as the pilot window.
+fn lookup_tab_scene(name: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [1100.0, 760.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.seed_notes(fixtures::notebook());
+            a.seed_lookup_tab(fixtures::pilot_report());
+            a.view = View::Lookup;
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 fn notes_dialog_scene(name: &'static str, size: [f32; 2], open: fn(&mut crate::app::SpaiApp)) -> Scene {
     dialog_scene(name, size, move |a| {
         a.seed_notes(fixtures::notebook());
@@ -824,6 +841,7 @@ pub(crate) fn all() -> Vec<Scene> {
         notes_dialog_scene("dialog_system_window_notes", [470.0, 620.0], |a| {
             a.open_system(30_004_759);
         }),
+        lookup_tab_scene("view_lookup_tab"),
         notes_dialog_scene("dialog_pilot_window", [440.0, 580.0], |a| {
             a.seed_pilot_report(fixtures::pilot_report());
         }),

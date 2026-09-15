@@ -122,7 +122,7 @@ pub(crate) fn pilot_report() -> crate::lookup::PilotReport {
             alliance_name: "Example Coalition Member".into(),
             history,
         }),
-        stats: Some(crate::charlookup::ZkStats {
+        stats: Some(crate::lookup::ZkStats {
             ships_destroyed: 1843,
             ships_lost: 212,
             isk_destroyed: 412.5e9,

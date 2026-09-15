@@ -456,9 +456,6 @@ impl SpaiApp {
                 continue;
             }
             self.lookup_tabs.push(name.to_owned());
-            if let Some(tx) = &self.lookup_tx {
-                let _ = tx.send(name.to_owned());
-            }
         }
         if !self.lookup_tabs.is_empty() {
             self.lookup_active = self.lookup_tabs.len() - 1;
@@ -500,6 +497,7 @@ impl SpaiApp {
             if !self.lookup_tabs.is_empty() && ui.button("Close all").clicked() {
                 self.lookup_tabs.clear();
                 self.lookup_active = 0;
+                self.feed_cache.clear();
             }
         });
         ui.separator();
@@ -513,23 +511,14 @@ impl SpaiApp {
         egui::ScrollArea::horizontal().id_salt("lookup_tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (i, name) in tabs.iter().enumerate() {
-                    let label = self
-                        .lookup_cache
-                        .lock()
-                        .unwrap()
-                        .get(&name.to_lowercase())
-                        .and_then(|o| o.as_ref())
-                        .filter(|inf| inf.found)
-                        .map(|inf| inf.name.clone())
-                        .unwrap_or_else(|| name.clone());
+                    let label = match self.feed_cache.get(name).map(|f| f.lock().unwrap().clone()) {
+                        Some(crate::lookup::LookupState::Done(r)) => r.name,
+                        _ => name.clone(),
+                    };
                     if ui.selectable_label(self.lookup_active == i, label).clicked() {
                         self.lookup_active = i;
                     }
-                    if ui
-                        .add(egui::Button::new(egui::RichText::new(icon::X).small()).frame(false))
-                        .on_hover_text("Close tab")
-                        .clicked()
-                    {
+                    if ui.add(egui::Button::new(icon::X).frame(false)).on_hover_text("Close tab").clicked() {
                         close = Some(i);
                     }
                     ui.separator();
@@ -537,7 +526,8 @@ impl SpaiApp {
             });
         });
         if let Some(i) = close {
-            self.lookup_tabs.remove(i);
+            let gone = self.lookup_tabs.remove(i);
+            self.feed_cache.remove(&gone);
             if self.lookup_active >= self.lookup_tabs.len() {
                 self.lookup_active = self.lookup_tabs.len().saturating_sub(1);
             }
@@ -545,144 +535,29 @@ impl SpaiApp {
         ui.separator();
 
         let Some(name) = self.lookup_tabs.get(self.lookup_active).cloned() else { return };
-        let info = self.lookup_cache.lock().unwrap().get(&name.to_lowercase()).cloned();
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Overview, "Overview");
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Kills, "Kills");
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Solo, "Solo");
-            ui.selectable_value(&mut self.pilot_tab, PilotTab::Losses, "Losses");
-        });
-        ui.separator();
-        let feed = if self.pilot_tab != PilotTab::Overview {
-            Some(
-                self.feed_cache
-                    .entry(name.clone())
-                    .or_insert_with(|| {
-                        let s = std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
-                        crate::lookup::spawn_lookup(name.clone(), s.clone(), ui.ctx().clone());
-                        s
-                    })
-                    .clone(),
-            )
-        } else {
-            None
-        };
-        egui::ScrollArea::vertical().id_salt("lookup_body").show(ui, |ui| {
-            if self.pilot_tab == PilotTab::Overview {
-                match info {
-                    None | Some(None) => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(format!("Looking up {name}..."));
-                        });
-                    }
-                    Some(Some(inf)) if !inf.found => {
-                        ui.label(format!("No character named \"{name}\" was found."));
-                    }
-                    Some(Some(inf)) => Self::lookup_profile(ui, &inf),
-                }
-                return;
+        // Fetched when a tab is first shown: a pasted local list can name dozens of pilots, and each
+        // lookup walks zKillboard's pages.
+        let state = self
+            .feed_cache
+            .entry(name.clone())
+            .or_insert_with(|| {
+                let s = std::sync::Arc::new(std::sync::Mutex::new(crate::lookup::LookupState::Idle));
+                crate::lookup::spawn_lookup(name.clone(), s.clone(), ui.ctx().clone());
+                s
+            })
+            .clone();
+        let state = state.lock().unwrap().clone();
+        match state {
+            crate::lookup::LookupState::Done(report) => self.pilot_report_ui(ui, &report),
+            crate::lookup::LookupState::Failed(e) => {
+                ui.label(egui::RichText::new(e).weak());
             }
-            match feed.map(|f| f.lock().unwrap().clone()) {
-                Some(crate::lookup::LookupState::Done(report)) => {
-                    let list = match self.pilot_tab {
-                        PilotTab::Kills => &report.kills,
-                        PilotTab::Solo => &report.solo,
-                        _ => &report.losses,
-                    };
-                    self.km_list(ui, list, report.loading, true);
-                }
-                Some(crate::lookup::LookupState::Failed(e)) => {
-                    ui.label(egui::RichText::new(e).weak());
-                }
-                _ => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Loading killmails\u{2026}");
-                    });
-                }
-            }
-        });
-    }
-
-    pub(crate) fn lookup_profile(ui: &mut egui::Ui, info: &crate::charlookup::LookupInfo) {
-        use egui_phosphor::regular as icon;
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::Image::new(eve_portrait_url(info.char_id, 72.0))
-                    .fit_to_exact_size(egui::Vec2::splat(72.0)),
-            );
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new(&info.name).strong().size(18.0));
+            _ => {
                 ui.horizontal(|ui| {
-                    if let Some(aid) = info.alliance_id {
-                        ui.add(
-                            egui::Image::new(eve_alliance_logo_url(aid, 40.0))
-                                .fit_to_exact_size(egui::Vec2::splat(40.0)),
-                        )
-                        .on_hover_text(if info.alliance.is_empty() {
-                            "Alliance"
-                        } else {
-                            info.alliance.as_str()
-                        });
-                    }
-                    if let Some(cid) = info.corp_id {
-                        ui.add(
-                            egui::Image::new(eve_corp_logo_url(cid, 40.0))
-                                .fit_to_exact_size(egui::Vec2::splat(40.0)),
-                        )
-                        .on_hover_text(if info.corp.is_empty() {
-                            "Corporation"
-                        } else {
-                            info.corp.as_str()
-                        });
-                    }
+                    ui.spinner();
+                    ui.label(format!("Looking up {name}\u{2026}"));
                 });
-            });
-        });
-        ui.separator();
-        egui::Grid::new("lookup_stats").spacing([24.0, 4.0]).show(ui, |ui| {
-            ui.label("Kills");
-            ui.label(egui::RichText::new(info.ships_destroyed.to_string()).strong());
-            ui.label("Losses");
-            ui.label(info.ships_lost.to_string());
-            ui.end_row();
-            ui.label("ISK destroyed");
-            ui.label(fmt_isk(info.isk_destroyed));
-            ui.label("ISK lost");
-            ui.label(fmt_isk(info.isk_lost));
-            ui.end_row();
-            ui.label("Danger");
-            ui.label(format!("{}%", info.danger_ratio));
-            ui.label("Gang");
-            ui.label(format!("{}%", info.gang_ratio));
-            ui.end_row();
-        });
-        if !info.top_ships.is_empty() {
-            ui.separator();
-            ui.label(egui::RichText::new("Most-used ships").strong());
-            ui.horizontal_wrapped(|ui| {
-                for (id, name, kills) in &info.top_ships {
-                    ui.add(
-                        egui::Image::new(eve_type_icon_url(id, 28.0))
-                            .fit_to_exact_size(egui::Vec2::splat(28.0)),
-                    )
-                    .on_hover_text(format!("{name}: {kills} kills"));
-                }
-            });
-        }
-        if !info.top_systems.is_empty() {
-            ui.separator();
-            ui.label(egui::RichText::new("Most active systems").strong());
-            ui.horizontal_wrapped(|ui| {
-                for (sys, kills) in &info.top_systems {
-                    ui.label(egui::RichText::new(format!("{sys} ({kills})")).weak());
-                }
-            });
-        }
-        ui.separator();
-        if ui.button(format!("{}  Open on zKillboard", icon::ARROW_SQUARE_OUT)).clicked() {
-            let _ = open::that(format!("https://zkillboard.com/character/{}/", info.char_id));
+            }
         }
     }
 

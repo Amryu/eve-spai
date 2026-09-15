@@ -9,7 +9,6 @@ mod brview;
 mod affiliation;
 mod alliances;
 mod camp;
-mod charlookup;
 mod charsettings;
 mod chatlog;
 mod copysettings;
