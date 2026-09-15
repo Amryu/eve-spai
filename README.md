@@ -12,11 +12,14 @@ reference data), and you sign in with EVE's official Single Sign-On.
 - Watch your intel channels and read reports as cards, with the systems, pilots, and
   ships involved worked out for you.
 - See hostiles on an interactive star map, with sovereignty, activity, and wormhole
-  overlays.
-- Get alerts you design — by what was said, how close it is, and how big the gang is —
-  with sound and desktop notifications.
-- Look up pilots on zKillboard, dragging in a whole local list at once.
+  overlays, and plan gate, jump and titan routes on it.
+- Get alerts you design, by what was said, how close it is, how big the gang is, or which
+  tagged pilots and systems are involved, with sound and desktop notifications.
+- Keep notes and tags on systems and pilots, organised in folders you can export and share.
+- Look up pilots: age, employment history, zKillboard record and your own notes.
 - Read and send fleet pings and chat without leaving the app.
+- Build battle reports from the kills around you, and share them.
+- Follow all of it from a phone or a second screen through the optional local web view.
 
 ## Installing
 
@@ -56,7 +59,7 @@ A few things happen the first time you open EVE Spai:
 1. Reference data. It downloads EVE's public data once and stores it on your machine.
    This runs in the background; the map and ship lookups fill in as it finishes.
 
-2. Log in. Open Settings and sign in with EVE Single Sign-On — the same login you use
+2. Log in. Open Settings and sign in with EVE Single Sign-On, the same login you use
    for the game. Your access is kept in your system's secure keychain, never in a plain
    file. This is what lets the app see where your characters are and set autopilot
    waypoints for you.
@@ -69,6 +72,10 @@ That is all you need to get going.
 
 ## Platforms
 
-EVE Spai is developed on Linux and runs there best. It is built to work on Windows and
-macOS as well; a few extras — alert-sound playback, the system tray, and the
-always-on-top overlay — are Linux-first for now and simply stay quiet elsewhere.
+EVE Spai is developed on Linux and published for Linux, Windows and macOS. Sound, the
+system tray and the alert overlay work on all three. A few window helpers, such as noticing
+whether the EVE client has focus, are Linux-only and stay quiet elsewhere.
+
+## How it is built
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

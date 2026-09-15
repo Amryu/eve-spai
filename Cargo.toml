@@ -8,7 +8,7 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/Amryu/eve-spai"
 
-# Build profile tuned for a small, lean release binary (see docs/DESIGN.md §3).
+# Tuned for a small release binary.
 [profile.release]
 opt-level = "z"
 lto = true
