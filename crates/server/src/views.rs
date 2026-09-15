@@ -1,4 +1,6 @@
-//! Built with [`maud`] - compile-time templates that auto-escape every interpolation.
+//! Battle-report HTML pages, built with [`maud`] compile-time templates that auto-escape every
+//! interpolation.
+//!
 //! Every user- or EVE-supplied string (titles, uploader names, side/alliance/pilot
 //! names) is rendered through a normal `(value)` interpolation, never via
 //! [`PreEscaped`], so none of them can inject markup. `PreEscaped` is used *only* for
@@ -631,8 +633,12 @@ fn js_safe_json(s: &str) -> String {
     s.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
 }
 
+/// All the inputs the client-side side editor needs to recompute the report under a custom
 /// party->side grouping, with no server round-trip. Integers and short kind strings only,
 /// except party/ship names, which are escaped by [`js_safe_json`]. Schema:
+/// `{ sides_count, parties:[{id,name,kind,side}], participants:[{char,party_id,party_name,
+/// party_kind,ship,lost_value,is_lost,side}], engagements:[{kill_id,victim_char,victim_value,
+/// attacker_party_ids:[..],fb:[{p,s}]}], ship_names:{id:name} }`.
 fn sides_data_json(doc: &BattleReportDoc) -> String {
     use serde_json::json;
     let b = &doc.battle;

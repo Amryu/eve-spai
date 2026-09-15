@@ -1,10 +1,8 @@
-//! The panic log, and the three things that used to make it useless.
+//! The panic log, the only record of a crash in a release build (no console).
 //!
-//! It was the only record of a crash (a release build has no console), but it was written with
-//! `let _ =` on both the open and the write, so a disk-full crash left nothing behind. It also
-//! amplified itself: the hook ended by calling the default hook, which prints to stderr, and when
-//! stderr is a broken pipe (the app runs detached) that print panics and re-enters the hook. One
-//! real incident produced 167 near-identical lines in five seconds. And it had no size cap.
+//! Write failures are reported rather than swallowed, a reserved tail lets a disk-full crash still
+//! land, the file is size-capped, and the hook never calls the default hook: its stderr print
+//! panics on a broken pipe (the app runs detached) and re-enters the hook.
 
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -33,8 +31,8 @@ pub(crate) enum Role {
 impl Role {
     fn file_name(self) -> &'static str {
         match self {
-            // Both processes run `main` and installed the same hook, so they appended to one file
-            // and raced each other's rotation.
+            // Both processes run `main` and install the same hook, so one shared file would race
+            // each other's rotation.
             Role::Main => "crash.log",
             Role::Overlay => "crash-overlay.log",
         }
@@ -132,8 +130,8 @@ pub(crate) fn record_at(path: &Path, line: &str) -> std::io::Result<()> {
 /// How much of the tail is still the filler written by [`reserve`].
 ///
 /// Reads only the last [`RESERVE_BYTES`], never the whole file: a character device such as
-/// `/dev/full` reports length 0 and then yields zeros forever, so slurping the path here ran the
-/// process out of memory instead of reporting the failure it was written to catch.
+/// `/dev/full` reports length 0 and then yields zeros forever, so slurping the path would run the
+/// process out of memory.
 fn trailing_reserve(f: &mut std::fs::File, end: u64) -> u64 {
     use std::io::Read;
     let window = end.min(RESERVE_BYTES);

@@ -1,16 +1,6 @@
-// The map, drawn on a canvas.
-//
-// # Why canvas
-//
-// SVG put one element per system in the DOM. With the real SDE that is 5255 circles, and every
-// viewBox change re-rasterises all of them, so a zoom gesture rebuilt the whole layer tree each
-// frame. Canvas draws the same 5255 dots in a millisecond or two and redraws on every frame without
-// touching the DOM at all.
-//
-// It also fixes sizing. In SVG the radius is in map units, so zooming in made the dots enormous;
-// here everything is drawn in screen pixels and stays the size it should be at any zoom.
-//
-// Hit testing is a nearest-node search rather than the browser's, which is what a canvas costs.
+// The map, drawn on a canvas. As SVG, the SDE's 5255 systems re-rasterise on every viewBox change;
+// canvas redraws them in a millisecond or two per frame. Everything is drawn in screen pixels so it
+// keeps its size at any zoom. Hit testing is a nearest-node search, see `nearest`.
 
 import { ico, register, send, state } from "./app.js";
 import { avoidOnce, currentRoute, showRoute, titansOnce } from "./dialogs.js";
@@ -24,31 +14,21 @@ let canvas = null;
 let ctx = null;
 let raf = null;
 
-/// Map units per pixel. One number instead of a viewBox: the projection is `screen = (map - o) / k`.
+/// The drawn view: `screen = (map - o) / k`, with `k` in map units per pixel.
 const view = { ox: 0, oz: 0, k: 1 };
 /// Where the view is heading. Zoom writes this and the drawn `view` eases towards it; pan writes
-/// both at once, because a drag has to track the pointer exactly and easing it would feel like drag.
+/// both at once, because a drag has to track the pointer exactly.
 const target = { ox: 0, oz: 0, k: 1 };
-/// How long a zoom takes to arrive, at most.
-///
-/// Proportional to the size of the jump rather than fixed: a wheel notch and a double-click that
-/// frames a region are the same operation at very different scales, and a fixed duration either
-/// makes the notch feel gluey or makes the reframe a jump cut. A trackpad's stream of tiny deltas
-/// works out at a couple of milliseconds, which is to say immediate, which is what a gesture that
-/// tracks the fingers has to be.
+/// Upper bound on a zoom's duration. Below it the duration scales with the size of the jump, so a
+/// wheel notch is not gluey, a region reframe is not a jump cut, and trackpad deltas land at once.
 const ZOOM_EASE_MS = 180;
 /// Milliseconds per e-fold of zoom. 180ms is reached at a factor of about two.
 const ZOOM_EASE_PER_LN = 260;
-/// The shape of a movement that starts at rest and stops at rest.
-///
-/// Exponential decay spent all its speed in the first frame and then crawled in on an asymptote,
-/// which is a lurch followed by drift rather than a movement. This leaves and arrives still.
+/// Starts and stops at rest. Exponential decay lurches in the first frame and drifts in after.
 const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
 
 /// The app's zoom limits, as multiples of the framed universe: `map_zoom.clamp(0.7, 60.0)`.
-///
-/// The web map had its own, five times out and a thousand times in, which is a different map to
-/// drive. Held as multiples rather than as values of `k` so the two agree whatever the pane's size.
+/// Held as multiples rather than values of `k` so they agree with the app whatever the pane's size.
 const ZOOM_MIN = 0.7;
 const ZOOM_MAX = 60;
 /// `k` for the framed universe: the app's zoom of 1. Set by the universe fit.
@@ -59,11 +39,10 @@ let anim = null;
 let fitted = false;
 /// The region the map is framed on, or null for the whole universe.
 let focused = null;
-/// The system under the pointer, if any. Drawn as a highlight and a readout, not just a cursor.
+/// The system under the pointer, if any.
 let hovered = null;
-/// The system the user picked, which is the one in the hash. It keeps the jump-range tint up after
-/// the pointer has moved off it: choosing a system is a statement about what you are working on, and
-/// the app keeps the bands drawn for exactly that reason.
+/// The system in the hash. It keeps the ring and jump-range tint up after the pointer moves off, as
+/// the app does.
 let selected = null;
 /// A route drag in flight: where it started, where the pointer is, and what it would land on.
 let link = null;
@@ -110,9 +89,8 @@ const JUMP_RANGES = [
 ];
 const RANGE_COLOURS = ["#5ac86a", "#e0a43a", "#4f9bd8", "#d84c4c"];
 
-/// The same green the app draws a bridge in.
 /// Canvas cannot use a webfont until it has loaded, and falls back silently if asked early, which is
-/// what draws a box instead of a glyph. Repaint once it is in.
+/// draws a box instead of a glyph. Repaint once it is in.
 let iconFontReady = false;
 if (document.fonts?.load) {
   document.fonts.load('16px phosphor, "phosphor"').then(() => {
@@ -151,6 +129,7 @@ function glyph(c, name, x, y, size, colour) {
   return true;
 }
 
+/// The green the app draws a bridge in.
 const BRIDGE_GREEN = "#3ad06a";
 /// Route colours, matching `Leg::color` in the app: gates cyan, bridges green, holes purple.
 const ROUTE_CYAN = "#4fc3f7";
@@ -159,8 +138,7 @@ const ROUTE_HOLE = "#b07ce8";
 /// A route the user asked for, in its own colours so it does not read as the app's travel route.
 const PICK_GATE = "#f2b134";
 const PICK_JUMP = "#e07be0";
-/// The titan: its own colour, because its jump is a different ship doing a different thing and
-/// sharing the capital-jump colour said they were the same move.
+/// The titan's jump is a different ship's move, so it does not share the capital-jump colour.
 const TITAN_COL = "#ff7a3d";
 /// Dash and gap, matching `dashed_flow` in the app.
 const DASH = [6, 6];
@@ -177,8 +155,8 @@ function arc(c, ax, ay, bx, by) {
     c.lineTo(bx, by);
     return;
   }
-  // Always bows upward, whichever way round the ends are: the perpendicular flips with the
-  // segment's direction, so without this a bridge arched up or down by accident of node order.
+  // Always bows upward: the perpendicular flips with the segment's direction, so otherwise the arch
+  // side would depend on node order.
   let nx = -dy / len;
   let ny = dx / len;
   if (ny > 0) {
@@ -256,10 +234,8 @@ function fit(region = null) {
   if (!geo?.nodes.length || !canvas) return;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
-  // A pane that is switched off has no size, and a view fitted to a zero-width canvas is a view of
-  // nothing: `k` comes out as the whole extent per pixel, so when the pane is finally shown the map
-  // is somewhere off the edge of a blank canvas. `fitted` is deliberately not set, so the first
-  // paint with a real size does the job properly.
+  // A hidden pane has no size, and fitting to it puts the map off the canvas once shown. `fitted`
+  // stays unset so the first paint with a real size fits.
   if (w < 2 || h < 2) return;
   if (region == null) {
     let [a0, a1, b0, b1] = [Infinity, -Infinity, Infinity, -Infinity];
@@ -286,10 +262,8 @@ function fit(region = null) {
   fitted = true;
 }
 
-/// Dot radius in screen pixels.
-///
-/// A star map is mostly space; the dots are markers, not planets. This tops out at 3px, which is
-/// about what the desktop draws, and the overlay rings are multiples of it so they shrink with it.
+/// Dot radius in screen pixels, capped at about what the desktop draws. Overlay rings are multiples
+/// of it so they shrink with it.
 function radius() {
   return Math.max(1.1, Math.min(3, 1.6 / Math.sqrt(view.k) * 6));
 }
@@ -304,12 +278,8 @@ function settle(now) {
   // Geometric in `k`, because zoom is: the halfway point of a zoom is the geometric mean, not the
   // arithmetic one, and interpolating it linearly races at one end and crawls at the other.
   view.k = anim.k0 * Math.pow(target.k / anim.k0, e);
-  // The pan is *derived* from the zoom rather than eased alongside it.
-  //
-  // Interpolating the origin on its own curve while `k` moved on another meant the two only agreed
-  // at the two ends: in between, the point the gesture was aimed at slid across the screen and the
-  // whole movement read as the map fighting the cursor. Solving `screen = (map - o) / k` for the
-  // anchor at each frame keeps that point under the cursor for every frame of the animation.
+  // The pan is derived from the zoom rather than eased on its own curve, which would let the anchor
+  // slide mid-animation. Solving `screen = (map - o) / k` each frame keeps it under the cursor.
   view.ox = anim.ax - anim.px * view.k;
   view.oz = anim.az - anim.py * view.k;
   if (e < 1) return true;
@@ -356,8 +326,7 @@ function paint() {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
-  // Nothing to draw on yet, and nothing worth recording: a pane switched on later arrives here once
-  // with no size and again with one.
+  // A pane switched on later arrives here once with no size and again with one.
   if (w < 2 || h < 2) return;
   if (!fitted) fit();
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
@@ -371,26 +340,16 @@ function paint() {
   const live = state.snapshot?.map ?? {};
   const status = state.snapshot?.status?.systems ?? {};
   const r = radius();
-  /// Markers for a system, collected across the layers and drawn in one centred row above it.
-  ///
-  /// Each layer used to draw at the same offset above the dot, so a system with a camp and a
-  /// wormhole drew both on top of each other, and nothing lined up with anything.
+  /// Markers for a system, collected across the layers and drawn in one centred row above it so
+  /// they cannot overlap.
   const marks = new Map();
-  /// How big text and markers are allowed to get, from the size of the pane.
-  ///
-  /// A fixed 13px name is fine in a column and lost on a full-screen map: the same map at four times
-  /// the area still labelled it as though it were a sidebar. Capped, because past a certain size
-  /// bigger type stops helping and starts crowding. This is the ceiling, not the size: see `grow`.
+  /// The ceiling for text and marker size, from the pane size: a fixed 13px is lost on a full-screen
+  /// map. Capped because bigger type starts crowding. The actual size is `grow`.
   const uiScale = Math.min(1.9, Math.max(1, Math.min(w, h) / 620));
   const span = view.k * w;
-  /// Names and markers start at the size they always were and reach the pane-sized one at full zoom.
-  ///
-  /// Scaled off the pane alone they were the enlarged size the moment they appeared, which at the
-  /// threshold is a wall of type over a map that is still mostly space. The pane decides how big
-  /// they can get; the zoom decides how much of that they have earned.
-  ///
-  /// Measured in `k` rather than in the span, so the two ends are the zoom stops themselves and a
-  /// wider pane does not quietly move them.
+  /// Names and markers grow from base size at the names threshold to `uiScale` at full zoom, so
+  /// they are not a wall of type over a map that is still mostly space. Measured in `k` rather than
+  /// the span so a wider pane does not move the ends.
   const kNames = geo.extent / 4 / w;
   const zoomT = Math.min(1, Math.max(0, Math.log(kNames / view.k) / Math.log(kNames / (geo.extent / 200000))));
   const grow = 1 + (uiScale - 1) * zoomT;
@@ -404,11 +363,8 @@ function paint() {
   const ICON = Math.round(16 * grow);
   const pad = 40;
   const onScreen = (px, py) => px >= -pad && px <= w + pad && py >= -pad && py <= h + pad;
-  /// Whether a segment could cross the viewport at all.
-  ///
-  /// Testing the endpoints was wrong: a link long enough to span the screen has both ends outside it
-  /// and was dropped, which is exactly what a jump bridge is. This tests the segment's bounding box
-  /// against the viewport instead, which keeps anything that could possibly be visible.
+  /// Whether a segment's bounding box meets the viewport. An endpoint test would drop links that
+  /// span the screen with both ends outside it, such as jump bridges.
   const segmentVisible = (ax, ay, bx, by) =>
     Math.max(ax, bx) >= -pad &&
     Math.min(ax, bx) <= w + pad &&
@@ -437,10 +393,8 @@ function paint() {
   }
   ctx.setLineDash([]);
 
-  // Jump bridges: green arches, solid. A bridge and a gate between the same pair are otherwise the
-  // same stroke in a different colour, and colour alone does not survive a busy map.
-  // A bridge the route is flying is drawn by the route, animated and in the route's colour. Drawing
-  // the plain green arc under it as well put two lines on one hop, one of them saying nothing.
+  // Jump bridges arch, because colour alone does not tell a bridge from a gate on a busy map. A
+  // bridge a route flies is drawn by the route, so it is skipped here.
   const routed = new Set();
   const hops = picked?.hops ?? [];
   for (let i = 1; i < hops.length; i++) {
@@ -524,7 +478,6 @@ function paint() {
     ctx.globalAlpha = 1;
   }
 
-  // Intel heat.
   ctx.globalAlpha = 0.45;
   for (const [id, sev] of live.intel ?? []) {
     const n = geo.nodes[geo.byId.get(id)];
@@ -538,7 +491,6 @@ function paint() {
   }
   ctx.globalAlpha = 1;
 
-  // Systems.
   let drawn = 0;
   for (const n of geo.nodes) {
     const px = sx(n.x), py = sy(n.z);
@@ -564,13 +516,8 @@ function paint() {
     }
   }
 
-  // Sov upgrades: one mark each, coloured by level the way `level_color` does, mining marks tinted
-  // to say they are ore.
-  // Upgrade marks are sized in screen pixels, not from the dot radius: tied to `r` they came out
-  // under three pixels across and were unreadable at every zoom.
-  // Upgrade marks use the app's own glyphs: a skull for ratting, a broadcast dish for exploration,
-  // a gear for anything else, and the actual ore icon for a mining upgrade. Squares said only "an
-  // upgrade is here", which the count already said.
+  // Sov upgrades use the app's glyphs, coloured by level as `level_color` does. A mining upgrade
+  // shows its ore icon.
   const UPGRADE_GLYPH = ["skull", "broadcast", null, "gear"];
   if (layers.upgrades && live.upgrades?.length) {
     for (const [id, ups] of live.upgrades) {
@@ -581,7 +528,6 @@ function paint() {
     }
   }
 
-  // Cyno generators.
   if (layers.cyno && live.cyno?.length) {
     for (const id of live.cyno) {
       mark(id, "crosshair-simple", pal.warning);
@@ -638,12 +584,8 @@ function paint() {
     ctx.stroke();
   }
 
-  // Every marker for a system, in one row centred above it. Drawn together so they cannot land on
-  // top of each other, and clear of the dot so neither hides the other.
-  //
-  // Only while the names are up. A marker is an annotation on a system you can identify; zoomed out
-  // past the names it is a glyph floating over an anonymous dot, and a thousand of them are a mess
-  // that hides the map underneath.
+  // Markers only while names are up: without a name a marker annotates an anonymous dot, and
+  // thousands of them hide the map.
   for (const [id, list] of (namesOn ? marks : [])) {
     const n = geo.nodes[geo.byId.get(id)];
     if (!n) continue;
@@ -667,17 +609,9 @@ function paint() {
     }
   }
 
-  // Labels.
-  //
-  // Zoomed in, system names. Zoomed out, region names, which is what the app shows and what is
-  // actually legible at that scale.
-  //
-  // The previous version capped system labels at the first 300 nodes **in array order**, which is
-  // sorted by system id, so whole regions silently went unlabelled while others got every name. The
-  // threshold below means the visible set is small enough not to need a cap at all.
+  // Zoomed in, system names. Zoomed out, region names, as the app shows, since those are what is
+  // legible at that scale.
   if (layers.labels) {
-    // Names come in well before the map is fully zoomed in: waiting until they cannot possibly
-    // overlap meant staring at an unlabelled map through most of the useful range.
     if (namesOn) {
       const size = nameSize;
       ctx.fillStyle = pal.muted;
@@ -778,8 +712,7 @@ function paint() {
     ctx.setLineDash([]);
   }
 
-  // A route the user picked from the drag menu, on top of everything, in its own colour so it does
-  // not read as the app's travel route.
+  // A route the user picked from the drag menu, on top of everything.
   if (picked?.path?.length > 1) {
     ctx.lineWidth = 3;
     // Animated dashes, like the app's own route: a static line is hard to pick out of a map already
@@ -794,8 +727,7 @@ function paint() {
       const kind = picked.hops?.[i]?.kind ?? 0;
       ctx.strokeStyle = kind === 2 ? PICK_JUMP : kind === 1 ? ROUTE_BRIDGE : PICK_GATE;
       ctx.beginPath();
-      // A bridge arcs, the same as everywhere else on this map: it is a bridge whether or not a
-      // route happens to be using it, and a straight line said it was a gate.
+      // Bridges and jumps arc, as elsewhere on the map, so neither reads as a gate.
       if (kind === 2 || kind === 1) arc(ctx, px, py, qx, qy);
       else {
         ctx.moveTo(px, py);
@@ -813,8 +745,7 @@ function paint() {
         ctx.strokeStyle = TITAN_COL;
         ctx.lineWidth = 2.5;
         ctx.setLineDash([12, 8]);
-        // Negative, like the route's: a positive offset runs the dashes backwards, so the titan
-        // appeared to be jumping to where it already was.
+        // Negative, like the route's: a positive offset runs the dashes backwards.
         ctx.lineDashOffset = -((performance.now() / 35) % 20);
         ctx.beginPath();
         arc(ctx, sx(a.x), sy(a.z), sx(b.x), sy(b.z));
@@ -870,9 +801,8 @@ function paint() {
     }
   }
 
-  // Everything the route is being planned around, while it is being planned. Off the routing mode
-  // these are just systems, and marking them all the time would be marking most of the map for
-  // someone with a long list.
+  // Avoided systems, only while a route is being planned: a long avoid list would otherwise mark
+  // much of the map.
   if (routeKind) {
     const always = alwaysAvoided();
     ctx.strokeStyle = pal.hostile;
@@ -940,11 +870,8 @@ function paint() {
     const i = geo.byId.get(focus.i);
     const home = geo.pos3[i];
     if (home) {
-      // No rings and no band labels: a jump range is a sphere, and a circle drawn on a top-down
-      // projection includes systems that are light years above or below it. The app can afford the
-      // ring because it is read next to the z axis; here it would just be wrong in two dimensions.
-      // The per-system tint is the part that is true either way, so that is all that is drawn.
-      // In-range systems, using the real positions rather than the drawn ones.
+      // Tint only, no rings: a jump range is a sphere, and a circle on a top-down projection would
+      // include systems far above or below it. Distances use the real 3D positions.
       for (let k = 0; k < geo.nodes.length; k++) {
         if (k === i) continue;
         const p = geo.pos3[k];
@@ -976,9 +903,6 @@ function paint() {
     ctx.arc(hx, hy, r * 3.4, 0, Math.PI * 2);
     ctx.stroke();
 
-    // `focus`, not `hovered`: WEB-038 made the ring follow the selection as well and left these
-    // three reading the pointer, so selecting a system and moving the pointer away threw on every
-    // frame after.
     const info = status[focus.i] ?? {};
     const bits = [focus.n, focus.s.toFixed(1)];
     if (info.adm != null) bits.push(`ADM ${info.adm.toFixed(1)}`);
@@ -1026,11 +950,8 @@ const CYCLES = [
   ["activity", "Activity", ["off", "k", "p", "n", "j"], ACTIVITY_LABEL],
 ];
 
-/// The layers, in the four things a map is actually asked about.
-///
-/// Eleven controls in one row is most of a phone's screen and a third of a pane on a desktop, and
-/// nothing in the row said which of them belonged together. Grouped, the row is four words and each
-/// word opens the handful of switches behind it.
+/// The layers in four groups, each a button opening its switches: eleven controls in one row take
+/// most of a phone screen.
 const GROUPS = [
   ["sov", "Sov", ["sov"], ["adm", "upgrades"]],
   ["activity", "Activity", ["activity"], ["camps", "cyno"]],
@@ -1102,15 +1023,13 @@ function build() {
   if (!fitted) fit();
   wire();
   dockSide();
-  // A pane can be switched on long after the map first rendered, and it arrives with no size at all.
-  // Watching the canvas is what turns that into a fit and a repaint rather than a blank rectangle.
+  // A pane switched on later arrives with no size, so watch the canvas to fit once it has one.
   new ResizeObserver(() => {
     if (!fitted) fit();
     schedule();
   }).observe(canvas);
   schedule();
-  // The system window parks itself against the canvas, and until this moment there was no canvas to
-  // park against: the geometry is fetched, so anything opened before it lands had nothing to measure.
+  // The system window parks against the canvas, which does not exist until the geometry is fetched.
   window.dispatchEvent(new Event("spai:map"));
 }
 
@@ -1128,26 +1047,20 @@ function wire() {
   window.addEventListener("hashchange", followHash);
   followHash();
 
-  // The binding first, because a route opened from a deep link was announced before this listener
-  // existed, and then the event for everything after.
+  // Read the binding first: a route opened from a deep link was announced before this listener existed.
   picked = currentRoute;
   window.addEventListener("spai:route", (e) => {
     picked = e.detail ?? null;
     schedule();
   });
 
-  /// Show one group's popup and close the others. `null` closes them all.
-  ///
-  /// The popup stays up while its own switches are used: a layer panel is a thing you set two or
-  /// three of at once, and closing after the first was a reopen for every one after it.
-  // The popups live in the body, not in the pane.
-  //
-  // A pane scrolls, and a scrolling box clips whatever hangs out of it, so anchored inside the pane
-  // they were cut off at the edge or lost entirely depending on the layout. The context menu already
-  // had to do this; doing it the same way here means one answer to "where do floating bits go".
+  // The popups live in the body, as the context menu does: a scrolling pane clips whatever hangs out
+  // of it.
   document.querySelectorAll("body > .mlpop").forEach((p) => p.remove());
   el.querySelectorAll(".mlpop").forEach((p) => document.body.append(p));
 
+  /// Show one group's popup and close the others. `null` closes them all. A popup stays open while
+  /// its switches are used, since layers are usually set several at once.
   const openGroup = (id) => {
     document.querySelectorAll(".mlpop").forEach((p) => {
       p.hidden = p.dataset.panel !== id;
@@ -1176,8 +1089,6 @@ function wire() {
       openGroup(already ? null : b.dataset.pop);
     })
   );
-  // Anywhere outside the toolbar closes whatever is open, which is the third of the three ways the
-  // user asked for: elsewhere, another button, or the same button again.
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".maptools") && !e.target.closest(".mlpop")) openGroup(null);
   });
@@ -1218,8 +1129,8 @@ function wire() {
     const lo = Math.min(view.k, (fitK || geo.extent / canvas.clientWidth) / ZOOM_MAX);
     const hi = Math.max(view.k, (fitK || geo.extent / canvas.clientWidth) / ZOOM_MIN);
     const k = Math.max(lo, Math.min(hi, target.k * factor));
-    // The map point under the cursor, which is what the whole gesture is about. Everything else,
-    // here and in `settle`, is derived from it, so it cannot drift.
+    // Everything here and in `settle` is derived from the map point under the cursor, so it cannot
+    // drift.
     const ax = view.ox + px * view.k;
     const az = view.oz + py * view.k;
     target.ox = ax - px * k;
@@ -1234,9 +1145,7 @@ function wire() {
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, e);
     moved = 0;
-    // A second finger is always a pinch. Whatever the first one was doing, it stops: a route line
-    // being dragged out of a system blocked the zoom entirely, because it was handled first and
-    // returned.
+    // A second finger is a pinch and cancels a route drag, which would otherwise swallow the zoom.
     if (pointers.size > 1) {
       link = null;
       hideLinkTip();
@@ -1257,9 +1166,8 @@ function wire() {
         openMenu(e, on);
       }, 500);
     }
-    // On a touch screen a drag off a system is a route only once there is a route: without a mouse
-    // there is no way to press somewhere else, so every pan that started on a system drew a line
-    // instead of moving the map. The long press is how a route starts there.
+    // On touch, a drag off a system draws a route line only once a route exists, or every pan that
+    // starts on a system would draw one. A long press starts a route there.
     if (on && (!touch || routeKind)) {
       const box = canvas.getBoundingClientRect();
       link = {
@@ -1344,9 +1252,6 @@ function wire() {
       canvas.style.cursor = "";
       schedule();
       if (over != null) {
-        // A drag off the current destination adds to the route rather than starting a new one: the
-        // old destination becomes a waypoint and the new system becomes the destination. Starting
-        // anywhere else is a new route, which is the only way to abandon one.
         // Off a system already on the route, the route is rewritten from there: everything after it
         // goes and the new target becomes the destination. Off the destination that is the same as
         // appending. Anywhere else is a new route, which is the only way to abandon one.
@@ -1358,8 +1263,7 @@ function wire() {
           if (kind === "gate") send({ SetDestination: { id: over } });
           replan();
         };
-        // The menu asks what kind of route this is, which is a question with one answer per route,
-        // not one per leg. Adding a waypoint to a route already being planned just extends it.
+        // The menu asks the route kind once per route, so extending a route skips it.
         if (extend) take(routeKind);
         else radial(e.clientX, e.clientY, take);
         return;
@@ -1381,8 +1285,7 @@ function wire() {
   canvas.addEventListener("pointermove", (e) => {
     if (pointers.size) return; // dragging: the grab cursor is the right answer
     const n = nearest(e);
-    // `cursor` is set inline because the stylesheet's `grab` would otherwise always win, which is
-    // what made a hovered system indistinguishable from empty space.
+    // Set inline because the stylesheet's `grab` would otherwise win.
     canvas.style.cursor = n ? "pointer" : "grab";
     if (n !== hovered) {
       hovered = n;
@@ -1414,11 +1317,8 @@ function wire() {
     (e) => {
       e.preventDefault();
       const box = canvas.getBoundingClientRect();
-      // The app's curve: `zoom * exp(scroll * 0.003)`, continuous in the scroll rather than a fixed
-      // step per notch, which is what makes a trackpad feel like a trackpad instead of a ratchet.
-      //
-      // Normalised to pixels first. A wheel reports lines in Firefox and pixels in Chrome, and the
-      // same gesture zoomed six times as far in one of them.
+      // The app's curve, `zoom * exp(scroll * 0.003)`, continuous rather than a step per notch.
+      // Normalised to pixels first, since Firefox reports lines and Chrome pixels.
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
       const px = Math.max(-240, Math.min(240, e.deltaY * unit));
       // `k` is map units per pixel, so zooming in makes it smaller. A positive `deltaY` is a scroll
@@ -1428,9 +1328,7 @@ function wire() {
     { passive: false }
   );
 
-  // Nearest node within a thumb's reach. This is what a canvas costs in place of the browser's own
-  // hit testing, and it is cheaper than 5000 elements.
-  // Double-click frames the region, which is the app's region view. Fit goes back to the universe.
+  // Double-click frames the region, as the app's region view does.
   canvas.addEventListener("dblclick", (e) => {
     const n = nearest(e);
     if (!n) return;
@@ -1451,8 +1349,7 @@ function wire() {
     const best = nearest(e);
     if (!best) return;
     location.hash = `#system/${best.i}`;
-    // The desktop map moves to it too. Tapping a system on the phone should put it in front of
-    // whoever is sitting at the machine, not leave the two maps looking at different places.
+    // The desktop map follows, so the phone and the machine look at the same place.
     send({ SelectSystem: { id: best.i } });
   });
 
@@ -1465,13 +1362,8 @@ function wire() {
   }
 }
 
-/// Nearest system to a pointer event, within a thumb's reach. This is what a canvas costs in place
-/// of the browser's own hit testing, and for 5000 systems it is cheaper than 5000 hit targets.
 /// The readout beside the system a route drag is over: light years, gates, and gates with bridges.
-///
-/// Three numbers rather than one because they answer different questions and are often far apart.
-/// A DOM node rather than canvas text: it has to be readable over a dense field and the browser
-/// already knows how to put a box behind a line of type.
+/// A DOM node rather than canvas text, so it stays readable over a dense field.
 function showLinkTip() {
   if (!link?.over) return hideLinkTip();
   let tip = document.getElementById("linktip");
@@ -1548,8 +1440,7 @@ function menuFor(id) {
     // depends on what kind of route that is: a system you will not gate through is often perfectly
     // fine to jump over.
     items.push([avoidOnce.has(id) ? "unavoid" : "avoid", avoidOnce.has(id) ? "Stop avoiding here" : "Avoid for this route"]);
-    // "Stop avoiding always" only where there is something to stop, which needs the app's list; it
-    // travels in the snapshot for exactly this and for the marks on the map.
+    // "Stop avoiding always" needs the app's list, which the snapshot carries.
     if (alwaysAvoided().has(id)) items.push(["avoid:never", "Stop avoiding always"]);
     else items.push(["avoid:always", "Avoid always"]);
     items.push(null);
@@ -1664,6 +1555,8 @@ function dockSide() {
   el.classList.toggle("dockright", w >= h * 1.25 && w >= 620);
 }
 
+/// Nearest system to a pointer event, within a thumb's reach, standing in for the browser's hit
+/// testing.
 function nearest(e) {
   const box = canvas.getBoundingClientRect();
   const mx = e.clientX - box.left;

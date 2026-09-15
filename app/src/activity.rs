@@ -143,8 +143,7 @@ pub fn spawn(cache: SharedActivity, ctx: egui::Context) {
                     }
                 };
 
-                // Birthday + last corp change: fetch once, reuse any already-known value.
-                // (Both change rarely; re-fetching on the normal TTL would also be fine.)
+                // Birthday and last corp change rarely change, so reuse any already-known value.
                 let (known_birthday, known_corp) = {
                     let c = cache.lock().unwrap();
                     let a = c.map.get(&id);

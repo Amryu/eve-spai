@@ -31,12 +31,13 @@ pub(crate) struct PingWindowState {
 
 pub(crate) type SharedPingWindow = std::sync::Arc<std::sync::Mutex<PingWindowState>>;
 
-/// Decide whether a captured window geometry should replace the stored one: rejects negative
-/// (off-screen) coords and ignores sub-`min_delta` jitter. `None` means "leave the stored value".
 /// Geometry read back from a viewport callback: inner size, plus outer position when the window
 /// manager reports one.
 pub(crate) type WinGeom = Option<((f32, f32), Option<(f32, f32)>)>;
 
+/// Decide whether a captured window geometry should replace the stored one: rejects winit's
+/// minimized-window sentinels and ignores sub-`min_delta` jitter. `None` means "leave the stored
+/// value".
 pub(crate) fn geometry_update(
     prev: Option<(f32, f32)>,
     new: (f32, f32),
@@ -56,17 +57,15 @@ pub(crate) fn geometry_update(
 
 /// Seed size (never position) into an overlay viewport's per-frame builder.
 ///
-/// Overlay viewports (alert + fleet ping) share this one rule so they can't drift apart: NEVER feed
-/// the live saved position into the per-frame builder. egui diffs the `ViewportBuilder` every frame,
-/// so a per-frame `with_position` issues a reposition command every frame; the render callback then
-/// reads the window's actual `outer_rect` (off by WM rounding / decoration), persists it, and it is
-/// fed back next frame, oscillating the window between two spots until the values converge. That is
-/// the exact bug that regressed the alert window when only ping was fixed. Position is restored ONCE
-/// on show via `ViewportCommand::OuterPosition` in the render callback instead. This helper takes no
-/// position argument, so there is structurally no way to seed a live position through it.
+/// Overlay viewports (alert and fleet ping) share this rule: never feed the live saved position into
+/// the per-frame builder. egui diffs the `ViewportBuilder` every frame, so a per-frame
+/// `with_position` repositions every frame, the render callback persists the window's `outer_rect`
+/// (off by WM rounding and decoration), and the window oscillates between two spots. Position is
+/// restored once on show via `ViewportCommand::OuterPosition` in the render callback, and this
+/// helper takes no position argument.
 ///
-/// Non-Windows seeds the saved size so no frame re-applies the default; Windows starts at the default
-/// size and restores the saved size via command on show (same reason position is command-only there).
+/// Non-Windows seeds the saved size so no frame re-applies the default. Windows starts at the default
+/// size and restores the saved size via command on show, for the same reason.
 pub(crate) fn seed_overlay_size(
     b: egui::ViewportBuilder,
     size: Option<(f32, f32)>,
@@ -251,9 +250,8 @@ pub(crate) fn build_alert_viewport_cb(
         }
         let just_opened = !st.open;
         st.open = true;
-        // A pinned window is held open "until closed", so keep it unconditionally on top —
-        // otherwise Smart on-top can drop it to a normal level and the EVE client covers it,
-        // which reads as the pin "not staying visible" and the window being unmovable.
+        // A pinned window is held open "until closed", so keep it unconditionally on top.
+        // Otherwise Smart on-top can drop it to a normal level and the EVE client covers it.
         let on_top = st.on_top_level || st.pinned;
         std::mem::take(&mut st.focus_pending);
         let feed = st.feed.clone();
@@ -290,8 +288,6 @@ pub(crate) fn build_alert_viewport_cb(
         drop(st);
         let mut verdict_out_new: Vec<(String, bool)> = Vec::new();
 
-        // Overlays request foreground only (via WindowLevel::AlwaysOnTop, a SWP_NOACTIVATE raise);
-        // never take keyboard focus, so a new alert can't steal it from the game.
         // Re-assert the saved geometry for a short settle after (re)open. On Windows the window is
         // shown from hidden here and a single restore command races that map, so keep re-sending
         // until it sticks; on Linux the one-shot on open is enough.
@@ -308,8 +304,9 @@ pub(crate) fn build_alert_viewport_cb(
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
-        // Re-assert the level only on change or (re)open — NOT every frame (a viewport
-        // command each frame pins egui at vsync).
+        // Overlays request foreground only (WindowLevel::AlwaysOnTop is a SWP_NOACTIVATE raise) and
+        // never take keyboard focus, so a new alert can't steal it from the game. Re-assert the
+        // level only on change or (re)open, since a viewport command each frame pins egui at vsync.
         if just_opened || level_applied != Some(on_top) {
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on_top {
                 egui::WindowLevel::AlwaysOnTop
@@ -577,9 +574,8 @@ pub(crate) fn build_alert_viewport_cb(
                     render_tip_content(&mut mui, &content, &tip_systems, &tip_status);
                     mui.min_rect().size()
                 };
-                // Window inner area = content + 2*margin + 2*stroke; add a couple px so the real
-                // (narrower) render doesn't wrap one extra line and clip. Under-padding here was why
-                // tips came out too small.
+                // Window inner area = content + 2*margin + 2*stroke. A couple px extra so the real
+                // (narrower) render doesn't wrap one extra line and clip.
                 let pad = TIP_MARGIN * 2.0 + 2.0 + 3.0;
                 let win_w = (measured.x + pad).min(TIP_MAXW + pad);
                 let win_h = measured.y + pad;

@@ -41,7 +41,6 @@ function Ask($q, $default) {
   return $a -match '^[Yy]'
 }
 
-# Start Menu entry.
 if (Ask "Create a Start Menu entry? [y/N]" "n") {
   $ico = Join-Path $Dir "eve-spai.ico"
   try { Invoke-WebRequest "https://raw.githubusercontent.com/$Repo/main/assets/eve-spai.ico" -OutFile $ico -UseBasicParsing } catch {}
@@ -57,7 +56,6 @@ if (Ask "Create a Start Menu entry? [y/N]" "n") {
   Write-Host "Created Start Menu entry."
 }
 
-# Add the install dir to the user PATH (with consent).
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$Dir*") {
   if (Ask "Add $Dir to your PATH? [Y/n]" "y") {

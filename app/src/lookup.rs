@@ -132,8 +132,7 @@ fn save_cache(report: &PilotReport) {
     }
 }
 
-/// One file per pilot ever looked up, with nothing deleting them until now. Everything here
-/// refetches, so age is the only thing worth keeping them for.
+/// One file per pilot ever looked up. Everything here refetches, so age alone decides what goes.
 pub(crate) fn prune_cache(level: crate::disk::Level) {
     let ttl = match level {
         crate::disk::Level::Normal => std::time::Duration::from_secs(30 * 24 * 60 * 60),

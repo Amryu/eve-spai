@@ -80,11 +80,8 @@ pub fn game_logs_dir(configured: &str) -> Option<PathBuf> {
         .find(|d| d.is_dir())
 }
 
-/// The real current byte length of `path`, queried from an OPEN handle (its true end-of-file), not
-/// the directory entry. On Windows the directory entry's size is updated lazily while another
-/// process (EVE) holds the file open and appends, so `DirEntry::metadata().len()` stays stale for
-/// minutes; seeking a freshly-opened handle to the end always sees the real size, which is how the
-/// log watchers detect new lines without lagging behind on Windows.
+/// The current byte length of `path`, read by seeking an open handle to its end. On Windows
+/// `DirEntry::metadata().len()` lags by minutes while EVE holds the file open and appends.
 pub fn real_len(path: &std::path::Path) -> Option<u64> {
     use std::io::Seek;
     std::fs::File::open(path).ok()?.seek(std::io::SeekFrom::End(0)).ok()

@@ -461,8 +461,8 @@ fn stray_letter_before_name_with_code_system() {
 
 #[test]
 fn apostrophe_name_does_not_leak_bare_first_word() {
-    // "Jennifer' Thyron" is one pilot; tokenizing strips the ' so a bare "Jennifer" used to
-    // leak as a separate candidate (and survive because it matches a real EVE name via ESI).
+    // "Jennifer' Thyron" is one pilot. Tokenizing strips the ', and a bare "Jennifer" would
+    // survive as a candidate because it matches a real EVE name via ESI.
     let s = systems();
     let text = "Biggi Harry Jae-ha Jennifer' Thyron Talon Karrdex";
     let r = analyze(text, &s, &noships(), &noknown(), 1, "ch", "Woosi");
@@ -1378,7 +1378,7 @@ fn nullified_is_a_flag_not_a_pilot() {
     );
     // "nullifier" (the module name) also triggers it.
     assert!(analyze("ceptor with interdiction nullifier", &s, &noships(), &noknown(), 1, "ch", "x").nullified);
-    // A plain nullsec mention must NOT trigger it.
+    // A plain nullsec mention does not trigger it.
     assert!(!analyze("hostiles in null in Rancer", &s, &noships(), &noknown(), 1, "ch", "x").nullified);
 }
 
@@ -2101,7 +2101,7 @@ fn identical_lines_across_accounts_make_one_card() {
         ingest(&mut st, "2026.07.06 14:30:22", "Scout", "Rancer Slasher hostile");
     }
     assert_eq!(st.reports.len(), 1, "{:?}", st.reports);
-    // Clears duplicate worst (try_amend never merges them) — dedup must still collapse.
+    // Clears duplicate worst (try_amend never merges them), but dedup must still collapse.
     let mut st2 = IntelState::default();
     for _ in 0..3 {
         ingest(&mut st2, "2026.07.06 14:31:00", "Scout", "Rancer clear");

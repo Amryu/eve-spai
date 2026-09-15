@@ -26,8 +26,7 @@ pub mod state;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// What the dialog endpoints read. Pushed down from the UI thread with the rest of the facts, for
-/// the same reason: the server thread has no store handle and no graph of its own.
+/// What the dialog endpoints read, pushed down from the UI thread like the facts.
 #[derive(Default)]
 pub struct DetailState {
     pub graph: Option<Arc<crate::geo::Systems>>,
@@ -36,49 +35,39 @@ pub struct DetailState {
     pub player_sys: Option<i64>,
     pub active_character: String,
     pub staging: Option<String>,
-    /// The folder tree, for exports.
+    /// For exports.
     pub notes: Arc<crate::notes::NoteBook>,
-    /// Wakes the UI when the page posts an action. Otherwise an idle app window drains the inbox only
-    /// on its next repaint, which made every edit from the page feel stuck.
+    /// Wakes the UI when the page posts an action, or an idle window drains the inbox only on its
+    /// next repaint.
     pub wake: Option<egui::Context>,
     pub count_bridges: bool,
-    /// Type names the app has resolved, shared so the ship dialog can name the skill a hull bonus
-    /// belongs to. Shared rather than copied because the request thread fills it in on a miss.
+    /// Shared rather than copied because the request thread fills it in on a miss.
     pub type_names: Option<Arc<Mutex<std::collections::HashMap<i64, String>>>>,
-    /// Systems the planner always goes around, one list per kind of route. Pushed from settings so
-    /// the persistent half of avoidance stays in one place and the page only ever sends the
-    /// this-route-only half.
+    /// Persistent avoidance from settings. The page only sends the per-route half.
     pub avoid_gate: Vec<i64>,
     pub avoid_jump: Vec<i64>,
-    /// Scanned wormhole connections as extra edges, and whether routes are allowed to use them.
-    /// Both come from the app, because the app is where the chain and the setting live.
+    /// Scanned wormhole connections as extra edges.
     pub holes: HashMap<i64, Vec<i64>>,
     pub via_wormholes: bool,
     /// Saved routes, already pruned of expired wormhole ones.
     pub saved_routes: Vec<crate::settings::SavedMapRoute>,
-    /// Every system's real coordinates, for the light-year maths the jump routes are made of.
+    /// Real coordinates, for jump-route light-year maths.
     pub coords: Option<Arc<Vec<crate::store::MapSystem>>>,
-    /// Scanned wormholes, sov upgrades and bookmarks, for the system dialog. Copied: each is a
-    /// handful of entries the user maintains by hand, and the request thread must not hold a lock
-    /// the UI writes to.
+    /// Copied: each is a handful of entries, and the request thread must not hold a lock the UI
+    /// writes to.
     pub wh_cache: Vec<crate::wormholes::Wormhole>,
     pub sov_upgrades: Vec<crate::settings::SovUpgrade>,
     pub bookmarks: Vec<i64>,
-    /// Gate camps, shared: the detection state is rebuilt from killmails on its own schedule and
-    /// asking it about one system is cheap.
+    /// Shared: rebuilt on its own schedule, and a one-system query is cheap.
     pub camps: Option<Arc<Mutex<crate::camp::CampState>>>,
-    /// The live jabber session, shared rather than copied: one room's backlog is larger than every
-    /// other pane put together, and the pane reads one conversation at a time.
+    /// Shared rather than copied: one room's backlog outweighs every other pane.
     pub jabber: Option<Arc<Mutex<crate::jabber::JabberState>>>,
 }
 
 pub type Detail = Arc<Mutex<DetailState>>;
 
-/// Actions posted by the page, drained on the UI thread.
-///
-/// Deliberately the same `OverlayToMain` the overlay subprocess sends, landing in the same drain and
-/// the same match arms. A second queue would be a second place for the two to disagree about what a
-/// verdict means.
+/// Actions posted by the page, drained on the UI thread through the same `OverlayToMain` match arms
+/// as the overlay subprocess, so the two cannot disagree.
 pub type Inbox = Arc<Mutex<Vec<crate::ipc::OverlayToMain>>>;
 
 pub fn detail() -> Detail {

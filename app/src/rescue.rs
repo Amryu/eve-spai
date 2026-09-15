@@ -190,7 +190,7 @@ impl FleetSnapshot {
     }
 }
 
-/// Per-ping record of the three actions the FC is expected to take. Comms actions remember WHICH
+/// Per-ping record of the three actions the FC is expected to take. Comms actions remember which
 /// op they were done for, so changing the op channel re-arms them.
 #[derive(Default, Clone, Copy)]
 pub struct PingActions {
@@ -209,7 +209,7 @@ impl PingActions {
 pub struct RescueState {
     pub active: bool,
     /// Test scenario loaded. While true the fleet poller is paused (so injected data isn't
-    /// overwritten) and ALL ping sending is hard-disabled in the UI. Nothing ever leaves the app.
+    /// overwritten) and all ping sending is hard-disabled in the UI. Nothing ever leaves the app.
     pub test_mode: bool,
     pub events: Vec<RescueEvent>,
     pub capital_system: Option<i64>,
@@ -242,7 +242,7 @@ pub struct RescueState {
     pub chat_tab: u8,
     pub fleet: FleetSnapshot,
     /// Sticky snowflakes: character_id -> reason tag. Once flagged (capital/cyno/titan/recon) a
-    /// pilot STAYS flagged for the session even if they re-ship to a pod, so the FC keeps tracking
+    /// pilot stays flagged for the session even if they re-ship to a pod, so the FC keeps tracking
     /// them. Keyed by character_id (survives ship changes).
     pub snowflakes: HashMap<i64, String>,
 }

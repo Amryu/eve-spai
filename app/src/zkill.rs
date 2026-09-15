@@ -162,8 +162,8 @@ pub fn spawn(
                     }
                     Poll::Retry => {
                         retries += 1;
-                        // After ~5 failed attempts the payload is almost certainly bad, not
-                        // a network blip — skip it so the feed doesn't stall on one sequence.
+                        // After ~5 failed attempts the payload is almost certainly bad, not a
+                        // network blip, so skip it rather than stall the feed on one sequence.
                         if retries >= 5 {
                             retries = 0;
                             seq = Some(s + 1);
@@ -620,7 +620,8 @@ fn pilot_of(c: &Combatant, names: &HashMap<i64, String>) -> String {
     names.get(&id).cloned().unwrap_or_else(|| "Unknown".to_owned())
 }
 
-/// NPCs. Player corporations are >= 98,000,000; a player-owned structure keeps that corp id, so
+/// A killmail attacker with no capsuleer behind it. Player corporations are >= 98,000,000, so a
+/// player-owned structure is not treated as an NPC.
 fn is_npc_attacker(c: &Combatant) -> bool {
     c.character_id.is_none() && c.corporation_id.map_or(true, |id| id < 98_000_000)
 }

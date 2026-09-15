@@ -1,13 +1,11 @@
 //! What the page is sent.
 //!
-//! One `Option` per pane, and `None` is the dirty flag: a pane is present only when it changed after
-//! the client's last `seq`. Each pane carries the `rev` it last changed at, so a reconnecting client
-//! asks once and gets exactly what it missed. No patch format, because a patch format is a second
-//! thing to get subtly wrong.
+//! One `Option` per pane: a pane is present only when it changed after the client's last `seq`, and
+//! carries the `rev` it last changed at, so a reconnecting client gets exactly what it missed.
 
-// `BTreeMap`, never `HashMap`, throughout this module: the publisher hashes the serialized panes to
-// decide whether anything changed, and a `HashMap` serializes in a per-instance random order, so
-// every pane would republish every tick. See `state::a_hashmap_would_not_have_hashed_stably`.
+// `BTreeMap`, never `HashMap`: the publisher hashes serialized panes to detect changes, and a
+// `HashMap` serializes in a per-instance random order.
+// See `state::a_hashmap_would_not_have_hashed_stably`.
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -25,8 +23,8 @@ pub struct IntelCard {
     pub chars: crate::app::CardChars,
 }
 
-/// The lookup tables a pane's cards index into. Shared rather than inlined per card, because a
-/// pilot, a hull or an alliance appears in many cards and a phone pays for every duplicated byte.
+/// Lookup tables the cards index into, shared because a pilot, hull or alliance appears in many
+/// cards.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Lookups {
     pub resolved_pilots: BTreeMap<String, i64>,
@@ -40,12 +38,8 @@ fn is_zero(v: &u32) -> bool {
     *v == 0
 }
 
-/// One system's ESI-sourced state, in the shortest form that still says everything the map draws.
-///
-/// `SysFlags` serialized whole was 190 bytes a system across 5382 systems, once inside the intel
-/// pane and again inside the alert pane: over 2 MB of a 2.86 MB snapshot, re-sent whenever either
-/// changed. Everything optional is skipped, and sovereignty arrives as a resolved colour so the page
-/// never has to know an alliance exists.
+/// One system's ESI-sourced state, compact because there are thousands of systems. `SysFlags`
+/// whole is about 190 bytes each. Sovereignty arrives as a resolved colour.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SysInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,8 +53,7 @@ pub struct SysInfo {
     pub n: u32,
     #[serde(skip_serializing_if = "is_zero")]
     pub j: u32,
-    /// Sovereignty colour by alliance, then by coalition. Both resolved the way the app resolves
-    /// them, so the two maps agree without the page knowing the rules.
+    /// Sovereignty colour by alliance, then by coalition, resolved by the app's rules.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sov: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,10 +62,8 @@ pub struct SysInfo {
     pub inc: bool,
 }
 
-/// Shared reference data: every system ESI has anything to say about.
-///
-/// Its own pane because it moves on ESI's cadence, minutes apart, while intel moves constantly.
-/// Inside the intel pane it was re-sent on every report.
+/// Every system ESI reports on. Its own pane because it changes on ESI's cadence, minutes apart,
+/// while intel changes constantly.
 #[derive(Clone, Debug, Serialize)]
 pub struct StatusPane {
     pub rev: u64,
@@ -89,17 +80,14 @@ pub struct IntelPane {
 #[derive(Clone, Debug, Serialize)]
 pub struct AlertPane {
     pub rev: u64,
-    /// The overlay's own DTO, verbatim. It already carries the feed and every lookup a card needs,
-    /// it is pinned by compatibility tests, and reusing it means the page and the overlay window
-    /// cannot end up showing different things.
+    /// The overlay's own DTO, reused so the page and the overlay window cannot diverge.
     pub msg: crate::ipc::AlertMsg,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PingCard {
     pub ping: crate::pings::Ping,
-    /// The rule that matched, if any. It is the only thing separating a ping that concerns you from
-    /// one that does not, so it travels with the ping rather than being re-derived in the browser.
+    /// The matched rule, sent so the browser does not re-derive it.
     pub rule: Option<String>,
     pub suppressed: bool,
 }
@@ -108,13 +96,11 @@ pub struct PingCard {
 pub struct PingPane {
     pub rev: u64,
     pub pings: Vec<PingCard>,
-    /// Names for the system ids a formup points at. `Formup::System` carries an id and nothing else,
-    /// and the page has no SDE, so without this a formup reads "30004759" instead of "1DQ1-A".
+    /// Names for formup system ids, since the page has no SDE.
     pub systems: BTreeMap<i64, String>,
 }
 
-/// The map's live layer. Geometry never travels here: it comes from `/api/map/geometry`, cached hard
-/// against the SDE version, because re-sending 8000 nodes twice a second would be absurd.
+/// The map's live layer. Geometry comes from `/api/map/geometry` instead.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct MapLive {
     pub rev: u64,
@@ -126,17 +112,13 @@ pub struct MapLive {
     pub camps: Vec<i64>,
     /// Scanned wormhole connections, as system pairs. Both ends known only.
     pub holes: Vec<(i64, i64)>,
-    /// Configured cyno generators.
     pub cyno: Vec<i64>,
-    /// The current travel route, in order. The page draws a leg solid when the two systems are gate
-    /// neighbours and dashed otherwise, which it can tell from the geometry it already has.
+    /// The current travel route, in order.
     pub route: Vec<i64>,
-    /// Sov upgrades per system, classified the way the app classifies them.
     pub upgrades: Vec<(i64, Vec<UpgradeMark>)>,
 }
 
-/// One sov upgrade, reduced to what a map draws: what kind it is, what level, and for a mining
-/// upgrade which ore, so the page can show the same icon the app does.
+/// One sov upgrade: kind, level, and for mining the ore, so the page shows the app's icon.
 #[derive(Clone, Debug, Serialize)]
 pub struct UpgradeMark {
     /// 0 ratting, 1 exploration, 2 mining, 3 other. Matches `app::UpgradeKind`.
@@ -159,23 +141,20 @@ pub struct Meta {
     pub active_character: String,
     pub chars: Vec<(String, i64)>,
     pub player_system: Option<i64>,
-    /// Severity name to sound name, so the page asks for the sound the user configured rather than
-    /// guessing one from the severity.
+    /// Severity name to configured sound name.
     pub sounds: BTreeMap<String, String>,
-    /// Bumped when the synthesis changes, so a browser cannot keep an immutable WAV past a tone
+    /// Bumped when the synthesis changes, so a browser does not keep an immutable WAV past a tone
     /// change.
     pub sound_rev: u32,
-    /// The permanent route-avoidance lists, so the page can say "stop avoiding" only where there is
-    /// something to stop, and mark them on the map.
+    /// Permanent route-avoidance lists, for the map marks and "stop avoiding".
     pub avoid_gate: Vec<i64>,
     pub avoid_jump: Vec<i64>,
-    /// Whether this build has the rescue mode and the user has it switched on. The pane only exists
-    /// when both are true, and there is no point offering it otherwise.
+    /// The build has rescue mode and the user switched it on.
     pub rescue: bool,
 }
 
-/// Notes and tags. The view is what cards and the map draw; the tree is only for the manager, sent
-/// anyway because it changes only when someone edits it.
+/// Notes and tags. The view is what cards and the map draw; the book is for the manager, cheap to
+/// send because it changes only on edits.
 #[derive(Clone, Debug, Serialize)]
 pub struct NotesPane {
     pub rev: u64,
@@ -186,8 +165,8 @@ pub struct NotesPane {
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
     pub seq: u64,
-    /// Changes every time the app restarts. A client that sees a new one throws away what it has,
-    /// which is what stops a stale `seq` from a previous run silencing a whole pane.
+    /// Changes on every app restart. A client that sees a new one discards its state, so a stale
+    /// `seq` from a previous run cannot silence a pane.
     pub gen: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel: Option<IntelPane>,

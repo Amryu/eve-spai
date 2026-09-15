@@ -76,9 +76,8 @@ pub fn hash_of<T: serde::Serialize>(v: &T) -> u64 {
 }
 
 impl WebState {
-    /// `Some(rev)` when this pane's payload differs from what was published last, after bumping the
-    /// sequence. `None` means nothing changed and the caller should not rebuild the pane, which is
-    /// what keeps an idle app from pushing a frame every tick.
+    /// `Some(rev)`, after bumping the sequence, when the payload differs from the last publish.
+    /// `None` means the caller should not rebuild the pane.
     pub fn changed(&mut self, pane: Pane, hash: u64) -> Option<u64> {
         let slot = &mut self.hashes[pane as usize];
         if *slot == Some(hash) {
@@ -108,12 +107,8 @@ impl WebState {
     pub fn put_status(&mut self, p: StatusPane) {
         self.status = Some(p);
     }
-    /// The theme as last published, for the stylesheet route.
-    ///
-    /// Read live rather than baked into the server's config: the config is only replaced by
-    /// restarting the listener, and restarting a listener because someone moved a colour slider is
-    /// both absurd and, since the old socket is not closed the instant the handle drops, a good way
-    /// to fail the rebind and take the feature down.
+    /// Read live rather than from the server config, which changes only on a listener restart, and a
+    /// restart can fail to rebind while the old socket closes.
     pub fn theme(&self) -> Option<crate::theme::Theme> {
         self.meta.as_ref().map(|m| m.theme.clone())
     }
@@ -141,8 +136,7 @@ impl WebState {
         self.notes = Some(p);
     }
 
-    /// Every pane that changed after `since`. `since == 0` is a client that has nothing, so it gets
-    /// everything.
+    /// Every pane that changed after `since`. `since == 0` gets everything.
     pub fn snapshot_since(&self, since: u64) -> Snapshot {
         let keep = |rev: u64| rev > since;
         Snapshot {
@@ -160,8 +154,7 @@ impl WebState {
         }
     }
 
-    /// The whole state, serialized once and handed out by `Arc`. Per-client serialization is how
-    /// eight phones come to cost eight times one phone.
+    /// Serialized once and shared by `Arc` rather than per client.
     pub fn full_json(&mut self) -> Arc<str> {
         if let Some(j) = &self.full {
             return j.clone();
@@ -177,13 +170,8 @@ impl WebState {
 mod tests {
     use super::*;
 
-    /// Every pane was being published on every tick, and the revision check that was supposed to
-    /// stop that was doing nothing.
-    ///
-    /// `hash_of` serializes with serde_json, and a `HashMap` is serialized in iteration order. Each
-    /// `HashMap` instance gets its own hash seed, so two maps with identical contents built a tick
-    /// apart serialize their keys in different orders and hash differently. The publisher rebuilds
-    /// these maps every tick, so nothing ever compared equal.
+    /// `hash_of` serializes with serde_json, and each `HashMap` has its own seed, so identical maps
+    /// built a tick apart would hash differently.
     #[test]
     fn a_map_hashes_the_same_however_it_was_built() {
         let build = || {
@@ -201,14 +189,13 @@ mod tests {
         }
         assert_eq!(hash_of(&build()), hash_of(&reversed), "insertion order must not matter");
 
-        // And the thing that actually bit: two separately built instances.
+        // Two separately built instances.
         for _ in 0..20 {
             assert_eq!(hash_of(&build()), hash_of(&build()));
         }
     }
 
-    /// The proof that the fix was needed, kept because it is the only thing that explains why the
-    /// lookups are `BTreeMap` and must stay that way.
+    /// Explains why the lookups must stay `BTreeMap`.
     #[test]
     fn a_hashmap_would_not_have_hashed_stably() {
         let build = || {

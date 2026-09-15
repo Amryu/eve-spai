@@ -317,8 +317,8 @@ pub struct Store {
     settings_locked: std::cell::Cell<bool>,
 }
 
-/// How long the kill archive is kept. The firehose writes a row per killmail and nothing used to
-/// delete them, which is how one profile reached 360MB of engagements.
+/// How long the kill archive is kept. The firehose writes a row per killmail, so without retention
+/// the archive grows by hundreds of megabytes.
 pub const ENGAGEMENT_RETENTION_SECS: i64 = 30 * 86_400;
 
 mod systems;
@@ -379,10 +379,8 @@ impl Store {
         let _ = conn.execute("ALTER TABLE pilot_activity ADD COLUMN last_corp_change INTEGER", []);
         let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_name TEXT", []);
         let _ = conn.execute("ALTER TABLE kill_details ADD COLUMN near_dist REAL", []);
-        // One-time: after the demotion-logic overhaul (90-day young-account grace, player-corp-change
-        // signal, and a true-90-day activity window), wipe the persisted activity/demotion cache once
-        // so every pilot is re-fetched and re-judged under the new rules instead of keeping a stale
-        // "demoted" verdict (which was wrongly hiding real, recently-active pilots).
+        // One-time wipe of the activity/demotion cache so every pilot is re-judged under the
+        // current rules instead of keeping a stale "demoted" verdict that hides a real pilot.
         let cleared: Option<String> = conn
             .query_row("SELECT value FROM kv WHERE key = 'activity_cache_reset_v2'", [], |r| r.get(0))
             .ok();
@@ -500,7 +498,7 @@ impl Store {
     pub fn add_known_pilot(&self, name: &str, char_id: i64) {
         // Upgrade a previously-stored negative (char_id 0) once ESI confirms a real
         // character with the same name, but never downgrade a confirmed pilot back to 0
-        // (the WHERE guards that). Plain OR IGNORE left the stale 0 row forever, hiding the
+        // (the WHERE guards that). Plain OR IGNORE would keep the stale 0 row, hiding the
         // pilot from `known_pilots`, which filters char_id != 0.
         self.exec_historic(
             "INSERT INTO known_pilots(name_lc, name, char_id) VALUES(?1, ?2, ?3)
@@ -984,11 +982,6 @@ impl Store {
 
 }
 
-/// Enable WAL and a busy timeout on a freshly opened connection. Many threads each
-/// open their own connection to the same DB file (see `path`), so without WAL +
-/// `busy_timeout` a colliding write fails with `SQLITE_BUSY` and — since most mutations
-/// ignore the result — is silently dropped. WAL is a persistent DB property; the timeout
-/// is per-connection, so every open must set it.
 /// Whether reclaiming is worth it right now. VACUUM rebuilds the database into a complete second
 /// copy before swapping, so on a tight disk it is the last thing that should run: stop growing
 /// first, reclaim once there is room.
@@ -1036,6 +1029,10 @@ pub fn run_maintenance(level: crate::disk::Level) {
     }
 }
 
+/// Enable WAL and a busy timeout on a freshly opened connection. Many threads each open their own
+/// connection to the same DB file, so without them a colliding write fails with `SQLITE_BUSY` and,
+/// since most mutations ignore the result, is silently dropped. The timeout is per-connection, so
+/// every open must set it.
 pub(crate) fn apply_pragmas(conn: &Connection) {
     let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
@@ -1325,14 +1322,11 @@ mod tests {
         crate::disk::force_level(before);
     }
 
-    /// A discarded COMMIT used to leave the connection inside its transaction, wedging it for the
-    /// rest of the process. This covers the reachable half: an upsert against a full database
-    /// leaves the connection able to open the next transaction.
+    /// An upsert against a full database leaves the connection able to open the next transaction.
     ///
-    /// It does NOT have teeth against the old hand-rolled BEGIN/COMMIT, and the honest reason is
-    /// that `max_page_count` fails the INSERT rather than the COMMIT, so the commit has nothing to
-    /// flush and succeeds either way. Failing at commit needs a real ENOSPC against the WAL, which
-    /// needs a loop device or a privileged container: see GAP-011.
+    /// `max_page_count` fails the INSERT rather than the COMMIT, so a failing commit is not
+    /// exercised here. That needs a real ENOSPC against the WAL, from a loop device or a
+    /// privileged container.
     #[test]
     fn an_upsert_against_a_full_database_leaves_the_connection_usable() {
         let _guard = crate::disk::test_guard();
@@ -1342,7 +1336,7 @@ mod tests {
         fill_pages(&s);
         crate::disk::force_level(crate::disk::Level::Normal);
 
-        // Runs against a full database, so the commit fails.
+        // Runs against a full database.
         s.upsert_wormhole(&a_hole(30_004_759, "ABC-123"));
 
         // The connection must not still be mid-transaction.

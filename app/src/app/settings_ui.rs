@@ -730,8 +730,7 @@ impl SpaiApp {
                 let sel_idx = self
                     .alert_selected_rule
                     .and_then(|id| self.settings.alerts.rules.iter().position(|r| r.id == id));
-                // In the row these reserved 82px of a 240px panel and cut every name to eight
-                // characters; under the list they cost the name nothing.
+                // Under the list, since in the row they would cut rule names in the narrow panel.
                 egui::Panel::bottom("alert_rule_reorder").resizable(false).show_inside(ui, |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {

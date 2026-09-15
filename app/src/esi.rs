@@ -62,7 +62,7 @@ fn location_for(
     let token = current_access_token(store, client_id, character.id, character.expires_at)?;
 
     // Skip offline characters: ESI still returns their last-known location, but it must not
-    // drive alert distances (an offline alt elsewhere was triggering far-away alerts).
+    // drive alert distances, or an offline alt elsewhere triggers far-away alerts.
     #[derive(Deserialize)]
     struct Online {
         online: bool,
@@ -140,7 +140,7 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
 
 pub type SharedJumpSkills = std::sync::Arc<std::sync::Mutex<Option<(u32, u32)>>>;
 
-/// Fetch the character's Jump Drive Calibration (21611) and Jump Fuel Conservation (21610)
+/// Fetch the character's Jump Drive Calibration (21611) and Jump Fuel Conservation (21610) levels.
 pub fn fetch_jump_skills(
     client_id: String,
     char_name: String,
@@ -325,7 +325,7 @@ pub fn spawn_fleet_poller(
         let Some(client) = esi_client() else { return };
         loop {
             std::thread::sleep(FLEET_POLL);
-            // Poll whenever rescue is active, INCLUDING test mode (test only disables sending, so
+            // Poll whenever rescue is active, including test mode (test only disables sending, so
             // the FC still sees their real fleet composition). Skip only when inactive.
             if !rescue.lock().unwrap().active {
                 continue;
@@ -344,7 +344,7 @@ pub fn spawn_fleet_poller(
                 let Some(raw) =
                     fleet_members_raw(&client, &store, &client_id, ch.id, ch.expires_at, fleet_id)
                 else {
-                    // In a fleet but not the boss (members endpoint 403) — try another character.
+                    // In a fleet but not the boss (members endpoint 403), so try another character.
                     continue;
                 };
                 let ids: Vec<i64> = raw.iter().map(|m| m.character_id).collect();
@@ -371,8 +371,8 @@ pub fn spawn_fleet_poller(
                 let mut r = rescue.lock().unwrap();
                 match built {
                     Some(snap) => {
-                        // Update sticky snowflakes from the FRESH ship types (handles re-ships), but
-                        // never remove an existing one — a podded titan pilot stays flagged.
+                        // Update sticky snowflakes from the fresh ship types (handles re-ships), but
+                        // never remove an existing one, so a podded titan pilot stays flagged.
                         let cap = r.capital_pilot.as_deref().map(|s| s.to_lowercase());
                         let cyno = r.cyno_pilot.as_deref().map(|s| s.to_lowercase());
                         for m in &snap.members {
@@ -395,9 +395,8 @@ pub fn spawn_fleet_poller(
 
 /// Why a character's ESI calls stopped working, when it is not something that fixes itself.
 ///
-/// Kept here, beside the one place that can tell: every call site takes `Option<String>` for the
-/// access token and had no way to say whether `None` meant "not now" or "not ever again". That is
-/// how an expired login presented as the map quietly no longer showing where you are.
+/// Kept beside the one place that can tell: call sites only see `Option<String>` for the access
+/// token and cannot tell "not now" from "not ever again".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AuthProblem {
     /// EVE SSO rejected the saved login. Only logging in again fixes it.
@@ -561,7 +560,7 @@ pub(crate) fn access_token(
         Err(_) => return None,
     };
     clear_problem(id);
-    // The refresh token may rotate — persist the new one.
+    // The refresh token may rotate, so persist the new one.
     let _ = tokens::save_refresh(id, &fresh.refresh_token);
     store.put(id, &fresh.access_token, now + fresh.expires_in);
     Some(fresh.access_token)

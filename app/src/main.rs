@@ -130,17 +130,15 @@ fn acquire_single_instance_lock() -> bool {
     let file = match std::fs::OpenOptions::new().create(true).write(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
-            // Failing open means two processes can end up on one SQLite file, which is a far worse
-            // outcome than a second window. A full disk is the case where that is most likely, so
-            // it feeds the pressure state and the user is told rather than only a console that a
-            // release build does not have.
+            // Failing open could put two processes on one SQLite file, which is worse than a
+            // second window. A full disk is the likely cause, so it feeds the pressure state and
+            // reaches the user, since a release build has no console.
             disk::note_io_error(&e);
             eprintln!("[main] could not open lock file ({e}); continuing without single-instance guard");
             return true;
         }
     };
-    // UFCS through the fs4 trait (avoids resolving to std's inherent File::try_lock, which has a
-    // different return type) — `Ok(())` = acquired, `Err(WouldBlock)` = another instance holds it.
+    // UFCS through the fs4 trait, because std's inherent File::try_lock has a different return type.
     match fs4::FileExt::try_lock(&file) {
         Ok(()) => {
             // Hold the lock for the whole process: leak the File so it's never dropped/unlocked.
@@ -152,13 +150,13 @@ fn acquire_single_instance_lock() -> bool {
 }
 
 fn main() -> eframe::Result<()> {
-    // Installed per role, because both processes run this function and used to append to one
-    // crash.log, racing each other's rotation.
+    // Installed per role, because both processes run this function and would otherwise append to
+    // one crash.log, racing each other's rotation.
     let overlay_child = std::env::args().any(|a| a == "--overlay");
     crashlog::install(if overlay_child { crashlog::Role::Overlay } else { crashlog::Role::Main });
 
     // Re-exec into the overlay child when launched with the hidden flag, before any main-window
-    // setup runs. The child must ALWAYS start (it is spawned by the main), so the single-instance
+    // setup runs. The child must always start (it is spawned by the main), so the single-instance
     // guard below is skipped for it.
     if overlay_child {
         return overlay::run_overlay();

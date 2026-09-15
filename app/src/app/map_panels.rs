@@ -5,9 +5,8 @@ use super::*;
 impl SpaiApp {
     /// The route panel: the same thing the browser's route window shows, in the sidebar.
     ///
-    /// It used to be a jump-only planner with the hull picker, both skills and an ESI button taking
-    /// the top third before a single hop was listed. The route is the subject; everything about the
-    /// ship is one collapsed header away, and only for the kind of route that has a ship.
+    /// The route is the subject. Everything about the ship is one collapsed header away, and only
+    /// for the kind of route that has a ship.
     pub(crate) fn jump_plan_content(&mut self, ui: &mut egui::Ui) {
         use crate::jumproute::{max_range_ly, SHIP_CLASSES};
         use egui_phosphor::regular as icon;
@@ -271,9 +270,8 @@ impl SpaiApp {
                 (
                     l.from_name.clone(),
                     l.to_name.clone(),
-                    // The label, which now names the system that makes this option different. It
-                    // used to be the jump count, which is the same for every one of them by
-                    // construction, so the buttons were indistinguishable.
+                    // The label names the system that makes this option different, since every
+                    // option has the same jump count by construction.
                     l.options.iter().map(|o| o.label.clone()).collect(),
                     l.whole_route,
                 )
@@ -281,8 +279,8 @@ impl SpaiApp {
             .collect();
         let mut pick: Option<(usize, usize)> = None;
         for (i, (from, to, opts, whole)) in legs.iter().enumerate() {
-            // A titan leg's options are the route's options, already above as the option row. A
-            // second row of the same buttons, which this leg's pick no longer feeds, is the bug.
+            // A titan leg's options are the route's options, already shown in the option row
+            // above, and this leg's pick does not feed them.
             if opts.len() < 2 || *whole {
                 continue;
             }
@@ -530,7 +528,6 @@ impl SpaiApp {
         }
     }
 
-    /// Whether capitals and supers may dock in a system, as the permit list stands.
     /// Saving and loading a route, the same store the page writes to.
     ///
     /// The whole route, not just the endpoints: a route is the anchors and what you told the planner

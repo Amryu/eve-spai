@@ -48,8 +48,8 @@ pub fn spawn(
         let mut processed: HashMap<PathBuf, usize> = HashMap::new();
         let mut file_sigs: HashMap<PathBuf, (u64, i64)> = HashMap::new();
         let mut last_system: HashMap<String, (i64, String, Vec<String>)> = HashMap::new();
-        // One SQLite connection for the watcher's lifetime — opening per message ran the
-        // full schema migration under the intel lock and could stall the UI thread.
+        // One connection for the watcher's lifetime: opening one per message runs the schema
+        // migration under the intel lock and can stall the UI thread.
         let db = crate::store::Store::open().ok();
         let known_regions = systems.region_names();
         let mut channel_regions: HashMap<String, Vec<String>> = HashMap::new();
@@ -114,10 +114,9 @@ fn scan(
         if path.extension().and_then(|e| e.to_str()) != Some("txt") {
             continue;
         }
-        // Detect new lines by the REAL size from an open handle, not DirEntry metadata. On Windows
-        // EVE holds the log open and the directory entry's size/mtime update lazily (stale for
-        // minutes), so a DirEntry-based check makes the watcher skip re-reading and fall far behind.
-        // The cheap DirEntry mtime is used only to skip clearly-inactive old logs without opening.
+        // New lines are detected by the size of an open handle: on Windows the DirEntry size and
+        // mtime of a log EVE holds open lag by minutes. The DirEntry mtime only skips clearly
+        // inactive old logs without opening them.
         let mtime = entry
             .metadata()
             .ok()
@@ -364,7 +363,7 @@ fn feed_pilot_names(reports: &[intel::IntelReport]) -> std::collections::HashSet
 }
 
 /// Lock discipline: `intel_state`, `pilots`, `activity`, `sightings`, and `revivals` are taken only
-/// as brief LEAF locks (lock → read/clone → drop) and never held while another is acquired.
+/// as brief leaf locks (lock, read/clone, drop) and never held while another is acquired.
 #[allow(clippy::too_many_arguments)]
 fn demote_pass(
     pilots: &crate::pilot::SharedPilots,

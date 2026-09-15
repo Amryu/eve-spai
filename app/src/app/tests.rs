@@ -133,7 +133,7 @@ mod celestial_key_tests {
         assert!(same("Planet VI", "Planet 6"));
     }
 
-    /// Adversarial cases added on review. Merging hides a chip, and a hidden chip can mean a
+    /// Adversarial cases. Merging hides a chip, and a hidden chip can mean a
     /// pilot not knowing hostiles sit at a different celestial, so the failure that matters is a
     /// false merge.
     #[test]
@@ -474,7 +474,6 @@ mod ping_link_tests {
         assert_eq!(trim_url_tail("https://zkillboard.com/kill/1/"), "https://zkillboard.com/kill/1/");
     }
 
-    /// Every branch slices `body` by byte index, so a multibyte ping body must not panic.
     #[test]
     fn muc_service_falls_back_to_the_convention() {
         // No room joined yet: the browse button still has a service to disco.
@@ -486,6 +485,7 @@ mod ping_link_tests {
         assert_eq!(muc_domain_of("", "pilot"), "");
     }
 
+    /// Every branch slices `body` by byte index, so a multibyte ping body must not panic.
     #[test]
     fn ping_bodies_render_without_panicking() {
         let bodies = [
@@ -1175,8 +1175,8 @@ mod chat_window_tests {
 
     #[test]
     fn ellipsized_tabs_stay_inside_the_minimum_width() {
-        // Guards the MIN_TAB_W bump that paid for the pop-out icon: the boundary tab is ellipsized
-        // rather than dropped, so its rendered width must never exceed the budget it was given.
+        // The boundary tab is ellipsized rather than dropped, so its rendered width must never
+        // exceed the budget it was given.
         egui::__run_test_ui(|ui| {
             for label in TAB_LABELS {
                 for budget in [96.0f32, 100.0, 140.0, 240.0] {
@@ -1277,15 +1277,14 @@ mod rescue_range_tests {
             .map(|s| s.name.clone())
     }
 
-    /// The defect: the jump-off point was ranked by lightyears to the target, so the fleet was sent
-    /// to the system that merely looks nearest on the map.
+    /// Ranking the jump-off point by lightyears to the target would send the fleet to the system
+    /// that merely looks nearest on the map.
     #[test]
     fn jump_off_is_the_fewest_jumps_out_not_the_nearest_on_the_map() {
         let (systems, coords) = fixture();
         let at = |id: i64| coords.iter().find(|s| s.id == id).unwrap();
         let target_pos = at(TARGET);
 
-        // The old ranking's answer, stated here so the test fails loudly if it ever comes back.
         assert!(
             crate::map::ly_distance(at(FAR_BUT_CLOSE), target_pos)
                 < crate::map::ly_distance(at(NEAR_B), target_pos),
@@ -1297,7 +1296,7 @@ mod rescue_range_tests {
         assert_eq!(pick(&systems, &coords).as_deref(), Some("NEAR-B"));
     }
 
-    /// Two systems one jump out, which is the reported case. The nearer of the two in lightyears
+    /// Two systems one jump out. The nearer of the two in lightyears
     /// wins, so the choice is stable rather than dependent on system id order.
     #[test]
     fn ties_at_the_same_jump_count_go_to_the_nearer_one() {
@@ -1547,7 +1546,7 @@ mod char_rings_tests {
         );
     }
 
-    /// The alert engine's own distance, which had no test at all.
+    /// The alert engine's own distance.
     #[test]
     fn min_jumps_from_takes_the_nearest_source() {
         let sys = Some(fixtures::systems());
@@ -1624,7 +1623,7 @@ mod jabber_room_tests {
         assert_eq!(a.jabber_tabs, vec![DM.to_owned()]);
     }
 
-    /// The X is not a leave any more: it hides, and the room stays joined.
+    /// The X hides, and the room stays joined.
     #[test]
     fn closing_a_room_tab_only_hides_it() {
         let (_ctx, mut a) = app();
@@ -1647,7 +1646,7 @@ mod jabber_room_tests {
         let (_ctx, mut a) = app();
         a.settings.jabber_rooms = vec![ROOM.to_owned()];
         a.jabber_tabs = vec![ROOM.to_owned()];
-        // Leaving is the sidebar's remove button now, the only path that leaves.
+        // The sidebar's remove button is the only path that leaves.
         a.jabber_forget(ROOM, true);
         assert_eq!(a.settings.jabber_left_rooms, vec![ROOM.to_owned()]);
         assert!(a.settings.jabber_rooms.is_empty(), "we would rejoin it on the next start");
@@ -1683,7 +1682,7 @@ mod jabber_room_tests {
         assert!(a.settings.jabber_left_rooms.is_empty());
         assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()]);
         assert!(a.jabber_frame(false).channels.iter().any(|c| c.jid == ROOM));
-        // First sight of a server-driven join opens the tab once (UI-047).
+        // First sight of a server-driven join opens the tab once.
         assert_eq!(a.jabber_tabs, vec![ROOM.to_owned()]);
     }
 
@@ -1897,8 +1896,8 @@ mod eve_time_label_tests {
         assert_eq!(eve_time_label(ts, ts + DAY), "EVE 2026/09/01 12:02:35");
     }
 
-    /// The whole point: two messages inside the same minute must read differently. +10s, not +30,
-    /// because 12:02:35 + 30 lands in 12:03 and the old format would have passed this vacuously.
+    /// Two messages inside the same minute must read differently. +10s, not +30, because
+    /// 12:02:35 + 30 lands in 12:03 and a minute-resolution format would pass vacuously.
     #[test]
     fn two_messages_in_one_minute_are_distinguishable() {
         let ts = 1_788_264_155;
@@ -2064,7 +2063,7 @@ mod jabber_rescue_room_tests {
         assert!(a.settings.jabber_main_tabs.contains(&SKIRMISH.to_owned()));
     }
 
-    /// The reported profile's shape: the room was left or forgotten before it was pinned.
+    /// The room was left or forgotten before it was pinned.
     #[test]
     fn previously_left_rescue_rooms_heal_on_reconcile() {
         let (_ctx, mut a) = app(true);
@@ -2133,11 +2132,11 @@ mod jabber_tab_persist_tests {
         (ctx, a)
     }
 
-    /// The headline: five joined rooms and a DM with history, none of them opened by the user.
+    /// Five joined rooms and a DM with history, none of them opened by the user.
     #[test]
     fn a_joined_room_does_not_open_a_tab_by_itself() {
         let mut s = crate::settings::Settings::default();
-        // Already known, so not a first-sight force-join (UI-047).
+        // Already known, so not a first-sight force-join.
         s.jabber_rooms = vec![ROOM.to_owned(), OTHER.to_owned()];
         let (_ctx, mut a) = app_with(s);
         a.jabber_reconcile(&frame(&[ROOM, OTHER], &[DM], &[], &[]));
@@ -2418,7 +2417,7 @@ mod active_character_tests {
                                No AFK cloaking";
 
     /// The title bar has one line, and a MOTD is a notice board. Blank lines and the rule of dashes
-    /// carry nothing once it is one line, and the rule took a third of the bar when it was kept.
+    /// carry nothing once it is one line.
     #[test]
     fn one_line_drops_the_blank_lines_and_the_rule() {
         let one = motd_one_line(SAMPLE_MOTD);
@@ -2442,12 +2441,9 @@ mod active_character_tests {
         assert_eq!(short, "one\ntwo");
     }
 
-    /// A room is never a direct message, however it got into the sticky set.
-    ///
-    /// Reported from chat: "Direct messages in jabber shows uninteractable rooms instead (the
-    /// duplicates on the rooms work just fine)". Every room that went unread was stuck into the DM
-    /// list and listed under both headings, and the duplicate was dead because two rows sharing a
-    /// jid share an egui id and only one wins the hit test.
+    /// A room is never a direct message, however it got into the sticky set. Listed under both
+    /// headings, one row is dead: two rows sharing a jid share an egui id and only one wins the hit
+    /// test.
     #[test]
     fn a_room_is_never_listed_as_a_direct_message() {
         use std::collections::{BTreeSet, HashSet};
@@ -2457,7 +2453,7 @@ mod active_character_tests {
         let contacts: HashSet<&String> = HashSet::new();
         let closed: HashSet<&String> = HashSet::new();
 
-        // The state the bug left behind: the room went unread, so it is sticky.
+        // The room went unread, so it is sticky.
         let sticky = BTreeSet::from([dm.clone(), room.clone()]);
         assert!(shows_in_dm_list(&dm, &dm_keys, &contacts, &closed, &sticky));
         assert!(
@@ -2466,8 +2462,8 @@ mod active_character_tests {
         );
     }
 
-    /// The sticky rule exists so closing a DM is curation and not a way to lose mail. It has to keep
-    /// working, because the fix narrows what stickiness is allowed to override.
+    /// The sticky rule exists so closing a DM is curation and not a way to lose mail. Keeping rooms
+    /// out of the DM list must not narrow it for DMs.
     #[test]
     fn a_closed_dm_comes_back_when_it_goes_unread() {
         use std::collections::{BTreeSet, HashSet};

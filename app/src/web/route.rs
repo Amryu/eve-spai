@@ -1,8 +1,5 @@
-//! Routes between two systems, as the map's drag gesture asks for them.
-//!
-//! Three questions, one endpoint: by gates, by capital jumps, and the titan answer, which is one jump
-//! out of range followed by gates. All three come back in the same shape so the page draws and lists
-//! them with one piece of code.
+//! Routes for the map's drag gesture: by gates, by capital jumps, and by titan bridge plus gates.
+//! All three share one shape so the page draws them with one piece of code.
 
 use serde::Serialize;
 
@@ -14,33 +11,25 @@ pub struct Hop {
     pub id: i64,
     pub name: String,
     pub security: f64,
-    /// 0 gate, 1 jump bridge, 2 capital jump. The first hop of a route has no edge before it and is
-    /// always 0.
+    /// Edge into this hop: 0 gate, 1 jump bridge, 2 capital jump. The first hop is 0.
     pub kind: u8,
-    /// Light years covered by a capital jump. Absent for a gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ly: Option<f64>,
-    /// Isotopes this jump burns, and the two timers it leaves behind, in minutes. Absent for a gate,
-    /// which costs neither.
+    /// Isotopes burned and the fatigue and reactivation timers in minutes. Absent for a gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fuel: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fatigue_min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactivation_min: Option<f64>,
-    /// Why not to fly through here, if there is a reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warn: Option<HopWarning>,
-    /// A system the user named: the start, a waypoint, or the destination. Everything else on a
-    /// route is just somewhere it passes through.
+    /// The start, a waypoint, or the destination, as opposed to a system the route passes through.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub anchor: bool,
 }
 
-/// One leg of a route, and the ways of flying it that are no worse.
-///
-/// Alternatives are the same number of jumps and sorted by total distance, so the list is "these all
-/// cost you the same; here they are from shortest to longest".
+/// One leg of a route with its alternatives: same jump count, sorted by distance.
 #[derive(Serialize)]
 pub struct LegChoice {
     pub from: i64,
@@ -48,18 +37,16 @@ pub struct LegChoice {
     pub from_name: String,
     pub to_name: String,
     pub options: Vec<RouteOption>,
-    /// This leg's options *are* the route's options, so the window must not offer them a second time
-    /// as a per-leg switcher. True for a titan route's last leg: where the titan bridges from
-    /// changes the whole route, not one hop of it.
+    /// Set on a titan route's last leg, whose options are the whole route's options, so the window
+    /// must not also show them as a per-leg switcher.
     pub whole_route: bool,
 }
 
-/// Where a route may not go.
 #[derive(Default, Clone)]
 pub struct Avoid {
-    /// Kept for good, from settings.
+    /// Persistent, from settings.
     pub always: std::collections::HashSet<i64>,
-    /// Kept for this route only, from the client.
+    /// This route only, from the client.
     pub once: std::collections::HashSet<i64>,
 }
 
@@ -72,32 +59,24 @@ impl Avoid {
     }
 }
 
-/// How many ways of flying one leg are worth offering.
-///
-/// Past a handful they stop being a choice and start being a list, and every one of them costs a
-/// search.
+/// Each alternative costs a search, and past a handful they stop being a useful choice.
 const LEG_OPTIONS: usize = 4;
 
-/// A reason to look twice at a system on the route.
-///
-/// Intel below Danger is not carried: a route through nullsec passes through dozens of systems that
-/// someone has said something about, and a warning on all of them is a warning on none.
+/// Intel below Danger is not carried: a nullsec route passes dozens of reported systems, and warning
+/// on all of them would be noise.
 #[derive(Serialize, Clone, Copy, Default, PartialEq)]
 pub struct HopWarning {
     /// Worst severity reported inside the intel TTL. 2 is Danger, 3 Critical.
     pub sev: u8,
-    /// When that report came in, so the page can say how old it is.
+    /// When that report came in.
     pub at: i64,
     /// Ship and pod kills in the last hour, from ESI.
     pub kills: u32,
     pub pods: u32,
 }
 
-/// Danger and above. Below that a nullsec route would be warnings end to end.
 pub const WARN_SEVERITY: u8 = 2;
 
-/// Mark the systems the user named, so the map and the list can pick them out of the ones the route
-/// merely passes through.
 pub fn mark_anchors(options: &mut [RouteOption], anchors: &[i64]) {
     let set: std::collections::HashSet<i64> = anchors.iter().copied().collect();
     for o in options.iter_mut() {
@@ -107,11 +86,8 @@ pub fn mark_anchors(options: &mut [RouteOption], anchors: &[i64]) {
     }
 }
 
-/// Attach the warnings to every hop of every option.
-///
-/// A pass over the finished routes rather than an argument to each builder: what counts as dangerous
-/// is a property of the moment, not of the path, and threading it through three route functions
-/// would put the same lookup in three places.
+/// A pass over finished routes rather than an argument to each builder, so the danger lookup lives
+/// in one place instead of three.
 pub fn annotate(
     options: &mut [RouteOption],
     danger: &std::collections::HashMap<i64, HopWarning>,
@@ -123,8 +99,7 @@ pub fn annotate(
     }
 }
 
-/// The warning map from what the page already has: the map pane's per-system intel and the status
-/// pane's kill counts.
+/// Warnings from the published snapshot: the map pane's intel and the status pane's kill counts.
 pub fn danger_from_marks(
     intel: &[(i64, u8, i64)],
     kills: &[(i64, u32, u32)],
@@ -147,8 +122,8 @@ pub fn danger_from_marks(
     out
 }
 
-/// The same map from the app's own state: raw reports plus the severity rules, because the desktop
-/// has no published snapshot to read when the web view is switched off.
+/// Warnings from raw reports, because the desktop has no published snapshot when the web view is
+/// off.
 pub fn danger_from_reports(
     reports: &[crate::intel::IntelReport],
     rules: &crate::settings::SeverityRules,
@@ -178,20 +153,18 @@ pub struct RouteOption {
     pub total_ly: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// What avoidance cost, when it cost anything. Absent when the route is the one you would have
-    /// flown anyway, which is most of the time even with a long avoid list.
+    /// What avoidance cost, if it changed the route.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detour: Option<String>,
-    /// The titan's own jump, when it moves itself before bridging: where from, where to, and how far.
-    /// Not a hop, because the fleet does not fly it; the fleet gates to where the titan lands.
+    /// The titan's own jump when it moves before bridging. Not a hop, because the fleet does not fly
+    /// it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub titan_jump: Option<TitanJump>,
-    /// Gates this saves over flying it without the titan. The whole point of the question, and the
-    /// number that says whether the answer is worth the fuel.
+    /// Gates saved over the plain gate route.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saved: Option<usize>,
-    /// Whether the route actually flies through a scanned wormhole, as opposed to the setting merely
-    /// allowing it. Only this makes a saved route expire, and a jump route is never one of them.
+    /// Set only when the route crosses a scanned wormhole, not when the setting merely allows it.
+    /// This is what makes a saved route expire.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub uses_wormhole: bool,
 }
@@ -205,8 +178,6 @@ pub struct TitanJump {
     pub ly: f64,
 }
 
-/// The hulls a jump route can be planned for, so the page's picker is the app's own list rather than
-/// a second copy of it.
 #[derive(Serialize)]
 pub struct Avoided {
     pub id: i64,
@@ -214,7 +185,6 @@ pub struct Avoided {
     pub always: bool,
 }
 
-/// The avoid list, named and ordered, for showing back to the user.
 pub fn avoided(graph: &crate::geo::Systems, avoid: &Avoid) -> Vec<Avoided> {
     let mut out: Vec<Avoided> = avoid
         .always
@@ -238,6 +208,7 @@ pub struct Hull {
     pub base_ly: f64,
 }
 
+/// Served from the app's own list so the page's picker cannot drift from it.
 pub fn hulls() -> Vec<Hull> {
     crate::jumproute::SHIP_CLASSES
         .iter()
@@ -251,26 +222,21 @@ pub struct RouteOut {
     pub from: i64,
     pub to: i64,
     pub options: Vec<RouteOption>,
-    /// The ways of flying each leg, so the window can offer them per waypoint.
+    /// Per-leg alternatives, so the window can offer them per waypoint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub legs: Vec<LegChoice>,
-    /// What the jump figures were worked out with, echoed back so the page's controls and the
-    /// numbers beside them cannot drift apart.
+    /// Echoed so the page's controls match the numbers computed with them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hulls: Vec<Hull>,
     pub hull: usize,
     pub jdc: u32,
     pub jfc: u32,
     pub max_ly: f64,
-    /// Whether the app is routing through scanned wormholes, echoed so the page can show the switch
-    /// rather than keep its own copy of a setting that lives in the app.
+    /// Echoed so the page shows the app's setting instead of keeping its own copy.
     pub via_wormholes: bool,
-    /// Every system this route was planned around, named, and whether it is on the permanent list.
-    /// Sent because the ids alone are not something anyone can check: "avoiding 3 systems" is only
-    /// useful if you can see which three.
+    /// Named, because "avoiding 3 systems" is only useful if the user can see which three.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub avoided: Vec<Avoided>,
-    /// Why there is nothing to show, when there is nothing to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -291,7 +257,6 @@ fn named(graph: &crate::geo::Systems, id: i64, kind: u8, ly: Option<f64>) -> Hop
     }
 }
 
-/// The gate route, with jump bridges when the user counts them.
 pub fn gate(
     graph: &crate::geo::Systems,
     from: i64,
@@ -300,12 +265,8 @@ pub fn gate(
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
 ) -> Option<RouteOption> {
-    // The endpoints are exempt. Avoiding the system you are standing in, or the one you asked to go
-    // to, would just mean no route at all, which is a worse answer than an honest one.
-    //
-    // `holes` is the scanned wormhole chain, empty unless the user routes through them. They are
-    // passed as extra edges rather than as a flag because that is how the app's own planner takes
-    // them, and a second way of expressing "there is a hole here" is a second way to be wrong.
+    // Endpoints are exempt, or avoiding the system you stand in would yield no route at all.
+    // Wormholes arrive as extra edges because that is how the app's own planner takes them.
     let path = graph.route_with(from, to, true, bridges, holes, |id| {
         id == from || id == to || !avoid.blocked(id)
     })?;
@@ -339,7 +300,7 @@ fn pos<'a>(coords: &'a [MapSystem], id: i64) -> Option<&'a MapSystem> {
     coords.iter().find(|s| s.id == id)
 }
 
-/// The capital jump route: cyno-able systems only, one hop per jump.
+/// Cyno-able systems only, one hop per jump.
 #[allow(clippy::too_many_arguments)]
 pub fn jump(
     graph: &crate::geo::Systems,
@@ -352,8 +313,7 @@ pub fn jump(
     avoid: &Avoid,
 ) -> Option<RouteOption> {
     let max_ly = crate::jumproute::max_range_ly(class, jdc);
-    // Avoidance is applied by taking the systems out of the graph rather than by filtering the
-    // result: a path that goes through a banned system is not a worse path, it is not a path.
+    // Avoided systems are removed from the search set so the search routes around them.
     let filtered: Vec<MapSystem>;
     let search: &[MapSystem] = if avoid.any() {
         filtered = coords
@@ -367,8 +327,7 @@ pub fn jump(
     };
     let path =
         crate::jumproute::shortest_path_pref(search, max_ly, from, to, &Default::default())?;
-    // The fuel and both timers come from the app's own model, per jump, so the page reports what the
-    // planner would and nothing has its own idea of how fatigue compounds.
+    // Costs come from the planner's own model so the page and the desktop agree on fatigue.
     let costs = crate::jumproute::hop_costs(coords, &path, class, jfc);
     let total_ly: f64 = costs.iter().map(|c| c.ly).sum();
     let fuel: f64 = costs.iter().map(|c| c.fuel).sum();
@@ -391,7 +350,6 @@ pub fn jump(
         detour: None,
         titan_jump: None,
         saved: None,
-        // A capital jump is not a wormhole, whatever the setting says.
         uses_wormhole: false,
         note: Some(format!(
             "{} isotopes · {:.0} min fatigue at the end",
@@ -403,26 +361,18 @@ pub fn jump(
     })
 }
 
-/// How many jump-off candidates are worth offering.
-///
-/// The ring the search lands on can hold a dozen systems that are all the same number of gates from
-/// the target. Past a handful they stop being a choice and start being a list.
+/// The ring can hold a dozen systems equally far by gates; past a handful they stop being a choice.
 const TITAN_OPTIONS: usize = 5;
 /// How far the gate search will look for a way in from a jump-off point.
 const TITAN_MAX_JUMPS: u32 = 40;
 
-/// The titan answer: one jump, and gates for the rest.
+/// One titan jump, gates for the rest.
 ///
-/// This is the rescue mode's calculation, which asks the question the other way round and for the
-/// same reason: the fewest *gate* jumps from the far end that a titan can still reach, not the system
-/// that happens to be nearest on the map. A system four light years away and twelve gates out is a
-/// worse answer than one six light years away and two gates out, and picking by distance gets that
-/// backwards every time.
+/// Like rescue mode, picks the reachable system fewest *gates* from the far end, not the nearest by
+/// distance: 4 ly and twelve gates out is worse than 6 ly and two gates out.
 ///
-/// `at_start` says which end the titan is at. With it set, which is the default, the titan is in the
-/// system the route starts from: you jump out as far as range allows and gate the rest. Cleared, the
-/// titan is waiting at the far end: you gate out to the best system it can reach and get bridged in.
-/// The search is the same either way, run from the other end.
+/// `at_start` set: the titan is in the start system. Cleared: it waits at the far end and bridges the
+/// fleet in, which is the same search run from the other end.
 #[allow(clippy::too_many_arguments)]
 pub fn titan(
     graph: &crate::geo::Systems,
@@ -437,34 +387,29 @@ pub fn titan(
     titans: &[i64],
     self_jump: bool,
 ) -> Vec<RouteOption> {
-    // The titan moves itself first: it is sitting with the fleet, so it can jump somewhere that
-    // bridges better and have the fleet gate out to meet it. Worth offering because a titan's range
-    // is often the difference between two gates and twenty.
+    // A titan sitting with the fleet can reposition first and bridge from somewhere better.
     if self_jump && at_start && titans.is_empty() {
         let opts = titan_self_jump(graph, coords, from, to, max_ly, bridges, avoid, holes);
         if !opts.is_empty() {
             return opts;
         }
     }
-    // Named titans win over the two guesses: if the user has said where the ships actually are, that
-    // is the answer, and "at the start" is only a guess about where one might be.
+    // Named titans are known positions, so they win over the `at_start` guess.
     if !titans.is_empty() {
         return titan_via(graph, coords, from, to, max_ly, bridges, avoid, holes, titans);
     }
     if !at_start {
-        // The mirror image: plan it backwards and turn the result around. One implementation of
-        // "one jump, gates for the rest" rather than two that can disagree.
+        // Plan it backwards and reverse, so there is one implementation that cannot disagree.
         return titan(graph, coords, to, from, max_ly, bridges, true, avoid, holes, titans, false)
             .into_iter()
             .map(reverse)
             .collect();
     }
-    // The target's position is not needed: the ring is found by gate distance, not by distance.
+    // The target's position is unused, the ring is found by gate distance.
     let (Some(start), Some(_)) = (pos(coords, from), pos(coords, to)) else {
         return Vec::new();
     };
-    // Everything the titan can reach in one jump, the target itself excluded: if it were in range
-    // this would not be a titan route, it would be one jump.
+    // The target is excluded: if it were in range this would be a single jump.
     let in_range: std::collections::HashSet<i64> = coords
         .iter()
         .filter(|s| s.id != to && crate::jumproute::jumpable(s))
@@ -481,8 +426,7 @@ pub fn titan(
     else {
         return Vec::new();
     };
-    // Same number of gates for all of them, so the tie goes to the shorter jump, which is less
-    // fatigue and less fuel for an identical arrival.
+    // Equal gates, so ties go to the shorter jump for less fatigue and fuel.
     ring.sort_by(|a, b| {
         let d = |id: i64| pos(coords, id).map(|s| crate::map::ly_distance(start, s)).unwrap_or(f64::MAX);
         d(*a).partial_cmp(&d(*b)).unwrap_or(std::cmp::Ordering::Equal)
@@ -537,11 +481,10 @@ fn join(head: RouteOption, tail: RouteOption) -> RouteOption {
     }
 }
 
-/// Every way of flying one leg that is no worse than the best one.
+/// Alternatives for one leg with the same jump count as the best path.
 ///
-/// The best path, then the best path with each of its intermediate systems banned in turn, keeping
-/// only the ones that take the same number of jumps. That is the cheap half of Yen's algorithm and it
-/// is enough here: the question is "what else costs the same", not "rank every path there is".
+/// Bans each intermediate system of the best path in turn, the cheap half of Yen's algorithm. Enough
+/// to answer "what else costs the same" without ranking every path.
 #[allow(clippy::too_many_arguments)]
 fn leg_options(
     graph: &crate::geo::Systems,
@@ -564,9 +507,7 @@ fn leg_options(
     };
     let Some(mut best) = one(avoid) else { return Vec::new() };
     let want = best.jumps;
-    // What the avoid list cost, if it cost anything. Worth one more search: a route that is three
-    // jumps longer than it needs to be is worth knowing about, and "why is this going the long way
-    // round" is otherwise unanswerable from the list.
+    // One extra search, so a detour caused by the avoid list is explained.
     if avoid.any() {
         if let Some(free) = one(&Avoid::default()) {
             if free.path != best.path {
@@ -596,14 +537,9 @@ fn leg_options(
         }
         out.push(alt);
     }
-    // Same cost, so the tie goes to the shorter flight. For a gate route that is the one with less
-    // grid to cross; for a jump route it is less fuel and less fatigue.
+    // Ties go to the shorter distance. Gate routes carry no distance, so they keep search order.
     out.sort_by(|p, q| p.total_ly.partial_cmp(&q.total_ly).unwrap_or(std::cmp::Ordering::Equal));
-    // Name each one after the system that makes it different.
-    //
-    // A gate route has no distance to report, so every alternative was labelled with the same jump
-    // count and the buttons read identically: picking one changed the route and looked like it had
-    // done nothing.
+    // Label by the system that differs, or gate alternatives would all read the same.
     let common: std::collections::HashSet<i64> = out
         .iter()
         .skip(1)
@@ -621,11 +557,8 @@ fn leg_options(
     out
 }
 
-/// A route through waypoints, with the ways of flying each leg.
-///
-/// The anchors are the systems the drags and the menu named, in order. `pick` is which alternative to
-/// use for each leg, and the assembled route comes back alongside the choices so the client never has
-/// to join legs itself.
+/// A route through waypoints. `pick` selects each leg's alternative, and the assembled route comes
+/// back with the choices so the client never joins legs itself.
 #[allow(clippy::too_many_arguments)]
 pub fn chain(
     graph: &crate::geo::Systems,
@@ -671,8 +604,6 @@ pub fn chain(
     if legs.iter().any(|l| l.options.is_empty()) {
         return (legs, Vec::new());
     }
-    // Assembled here, not in the client: joining legs is where the duplicated hop lives, and one
-    // implementation of that is enough.
     let assemble = |choice: &dyn Fn(usize) -> usize| -> RouteOption {
         let mut acc: Option<RouteOption> = None;
         for (i, l) in legs.iter().enumerate() {
@@ -686,14 +617,12 @@ pub fn chain(
     };
     let chosen = assemble(&|i: usize| pick.get(i).copied().unwrap_or(0));
     let mut out = vec![chosen];
-    // The titan search's alternatives are alternatives for the whole route, not for one leg of it,
-    // so they stay in the option list the window already has.
+    // Titan alternatives cover the whole route, so they become the route's options.
     if kind == "titan" && legs[last].options.len() > 1 {
         out = (0..legs[last].options.len())
             .map(|k| assemble(&move |i: usize| if i == last { k } else { pick.get(i).copied().unwrap_or(0) }))
             .collect();
-        // Chosen by the option tabs from here on, so `pick` no longer reaches this leg. A switcher
-        // for it would be the same buttons a second time, and the ones that do nothing.
+        // The option tabs choose this leg and `pick` does not reach it, so a switcher would do nothing.
         legs[last].whole_route = true;
     }
     (legs, out)
@@ -701,13 +630,8 @@ pub fn chain(
 
 /// The titan jumps itself, the fleet gates out to it, and it bridges them from there.
 ///
-/// The objective is the **fleet's** gate count, not the titan's jump. A titan that hops one system
-/// over has moved and helped nobody; the one worth taking is the landing from which the bridge lands
-/// the fleet as close to the destination as it can, counting what it costs the fleet to get there.
-///
-/// Two distance balls do most of the work: how far every system is from the start by gates, and how
-/// far every system is from the destination by gates. After that a landing is scored by adding two
-/// numbers, and only the inner "which system does the bridge land on" needs a scan.
+/// Minimizes the fleet's total gates. Gate distances from the start and to the destination are
+/// computed once, so a landing's score is a sum and only the bridge target needs a scan.
 #[allow(clippy::too_many_arguments)]
 fn titan_self_jump(
     graph: &crate::geo::Systems,
@@ -719,7 +643,7 @@ fn titan_self_jump(
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
 ) -> Vec<RouteOption> {
-    /// How far the fleet will gate to meet the titan. Past this it is not a shortcut any more.
+    /// Past this many gates to meet the titan it is no longer a shortcut.
     const MAX_GATE_TO_TITAN: u32 = 8;
 
     let (Some(start), Some(plain)) =
@@ -732,7 +656,6 @@ fn titan_self_jump(
     let in_to_target = graph.gate_distances_from(to, TITAN_MAX_JUMPS);
     let max_m = max_ly;
 
-    // Every system the titan could jump to that the fleet can also reach by gates.
     let landings: Vec<&MapSystem> = coords
         .iter()
         .filter(|s| s.id != from && crate::jumproute::jumpable(s))
@@ -741,7 +664,7 @@ fn titan_self_jump(
         .filter(|s| crate::map::ly_distance(start, s) <= max_m)
         .collect();
 
-    // Scored: what the fleet gates to reach the titan, plus what it gates after being thrown.
+    // Score: fleet gates to reach the titan plus gates after the bridge.
     let mut scored: Vec<(usize, f64, i64, i64)> = Vec::new();
     for land in landings {
         let fleet_out = *out_from_start.get(&land.id).unwrap_or(&u32::MAX) as usize;
@@ -760,15 +683,13 @@ fn titan_self_jump(
         }
         let Some((gates_in, hop)) = best else { continue };
         let total = fleet_out + gates_in;
-        // Strictly better, which is what "saves at least one jump" means. A reposition that ties is
-        // a titan cycling its drive for nothing.
+        // Strictly better only, a tie cycles the titan's drive for nothing.
         if total >= baseline {
             continue;
         }
         scored.push((total, crate::map::ly_distance(start, land), land.id, hop));
     }
-    // Fewest gates for the fleet first; ties to the shorter titan jump, which is less fatigue on the
-    // ship that has to make it.
+    // Ties go to the shorter titan jump, for less fatigue on the titan.
     scored.sort_by(|a, b| {
         a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     });
@@ -819,11 +740,10 @@ fn titan_self_jump(
         .collect()
 }
 
-/// Gate to a titan, jump as far in as its range allows, gate the rest.
+/// Gate to a named titan, bridge as far in as range allows, gate the rest.
 ///
-/// One option per titan that helps, best first. A titan that does not help is left out rather than
-/// listed as a worse choice: the point of asking is to find the one that does, and the caller says so
-/// when none of them do.
+/// One option per titan that beats the plain gate route, best first. With none, the gate route comes
+/// back with a note saying so.
 #[allow(clippy::too_many_arguments)]
 fn titan_via(
     graph: &crate::geo::Systems,
@@ -841,7 +761,6 @@ fn titan_via(
     let mut out: Vec<RouteOption> = Vec::new();
     for &t in titans {
         let Some(tpos) = pos(coords, t) else { continue };
-        // Getting to the titan is gates, and it can be none of them if you are already there.
         let Some(head) = gate(graph, from, t, bridges, avoid, holes) else { continue };
         let in_range: std::collections::HashSet<i64> = coords
             .iter()
@@ -903,7 +822,6 @@ fn titan_via(
         )
     });
     if out.is_empty() {
-        // No titan shortens it, so the honest answer is the route you would fly anyway, saying why.
         return plain
             .into_iter()
             .map(|mut o| {
@@ -918,10 +836,8 @@ fn titan_via(
     out
 }
 
-/// A route flown the other way.
-///
-/// The hops reverse, but a hop's `kind`, distance and fuel describe the edge *into* it, so those have
-/// to shift one place as well or the jump would be reported on the wrong system.
+/// A hop's `kind`, distance and fuel describe the edge *into* it, so they shift one place when the
+/// hops reverse.
 fn reverse(o: RouteOption) -> RouteOption {
     let n = o.hops.len();
     let mut hops: Vec<Hop> = o.hops.into_iter().rev().collect();
@@ -993,8 +909,7 @@ mod tests {
         crate::uitest::fixtures::systems()
     }
 
-    /// A route to yourself is one system, not nothing: the caller draws `path` and an empty one
-    /// would look like a failure.
+    /// The caller draws `path`, and an empty one would look like a failure.
     #[test]
     fn a_route_to_the_same_system_is_a_single_hop() {
         let g = graph();
@@ -1005,17 +920,13 @@ mod tests {
         assert_eq!(r.hops.len(), 1);
     }
 
-    /// A titan route's alternatives belong to the whole route, so the leg that produced them is
-    /// marked and the window knows not to offer them a second time as a per-leg switcher.
-    ///
-    /// The duplicate was not merely untidy: `chain` picks that leg from the option tabs, so `pick`
-    /// no longer reaches it and the second row of buttons did nothing at all.
+    /// A titan leg's options belong to the whole route, and `pick` does not reach that leg, so a
+    /// per-leg switcher for it would do nothing.
     #[test]
     fn a_titan_leg_is_marked_so_its_options_are_not_offered_twice() {
         use crate::store::MapSystem;
-        // A line of seven, and two titans near the start that can each reach a different system far
-        // along it. The shipped fixture is three systems wide, which cannot produce two titan
-        // options at all, and a test that cannot fail is worse than none.
+        // A line of seven with two titans near the start reaching different systems. The shared
+        // fixture is three systems wide, too small for two titan options.
         let ly = crate::map::LY_METERS;
         let ids: Vec<i64> = (0..7).map(|i| 30_100_000 + i).collect();
         let mut by_name = std::collections::HashMap::new();
@@ -1100,8 +1011,7 @@ mod tests {
         assert!(gates.iter().all(|l| !l.whole_route), "no gate leg is the whole route");
     }
 
-    /// A waypoint makes one route, not two: the leg boundary is where the first leg's last hop is,
-    /// and repeating it would draw a doubled system and count an extra jump.
+    /// Repeating the waypoint would draw a doubled system and count an extra jump.
     #[test]
     fn a_chain_joins_at_the_waypoint_without_repeating_it() {
         let g = graph();
@@ -1130,9 +1040,7 @@ mod tests {
         assert!(via.jumps >= direct.jumps, "a detour is never shorter than the direct route");
     }
 
-    /// A system on the avoid list is not routed through, and the endpoints are exempt: avoiding the
-    /// system you are standing in would mean no route at all, which is a worse answer than an honest
-    /// one.
+    /// Avoided systems are not routed through, but the endpoints are exempt.
     #[test]
     fn an_avoided_system_is_not_routed_through() {
         let g = graph();
@@ -1150,7 +1058,7 @@ mod tests {
         assert_eq!(still.path, direct.path);
     }
 
-    /// Every hop names a real system. An id that fell out of the graph would render as a number.
+    /// An id missing from the graph would render as a number.
     #[test]
     fn every_hop_carries_a_name() {
         let g = graph();

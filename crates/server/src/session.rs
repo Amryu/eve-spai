@@ -1,8 +1,7 @@
-//! The EVE SSO access token carries write scopes (`write_waypoint`, `write_fittings`)
-//! and is audienced to EVE — not to us. So it is verified exactly ONCE, at the
-//! [`POST /api/session`](crate::routes) mint endpoint, and is never logged or persisted.
-//! Every battle-report call then authenticates with one of OUR own short-lived HS256
-//! tokens, audienced to `eve-spai.com` and carrying no EVE scopes.
+//! Session tokens for the battle-report API. The EVE SSO access token carries write scopes and is
+//! audienced to EVE, so it is verified once at the [`POST /api/session`](crate::routes) mint
+//! endpoint and never logged or persisted. Every other call authenticates with our own
+//! short-lived HS256 token, audienced to `eve-spai.com` and carrying no EVE scopes.
 
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
@@ -15,7 +14,7 @@ use crate::auth::Identity;
 use crate::error::AppError;
 use crate::state::AppState;
 
-/// `iss`/`aud` of our own tokens — we issue to ourselves and accept only ourselves.
+/// `iss`/`aud` of our own tokens: we issue to ourselves and accept only ourselves.
 pub const SESSION_ISS: &str = "eve-spai.com";
 pub const SESSION_AUD: &str = "eve-spai.com";
 
@@ -91,7 +90,7 @@ pub fn bearer(headers: &HeaderMap) -> Result<&str, AppError> {
         .ok_or_else(|| AppError::Unauthorized("missing bearer token".into()))
 }
 
-/// Extractor for the protected BR routes: validates OUR session token (never the EVE
+/// Extractor for the protected BR routes: validates our session token (never the EVE
 /// token) and yields the caller's [`Identity`]. Anything else becomes a 401.
 pub struct SessionIdentity(pub Identity);
 

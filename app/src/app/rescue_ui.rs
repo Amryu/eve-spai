@@ -456,7 +456,6 @@ impl SpaiApp {
             let mut pick: Option<u64> = None;
             let mut resolve: Option<u64> = None;
 
-            // --- Title bar: capital summary left, ping chips right ---
             ui.horizontal(|ui| {
                 ui.heading(egui_phosphor::regular::WARNING_OCTAGON.to_string());
                 let pilot = r.capital_pilot.clone().unwrap_or_else(|| "unknown".into());
@@ -570,7 +569,6 @@ impl SpaiApp {
             }
             ui.separator();
 
-            // ================= LEFT: operations (resizable) =================
             let ops_resp = egui::Panel::left("rescue_ops_panel")
                 .resizable(true)
                 .default_size(ops_w)
@@ -765,11 +763,9 @@ impl SpaiApp {
                 });
             new_ops_w = ops_resp.response.rect.width();
 
-            // ================= RIGHT: chat (delve911 | skirmish tabs, reply pinned bottom) =======
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 0)))
                 .show_inside(ui, |ui| {
-                // Reply box pinned at the bottom; targets the currently selected tab's room.
                 egui::Panel::bottom("rescue_chat_reply").show_inside(ui, |ui| {
                     let (room, room_set) = if r.chat_tab == 1 {
                         (skirmish_jid.clone(), !skirmish_jid.is_empty())
@@ -806,7 +802,6 @@ impl SpaiApp {
                     });
                 });
                 egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
-                    // Tab row: exactly two 50%-width tabs regardless of label length.
                     ui.columns(2, |c| {
                         let w0 = c[0].available_width();
                         if c[0]

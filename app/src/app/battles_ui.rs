@@ -224,9 +224,8 @@ impl SpaiApp {
             let battles = crate::store::Store::open()
                 .ok()
                 .map(|s| {
-                    // Bounded by the retention window rather than by everything ever stored:
-                    // this used to parse the whole table, hundreds of MB of JSON, in one go, and
-                    // the prune that bounds it runs asynchronously.
+                    // Bounded by the retention window: the whole table can be hundreds of MB of
+                    // JSON, and the prune that bounds it runs asynchronously.
                     let since = chrono::Utc::now().timestamp()
                         - crate::store::ENGAGEMENT_RETENTION_SECS;
                     let engs = s.load_engagements(since);
@@ -1376,9 +1375,9 @@ impl SpaiApp {
                     self.battle_detail_cache = None;
                 }
                 true => {
-                    // The brview worker builds the detail off-thread; mirror it into the cache only
-                    // when the worker publishes new output or the selection changed — never a
-                    // per-frame clone of the (heavy) battle.
+                    // The brview worker builds the detail off-thread. Mirror it into the cache only
+                    // when the worker publishes new output or the selection changed, since the
+                    // battle is too heavy to clone per frame.
                     let need = self.battle_detail_cache.as_ref().map(|c| c.kid) != Some(kid)
                         || self.battle_detail_out_sig != self.br_outputs.lock().unwrap().sig;
                     if need {
@@ -1393,8 +1392,7 @@ impl SpaiApp {
                             }
                             self.battle_detail_cache = d;
                         } else if self.battle_detail_cache.as_ref().map(|c| c.kid) != Some(kid) {
-                            // Worker hasn't produced this battle yet and we have nothing for it.
-                            // Render nothing (no spinner) — the worker repaints when it's ready.
+                            // No spinner: the worker repaints when this battle is ready.
                             self.battle_detail_cache = None;
                         }
                     }

@@ -427,11 +427,8 @@ fn run(path: &PathBuf, set: &impl Fn(SdeStatus)) -> Result<()> {
         anyhow::bail!("no systems parsed from SDE");
     }
 
-    // Celestials are populated AFTER the main commit, in their own chunked transactions
-    // (see `bake_celestials`). Holding the single main write-transaction across the 224MB
-    // moon parse kept the WAL write-lock for the whole bake, so every UI-thread write
-    // blocked on busy_timeout and the app appeared frozen. The core SDE is committed by
-    // now, so the UI is usable while celestials trickle in.
+    // Celestials go in after the main commit, in chunked transactions: holding the write lock
+    // across the 224MB moon parse blocks every UI-thread write on busy_timeout.
     bake_celestials(&mut conn, zip_bytes.as_ref(), set)?;
 
     Ok(())
@@ -512,7 +509,7 @@ fn bake_celestials(conn: &mut Connection, zip_bytes: &[u8], set: &impl Fn(SdeSta
         }
     }
 
-    // Moons (224MB — MUST stream): "<system> <roman(celestialIndex)> - Moon <orbitIndex>".
+    // Moons are 224MB, so stream them: "<system> <roman(celestialIndex)> - Moon <orbitIndex>".
     if let Ok(entry) = archive.by_name("mapMoons.jsonl") {
         for line in BufReader::new(entry).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };

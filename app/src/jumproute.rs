@@ -1,5 +1,5 @@
-//! Range/fuel/fatigue match the live game mechanics (verified against the EVE University wiki
-//! and the official Jump Activation Cooldown article):
+//! Capital jump route planning. Range, fuel and fatigue match the live game mechanics (the EVE
+//! University wiki and the official Jump Activation Cooldown article):
 //!   range  = base × (1 + 0.20 × JDC)
 //!   fuel   = Σ ly × isotopes/ly × (1 − 0.10 × JFC) × (1 − role_fuel)
 //!   d'     = ly × (1 − role_reduction)                 (black ops 0.75, JF/rorqual 0.90)
@@ -7,7 +7,7 @@
 //!   cooldown(red)    = max(prev_fatigue / 10, 1 + d'), capped at 30 min
 //! Per-hull fuel is the standard class value (a specific Titan can differ).
 //! Base range and fuel come from the live SDE `jumpDriveRange` / `jumpDriveConsumptionAmount`
-//! attributes, NOT the Phoebe-era 2014 values: those were restored in later patches.
+//! attributes, not the Phoebe-era 2014 values, which later patches changed.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -28,7 +28,7 @@ pub struct ShipClass {
 // base_ly / fuel_per_ly are the hull attributes before skills; JDC V doubles the range, JFC V
 // halves the fuel. Fatigue role bonus reduces effective distance: black ops 75%, jump freighters
 // / rorquals 90%, other capitals none. Saved routes store the picker index, so a new class is
-// APPENDED here, never sorted into range order.
+// appended here, never sorted into range order.
 pub const SHIP_CLASSES: &[ShipClass] = &[
     ShipClass { name: "Capital (Dread / Carrier / FAX)", base_ly: 3.5, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
     ShipClass { name: "Supercarrier / Titan", base_ly: 3.0, fuel_per_ly: 3000.0, fuel_role_reduction: 0.0, fatigue_role_reduction: 0.0 },
@@ -110,13 +110,9 @@ pub fn shortest_path_pref(
     let dist2 = |a: &MapSystem, b: &MapSystem| {
         (a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)
     };
-    // Dijkstra on (jumps, systems you cannot dock in, light years), in that order.
-    //
-    // A plain breadth-first search minimises jumps and nothing else, so among the many paths of the
-    // same length it returned whichever the queue reached first: on a dense map that is routinely
-    // several light years and a lot of fuel worse than the best one. Jumps still come first, because
-    // one fewer jump is worth any amount of distance; docking preference keeps the priority it had
-    // over distance; light years decide what used to be arbitrary.
+    // Dijkstra on (jumps, systems you cannot dock in, light years), in that order. A plain BFS
+    // takes whichever equal-length path the queue reaches first, often several light years worse.
+    // Jumps come first because one fewer jump is worth any amount of distance.
     let mut best: HashMap<usize, Key> = HashMap::new();
     let mut prev: HashMap<usize, usize> = HashMap::new();
     let mut heap: BinaryHeap<std::cmp::Reverse<(Key, usize)>> = BinaryHeap::new();
@@ -290,11 +286,8 @@ mod tests {
         }
     }
 
-    /// Same number of jumps, so the shorter one wins.
-    ///
-    /// A breadth-first search minimises jumps and stops thinking: among equal-length paths it took
-    /// whichever the queue reached first. `B` is listed before `A` here precisely so that the first
-    /// one reached is the longer one, which is what a plain BFS returned.
+    /// Same number of jumps, so the shorter one wins. `B` is listed before `A` so a plain BFS would
+    /// reach the longer path first.
     #[test]
     fn equal_jumps_go_the_short_way() {
         let s = vec![

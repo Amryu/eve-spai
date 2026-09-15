@@ -79,8 +79,8 @@ pub fn upload(text: &str) -> anyhow::Result<String> {
     }
 }
 
-/// Parse the ship breakdown out of a dscan.info share PAGE. dscan.info serves a share as HTML (there
-/// is no data/JSON API), rendering the ships as a `<ul id="ships">` list where each entry is
+/// Parse the ship breakdown out of a dscan.info share page. dscan.info has no data API, and renders
+/// the ships as a `<ul id="ships">` list where each entry is
 /// `<li ...><span class="badge...">COUNT</span><b>TYPE NAME</b></li>`. Returns `(type name, count)`
 /// pairs in document order; the caller maps names to type ids via the ship index. Empty if the page
 /// has no ships block (e.g. a bad id, or a local/fleet scan rather than a d-scan).

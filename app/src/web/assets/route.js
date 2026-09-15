@@ -1,9 +1,7 @@
 // Routing from the map: how far it is, and what to do about it.
 //
-// The distances are worked out in the browser. The page already has the gate edges, the jump bridges
-// and the 3D positions, because the map draws all three, so asking the server would be a round trip
-// to compute something from data already sitting in memory. Single-source, once per drag, so every
-// hover after that is an array lookup rather than a search.
+// Distances are computed in the browser from the map geometry already loaded. Single-source, once
+// per drag, so each hover is an array lookup.
 
 import { ico } from "./app.js";
 
@@ -31,7 +29,7 @@ function spread(geo, from, extra) {
   }
   const adj = geo.adj;
   dist[from] = 0;
-  // A plain array used as a queue, with a read head: a 5000-node shift() queue is quadratic.
+  // Read head instead of shift(), which is quadratic over 5000 nodes.
   const q = [from];
   for (let head = 0; head < q.length; head++) {
     const v = q[head];
@@ -45,16 +43,13 @@ function spread(geo, from, extra) {
   return dist;
 }
 
-/// Gate jumps and bridge-assisted jumps from one system to every other.
-///
-/// Two passes, because the answer to "how far is it" and "how far is it if I use our bridges" are
-/// both worth showing and they are often different by a lot.
+/// Gate jumps and bridge-assisted jumps from one system to every other. Both are shown, and they
+/// often differ a lot.
 export function reach(geo, from) {
   return { gates: spread(geo, from, false), bridged: spread(geo, from, true) };
 }
 
-/// Straight-line light years between two nodes, from the real 3D positions rather than the drawn
-/// ones: the map is a projection, and two systems that look adjacent can be far apart in z.
+/// From the real 3D positions, since two systems adjacent on the projection can be far apart in z.
 export function lightYears(geo, a, b) {
   const p = geo.pos3?.[a];
   const q = geo.pos3?.[b];
@@ -62,10 +57,7 @@ export function lightYears(geo, a, b) {
   return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) / 100;
 }
 
-/// The radial menu, at the point the drag was let go.
-///
-/// Four options around the drop rather than a list beside it: the hand is already there, and every
-/// option is the same distance away, which is the whole argument for a radial.
+/// Radial menu options around the drop point, each the same distance from the pointer.
 const OPTIONS = [
   ["gate", "Gate route", "sign-in", "Route by gates, and set it as the destination"],
   ["jump", "Jump route", "spiral", "Plan it as capital jumps"],
@@ -73,16 +65,11 @@ const OPTIONS = [
   ["cancel", "Cancel", "x", ""],
 ];
 
-/// A plain list menu at a point, for the things a radial has no room for.
-///
-/// A `null` entry is a separator. Dismissed by anything outside it, like the radial, and for the same
-/// reason: there is no backdrop to click.
-/// Dismisses whatever menu is open, listener and all.
-///
-/// Held rather than found in the DOM: removing the element left its outside-click listener behind,
-/// and reopening a menu a few times left a few of them.
+/// Dismisses the open menu. Held rather than found in the DOM, because removing only the element
+/// would leave its outside-click listener behind.
 let closeMenu = null;
 
+/// A `null` entry is a separator. There is no backdrop, so a pointerdown outside dismisses it.
 export function menu(x, y, items, pick) {
   closeMenu?.();
   const el = document.createElement("div");
@@ -95,7 +82,7 @@ export function menu(x, y, items, pick) {
     )
     .join("");
   document.body.append(el);
-  // Placed after measuring, so a menu opened near an edge comes back on screen instead of off it.
+  // Placed after measuring, so a menu opened near an edge stays on screen.
   const r = el.getBoundingClientRect();
   el.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 4))}px`;
   el.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
@@ -126,7 +113,7 @@ export function radial(x, y, pick) {
   el.style.top = `${y}px`;
   const r = 62;
   el.innerHTML = OPTIONS.map(([kind, label, icon, tip], i) => {
-    // Starting at the top and going clockwise, so the order reads the way the list above does.
+    // Clockwise from the top, in `OPTIONS` order.
     const a = (i / OPTIONS.length) * Math.PI * 2 - Math.PI / 2;
     const dx = Math.round(Math.cos(a) * r);
     const dy = Math.round(Math.sin(a) * r);

@@ -121,8 +121,8 @@ pub fn valid_session(store_path: &Path, char_id: i64) -> Option<String> {
     let eve_bearer = valid_bearer(store_path, char_id)?;
     let session = mint_session(&eve_bearer).ok()?;
     if session.character_id != char_id {
-        // The server minted a session for a different character than the EVE token we sent —
-        // don't cache or use it under this id. Surface it; the UI will re-prompt.
+        // The server minted a session for a different character than the EVE token we sent, so
+        // don't cache or use it under this id. The UI re-prompts.
         eprintln!(
             "[brshare] session character mismatch: requested {char_id}, server returned {} ({})",
             session.character_id, session.character_name

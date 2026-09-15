@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Screenshots the web view's fixture demo, the way `uitest_screenshots` renders the egui scenes.
 #
-# The egui harness cannot render HTML, so this is what stands in for it (see
-# ui-tickets/GAP-011-web-render-unreachable/). It shoots the demo server, which serves fixtures on
-# loopback and never touches the live profile, so the PNGs are safe to commit.
+# The egui harness cannot render HTML, so this stands in for it. It shoots the demo server, which
+# serves fixtures on loopback and never touches the live profile, so the PNGs are safe to commit.
 #
 #   app/src/uitest/webshot.sh [outdir] [width,height ...]
 #
@@ -20,16 +19,15 @@ url="${SPAI_WEBSHOT_URL:-http://127.0.0.1:6799/?t=demo}"
 
 # The flatpak Firefox cannot see /tmp or an arbitrary profile path: its only writable host
 # filesystem is xdg-download. Both the scratch profile and the PNGs therefore live under
-# ~/Downloads and get copied out, which is the whole reason an obvious `--screenshot /tmp/x.png`
-# silently produces nothing.
+# ~/Downloads and get copied out. A `--screenshot /tmp/x.png` silently produces nothing.
 stage="$HOME/Downloads/.spai-webshot"
 # A profile kept between runs can answer from its cache and shoot stale CSS and JS, so every run
 # starts from an empty profile.
 rm -rf "$stage/profile"
 mkdir -p "$stage/profile" "$out"
 
-# A server left over from an earlier run serves that run's assets, so a CSS or JS change screenshots
-# as if it had never been made. Reuse is not worth the hours that costs: always start a fresh one.
+# A server left over from an earlier run serves that run's assets, so a CSS or JS change would not
+# show. Always start a fresh one.
 fuser -k 6799/tcp >/dev/null 2>&1 || true
 echo "starting the demo server"
 ( cd "$repo" && exec cargo test --bin eve-spai webdemo -- --ignored --nocapture >"$stage/demo.log" 2>&1 ) &
@@ -60,8 +58,7 @@ done
 
 # Stop it by the port it holds, never by a command-line pattern. `cargo test` execs the test binary
 # as a child, so killing the pid we started leaves the server running; and a `pkill -f` broad enough
-# to catch that binary is also broad enough to catch the shell running this script, which is how
-# this exited 144 twice while it was being written.
+# to catch that binary also catches the shell running this script.
 if [ -n "$demo_pid" ]; then
   fuser -k 6799/tcp >/dev/null 2>&1 || true
   wait "$demo_pid" 2>/dev/null || true

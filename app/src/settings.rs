@@ -227,7 +227,7 @@ pub struct Settings {
     #[serde(default = "default_rescue_template")]
     pub rescue_ping_template: String,
     /// skirmish_commanders room JID: where the FC posts `!bping <group>` ping requests and watches
-    /// the responses. coord/fc/all are directorbot ping GROUPS, not separate rooms.
+    /// the responses. coord/fc/all are directorbot ping groups, not separate rooms.
     #[serde(default)]
     pub rescue_skirmish_jid: String,
     /// XMPP room JID for the delve911 conference, so the FC can respond from the rescue window.
@@ -574,9 +574,8 @@ mod web_defaults {
     /// The three settings that can put the page on the open internet are off, and a blob written
     /// before they existed still parses to off.
     ///
-    /// Worth a test of its own rather than trusting `Default`: every one of them is a way to hand
-    /// alliance intel and private conversations to anyone who can reach the port, and "it defaults
-    /// to safe" is the kind of thing that stays true until someone reorders a struct.
+    /// Worth a test of its own rather than trusting `Default`: each one is a way to hand alliance
+    /// intel and private conversations to anyone who can reach the port.
     #[test]
     fn exposure_is_never_the_default() {
         let d = super::WebSettings::default();
@@ -1466,7 +1465,7 @@ mod window_geometry_tests {
 
     #[test]
     fn legacy_string_doctrines_still_parse() {
-        // A config saved before doctrine descriptions existed must NOT fail the whole Settings
+        // A config saved before doctrine descriptions existed must not fail the whole Settings
         // parse (which would reset every setting). Old form = list of plain name strings.
         let json = r#"{"rescue_doctrines":["Harpy","FNI","Flycatcher"],"jabber_jid":"a@b"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
@@ -1724,7 +1723,7 @@ mod tab_persistence_tests {
         assert_eq!(s.jabber_rooms, vec!["a@conference.x".to_owned()]);
     }
 
-    /// UI-045 removed `jabber_close_room_leaves`. An unknown key must be ignored, not fail the
+    /// An unknown key such as the removed `jabber_close_room_leaves` must be ignored, not fail the
     /// whole parse: `load_settings` falls back to defaults on a parse error, which would reset
     /// every setting the user has.
     #[test]
@@ -1736,7 +1735,7 @@ mod tab_persistence_tests {
         assert_eq!(s.jabber_rooms, vec!["a@conference.x".to_owned()]);
     }
 
-    /// Every list this session added, together, so none of them is the one that silently resets.
+    /// The persisted Jabber lists, together, so none of them is the one that silently resets.
     /// Field by field, not whole-struct: some UI-transient flags are deliberately not persisted
     /// (`BattleRule::expanded` among them) and would fail an equality check for the wrong reason.
     #[test]

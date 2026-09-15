@@ -25,9 +25,8 @@ const BRASS: &[f32] = &[1.0, 0.8, 0.6, 0.45, 0.32, 0.22, 0.15, 0.1];
 
 /// The tones a build can actually play.
 ///
-/// `siren` is the delve911 scramble callout and its `preset` arm is behind `fc-rescue`, so listing
-/// it unconditionally offered a sound that a stock build resolves to `None` and plays as silence.
-/// The list and the synthesizer have to agree, because nothing else tells the user.
+/// `siren` is the delve911 scramble callout and its `preset` arm is behind `fc-rescue`. A stock
+/// build that listed it would resolve it to `None` and play silence, with nothing telling the user.
 #[cfg(not(feature = "fc-rescue"))]
 pub const PRESETS: &[&str] =
     &["info", "warning", "danger", "critical", "beep", "chime", "sweep", "horn"];
@@ -115,7 +114,7 @@ pub fn play_prio(spec: &str, prio: u8, volume: f32) {
 /// delve911 priority alert: a rising scramble siren, distinct from every other alert so a
 /// rapid-response callout is recognisable without looking. Level-matched to the other alert tones,
 /// so it stands out by being different rather than louder. Rate-limited so a burst of messages only
-/// alerts once. The gate is refreshed on EVERY message, so it re-arms only after 5 minutes of quiet
+/// alerts once. The gate is refreshed on every message, so it re-arms only after 5 minutes of quiet
 /// (the next message after a lull alerts again). Independent of the global 2s gate.
 #[cfg(feature = "fc-rescue")]
 pub fn play_delve911_alert() {
@@ -125,7 +124,7 @@ pub fn play_delve911_alert() {
         let mut g = GATE.lock().unwrap();
         let now = std::time::Instant::now();
         let play = g.map_or(true, |last| now.duration_since(last) >= DELVE911_COOLDOWN);
-        *g = Some(now); // reset the timer on every message
+        *g = Some(now);
         play
     };
     if should_play {
@@ -186,10 +185,9 @@ fn play_file(path: &Path, volume: f32) {
     }
     #[cfg(target_os = "windows")]
     {
-        // winmm PlaySound — the canonical Windows WAV playback. Avoids PowerShell's startup
-        // latency, console-window flash, and System.Media.SoundPlayer quirks, all of which
-        // made the previous shell-out unreliable. It has no per-sound volume: presets bake gain
-        // into the WAV, user files play at full (the `volume` arg only applies to files here).
+        // winmm PlaySound avoids PowerShell's startup latency, console-window flash and
+        // System.Media.SoundPlayer quirks. It has no per-sound volume: presets bake gain into the
+        // WAV, user files play at full.
         let _ = volume;
         use std::os::windows::ffi::OsStrExt;
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
@@ -249,8 +247,7 @@ fn ensure_tone(name: &str, volume: f32, tone: &Tone) -> Option<PathBuf> {
     Some(path)
 }
 
-/// Temp file then rename. A direct write that failed part way left a truncated WAV that passed the
-/// `is_file` check above forever after, so one full disk permanently broke that alert sound.
+/// Temp file then rename, because a truncated WAV would pass the `is_file` check forever after.
 /// Gated on its own result rather than on the disk level: `$TMPDIR` is often a different
 /// filesystem from the data directory.
 fn write_cached(path: &Path, bytes: &[u8]) -> Option<()> {
@@ -265,7 +262,7 @@ fn write_cached(path: &Path, bytes: &[u8]) -> Option<()> {
 
 /// Bake `volume` into a copy of a custom WAV file and cache it, returning the temp path. Returns
 /// `None` for a non-WAV file, an unsupported WAV encoding, or at (near) full volume where scaling
-/// is pointless — the caller then plays the original with the player's own volume flag.
+/// is pointless. The caller then plays the original with the player's own volume flag.
 fn scaled_wav_file(spec: &str, volume: f32) -> Option<PathBuf> {
     if volume > 0.999 {
         return None;
@@ -476,7 +473,7 @@ mod tests {
     }
 
     /// The delve911 callout has to stand out by being different, not by being louder than
-    /// everything else. It was 3.6x the other presets before this was pinned down.
+    /// everything else.
     #[cfg(feature = "fc-rescue")]
     #[test]
     fn siren_loudness_matches_the_alert_tones() {
@@ -493,8 +490,7 @@ mod tests {
 
     #[test]
     fn long_segments_do_not_fade_out_early() {
-        // A 10%-of-segment fade turned the tail of a long tone into an audible decay; the fade is
-        // capped so a held note ends by stopping, not by dying away.
+        // The fade is capped so a held note ends by stopping, not by dying away.
         let held = Tone {
             segs: vec![Seg { f0: 440.0, f1: 440.0, ms: 1500 }],
             amp: 0.9,
@@ -561,8 +557,7 @@ mod web_tests {
         }
     }
 
-    /// The regression test for the list and the synthesizer disagreeing. Every name the app offers
-    /// has to resolve to a tone in the build that offers it.
+    /// Every name the app offers has to resolve to a tone in the build that offers it.
     #[test]
     fn every_offered_preset_resolves_in_this_build() {
         for name in PRESETS {

@@ -927,8 +927,8 @@ pub fn color32(c: [u8; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// Light tones only: tag markers sit on the map's near-black background, where the mid and dark
-/// shades this used to include (brown, grey, deep purple) all but vanished.
+/// Light tones only: tag markers sit on the map's near-black background, where mid and dark shades
+/// all but vanish.
 const PALETTE: [[u8; 3]; 10] = [
     [0xFF, 0x6B, 0x6B],
     [0xFF, 0xA9, 0x4D],

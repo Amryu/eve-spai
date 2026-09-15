@@ -47,9 +47,9 @@ struct SessionResponse {
     character_name: String,
 }
 
-/// `POST /api/session` — the ONLY route that accepts an EVE SSO token. The EVE token is
-/// verified in memory (never logged, never persisted), then exchanged for one of OUR
-/// short-lived, correctly-audienced session tokens which all other routes require.
+/// `POST /api/session`, the only route that accepts an EVE SSO token. The EVE token is verified
+/// in memory (never logged or persisted), then exchanged for one of our short-lived,
+/// correctly-audienced session tokens, which all other routes require.
 async fn create_session(
     State(st): State<AppState>,
     headers: HeaderMap,

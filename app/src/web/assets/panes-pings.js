@@ -4,7 +4,7 @@
 import { esc, ico, register, send, state } from "./app.js";
 import { fmtAge } from "./panes-intel.js";
 
-/// `PapType`: strategic reads red, peacetime amber, anything else is free text and stays weak.
+/// `PapType`: strategic red, peacetime amber, free text stays weak.
 function papTag(pap) {
   if (!pap) return "";
   if (pap === "Strategic") return `<span class="pap strat">STRAT</span>`;
@@ -31,13 +31,11 @@ function comms(c, ts) {
   if (!c) return "";
   if (typeof c === "object" && "Mumble" in c) {
     const { channel, link } = c.Mumble;
-    // The button asks the desktop to join, because that is where the Mumble client is. Following
-    // the link on a phone opens nothing useful, and on the host it would be the wrong machine only
-    // by accident.
+    // The desktop joins, because that is where the Mumble client is.
     const join = state.snapshot?.meta?.allow_writeback
       ? `<button class="chip mumble" data-join="${ts}">${ico("headset")} Join ${esc(channel)} on the desktop</button>`
       : `<span class="chip">${ico("headset")} ${esc(channel)}</span>`;
-    // The raw link stays, for a browser that is on the machine with the client.
+    // The raw link stays for a browser on the machine with the client.
     return `${join}<a class="chip lnk" href="${esc(link)}" title="Open here instead">${ico("link")}</a>`;
   }
   const t = typeof c === "object" ? Object.values(c)[0] : c;
@@ -50,8 +48,7 @@ function row(label, body) {
 
 function pingCard(entry, now, systems) {
   const p = entry.ping;
-  // A matched rule shows as the card's highlight and nothing else, the same as `render_ping`. The
-  // app never names the rule on the card.
+  // A matched rule shows only as the highlight, as in `render_ping`.
   const matched = entry.rule && !entry.suppressed;
   const cls = `ping${matched ? " matched" : ""}`;
 
@@ -100,7 +97,7 @@ const renderPings = (el, snap) => {
 
 const ts = (p) => ("Fleet" in p ? p.Fleet.timestamp : p.Plain.timestamp);
 
-// One listener for the pane, rather than rebinding a button every repaint.
+// Delegated, so buttons need no rebinding on every repaint.
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-join]");
   if (!b) return;

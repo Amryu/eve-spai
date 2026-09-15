@@ -1,25 +1,23 @@
 //! Map geometry for the page.
 //!
-//! Served separately from the live layer and cached hard: the SDE does not change between releases,
-//! while intel changes every few seconds. Re-sending 8000 nodes twice a second would be absurd, so
-//! the rule is that the live payload in `snapshot::MapLive` carries system ids and never coordinates.
+//! Served separately from the live layer and cached, since the SDE does not change between releases.
+//! The live payload in `snapshot::MapLive` carries system ids, never coordinates.
 
 use serde::Serialize;
 
-/// The projected box nodes are quantised into. Integers in a fixed range keep the payload small and
-/// give the browser a `viewBox` it can pan and zoom without rescaling anything.
+/// The projected box nodes are quantised into. Integers keep the payload small.
 pub const EXTENT: f64 = 4096.0;
 
 #[derive(Serialize)]
 pub struct Node {
     pub i: i64,
     pub n: String,
-    /// Security, one decimal. The page indexes the same eleven-stop ramp the app does.
+    /// Security, one decimal, for the same eleven-stop ramp the app uses.
     pub s: f64,
     pub r: i64,
     pub x: i64,
     pub z: i64,
-    /// Holds a Jove Observatory. Static, so it rides with the geometry rather than the live layer.
+    /// Holds a Jove Observatory. Static, so it rides with the geometry.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub j: bool,
 }
@@ -28,41 +26,23 @@ pub struct Node {
 pub struct Geometry {
     pub extent: f64,
     pub nodes: Vec<Node>,
-    /// Index pairs into `nodes` with a style, deduped `a < b`. Ids would be eight bytes each and
-    /// there are thousands of them; indices roughly halve the payload.
-    ///
-    /// The third value is 0 inside a constellation, 1 across constellations, 2 across regions. A
-    /// gate says where a boundary runs as much as where you can go, and on a map of identical lines
-    /// none of those boundaries were visible.
+    /// Index pairs into `nodes`, deduped `a < b`, plus a style: 0 inside a constellation, 1 across
+    /// constellations, 2 across regions. Indices instead of ids roughly halve the payload.
     pub edges: Vec<(usize, usize, u8)>,
-    /// Real positions in hundredths of a light year, parallel to `nodes`.
-    ///
-    /// The drawn coordinates are a projection quantised into a 0..4096 box, which cannot answer "is
-    /// this within 6 ly", so jump range needs the real thing. Three small integers per system rather
-    /// than three floats: at 0.01 ly the whole galaxy fits in about a million units and the error is
-    /// far below anything a range band cares about.
+    /// Real positions in hundredths of a light year, parallel to `nodes`. The drawn coordinates are
+    /// projected and quantised, so jump range needs these.
     pub pos3: Vec<[i32; 3]>,
-    /// Map units per light year, for drawing a range band at the right size. Exact for a geographic
-    /// layout, and the same approximation the app makes for any other.
+    /// Map units per light year, for sizing a range band. Exact for a geographic layout, and the
+    /// same approximation the app makes for any other.
     pub units_per_ly: f64,
-    /// Region id to name, for the labels the map draws when it is zoomed out too far for system
-    /// names to be readable. About a hundred entries, so it rides with the geometry.
+    /// Region id to name, for zoomed-out labels.
     pub regions: Vec<(i64, String)>,
-    /// Jump bridges, same index-pair shape. Separate from `edges` because they are drawn
-    /// differently and can be switched off on their own.
+    /// Jump bridges, same index-pair shape. Separate because they are drawn and toggled on their own.
     pub bridges: Vec<(usize, usize)>,
 }
 
-/// Whether a system belongs on the star map at all.
-///
-/// The SDE carries far more than the map shows: wormhole space, abyssal pockets and the Jove
-/// regions are all in `sde_systems`, and none of them are places you fly to through a gate. The
-/// desktop map drops them with exactly these two rules (`app.rs`, the `map_systems` build), so this
-/// uses the same ones rather than inventing a third answer.
-///
-/// - Nothing connects to it, so it cannot be reached or drawn as part of the graph.
-/// - Its region name contains a digit, which is how J-space (`A-R00001`) and the abyssal and Jove
-///   regions are named and normal space is not.
+/// Whether a system belongs on the star map. Same rules as the desktop map's `map_systems` build:
+/// it has a gate, and its region name has no digit (J-space `A-R00001`, abyssal and Jove regions do).
 pub fn on_the_map(id: i64, graph: &crate::geo::Systems) -> bool {
     !graph.neighbors(id).is_empty()
         && graph.info_of(id).is_none_or(|i| !i.region.chars().any(|c| c.is_ascii_digit()))
@@ -76,8 +56,7 @@ pub fn build(systems: &[crate::store::MapSystem], graph: &crate::geo::Systems) -
     let (min_x, max_x, min_z, max_z) = bounds(&nodes);
     let span = ((max_x - min_x).max(max_z - min_z)).max(1.0);
     let project = |v: f64, min: f64| (((v - min) / span) * EXTENT).round() as i64;
-    // North is up. `map::project` draws with `center.y - (z - mid)`, so screen y runs opposite to
-    // z; emitting z unflipped rendered the whole map upside down against the app's.
+    // North is up. `map::project` draws with `center.y - (z - mid)`, so screen y runs opposite to z.
     let project_z = |v: f64| ((((max_z - v) / span)) * EXTENT).round() as i64;
 
     let index: std::collections::HashMap<i64, usize> =
@@ -178,8 +157,7 @@ mod tests {
     use super::*;
 
     fn sys(id: i64, name: &str, x: f64, z: f64) -> crate::store::MapSystem {
-        // 7-K5EL is in Fountain in the fixture graph, so it gets its own region id here too:
-        // a row whose `region_id` disagrees with the graph's region name is not a real row.
+        // 7-K5EL is in Fountain in the fixture graph, so its `region_id` must match.
         let region_id = if id == 30_003_704 { 10_000_058 } else { 10_000_060 };
         crate::store::MapSystem {
             id,
@@ -228,8 +206,7 @@ mod tests {
         }
     }
 
-    /// A system id is eight digits and there are thousands of edges. This is what stops someone
-    /// "simplifying" the wire format back to ids without noticing the cost.
+    /// Ids on the wire would cost eight digits per end across thousands of edges.
     #[test]
     fn edges_are_indices_on_the_wire_not_ids() {
         let (s, g) = fixture();
@@ -246,7 +223,7 @@ mod tests {
         }
     }
 
-    /// North is up, as in the app. Emitting z unflipped rendered the whole map upside down.
+    /// North is up, as in the app.
     #[test]
     fn greater_z_is_higher_on_screen() {
         let (_, g) = fixture();
@@ -259,31 +236,25 @@ mod tests {
         assert!(by("north") < by("south"), "north {} should sit above south {}", by("north"), by("south"));
     }
 
-    /// The fixtures straddle a real boundary: 1DQ1-A and 319-3D are both in Delve, 7-K5EL is in
-    /// Fountain, and all three share a constellation name. So one gate is interior and one leaves
-    /// the region, which is exactly the distinction being drawn.
+    /// 1DQ1-A and 319-3D are in Delve, 7-K5EL in Fountain, and all three share a constellation name,
+    /// so one gate is interior and one leaves the region.
     #[test]
     fn gate_style_says_which_boundary_it_crosses() {
         let (_, g) = fixture();
         assert_eq!(edge_style(&g, 30_004_759, 30_004_608), 0, "1DQ1-A to 319-3D, both Delve");
         assert_eq!(edge_style(&g, 30_004_608, 30_003_704), 2, "319-3D to 7-K5EL, Delve to Fountain");
-        // Symmetric: which end you ask from cannot change the answer.
         assert_eq!(edge_style(&g, 30_003_704, 30_004_608), 2);
         // A system the graph has never heard of falls back to interior rather than guessing.
         assert_eq!(edge_style(&g, 30_009_999, 30_004_608), 0);
     }
 
-    /// A range band is only meaningful if the positions behind it are the real ones. The drawn
-    /// coordinates are projected and quantised, so they cannot answer a distance question.
     #[test]
     fn real_positions_ride_alongside_the_drawn_ones() {
         let (s, g) = fixture();
         let geo = build(&s, &g);
         assert_eq!(geo.pos3.len(), geo.nodes.len(), "one per node, in the same order");
         assert!(geo.units_per_ly > 0.0);
-        // The fixture systems are metres apart, which is a rounding error in light years, so every
-        // real position lands on the origin. That is correct: it is the same number the app would
-        // compute, not a placeholder.
+        // The fixture systems are metres apart, which rounds to the origin in light years.
         assert!(geo.pos3.iter().all(|p| p == &[0, 0, 0]), "{:?}", geo.pos3);
     }
 
@@ -307,8 +278,6 @@ mod tests {
         assert_eq!(build(&s, &g).nodes[0].s, -0.4);
     }
 
-    /// The reported bug: the payload carried 2604 wormhole systems and 401 abyssal ones, none of
-    /// which are on the star map, plus 3222 systems with no gate at all.
     #[test]
     fn wormhole_abyssal_and_unconnected_systems_are_not_on_the_map() {
         let (mut s, g) = fixture();
@@ -324,8 +293,7 @@ mod tests {
         assert_eq!(names, vec!["7-K5EL", "319-3D", "1DQ1-A"], "only connected k-space, {names:?}");
     }
 
-    /// Every node has to keep indexing correctly after the filter removes rows. Filtering before
-    /// the index is built is the whole reason this is safe; doing it after would shift every edge.
+    /// Filtering must happen before the index is built, or every edge shifts.
     #[test]
     fn edges_still_index_the_filtered_list() {
         let (mut s, g) = fixture();

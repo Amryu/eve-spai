@@ -4,8 +4,7 @@
 import { ico, state, register } from "./app.js";
 import { card } from "./panes-intel.js";
 
-/// Rows this device has already seen. Per device on purpose: two people watching the same app should
-/// not clear each other's unseen markers.
+/// Per device, so two people watching the same app do not clear each other's unseen markers.
 const SEEN = "spai_seen_alerts";
 
 function seen() {
@@ -18,10 +17,10 @@ function seen() {
 
 function markSeen(ids) {
   try {
-    // Bounded: the alert feed is capped at 100, so remembering far past that is pure growth.
+    // The alert feed is capped at 100, so remembering far past that is pure growth.
     localStorage.setItem(SEEN, JSON.stringify([...ids].slice(-300)));
   } catch {
-    // Private browsing refuses storage. Everything then reads as unseen, which is the safe way round.
+    // Private browsing refuses storage. Everything then reads as unseen, which is the safe side.
   }
 }
 
@@ -54,8 +53,7 @@ const renderAlerts = (el, snap) => {
         via: msg.via?.[i] ?? "Gates",
         chars: msg.chars?.[i] ?? { hops: [], selected: null },
       };
-      // No severity header and no age above the card: the card already carries both, in its tint,
-      // its icon and its age column. A second copy just pushed the cards apart.
+      // No severity header or age: the card already shows both.
       return (
         `<div class="alert${fresh ? " fresh" : ""}">` +
         card(c, { resolved_pilots: msg.resolved_pilots, uncertain: msg.uncertain }, compact, now) +

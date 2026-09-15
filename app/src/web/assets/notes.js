@@ -1,9 +1,8 @@
 // Notes and tags on systems and pilots, kept in folders.
 //
-// The app owns the book and every rule about it: this draws the merged view the snapshot carries and
-// posts edits back as `Notes` actions. Nothing here edits the snapshot optimistically, because a
-// refused edit (a name taken, a note too long) would leave the page showing something the app does
-// not have. The next push, half a second later, is the confirmation.
+// The app owns the book and its rules. This draws the view the snapshot carries and posts `Notes`
+// actions. No optimistic edits: a refused edit would leave the page showing something the app does
+// not have, so the next push is the confirmation.
 
 import { afterRender, esc, ico, modal as shell, send, state } from "./app.js";
 import { menu } from "./route.js";
@@ -929,7 +928,7 @@ afterRender.push(() => {
 });
 
 /// `#notes/system` and `#notes/pilot` open the manager, and `#notes/edit/<kind>/<id>[/<name>]` the
-/// editor, for the same reason every dialog takes a deep link: a load-time screenshot cannot click.
+/// editor, for links and load-time screenshots.
 function fromHash() {
   const m = /^#notes\/(system|pilot)$/.exec(location.hash);
   if (m) return openManager(m[1]);

@@ -1,25 +1,19 @@
-// The jabber pane: the Convos list on the left, the selected conversation on the right.
-//
-// No tabs. The app grew a tab bar over the same list and it was possible to have a conversation
-// selected in one and showing in the other; here the list is the selection, which is the whole point
-// of the Convos rework this mirrors.
+// The jabber pane: the Convos list on the left, the selected conversation on the right. No tabs, so
+// the list is the selection and the two cannot disagree.
 
 import { esc, ico, modal, register, send, state } from "./app.js";
 
 const KEY = "spai_jabber";
 
-/// Which conversation is open, per device.
-///
-/// Not pushed from the app: two people reading the same feed from two phones are not reading the
-/// same conversation, and the desktop is a third reader again.
+/// Which conversation is open, per device rather than pushed from the app, since each reader picks
+/// their own.
 let sel = null;
 try {
   sel = localStorage.getItem(KEY);
 } catch {
   // Private browsing. The selection then lasts one session.
 }
-// `?jabber=<jid>` opens one, which is how a link can point at a conversation and the only way a
-// load-time screenshot can capture the chat header: the harness cannot click.
+// `?jabber=<jid>` opens one, for links and load-time screenshots, since the harness cannot click.
 {
   const want = new URLSearchParams(location.search).get("jabber");
   if (want) sel = want;
@@ -46,10 +40,7 @@ function convo(jid) {
   return side().convos.find((c) => c.jid === jid) ?? null;
 }
 
-/// Fetch the open conversation, but only when it has actually moved.
-///
-/// The list carries `last_at`, so the page already knows whether there is anything new. Polling on a
-/// timer would refetch a room's backlog every few seconds to learn nothing.
+/// Fetch the open conversation only when its `last_at` moved, rather than polling the backlog.
 async function sync(force) {
   const c = convo(sel);
   if (!c) return;
@@ -76,16 +67,11 @@ function open(jid) {
   markRead();
 }
 
-/// Tell the app the open conversation has been looked at.
+/// Tell the app the open conversation was read. The unread marker lives in the app and the chat
+/// endpoint is a plain read, so this is the only thing that clears it.
 ///
-/// Reading it here had been clearing nothing: the unread marker lives in the app's jabber state, the
-/// chat endpoint is a plain read, and nothing ever said the page was looking. So a message read on a
-/// phone stayed bold on the desktop and kept its badge on both.
-///
-/// Three conditions, because "the page has this conversation selected" is not the same as "somebody
-/// is reading it": the pane has to be the one on screen, the tab has to be in the foreground, and
-/// there has to be something unread to clear. The last one is what keeps this from posting on every
-/// snapshot for the rest of the session.
+/// Only when the pane is on screen, the tab is visible and something is unread, so a selected but
+/// unwatched conversation stays unread and this does not post on every snapshot.
 function markRead() {
   if (!sel || document.visibilityState !== "visible") return;
   if (!el || el.hidden || !el.offsetParent) return;
@@ -98,10 +84,8 @@ const stamp = (at) => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 };
 
-/// A roll-call collapsed to a count, the way `condense_attention_list` does it.
-///
-/// The ping bot echoes every broadcast back with every recipient named, which is a multi-kilobyte
-/// line that buries the conversation it is in.
+/// A roll-call collapsed to a count, like `condense_attention_list`. The ping bot echoes broadcasts
+/// with every recipient named, a multi-kilobyte line that buries the conversation.
 function condense(body) {
   const marker = "requests the attention of:";
   const at = body.toLowerCase().indexOf(marker);
@@ -113,15 +97,12 @@ function condense(body) {
   return `${body.slice(0, after).trimEnd()} [${n} ${n === 1 ? "user" : "users"}]`;
 }
 
-/// Trailing sentence punctuation is not part of a URL: a copied link with a full stop on the end
-/// fails when it is pasted. The same set `trim_url_tail` strips.
+/// Trailing sentence punctuation is not part of a URL. The same set `trim_url_tail` strips.
 const TAIL = /[.,;:!?)\]}>"']+$/;
 
 /// The message body as HTML: links clickable, mentions marked, everything else escaped.
 ///
-/// Tokenised rather than escaped-then-regexed. Escaping first turns an `&` inside a URL into
-/// `&amp;` and the href stops working; linkifying first means the surrounding text never gets
-/// escaped at all.
+/// Tokenised, since escaping first breaks `&` in hrefs and linkifying first leaves the text unescaped.
 function bodyHtml(text, names) {
   const rx = names.length
     ? new RegExp(`(^|[^\\w])(${names.map(esc4rx).join("|")})(?![\\w])`, "gi")
@@ -133,10 +114,8 @@ function bodyHtml(text, names) {
   return linkify(condense(text), mark);
 }
 
-/// Every http(s) URL in `text` as an anchor, with `mark` escaping everything between them.
-///
-/// `mark` is the seam: a chat line also wants its mentions highlighted, a MOTD wants nothing but
-/// the links, and both want exactly one implementation of where a URL ends.
+/// Every http(s) URL in `text` as an anchor, with `mark` escaping everything between them, so chat
+/// lines can also highlight mentions while sharing one URL boundary rule with the MOTD.
 function linkify(text, mark = esc) {
   let out = "";
   let rest = String(text ?? "");
@@ -155,24 +134,20 @@ function linkify(text, mark = esc) {
 
 const esc4rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/// The part of a JID anyone says out loud. A sender arrives as a bare JID in a DM and as a nick in a
-/// room, and "@goonfleet.com" after every line in a conversation with one other person is noise.
+/// The local part of a JID. A DM sender arrives as a bare JID, and the domain on every line is noise.
 const who = (from) => String(from ?? "").split("@")[0];
 
-/// A MOTD is a notice board: several lines, blank ones between them, sometimes a rule of dashes.
-/// Collapsed it is a paragraph, so the separator keeps the first line reading as the headline.
+/// A multi-line MOTD on one line. The separator keeps the first line reading as the headline.
 const motdOneLine = (m) =>
   String(m ?? "")
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean)
-    // A row of dashes or equals is a rule: it separates the lines above from the ones below, and on
-    // one line it separates nothing while taking a third of the bar.
+    // Drop rules of dashes or equals, which separate nothing on one line.
     .filter((l) => /[\p{L}\p{N}]/u.test(l))
     .join("  ·  ");
 
-/// The first `max` non-empty lines, marked when there is more. A tooltip carrying a whole MOTD
-/// covers the conversation it is describing.
+/// The first `max` non-empty lines, marked when there is more, so a tooltip does not cover the chat.
 function motdPreview(m, max) {
   const lines = String(m ?? "")
     .split("\n")
@@ -188,13 +163,11 @@ function row(c) {
   const badge = c.unread
     ? `<span class="jcount${c.mention ? " mention" : ""}">${c.unread > 99 ? "99+" : c.unread}</span>`
     : "";
-  // The close button is a sibling, not nested: a button inside a button is invalid HTML and the
-  // browser hoists it out, which is how the row would stop being clickable at all.
+  // The close button is a sibling: a nested button is invalid HTML and the browser hoists it out.
   return (
     `<div class="jrowwrap">` +
     `<button class="jrow${c.jid === sel ? " on" : ""}${c.mention ? " mentioned" : ""}" data-convo="${esc(c.jid)}" ` +
-    // A room's tooltip is its topic, capped: that is what you want off a room in a list, and the
-    // JID is the same words as the name plus a domain.
+    // A room's tooltip is its capped topic, since its JID only repeats the name.
     `title="${esc(c.motd ? motdPreview(c.motd, 6) : c.jid)}">` +
     `${dot}<span class="jname">${esc(c.name)}</span>${badge}</button>` +
     `<button class="jshut" data-close="${esc(c.jid)}" title="Close. It comes back on the next message.">` +
@@ -221,9 +194,7 @@ function body() {
     return `<p class="placeholder">Pick a conversation.</p>`;
   }
   const names = side().mention_names ?? [];
-  // One person talking for a while is one block. Repeating the same name and the same minute on
-  // every line is the noise a chat client exists to remove; five minutes, and only while nobody
-  // else has spoken, which is what makes it still a block and not a merge.
+  // Consecutive lines from one sender within five minutes share a header.
   const GROUP_SECS = 300;
   const lines = chat.msgs
     .map((m, i) => {
@@ -244,8 +215,7 @@ function body() {
     : "";
   return (
     `<div class="jhead">${c.room ? ico("users-three") : ico("chat-circle-dots")} <b>${esc(c.name)}</b>` +
-    // The room's topic on the room's own bar, one line of it. The rest is a tap away rather than
-    // wrapped into the header, which on a phone would be most of the screen before any message.
+    // One line of topic, since a wrapped MOTD would fill a phone screen before any message.
     (c.motd
       ? `<span class="jtopic" title="${esc(motdPreview(c.motd, 6))}">${esc(motdOneLine(c.motd))}</span>` +
         `<button class="jmotd" data-motd="${esc(c.jid)}" title="Show the full MOTD">${ico("article")}</button>`
@@ -260,8 +230,7 @@ let el = null;
 
 function paint() {
   if (!el) return;
-  // The log is the one thing worth keeping a scroll position for, and it is nearly always pinned to
-  // the bottom, so that is what is restored.
+  // Keep the log pinned to the bottom, or at its scroll position if the user scrolled up.
   const log = el.querySelector(".jlog");
   const pinned = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
   const draft = el.querySelector(".jsend input")?.value ?? "";
@@ -286,23 +255,19 @@ register("jabber", (node) => {
 document.addEventListener("visibilitychange", markRead);
 window.addEventListener("spai:panes", markRead);
 
-/// A room's MOTD in full, which is the only place it is shown whole.
-///
-/// The header shows one line of it; this is where the ping format, the comms details and the forum
-/// link actually live, so the text stays selectable and the whitespace it was written with is kept.
+/// A room's full MOTD, selectable and with its original whitespace kept.
 function motdDialog(jid) {
   const c = convo(jid);
   if (!c?.motd) return;
   modal(
     "motddlg",
     `<h3>${ico("article")} ${esc(c.name)} MOTD</h3>` +
-      // Linkified, not escaped flat: a MOTD is where the doctrine and forum links live, and they are
-      // the part people actually want out of it.
+      // Linkified, since MOTDs carry the doctrine and forum links.
       `<pre class="jmotdtext">${linkify(c.motd)}</pre>`
   );
 }
 
-/// One listener, on the pane, for every row there will ever be: the list is rebuilt on every push.
+/// One document listener, since the list is rebuilt on every push.
 document.addEventListener("click", (e) => {
   const m = e.target.closest("[data-motd]");
   if (m) {
@@ -312,14 +277,13 @@ document.addEventListener("click", (e) => {
   const shut = e.target.closest("[data-close]");
   if (shut) {
     const jid = shut.dataset.close;
-    // Hiding, not leaving: the same thing the app's tab X does, and it comes back unread.
+    // Hides rather than leaves, like the app's tab X. It comes back on the next message.
     send({ JabberClose: { jid } });
     if (sel === jid) {
       remember(null);
       chat = { jid: null, msgs: [], at: 0 };
     }
-    // Dropped from the list now rather than waiting for the next snapshot, so the click looks like
-    // it did something.
+    // Removed now rather than on the next snapshot, so the click has visible effect.
     shut.closest(".jrowwrap")?.remove();
     return;
   }
@@ -358,8 +322,7 @@ function startDialog(kind) {
 
   const draw = () => {
     const term = q.value.trim().toLowerCase();
-    // Everything with history, not only what the list shows: the point of this dialog is to reach
-    // what the list does not.
+    // Everything with history, including conversations the list does not show.
     const rows = side()
       .convos.filter((c) => c.room === room && c.last_at > 0)
       .filter((c) => !term || c.name.toLowerCase().includes(term) || c.jid.toLowerCase().includes(term))
@@ -382,8 +345,7 @@ function startDialog(kind) {
   const go = (name) => {
     close();
     send({ JabberOpen: { name, room } });
-    // Optimistic: the app resolves the name and the next push carries the conversation. Until then
-    // the list is what it was, which is better than a pane that looks broken.
+    // The app resolves the name and the next push carries the conversation. Open it now if known.
     const known = side().convos.find(
       (c) => c.room === room && (c.name.toLowerCase() === name.toLowerCase() || c.jid === name)
     );

@@ -777,9 +777,8 @@ impl SpaiApp {
             AuthStatus::Idle => {}
         }
 
-        // Where the refresh token actually lives. Not a warning: the fallback works, and it is only
-        // reached when the machine has no usable keychain. But it is a real difference from what the
-        // app normally does with a credential, and not one the user chose, so it is said out loud.
+        // Not a warning, the fallback works. It still differs from how the app normally keeps a
+        // credential, and the user did not choose it, so it is stated.
         if crate::tokens::fallback_in_use() {
             ui.add_space(6.0);
             ui.label(
@@ -825,10 +824,8 @@ impl SpaiApp {
             let scope_count = have.iter().filter(|s| !s.is_empty()).count();
             let missing: Vec<&str> =
                 auth::DEFAULT_SCOPES.iter().copied().filter(|s| !have.contains(s)).collect();
-            // The real question is whether the saved *login* still works, not whether the
-            // twenty-minute access token happens to be fresh this second. The old check read the
-            // latter, so a perfectly healthy character showed "token expired" between refreshes and
-            // a dead one showed nothing until the next call happened to run.
+            // Whether the saved login still works matters, not whether the twenty-minute access
+            // token is fresh right now: that expires between refreshes on a healthy character.
             let problem = crate::esi::auth_problem(c.id);
             let token_ok = problem.is_none() && (c.expires_at > now || crate::tokens::load_refresh(c.id).is_some());
             let mut intel_on =

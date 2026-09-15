@@ -5,8 +5,8 @@ use super::*;
 impl SpaiApp {
     /// The four things a finished route drag can mean, arranged around where it was let go.
     ///
-    /// One area with one disc and four buttons placed on it, rather than four popups: four separate
-    /// frames overlapped each other and looked like a mistake.
+    /// One area with one disc and four buttons placed on it, since four separate popups overlap
+    /// each other.
     pub(crate) fn map_link_menu_ui(&mut self, ui: &mut egui::Ui) {
         let Some((from, to, at)) = self.map_link_menu else { return };
         // A drag off the current destination is adding a waypoint to a route that already has a
@@ -55,8 +55,8 @@ impl SpaiApp {
                 }
                 rect
             });
-        // On release, not on press: clearing the menu the moment a button was pressed took the
-        // button away before its own click could land, which is why none of them worked.
+        // On release, not on press: clearing the menu on press removes a button before its own
+        // click can land.
         if chose.is_none() && ui.input(|i| i.pointer.any_click()) {
             let inside = ui
                 .input(|i| i.pointer.interact_pos())

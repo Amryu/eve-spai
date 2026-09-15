@@ -1,7 +1,7 @@
 // Alert sound, in the browser.
 //
-// AudioContext with decoded buffers behind one GainNode, rather than a pool of <audio> elements:
-// one gain to mute everything at once, lower latency, and far better behaviour on iOS.
+// AudioContext behind one GainNode rather than <audio> elements: one mute, lower latency, and far
+// better behaviour on iOS.
 
 import { register, renderers, state } from "./app.js";
 
@@ -32,10 +32,8 @@ const write = (k, v) => {
 
 const audio = { muted: read(MUTE, false), volume: read(VOL, 1) };
 
-/// A mobile browser refuses audio until a user gesture, so nothing here works before one.
-///
-/// The silent one-sample buffer is the standard iOS unlock: resuming the context is not enough on
-/// its own. The gesture is needed once per page load, not once per device.
+/// A mobile browser refuses audio until a user gesture, once per page load. The silent one-sample
+/// buffer is the iOS unlock, since resuming the context alone is not enough.
 async function arm() {
   if (armed) return true;
   try {
@@ -66,8 +64,7 @@ async function buffer(name) {
   return buf;
 }
 
-/// The app's own gate: one sound per two seconds, unless something worse arrives, in which case it
-/// cuts through. Ported from `sound::gate_allows` so a burst of intel does not machine-gun.
+/// Ported from `sound::gate_allows`: one sound per two seconds unless something worse arrives.
 const COOLDOWN_MS = 2000;
 let lastAt = 0;
 let lastSev = 0;
@@ -100,8 +97,7 @@ function setMuted(m) {
 
 const SEV = { Info: 0, Warning: 1, Danger: 2, Critical: 3 };
 
-/// Sound follows the alert pane: a report id this device has not sounded for yet, and the loudest
-/// severity in the batch wins.
+/// Plays for report ids not yet sounded on this device. The loudest severity in the batch wins.
 function onSnapshot(snap) {
   const feed = snap?.alerts?.msg?.feed ?? [];
   let best = null;
@@ -139,7 +135,7 @@ function paint() {
   el.querySelector("[data-mute]").addEventListener("click", () => setMuted(!audio.muted));
 }
 
-// The bar repaints on every render, so the control is rebuilt with it.
+// The alert bar is rebuilt on every render, so the sound control is repainted with it.
 const wrapped = renderers.alerts;
 register("alerts", (el, snap) => {
   wrapped?.(el, snap);

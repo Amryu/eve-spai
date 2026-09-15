@@ -1,8 +1,7 @@
 //! Icon names, emitted from the same constants the app draws with.
 //!
-//! The page asks for `ico('warning')` and never writes a codepoint. Phosphor's escapes are opaque
-//! four-hex sequences, so a hand-copied one is both easy to get wrong and impossible to review, and
-//! a wrong glyph renders as a tofu square rather than as an error.
+//! The page asks for `ico('warning')` and never writes a codepoint, since a hand-copied Phosphor
+//! escape is unreviewable and a wrong one renders as tofu instead of an error.
 
 use egui_phosphor::regular as icon;
 
@@ -47,7 +46,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("arrows-in", icon::ARROWS_IN),
     ("arrows-out", icon::ARROWS_OUT),
     ("x", icon::X),
-    // Layout chrome: the grab handle and the span buttons on each pane.
+    // Layout chrome.
     ("dots-six-vertical", icon::DOTS_SIX_VERTICAL),
     ("arrows-out-line-horizontal", icon::ARROWS_OUT_LINE_HORIZONTAL),
     ("arrows-out-line-vertical", icon::ARROWS_OUT_LINE_VERTICAL),
@@ -59,7 +58,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("users-three", icon::USERS_THREE),
     ("paper-plane-right", icon::PAPER_PLANE_RIGHT),
     ("plus", icon::PLUS),
-    // Map markers, the same glyphs the app's own map draws.
+    // Map markers.
     ("radioactive", icon::RADIOACTIVE),
     ("gear", icon::GEAR),
     ("cell-tower", icon::CELL_TOWER),
@@ -93,9 +92,8 @@ pub fn json() -> String {
 mod tests {
     use super::*;
 
-    /// Every entry has to be a single real glyph in Phosphor's private-use range. A name that does
-    /// not exist in the crate will not compile, but a constant that is somehow empty or multi-glyph
-    /// would render as nothing or as garbage, and only the browser would ever say so.
+    /// A missing name fails to compile, but an empty or multi-glyph constant would only show in the
+    /// browser.
     #[test]
     fn every_icon_is_one_private_use_glyph() {
         for (name, glyph) in ICONS {

@@ -1,6 +1,4 @@
-/* Mirrors `render_ping`: a grouped card, with an accent stroke and a faint accent wash when a rule
-   matched. That highlight is the only thing separating a ping that concerns you from one that does
-   not, so it is not decoration. */
+/* Mirrors `render_ping`: a grouped card with an accent stroke and wash when a rule matched. */
 .ping {
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -45,7 +43,6 @@
 }
 .ping .mumble { color: var(--accent); }
 
-/* Line height matched to the ink. UI-018 and UI-027 both landed on ping and chat bodies allocating
-   26px of row for 15px of text; the web card must not reintroduce it. */
+/* Line height matched to the ink, not 26px of row for 15px of text. */
 .pbody { margin: 0.4rem 0 0; line-height: 1.35; white-space: pre-wrap; }
 .pfoot { margin-top: 0.3rem; color: var(--muted); font-size: 0.9em; }

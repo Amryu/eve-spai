@@ -1,8 +1,7 @@
 //! The palette, emitted from the app's own colours.
 //!
-//! Every colour the page uses is a custom property generated here, so the browser hardcodes none of
-//! them. That is the whole mechanism keeping the page and the app from drifting: change a theme, a
-//! severity colour or a security stop in Rust and the page follows without anyone editing CSS.
+//! Every colour the page uses is a custom property generated here, so a theme, severity or security
+//! colour changed in Rust reaches the page without editing CSS.
 
 use egui::Color32;
 
@@ -67,8 +66,7 @@ pub fn theme_css(theme: &Theme) -> String {
     ] {
         out.push_str(&format!("  --{name}: {};\n", hex(c)));
     }
-    // EVE's eleven security stops, indexed the way `security_color` indexes them, so the page can
-    // pick one with the same arithmetic instead of carrying its own ramp.
+    // Indexed like `security_color`, so the page picks a stop with the same arithmetic.
     for i in 0..=10 {
         let c = crate::app::security_color(i as f64 / 10.0);
         out.push_str(&format!("  --sec-{i}: {};\n", hex(c)));
@@ -82,8 +80,7 @@ pub fn theme_css(theme: &Theme) -> String {
     out
 }
 
-/// A browser asking for its own three colours. The derivation still happens here, in Rust, so a
-/// per-device override cannot drift from the app's the way a JavaScript reimplementation would.
+/// A per-device colour override. Derived here in Rust so it cannot drift from the app's derivation.
 pub fn theme_from_query(query: &str, fallback: &Theme) -> Theme {
     let pick = |key: &str, dflt: theme::Rgb| {
         super::routes::query_param(query, key)
@@ -126,8 +123,6 @@ mod tests {
         assert!(css.contains("font-family:phosphor"));
     }
 
-    /// The point of generating this from Rust. If someone changes a theme or a severity colour and
-    /// the page keeps the old one, these are the values that stop agreeing.
     #[test]
     fn the_emitted_values_are_the_app_values() {
         let t = Theme::caldari();

@@ -317,7 +317,7 @@ pub(crate) fn affil() -> crate::affiliation::SharedAffil {
     Arc::new(std::sync::Mutex::new(crate::affiliation::AffilCache::default()))
 }
 
-/// `intel_row` skips any pilot missing from this map (`app.rs:22099`), so every fixture name has
+/// `intel_row` skips any pilot missing from this map, so every fixture name has
 /// to appear here or the pilot chips never render and the torture case stops being one.
 pub(crate) fn resolved_pilots() -> HashMap<String, i64> {
     let mut m = HashMap::from([
@@ -521,7 +521,7 @@ fn room_history() -> Vec<crate::jabber::ChatMsg> {
     v
 }
 
-/// The cap `jabber.rs` drains a conversation back to, which is the case the user reported.
+/// The cap `jabber.rs` drains a conversation back to.
 pub(crate) const JABBER_LONG_LEN: usize = 1000;
 
 /// A conversation at the cap, generated rather than written out. Senders run in threes so grouping

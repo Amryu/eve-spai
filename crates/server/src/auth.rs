@@ -10,9 +10,8 @@ use serde::Deserialize;
 /// a refresh regardless of age (key rotation).
 const JWKS_TTL: Duration = Duration::from_secs(3600);
 
-/// The accepted issuer values. EVE's current tokens stamp the URI form
-/// `https://login.eveonline.com` (no trailing slash); older tokens used the bare host. Accept all
-/// three forms (bare host, URI, URI+slash) — per EVE's guidance to match either the host or the URI.
+/// Current EVE tokens stamp the URI form `https://login.eveonline.com` without a trailing slash,
+/// older ones the bare host. EVE's guidance is to match either, so all three forms are accepted.
 const ISSUERS: [&str; 3] = [
     "login.eveonline.com",
     "https://login.eveonline.com",

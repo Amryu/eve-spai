@@ -169,8 +169,8 @@ fn write_atomic(p: &Path, bytes: &[u8]) {
         Ok(()) => {
             let _ = std::fs::rename(&tmp, p);
         }
-        // The partial file used to be left behind, so a full disk made this cache grow rather
-        // than shed, and every orphan then survived pruning for a full TTL on its fresh mtime.
+        // A leftover partial file would make a full disk grow the cache, and the orphan would
+        // survive pruning for a full TTL on its fresh mtime.
         Err(e) => {
             crate::disk::note_io_error(&e);
             let _ = std::fs::remove_file(&tmp);
@@ -212,6 +212,7 @@ fn prune_with(dir: &Path, ttl: Duration) {
     }
 }
 
+/// Install egui's image loaders with the disk-caching EVE-image loader in front of the
 /// default network loader. Loaders are tried last-registered-first, so registering ours
 /// *after* `install_image_loaders` gives it precedence for the `images.evetech.net` host.
 pub fn install_image_loaders_cached(ctx: &egui::Context) {

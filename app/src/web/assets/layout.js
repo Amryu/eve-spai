@@ -1,19 +1,16 @@
-// Pane arrangement: tabs, columns or grid, ordered and persisted per device.
-//
-// Per device, not in Settings: a phone and a desktop browser want different layouts, and the app
-// pushing one to both would be the app fighting the user.
+// Pane arrangement: tabs, columns or grid, ordered and persisted per device rather than in
+// Settings, since a phone and a desktop browser want different layouts.
 
 import { afterRender, available, ico, PANES, render } from "./app.js";
 
 const KEY = "spai_layout";
 
-// Jabber is off to begin with: five panes do not fit in four cells, and a pane switched off by the
-// budget without the user asking reads as one that is broken.
+// Jabber starts off: five panes do not fit in four cells, and a pane the budget silently drops looks
+// broken.
 const DEFAULTS = { mode: "auto", order: [...PANES], active: 0, off: ["jabber"], span: {} };
 
-/// The grid is 2x2 and nothing else, so four cells is the whole budget. Columns and tabs take the
-/// same number of panes, which is what the user asked for and also what four columns can hold
-/// without each one being too narrow to read.
+/// The grid is 2x2, so four cells is the whole budget. Columns share it, since more than four are
+/// too narrow to read.
 const CELLS = 4;
 
 /// What a pane costs in cells. Only the grid has cells to spend.
@@ -45,17 +42,14 @@ function save() {
   try {
     localStorage.setItem(KEY, JSON.stringify(layout));
   } catch {
-    // Private browsing. The layout then lasts one session, which is better than refusing to lay out.
+    // Private browsing. The layout then lasts one session.
   }
 }
 
-/// `auto` is a media query rather than a stored choice, so rotating a tablet does the right thing
-/// without the user having picked anything.
 /// Panes the user has left switched on, in their chosen order.
 function shown() {
   const have = available();
-  // Rescue is always on where it exists: the mode is already an explicit choice made twice, in the
-  // build and in the settings, and a third switch to forget is one too many.
+  // Rescue is always on where it exists: the build feature and the setting already opt in twice.
   return layout.order.filter(
     (p) => have.includes(p) && (p === "rescue" || !layout.off.includes(p))
   );
@@ -65,11 +59,8 @@ function isOn(pane) {
   return !layout.off.includes(pane);
 }
 
-/// Switch a pane off from its own corner, and give up its extra cell while it goes.
-///
-/// A pane that comes back later comes back as one cell. Keeping the span would mean switching a pane
-/// on and having it arrive two cells wide, pushing something else out to pay for a size nobody asked
-/// for in this layout.
+/// Switch a pane off and drop its span, so it comes back as one cell instead of pushing another pane
+/// out.
 function hide(pane) {
   delete layout.span[pane];
   setOn(pane, false);
@@ -79,18 +70,15 @@ function setOn(pane, on) {
   const off = new Set(layout.off);
   if (on) off.delete(pane);
   else off.add(pane);
-  if (off.size >= PANES.length) return; // keep at least one
+  if (off.size >= PANES.length) return;
   layout.off = [...off];
   fit();
   save();
   apply();
 }
 
-/// Which panes actually get drawn in a mode that has cells to fill.
-///
-/// Everything switched on stays switched on: tabs shows all of them, and grid and columns take the
-/// ones that fit in order and leave the rest where they are. Switching a pane on used to switch
-/// another off, which meant the layout quietly forgot a choice the user had made.
+/// Which panes get drawn. Tabs shows every pane switched on. Grid and columns take the ones that fit,
+/// in order, without switching the rest off.
 function fitting(mode = effectiveMode()) {
   const on = shown();
   if (mode === "tabs") return on;
@@ -105,16 +93,13 @@ function fitting(mode = effectiveMode()) {
   return out;
 }
 
-/// Keep `active` inside the list and drop spans that no longer fit anywhere.
+/// Keep `active` inside the list.
 function fit() {
   layout.active = Math.min(layout.active, Math.max(0, shown().length - 1));
 }
 
-/// A pane's span: two columns wide, two rows tall, or neither. Both buttons are always there and
-/// each is its own toggle; the two are exclusive, so setting one clears the other.
-///
-/// A single cycling button meant reaching "tall" by passing through "wide", which rearranged the
-/// whole grid on the way past for no reason the user asked for.
+/// Toggle a pane's span. Wide and tall are separate, exclusive toggles, so reaching one never passes
+/// through the other and reflows the grid.
 function setSpan(pane, kind) {
   // Any deliberate choice retires the seeded default for good.
   layout.autoSpan = true;
@@ -125,11 +110,7 @@ function setSpan(pane, kind) {
   apply();
 }
 
-/// Swap two panes' places in the order, which is what a drop on top of one means.
-///
-/// The span goes with the place, not with the pane. A drop on the wide cell means "put this one
-/// there", and a pane that arrived in the wide cell and stayed narrow, pushing the other one's width
-/// along with it, is not what the grid looked like a moment before the drop.
+/// Swap two panes' places. The span stays with the place, so the grid keeps its shape after a drop.
 function swap(a, b) {
   const i = layout.order.indexOf(a);
   const j = layout.order.indexOf(b);
@@ -146,6 +127,7 @@ function swap(a, b) {
   apply();
 }
 
+/// `auto` is a media query rather than a stored choice, so rotating a tablet adapts.
 function effectiveMode() {
   if (layout.mode !== "auto") return layout.mode;
   return window.matchMedia("(min-width: 900px)").matches ? "columns" : "tabs";
@@ -162,9 +144,8 @@ function apply() {
   fit();
   const on = shown();
   const drawn = fitting(mode);
-  // An odd count leaves a spare cell and the map is the pane that gains most from the width, so it
-  // starts wide. Seeded once as a real stored value rather than computed every time: computed, it
-  // fought the span buttons, because clearing the span just made the rule put it straight back.
+  // An odd count leaves a spare cell, so the map starts wide. Seeded once as a stored value, since a
+  // rule computed every time would put the span back right after the user cleared it.
   if (
     !layout.autoSpan &&
     mode === "grid" &&
@@ -194,12 +175,10 @@ function apply() {
   const tall = drawn.some((p) => layout.span[p] === "tall");
   main.style.setProperty("--rows", String(Math.min(2, Math.max(tall ? 2 : 1, Math.ceil(spent / 2)))));
   paneChrome(mode);
-  // Not during a swipe or the smooth scroll that follows a tab tap: jumping the strip to the active
-  // pane mid-animation is what made the slide cut off at the end.
+  // Not while a swipe or smooth scroll settles: jumping the strip mid-animation cuts the slide off.
   if (mode === "tabs" && !settling) scrollToActive(false);
   paintTabs();
-  // Which panes are on screen has just changed. A pane that only acts while it is being looked at
-  // has no other way to learn that: `register` fires on a snapshot, not on a tab tap.
+  // Panes that act only while visible need this, since `register` fires on a snapshot, not a tab tap.
   window.dispatchEvent(new Event("spai:panes"));
 }
 
@@ -225,11 +204,8 @@ const SPANS = [
   ["tall", "arrows-out-line-vertical", "Two rows tall"],
 ];
 
-/// The per-pane controls, put back after every repaint.
-///
-/// Injected rather than written by each pane's renderer: a pane draws its own contents and should
-/// not have to know it lives in a grid. `render()` replaces the pane's HTML wholesale, so this runs
-/// from `afterRender` and is written to be idempotent.
+/// Per-pane controls, injected so pane renderers need not know about the grid. `render()` replaces
+/// pane HTML wholesale, so this reruns from `afterRender` and must be idempotent.
 function paneChrome(mode) {
   const grid = mode === "grid";
   for (const name of PANES) {
@@ -256,10 +232,8 @@ function paneChrome(mode) {
   }
 }
 
-/// Drag a pane by its handle onto another pane to swap the two.
-///
-/// Pointer events rather than HTML5 drag and drop: the latter has no touch story at all, and the
-/// tab strip next to this already works this way.
+/// Drag a pane's handle onto another pane to swap them. Pointer events, since HTML5 drag and drop
+/// does not work on touch.
 function wirePanes() {
   const main = document.getElementById("panes");
   if (!main) return;
@@ -336,10 +310,8 @@ function scrollToActive(smooth) {
   main.scrollTo({ left: want, behavior: smooth ? "smooth" : "auto" });
 }
 
-/// Swipe is the browser's scroll-snap, not a touch handler.
-///
-/// Hand-rolled `touchstart`/`touchmove`/`touchend` gets momentum, over-scroll and interrupted
-/// gestures wrong, and fights iOS. The strip snaps; this only reads back which pane it landed on.
+/// Swipe is the browser's scroll-snap, since hand-rolled touch handlers get momentum and interrupted
+/// gestures wrong and fight iOS. This only reads back which pane the strip landed on.
 function watchScroll() {
   const main = document.getElementById("panes");
   if (!main) return;
@@ -457,7 +429,7 @@ function wireTabs() {
 function wireSheet() {
   const b = document.getElementById("sheet");
   if (!b) return;
-  b.textContent = "\u2261"; // three bars; the icon font may not have loaded this early
+  b.textContent = "\u2261"; // the icon font may not have loaded this early
   b.title = "Layout";
   b.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -469,8 +441,7 @@ function wireSheet() {
 }
 
 function wire() {
-  // `#pane/<name>` selects a pane on load, so a link can point at one. Also the only way a
-  // load-time screenshot can reach a pane that is not the first.
+  // `#pane/<name>` selects a pane on load, for links and load-time screenshots.
   const deep = /^#pane\/(\w+)$/.exec(location.hash);
   if (deep) {
     const i = shown().indexOf(deep[1]);
@@ -479,15 +450,13 @@ function wire() {
       save();
     }
   }
-  // `?mode=grid` picks a layout on load. A link can then point at one, and it is the only way a
-  // load-time screenshot reaches a mode that is not the stored one.
+  // `?mode=grid` picks a layout on load, for links and load-time screenshots.
   const m = new URLSearchParams(location.search).get("mode");
   if (["auto", "tabs", "columns", "grid"].includes(m)) {
     layout.mode = m;
     save();
   }
-  // `?panes=intel,jabber` picks what is showing. A link can carry a layout, and it is how a
-  // load-time screenshot reaches a pane the budget switched off.
+  // `?panes=intel,jabber` picks what is showing, for links and load-time screenshots.
   const want = new URLSearchParams(location.search).get("panes");
   if (want) {
     const on = want.split(",").filter((p) => PANES.includes(p));
@@ -497,15 +466,13 @@ function wire() {
       save();
     }
   }
-  // `#layout` opens the menu on load. Same reason the dialogs take deep links: the harness cannot
-  // click, so without this the menu is the one control no screenshot can show.
+  // `#layout` opens the menu on load, since the screenshot harness cannot click.
   if (location.hash === "#layout") document.body.classList.add("sheet");
   watchScroll();
   wireTabs();
   wirePanes();
   wireSheet();
-  // The map rebuilds its own pane when its geometry lands, outside `render`, which takes the heading
-  // and the controls in it with it. It says so; this puts them back.
+  // The map rebuilds its pane outside `render` when geometry lands, dropping the heading controls.
   window.addEventListener("spai:map", () => paneChrome(effectiveMode()));
   window.matchMedia("(min-width: 900px)").addEventListener("change", apply);
   apply();

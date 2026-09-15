@@ -1,4 +1,3 @@
 .alert { margin-bottom: 0.35rem; }
-/* An alert this device has not seen yet gets an accent edge, the same idea as the app's unread dot.
-   The card itself carries the severity and the age, so nothing is repeated above it. */
+/* An alert this device has not seen gets an accent edge, like the app's unread dot. */
 .alert.fresh { box-shadow: inset 3px 0 0 0 var(--accent); padding-left: 0.35rem; }

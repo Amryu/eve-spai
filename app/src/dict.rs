@@ -1,4 +1,6 @@
-//! domain / Unlicense), sorted (LC_ALL=C, i.e. byte order — matches `str` Ord for ASCII) and
+//! Bundled English word list (dwyl/english-words, public domain), used to drop single-word
+//! lowercase prose before it is queued to ESI as a pilot. Byte-sorted so `str` Ord can
+//! binary-search it.
 
 use std::sync::LazyLock;
 

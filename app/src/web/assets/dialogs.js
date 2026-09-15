@@ -1,6 +1,5 @@
-// Dialogs render here, in the browser, not as a window on the desktop. A tap on a phone must not
-// raise a viewport on a machine in another room, which is why a badge tap is a plain GET and never
-// an IntelClick.
+// Dialogs render in the browser. A badge tap is a plain GET, never an IntelClick, so a tap on a
+// phone cannot raise a window on a desktop in another room.
 
 import { esc, ico, modal, send, state } from "./app.js";
 import { menu } from "./route.js";
@@ -10,27 +9,18 @@ import { section as notesSection } from "./notes.js";
 
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
 
-/// One window per kind of thing, not one window reused.
-///
-/// A ship opened from an intel card was landing in the system window, on top of the map, replacing
-/// whatever system was being read. They are different things, opened from different places, and
-/// looking at a hull while looking at where it was seen is the normal case.
+/// One window per kind, so a ship opened from a card does not replace the system being read.
 const shells = new Map();
-/// How far each kind's window is offset from the map's corner, so three open at once cascade rather
-/// than hiding each other. Only used while they float.
+/// Per-kind offset from the map's corner, so floating windows cascade instead of hiding each other.
 const CASCADE = { system: 0, ship: 1, pilot: 2, route: 0 };
 const TAB_NAME = { route: "Route", system: "System", ship: "Ship", pilot: "Pilot" };
 
-/// The dock in the map pane, or null when there is no map pane to dock into.
+/// The dock in the map pane, or null when there is no visible map pane to dock into.
 ///
-/// One box with tabs rather than one box per kind: three windows docked side by side would leave the
-/// map a sliver, and they are read one at a time anyway. Floating is the fallback, for a page with
-/// the map switched off.
+/// One tabbed box rather than one per kind: three docked side by side would leave the map a sliver.
 function dock() {
   const pane = document.querySelector('#panes [data-pane="map"]');
-  // Only while the map pane is actually on screen. Docking into a hidden pane puts the window inside
-  // something with `display: none`, so a ship opened from the alerts pane rendered into nothing and
-  // looked like a dead click.
+  // Docking into a hidden pane would render the window inside `display: none`, a dead click.
   if (!pane || pane.hidden || !pane.offsetParent) return null;
   const row = pane.querySelector(".maprow");
   if (!row) return null;
@@ -51,7 +41,6 @@ function dock() {
   return d;
 }
 
-/// Which docked panes are open, in a stable order, and which one is showing.
 function paintTabs(active) {
   const d = dock();
   if (!d) return;
@@ -75,17 +64,12 @@ function showTab(kind) {
   paintTabs(kind);
 }
 
-/// A floating window, not a modal.
-///
-/// A modal takes the whole page to show one system, which is wrong for something you open while
-/// reading the map: the map is the context. This floats, can be dragged, and does not block anything
-/// behind it. Escape and its close button dismiss it; clicking the map does not, because clicking
-/// the map is how you open the next one.
+/// A draggable floating window, not a modal, so the map stays usable behind it. Clicking the map
+/// does not dismiss it, because that is how the next one is opened.
 function shell(kind) {
   const had = shells.get(kind);
   if (had) {
-    // The map pane can be switched off while a window is docked inside it. Float it again rather
-    // than leaving it in a box nobody can see.
+    // The map pane can be switched off while a window is docked inside it.
     if (had.classList.contains("dpane") && !dock()) {
       had.className = "float";
       had.style.cssText = "";
@@ -114,17 +98,14 @@ function shell(kind) {
     if (e.key === "Escape") close(kind);
   });
   dragify(dlg);
-  // A pane that changes size moves the map with it, and the window was parked against where the map
-  // used to be. Same for the map arriving after the window did.
+  // A pane resize moves the map, and the map can arrive after the window.
   const repark = () => {
-    // The map pane may not exist yet when a window is first opened, and these belong inside it. The
-    // map says when it is ready; this is what moves a window in at that point.
+    // The map pane may not exist when the window first opens. `spai:map` moves it in once it does.
     const body = dock()?.querySelector(".dbody");
     if (body && dlg.parentElement !== body) {
       dlg.className = "dpane";
       dlg.style.cssText = "";
-      // Its own close button came with it from floating, and the tab has one: two × in one corner
-      // is one too many.
+      // The tab carries its own close button.
       dlg.querySelector(".mclose")?.remove();
       body.append(dlg);
       paintTabs(kind);
@@ -142,8 +123,7 @@ function shell(kind) {
 function dragify(node) {
   let from = null;
   node.addEventListener("pointerdown", (e) => {
-    // Anything interactive keeps the pointer: a drop-down or a number field is dragged sideways to
-    // use it, and the window was following the pointer instead of the control.
+    // Controls keep the pointer, since dragging a number field or drop-down is how it is used.
     if (e.target.closest("button, a, input, select, textarea, label, option")) return;
     // Docked, the layout places it, and capturing the pointer fought the panel's own touch scroll.
     if (node.classList.contains("dpane")) return;
@@ -162,7 +142,7 @@ function dragify(node) {
     node.style.right = "auto";
     node.style.bottom = "auto";
     node.style.transform = "none";
-    // Once it has been moved by hand it stays where it was put.
+    // Moved by hand, so `place` leaves it alone.
     node.dataset.moved = "1";
   });
   const drop = () => {
@@ -183,23 +163,14 @@ function close(kind = null) {
   paintTabs(null);
 }
 
-/// Park the window at the top right of the map, below whatever controls are showing.
-///
-/// The canvas's own top is not low enough: on a narrow pane the layer panel is an overlay sitting
-/// over the top of the canvas, so a window aligned to the canvas covers the filters. This clears
-/// whichever of the toolbar and the open panel reaches furthest down, so it works whether the panel
-/// is in the flow or floating.
+/// Park the window at the top right of the map, below the toolbar and the layer panel. On a narrow
+/// pane the panel overlays the canvas, so the canvas top alone would cover the filters.
 function place(d, tries = 10) {
-  // A docked window is placed by the layout, not by us.
   if (d.classList.contains("dpane") || d.dataset.moved || d.hidden) return;
   const canvas = document.querySelector(".starmap");
   const r = canvas?.getBoundingClientRect();
-  // Nothing to measure: either the map is off screen, which is what it is in tabs mode while another
-  // pane is showing, or its canvas has not been drawn yet because the geometry is still on the way.
-  //
-  // Giving up here is what left the window sitting in the CSS corner *on top of the toolbar it is
-  // meant to clear*, permanently, since placement only ever ran once as the window opened. So it
-  // comes back and looks again for about a second, which is longer than the geometry takes.
+  // The map is off screen (tabs mode) or has no geometry yet. Retry for about a second, or the
+  // window stays in the CSS corner over the toolbar it should clear.
   if (!r || r.width < 60 || r.right < 0 || r.left > window.innerWidth) {
     if (tries > 0) setTimeout(() => place(d, tries - 1), 120);
     return;
@@ -233,7 +204,7 @@ function open(kind, html) {
     paintTabs(kind);
     return;
   }
-  // Floating, the newest goes on top of the others instead.
+  // Floating, the newest goes on top.
   for (const [k, o] of shells) o.style.zIndex = k === kind ? 52 : 50;
   place(d);
 }
@@ -245,8 +216,7 @@ function rows(pairs) {
     .join("");
 }
 
-/// The four damage types, in the app's own order and colours. Shared by the ship dialog's resist
-/// table and the rat profile, which are asking the same question from two sides.
+/// Damage types in the app's order and colours, shared by the resist table and the rat profile.
 const DMG = [
   ["EM", "#5aa9e0"],
   ["Th", "#d64545"],
@@ -257,10 +227,8 @@ const DMG = [
 const DMG_COL = (name) => (DMG.find(([t]) => name.toLowerCase().startsWith(t.toLowerCase().slice(0, 2)))
   ?? [null, "var(--fg)"])[1];
 
-/// A counter read against its own region's average, the way the app colours it.
-///
-/// Twenty kills is a quiet hour in Delve and a siege in Aridia, so the bare number says nothing. Two
-/// times the regional average is hostile, above it is a warning, and anything else is just traffic.
+/// Colour a counter against its region's average, since the same count is quiet in Delve and a
+/// siege in Aridia.
 function heat(v, avg) {
   if (avg > 0 && v >= 2 * avg) return "var(--hostile)";
   if (avg > 0 && v > avg) return "var(--warning)";
@@ -275,19 +243,14 @@ const CAMP_TEXT = {
 
 const ADM_COL = (adm) => (adm >= 5 ? "#5ac86a" : adm >= 3 ? "var(--warning)" : "var(--hostile)");
 
-/// The system dialog, carrying what the app's own system window carries.
-///
-/// Laid out as cards rather than the app's single column of labels: the page has the width for it,
-/// and rats, wormholes and the hour's traffic are three separate questions that were reading as one
-/// wall of text.
+/// The system dialog, with the app's system window content laid out as cards.
 async function showSystem(id) {
   open("system", `<h3>System</h3><p class="placeholder">Loading.</p>`);
   const r = await fetch(`/api/system/${id}`);
   if (!r.ok) return open("system", `<h3>System</h3><p class="placeholder">Not in the star map.</p>`);
   const s = await r.json();
 
-  // Live intel for the neighbour chips, from the snapshot the page already has. The app counts
-  // reports; severity is the same question answered better, and costs nothing extra here.
+  // Neighbour chips show intel severity from the snapshot, where the app shows a report count.
   const sev = new Map((state.snapshot?.map?.intel ?? []).map(([sid, v]) => [sid, v]));
   const SEV = ["info", "warning", "danger", "critical"];
 
@@ -347,8 +310,7 @@ async function showSystem(id) {
       `</ul></section>`
     : "";
 
-  // Neighbours, coloured by security and tinted when the step leaves the constellation or the
-  // region, which is the app's way of showing that a gate is a border.
+  // Tinted when the step leaves the constellation or region, marking a border gate.
   const neigh = s.neighbours.length
     ? `<section class="scard"><h4>Neighbours</h4><div class="sneigh">` +
       s.neighbours
@@ -481,8 +443,7 @@ async function showShip(id) {
   );
 }
 
-/// The uncertain-pilot prompt, carrying the app's own wording. Getting this wrong hides real pilots,
-/// which is the failure the whole "?" mechanism exists to avoid.
+/// The uncertain-pilot prompt, in the app's wording. Getting this wrong hides real pilots.
 function showVerdict(name) {
   open(
     "pilot",
@@ -521,16 +482,12 @@ async function showPilot(name) {
   );
 }
 
-/// The route window: the jump planner, for a route picked off the map.
-///
-/// It takes the system window's corner, which is what the user asked for: a route is read against
-/// the map the same way a system is, and two windows in the same place would be two windows to move.
+/// The route window, for a route picked off the map. It shares the system window's corner.
 let routeOpts = [];
 let routeAt = 0;
-/// What the window is showing, kept so the hull and skill controls can ask again without the map
-/// having to hand the anchors over a second time.
+/// Kept so the hull and skill controls can refetch without the map resending the anchors.
 let routeReq = null;
-/// The jump setup, per device. Skills default to five, which is what anyone flying a capital has.
+/// The jump setup, per device. Skills default to five, as for any capital pilot.
 const JUMP_KEY = "spai_jump";
 let jump = { hull: 0, jdc: 5, jfc: 5, tstart: true, tself: false };
 try {
@@ -539,17 +496,12 @@ try {
   // Private browsing. The setup then lasts one session.
 }
 
-/// Systems left out of the route being planned. Cleared with the route; the permanent lists live in
-/// the app's settings, where they survive a reload and reach the desktop too.
+/// Systems left out of this route only. The permanent avoid lists live in the app's settings.
 export const avoidOnce = new Set();
-/// Systems a titan is sitting in, for this route. Not a setting and not pushed from the app: which
-/// ships are where is a fact about the operation being planned, so it lives and dies with the route.
+/// Systems a titan is sitting in, for this route only, since that belongs to the operation.
 export const titansOnce = new Set();
-/// The route currently being shown, as a live binding.
-///
-/// The event below is how the map hears about a change, but an event has no replay: a route opened
-/// from a deep link is announced before the map has wired up its listener. So the map reads this
-/// once when it wires, and follows the event after that.
+/// The route currently shown, as a live binding. Events do not replay, and a deep-linked route is
+/// announced before the map listens, so the map reads this once when it wires up.
 export let currentRoute = null;
 /// Which alternative is picked for each leg.
 let legPick = [];
@@ -591,14 +543,8 @@ async function fetchRoute() {
   paintRoute(kind, onPick);
 }
 
-/// The hull and the two skills, for the routes where they change the answer.
-///
-/// Names and ranges come from the app's own `SHIP_CLASSES` rather than a second copy in here: a
-/// picker that disagrees with the planner about what a jump freighter can do is worse than no picker.
-/// The app's "route via wormholes" setting, shown and changed from here.
-///
-/// Not a per-device preference: it changes what the desktop plans as well, and a route that used a
-/// hole on the phone and not on the machine would be two different routes with one name.
+/// The app's "route via wormholes" setting. A shared setting rather than per device, so the phone
+/// and the desktop plan the same route.
 function holeControl(kind, out) {
   if (kind === "jump" || !out) return "";
   return (
@@ -611,6 +557,8 @@ function holeControl(kind, out) {
 const flagText = (long, short) =>
   `<span class="flong">${long}</span><span class="fshort" title="${long}">${short}</span>`;
 
+/// The hull and the two skills, for routes where they change the answer. Hulls come from the app's
+/// `SHIP_CLASSES`, so the picker cannot disagree with the planner.
 function jumpControls(kind, out) {
   // Which end the titan is at. On, the default, it is in the system the route starts from: one jump
   // out and gates for the rest. Off, it is waiting at the far end and bridges you the last leg.
@@ -644,8 +592,7 @@ function jumpControls(kind, out) {
 
 const KINDS = { gate: "Gate route", jump: "Jump route", titan: "Titan route" };
 
-/// Whether the avoid list is expanded. "Avoiding 3 systems" is only useful if you can see which
-/// three, and a list that is always open costs the hops their room.
+/// Whether the avoid list is expanded. Collapsed by default so it does not crowd the hops.
 let avoidOpen = false;
 
 function avoidList(out) {
@@ -674,17 +621,13 @@ function avoidList(out) {
 function paintRoute(kind, onPick) {
   const o = routeOpts[routeAt];
   onPick?.(o);
-  // Announced rather than called back, so the map can draw the route without this module importing
-  // it: dialogs already imports the pane renderers, and the map imports dialogs. It also means a
-  // route opened from a deep link is drawn, which a callback the link cannot pass was not.
+  // An event rather than a callback: the map imports dialogs, so dialogs cannot import the map, and a
+  // deep-linked route has no callback to pass.
   currentRoute = o;
   window.dispatchEvent(new CustomEvent("spai:route", { detail: o }));
   const secCol = (v) => `var(--sec-${Math.min(10, Math.max(0, Math.round(v * 10)))})`;
-  // More than one way to do it, so the window offers them rather than picking one silently. This is
-  // the titan case: several systems are the same number of gates out and only the pilot knows which
-  // staging they would rather burn.
-  // One switcher per leg: the alternatives all cost the same number of jumps, so the list reads as
-  // "these are the same price, shortest first" rather than as a ranking.
+  // One switcher per leg with equal-cost alternatives, since only the pilot knows which staging to
+  // use.
   const legs = (routeReq?.out?.legs ?? [])
     .map((l, i) =>
       l.options.length > 1 && !l.whole_route
@@ -713,21 +656,18 @@ function paintRoute(kind, onPick) {
       : "";
   const mins = (m) => (m >= 60 ? `${(m / 60).toFixed(1)}h` : `${Math.round(m)}m`);
   const SEV = ["", "", "Danger", "Critical"];
-  // Why not to fly through here. Intel below Danger is left off on purpose: a nullsec route passes
-  // through dozens of systems someone has said something about, and a warning on all of them is a
-  // warning on none.
+  // Intel below Danger is left off: a nullsec route passes dozens of systems with some report, and
+  // warning on all of them is noise.
   const warn = (w, id) => {
     if (!w) return "";
     const bits = [];
     if (w.sev >= 2) bits.push(`${SEV[w.sev]} intel ${fmtAge(Math.max(0, Date.now() / 1000 - w.at))}`);
-    // No "this hour": the figures are hourly and every one of them says so, which is three words per
-    // row saying the same thing.
+    // No "this hour" per row, since every figure is hourly.
     if (w.kills || w.pods) {
       bits.push(`${w.kills} ${w.kills === 1 ? "kill" : "kills"}${w.pods ? ` · ${w.pods} pods` : ""}`);
     }
     if (!bits.length) return "";
-    // Clickable when there is intel behind it, because "Danger intel 4m" is a summary of something
-    // someone actually wrote and the words are the part worth reading.
+    // Clickable when there is intel behind it, so the report itself can be read.
     const tag = w.sev >= 2 ? "button" : "span";
     const attr = w.sev >= 2 ? ` data-intel="${id}"` : "";
     return `<${tag} class="rwarn${w.sev >= 3 ? " crit" : ""}"${attr}>${ico("warning")} ${esc(bits.join(" · "))}</${tag}>`;
@@ -748,8 +688,7 @@ function paintRoute(kind, onPick) {
           : `<span class="rkind">gate</span>`) +
     warn(h.warn, h.id) +
     `</span>` +
-    // One button rather than one per action: a row is a system and a distance, and three buttons
-    // beside that is more chrome than content.
+    // One actions button rather than several, to keep the row compact.
     `<button class="ract" data-act="${h.id}" data-at="${i}" title="Actions">${ico("dots-three")}</button>` +
     `</li>`;
   open(
@@ -850,10 +789,8 @@ function win_wire(kind, onPick) {
   );
 }
 
-/// The intel behind a route warning, as a modal.
-///
-/// A modal rather than another floating window: it is opened from one and would otherwise land on top
-/// of the thing that named it, and it is read and dismissed rather than kept beside the map.
+/// The intel behind a route warning, as a modal, since a floating window would land on top of the
+/// route window that opened it.
 function showIntel(id) {
   document.querySelector(".intelmodal")?.remove();
   const cards = (state.snapshot?.intel?.cards ?? []).filter((c) =>
@@ -869,15 +806,13 @@ function showIntel(id) {
   );
 }
 
-/// What a row offers, which depends on the kind of route and on what the system already is.
 function hopMenu(id, at, kind) {
   const o = routeOpts[routeAt];
   const h = o?.hops?.[at];
   const titans = titansOnce;
   const items = [];
   if (h?.warn?.sev >= 2) items.push(["intel", "Show intel"]);
-  // An anchor is a choice the user made, so the row it sits on is where taking it back belongs. Not
-  // the start: a route has to begin somewhere, and an anchor list without one means nothing.
+  // Any anchor but the start can be removed from its own row.
   const anchorAt = routeReq?.anchors?.indexOf(id) ?? -1;
   if (h?.anchor && anchorAt > 0) {
     items.push([
@@ -936,10 +871,8 @@ async function hopAction(pick, id, at, kind, onPick) {
   }
 }
 
-/// The systems a capital could stop in between the two hops either side of this one.
-///
-/// Picking one inserts it as a waypoint rather than replacing anything: that is what makes it a
-/// steer rather than a different route.
+/// Systems a capital could stop in between the hops either side of this one. Picking one inserts a
+/// waypoint, steering the route without replacing it.
 async function showAlternatives(at, kind, onPick) {
   const o = routeOpts[routeAt];
   const a = o.hops[at - 1]?.id;
@@ -979,19 +912,13 @@ async function showAlternatives(at, kind, onPick) {
   });
 }
 
-/// Saving and loading a route.
-///
-/// The whole thing, not just the endpoints: a route is the anchors and what you told the planner
-/// about them, and one that came back without its avoid list or its titans would be a different
-/// route with the same name. It lives in the app's settings, so it reaches the desktop too.
+/// Save the whole route, avoids and titans included, into the app's settings so the desktop has it.
 function saveRoute(kind) {
   const a = routeReq?.anchors ?? [];
   if (a.length < 2) return;
-  // Whether this route actually flies through a hole, not whether the setting allows one. A jump
-  // route never does, and a gate route that happened to find no hole is not on a clock either.
+  // Whether this route flies through a hole, not whether the setting allows one.
   const wh = !!routeOpts[routeAt]?.uses_wormhole;
-  // The page's own dialog, not the browser's. `prompt` blocks the whole tab, looks like a phishing
-  // box on a phone, and cannot say the one thing that matters here, which is the expiry.
+  // Not `prompt`: it blocks the tab, looks like phishing on a phone, and cannot show the expiry.
   const { wrap, close } = modal(
     "altdlg",
     `<h3>Save route</h3>` +
@@ -1085,8 +1012,7 @@ async function loadRoute(onPick) {
   });
 }
 
-// One listener on the document rather than one per chip: panes re-render constantly, and rebinding
-// on every repaint is how a handler ends up attached twice or not at all.
+// One document listener rather than one per chip, since panes re-render constantly.
 document.addEventListener("click", (e) => {
   const intel = e.target.closest("[data-intel]");
   if (intel) return showIntel(Number(intel.dataset.intel));
@@ -1094,8 +1020,7 @@ document.addEventListener("click", (e) => {
   if (mark) {
     const id = Number(mark.dataset.bookmark);
     const on = mark.dataset.on === "1";
-    // Flipped here as well as sent: the app's answer arrives on the next snapshot, and a star that
-    // waits half a second to fill reads as a dead button.
+    // Flipped immediately, since the app's answer only arrives with the next snapshot.
     mark.dataset.on = on ? "0" : "1";
     mark.classList.toggle("on", on);
     mark.title = on ? "Remove bookmark" : "Bookmark this system";
@@ -1110,18 +1035,14 @@ document.addEventListener("click", (e) => {
   if (pilot) return showPilot(pilot.dataset.pilot);
 });
 
-/// Deep links: `#system/30004759`, `#ship/587`, `#pilot/Some%20Name`.
-///
-/// Worth having on its own, since a dialog is a thing you want to send someone. It is also the only
-/// way a load-time screenshot can capture one, the harness being unable to click.
+/// Deep links: `#system/30004759`, `#ship/587`, `#pilot/Some%20Name`. Also how a load-time
+/// screenshot opens a dialog, since the harness cannot click.
 function fromHash() {
-  // The hash holds one route, and a shot of a dialog *over the map* needs two: which pane, and
-  // which dialog. `?dlg=system/30004759` is the second channel.
+  // `?dlg=system/30004759` opens a dialog while the hash selects a pane.
   const src = /^#(system|ship|pilot)\//.test(location.hash)
     ? location.hash.slice(1)
     : new URLSearchParams(location.search).get("dlg") ?? "";
-  // `route/<kind>/<from>/<to>`: the route window has no hash route of its own, and this is the only
-  // way a load-time screenshot can reach it.
+  // `?dlg=route/<kind>/<from>/<to>`, for load-time screenshots of the route window.
   const r = /^route\/(\w+)\/(\d+)\/(\d+)$/.exec(src);
   if (r) return showRoute(r[1], [Number(r[2]), Number(r[3])]);
   const m = /^(system|ship|pilot)\/(.+)$/.exec(src);

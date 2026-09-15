@@ -13,8 +13,7 @@ pub struct Affil {
     pub char_name: Option<String>,
 }
 
-/// Re-resolve a character's affiliation after this many seconds — corp/alliance
-/// membership changes over time, so a session-long cache would show stale data.
+/// Corp/alliance membership changes, so a session-long cache would show stale data.
 const AFFIL_TTL: i64 = 3600;
 
 #[derive(Default)]

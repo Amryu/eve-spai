@@ -10,7 +10,6 @@ REPO="Amryu/eve-spai"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 API="https://api.github.com/repos/$REPO"
 
-# --- detect platform -------------------------------------------------------
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
@@ -54,7 +53,7 @@ echo "Installed eve-spai $tag to $PREFIX/eve-spai"
 # macOS: clear the quarantine flag so Gatekeeper doesn't block it.
 [ "$plat" = "macos" ] && xattr -dr com.apple.quarantine "$PREFIX/eve-spai" 2>/dev/null || true
 
-# Interactive prompts read from the controlling terminal so they work under `curl | sh`.
+# Prompts read from the controlling terminal so they work under `curl | sh`.
 ask() { # $1=prompt $2=default(y/n); returns 0 for yes
   [ -e /dev/tty ] || return 1
   printf '%s ' "$1" > /dev/tty
@@ -62,7 +61,7 @@ ask() { # $1=prompt $2=default(y/n); returns 0 for yes
   case "${_r:-$2}" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
 
-# Application menu entry (Linux .desktop; macOS would need an .app bundle).
+# Linux only: macOS would need an .app bundle.
 if [ "$plat" = "linux" ] && ask "Create an application menu entry? [y/N]" n; then
   apps="$HOME/.local/share/applications"
   icondir="$HOME/.local/share/icons/hicolor/256x256/apps"
@@ -82,7 +81,6 @@ DESKTOP
   echo "Created $apps/eve-spai.desktop"
 fi
 
-# PATH.
 case ":$PATH:" in
   *":$PREFIX:"*) echo "Run it with: eve-spai" ;;
   *) if ask "Add $PREFIX to your PATH (via ~/.profile)? [Y/n]" y; then

@@ -317,8 +317,8 @@ impl Wormhole {
         if matches!(self.dest, DestClass::Thera | DestClass::Turnur) {
             return format!("{}|{}", self.system_id, self.dest.code());
         }
-        // Normalise the signature to its scan id (the 3-char prefix before the dash),
-        // stripping brackets/spaces — so a seeded "ABC-123" and an intel "[ABC]" match.
+        // Normalise the signature to its scan id (the 3-char prefix before the dash) so a seeded
+        // "ABC-123" and an intel "[ABC]" match.
         let sig_id = self.signature.as_deref().map(|s| {
             s.chars()
                 .filter(|c| c.is_ascii_alphanumeric() || *c == '-')

@@ -1,5 +1,4 @@
-/* A floating window rather than a modal: it is opened while reading the map, and the map is the
-   context, so nothing behind it is blocked or dimmed. */
+/* A floating window rather than a modal, since it is opened while reading the map. */
 .float {
   position: fixed;
   top: 4rem;
@@ -8,13 +7,12 @@
   touch-action: none;
   cursor: grab;
 }
-/* `hidden` is a UA rule of the same specificity as the class, and an author rule wins, so without
-   this the window could not be closed at all. */
+/* An author `display` rule on the class beats the UA's `[hidden]` rule. */
 .float[hidden] { display: none; }
 .float:active { cursor: grabbing; }
 
 @media (max-width: 640px) {
-  /* No room to float on a phone: it sits over the bottom of the screen where a thumb reaches. */
+  /* No room to float on a phone, so it sits at the bottom where a thumb reaches. */
   .float {
     top: auto;
     left: 0.5rem;
@@ -45,7 +43,7 @@
   background: transparent;
   border: 0;
   cursor: pointer;
-  /* A close button on a phone needs a thumb-sized target, not a glyph-sized one. */
+  /* Thumb-sized on a phone. */
   min-width: 2.75rem;
   min-height: 2.75rem;
   font-size: 1.2rem;
@@ -77,7 +75,7 @@
 .mbtns .mok { border-color: var(--friendly); }
 .mbtns .mno { border-color: var(--hostile); }
 
-/* The resist table, laid out like the app's grid: HP, one bar per damage type, EHP. */
+/* The resist table, like the app's grid: HP, one bar per damage type, EHP. */
 .mresists { width: 100%; border-collapse: collapse; margin: 0.2rem 0 0.3rem; }
 .mresists th { text-align: left; font-weight: 600; padding: 0.1rem 0.3rem; }
 .mresists td { padding: 0.1rem 0.3rem; }
@@ -110,8 +108,7 @@
   cursor: pointer;
 }
 .ropt.on { color: var(--fg); border-color: var(--accent); }
-/* No height of its own: the box it is in decides, which docked is the dock and floating is the
-   viewport. An 18rem cap here made a full-height dock scroll at a third of its height. */
+/* No height of its own: the dock or the viewport decides, or a tall dock scrolls early. */
 .rhops { list-style: none; margin: 0.3rem 0 0; padding: 0; min-height: 0; overflow-y: auto; }
 .float .rhops { max-height: 50vh; }
 .rhop { display: flex; align-items: center; gap: 0.4rem; padding: 0.1rem 0; }
@@ -133,8 +130,7 @@
 .jumpcfg input { width: 3rem; }
 .jumpcfg label { color: var(--muted); font-size: 0.8rem; display: flex; align-items: center; gap: 0.2rem; }
 .jumpmax { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
-/* The info wraps inside its own box so the action button keeps the far right of the row's last line,
-   instead of wrapping onto a line of its own wherever the costs or the warning run long. */
+/* The info wraps inside its own box so the action button keeps the far right of the last line. */
 .rmain { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .rcost { flex: 1 1 auto; color: var(--muted); font-size: 0.78rem; padding-left: 0.3rem; }
 
@@ -146,8 +142,8 @@
 }
 .rwarn.crit { color: var(--hostile); }
 
-/* A phone gets the same windows in a bottom sheet, so everything in them has to earn its height:
-   one line per hop instead of three, and the panel scrolls rather than the lists inside it. */
+/* On a phone the windows are a bottom sheet: one line per hop, and the panel scrolls rather than
+   the lists inside it. */
 @media (max-width: 640px) {
   .float .mpanel { max-height: 58vh; overflow-y: auto; }
   .mpanel h3 { font-size: 0.95rem; margin-bottom: 0.35rem; }
@@ -165,7 +161,7 @@
   .rhops { max-height: none; overflow: visible; }
   .rhop { padding: 0; font-size: 0.82rem; }
   .rhop .chip { padding: 0 0.25rem; }
-  /* The costs and the warning ride on the same line as the hop, not under it. */
+  /* Costs and warning share the hop's line. */
   .rcost, .rwarn { flex: 1 1 auto; padding-left: 0; font-size: 0.7rem; }
   .jumpcfg { gap: 0.25rem; }
   .jumpcfg select { flex: 1 1 100%; }
@@ -183,8 +179,7 @@ button.rwarn {
 }
 button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .jumpcfg.tflag { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); font-size: 0.85rem; }
-/* The route checkboxes share rows instead of taking one each: three stacked cost the hop list most
-   of a bottom dock. */
+/* The route checkboxes share rows, or three stacked take most of a bottom dock. */
 .rflags { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.9rem; row-gap: 0.15rem; margin-bottom: 0.5rem; }
 .rflags:empty { display: none; }
 .rflags > .jumpcfg { margin-bottom: 0; }
@@ -198,8 +193,7 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 
 .rleg { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-bottom: 0.3rem; }
 .rleg > span { color: var(--muted); font-size: 0.8rem; margin-right: auto; }
-/* A system the user named, rather than one the route passes through. The whole row is tinted: an
-   outline on the chip alone read as a focus ring, which is a different thing entirely. */
+/* A system the user named. The whole row is tinted, since an outline on the chip reads as focus. */
 .rhop:has(.chip.anchor) {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-radius: 4px;
@@ -240,7 +234,7 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .ravoidrows em { color: var(--muted); font-size: 0.75rem; font-style: normal; }
 .ravoidrows button { font: inherit; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 0.1rem 0.25rem; }
 .ravoidrows button:hover { color: var(--hostile); }
-/* A pointer that never hovers, so the button is always there and big enough to hit. */
+/* No hover, so the button is always shown and big enough to hit. */
 @media (hover: none) {
   .ract { padding: 0.4rem 0.55rem; font-size: 1.05rem; }
 }
@@ -266,14 +260,12 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .dshut { color: var(--muted); line-height: 1; }
 .dshut:hover { color: var(--hostile); }
 .dbody { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; }
-/* Only the showing tab's pane takes part in the layout; the rest keep their content for when their
-   tab comes back. */
+/* Hidden tabs keep their content for when they come back. */
 .dpane { display: none; flex: 1 1 auto; min-height: 0; min-width: 0; }
 .dpane.on { display: flex; }
 .dpane[hidden] { display: none !important; }
 
-/* The floating panel's own width and height cap do not survive docking: the dock is the box. The
-   44rem cap in particular left the hop list scrolling with the bottom of a tall dock empty. */
+/* Docked, the dock is the box, so the floating panel's width and height caps do not apply. */
 .rdock .mpanel {
   flex: 1 1 auto;
   width: auto;
@@ -291,25 +283,22 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 }
 .rdock .rhop { min-width: 0; }
 .rdock .rhops { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-/* Whatever a pane holds, the dock is a fixed box and the content is what scrolls inside it. */
-/* The panel is the box; the hop list is what scrolls inside it. With the panel scrolling instead,
-   the list stopped at its own content height and left the bottom of the dock empty. */
+/* The panel is the box and the hop list scrolls inside it, or the list stops at its content height
+   and leaves the bottom of the dock empty. */
 .dpane .mpanel { overflow: hidden; }
-/* Only the route has an inner list to scroll. Every other docked window scrolls the panel, or a tall
-   one is cut off at the bottom of the dock. */
+/* Other docked windows have no inner list, so the panel scrolls or a tall one is cut off. */
 .dpane:not([data-kind="route"]) .mpanel { overflow-y: auto; overscroll-behavior: contain; }
 .dpane .rhops { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .rdock .mresists { font-size: 0.82rem; }
 
-/* Closing is the one control every window has, and on a phone it was a 12px glyph. */
+/* Thumb-sized window controls on touch screens. */
 @media (hover: none) {
   .mclose { padding: 0.5rem 0.6rem; font-size: 1.15rem; }
   .dtab { padding: 0.45rem 0.6rem; }
   .dshut { padding: 0.1rem 0.3rem; font-size: 1.05rem; }
 }
 
-/* A baseline width for the system badge, so a column of null-sec names lines up instead of jittering
-   with the character widths. Names longer than this still grow; most do not. */
+/* A baseline width so a column of null-sec names lines up. Longer names still grow. */
 .rhop .chip { min-width: 5.4rem; justify-content: center; }
 /* The warning shares the row, truncated, so a hop stays one line where the width allows. */
 .rwarn {
@@ -321,7 +310,6 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
   white-space: nowrap;
 }
 .rdetour { color: var(--warning); font-size: 0.82rem; margin: 0 0 0.4rem; }
-/* Docked, the hop list takes whatever height is left rather than stopping at a guess. */
 
 .altdlg .mpanel { min-width: min(20rem, 90vw); }
 .altdlg .ravoidrows { max-height: 16rem; }
@@ -347,9 +335,7 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .altdlg .ravoidrows li button[data-load] { display: flex; flex-direction: column; align-items: flex-start; }
 .altdlg .ravoidrows em { font-style: normal; color: var(--muted); font-size: 0.75rem; }
 
-/* The system dialog. The app stacks everything in one column of labels because an egui window is
-   narrow; the page has the room to separate the three questions being asked (who holds it, how busy
-   it is, what lives there) into cards. */
+/* The system dialog, split into cards: who holds it, how busy it is, what lives there. */
 .shead { align-items: center; gap: 0.5rem; }
 .ssec {
   flex: 0 0 auto;
@@ -429,7 +415,6 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
   min-width: 0;
 }
 
-/* Four counters read at a glance, which is what they are for. */
 .sstats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.4rem; }
 .sstat { display: flex; flex-direction: column; align-items: center; text-align: center; }
 .sstat b { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
@@ -446,7 +431,7 @@ button.rwarn:hover { text-decoration: underline; filter: brightness(1.25); }
 .supg li { color: var(--corp); }
 
 .sneigh { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-/* A gate that leaves the constellation, or the region, is a border and the app tints it as one. */
+/* A gate leaving the constellation or region is tinted as a border, as in the app. */
 .chip.nb { position: relative; font-variant-numeric: tabular-nums; }
 .chip.nb.xconst { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .chip.nb.xregion { background: color-mix(in srgb, var(--accent) 22%, transparent); }

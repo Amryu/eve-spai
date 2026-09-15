@@ -1,12 +1,10 @@
 .maprow { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
-/* A wide pane gives the dock the right-hand edge; a tall one gives it the bottom. Either way it
-   takes space from the map instead of covering it, which is the difference between docking and
-   floating. */
+/* A wide pane docks on the right, a tall one at the bottom, taking space from the map rather than
+   covering it. */
 .pane.dockright .maprow { flex-direction: row; }
 .mapwrap { display: flex; min-height: 8rem; flex: 1 1 auto; min-width: 0; }
 
 .starmap {
-  /* Fills whatever the pane gives it rather than a guessed height. */
   flex: 1 1 auto;
   width: 100%;
   height: 100%;
@@ -15,11 +13,10 @@
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 4px;
-  /* The canvas owns the gesture: without this a drag scrolls the page instead of panning. */
+  /* Otherwise a drag scrolls the page instead of panning. */
   touch-action: none;
-  /* Only the starting value. The pointer handler sets `cursor` inline as it moves, because a
-     stylesheet rule here always wins over nothing and left a hovered system looking exactly like
-     empty space. */
+  /* Only the starting value. The pointer handler sets `cursor` inline, since a stylesheet rule
+     cannot tell a hovered system from empty space. */
   cursor: grab;
 }
 
@@ -39,7 +36,7 @@
   padding: 0.15rem 0.5rem;
   cursor: pointer;
 }
-/* A layer that is on reads as pressed, the same language the pane toggles use. */
+/* A layer that is on reads as pressed, like the pane toggles. */
 .maptools .ml { opacity: 0.5; }
 .maptools .ml.on { opacity: 1; border-color: var(--accent); }
 .maphint { color: var(--muted); font-size: 0.9em; margin-left: auto; }
@@ -49,7 +46,7 @@
   .maphint { width: 100%; margin-left: 0; }
 }
 
-/* Layer groups: a word per category in the toolbar, each with its popup anchored under it. */
+/* Layer groups: one word per category, each with a popup under it. */
 .maptools { position: relative; }
 .mlgroup { position: relative; display: inline-flex; }
 .mlhead {
@@ -62,13 +59,11 @@
   cursor: pointer;
 }
 .mlhead:hover { color: var(--fg); }
-/* On: something in this group is drawing. Open: its popup is showing. Two different facts, so two
-   different marks. */
+/* On: something in the group draws. Open: its popup shows. Separate marks for separate states. */
 .mlhead.on { color: var(--fg); border-color: var(--accent); }
 .mlhead.open { background: var(--surface-active); color: var(--fg); }
 
-/* Fixed and placed by hand, because the pane scrolls and a scrolling box clips what hangs out of
-   it: anchored inside the pane, half the popup was cut off at the edge. */
+/* Fixed and placed by hand, because the scrolling pane would clip it. */
 .mlpop {
   position: fixed;
   z-index: 30;
@@ -91,8 +86,7 @@
 .mlgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.3rem; }
 
 @media (max-width: 640px) {
-  /* No room to hang a popup off a button on a phone, so it comes up from the bottom where a thumb
-     already is. */
+  /* On a phone the popup comes up from the bottom. */
   .mlpop {
     position: fixed;
     top: auto;
@@ -106,7 +100,7 @@
   .mlpop button { min-height: 2.6rem; }
 }
 
-/* The readout beside the system a route drag is aimed at. */
+/* Readout beside the route drag's target system. */
 #linktip {
   position: fixed;
   z-index: 55;
@@ -125,7 +119,6 @@
 #linktip b { color: var(--fg); font-size: 0.95rem; }
 #linktip[hidden] { display: none; }
 
-/* The radial menu at the end of a route drag. */
 .radial { position: fixed; z-index: 58; width: 0; height: 0; }
 .rbtn {
   position: absolute;
@@ -148,7 +141,6 @@
 .rbtn:hover { border-color: var(--accent); background: var(--surface-hi); }
 .rbtn.cancel .ph { color: var(--muted); }
 
-/* The map's context menu. */
 .ctxmenu {
   position: fixed;
   z-index: 58;
@@ -178,9 +170,8 @@
   .ctxmenu button { padding: 0.55rem 0.6rem; }
 }
 
-/* The route window, docked. */
-/* A fixed share of the pane, not content-sized: the dock holds tabs, and a box that resizes when
-   you switch between them moves the map every time you look at something else. */
+/* The docked route window. A fixed share, since a content-sized dock would move the map on every
+   tab switch. */
 .rdock {
   flex: 0 0 45%;
   display: flex;

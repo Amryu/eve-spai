@@ -1,5 +1,6 @@
-//! This is its OWN cargo workspace (see `Cargo.toml`'s empty `[workspace]` table) so
-//! the desktop app's cross-platform CI never tries to compile the tokio/axum/sqlx
+//! Battle-report sharing API server (Linux-only). It is its own cargo workspace (the empty
+//! `[workspace]` table in `Cargo.toml`) so the desktop app's cross-platform CI never compiles
+//! the tokio/axum/sqlx stack.
 
 pub mod auth;
 pub mod config;

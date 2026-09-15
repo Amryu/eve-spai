@@ -1,14 +1,9 @@
 //! The unread count on the desktop's own taskbar entry.
 //!
-//! [`crate::app::SpaiApp::sync_taskbar_badge`] already draws the number onto the window icon, which
-//! is the whole story on Windows and on desktops that take a window's icon at face value. Plasma
-//! does not: it matches a window to a `.desktop` file and then uses *that* file's `Icon=`, so the
-//! badged icon is composed, handed over, and ignored. The number never appeared.
-//!
-//! The mechanism those desktops do implement is the Unity LauncherEntry API — a plain session-bus
-//! broadcast naming a desktop file and a count. Plasma's task manager has honoured it since 5.7, as
-//! do Dash-to-Dock and Latte. It is a signal with no reply and no registered service: if nothing is
-//! listening it costs one message and changes nothing.
+//! [`crate::app::SpaiApp::sync_taskbar_badge`] draws the number onto the window icon, which is
+//! enough on Windows. Plasma matches a window to its `.desktop` file and uses that file's `Icon=`,
+//! ignoring the badged icon. Plasma, Dash-to-Dock and Latte do honour the Unity LauncherEntry API,
+//! a session-bus signal naming a desktop file and a count. With no listener it costs one message.
 
 #[cfg(target_os = "linux")]
 mod imp {

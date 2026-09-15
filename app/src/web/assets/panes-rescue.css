@@ -13,6 +13,6 @@
 .rsbig { font-size: 1.05rem; font-weight: 600; }
 .rsub { color: var(--muted); font-size: 0.82rem; }
 .rsping { align-items: center; }
-/* The one the FC is working, which is the only one anyone else needs to find at a glance. */
+/* The ping the FC is working. */
 .rsping.on { outline: 1px solid var(--accent); }
 .rswho { color: var(--muted); }

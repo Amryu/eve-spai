@@ -1,5 +1,4 @@
-/* Notes and tags. A tag is its own colour on a tint of itself, so one reads the same on a card, in a
-   dialog and on the map marker. */
+/* A tag is its own colour on a tint of itself, so it reads the same on a card, dialog and map. */
 .ntag {
   display: inline-flex;
   align-items: center;
@@ -17,7 +16,6 @@
 .ntags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.4rem; }
 .nempty { color: var(--muted); margin: 0; list-style: none; }
 
-/* The dialog card. */
 .snotes h4 { display: flex; align-items: center; gap: 0.35rem; }
 .nedit {
   margin-left: auto;
@@ -36,7 +34,6 @@
 .npath { color: var(--muted); }
 .npart.ro { border-left: 2px solid var(--line); padding-left: 0.5rem; }
 
-/* The editor and the small prompts. */
 .noteeditor .mpanel,
 .nask .mpanel { width: min(32rem, calc(100vw - 2rem)); }
 .nfield { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.4rem; color: var(--muted); }
@@ -96,7 +93,7 @@
 .nask p { overflow-wrap: anywhere; }
 .npick button { display: flex; align-items: center; gap: 0.35rem; padding-left: calc(var(--d, 0) * 1rem); }
 
-/* The quick menu can list every tag there is, so it scrolls rather than running off the screen. */
+/* The quick menu can list every tag, so it scrolls. */
 .ctxmenu { max-height: calc(100vh - 8px); overflow-y: auto; }
 .ctxmenu .nhead { color: var(--muted); }
 .ctxmenu .ndot {
@@ -110,7 +107,7 @@
 }
 .ctxmenu .nelse { font-style: normal; color: var(--muted); }
 
-/* The manager: the folder tree beside what the chosen folder holds, stacked on a phone. */
+/* The manager: folder tree beside folder contents, stacked on a phone. */
 .notesdlg .nmgr { width: min(58rem, calc(100vw - 2rem)); max-height: min(88vh, 52rem); }
 .ntabs { display: flex; gap: 0.3rem; margin: 0 0 0.6rem; }
 .ntabs button {

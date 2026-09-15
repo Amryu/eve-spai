@@ -1,8 +1,6 @@
 //! What a dialog needs, built on request.
 //!
-//! The dialogs render in the browser rather than opening a window on the desktop, which is what the
-//! user asked for: a tap on a phone must not raise a viewport on a machine in another room. So these
-//! are plain reads, not `IntelClick`, which exists precisely to open a viewport.
+//! Plain reads rather than `IntelClick`, because a tap on a phone must not open a desktop viewport.
 
 use serde::Serialize;
 
@@ -16,7 +14,6 @@ pub struct SystemInfo {
     pub faction: String,
     pub jove: bool,
     pub wormhole: bool,
-    /// Gate neighbours, named, so the dialog can offer somewhere to go next.
     pub gates: Vec<(i64, String)>,
     pub sov: Option<String>,
     pub adm: Option<f64>,
@@ -25,27 +22,24 @@ pub struct SystemInfo {
     pub pod_kills: u32,
     pub npc_kills: u32,
     pub jumps_from_you: Option<u32>,
-    /// (from, light-years), the same lines the app's system tooltip shows.
+    /// (from, light-years), as in the app's system tooltip.
     pub ly_from_staging: Option<(String, f64)>,
     pub ly_from_you: Option<(String, f64)>,
-    /// Gate traffic in the last hour, and the region's own average for each of the four counters.
-    /// The app colours a counter against its region rather than against an absolute number, because
-    /// twenty kills is a quiet hour in Delve and a siege in Aridia; without the average the page
-    /// would just be showing four numbers that mean nothing.
+    /// Last-hour counters with their region averages. The app colours a counter against its region,
+    /// since twenty kills is a quiet hour in Delve and a siege in Aridia.
     pub jumps: u32,
     pub avg_jumps: f64,
     pub avg_ship_kills: f64,
     pub avg_npc_kills: f64,
     pub bookmarked: bool,
     pub fw: Option<String>,
-    /// Alliance holding sov, so the page can show the same logo the app does.
+    /// Alliance holding sov, for its logo.
     pub sov_alliance: Option<i64>,
     pub camp: Option<CampInfo>,
     pub rats: Option<RatInfo>,
     pub holes: Vec<HoleInfo>,
     pub upgrades: Vec<String>,
-    /// Gate neighbours with what the app's neighbour buttons carry: security for the colour, and
-    /// whether the step leaves the constellation or the region.
+    /// Every graph neighbour, as the app's neighbour buttons show them.
     pub neighbours: Vec<Neighbour>,
 }
 
@@ -101,8 +95,7 @@ pub fn system(id: i64, d: &super::DetailState) -> Option<SystemInfo> {
         .collect();
     gates.sort_by(|a, b| a.1.cmp(&b.1));
 
-    // Every neighbour, not just the gate ones: the app's neighbour row includes whatever the graph
-    // joins, which is how a scanned hole shows up as somewhere you can go.
+    // All graph neighbours, not only gates, so a scanned hole shows up as a destination.
     let mut neighbours: Vec<Neighbour> = graph
         .neighbors(id)
         .iter()
@@ -119,8 +112,7 @@ pub fn system(id: i64, d: &super::DetailState) -> Option<SystemInfo> {
         .collect();
     neighbours.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // The region's average for each counter, which is the only thing that makes the raw numbers
-    // readable. Averaged over every system in the region, the same way the app does it.
+    // Averaged over every system in the region, as the app does.
     let region_ids: Vec<i64> = d
         .store
         .as_ref()
@@ -201,7 +193,7 @@ pub fn system(id: i64, d: &super::DetailState) -> Option<SystemInfo> {
         ship_kills: status.map_or(0, |s| s.ship_kills),
         pod_kills: status.map_or(0, |s| s.pod_kills),
         npc_kills: status.map_or(0, |s| s.npc_kills),
-        // Same walk `jumps_from_you` does, against the borrow this function already holds.
+        // Same walk as `jumps_from_you`, using the borrow already held.
         jumps_from_you: d.player_sys.and_then(|from| {
             if d.count_bridges {
                 graph.jumps(id, from, crate::app::JUMP_SCAN_CAP)
@@ -245,8 +237,7 @@ pub struct ShipInfo {
     pub shield_resist: [u32; 4],
     pub armor_resist: [u32; 4],
     pub hull_resist: [u32; 4],
-    /// Effective HP per layer, with the app's own average-resist formula, so the two windows cannot
-    /// disagree about a number the user reads off both.
+    /// Effective HP per layer, with the app's own average-resist formula.
     pub shield_ehp: f64,
     pub armor_ehp: f64,
     pub hull_ehp: f64,
@@ -269,8 +260,7 @@ pub struct ShipInfo {
 pub struct TraitGroup {
     /// The skill's name, or "Role Bonuses" for the ones that need no skill.
     pub skill: String,
-    /// The bonus figure and its text. Zero means the line carries no number of its own, which is
-    /// most role bonuses.
+    /// The bonus figure and its text. Zero means the line has no number, as with most role bonuses.
     pub lines: Vec<(f64, String)>,
 }
 
@@ -281,8 +271,7 @@ pub fn ship(
 ) -> Option<ShipInfo> {
     let d = store.ship_details(id)?;
     let traits = store.ship_traits(id);
-    // Grouped by skill in the order the SDE lists them, which is the order the app shows them in.
-    // Role bonuses last, under their own heading, because they apply whatever you have trained.
+    // SDE order, as the app shows them. Role bonuses last, since they need no skill.
     let mut skills: Vec<i64> = Vec::new();
     for (s, _, _) in &traits {
         if *s > 0 && !skills.contains(s) {
@@ -330,9 +319,8 @@ pub fn ship(
         low_slots: d.low_slots,
         max_velocity: d.max_velocity,
         warp_speed: d.warp_speed,
-        // The glyph itself, not a name: the page is already serving the same Phosphor font the app
-        // draws with, and a second mapping from the app's constants to icon names is a second thing
-        // to keep in step.
+        // The glyph itself, since the page serves the same Phosphor font and a name mapping would
+        // be one more thing to keep in step.
         roles: crate::app::derive_roles(&traits)
             .into_iter()
             .map(|(g, l)| (g.to_owned(), l.to_owned()))
@@ -341,7 +329,7 @@ pub fn ship(
     })
 }
 
-/// Skill ids a ship's traits name, so the caller can resolve them before building the dialog.
+/// So the caller can resolve skill names before building the dialog.
 pub fn ship_skill_ids(id: i64, store: &crate::store::Store) -> Vec<i64> {
     let mut s: Vec<i64> = store.ship_traits(id).into_iter().map(|t| t.0).filter(|&s| s > 0).collect();
     s.sort_unstable();

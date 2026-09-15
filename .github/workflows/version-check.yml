@@ -1,9 +1,7 @@
 name: Version check
 
-# Guard the version invariant on main: the committed Cargo.toml version must never be BEHIND the
-# latest published release tag. A stale Cargo.toml is what makes local/dev builds report an old
-# version and flag themselves "a version behind" against the release. After tagging vX.Y.Z, bump
-# Cargo.toml to the next dev version (see CLAUDE.md). Runs only on main.
+# Cargo.toml on main must not be behind the latest release tag, or local builds report an old version
+# and flag themselves as behind. After tagging vX.Y.Z, bump to the next dev version (see CLAUDE.md).
 on:
   push:
     branches: [main]

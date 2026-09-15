@@ -353,9 +353,7 @@ impl SpaiApp {
         self.travel_ingame_dest = next;
     }
 
-    /// Set the travel route's start. Only the start: the destination is typed into the panel, and
-    /// UI-053 removed the map entry that was the only other way in, so the two-variant enum this used
-    /// to take had one variant nobody could reach.
+    /// Set the travel route's start. The destination is typed into the panel.
     pub(crate) fn travel_set_start(&mut self, id: i64) {
         let name = self
             .systems

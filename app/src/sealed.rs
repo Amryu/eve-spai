@@ -1,9 +1,8 @@
 //! A fallback for the refresh token when the OS keychain cannot be used.
 //!
-//! The keychain stays the primary store and is always tried first. This exists because a machine
-//! with no Secret Service provider — no GNOME Keyring, no KWallet, no KeePassXC, which is an
-//! ordinary state for a minimal Linux desktop — made the app unusable for everything ESI: the login
-//! refused to complete rather than write the token somewhere less safe.
+//! The keychain stays the primary store and is always tried first. A machine with no Secret Service
+//! provider (no GNOME Keyring, KWallet or KeePassXC, ordinary on a minimal Linux desktop) would
+//! otherwise have nowhere to keep the token, and every ESI feature would be unusable.
 //!
 //! # What this protects, and what it does not
 //!
@@ -12,10 +11,8 @@
 //! a synced folder or a disk image, it will not open.
 //!
 //! It does **not** protect against code running as that user. Any key the app can derive unattended,
-//! a program running as the same account can derive too. That is not a flaw in this design, it is
-//! the ceiling for any unattended secret, and an unlocked OS keychain sits at exactly the same
-//! ceiling. What it buys over plaintext is real and bounded: the token does not leak by being
-//! copied somewhere.
+//! a program running as the same account can derive too, and an unlocked OS keychain has the same
+//! ceiling. What it buys over plaintext is that the token does not leak by being copied somewhere.
 //!
 //! Not plaintext, and never a fallback the user did not need: writing here is only ever reached
 //! after the keychain has actually failed, and [`promote`] moves the token back the moment a
@@ -297,8 +294,7 @@ pub fn delete(character_id: i64) -> Result<()> {
 /// keychain" is something they are entitled to know without reading a log.
 ///
 /// Cached, because the settings view asks once per frame and the answer changes only when this
-/// module writes. Without it that is a failed `read` syscall every frame, forever, on the
-/// overwhelmingly common machine that has a working keychain and no vault at all.
+/// module writes.
 static IN_USE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static IN_USE_KNOWN: std::sync::Once = std::sync::Once::new();
 
@@ -372,9 +368,7 @@ mod tests {
         );
     }
 
-    /// Copied to another account, the file is worthless. This is what "tied to the user's account"
-    /// has to mean to be worth anything, and it is the property that is easy to claim and easy to
-    /// get wrong.
+    /// Copied to another account, the file is worthless.
     #[test]
     fn a_vault_from_another_account_does_not_open() {
         scratch("binding");

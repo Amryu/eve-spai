@@ -1,12 +1,10 @@
-/* Every colour here is a custom property from /api/theme.css, which the app generates from its own
-   palette. Nothing in this file names a colour, so the page follows a theme change without an edit. */
+/* Colours come only from /api/theme.css custom properties, generated from the app's palette. */
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body {
   margin: 0;
   height: 100%;
-  /* The page itself never scrolls. Panes scroll inside themselves, so switching to grid cannot turn
-     four independently long lists into one very long document. */
+  /* Panes scroll inside themselves, so grid mode cannot become one long document. */
   overflow: hidden;
   background: var(--bg);
   color: var(--fg);
@@ -35,10 +33,8 @@ body {
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
-  /* Above every pane, because the header's own z-index is a stacking context: the layout menu
-     inside it is z-index 30, but that 30 is measured against its siblings in here, and the map's
-     layer panel at 20 sits in the root context. At 10 the header lost, and the map's filter buttons
-     came out in front of the menu. */
+  /* The header is a stacking context, so the layout menu's z-index 30 only counts inside it. This
+     must beat the map's layer panel at 20 in the root context. */
   z-index: 40;
 }
 
@@ -48,13 +44,11 @@ body {
   font-weight: 700;
   font-size: 1rem;
   letter-spacing: 0.06em;
-  /* Two words in a flex row wrap to two lines the moment the tabs need the space, which at phone
-     width is always. */
+  /* Two words in a flex row wrap as soon as the tabs need the space. */
   white-space: nowrap;
 }
 
-/* Tabs take the slack, so everything after them sits at the far right: sound, status, and the menu
-   button last, where a menu button belongs. */
+/* Tabs take the slack, pushing sound, status and the menu button to the far right. */
 #tabs { margin-right: auto; }
 #menu { position: relative; display: inline-flex; }
 .status { color: var(--muted); font-size: 0.9rem; }
@@ -77,8 +71,7 @@ body {
   padding: 0.25rem 0.6rem;
   cursor: pointer;
 }
-/* A pane switched off leaves the bar entirely. It comes back from the layout menu, which is where
-   turning it off happened; leaving a dead chip in the bar was just clutter. */
+/* A pane switched off leaves the bar. It comes back from the layout menu. */
 .tab.off { display: none; }
 .tab[aria-selected="true"] { background: var(--surface-active); border-color: var(--accent); }
 .tab b { color: var(--accent); font-weight: 600; }
@@ -94,7 +87,7 @@ body {
   background: var(--surface-hi);
   border: 1px solid var(--line);
   border-radius: 4px;
-  /* A thumb-sized target: this is the control people reach for first on a phone. */
+  /* Thumb-sized: the control people reach for first on a phone. */
   min-height: 2rem;
   padding: 0 0.6rem;
   cursor: pointer;
@@ -104,8 +97,7 @@ body {
 
 .status { margin-left: 0.25rem; }
 
-/* The layout menu's button. Present at every width: turning a pane off has to be reachable on a
-   desktop too, and a dropdown is a better home for six controls than six more chips in the bar. */
+/* The layout menu's button, at every width, since switching panes off must work on a desktop too. */
 #sheet {
   display: inline-flex;
   align-items: center;
@@ -122,12 +114,10 @@ body {
 }
 
 /* ---- phone controls ----
-   The data display reads fine narrow; the controls are what get cramped. Below this width the bar
-   becomes two rows, every control becomes a real touch target, and the tabs scroll sideways rather
-   than wrapping the bar into three rows and eating the feed.
+   Below this width the bar becomes two rows and every control a real touch target.
 
-   The mode switcher lives in layout.css with the rest of `.modebar`: that file loads after this one,
-   so a rule here of the same specificity would silently lose. */
+   The mode switcher lives in layout.css, which loads after this file, so a rule here of the same
+   specificity would silently lose. */
 @media (max-width: 640px) {
   #bar {
     gap: 0.4rem;
@@ -141,11 +131,9 @@ body {
   .brand { grid-area: brand; }
   #menu { grid-area: menu; }
   .soundbar { grid-area: sound; margin-left: auto; }
-  /* The status word costs a whole column on a phone; the tab counts and the feed already say
-     whether anything is arriving. */
+  /* The status word costs a whole column on a phone, and the tab counts already show activity. */
   .status { display: none; }
-  /* One row, the full width, split evenly. A scrolling strip of differently sized buttons put the
-     last pane off the edge of the screen, where nothing says it is there. */
+  /* One row split evenly, so no tab hides off the edge of the screen. */
   #tabs { grid-area: tabs; margin-right: 0; flex-wrap: nowrap; overflow-x: hidden; }
 
   /* 44px is the smallest target a thumb hits reliably. */
@@ -162,8 +150,7 @@ body {
   .soundbar .armbtn, .soundbar .mutebtn { min-height: 2.4rem; }
 }
 
-/* The arm button says what it wants in a sentence on a desktop and in a glyph on a phone, where the
-   bar has four things to fit and no room for a sentence. */
+/* The arm button is a sentence on a desktop and a glyph on a phone, where the bar has no room. */
 .armshort { display: none; }
 @media (max-width: 640px) {
   .armfull { display: none; }

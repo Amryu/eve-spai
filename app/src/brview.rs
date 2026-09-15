@@ -219,7 +219,6 @@ pub fn sorted_detail(
         }
         rows_out.push(rows);
 
-        // Condensed: aggregate by hull then sort.
         let mut order: Vec<i64> = Vec::new();
         let mut agg: HashMap<i64, (u32, u32, f64, f64)> = HashMap::new();
         for p in roster.iter() {
@@ -323,15 +322,13 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
     let Some(systems) = deps.systems.clone() else { return out };
     let player = (inp.player_sys != 0).then_some(inp.player_sys);
     let source = if inp.show_history { &deps.history } else { &deps.battles };
-    // Snapshot under a short lock, then do the heavy filtering + jump-distance work lock-free.
-    // Holding `source` across the whole cards loop stalls the UI thread, which locks the same
-    // battles list every frame in `ui_signature` (felt as a freeze when opening a battle).
+    // Snapshot under a short lock: the UI thread locks the same battles list every frame in
+    // `ui_signature`, so holding it across the cards loop freezes the UI.
     let battles: Vec<Battle> = source.lock().unwrap().clone();
 
     let intel_sys = intel_systems(&deps.intel);
     let query = inp.query.trim().to_lowercase();
 
-    // Cards.
     {
         let type_names = deps.type_names.lock().unwrap();
         let rules = deps.filter.lock().unwrap();
@@ -370,7 +367,6 @@ fn compute(deps: &Deps, inp: &BrInputs, sig: u64) -> BrOutputs {
             .collect();
     }
 
-    // Detail for the selected battle.
     if let Some(kid) = inp.selected_kid {
         let b = battles
             .iter()

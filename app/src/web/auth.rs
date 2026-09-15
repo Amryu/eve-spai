@@ -2,20 +2,18 @@
 
 use base64::Engine;
 
-/// Bytes of entropy behind a pairing token. The socket can be on the LAN, so the token is the thing
-/// standing between a stranger on the same wifi and a live intel feed.
+/// Bytes of entropy behind a pairing token. The socket can be on the LAN.
 const TOKEN_BYTES: usize = 32;
 
-/// A fresh pairing token, or `None` if the OS rng failed. A caller that gets `None` must leave the
-/// server disabled rather than fall back to anything weaker.
+/// `None` if the OS rng failed. The caller must then leave the server disabled rather than fall back
+/// to anything weaker.
 pub fn new_token() -> Option<String> {
     let mut buf = [0u8; TOKEN_BYTES];
     getrandom::getrandom(&mut buf).ok()?;
     Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf))
 }
 
-/// Constant-time comparison. A token check that short-circuits on the first wrong byte leaks the
-/// prefix to anyone who can time it, and this one answers requests from the network.
+/// Constant-time, because a short-circuiting compare leaks the prefix to a network timing attack.
 pub fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
@@ -49,8 +47,7 @@ mod tests {
         assert!(!ct_eq(&format!("{t}x"), t), "an extension must not pass");
     }
 
-    /// One bit wrong at any position must fail. A `starts_with` or a truncating compare passes the
-    /// equality test above and fails this one.
+    /// A `starts_with` or truncating compare passes the equality test above and fails this one.
     #[test]
     fn ct_eq_rejects_a_single_flipped_bit_anywhere() {
         let base = new_token().expect("rng");
@@ -63,13 +60,8 @@ mod tests {
     }
 }
 
-/// The pairing link as a QR, rasterised for egui.
-///
-/// Typing 43 characters of mixed-case base64 into a phone is where people give up, so this is the
-/// difference between the feature being usable and being technically available.
-///
-/// `scale` is pixels per module. Cameras need a few: at 1 the code is the size of a postage stamp on
-/// a modern display and nothing can read it.
+/// The pairing link as a QR, rasterised for egui. `scale` is pixels per module; at 1 a camera cannot
+/// read it on a modern display.
 pub fn qr_image(url: &str, scale: usize) -> Option<egui::ColorImage> {
     let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
     let modules = code.to_colors();
@@ -77,8 +69,7 @@ pub fn qr_image(url: &str, scale: usize) -> Option<egui::ColorImage> {
     if side == 0 || side * side != modules.len() {
         return None;
     }
-    // A quiet zone is part of the spec, not decoration: without it a reader cannot find the code
-    // against whatever is behind it.
+    // The spec requires a quiet zone, or a reader cannot find the code against its background.
     const QUIET: usize = 4;
     let px = (side + QUIET * 2) * scale;
     let mut pixels = vec![egui::Color32::WHITE; px * px];
@@ -107,7 +98,6 @@ mod qr_tests {
         assert_eq!(img.size[0], img.size[1], "a QR is square");
         assert!(img.size[0] > 100, "too small to scan: {}px", img.size[0]);
 
-        // Light border all the way round: the quiet zone is what a reader finds the code against.
         let w = img.size[0];
         for i in 0..w {
             assert_eq!(img.pixels[i], egui::Color32::WHITE, "top row {i} is not quiet");

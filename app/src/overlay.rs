@@ -9,19 +9,16 @@ pub fn run_overlay() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("EVE Spai overlay")
         .with_inner_size([1.0, 1.0])
-        // Keep the 1×1 root off the taskbar. It must stay mapped (a hidden window never paints, so
-        // its deferred ping/alert child viewports would never run), so we can't hide it — 1×1 +
-        // taskbar-off keeps it out of sight. NOTE: on macOS hiding the Dock tile would need an
-        // `LSUIElement`/`NSApplicationActivationPolicyAccessory` bundle flag — out of scope here.
+        // The 1×1 root must stay mapped, since a hidden window never paints and its deferred
+        // ping/alert child viewports would never run, so it is kept off the taskbar instead.
         .with_taskbar(false)
         .with_decorations(false)
         .with_transparent(true)
         .with_visible(true);
-    // On X11 make the 1×1 context-host root OVERRIDE-REDIRECT: winit has no skip-taskbar on X11, and a
-    // Utility type still leaves it in KWin's task switcher as a stray empty entry. Override-redirect
-    // takes it out of the WM entirely (no taskbar / switcher / stack). The root has no content and
-    // never needs focus, and the alert/ping/dscan child viewports are separate managed windows, so
-    // this only hides the host. (Utility kept as a fallback hint.)
+    // On X11 make the 1×1 context-host root override-redirect: winit has no skip-taskbar on X11, and
+    // a Utility type still leaves a stray entry in KWin's task switcher. The root has no content and
+    // never needs focus, and the child viewports are separate managed windows, so this only hides
+    // the host. Utility stays as a fallback hint.
     #[cfg(target_os = "linux")]
     {
         viewport = viewport
@@ -55,7 +52,7 @@ struct Overlay {
 impl Overlay {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // The overlay renders the same cards as the main, so its egui context needs the same
-        // setup — otherwise icons render as tofu squares and ship images as red error triangles.
+        // setup, otherwise icons render as tofu squares and ship images as red error triangles.
         crate::theme::install_fonts(&cc.egui_ctx);
         crate::image_cache::install_image_loaders_cached(&cc.egui_ctx);
         let theme = crate::store::Store::open()
@@ -154,11 +151,9 @@ impl Overlay {
                     Ok(crate::ipc::MainToOverlay::Ping(m)) => {
                         {
                             let mut st = ping_shared.lock().unwrap();
-                            // Preserve `shown_at` for pings we're already showing — only genuinely
-                            // new pings start their "blink"/freshness clock. Otherwise a plain resend
-                            // (e.g. the main re-sending because an unrelated alert-window setting
-                            // changed) would reset every ping to "just now" and the window would
-                            // blink hours-old pings and re-raise.
+                            // Preserve `shown_at` for pings already showing, so a plain resend (e.g.
+                            // after an unrelated alert-window setting changed) does not reset
+                            // hours-old pings to "just now" and re-raise the window.
                             let now = std::time::Instant::now();
                             let prev = std::mem::take(&mut st.windows);
                             st.windows = m
@@ -407,10 +402,9 @@ impl eframe::App for Overlay {
         let (alert_pos, alert_size) = {
             let mut st = self.alert_shared.lock().unwrap();
             st.on_top_level = alert_on_top;
-            // Windows: the alert viewport starts HIDDEN, and a hidden deferred viewport's own render
-            // closure can't run to un-hide itself. Drive its visibility from the ROOT (which always
-            // repaints) so it shows on an alert and hides when idle. Send only on change (each
-            // command pins egui at vsync); `applied_visible` is the shared tracker the closure uses.
+            // Windows: the alert viewport starts hidden, and a hidden deferred viewport's render
+            // closure cannot run to un-hide itself, so the always-repainting root drives it. Send
+            // only on change, since each command pins egui at vsync.
             #[cfg(target_os = "windows")]
             {
                 let active = st.enabled && (st.secs > 0.0 || st.pinned);

@@ -3,15 +3,13 @@
 //! # Why this writes its own chunks
 //!
 //! `tiny_http::Response::raw_print` sends an unknown-length body through
-//! `chunked_transfer::Encoder::new(writer)`, which buffers 8192 bytes with `flush_after_write: false`
-//! and only sends when that buffer overflows. `io::copy` never calls `flush`. So a reader handed to
-//! `Response::new(.., data_length: None, ..)` puts nothing on the wire until roughly forty events
-//! have queued up, and the symptom looks like a broken browser rather than a broken server.
+//! `chunked_transfer::Encoder`, which buffers 8192 bytes with `flush_after_write: false`, and
+//! `io::copy` never flushes. A `Response` with `data_length: None` puts nothing on the wire until
+//! about forty events queue up.
 //!
-//! `Request::into_writer` hands back the raw socket instead, and `Drop for Request` is a no-op once
-//! the writer has been taken, so nothing writes a 500 behind us. The framing below is what the
-//! encoder would have written, with a flush where it matters. Do not "simplify" this back to
-//! `Response`; `first_event_arrives_promptly` is the test that fails when someone does.
+//! `Request::into_writer` hands back the raw socket, and `Drop for Request` is a no-op once the
+//! writer is taken. The framing below is what the encoder would write, plus flushes.
+//! `first_event_arrives_promptly` fails if this goes back to `Response`.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,19 +19,16 @@ use std::time::Duration;
 
 use super::state::SharedWeb;
 
-/// Live streams allowed at once. `tiny_http` exposes no socket handle, so no send timeout can be set
-/// on a stream; a phone that walks out of wifi leaves a socket whose write blocks while the kernel
-/// retransmits. The cap is what bounds that, so it is correctness rather than politeness.
+/// Live streams allowed at once. `tiny_http` exposes no socket handle for a send timeout, so a phone
+/// that leaves wifi blocks a thread in write while the kernel retransmits. The cap bounds that.
 pub const MAX_CLIENTS: usize = 8;
 
-/// How long a client's queue may run behind before it is dropped and told to resync. Small on
-/// purpose: falling behind means the phone is not reading, and a caught-up reconnect is cheaper than
+/// Frames a client may fall behind before it is dropped. Small, because a reconnect is cheaper than
 /// a growing backlog.
 const QUEUE: usize = 8;
 
-/// Frames kept for replay. A reconnect inside this window is told only what it missed; outside it,
-/// everything. Sized for the several minutes an iOS tab spends backgrounded at a 500ms publish rate
-/// being far more than anyone reconnects across.
+/// Frames kept for replay. A reconnect inside this window gets only what it missed, outside it a
+/// full snapshot.
 const RING: usize = 64;
 
 const POLL: Duration = Duration::from_millis(200);
@@ -79,24 +74,18 @@ impl Hub {
         self.clients.lock().unwrap_or_else(|e| e.into_inner()).retain(|c| c.id != id);
     }
 
-    /// Everything after `since`, if the ring still reaches that far back.
     fn replay(&self, since: u64) -> Option<Vec<(u64, Arc<str>)>> {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         let oldest = ring.front().map(|(id, _)| *id)?;
-        // `since + 1` is the first frame the client still needs; if the ring starts after that, the
-        // gap cannot be filled and the caller sends a full snapshot instead.
+        // `since + 1` is the first frame the client still needs.
         if oldest > since + 1 {
             return None;
         }
         Some(ring.iter().filter(|(id, _)| *id > since).cloned().collect())
     }
 
-    /// Tell every stream to go away and come back.
-    ///
-    /// Without this a restart, which is what changing the port, the token or the theme does, leaves
-    /// each connected phone holding a socket that will never carry another byte: the listener is
-    /// gone but the stream threads and their sockets are not. `EventSource` only reconnects when the
-    /// stream ends, so the page would sit on stale data indefinitely.
+    /// Tell every stream to reconnect. A restart drops the listener but not the stream threads, and
+    /// `EventSource` only reconnects when the stream ends.
     pub fn close_all(&self, why: &'static str) {
         let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
         for c in clients.drain(..) {
@@ -113,8 +102,7 @@ impl Hub {
             }
         }
         let mut clients = self.clients.lock().unwrap_or_else(|e| e.into_inner());
-        // `try_send`, never `send`: the publisher must never block behind a phone that stopped
-        // reading, and a client that cannot keep up is better dropped than queued forever.
+        // `try_send` so the publisher never blocks behind a phone that stopped reading.
         clients.retain(|c| {
             !matches!(
                 c.tx.try_send(Frame::Event { id, json: json.clone() }),
@@ -124,11 +112,8 @@ impl Hub {
     }
 }
 
-/// Watches the published state and fans out what changed.
-///
-/// Polling rather than being called by the publisher, so the publisher knows nothing about who is
-/// connected and the two can be reasoned about separately. At 200ms against a 500ms publish it adds
-/// less latency than the publish interval it is watching.
+/// Polls the published state and fans out what changed, so the publisher knows nothing about
+/// connected clients.
 pub fn spawn_broadcaster(hub: SharedHub, web: SharedWeb) {
     std::thread::spawn(move || {
         let mut sent = 0u64;
@@ -176,10 +161,7 @@ pub fn full_reset(id: u64, json: &str) -> String {
 
 pub const KEEPALIVE_FRAME: &str = ": keepalive\n\n";
 
-/// Take over the connection and stream until the client goes away.
-///
-/// Runs on its own thread so it never occupies one of the server's workers, of which there are only
-/// a few.
+/// Streams on its own thread so it does not occupy one of the server's few workers.
 pub fn serve(req: tiny_http::Request, hub: SharedHub, web: SharedWeb, last_event_id: Option<u64>) {
     let Some((id, rx)) = hub.join() else {
         let _ = req.respond(
@@ -196,8 +178,7 @@ pub fn serve(req: tiny_http::Request, hub: SharedHub, web: SharedWeb, last_event
             hub.leave(id);
             return;
         }
-        // How fast to come back. iOS kills the stream when the tab backgrounds and reconnects on
-        // foreground, so this is the usual path, not an error path.
+        // iOS kills the stream when the tab backgrounds, so reconnecting is the normal path.
         if chunk(&mut *w, "retry: 2000\n\n").is_err() {
             hub.leave(id);
             return;
@@ -313,8 +294,6 @@ mod tests {
         assert!(hub.join().is_some(), "a departed client frees its slot");
     }
 
-    /// A phone that stopped reading must not hold the broadcaster up, and must not accumulate a
-    /// backlog either. It is dropped, and EventSource brings it back with a `Last-Event-ID`.
     #[test]
     fn closing_tells_every_stream_to_come_back() {
         let hub = Hub::default();
@@ -329,6 +308,7 @@ mod tests {
         }
     }
 
+    /// A dropped client comes back through EventSource with a `Last-Event-ID`.
     #[test]
     fn a_client_that_stops_reading_is_dropped_rather_than_queued() {
         let hub = Hub::default();

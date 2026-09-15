@@ -1,29 +1,24 @@
 //! The jabber pane: the Convos list, and one conversation's messages on request.
 //!
-//! The list travels in the snapshot, because it changes whenever anything arrives and is small. The
-//! messages do not: one room's backlog dwarfs every other pane put together, and only one
-//! conversation is on screen at a time, so they are fetched for the JID being read.
+//! The list is small and travels in the snapshot. Messages are fetched per JID, because one room's
+//! backlog dwarfs every other pane and only one conversation is on screen.
 
 use serde::Serialize;
 
-/// One row of the Convos list.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct WebConvo {
     pub jid: String,
     pub name: String,
     pub room: bool,
-    /// Whether the app's own Convos list shows it. The rest are carried anyway, because "start a
-    /// conversation" offers what you have talked to recently and that is exactly this list.
+    /// Shown in the app's Convos list. Unlisted rows still feed "start a conversation".
     pub listed: bool,
     pub unread: u32,
     pub mention: bool,
     pub last_at: i64,
-    /// Presence as a colour, resolved the way the app resolves it. `None` for a room, which has no
-    /// single presence to show.
+    /// Presence as a colour. `None` for a room.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence: Option<String>,
-    /// The room's MOTD, whole. The page shows one line of it and keeps the rest for the dialog, so
-    /// sending a preview would mean the dialog could not show what it is for.
+    /// Whole, because the dialog shows all of it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub motd: String,
 }
@@ -32,11 +27,9 @@ pub struct WebConvo {
 pub struct JabberSide {
     pub configured: bool,
     pub connected: bool,
-    /// Already in the order the app lists them: DMs first, unread before read, then by recency.
+    /// In the app's order: DMs first, unread before read, then by recency.
     pub convos: Vec<WebConvo>,
-    /// What counts as being named: the jabber username plus whatever the user added. The same list
-    /// the app highlights on, sent rather than re-derived so the two cannot disagree about what a
-    /// mention is.
+    /// The app's highlight list, sent so the page cannot disagree about what a mention is.
     pub mention_names: Vec<String>,
 }
 
@@ -61,10 +54,7 @@ pub struct ChatOut {
     pub msgs: Vec<ChatLine>,
 }
 
-/// The tail of one conversation.
-///
-/// A tail, not the whole thing: a room that has been open for a day holds thousands of lines, and a
-/// phone that has just opened the pane wants the last screenful, not the backlog.
+/// The newest `limit` lines of one conversation. A day-old room holds thousands.
 pub fn chat(st: &crate::jabber::JabberState, jid: &str, limit: usize) -> ChatOut {
     let msgs = st
         .chats
@@ -102,8 +92,7 @@ mod tests {
         st
     }
 
-    /// The tail, and the *end* of it. Taking the first `limit` instead would serve a room's oldest
-    /// messages forever, which looks like a conversation that stopped rather than a cap.
+    /// Taking the first `limit` would serve a room's oldest messages forever.
     #[test]
     fn chat_returns_the_newest_lines_in_order() {
         let st = st_with("room@conf", 500);

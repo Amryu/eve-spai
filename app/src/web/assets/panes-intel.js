@@ -6,7 +6,7 @@ import { chips as noteChips, queryHits, titleLines } from "./notes.js";
 
 const CDN = "https://images.evetech.net";
 
-// The app snaps image requests to the CDN's own buckets rather than asking for arbitrary sizes.
+// Snap to the CDN's own size buckets, as the app does.
 const bucket = (px) => [32, 64, 128, 256, 512].find((b) => b >= px) ?? 512;
 
 export function fmtAge(secs, compact) {
@@ -23,14 +23,11 @@ export function fmtAge(secs, compact) {
   return `${h}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
-/// EVE's security ramp, indexed exactly as `security_color` indexes it.
+/// Indexed as `security_color` indexes it.
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
 
-/// A distance in **metres**, which is the unit `near_celestial` carries.
-///
-/// It was being read as kilometres, so every reading was a thousand times too far and the AU figures
-/// were nonsense. The app divides by 1000 and groups the thousands, and this now matches it, down to
-/// dropping anything past 15,000 km the way the app's own ceiling does.
+/// `near_celestial` is in **metres**. Like the app, show km with grouped thousands and drop anything
+/// past 15,000 km.
 const KM_PER_AU = 149597870.7;
 const CELESTIAL_MAX_M = 15_000_000;
 
@@ -66,8 +63,7 @@ function jumpText(from) {
   return from === 0 ? "here" : `${from}j`;
 }
 
-/// `Gates` reads as your own corp blue; a bridge-shortened or bridge-only number reads purple,
-/// because it is a number a hostile does not face.
+/// A bridge-assisted jump count reads purple, because a hostile does not face that number.
 const viaVar = (via) => (via === "Gates" ? "var(--corp)" : "var(--alliance)");
 
 function flagTags(r, isKill) {
@@ -81,8 +77,7 @@ function flagTags(r, isKill) {
   if (r.help) add("HELP", "var(--hostile)");
   if (r.bubble) add("BUBBLE", "var(--warning)");
   if (r.nullified) add("NULLIFIED", "var(--warning)");
-  // A zKill card is already a kill: it has the crosshair icon and its own dark card. The tag is
-  // only worth saying on a chat report that mentions one.
+  // A zKill card is already visibly a kill, so the tag is only for chat reports.
   if (r.killmail && !isKill) add("KILL", "var(--hostile)");
   if (r.cyno) add("CYNO", "var(--hostile)");
   if (r.dropper) add("DROPPER", "var(--hostile)");
@@ -97,14 +92,11 @@ function flagTags(r, isKill) {
   return t.join("");
 }
 
-/// Cards showing their original message, by report id.
-///
-/// Module state rather than a class on the node: a pane rebuilds its HTML whenever the snapshot
-/// moves, and anything living only in the DOM is gone on the next tick.
+/// Cards showing their original message, by report id. Module state, because panes rebuild their
+/// HTML and DOM-only state would be lost.
 const raw = new Set();
 
-// One listener for every card there will ever be. A click on the card itself, not on a badge, shows
-// the message the card was parsed from, which is what the app does with the same click.
+// A click on the card itself, not a badge, shows the original message, as in the app.
 document.addEventListener("click", (e) => {
   const art = e.target.closest("article.card[data-raw]");
   if (!art || e.target.closest("button, a")) return;
@@ -114,7 +106,7 @@ document.addEventListener("click", (e) => {
   art.classList.toggle("showraw", raw.has(id));
 });
 
-/// Mirrors `system_hover`: straight-line distance from staging and from the active character.
+/// Mirrors `system_hover`.
 function lyTitle(sys, ly) {
   const row = (ly?.systems ?? []).find(([id]) => id === sys.id);
   const lines = [sys.name];
@@ -136,18 +128,15 @@ export function card(c, lookups, compact, now) {
   const sev = `var(--sev-${String(c.severity).toLowerCase()})`;
   const parts = [];
 
-  // The header stays put when the message is revealed, so the card does not jump: `display: contents`
-  // means wrapping it changes nothing about the layout.
+  // `display: contents`, so the wrapper keeps the header in place when the message is revealed.
   parts.push(`<span class="hdr">`);
   parts.push(`<span class="tico" style="color:${iconVar ?? sev}">${ico(icon)}</span>`);
-  // `data-at` lets the clock tick without a re-render: nothing else in the card changes as time
-  // passes, and rebuilding a pane every second is what this whole page has been fighting.
+  // `data-at` lets the clock tick without a re-render.
   parts.push(
     `<span class="age" data-at="${r.received}">${fmtAge(now - r.received, compact)}</span>`
   );
 
-  // The character ring only exists when there is more than one character to confuse, matching
-  // `CardChars`; with one, the card draws the plain number it always did.
+  // Only filled with more than one character, matching `CardChars`.
   const hops = c.chars?.hops ?? [];
   if (hops.length) {
     parts.push(
@@ -221,8 +210,7 @@ export function card(c, lookups, compact, now) {
     if (id == null) continue;
     const un = uncertain.has(name.toLowerCase());
     const px = bucket(compact ? 16 : 20);
-    // Alliance, then corp, then portrait, then the name: the app's own order, and the two logos are
-    // what makes a name in a feed readable as friendly or not without clicking it.
+    // Alliance, corp, portrait, name: the app's order.
     const aff = lookups?.affil?.[id];
     const logo = (kind, lid, label) =>
       lid ? `<img class="aff" src="${CDN}/${kind}/${lid}/logo?size=${px}" alt="" title="${esc(label ?? "")}">` : "";
@@ -260,8 +248,7 @@ export function card(c, lookups, compact, now) {
     !isKill && r.reporter
       ? `<div class="rep">${esc(r.reporter)} · ${esc(r.channel)}</div>`
       : "";
-  // A kill card is generated, not reported: there is no original message behind it, which is why the
-  // app leaves those alone too.
+  // A kill card has no original message to reveal.
   const id = String(r.id);
   const body = isKill
     ? ""
@@ -270,7 +257,7 @@ export function card(c, lookups, compact, now) {
   return `<article class="card${!isKill && raw.has(id) ? " showraw" : ""}" style="background:${fill}"${attrs}>${parts.join("")}${body}${footer}</article>`;
 }
 
-/// The app's own filters: type, free text, and a jump ceiling.
+/// The app's filters: type, free text, and a jump ceiling.
 function matches(c, f) {
   const r = c.report;
   if (!r.systems.length && !(r.gates ?? []).length) return false;
@@ -347,10 +334,7 @@ const renderIntel = (el, snap) => {
 
 register("intel", renderIntel);
 
-/// Tick every visible age once a second, in place.
-///
-/// Ages used to move only when a pane re-rendered. Now that panes rebuild rarely, the clock would
-/// sit still for minutes; this updates the text and touches nothing else.
+/// Tick every visible age in place, since panes re-render only when their data changes.
 setInterval(() => {
   const now = Math.floor(Date.now() / 1000);
   const compact = !!state.snapshot?.meta?.compact;

@@ -1,9 +1,7 @@
 //! The listener.
 //!
-//! `tiny_http` rather than a second HTTP stack: it is already a dependency, it already serves the
-//! ESI login callback, it is synchronous, and the app has no shared async runtime to borrow. A bind
-//! failure disables the feature and says so, the way `instance::start_control_listener` does; it
-//! never takes the app down with it.
+//! `tiny_http` because it already serves the ESI login callback and the app has no async runtime to
+//! borrow. A bind failure disables the feature and says so, like `instance::start_control_listener`.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -17,9 +15,8 @@ use super::state::SharedWeb;
 
 const WORKERS: usize = 4;
 
-/// Failed pairing attempts allowed per address per window. The token is 256 bits, so this is log
-/// hygiene rather than a real guessing defence, and it is deliberately generous enough that a phone
-/// reloading a stale bookmark does not lock itself out.
+/// Failed pairing attempts per address per window. The token is 256 bits, so this is log hygiene,
+/// and generous so a phone reloading a stale bookmark does not lock itself out.
 const MAX_FAILS: u32 = 10;
 const FAIL_WINDOW: Duration = Duration::from_secs(60);
 
@@ -30,12 +27,9 @@ pub struct Config {
     pub bind_lan: bool,
     pub token: String,
     pub theme: crate::theme::Theme,
-    /// An address to bind instead of the one `bind_lan` picks, and whether to serve without pairing.
-    /// Both are off unless the user went into the advanced options and accepted the warning there.
+    /// Overrides `bind_lan`. This and `no_pairing` are advanced options behind a warning.
     pub bind_addr: String,
     pub no_pairing: bool,
-    /// Built once on the worker that first asks for it, then cached: the SDE does not change while
-    /// the app is running, and walking 8000 systems per request would be silly.
     pub map: Option<Arc<super::map::Geometry>>,
 }
 
@@ -48,8 +42,7 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Devices holding a live stream. Surfaced in settings so a user can tell whether the phone in
-    /// their hand is the thing that is connected.
+    /// Shown in settings so a user can tell whether their phone is connected.
     pub fn clients(&self) -> usize {
         self.hub.client_count()
     }
@@ -59,9 +52,8 @@ impl Drop for Handle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
         self.server.unblock();
-        // The listener stopping does not end the streams it already handed out, and a restart is
-        // the normal way this drops. Tell them, so each page reconnects to the new listener instead
-        // of holding a socket nothing will ever write to again.
+        // Stopping the listener does not end streams it handed out. Close them so pages reconnect
+        // to the new listener instead of holding a dead socket.
         self.hub.close_all("restart");
     }
 }
@@ -69,15 +61,15 @@ impl Drop for Handle {
 struct Ctx {
     cfg: Config,
     web: SharedWeb,
-    /// What the dialogs read and where a write-back lands. Both are handles the app already owns.
     detail: super::Detail,
     inbox: super::Inbox,
     hub: SharedHub,
+    /// Serialized on first request and kept, since the SDE does not change while the app runs.
     map_json: Mutex<Option<Arc<str>>>,
     fails: Mutex<HashMap<IpAddr, (Instant, u32)>>,
 }
 
-/// `None` when the port could not be bound. The caller reports that and leaves the feature off.
+/// Errs when the port cannot be bound. The caller reports that and leaves the feature off.
 pub fn start(
     cfg: Config,
     web: SharedWeb,
@@ -91,12 +83,8 @@ pub fn start(
     } else {
         "127.0.0.1"
     };
-    // Retried, because the usual reason this fails is the listener that was just replaced.
-    //
-    // Dropping a `Handle` tells the workers to stop and unblocks the accept, but the socket is only
-    // closed when the last worker lets go of its `Arc<Server>`, and they wake on a 500ms timeout.
-    // Binding immediately afterwards therefore hits the old socket and the feature switched itself
-    // off, which is what a settings change looked like from the browser.
+    // Retried: a replaced listener's socket stays bound until its last worker drops the
+    // `Arc<Server>`, and workers wake on a 500ms timeout.
     let mut server = None;
     let mut last = String::new();
     for attempt in 0..12 {
@@ -149,9 +137,8 @@ pub fn start(
 
 /// This machine's address on the network it would route out of.
 ///
-/// A UDP socket "connected" to a documentation address sends no packets; the kernel simply picks the
-/// interface it would use and the local address falls out of that. Enumerating interfaces instead
-/// means guessing which of several is the one the phone can reach.
+/// Connecting a UDP socket sends no packets but makes the kernel pick the outbound interface, which
+/// avoids guessing among enumerated interfaces.
 pub fn lan_address() -> Option<std::net::IpAddr> {
     let sock = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
     // TEST-NET-1: reserved for documentation and never routed anywhere.
@@ -176,8 +163,8 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
     let peer = req.remote_addr().map(|a| a.ip());
 
     let limited = peer.is_some_and(|ip| is_limited(ctx, ip));
-    // Unpaired serving is a deliberate, warned-about choice, and it is the only thing that skips
-    // this. Everything else about the request, the DNS-rebinding host check included, still applies.
+    // Unpaired serving is an opt-in behind a warning. It skips the host check too; writes still
+    // check `Origin`.
     let access = if ctx.cfg.no_pairing {
         routes::Access::Granted
     } else {
@@ -191,8 +178,7 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
         )
     };
 
-    // A write has to be read before anything else touches the request, and it is the one place
-    // `Origin` matters: a cross-site form post carries the browser's own cookie.
+    // `Origin` matters only on writes, because a cross-site form post carries the browser's cookie.
     if route == Route::Action {
         return match access {
             Access::Granted => {
@@ -210,13 +196,9 @@ fn handle(ctx: &Ctx, req: tiny_http::Request) {
                 ctx.fails.lock().unwrap_or_else(|e| e.into_inner()).remove(&ip);
             }
             let cookie = pair_cookie(query_token.unwrap_or_default());
-            // Served directly rather than through a 302.
-            //
-            // The redirect was the bug: a phone arriving from a QR scanner has no same-site
-            // initiator, so the browser would not attach the just-set cookie to the redirect it was
-            // told to follow, and the device landed on the "not paired" page having just paired.
-            // The page strips the token from the address bar itself, which is what the redirect was
-            // for and is one fewer thing to get wrong.
+            // Served directly, not via a 302: a QR scan has no same-site initiator, so the browser
+            // would not attach the new cookie to the redirect. The page strips the token from the
+            // address bar itself.
             let boot = ctx.web.lock().unwrap_or_else(|e| e.into_inner()).full_json();
             let page = super::assets::index_with_boot(&boot);
             respond(req, 200, "text/html; charset=utf-8", page.as_bytes(), &[
@@ -287,9 +269,6 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             }
         }
         Route::Logo => {
-            // The app's own icon, straight out of the binary: it is already linked in for the window
-            // and the tray, so serving it costs nothing and the page cannot disagree with the app
-            // about what the app looks like.
             respond(
                 req,
                 200,
@@ -353,8 +332,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         .filter(|i| *i < crate::jumproute::SHIP_CLASSES.len())
                         .unwrap_or(0);
                     let class = &crate::jumproute::SHIP_CLASSES[hull];
-                    // The titan option is a titan whatever hull the jump planner is set to: that is
-                    // what the word means, and the two questions are asked from the same menu.
+                    // A titan regardless of the hull the jump planner is set to.
                     let titan_ly =
                         crate::jumproute::max_range_ly(&crate::jumproute::SHIP_CLASSES[1], jdc);
                     let mut out = super::route::RouteOut {
@@ -369,7 +347,6 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         via_wormholes: d.via_wormholes,
                         ..Default::default()
                     };
-                    // `from`, the waypoints, then `to`: the systems the drags named, in order.
                     let mut anchors = vec![from];
                     anchors.extend(
                         routes::query_param(query, "via")
@@ -407,8 +384,8 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         jfc,
                         titan_ly,
                         routes::query_param(query, "tstart").unwrap_or("1") != "0",
-                        // Per route, not a setting: which ships are where is a fact about the
-                        // operation being planned, so the client carries it like the avoid list.
+                        // Per route, not a setting: titan positions belong to the operation being
+                        // planned, so the client carries them like the avoid list.
                         &ids("titans").into_iter().collect::<Vec<i64>>(),
                         routes::query_param(query, "tself").unwrap_or("0") == "1",
                         d.count_bridges,
@@ -480,8 +457,8 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             )])
         }
         Route::Alternatives => {
-            // Systems a capital could stop in between two hops. Picking one inserts it as a
-            // waypoint, which is the only way to steer a jump route without banning things.
+            // Picking one inserts a waypoint, the only way to steer a jump route without banning
+            // systems.
             let num = |k: &str| routes::query_param(query, k).and_then(|v| v.parse::<i64>().ok());
             let jdc = routes::query_param(query, "jdc")
                 .and_then(|v| v.parse::<u32>().ok())
@@ -512,8 +489,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         }))
                     })
                     .collect();
-                // Enough to choose from, not enough to scroll: the ring between two hops can hold
-                // dozens and they are all the same kind of answer.
+                // The ring between two hops can hold dozens of equivalent answers.
                 out.truncate(40);
             }
             drop(d);
@@ -524,8 +500,7 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
             )])
         }
         Route::JabberChat => {
-            // Percent-decoded, because a JID's `@` is encoded by the page and a raw one would look
-            // up a conversation that does not exist.
+            // The page percent-encodes a JID's `@`.
             let jid = routes::query_param(query, "jid").map(routes::percent_decode).unwrap_or_default();
             let state = ctx.detail.lock().unwrap_or_else(|e| e.into_inner()).jabber.clone();
             let out = match state {
@@ -556,9 +531,8 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
         }
         Route::ShipInfo(id) => {
             let d = ctx.detail.lock().unwrap_or_else(|e| e.into_inner());
-            // Skill names come from ESI and the app caches them. A ship the app has never opened
-            // has none, so this resolves the misses itself rather than showing "Skill 3330". One
-            // blocking call per hull that has never been looked at anywhere, then never again.
+            // Resolve uncached skill names from ESI rather than showing "Skill 3330". This blocks
+            // once per never-seen hull.
             if let (Some(store), Some(cache)) = (d.store.as_ref(), d.type_names.as_ref()) {
                 let want = super::detail::ship_skill_ids(id, store);
                 let missing: Vec<i64> = {
@@ -594,7 +568,6 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
     }
 }
 
-/// Queue one action from the page.
 fn act(ctx: &Ctx, mut req: tiny_http::Request, origin: Option<&str>) {
     if !ctx.cfg.allow_writeback {
         return respond(req, 403, "text/plain; charset=utf-8", b"read only\n", &[]);
@@ -630,12 +603,8 @@ fn json_or_404<T: serde::Serialize>(req: tiny_http::Request, body: Option<T>) {
 
 fn cached(req: tiny_http::Request, if_none_match: Option<String>, mime: &str, body: &[u8]) {
     let tag = super::assets::etag(body);
-    // `no-cache` means "ask me first", not "do not store": the browser keeps the copy and
-    // revalidates, so an unchanged asset still costs one 304 and nothing more.
-    //
-    // Without it there is no freshness information at all, and a browser is free to apply its own
-    // heuristic and serve a stale copy without asking. That is exactly what happened: a fixed page
-    // kept rendering the old behaviour on the one machine that had loaded it before.
+    // `no-cache` means revalidate, not "do not store". Without any freshness information a browser
+    // may heuristically serve a stale copy without asking.
     let head = [("Cache-Control", "no-cache".to_owned()), ("ETag", tag.clone())];
     if if_none_match.as_deref() == Some(tag.as_str()) {
         return respond(req, 304, mime, b"", &head);
@@ -663,13 +632,8 @@ fn hdr(k: &str, v: &str) -> tiny_http::Header {
         .unwrap_or_else(|()| tiny_http::Header::from_bytes(&b"X-Bad"[..], &b"1"[..]).expect("static"))
 }
 
-/// `Lax`, not `Strict`.
-///
-/// `Strict` withholds the cookie on any navigation that did not start on this site, and a QR scan
-/// starts outside the browser entirely, so the very first page load after pairing arrived without
-/// it. `Lax` attaches it to top-level GET navigations, which is exactly this case, and still
-/// withholds it from cross-site POSTs. Writes do not lean on that anyway: `/api/action` checks
-/// `Origin`, which is the defence that actually holds.
+/// `Lax`, because `Strict` withholds the cookie from the first load after a QR scan, which starts
+/// outside the browser. Writes are protected by the `Origin` check on `/api/action`.
 fn pair_cookie(token: &str) -> String {
     format!("spai={token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax")
 }
@@ -781,11 +745,8 @@ mod tests {
         assert!(page.text().unwrap().contains("EVE Spai"));
     }
 
-    /// The reported bug: a phone scanned the QR, reached the server, and was told it was not paired.
-    ///
-    /// Pairing used to answer 302 with a `SameSite=Strict` cookie. A QR scan has no same-site
-    /// initiator, so the browser withheld the cookie from the redirect it had just been told to
-    /// follow, and the device landed on the pair page having just paired.
+    /// A QR scan has no same-site initiator, so a `Strict` cookie on a redirect is withheld and the
+    /// device lands on the pair page having just paired.
     #[test]
     fn pairing_serves_the_page_itself_rather_than_a_redirect() {
         let s = serve_test();
@@ -843,8 +804,7 @@ mod tests {
         }
     }
 
-    /// An asset with an `ETag` and no freshness information lets the browser decide on its own how
-    /// long to keep it, which it does, and a fixed page goes on rendering the old bug.
+    /// An `ETag` without freshness information lets the browser keep a stale copy without asking.
     #[test]
     fn assets_are_revalidated_rather_than_heuristically_cached() {
         let s = serve_test();
@@ -878,12 +838,8 @@ mod tests {
         assert_eq!(again.status(), 304, "an unchanged asset is not sent twice");
     }
 
-    /// The sheet has to track the app's current theme without the listener being replaced.
-    ///
-    /// It used to come from `Config`, which is only replaced by restarting the server, so moving a
-    /// colour slider tore the listener down and rebuilt it. The rebind then raced the socket the old
-    /// workers were still holding, failed, and switched the whole feature off: a colour change read
-    /// as the web view crashing.
+    /// The sheet tracks the published theme on the same listener. Restarting the server per colour
+    /// change would race the old socket on rebind and could switch the feature off.
     #[test]
     fn the_theme_sheet_follows_the_published_theme_without_a_restart() {
         let s = serve_test();
@@ -1012,11 +968,8 @@ mod tests {
         None
     }
 
-    /// The regression test for the whole reason `sse.rs` writes its own chunks.
-    ///
-    /// `tiny_http`'s unknown-length response buffers 8 KB and never flushes per write, so the
-    /// obvious implementation delivers nothing until roughly forty events have piled up. Against
-    /// that version this test times out; the framing in `sse::serve` is what makes it pass.
+    /// `tiny_http`'s unknown-length response buffers 8 KB without flushing per write, which is why
+    /// `sse::serve` frames its own chunks.
     #[test]
     fn first_event_arrives_promptly() {
         let s = serve_test();

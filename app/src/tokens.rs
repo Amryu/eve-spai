@@ -13,12 +13,11 @@ fn entry(character_id: i64) -> Result<keyring::Entry> {
     keyring::Entry::new(SERVICE, &character_id.to_string()).map_err(|e| anyhow::Error::new(e).context(ADVICE))
 }
 
-/// What to actually do about it, because the underlying error does not say.
+/// What to do about a keychain error, because the underlying error does not say.
 ///
 /// The Secret Service error for "there is no keyring at all" is `result not returned from SS API`,
-/// nested twice, which reads like a bug in this app. It is not: it means the D-Bus service answered
-/// but has no collection to put anything in. A user hitting this had to work out on their own that
-/// installing a provider fixed it.
+/// nested twice, which reads like a bug in this app. It means the D-Bus service answered but has no
+/// collection to put anything in, and installing a provider fixes it.
 #[cfg(target_os = "linux")]
 const ADVICE: &str = "The system keychain could not be used. On Linux it needs a Secret Service \
      provider with a keyring created: GNOME Keyring, KWallet with its Secret Service module, or \
@@ -30,14 +29,13 @@ const ADVICE: &str = "The system keychain could not be used. Make sure it is unl
 
 /// Store a character's refresh token.
 ///
-/// The OS keychain first, always. Only the (small) refresh token lives there — the access-token JWT
-/// is short-lived and grows with scopes, and on Windows the Credential Manager rejects a password
-/// over 2560 UTF-16 chars; it's cached in the DB instead.
+/// The OS keychain first. Only the small refresh token lives there: the access-token JWT grows with
+/// scopes, and the Windows Credential Manager rejects a password over 2560 UTF-16 chars, so it is
+/// cached in the DB instead.
 ///
-/// When the keychain cannot be used at all, the token is sealed into [`crate::sealed`] instead:
-/// encrypted under a key tied to this OS account on this machine. Never plaintext, and never
-/// reached while the keychain works. Before this, a machine with no Secret Service provider could
-/// not complete a login at all, which made every ESI feature unusable.
+/// When the keychain cannot be used at all, the token is sealed into [`crate::sealed`], encrypted
+/// under a key tied to this OS account on this machine. Never plaintext, and never reached while
+/// the keychain works.
 pub fn save_refresh(character_id: i64, refresh_token: &str) -> Result<()> {
     let Err(e) = entry(character_id).and_then(|e| {
         e.set_password(refresh_token).map_err(|e| anyhow::Error::new(e).context(ADVICE))
@@ -59,9 +57,8 @@ pub fn load_refresh(character_id: i64) -> Option<String> {
 /// The same read, keeping the difference between "no token saved for this character" and "neither
 /// store could be read at all".
 ///
-/// Collapsing those two into `None` is what made a broken keyring look like a character that had
-/// never been logged in: the app asked for a login, the login then failed to save, and nothing
-/// said why.
+/// Collapsing the two into `None` would make a broken keyring look like a character that never
+/// logged in, with a new login then failing to save and nothing saying why.
 pub fn try_load_refresh(character_id: i64) -> Result<Option<String>> {
     match entry(character_id).and_then(|e| match e.get_password() {
         Ok(raw) => Ok(Some(raw)),

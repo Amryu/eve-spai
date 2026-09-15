@@ -1,7 +1,4 @@
-// The rescue pane: what the capital-rescue mode is looking at, read-only.
-//
-// No send buttons. The desktop's rescue window pings an alliance and pulls people into comms; a page
-// on the LAN should be able to watch that, not do it.
+// The rescue pane, read-only: a page on the LAN may watch the rescue mode but not ping an alliance.
 
 import { esc, ico, register, state } from "./app.js";
 import { fmtAge } from "./panes-intel.js";

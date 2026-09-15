@@ -67,8 +67,8 @@ impl SpaiApp {
             let mut st = self.intel_state.lock().unwrap();
             reports.into_iter().map(|report| st.push(report)).collect()
         };
-        // These are historical kills, not live events — pre-mark them alerted so the recency
-        // gate in the alert daemon doesn't pop them into the alert window at startup.
+        // Historical kills, not live events. Pre-mark them alerted so the recency gate in the
+        // alert daemon doesn't pop them into the alert window at startup.
         let now = chrono::Utc::now().timestamp();
         {
             let mut rt = self.alerts_engine.runtime.lock().unwrap();
@@ -148,9 +148,6 @@ impl SpaiApp {
         }
     }
 
-    /// Push the rescue capital's system to the active character as an ESI autopilot destination.
-    /// Used both by the auto-set while the rescue window is open and the manual "Set Destination"
-    /// button (which works even with the window closed). No-op without an active character.
     /// The most recent `n` rescue pings that resolved a system, newest first, as (system_id, name).
     /// Each is a real delve911 ping, so its system is exactly what that ping reported.
     #[cfg(feature = "fc-rescue")]
@@ -167,6 +164,8 @@ impl SpaiApp {
             .collect()
     }
 
+    /// Push the rescue capital's system to the active character as an ESI autopilot destination.
+    /// No-op without an active character.
     #[cfg(feature = "fc-rescue")]
     pub(crate) fn rescue_push_destination(&mut self, sid: i64) {
         if self.active_character == "No character" {

@@ -55,7 +55,7 @@ pub(crate) fn anom_sig_badge_label(kind: crate::intel::AnomKind, code: &str) -> 
 }
 
 /// One character's badge and jump number. `small()` and no frame because a framed button floors to
-/// `interact_size.y`, which would put 28px under every 15px row in the feed (UI-027).
+/// `interact_size.y`, which would put 28px under every 15px row in the feed.
 pub(crate) fn char_jump_slot(
     ui: &mut egui::Ui,
     hop: &CharHop,
@@ -83,8 +83,8 @@ pub(crate) fn char_jump_slot(
         .ui(ui, |ui| char_jump_menu(ui, all));
 
     let (color, mark) = jump_chip_style(hop.via);
-    // 0.55 read as greyed out rather than secondary. This ranks the two numbers and still leaves
-    // the dimmer one legible against the card.
+    // A stronger dim reads as greyed out. This ranks the two numbers and keeps the dimmer one
+    // legible against the card.
     let color = if dim { color.gamma_multiply(0.8) } else { color };
     let jtxt = match hop.jumps {
         Some(0) => "here".to_owned(),
@@ -281,7 +281,6 @@ pub(crate) fn intel_row(
                 ui.spacing_mut().interact_size.y = if compact { 16.0 } else { 28.0 };
                 ui.spacing_mut().button_padding.y = if compact { 1.0 } else { 2.0 };
                 if compact {
-                    // x = gap between chips on a line; y = gap between wrapped lines.
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 1.0);
                 }
                 // All chips render as filled Buttons, not raw Frames. A Frame sizes its fill to the
@@ -322,7 +321,7 @@ pub(crate) fn intel_row(
                         egui::RichText::new(format!("{jtxt:>4}")).monospace().color(jumps_color),
                     );
                     if let Some(why) = jump_chip_tip(via, j) {
-                        // A shortcut is now purple and nothing else, so the number carries the
+                        // A shortcut is marked only by colour, so the number carries the
                         // explanation whether or not there is a label beside it.
                         let mr = bridge_mark
                             .as_ref()

@@ -23,9 +23,6 @@ pub(crate) fn scratch_profile() {
     std::env::set_var("EVE_SPAI_DATA_DIR", &d);
 }
 
-/// Refuses to proceed unless the live profile is out of reach. Renders go into ticket folders that
-/// get committed and pushed, and alliance chat is operational information, so a scene must never be
-/// one forgotten override away from painting real rooms, contacts or messages into a public PNG.
 /// Why this profile path is unacceptable, or `None` if it is the scratch one. Split out pure so
 /// the guard can be tested without writing a process-wide variable every other test in this binary
 /// reads concurrently.
@@ -45,6 +42,9 @@ pub(crate) fn profile_objection(
     }
 }
 
+/// Refuses to proceed unless the live profile is out of reach. Renders get committed and pushed,
+/// and alliance chat is operational information, so a scene must never be one forgotten override
+/// away from painting real rooms, contacts or messages into a public PNG.
 pub(crate) fn assert_no_live_profile() {
     let want = out_dir("uitest-profile");
     let got = std::env::var_os("EVE_SPAI_DATA_DIR").map(std::path::PathBuf::from);

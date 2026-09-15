@@ -201,8 +201,7 @@ impl SpaiApp {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(&err).weak());
                 ui.add_space(4.0);
-                // The same failure used to be reported as a permissions problem either way, which
-                // sent anyone with a full disk looking in the wrong place.
+                // A full disk fails the same way as a permissions problem, so say which it is.
                 if self.disk_level == crate::disk::Level::Critical {
                     ui.label(
                         "The disk holding the data folder is full. Free some space and restart; \

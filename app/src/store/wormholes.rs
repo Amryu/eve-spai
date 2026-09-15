@@ -4,14 +4,10 @@ use super::*;
 
 impl Store {
     pub fn upsert_wormhole(&self, incoming: &crate::wormholes::Wormhole) -> i64 {
-        // The find-then-insert/update below is a read-modify-write; two scout/watcher
-        // connections could both miss the row and both INSERT, and the loser's INSERT would
-        // hit the dedup UNIQUE constraint and be silently dropped. BEGIN IMMEDIATE takes the
-        // write lock up front so concurrent upserts serialize.
-        //
-        // RAII rather than a hand-rolled COMMIT: a discarded commit error left the connection
-        // inside the transaction, so every later BEGIN on it failed and it stayed wedged for the
-        // rest of the process. Dropping the guard rolls back instead.
+        // BEGIN IMMEDIATE so concurrent find-then-insert upserts serialize; otherwise two
+        // connections both miss the row and the loser's INSERT is dropped by the UNIQUE
+        // constraint. The RAII guard rolls back on drop, so a failed commit cannot leave the
+        // connection wedged inside the transaction.
         match rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,

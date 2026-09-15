@@ -1,15 +1,12 @@
 //! Free-space pressure on the filesystem holding the data directory.
 //!
-//! The app crashed on a user's machine when the disk filled. Nothing here stops that machine from
-//! filling up, so the goal is narrower: keep raising alerts on a full disk, drop only the archive,
-//! and say so. See [`Kind`] for the split.
+//! On a full disk the app keeps raising alerts, drops only the archive, and says so. See [`Kind`]
+//! for the split.
 //!
 //! State is process-global rather than an `Arc` threaded through constructors: ~20 places open
-//! their own `Store`, and `esilog::record`, `image_cache::write_atomic`, `lookup::save_cache` and
-//! `sound::ensure_tone` are free functions with no app handle to hang one off. There is one data
+//! their own `Store`, and several writers are free functions with no app handle. There is one data
 //! directory and one filesystem, so one answer. Every decision is a pure function taking the level
-//! as an argument, so the statics are read only at the call boundary; a test that reads the live
-//! statics can race one that sets them, which is why the logic below never does.
+//! as an argument, because a test that reads the live statics can race one that sets them.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -235,9 +232,8 @@ pub(crate) fn spawn_monitor(ctx: egui::Context) {
                     }
                     ctx.request_repaint();
                 }
-                // On the first tick, on any change, and every six hours otherwise. Running it
-                // only under pressure would mean retention never applied on a healthy disk, which
-                // is how the archive grew unbounded in the first place.
+                // Not only under pressure, or retention would never apply on a healthy disk and the
+                // archive would grow unbounded.
                 let due = last_maintenance
                     .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(6 * 3600));
                 if due || next != current {

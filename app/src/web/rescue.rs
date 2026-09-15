@@ -1,10 +1,9 @@
 //! The rescue pane: what the FC-only capital rescue mode is looking at.
 //!
-//! Read-only. The desktop's rescue window sends pings and invites people into comms; none of that is
-//! offered here, because a socket on the LAN should not be able to broadcast to an alliance.
+//! Read-only, because a socket on the LAN should not be able to broadcast to an alliance.
 //!
-//! The types are unconditional and the filling is not: a build without `fc-rescue` simply never
-//! publishes the pane, which keeps `cfg` out of the snapshot and out of the page.
+//! The types are unconditional; a build without `fc-rescue` never publishes the pane, which keeps
+//! `cfg` out of the snapshot and the page.
 
 use serde::Serialize;
 
@@ -29,7 +28,7 @@ pub struct RescuePing {
     pub selected: bool,
 }
 
-/// How far the staging is from the capital, which is the whole question the mode exists to answer.
+/// How far the staging is from the capital.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct RescueRange {
     pub ly: f64,

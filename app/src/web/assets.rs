@@ -1,9 +1,8 @@
 //! The static files, compiled in.
 //!
-//! A table of `include_str!` rather than a bundler: the repo has no JS toolchain, the battle-report
-//! server does the same, and `<script type="module">` needs no build step. Every entry is served with
-//! a version-keyed `ETag`, which is what stops a phone from running yesterday's JavaScript against
-//! today's snapshot.
+//! A table of `include_str!` rather than a bundler: the repo has no JS toolchain, and
+//! `<script type="module">` needs no build step. Entries are served with a content-keyed `ETag`, so a
+//! phone does not run stale JavaScript against a new snapshot.
 
 pub struct Asset {
     pub path: &'static str,
@@ -126,34 +125,22 @@ pub const ASSETS: &[Asset] = &[
 
 pub const INDEX: &str = include_str!("assets/index.html");
 
-/// The app's icon, the same bytes the window and the tray use.
 pub const LOGO: &[u8] = include_bytes!("../../../assets/eve-spai.png");
 
-/// Where the first snapshot is spliced into the page.
 const BOOT_SLOT: &str = "\"__BOOT__\"";
-/// Where the icon map is spliced in.
 const ICON_SLOT: &str = "\"__ICONS__\"";
 
-/// The page with its first snapshot already in it.
-///
-/// Without this the page costs two round trips before it shows anything: fetch the document, then
-/// fetch the state. On a phone on the far side of a wifi link that is the difference between
-/// instant and visibly slow, and it is the same JSON-island trick the battle-report server already
-/// uses.
+/// The page with its first snapshot inlined, saving a round trip before first paint.
 pub fn index_with_boot(snapshot_json: &str) -> String {
     INDEX
         .replace(BOOT_SLOT, &js_safe_json(snapshot_json))
-        // Inlined for the same reason as the snapshot, and one more: fetched, the page paints once
-        // without icons and again with them, which is a visible flicker on every load.
+        // Inlined, or the page paints once without icons and flickers when they arrive.
         .replace(ICON_SLOT, &js_safe_json(&super::icons::json()))
 }
 
-/// Neutralise anything that could close the `<script>` element the JSON sits in.
-///
 /// The snapshot carries EVE chat verbatim, and anyone in an intel channel can type `</script>`.
-/// Escaping to `\uXXXX` keeps the JSON valid and identical once parsed, because these three
-/// characters never appear as JSON syntax, only inside string values. Same approach as
-/// `crates/server/src/views.rs`.
+/// Escaping to `\uXXXX` parses back identically, since these characters only occur inside JSON
+/// strings.
 fn js_safe_json(s: &str) -> String {
     s.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
 }
@@ -162,12 +149,8 @@ pub fn find(path: &str) -> Option<&'static Asset> {
     ASSETS.iter().find(|a| a.path == path)
 }
 
-/// Keyed on the content, not on the version.
-///
-/// Keying it on `CARGO_PKG_VERSION` looked equivalent, because an asset cannot change without the
-/// binary changing. It is not: the version only moves at release, so every dev build served a
-/// changed file under an unchanged tag and browsers kept running the old one. That cost a debugging
-/// session where a fixed page kept rendering the bug.
+/// Keyed on the content, not `CARGO_PKG_VERSION`, which only moves at release, so dev builds would
+/// serve changed files under an unchanged tag.
 pub fn etag(body: &[u8]) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -175,9 +158,7 @@ pub fn etag(body: &[u8]) -> String {
     format!("W/\"{:x}\"", h.finish())
 }
 
-/// The icon font the app itself draws with, served straight from the crate that is already linked
-/// into this binary. Same file, same codepoints, so a glyph cannot come out as tofu in one place and
-/// correct in the other, and it costs nothing to ship.
+/// The app's own icon font, so codepoints match between app and page.
 pub fn phosphor_ttf() -> &'static [u8] {
     egui_phosphor::Variant::Regular.font_bytes()
 }
@@ -215,8 +196,7 @@ mod tests {
         assert!(font_path().ends_with(".ttf"));
     }
 
-    /// The page has to actually use the push channel. A silent regression to polling would still
-    /// show live data and would quietly cost every connected phone its battery.
+    /// A regression to polling would still show live data while draining phone batteries.
     #[test]
     fn the_page_subscribes_rather_than_polls() {
         let js = find("/assets/app.js").expect("app.js").body;
@@ -233,14 +213,12 @@ mod tests {
         assert!(page.contains("\"warning\":"), "the icon map has to reach the document");
     }
 
-    /// The snapshot carries chat text verbatim, and anyone in an intel channel can type this.
     #[test]
     fn chat_cannot_close_the_script_element_it_travels_in() {
         let hostile = "{\"text\":\"</script><img src=x onerror=alert(1)>\"}";
         let page = index_with_boot(hostile);
         assert!(!page.contains("</script><img"), "the payload escaped its island");
         assert!(page.contains("\\u003c/script\\u003e"), "it should be escaped, not stripped");
-        // Still the same value once a JSON parser has read it back.
         let start = page.find("id=\"boot\">").expect("island") + "id=\"boot\">".len();
         let end = page[start..].find("</script>").expect("island end") + start;
         let parsed: serde_json::Value =
@@ -259,8 +237,7 @@ mod tests {
         assert!(js.contains("boot"), "the page has to read its inlined first snapshot");
     }
 
-    /// The tab buttons and the pane sections are different elements. They shared `data-pane` once,
-    /// and because the buttons come first in the document every pane rendered inside the header.
+    /// Tab buttons come first in the document, so a shared selector would render panes in the header.
     #[test]
     fn the_pane_lookup_cannot_match_a_tab() {
         let js = find("/assets/app.js").expect("app.js").body;
@@ -274,8 +251,7 @@ mod tests {
         );
     }
 
-    /// The token has to leave the address bar, and after the pairing redirect was removed the page
-    /// is the only thing left that can do it.
+    /// Pairing serves the page directly, so only the page can remove the token from the address bar.
     #[test]
     fn the_page_strips_the_token_from_the_url() {
         let js = find("/assets/app.js").expect("app.js").body;
@@ -283,9 +259,8 @@ mod tests {
         assert!(js.contains("searchParams.delete(\"t\")"));
     }
 
-    /// A stylesheet `cursor` on the canvas wins over nothing, so a hovered system read exactly like
-    /// empty space. The pointer handler has to set it, and the `:active` rule that fought it is
-    /// gone.
+    /// A stylesheet `cursor` on the canvas cannot tell a hovered system from empty space, so the
+    /// pointer handler sets it.
     #[test]
     fn the_map_cursor_is_driven_by_the_pointer_not_the_stylesheet() {
         let css = find("/assets/map.css").expect("map.css").body;
@@ -295,8 +270,7 @@ mod tests {
         assert!(js.contains("hovered"), "and nothing highlights what is under it");
     }
 
-    /// Canvas falls back silently when asked for a webfont it has not loaded, which draws a box
-    /// instead of the glyph. The map must wait for the font before drawing any.
+    /// Canvas silently draws a box for a webfont that has not loaded yet.
     #[test]
     fn the_map_waits_for_the_icon_font() {
         let js = find("/assets/map.js").expect("map.js").body;
@@ -304,17 +278,14 @@ mod tests {
         assert!(js.contains("iconFontReady"), "and nothing gates drawing on it");
     }
 
-    /// The dialog could not be closed at all: `hidden` is a UA rule of the same specificity as the
-    /// class next to it, an author rule wins, and the display rule kept it on screen. It is a
-    /// floating window now, and the same trap applies to it.
+    /// `hidden` is a UA rule, so an author `display` rule on the window's class overrides it.
     #[test]
     fn a_hidden_window_is_actually_hidden() {
         let css = find("/assets/dialogs.css").expect("dialogs.css").body;
         assert!(css.contains(".float[hidden]"), "nothing overrides display for a hidden window");
     }
 
-    /// A pane may scroll; the page may not. Four independently long panes in grid mode otherwise
-    /// become one very long document and the layout stops meaning anything.
+    /// A pane may scroll, the page may not, or grid mode becomes one long document.
     #[test]
     fn the_page_itself_does_not_scroll() {
         let css = find("/assets/app.css").expect("app.css").body;
@@ -323,8 +294,7 @@ mod tests {
         assert!(rule.contains("overflow: hidden"), "{rule}");
     }
 
-    /// The map rebuilt every node on every push, which with a real SDE is thousands of elements
-    /// several times a second.
+    /// With a real SDE, rebuilding the map per push is thousands of nodes several times a second.
     #[test]
     fn a_snapshot_push_does_not_rebuild_every_pane() {
         let js = find("/assets/app.js").expect("app.js").body;
@@ -332,9 +302,8 @@ mod tests {
         assert!(js.contains("dirty && !dirty.has(pane)"), "and render has to honour it");
     }
 
-    /// The regression test for a stale-asset bug that a version-keyed tag cannot catch: the version
-    /// does not move between a source edit and the next run, so an edited file kept its tag and the
-    /// browser kept the old copy.
+    /// The version does not move between a source edit and the next run, so the tag must follow
+    /// content.
     #[test]
     fn an_etag_follows_the_content() {
         assert_ne!(etag(b"one"), etag(b"two"));

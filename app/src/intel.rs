@@ -239,9 +239,8 @@ impl IntelState {
     pub fn push(&mut self, mut report: IntelReport) -> u64 {
         let id = NEXT_REPORT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         report.id = id;
-        // A "clear" records that a system was reported empty at this time. We do
-        // NOT delete prior intel — "clear" means the hostiles aren't there *now*,
-        // so earlier sightings are outdated (greyed), not erased.
+        // A "clear" means the hostiles aren't there *now*, so earlier sightings are
+        // greyed as outdated, not erased.
         if report.clear {
             for s in &report.systems {
                 let slot = self.cleared.entry(s.name.to_lowercase()).or_insert(report.received);
@@ -253,8 +252,8 @@ impl IntelState {
     }
 
     pub fn try_amend(&mut self, new: &IntelReport, grace: i64, systems: &Systems) -> bool {
-        // A clear is always its own report — it must never merge into (and overwrite
-        // the threat info of) a prior sighting.
+        // A clear is always its own report, so it never overwrites the threat info of a
+        // prior sighting.
         if new.clear {
             return false;
         }
@@ -988,8 +987,10 @@ fn extract_dscan_drops(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// `<url=killReport...>` tag, leaving only this text, and in some locales the killword+colon glues to
-/// the first name word with no space ("击杀：Lord Road" is one whitespace token), so the victim never
+/// Victim pilot and ship from a pasted killmail-link display string, `<killword><colon> <Victim>
+/// (<Ship>)`, e.g. "Kill: Lord Road (Loki)". The chat log strips the `<url=killReport...>` tag, and
+/// in some locales the killword and colon glue to the first name word ("击杀：Lord Road" is one
+/// whitespace token), so the victim never forms via the normal paths.
 fn extract_kill_drops(text: &str) -> Option<(String, Option<String>)> {
     let lower = text.to_lowercase();
     let (kw_start, kw) = KILL_WORDS
@@ -2358,7 +2359,9 @@ pub fn analyze_ctx(
         pilots.retain(|_| !it.next().copied().unwrap_or(false));
     }
     // Double-consume guard: a source word claimed by one pilot must not be re-used by another. When
-    // consumed can't seed a bogus second pilot. Positions decide this, never letter case.
+    // two candidate spans partially overlap ("Lord Road" vs "Road he's"), keep the stronger name
+    // (known, else longer, else leftmost) so a tail a longer name already consumed can't seed a
+    // bogus second pilot. Positions decide this, never letter case.
     {
         let src: Vec<String> = tokenize(text).iter().map(|t| t.to_lowercase()).collect();
         let span = |p: &str| -> Option<(usize, usize)> {
@@ -2787,7 +2790,7 @@ pub fn analyze_ctx(
             || lower.contains("needs backup")
             || lower.contains("求救")
             || lower.contains("求助"),
-        // Exact match, not prefix: the "drag" stem matched the destroyer Dragoon.
+        // Exact match, not prefix: the "drag" stem would match the destroyer Dragoon.
         bubble: flagged_exact(
             &lower_tokens,
             &pilot_tokens,
@@ -3291,6 +3294,7 @@ fn detect_structures(text: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// An approximate ISK amount posted in intel ("300kk", "1.5b", "300 mil", "300 million"),
 /// returned in ISK. "kk" is the EVE shorthand for millions. Returns the largest match.
 fn parse_isk(text: &str, ess: bool) -> Option<u64> {
     if !ess {
@@ -3332,9 +3336,9 @@ fn parse_isk(text: &str, ess: bool) -> Option<u64> {
         };
         if let Some(m) = m {
             let isk = (n * m) as u64;
-            // In ESS context an amount below 50M is almost always a TIME, not ISK ("30m" = 30
-            // minutes, not 30M ISK) — real ESS banks worth calling out are >= 50M. Drop the small
-            // ones so they don't double-parse as an ISK amount alongside the hack timer.
+            // In ESS context an amount below 50M is almost always a time ("30m" = 30 minutes),
+            // since ESS banks worth calling out are >= 50M. Drop the small ones so they don't
+            // double-parse as an ISK amount alongside the hack timer.
             if ess && isk < 50_000_000 {
                 continue;
             }
@@ -3358,7 +3362,7 @@ pub fn format_isk(isk: u64) -> String {
     }
 }
 
-/// Derive the hostile count from its components and the CURRENT pilot count. `named` is the number
+/// Derive the hostile count from its components and the current pilot count. `named` is the number
 /// of pilots still in the report, so re-deriving after resolution drops a count that was inflated by
 /// discarded candidates. An explicit total (`extra`) stands on its own; otherwise a `+N` addend or
 /// 3+ named pilots or the solo keyword seeds the base. Resolved ship counts always add on top.
@@ -3408,8 +3412,8 @@ fn is_ship_or_class_word(w: &str, ship_index: &HashMap<String, (i64, String)>) -
 /// "Trinity 5 red" (pilot "Trinity 5", so the 5 is part of a name) from "ESS 5 reds" (no pilot
 /// "ESS 5", so the 5 is a count) even though both put a capitalised word in front of the number.
 ///
-/// The caller records it as a `name_skip` rather than dropping it: if resolution decides the
-/// candidate is not a real character, `app.rs` adds the number back as a ship count.
+/// The caller records it in `name_number_skips` rather than dropping it: if resolution decides the
+/// candidate is not a real character, the alert engine adds the number back as a ship count.
 fn number_in_pilot_name(
     words: &[&str],
     i: usize,

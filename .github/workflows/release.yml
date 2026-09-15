@@ -38,9 +38,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Restore only: warm-cache.yml populates the default-branch cache (the only scope a tag build
-      # can read); a tag build's own save would be a junk tag-scoped cache that could LRU-evict the
-      # useful main one. So tags restore the warm cache and never save.
+      # Restore only: a tag build can read only the default-branch cache that warm-cache.yml fills,
+      # and its own tag-scoped save could LRU-evict that cache.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -57,10 +56,7 @@ jobs:
             libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxcursor-dev \
             libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config
 
-      # The committed Cargo.toml version is the source of truth: a release tag must match it
-      # exactly, so the published binary, the tag, and the source all agree. Reject the build on a
-      # mismatch instead of silently rewriting it (a stale Cargo.toml then made local builds report
-      # an old version and flag themselves "a version behind").
+      # Cargo.toml is the source of truth, so a mismatched tag fails the build instead of rewriting it.
       - name: Verify Cargo.toml version matches tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash

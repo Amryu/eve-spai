@@ -123,15 +123,11 @@ impl SpaiApp {
 
     /// Badge the taskbar entry with the same count as the tray.
     ///
-    /// Two mechanisms, because no single one covers the desktops this runs on. The badged window
-    /// icon is what Windows and anything that takes a window at its word will use. Plasma is not
-    /// one of those: it matches the window to a `.desktop` file and uses that file's `Icon=`, so the
-    /// badged icon it is handed is ignored and the count never appeared. `launcher::set_count` is
-    /// the API those desktops do implement.
+    /// Two mechanisms, because no single one covers the desktops this runs on. Windows uses the
+    /// badged window icon. Plasma matches the window to a `.desktop` file and uses that file's
+    /// `Icon=`, ignoring the badged icon, so `launcher::set_count` covers it.
     ///
-    /// Only on a change: `ViewportCommand::Icon` hands the window manager a fresh image, and doing
-    /// that every frame would have it re-decoding an icon sixty times a second for a number that
-    /// moves every few minutes.
+    /// Only on a change: `ViewportCommand::Icon` hands the window manager a fresh image to decode.
     pub(crate) fn sync_taskbar_badge(&mut self, ctx: &egui::Context, count: u32) {
         crate::launcher::set_count(count);
         if self.taskbar_badge == Some(count) {
@@ -702,9 +698,8 @@ impl SpaiApp {
         self.tab_set().detach(jid);
     }
 
-    /// The X hides, always. Closing a tab is not destructive and does not ask: leaving a room is
-    /// the sidebar's remove button and nothing else. This used to branch on a sticky one-time
-    /// answer, which silently turned every close into a leave, delve911 included.
+    /// The X hides. Closing a tab is not destructive and does not ask: leaving a room is the
+    /// sidebar's remove button and nothing else.
     pub(crate) fn close_jabber_tab(&mut self, jid: &str, is_room: bool) {
         // Rescue Mode holds its rooms open, so closing one would reopen on the next frame.
         if self.jabber_rescue_rooms().iter().any(|r| r == jid) {
@@ -747,7 +742,7 @@ impl SpaiApp {
             self.settings.jabber_popout_windows = want;
             self.needs_save = true;
         }
-        // The main window's tab bar, on the same terms: pop-outs have always persisted theirs.
+        // The main window's tab bar, on the same terms as the pop-outs.
         if self.settings.jabber_main_tabs != self.jabber_tabs {
             self.settings.jabber_main_tabs = self.jabber_tabs.clone();
             self.needs_save = true;
@@ -951,8 +946,8 @@ impl SpaiApp {
             // into itself and the dialog creeps wider every frame.
             const DIALOG_W: f32 = 320.0;
             const FIELD_W: f32 = DIALOG_W - 70.0;
-            // Six was a guess that hid everything older. A hundred with a scroll bar is the whole
-            // recent history without the dialog growing past the screen.
+            // A hundred with a scroll bar covers recent history without the dialog growing past the
+            // screen.
             const RECENT_CAP: usize = 100;
             ui.set_min_width(DIALOG_W);
             if rooms_mode {
@@ -1095,13 +1090,11 @@ impl SpaiApp {
         self.jabber_ui(ui, f);
     }
 
-    /// One lock, one snapshot of everything a chat window needs to draw itself. Messages stay
-    /// out of it: each window borrows its own conversation under the lock while it draws.
     /// The Convos list: direct messages above rooms, each newest first.
     ///
-    /// DMs go on top because they are addressed to you personally and were the thing easiest to miss
-    /// when they sat in a tab beside everything else. Recency rather than name order, because the
-    /// conversation you want next is almost always the one that just moved.
+    /// DMs go on top because they are addressed to you personally and are easy to miss beside
+    /// everything else. Recency rather than name order, because the conversation you want next is
+    /// usually the one that just moved.
     pub(crate) fn jabber_convos_list_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame, search: &str) {
         let matches = |name: &str, jid: &str| {
             search.is_empty()
@@ -1248,10 +1241,6 @@ impl SpaiApp {
     }
 
     /// A dialog's recent list: scrollable, and every row a full-width target that lights up.
-    ///
-    /// These were frameless buttons, so the hit area and the hover were the width of the name and
-    /// the rest of the row was dead. A capped list also needs somewhere for the rest to go, which is
-    /// what the scroll area is for.
     pub(crate) fn jabber_recent_list(
         ui: &mut egui::Ui,
         salt: &str,
@@ -1354,7 +1343,7 @@ impl SpaiApp {
                 ui.add_space(2.0);
                 match presence {
                     // Filled, not an outline glyph: a ring at this size reads as absent rather than
-                    // as a status, and it was invisible for anyone offline.
+                    // as a status, and is invisible for anyone offline.
                     Some(c) => {
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -1422,6 +1411,8 @@ impl SpaiApp {
         }
     }
 
+    /// One lock, one snapshot of everything a chat window needs to draw itself. Messages stay
+    /// out of it: each window borrows its own conversation under the lock while it draws.
     pub(crate) fn jabber_frame(&self, focused: bool) -> JabberFrame {
         let mut st = self.jabber.lock().unwrap();
         let configured = self.settings.jabber_enabled
@@ -1586,7 +1577,7 @@ impl SpaiApp {
         let mut save = false;
         // An incoming DM (present in `unread`) reopens a conversation whose tab was closed. A
         // hidden room is deliberately hidden while still joined, so only being named in it is loud
-        // enough to bring the tab back - reopening on ordinary room traffic would undo the hide
+        // enough to bring the tab back. Reopening on ordinary room traffic would undo the hide
         // within seconds of every reconnect.
         for k in &f.unread {
             if let Some(p) = self.settings.jabber_closed_dms.iter().position(|j| j == k) {
@@ -1635,10 +1626,9 @@ impl SpaiApp {
         let closed_rooms: std::collections::HashSet<String> =
             self.settings.jabber_closed_rooms.iter().cloned().collect();
         let room_set: std::collections::HashSet<&String> = f.rooms.iter().collect();
-        // The open tabs are the ones that are open, restored from settings at startup. Nothing is
-        // added because a room happens to be joined or a DM happens to have history: that rebuilt
-        // the whole tab bar on every start and made the closed-lists the only thing standing
-        // between a conversation and permanent resurrection.
+        // The open tabs are the ones restored from settings at startup. Nothing is added because a
+        // room happens to be joined or a DM has history, which would rebuild the whole tab bar on
+        // every start.
         let mut want: Vec<String> = self
             .tab_set()
             .all_tabs()
@@ -1653,7 +1643,7 @@ impl SpaiApp {
             .collect();
         // New traffic still surfaces a conversation, or an incoming DM from someone with no tab
         // would be invisible outside the sidebar. A room needs a mention, a DM needs a message,
-        // and neither reopens something on a closed-list (UI-039).
+        // and neither reopens something on a closed-list.
         for k in &f.unread {
             let is_room = room_set.contains(k);
             let closed = if is_room { closed_rooms.contains(k) } else { closed_dms.contains(k) };
@@ -2060,9 +2050,9 @@ impl SpaiApp {
                                 };
                                 if ui
                                     .add(
-                                        // Not `.small()`: at 9px this was the hardest thing in the
-                                        // list to hit and the easiest to hit by accident, and it
-                                        // adds or drops a contact.
+                                        // Not `.small()`: at 9px this is hard to hit on purpose
+                                        // and easy to hit by accident, and it adds or drops a
+                                        // contact.
                                         egui::Button::new(
                                             egui::RichText::new(egui_phosphor::regular::STAR)
                                                 .size(15.0)
@@ -2132,8 +2122,8 @@ impl SpaiApp {
         egui::Panel::top(egui::Id::new(("jabber_tab_bar", win)))
             .frame(egui::Frame::new().fill(ui.visuals().panel_fill))
             .show_inside(ui, |ui| self.jabber_tab_bar_ui(ui, win, f, &mut bar));
-        // Applied between the bar and the body so a tab click still switches the conversation in
-        // the same frame, as it did when the bar owned this state directly.
+        // Applied between the bar and the body so a tab click switches the conversation in the
+        // same frame.
         self.apply_tab_actions(bar);
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.push_id(("jwin", win), |ui| match (win, self.win_active(win)) {
@@ -2212,7 +2202,6 @@ impl SpaiApp {
             ChatWinKey::Popout(id) => Some(format!("jabberwin_{id}")),
             ChatWinKey::Main => None,
         };
-        // Tab strip: Fleet pings (static, left-most) then one tab per open conversation.
         let mut focus: Option<Option<String>> = None;
         let mut close_tab: Option<(String, bool)> = None;
         let mut move_to: Option<(String, ChatWinKey)> = None;
@@ -2427,7 +2416,6 @@ impl SpaiApp {
                 });
             }
 
-            // Pin the dropdown pseudo-tab to the right edge (always shown, static position).
             let pad = (full - used - dd_w - pin_w).max(0.0);
             if pad > 0.0 {
                 ui.add_space(pad);
@@ -2595,7 +2583,6 @@ impl SpaiApp {
                 );
             }
         });
-        // Load the next page once the user scrolls near the bottom of the shown set.
         if visible < pings.len()
             && out.state.offset.y + out.inner_rect.height()
                 >= out.content_size.y - 200.0
@@ -2741,20 +2728,18 @@ impl SpaiApp {
         let mut dm_click: Option<String> = None;
         let mut msg_mention: Option<String> = None;
         let mut msg_dm: Option<String> = None;
-        // Don't snap to the bottom while the pointer is held: that snap on
-        // every incoming message was wiping out any text selection mid-drag
-        // (the chat felt unselectable in a busy channel). It resumes on release.
+        // Don't snap to the bottom while the pointer is held, or every incoming message wipes a
+        // text selection mid-drag. It resumes on release.
         let selecting = ui.input(|i| i.pointer.any_down());
-        // Borrowed under the lock instead of cloned. This used to deep-clone the whole
-        // conversation once per frame per open window, and history is capped at 1000.
+        // Borrowed under the lock rather than deep-cloning up to 1000 messages per frame per open
+        // window.
         let jabber = self.jabber.clone();
         let guard = jabber.lock().unwrap();
         let sel_msgs: &[crate::jabber::ChatMsg] =
             guard.chats.get(&jid).map_or(&[][..], Vec::as_slice);
         egui::ScrollArea::vertical()
-            // UI-036. Salted by conversation, not just by window: one shared id handed every tab
-            // the previous one's offset and stuck-to-bottom flag, which opened the next, longer
-            // conversation at the top of its history.
+            // Salted by conversation, not just by window, or each tab inherits the previous one's
+            // offset and stuck-to-bottom flag.
             .id_salt(("msgs", jid.as_str()))
             .auto_shrink([false, false])
             .max_height((body_h - composer_h - 8.0).max(HISTORY_MIN_H))
@@ -2902,7 +2887,7 @@ impl SpaiApp {
         );
         // The border belongs outside the scroll area, or the viewport clips it as it scrolls.
         let mut frame = composer_frame(ui).begin(ui);
-        // `ScrollArea` pads its content clip by `clip_rect_margin`, which now lands outside the
+        // `ScrollArea` pads its content clip by `clip_rect_margin`, which lands outside the
         // border and lets the next line bleed under it.
         frame.content_ui.visuals_mut().clip_rect_margin = 0.0;
         let resp = egui::ScrollArea::vertical()

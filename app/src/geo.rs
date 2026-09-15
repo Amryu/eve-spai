@@ -185,9 +185,8 @@ impl Systems {
             }
             for &n in adj.get(&sys).into_iter().flatten() {
                 // Recorded before the transit check and expanded after it, because `bfs_jumps`
-                // answers `n == to` before testing `is_no_transit`: a route may END at Zarzakh
-                // and never pass through it. Reversing the two makes this disagree with
-                // `jumps` on exactly one system.
+                // answers `n == to` before testing `is_no_transit`: a route may end at Zarzakh
+                // but never pass through it.
                 if let std::collections::hash_map::Entry::Vacant(slot) = dist.entry(n) {
                     slot.insert(d + 1);
                     if !is_no_transit(n) {
@@ -472,10 +471,10 @@ mod tests {
         assert_eq!(g.jumps(1, 2, 10), Some(3));
     }
 
-    /// `distances_from` answers a whole feed in one walk, so the intel card and the `<= jumps`
-    /// filter read it instead of one `jumps` per card. That swap is only safe while the two agree
-    /// on every pair, Zarzakh included: `bfs_jumps` returns for `n == to` BEFORE testing
-    /// `is_no_transit`, so a route may end there and never pass through.
+    /// The intel card and the `<= jumps` filter read `distances_from` instead of one `jumps` per
+    /// card, which is only safe while the two agree on every pair, Zarzakh included: `bfs_jumps`
+    /// returns for `n == to` before testing `is_no_transit`, so a route may end there but never
+    /// pass through.
     #[test]
     fn a_ball_answers_exactly_what_jumps_would() {
         for (label, g) in [("line", line_graph()), ("zarzakh", zarzakh_graph())] {

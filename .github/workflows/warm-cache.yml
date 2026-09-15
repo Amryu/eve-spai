@@ -1,12 +1,8 @@
 name: Warm release cache
 
-# The Release workflow only runs on v* tags, and GitHub Actions caches are restorable across refs
-# ONLY from the default branch (a tag can read a `main` cache, but not another tag's). So a
-# tag-triggered release never finds a cache and does a full cold build every time. This job builds
-# the exact release target/profile on `main` with the SAME rust-cache key as release.yml, populating
-# a default-branch cache that tag releases then restore (deps cached -> only the final crate + LTO
-# recompile). It runs only when it pays off: when Cargo.lock changes (every dev-version bump and any
-# dependency change), a weekly refresh so the cache never evicts, or on demand.
+# A tag build can restore caches only from the default branch, so this builds the release targets on
+# `main` with release.yml's cache key. Runs when Cargo.lock changes, weekly so the cache is not
+# evicted, or on demand.
 on:
   push:
     branches: [main]
@@ -16,9 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The job id MUST be `build` to match release.yml's job: rust-cache bakes `github.job` into the
-  # cache key (`v0-rust-<target>-<job>-<os>-<hash>`), so a differently-named job would save an
-  # unreachable key. With the same id the key is identical and tag releases restore this cache.
+  # Must be `build`, like release.yml: rust-cache puts `github.job` in the cache key.
   build:
     name: Warm ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

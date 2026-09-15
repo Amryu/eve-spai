@@ -189,11 +189,8 @@ fn exchange_code(client_id: &str, code: &str, verifier: &str) -> Result<TokenRes
     resp.json().context("parsing token response")
 }
 
-/// A refresh that failed, split by whether trying again could ever help.
-///
-/// The distinction is the whole point: a rejected refresh token is a logout that has already
-/// happened and only a new login fixes it, while a timeout on the way to SSO fixes itself. Treating
-/// both as "no token today" is what let an expired login look like the map quietly not working.
+/// A refresh that failed, split by whether trying again could ever help. A rejected refresh token
+/// is a logout only a new login fixes, while a timeout on the way to SSO fixes itself.
 #[derive(Debug)]
 pub enum RefreshError {
     /// SSO rejected the token: expired, revoked, or the client id changed under it.
@@ -204,9 +201,8 @@ pub enum RefreshError {
 
 /// 4xx is SSO saying no and meaning it; 5xx is SSO being unavailable, which it regularly is.
 ///
-/// The split decides whether the user is told their login is gone, so it is worth being explicit
-/// about: warning on a 503 would cry wolf every time SSO hiccups, and staying quiet on a 400 is the
-/// silence that started this.
+/// The split decides whether the user is told their login is gone: warning on a 503 would cry wolf
+/// every time SSO hiccups, and staying quiet on a 400 hides a real logout.
 fn refresh_failure(status: reqwest::StatusCode, body: String) -> RefreshError {
     if status.is_client_error() {
         RefreshError::Rejected(format!("EVE SSO rejected the saved login ({status}): {body}"))
@@ -266,7 +262,7 @@ impl Claims {
     }
 }
 
-/// Decode (without signature verification — see module note) the JWT payload.
+/// Decode the JWT payload without signature verification (see the module docs).
 fn decode_claims(jwt: &str) -> Result<Claims> {
     let payload = jwt.split('.').nth(1).ok_or_else(|| anyhow!("malformed JWT"))?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -323,10 +319,8 @@ fn random_bytes(n: usize) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// The whole point of the split: a rejection is a logout that already happened and is worth
-    /// telling the user about, and everything else is worth retrying in silence. Getting this
-    /// backwards either cries wolf on every SSO hiccup or says nothing when a login is gone, and
-    /// saying nothing is what left a user watching the map quietly stop working for days.
+    /// A rejection is a logout worth telling the user about, and everything else is retried in
+    /// silence. Backwards, it cries wolf on every SSO hiccup or says nothing when a login is gone.
     #[test]
     fn only_a_refusal_from_sso_counts_as_a_lost_login() {
         use reqwest::StatusCode;

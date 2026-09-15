@@ -23,15 +23,13 @@
   <nav id="tabs"></nav>
   <span id="sound" class="soundbar"></span>
   <span id="status" class="status" data-state="connecting">connecting</span>
-  <!-- The menu owns its own button, so the panel can be positioned against it rather than against
-       the bar, which is what left the two looking unrelated. -->
+  <!-- The menu owns its button, so the panel is positioned against it rather than the bar. -->
   <span id="menu">
     <button id="sheet" aria-label="Layout"></button>
     <div class="modebar" hidden></div>
   </span>
 </header>
-<!-- One section per pane, declared here so each pane ticket owns its own file and none of them
-     have to edit this one. WEB-010 decides how they are arranged. -->
+<!-- One section per pane, declared here so pane modules never edit this file. -->
 <main id="panes">
   <section class="pane" data-pane="intel" aria-label="Intel"></section>
   <section class="pane" data-pane="alerts" aria-label="Alerts"></section>
@@ -40,10 +38,10 @@
   <section class="pane" data-pane="jabber" aria-label="Jabber"></section>
   <section class="pane" data-pane="rescue" aria-label="Rescue"></section>
 </main>
-<!-- The first snapshot, spliced in by the server so the page paints without a second round trip.
-     Escaped on the way in: this carries EVE chat verbatim. -->
+<!-- The first snapshot, spliced in by the server to save a round trip. Escaped, since it carries
+     EVE chat verbatim. -->
 <script type="application/json" id="boot">"__BOOT__"</script>
-<!-- The icon map, inlined so the first paint has its glyphs instead of painting twice. -->
+<!-- Inlined so the first paint has its glyphs. -->
 <script type="application/json" id="icons">"__ICONS__"</script>
 <script type="module" src="/assets/app.js"></script>
 <script type="module" src="/assets/panes-intel.js"></script>

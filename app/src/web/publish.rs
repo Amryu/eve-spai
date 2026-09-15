@@ -1,9 +1,7 @@
 //! The publisher thread.
 //!
-//! Deliberately its own thread rather than the egui update loop: the point of the web view is that a
-//! phone keeps working while the desktop window is minimized, and egui parks when it is. Deliberately
-//! not the alert daemon either, which already carries kill ingest, reconcile, evaluate and both
-//! overlay pushes at 400ms; an optional feature does not belong on the alert critical path.
+//! Its own thread because egui parks while the window is minimized, and the phone must keep
+//! updating. Not on the alert daemon, to keep an optional feature off the alert critical path.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -14,11 +12,10 @@ use super::state::{hash_of, Pane, SharedWeb};
 
 const TICK: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Newest reports carried to the page. Matches the app's own `CARD_CAP`, so the phone and the
-/// desktop run out of feed at the same point.
+/// Newest reports carried to the page. Matches the app's own card cap.
 const CARD_CAP: usize = 250;
 
-/// Fleet pings carried to the page. The app keeps its whole history; a phone wants the recent ones.
+/// Fleet pings carried to the page. The app keeps its whole history.
 const PING_CAP: usize = 80;
 
 fn ping_time(p: &crate::pings::Ping) -> i64 {
@@ -42,8 +39,7 @@ pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'sta
     std::thread::spawn(move || {
         let mut last_notes = 0usize;
         loop {
-            // A notes edit publishes on the next slice rather than waiting out the tick: the page
-            // made that change and is watching for it.
+            // A notes edit publishes on the next slice, since the page is waiting for it.
             const SLICE: std::time::Duration = std::time::Duration::from_millis(40);
             let mut waited = std::time::Duration::ZERO;
             while waited < TICK {
@@ -64,18 +60,15 @@ pub fn spawn(deps: Deps, alerts: impl Fn() -> crate::ipc::AlertMsg + Send + 'sta
     });
 }
 
-/// Whether this tick is worth doing.
-///
-/// Split out pure because the loop it guards never returns, so the only way to test the decision is
-/// to be able to ask it directly. Both halves matter: the feature is off by default, and the SDE
-/// graph arrives well after startup.
+/// Split out so it is testable, since the loop never returns. The SDE graph arrives well after
+/// startup.
 fn should_publish(facts: &super::facts::UiFacts) -> bool {
     facts.web_enabled && facts.systems.is_some()
 }
 
 fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMsg) {
-    // Phase 1, copy out. Each lock is taken alone and dropped before the next, so the documented
-    // `intel_state -> pilots` order cannot be violated: the two are never held together.
+    // Phase 1, copy out. Each lock is dropped before the next, so the `intel_state -> pilots` order
+    // cannot be violated.
     let reports: Vec<crate::intel::IntelReport> = {
         let st = deps.intel_state.lock().unwrap_or_else(|e| e.into_inner());
         let n = st.reports.len();
@@ -134,12 +127,11 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
             }
         })
         .collect();
-    // Newest first, the same ordering `intel_view` applies. Report order in `IntelState` is arrival
-    // order, and an amended report keeps its original slot, so the two are not the same thing.
+    // Newest first, like `intel_view`. `IntelState` is in arrival order and an amended report keeps
+    // its slot.
     cards.sort_by(|a, b| b.report.received.cmp(&a.report.received));
 
-    // Newest first and capped. The jabber state holds every ping it has ever seen, which on a live
-    // profile was 1163 of them and 738 KB of snapshot.
+    // Capped, because the jabber state holds every ping it has seen.
     let mut pings = pings;
     pings.sort_by_key(|p| std::cmp::Reverse(ping_time(p)));
     pings.truncate(PING_CAP);
@@ -172,11 +164,9 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
         st.put_intel(IntelPane { rev, cards, lookups });
     }
     if let Some(rev) = st.changed(Pane::Alerts, hash_of(&alerts.feed)) {
-        // The overlay needs `status` in its own message; the page reads the shared status pane, so
-        // carrying it here was a second megabyte of the same data.
+        // The page reads the status and notes panes, so drop the overlay's copies.
         let mut msg = alerts.clone();
         msg.status = Default::default();
-        // Same for notes: the overlay's subset would be a stale second copy of the notes pane.
         msg.notes = Default::default();
         st.put_alerts(AlertPane { rev, msg });
     }
@@ -227,8 +217,7 @@ fn tick(deps: &Deps, facts: &super::facts::UiFacts, alerts: &crate::ipc::AlertMs
     }
 }
 
-/// Severity name to sound name. `AlertSettings::sounds` is a positional list; the page wants it
-/// keyed, because it holds a severity string and not an index.
+/// `AlertSettings::sounds` is positional; the page holds a severity name, not an index.
 fn sound_map(sounds: &[String]) -> BTreeMap<String, String> {
     use crate::settings::Severity::*;
     [Info, Warning, Danger, Critical]
@@ -242,8 +231,7 @@ fn sound_map(sounds: &[String]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Names for every system a formup points at, and nothing else: the page has no SDE to look them up
-/// in, and a formup that reads as a bare id is useless to someone trying to get to it.
+/// Names for formup systems, since the page has no SDE.
 fn formup_names(
     pings: &[PingCard],
     systems: &Option<Arc<crate::geo::Systems>>,
@@ -263,8 +251,8 @@ fn formup_names(
     out
 }
 
-/// Worst severity and newest sighting per system, plus where your characters are. Systems only,
-/// never coordinates: the geometry is served once and cached against the SDE version.
+/// Worst severity and newest sighting per system, plus where your characters are. Ids only, the
+/// geometry is served separately.
 fn map_live(
     cards: &[IntelCard],
     you: Option<i64>,
@@ -313,7 +301,6 @@ fn map_live(
     }
 }
 
-/// Every system ESI has anything to say about, in the compact form the map reads.
 fn status_pane(
     status: &HashMap<i64, crate::systemstatus::SysFlags>,
     facts: &super::facts::UiFacts,
@@ -344,8 +331,7 @@ mod tests {
     use super::*;
     use crate::uitest::fixtures;
 
-    /// The player sits in 1DQ1-A, so `intel_typical` is here and `intel_beyond_the_gates` is two
-    /// gates out through 319-3D.
+    /// The player's system, 1DQ1-A.
     const HOME: i64 = 30_004_759;
 
     fn facts() -> super::super::facts::UiFacts {
@@ -404,10 +390,8 @@ mod tests {
         }
     }
 
-    /// The publisher thread is spawned whether or not anyone wants it. Ticking anyway would clone
-    /// 250 reports, resolve pilots, walk the graph for character rings and serialize four panes,
-    /// twice a second, forever, for every user who never turns the web view on. It is off by
-    /// default, so that is almost all of them.
+    /// The thread is spawned regardless, and a tick is expensive for users who never enable the web
+    /// view.
     #[test]
     fn a_tick_is_skipped_unless_the_feature_is_on_and_the_graph_is_loaded() {
         let ready = facts();
@@ -454,8 +438,7 @@ mod tests {
         );
     }
 
-    /// The ring only exists to say whose number a card is quoting, so it only fills in once there
-    /// is more than one character to confuse. Second character sits in 319-3D, one gate nearer.
+    /// The ring says whose jump count a card quotes, so it fills in only with a second character.
     #[test]
     fn a_second_character_fills_in_the_ring() {
         let d = deps_at(
@@ -480,8 +463,7 @@ mod tests {
         assert_eq!(intel.cards[0].chars.selected, Some(1), "the active character is Amryu");
     }
 
-    /// Jita is in the fixture graph but nothing connects to it. An unreachable system has to come
-    /// back as "no distance", not as zero, or a card claims a hostile is on top of you.
+    /// Jita is unconnected in the fixture graph. Zero would claim a hostile is on top of you.
     #[test]
     fn an_unreachable_system_has_no_distance() {
         let d = deps(vec![fixtures::intel_beyond_the_gates()]);
@@ -491,8 +473,6 @@ mod tests {
         assert_eq!(intel.cards[0].from_you, None);
     }
 
-    /// `Formup::System` carries an id and nothing else, and the page has no SDE, so a formup that
-    /// is not resolved here renders as a bare number to whoever is trying to get to it.
     #[test]
     fn a_formup_system_is_named_for_the_page() {
         let d = deps(vec![]);
@@ -519,9 +499,6 @@ mod tests {
         assert_eq!(meta.sound_rev, crate::sound::SYNTH_REV);
     }
 
-    /// The snapshot carried `SysFlags` whole, twice: once in the intel pane and once inside the
-    /// embedded alert message. On a live profile that was over 2 MB of a 2.86 MB snapshot, re-sent
-    /// whenever either pane changed.
     #[test]
     fn status_is_its_own_pane_and_is_not_duplicated() {
         let d = deps(vec![fixtures::intel_typical()]);
@@ -542,8 +519,6 @@ mod tests {
         assert!(alerts.msg.notes.pilots.is_empty(), "nor a second copy of the notes");
     }
 
-    /// The jabber state keeps every ping it has ever seen. A live profile had 1163 of them, 738 KB
-    /// of snapshot, on a page that shows the recent ones.
     #[test]
     fn pings_are_capped_to_the_newest() {
         let d = deps(vec![]);
@@ -589,11 +564,8 @@ mod tests {
         assert!(!json.contains("x2d") && !json.contains("\"x\""), "geometry must not ride along");
     }
 
-    /// The whole point of the revs. A second tick over unchanged inputs must publish nothing, or an
-    /// idle app pushes a frame to every connected phone twice a second forever.
-    ///
-    /// This passed while the bug was live, because the fixtures resolve no pilots and the empty maps
-    /// hashed stably. `an_idle_tick_with_real_lookups_publishes_nothing` is the one with teeth.
+    /// Empty lookups hash stably whatever the container, so
+    /// `an_idle_tick_with_real_lookups_publishes_nothing` is the stricter version.
     #[test]
     fn an_unchanged_tick_publishes_nothing() {
         let d = deps(vec![fixtures::intel_typical()]);
@@ -611,9 +583,7 @@ mod tests {
         );
     }
 
-    /// Every container that reaches the snapshot has to hash the same way twice, or the revision
-    /// check it feeds is decoration. Two have caught this out already: the lookup maps, and the
-    /// uncertain-pilot set inside them.
+    /// Every container in the snapshot must hash the same way twice, or change detection fails.
     #[test]
     fn a_snapshot_hashes_the_same_when_rebuilt() {
         let lookups = || {
@@ -639,17 +609,11 @@ mod tests {
         }
     }
 
-    /// The reported bug: every pane republished on every tick, which reset the scroll position of
-    /// whatever the user was reading.
-    ///
-    /// It needs populated lookups to reproduce. The maps are rebuilt each tick, and a `HashMap`
-    /// serializes in its own instance's iteration order, so identical contents hashed differently
-    /// and nothing ever compared equal.
+    /// A republish resets the page's scroll position. Lookups are rebuilt each tick, and a `HashMap`
+    /// serializes in per-instance order, so only populated lookups expose unstable hashing.
     #[test]
     fn an_idle_tick_with_real_lookups_publishes_nothing() {
         let d = deps(vec![fixtures::intel_torture()]);
-        // Populated lookups are the whole point: empty maps hash stably whatever container they
-        // are, so a fixture with nothing in them would pass either way.
         {
             let mut st = d.system_status.lock().unwrap();
             for id in 30_004_700..30_004_712 {
@@ -725,10 +689,8 @@ mod tests {
         assert_eq!(st.snapshot_since(0).meta.unwrap().rev, meta_rev);
     }
 
-    /// The documented lock order is `intel_state -> pilots`. A publisher that takes both together
-    /// deadlocks against any UI-thread path that takes them the other way round. Holding `pilots`
-    /// from another thread is what makes that visible: this test hangs rather than fails if the
-    /// three-phase copy-out is ever collapsed into nested locks.
+    /// Lock order is `intel_state -> pilots`. This test hangs rather than fails if the copy-out ever
+    /// nests the two locks.
     #[test]
     fn the_publisher_never_holds_two_locks_at_once() {
         let d = deps(vec![fixtures::intel_typical()]);

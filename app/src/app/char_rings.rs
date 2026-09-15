@@ -43,8 +43,7 @@ pub(crate) struct CharHop {
 }
 
 /// Which characters a card's numbers belong to, nearest first. Empty where there is nothing to
-/// disambiguate, which is the single-character case, and the card then draws the plain number it
-/// always did.
+/// disambiguate, which is the single-character case, and the card then draws the plain number.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CardChars {
     pub(crate) hops: Vec<CharHop>,
@@ -109,8 +108,8 @@ pub(crate) struct Ring {
 }
 
 /// Every character a card may attribute a number to this frame, each with the whole distance ball
-/// around wherever it is sitting. Built once per feed, read per card: one walk per character beats
-/// one walk per card, which at 250 cards was already the frame budget before any alt was counted.
+/// around wherever it is sitting. Built once per feed, read per card: one walk per card at 250 cards
+/// already fills the frame budget.
 #[derive(Default)]
 pub(crate) struct CharRings {
     pub(crate) rings: Vec<Ring>,
@@ -357,7 +356,7 @@ pub(crate) fn jump_via(
 pub(crate) fn jump_chip_style(via: JumpVia) -> (egui::Color32, Option<String>) {
     match via {
         JumpVia::Gates => (crate::theme::standing::CORP, None),
-        // Purple is the whole mark. A glyph beside every bridged number was noise in a home region
+        // Purple is the whole mark. A glyph beside every bridged number is noise in a home region
         // where most of them are, and the tooltip still says which kind of bridge it is.
         JumpVia::BridgeShorter(_) => (crate::theme::standing::ALLIANCE, None),
         // Colour cannot say "there is no gate route at all", so this one keeps its words.

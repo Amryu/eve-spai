@@ -83,9 +83,7 @@ pub fn rail(
     expanded: &mut bool,
     badges: &[View],
     warns: &[View],
-    // The rows to show. Not `View::primary()` directly: rescue is an opt-in feature in an opt-in
-    // build, and on every other install it is not a row that is disabled, it is a row that does not
-    // exist.
+    // Not `View::primary()`: rescue is opt-in, and when off its row is absent rather than disabled.
     items: &[View],
 ) -> View {
     let mut selected = current;
@@ -141,10 +139,9 @@ pub fn rail(
         primary_items(ui, &mut selected, *expanded, badges, warns, items);
         settings_item(ui, &mut selected, *expanded);
     } else {
-        // Shorter than the rail's own rows, which the 460px minimum window height allows. The list
-        // scrolls to keep its tail reachable, and the footer holds its strip so Settings is not the
-        // item that falls off the bottom. A solid bar because the default floating one is invisible
-        // until touched, and it is the only hint that the list continues past the fold.
+        // The 460px minimum window height allows this. The list scrolls and the footer keeps its
+        // strip so Settings stays reachable. A solid bar because the floating one is invisible
+        // until touched, and it is the only hint that the list continues.
         ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         egui::ScrollArea::vertical()
             .max_height((avail - foot_h).max(0.0))

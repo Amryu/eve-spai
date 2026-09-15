@@ -3,9 +3,8 @@ use std::sync::{Arc, Mutex};
 
 const ESI_IDS: &str = "https://esi.evetech.net/latest/universe/ids/";
 
-/// A "not a character" verdict is cached only this long, then re-queried — ESI can miss a
-/// brand-new character or transiently drop a name, and a permanent negative made real names
-/// (e.g. "River Pixies") vanish forever.
+/// A "not a character" verdict is cached only this long, then re-queried: ESI can miss a
+/// brand-new character or transiently drop a name, and a permanent negative would hide a real name.
 const NEG_TTL: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
 
 #[derive(Default)]
@@ -14,8 +13,8 @@ pub struct PilotCache {
     /// When each negative verdict was recorded, for the NEG_TTL re-check. A negative without
     /// a timestamp (test fixture / preloaded) never expires.
     neg_at: HashMap<String, std::time::Instant>,
-    /// Names whose "not a character" verdict was re-confirmed by a SECOND ESI lookup — a
-    /// stale-free negative. A two-word block is only split into its two single-word players once
+    /// Names whose "not a character" verdict was re-confirmed by a second ESI lookup, so the
+    /// negative is not stale. A two-word block is only split into its two single-word players once
     /// its pair is in here, so a real two-word name with a transient negative isn't torn apart.
     reverified: std::collections::HashSet<String>,
     queued: std::collections::HashSet<String>,
@@ -62,13 +61,11 @@ impl PilotCache {
         if self.resolved.contains_key(&lw) || self.queued.contains(&lw) {
             return;
         }
-        // EVE character names are at most 3 words and 37 chars. An over-glued parser run
-        // ("Le Van Duc Nguyen Van Minh ...") can never be a character, so record it as a PERMANENT
-        // negative instead of hammering ESI and leaving it stuck on the "..." animation; the parser
-        // then covers/splits it into its plausible sub-names. This also stops the junk flood that
-        // was starving real short names of resolution.
+        // An over-glued parser run ("Le Van Duc Nguyen Van Minh ...") can never be a character, so
+        // record a permanent negative instead of flooding ESI and leaving it stuck on the "..."
+        // animation. The parser then splits it into its plausible sub-names.
         if !plausible_character_name(name) {
-            self.resolved.insert(lw, None); // no neg_at entry => never expires (permanently not a name)
+            self.resolved.insert(lw, None); // no neg_at entry, so it never expires
             return;
         }
         self.queued.insert(lw);
@@ -121,8 +118,8 @@ impl PilotCache {
         }
     }
 
-    /// Snapshot of confirmed names (lower-cased) → character id, for the parser. EXCLUDES only
-    /// USER-HIDDEN names (the user marked them "not a pilot") so the parser frees their tokens;
+    /// Snapshot of confirmed names (lower-cased) → character id, for the parser. Excludes only
+    /// user-hidden names (the user marked them "not a pilot") so the parser frees their tokens;
     /// activity-flagged-but-undecided names are still real pilots to the parser.
     pub fn confirmed(&self) -> HashMap<String, i64> {
         self.resolved
@@ -165,26 +162,24 @@ impl PilotCache {
 
     /// Cover a multi-word candidate with confirmed character sub-names, longest match
     /// first, e.g. "Wwallddo Lulu Uanid" → ["Wwallddo", "Lulu Uanid"]. Returns empty
-    /// (don't split) unless EVERY word is covered by a confirmed name — so "Amryu Alpha"
-    /// (with "Alpha" not a character) is not collapsed to "Amryu" — and defers (empty)
-    /// while any longer span is still pending resolution, so the longest name wins.
+    /// (don't split) unless every word is covered by a confirmed name, so "Amryu Alpha"
+    /// (with "Alpha" not a character) is not collapsed to "Amryu". Defers (empty) while any
+    /// longer span is still pending resolution, so the longest name wins.
     pub fn cover(&self, candidate: &str) -> Vec<String> {
         let words: Vec<&str> = candidate.split_whitespace().collect();
         let mut claims: Vec<(usize, usize)> = Vec::new();
         let mut i = 0;
         while i < words.len() {
-            // A short bare number is a count ("Ace hodgens 30" = pilot + 30 ships), never a
-            // name component on its own — skip it (it also never resolves, so waiting on it
-            // would block forever).
+            // A short bare number is a count ("Ace hodgens 30" = pilot + 30 ships), never a name
+            // component on its own. It never resolves, so waiting on it would block forever.
             if words[i].len() <= 4 && words[i].chars().all(|c| c.is_ascii_digit()) {
                 i += 1;
                 continue;
             }
-            // Take the longest CONFIRMED character name starting here — always try 3, then 2,
-            // then 1 word. WAIT (return empty) if a longer span is still *pending* — otherwise a
-            // coincidental shorter name ("Yan" / "Watt", which are also real players) gets grabbed
-            // before the real "Yan Fan" / "Watt Watt" resolves. A span resolved as a *non-name*
-            // (the bridging "Grim Iskander Felmilia") is skipped to try a shorter span.
+            // Wait (return empty) while a longer span is still *pending*, otherwise a coincidental
+            // shorter name ("Yan" / "Watt", also real players) is grabbed before the real
+            // "Yan Fan" / "Watt Watt" resolves. A span resolved as a *non-name* (the bridging
+            // "Grim Iskander Felmilia") is skipped to try a shorter span.
             let mut matched = None;
             for len in (1..=3.min(words.len() - i)).rev() {
                 let span = words[i..i + len].join(" ");
@@ -206,20 +201,18 @@ impl PilotCache {
                     i += len;
                 }
                 None => {
-                    // Every span starting here resolved as a non-name (a *pending* one would
-                    // have returned above). It's a typo / intel word glued onto the run
-                    // ("Tort Radeon skywook tief", "H3xat0r arazy") — skip it and keep the
-                    // confirmed names, instead of discarding the whole run.
+                    // Every span starting here resolved as a non-name, so it is a typo or intel
+                    // word glued onto the run ("Tort Radeon skywook tief", "H3xat0r arazy"). Skip
+                    // it and keep the confirmed names instead of discarding the whole run.
                     i += 1;
                 }
             }
         }
-        // A CONTIGUOUS run of EXACTLY two single-word claims is almost always ONE two-word
-        // character ("Zantor Thes", "Andy Shank", "Ghost Magician") that ESI hasn't confirmed as a
-        // whole yet — its words just happen to also be real players — so drop it (kept as the
-        // pending blob, re-queried) rather than exploding into two spurious singles. A LONGER run
-        // (3+) is, once ESI has rejected the whole name, a genuinely mis-joined list of handles
-        // ("Gliar Mliarvis Sliarhia"), so surface each. A lone single or a multi-word claim stands.
+        // A contiguous run of exactly two single-word claims is almost always one two-word
+        // character ("Zantor Thes", "Ghost Magician") that ESI hasn't confirmed as a whole yet and
+        // whose words are also real players, so drop it (the pending blob is re-queried) rather
+        // than exploding it into two spurious singles. A longer run, once ESI has rejected the
+        // whole name, is a mis-joined list of handles ("Gliar Mliarvis Sliarhia"), so surface each.
         let mut out = Vec::new();
         let mut k = 0;
         while k < claims.len() {
@@ -232,10 +225,8 @@ impl PilotCache {
                 j += 1;
             }
             if claims[k].1 == 1 && j == k + 1 {
-                // Exactly two adjacent singles: almost always ONE two-word name whose pair ESI
-                // hasn't confirmed — keep it whole (drop, re-queried) UNLESS the pair's negative
-                // has been re-confirmed (stale-free), in which case it's genuinely two players in a
-                // mangled block, so surface both.
+                // Surface both only when the pair's negative has been re-confirmed, making it two
+                // players in a mangled block.
                 let pair = format!("{} {}", words[claims[k].0], words[claims[k].0 + 1]).to_lowercase();
                 if self.reverified.contains(&pair) {
                     for m in k..=j {
@@ -261,11 +252,9 @@ impl PilotCache {
 /// silently matches nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(transparent)]
-/// Ordered, not hashed.
-///
-/// This is serialized into the web snapshot, which is hashed to decide whether the intel pane
-/// changed. A `HashSet` serializes in its own instance's iteration order, and this set is rebuilt
-/// every tick, so an unordered one made the pane look different every time and republish forever.
+/// Ordered, not hashed: this is serialized into the web snapshot, which is hashed to decide whether
+/// the intel pane changed. A `HashSet` rebuilt every tick serializes in a new order each time, so
+/// the pane would republish forever.
 pub struct UncertainPilots(std::collections::BTreeSet<String>);
 
 impl UncertainPilots {
@@ -350,12 +339,12 @@ pub fn spawn_resolver(cache: SharedPilots, ctx: egui::Context) {
                         let lw = name.to_lowercase();
                         c.queued.remove(&lw);
                         let id = chars.get(&lw).copied();
-                        // A name that resolves "not a character" AGAIN (it was already negative —
-                        // i.e. a forced re-check) is a stale-free negative we can act on.
+                        // A name that resolves "not a character" again on a forced re-check is a
+                        // negative we can act on.
                         let was_negative = matches!(c.resolved.get(&lw), Some(None));
                         c.resolved.insert(lw.clone(), id);
-                        // Negatives are kept in-memory with a TTL (see NEG_TTL), never persisted
-                        // — a persisted "not a name" verdict is what made real names vanish.
+                        // Negatives are kept in memory with a TTL (see NEG_TTL), never persisted,
+                        // because a persisted "not a name" verdict would hide real names for good.
                         if id.is_none() {
                             c.neg_at.insert(lw.clone(), std::time::Instant::now());
                             if was_negative {
@@ -408,10 +397,9 @@ fn resolve_batch(client: &reqwest::blocking::Client, names: &[String]) -> Option
     };
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
-    // ESI returns 400 for the WHOLE batch if any single name is invalid (a parser fragment, a
+    // ESI returns 400 for the whole batch if any single name is invalid (a parser fragment, a
     // too-short/odd token) or the batch is too large. Split to isolate the offender so one bad
-    // token can't stall every other valid name in the batch forever (this is what left real
-    // players stuck on the "..." animation).
+    // token can't stall every other valid name in the batch forever.
     if status == reqwest::StatusCode::BAD_REQUEST {
         crate::esilog::record(
             "universe/ids 400",

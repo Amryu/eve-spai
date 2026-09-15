@@ -149,11 +149,9 @@ impl Theme {
         v.widgets.open.bg_stroke = Stroke::new(1.0, line);
         v.widgets.open.fg_stroke = Stroke::new(1.0, fg);
 
-        // Don't draw a loading spinner over pending remote images (pilot/corp/alliance/ship
-        // icons from images.evetech.net). The spinner self-animates via request_repaint every
-        // frame, so on a busy intel feed — where images are always loading (and some 404 or are
-        // slow) — it pins the UI at a continuous repaint and burns CPU. The image still appears
-        // once its loader thread finishes (it requests a single repaint then).
+        // The loading spinner requests a repaint every frame, so on a busy intel feed, where remote
+        // images are always loading, it pins the UI at continuous repaint. The image still appears
+        // once its loader requests a single repaint.
         v.image_loading_spinners = false;
 
         ctx.set_visuals(v);
@@ -168,8 +166,8 @@ impl Theme {
 }
 
 /// Every colour `Theme::apply` puts into the egui `Visuals`, derived from the theme's three.
-/// Pulled out of `apply` so the web view can emit the same palette as CSS custom properties rather
-/// than re-deriving it in JavaScript, where the two would drift apart the first time either changed.
+/// Separate from `apply` so the web view emits the same palette as CSS custom properties instead of
+/// re-deriving it in JavaScript, where the two would drift apart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Derived {
     pub dark: bool,
@@ -203,12 +201,7 @@ pub fn derived(theme: &Theme) -> Derived {
     }
 }
 
-/// The intel card's chip palette.
-///
-/// These were literals inside `intel_row`, which meant the web view had to copy fourteen hex values
-/// out of a 27k-line file and hope. Named here so both surfaces read the same constant and
-/// `web::css` can emit them, and so a chip's colour can be found by searching for what it is rather
-/// than for its hex.
+/// The intel card's chip palette, shared so the egui card and `web::css` read the same constants.
 pub mod chip {
     use egui::Color32;
 
@@ -251,9 +244,10 @@ pub mod standing {
     pub const WARNING: Color32 = Color32::from_rgb(0xE0, 0xA4, 0x3A);
 }
 
-/// binary by ~15 MB) and appended LAST in both the Proportional and Monospace families,
-/// so Latin/icon glyphs keep their existing fonts and metrics; the CJK font is only
-/// consulted for code points the earlier fonts lack. If no CJK font is found we log once
+/// Build and install the shared font set: egui's defaults, Phosphor icons and a CJK fallback so
+/// Chinese names render instead of tofu. The CJK face is loaded from a system font file (embedding
+/// it would add ~15 MB) and appended last in both the Proportional and Monospace families, so
+/// Latin and icon glyphs keep their fonts and metrics. Without a CJK font, CJK text stays tofu.
 pub fn install_fonts(ctx: &egui::Context) {
     install_fonts_opts(ctx, true);
 }
@@ -382,9 +376,8 @@ mod tests {
         }
     }
 
-    /// Pins every chip colour to the literal it replaced inside `intel_row`. Extracting fourteen hex
-    /// values by hand is exactly the kind of edit where one digit slips, and a wrong chip colour is
-    /// invisible until someone notices a card looks off.
+    /// Pins every chip colour to its literal: a wrong chip colour is invisible until someone
+    /// notices a card looks off.
     #[test]
     fn chip_colours_match_the_literals_they_replaced() {
         use chip::*;

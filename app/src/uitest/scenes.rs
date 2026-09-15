@@ -218,8 +218,8 @@ fn alert_bridge_cards() -> Vec<(crate::intel::IntelReport, Option<u32>, crate::a
 
 /// The alert window fed the way the overlay subprocess is fed: one `AlertMsg` through the frame
 /// codec and into the state the real reader fills. Nothing here knows the player's system or the
-/// bridge setting, so a mark can only have come from the verdict on the wire. GAP-007 keeps the
-/// subprocess itself out of the harness; this is the same callback reached the same way.
+/// bridge setting, so a mark can only have come from the verdict on the wire. The subprocess itself
+/// cannot run in the harness; this is the same callback reached the same way.
 fn alert_window_ipc_scene(
     name: &'static str,
     cards: Vec<(crate::intel::IntelReport, Option<u32>, crate::app::JumpVia)>,
@@ -317,7 +317,7 @@ fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
             a.settings.web.enabled = true;
             a.settings.web.token = "PAIRING-TOKEN-FOR-THE-SCENE-0123456789ab".to_owned();
             // Path detection finds the real EVE install, so a render of this view carries the
-            // machine's home directory. These renders get committed to ticket folders and pushed.
+            // machine's home directory, and these renders get committed and pushed.
             a.settings.eve_logs_dir = "/fixture/EVE/logs".to_owned();
             a.settings.eve_settings_dir = "/fixture/EVE/settings".to_owned();
             // The link and QR are hidden until asked for, which a scene has to ask for.
@@ -657,7 +657,7 @@ fn jabber_popout_seeded(
 
 /// The same pop-out mid-drag: the room tab picked up, the pointer holding it over the history.
 /// The drag state is seeded rather than gestured, because kittest has no way to grab a tab that is
-/// a painter-only `interact` rect with no AccessKit node (GAP-008).
+/// a painter-only `interact` rect with no AccessKit node.
 fn jabber_tab_drag_scene(name: &'static str, size: [f32; 2], pointer: [f32; 2]) -> Scene {
     use crate::app::ChatWinKey;
     harness::scratch_profile();
@@ -731,9 +731,9 @@ fn map_layers_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
-/// The chat sidebar, one scene per pane. UI-041 lives on the rows: the Channels pane lists
-/// remembered rooms with their MOTDs, the Directory pane files anything remembered but not on the
-/// roster under "Other", and both now carry a remove button.
+/// The chat sidebar, one scene per pane. The Channels pane lists remembered rooms with their MOTDs,
+/// the Directory pane files anything remembered but not on the roster under "Other", and both carry
+/// a remove button.
 fn jabber_sidebar_scene(name: &'static str, size: [f32; 2], convos: bool) -> Scene {
     jabber_sidebar_scene_cfg(name, size, convos, false)
 }
@@ -758,8 +758,8 @@ fn jabber_sidebar_scene_cfg(
     })
 }
 
-/// UI-051: the two halves of what used to be one "Join conversation" dialog, each with its own
-/// recent list. Sized to show the list scrolling rather than a handful of names.
+/// The DM and room start dialogs, each with its own recent list. Sized to show the list scrolling
+/// rather than a handful of names.
 fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
     harness::scratch_profile();
     let f = fixtures::jabber_sidebar_frame();
@@ -774,9 +774,8 @@ fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
     })
 }
 
-/// The rescue feed on its own. GAP-009 leaves the rescue window itself without a scene, so this
-/// renders the chat the way `uitest_rescue_chat_lines_are_one_line_tall` drives it, which is enough
-/// to read the timestamps UI-043 changed.
+/// The rescue feed on its own. The rescue window itself has no scene, so this renders the chat the
+/// way `uitest_rescue_chat_lines_are_one_line_tall` drives it.
 #[cfg(feature = "fc-rescue")]
 fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
     let base = fixtures::now();
@@ -809,15 +808,15 @@ fn uitest_a_live_profile_is_refused() {
 
 pub(crate) fn all() -> Vec<Scene> {
     let mut v = vec![
-        // UI-043: the timestamp is the subject, so the messages sit seconds apart.
+        // The timestamp is the subject, so the messages sit seconds apart.
         jabber_popout_scene("jabber_popout_stamps", [520.0, 480.0], fixtures::JABBER_ROOM, ""),
-        // UI-041: both panes, because the remove button has to read the same in each.
+        // Both panes, because the remove button has to read the same in each.
         jabber_sidebar_scene("jabber_sidebar_convos", [900.0, 560.0], true),
         jabber_sidebar_scene("jabber_sidebar_directory", [900.0, 560.0], false),
-        // UI-051: one dialog per kind, and neither offering the other kind's conversations.
+        // One dialog per kind, and neither offering the other kind's conversations.
         jabber_start_scene("jabber_start_dm", false),
         jabber_start_scene("jabber_join_room", true),
-        // UI-040: the class list is the subject, so the panel is sized to show the picker and the
+        // The class list is the subject, so the panel is sized to show the picker and the
         // range readout that moves with it.
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
@@ -849,7 +848,7 @@ pub(crate) fn all() -> Vec<Scene> {
             vec![fixtures::intel_torture(), fixtures::intel_typical(), fixtures::intel_clear()],
         ),
         alert_window_ipc_scene("alert_window_bridged", alert_bridge_cards(), true),
-        // UI-037: the attribution has to survive the wire, since the overlay subprocess holds
+        // The attribution has to survive the wire, since the overlay subprocess holds
         // neither the roster nor anyone's location and cannot derive it.
         alert_window_ipc_chars_scene(
             "alert_window_chars",
@@ -862,7 +861,7 @@ pub(crate) fn all() -> Vec<Scene> {
             "ping_window_mixed",
             vec![fixtures::ping_fleet(), fixtures::ping_plain()],
         ),
-        // UI-038. A gigabyte free is a warning; a quarter of one has already stopped the archive.
+        // A gigabyte free is a warning; a quarter of one has already stopped the archive.
         // The narrow pair proves the wording wraps rather than clipping.
         disk_scene(
             "disk_banner_low",
@@ -907,7 +906,7 @@ pub(crate) fn all() -> Vec<Scene> {
             [720.0, 600.0],
         ),
         intel_scene("intel_row_typical", fixtures::intel_typical(), 520.0),
-        // UI-037. Two badges and two numbers when the nearest alerting character is not the one
+        // Two badges and two numbers when the nearest alerting character is not the one
         // you are looking through, one badge and one number when it is, and a compact card that
         // has room for neither the second badge nor the second number.
         intel_chars_scene(
@@ -995,8 +994,8 @@ pub(crate) fn all() -> Vec<Scene> {
     // window. 720 breaks them into the most rows, which is where a divider is most likely to end
     // up at a row edge.
     v.push(view_scene("view_battles_narrow", View::Battles, [720.0, 800.0]));
-    // UI-017: 1440 is a break point where the throttle picker used to land last on its row with
-    // too little space left, and paint over the panel edge.
+    // 1440 is a break point where the throttle picker lands last on its row with the least space
+    // left, next to the panel edge.
     v.push(view_scene("view_battles_wide", View::Battles, [1440.0, 800.0]));
     v.push(battle_detail_scene("view_battle_detail_narrow", [720.0, 800.0]));
     // 720 is the app's minimum window width (main.rs), where the intel toolbar has to wrap.
@@ -1049,13 +1048,13 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     #[cfg(feature = "fc-rescue")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
-    // UI-045: with Rescue Mode on, delve911's remove button is disabled while every other room
+    // With Rescue Mode on, delve911's remove button is disabled while every other room
     // keeps its own. Only meaningful in a build that has the feature.
     #[cfg(feature = "fc-rescue")]
     v.push(jabber_sidebar_scene_cfg("jabber_sidebar_rescue_pinned", [900.0, 560.0], true, true));
     v.push(characters_rows_scene("view_characters_rows", [1280.0, 800.0]));
     v.push(alert_rules_scene("view_alert_rules", [1280.0, 800.0], None));
-    // UI-030: the rule panel's 180px drag minimum, the least room a rule name ever gets.
+    // The rule panel's 180px drag minimum, the least room a rule name ever gets.
     v.push(alert_rules_scene("view_alert_rules_narrow", [1280.0, 800.0], Some(180.0)));
     // Dialog sizes are the ones each dialog asks for in `dialog_viewport`, so a scene lays out at
     // the width the real window opens at. The three that are plain `egui::Window`s or `Modal`s get
@@ -1195,9 +1194,8 @@ fn uitest_screenshots() {
     }
 }
 
-/// UI-020: the pin used to be a floating `Area` over the central panel, which put it on top of the
-/// tab bar's overflow caret. It now sits at the right end of the tab-bar row, so it shares that row
-/// with the caret, follows it rather than covering it, and stays inside the window at both sizes.
+/// The pin sits at the right end of the tab-bar row, so it shares that row with the overflow caret,
+/// follows it rather than covering it, and stays inside the window at both sizes.
 #[test]
 fn uitest_jabber_popout_pin_is_in_the_tab_bar() {
     use egui::accesskit::Role;
@@ -1316,9 +1314,9 @@ fn uitest_toolbar_dividers_keep_content_on_both_sides() {
     }
 }
 
-/// UI-017: a `ComboBox` used to claim only the row space left over instead of the width it paints,
-/// which overflows the window wherever the toolbar happens to break just before one. The two
-/// widths in the ticket sit between widths that both look fine, so sweep rather than spot-check.
+/// A `ComboBox` that claims only the row space left over instead of the width it paints overflows
+/// the window wherever the toolbar breaks just before one. Failing widths sit between widths that
+/// look fine, so sweep rather than spot-check.
 #[test]
 fn uitest_battles_toolbar_stays_inside_the_window() {
     let mut failures = Vec::new();
@@ -1869,7 +1867,7 @@ fn char_badges(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
         .collect()
 }
 
-/// The left edge of the first jump number, which is the column UI-002 exists to protect.
+/// The left edge of the first jump number, a column that has to hold across cards.
 fn first_jump_x(harness: &egui_kittest::Harness<'_>) -> Option<f32> {
     use egui_kittest::kittest::NodeT as _;
 
@@ -1887,8 +1885,8 @@ fn first_jump_x(harness: &egui_kittest::Harness<'_>) -> Option<f32> {
         .map(|b| b.x0 as f32)
 }
 
-/// UI-037. The alert engine already fires on the nearest alert-enabled character while the card
-/// quoted the selected one, so a report that alerted at one jump sat on a card reading four.
+/// The alert engine fires on the nearest alert-enabled character, so a card quoting only the
+/// selected one could read four jumps for a report that alerted at one.
 #[test]
 fn uitest_intel_card_attributes_the_nearest_character() {
     let mut scene = all().into_iter().find(|s| s.name == "intel_row_two_characters").expect("scene");
@@ -1943,9 +1941,8 @@ fn uitest_intel_card_badge_is_as_tall_as_the_chips_beside_it() {
     );
 }
 
-/// A compact card carries both slots too. Dropping the second one there was the wrong trade: the
-/// number you are used to reading disappearing when the feed is docked narrow is more confusing
-/// than the width it costs.
+/// A compact card carries both slots too: the number you are used to reading disappearing when the
+/// feed is docked narrow is more confusing than the width it costs.
 #[test]
 fn uitest_intel_card_compact_shows_both_characters() {
     let mut scene =
@@ -1981,8 +1978,8 @@ fn uitest_intel_card_draws_no_badge_for_one_character() {
     assert!(char_badges(&harness).is_empty(), "a lone character has nobody to be told apart from");
 }
 
-/// UI-002 restated for the new layout: the badge is on every card in a multi-character feed, so
-/// the first number's column holds whether or not a card also carries a second slot.
+/// The badge is on every card in a multi-character feed, so the first number's column holds whether
+/// or not a card also carries a second slot.
 #[test]
 fn uitest_intel_card_jump_column_holds_its_x() {
     let x = |name: &str| {
@@ -2000,7 +1997,7 @@ fn uitest_intel_card_jump_column_holds_its_x() {
 }
 
 /// A per-character verdict is the thing one shared `JumpVia` could not express: the nearest
-/// character rides a bridge here and the other one does not. The mark is a colour now, which the
+/// character rides a bridge here and the other one does not. The mark is a colour, which the
 /// AccessKit tree cannot see, so the two halves are asserted where each is observable.
 #[test]
 fn uitest_intel_card_marks_a_bridge_per_character() {
@@ -2073,7 +2070,7 @@ fn uitest_alert_window_shows_attribution_sent_over_ipc() {
     assert!(jump_chips(&harness).iter().any(|c| c == "1j"), "the nearest number crossed too");
 }
 
-/// UI-038. The banner has to say the archive stopped, not just that space is low, and it must not
+/// The banner has to say the archive stopped, not just that space is low, and it must not
 /// offer a Dismiss for a state that is still degrading the app.
 #[test]
 fn uitest_disk_banner_says_what_stopped_and_cannot_be_dismissed_when_critical() {
@@ -2143,9 +2140,9 @@ fn uitest_disk_banner_does_not_displace_the_chrome() {
     }
 }
 
-/// UI-025: the card's jump distance walked the bridged graph whichever way the setting was set, so
-/// a hostile who cannot use your bridges read as closer than the alert that fired on it. Both
-/// answers come from one fixture, since a single number proves nothing about which graph was used.
+/// The card's jump distance follows the bridge setting, or a hostile who cannot use your bridges
+/// reads as closer than the alert that fired on it. Both answers come from one fixture, since a
+/// single number proves nothing about which graph was used.
 #[test]
 fn uitest_intel_card_jumps_follow_the_bridge_setting() {
     let read = |count_bridges: bool| {
@@ -2178,7 +2175,7 @@ fn bridge_marks(harness: &egui_kittest::Harness<'_>) -> Vec<String> {
     out
 }
 
-/// UI-026: with the setting on, a card's distance can be short by a few jumps or exist only
+/// With the setting on, a card's distance can be short by a few jumps or exist only
 /// because of a bridge, and a hostile can use neither. All three states share one feed, since a
 /// mark means nothing without an unmarked card beside it.
 #[test]
@@ -2203,9 +2200,8 @@ fn uitest_intel_card_marks_a_bridge_dependent_range() {
     assert!(marks.is_empty(), "gate-only distances were marked as bridged: {marks:?}");
 }
 
-/// UI-029: the overlay is handed a jump number over IPC and has no graph to work out what it
-/// rests on, so the verdict has to travel with it. Sending the same feed without `via` is the bug
-/// as it shipped, and draws no mark at all.
+/// The overlay is handed a jump number over IPC and has no graph to work out what it rests on, so
+/// the verdict has to travel with it. The same feed without `via` draws no mark at all.
 #[test]
 fn uitest_alert_window_marks_a_bridge_dependent_range() {
     let read = |send_via: bool| {
@@ -2259,8 +2255,7 @@ fn jump_to_chip_gap(harness: &egui_kittest::Harness<'_>, system: &str) -> f32 {
 }
 
 /// The mark is an extra widget on the row, so a card that did not earn one must carry nothing at
-/// all between its number and its first chip. This is the UI-002 trade: reserving width for an
-/// absent widget is the bug, not the fix.
+/// all between its number and its first chip, not even reserved width.
 #[test]
 fn uitest_bridge_mark_only_takes_width_on_the_card_that_earned_it() {
     let mut scene = intel_bridge_states_scene("bridge_align_probe", true, [1280.0, 800.0]);
@@ -2285,7 +2280,7 @@ fn uitest_bridge_mark_only_takes_width_on_the_card_that_earned_it() {
     );
 }
 
-/// The number column is what UI-002 protected: the mark rides after it, never in front of it.
+/// The number column holds: the mark rides after the number, never in front of it.
 #[test]
 fn uitest_bridge_mark_holds_the_jump_column() {
     use egui_kittest::kittest::NodeT as _;
@@ -2330,8 +2325,8 @@ fn uitest_bridge_mark_explains_itself_on_hover() {
 
     let mut scene = intel_bridge_states_scene("bridge_hover_probe", true, [1280.0, 800.0]);
     let harness = harness::build(&mut scene, false);
-    // The shortcut no longer draws a widget of its own, so the number is the only thing left to
-    // reach for. Find it by the row its system chip sits on.
+    // The shortcut draws no widget of its own, so the number is the only thing to reach for. Find
+    // it by the row its system chip sits on.
     let mut row_y: Option<f32> = None;
     let mut spot: Option<egui::Pos2> = None;
     for node in harness.root().children_recursive() {
@@ -2518,9 +2513,8 @@ fn uitest_bench_intel_bridge_detection() {
 }
 
 /// The setting is only reachable from the alert rules editor unless the intel toolbar carries its
-/// own control, which is the half of UI-025 the user reported. UI-032 shortened the label, so this
-/// asserts a labelled, ticked control rather than the old wording: an icon or a menu entry would
-/// pass a looser check while losing the point.
+/// own control. This asserts a labelled, ticked control rather than exact wording: an icon or a
+/// menu entry would pass a looser check while losing the point.
 #[test]
 fn uitest_intel_toolbar_carries_the_bridge_toggle() {
     use egui_kittest::kittest::NodeT as _;
@@ -2535,15 +2529,12 @@ fn uitest_intel_toolbar_carries_the_bridge_toggle() {
     assert!(found, "the intel toolbar has no jump-bridge toggle");
 }
 
-/// UI-032: the toolbar is one wrapping row ending in the search field, so every pixel a control
-/// spends is a pixel the field does not get. UI-004 and UI-025 each bought clarity with width and
-/// nobody measured the row, which left the field 57px wide at 1280.
+/// The toolbar is one wrapping row ending in the search field, so every pixel a control spends is
+/// a pixel the field does not get.
 ///
-/// The budget is three quarters of the window for the fixed controls, a quarter for the field.
-/// Measured against a 960px ceiling by restoring each ticket's copy: the row before either was
-/// 854px, UI-004 took it to 1008px and UI-025 to 1146px, so this fails on both and passes on what
-/// they were added to. The field then has to still sit on that row and still be able to show its
-/// own hint, since a placeholder it cannot render says nothing about what it filters.
+/// The budget is three quarters of the window for the fixed controls, a quarter for the field. The
+/// field then has to still sit on that row and still be able to show its own hint, since a
+/// placeholder it cannot render says nothing about what it filters.
 #[test]
 fn uitest_intel_toolbar_leaves_room_for_the_search_field() {
     use egui_kittest::kittest::NodeT as _;
@@ -2925,9 +2916,9 @@ fn ping_node_rect(
     None
 }
 
-/// FC, Formup and Doctrine are the same thing: one line of text. Doctrine used to sit in a
-/// `horizontal_wrapped`, whose row is floored at `interact_size.y` whether or not anything
-/// interactive is in it, so it stood 11px taller than its neighbours.
+/// FC, Formup and Doctrine are the same thing: one line of text, so they stand the same height. A
+/// `horizontal_wrapped` row is floored at `interact_size.y` whether or not anything interactive is
+/// in it, which would make one 11px taller than its neighbours.
 #[test]
 fn uitest_ping_metadata_rows_share_a_rhythm() {
     for url in ["", "https://example.invalid/doctrines"] {
@@ -3026,9 +3017,9 @@ fn theme_spacing() -> egui::style::Spacing {
     ctx.global_style().spacing.clone()
 }
 
-/// A body line holds one line of text, so it must stand one line tall. `render_ping_body` put each
-/// line in its own `horizontal_wrapped`, whose row is floored at `interact_size.y` whether or not
-/// anything interactive is on it, so every line allocated 26px for 15px of ink.
+/// A body line holds one line of text, so it must stand one line tall. A `horizontal_wrapped` row
+/// is floored at `interact_size.y` whether or not anything interactive is on it, which allocates
+/// 26px for 15px of ink.
 #[test]
 fn uitest_ping_body_lines_are_one_line_tall() {
     let spacing = theme_spacing();
@@ -3100,8 +3091,8 @@ fn uitest_ping_body_link_stays_on_its_line() {
     assert!(link.bottom() <= after.top(), "the link overruns the next line: {link:?}");
 }
 
-/// The Copy button was a `small_button`, which drops the `interact_size` floor and left a 17px
-/// target next to the 27px Join Mumble in the same card.
+/// The Copy button keeps the `interact_size` floor: a `small_button` would be a 17px target next to
+/// the 27px Join Mumble in the same card.
 #[test]
 fn uitest_ping_copy_matches_the_other_buttons() {
     use egui_kittest::kittest::Queryable as _;
@@ -3125,9 +3116,8 @@ fn uitest_ping_copy_matches_the_other_buttons() {
     );
 }
 
-/// The uncertain set is built from display-cased pilot names here, the shape that used to render
-/// nothing at all. `UncertainPilots` normalizes on the way in, so the marker and the verdict click
-/// both have to survive it.
+/// The uncertain set is built from display-cased pilot names here. `UncertainPilots` normalizes on
+/// the way in, so the marker and the verdict click both have to survive it.
 #[test]
 fn uitest_intel_row_marks_uncertain_pilot_from_display_cased_set() {
     use egui_kittest::kittest::Queryable as _;
@@ -3216,12 +3206,10 @@ fn uitest_jabber_popout_renders_a_conversation() {
     }
 }
 
-/// Every conversation in a window shared one `ScrollArea` id, so its scroll offset and its
-/// stuck-to-bottom flag carried across a tab switch. A short DM's content fits, so the press that
-/// switches tabs clears the sticky flag (`selecting` drops `stick_to_bottom` for that frame, and
-/// egui only re-enters sticky mode from a short body while sticking is asked for). The next,
-/// longer conversation then opened at offset 0, the top of a 1000-message history, and never
-/// snapped back.
+/// Each conversation in a window needs its own `ScrollArea` id. With a shared one, a short DM's
+/// tab-switch press clears the stick-to-bottom flag (`selecting` drops `stick_to_bottom` for that
+/// frame, and egui only re-enters sticky mode from a short body while sticking is asked for), so
+/// the next, longer conversation opens at offset 0, the top of a 1000-message history.
 #[test]
 fn uitest_jabber_tab_switch_opens_at_the_newest_message() {
     use crate::app::ChatWinKey;
@@ -3268,7 +3256,7 @@ fn uitest_jabber_tab_switch_opens_at_the_newest_message() {
     );
 }
 
-/// The other half of UI-036: per-conversation state has to mean the scrollback is kept, not that
+/// The other half: per-conversation state has to mean the scrollback is kept, not that
 /// every arrival is forced to the bottom. Scroll the room up, leave, come back, land where you
 /// left. A fix that simply snapped to the newest message on every switch would pass
 /// [`uitest_jabber_tab_switch_opens_at_the_newest_message`] and fail this.
@@ -3342,9 +3330,8 @@ fn jabber_top_body(harness: &egui_kittest::Harness<'_>) -> Option<String> {
         .find(|l| l.contains('#'))
 }
 
-/// UI-027. Chat bodies sat in `jabber_conversation_ui`'s own `horizontal_wrapped`, whose row is
-/// floored at `interact_size.y` whether or not anything interactive is on it, so every message
-/// allocated 26px for 15px of ink.
+/// A chat body stands one line tall. A `horizontal_wrapped` row is floored at `interact_size.y`
+/// whether or not anything interactive is on it, which allocates 26px for 15px of ink.
 #[test]
 fn uitest_jabber_message_body_is_one_line_tall() {
     let (line, spacing) = (theme_body_line(), theme_spacing());
@@ -3375,8 +3362,8 @@ fn uitest_jabber_message_body_is_one_line_tall() {
     );
 }
 
-/// The second row of a wrapped body was already one line tall while the first was floored, so a
-/// two-row message measured 41px rather than 30px. Every row has to be the same height now.
+/// Every row of a wrapped body has to be the same height, so a two-row message measures 30px, not
+/// 41px with a floored first row.
 #[test]
 fn uitest_jabber_wrapped_body_rows_are_all_one_line() {
     let line = theme_body_line();
@@ -3424,9 +3411,8 @@ fn uitest_jabber_blank_body_keeps_its_row() {
     );
 }
 
-/// UI-028. The rescue window's chat lines carried the same floored `horizontal_wrapped` the main
-/// chat shed in UI-027. GAP-009 leaves that window without a scene, so this drives the feed
-/// directly rather than through the window around it.
+/// The rescue window's chat lines stand one line tall too. That window has no scene, so this drives
+/// the feed directly rather than through the window around it.
 #[cfg(feature = "fc-rescue")]
 #[test]
 fn uitest_rescue_chat_lines_are_one_line_tall() {
@@ -3474,7 +3460,7 @@ fn uitest_rescue_chat_lines_are_one_line_tall() {
 
 /// The composer's text band, which is the height the galley *wants*. It lives inside a scroll
 /// area, so past the ten-row cap this rect keeps growing while the visible band stops. The frame
-/// margin is outside the field now, so this is the text alone.
+/// margin is outside the field, so this is the text alone.
 fn composer_rect(harness: &egui_kittest::Harness<'_>) -> egui::Rect {
     use egui_kittest::kittest::NodeT as _;
     harness
@@ -3603,7 +3589,7 @@ fn uitest_jabber_composer_yields_to_a_small_window() {
     );
 }
 
-/// With the Send button gone, Enter is the only way to send, so both halves of the return-key split
+/// Enter is the only way to send, so both halves of the return-key split
 /// have to be driven, not reasoned about.
 #[test]
 fn uitest_jabber_composer_enter_sends_shift_enter_wraps() {
@@ -3663,9 +3649,9 @@ fn painted_text_rects(harness: &egui_kittest::Harness<'_>, text: &str) -> Vec<eg
     out
 }
 
-/// UI-023: a tab drag said nothing at the pointer, so the user could not tell one had begun. The
-/// gesture itself is not driven here (GAP-008: the tab is a painter-only `interact` rect kittest
-/// cannot grab), so the drag state is seeded and the painted output is what gets checked, against
+/// A tab drag has to show at the pointer, or the user cannot tell one has begun. The gesture
+/// itself is not driven here (the tab is a painter-only `interact` rect kittest cannot grab), so
+/// the drag state is seeded and the painted output is what gets checked, against
 /// the same window under the same pointer with no drag running.
 #[test]
 fn uitest_jabber_tab_drag_paints_a_ghost_at_the_pointer() {
@@ -3710,8 +3696,8 @@ fn uitest_jabber_tab_drag_paints_a_ghost_at_the_pointer() {
         "the ghost is at {ghost:?}, nowhere near the pointer at {pointer:?}"
     );
 
-    // An interactive ghost would sit on the history as a click target, which is exactly what UI-020
-    // had to undo for the always-on-top pin. It is painted into a layer, so it owns no node at all.
+    // An interactive ghost would sit on the history as a click target. It is painted into a layer,
+    // so it owns no node at all.
     assert_eq!(
         node_rects(&harness),
         node_rects(&idle),
@@ -3763,9 +3749,8 @@ fn uitest_jabber_tab_drag_ghost_comes_and_goes_with_the_gesture() {
     );
 }
 
-/// UI-024: the `ScrollArea` used to wrap the whole `TextEdit`, frame included, so past the ten-row
-/// cap the border scrolled with the text and the viewport clipped its top and bottom edges. The
-/// border is painted outside the scrolling region now, so its clip rect has to hold all of it.
+/// Past the ten-row cap only the text scrolls. The border is painted outside the scrolling region,
+/// so its clip rect has to hold all of it.
 #[test]
 fn uitest_jabber_composer_border_does_not_scroll() {
     for name in ["jabber_popout_overflow", "jabber_popout_min_overflow"] {
@@ -3785,7 +3770,7 @@ fn uitest_jabber_composer_border_does_not_scroll() {
     }
 }
 
-/// The border carries the focus ring now, since the field itself is drawn frameless. A focused
+/// The border carries the focus ring, since the field itself is drawn frameless. A focused
 /// composer that outlines itself like an idle one reads as the odd widget out.
 #[test]
 fn uitest_jabber_composer_focused_border_is_the_focus_ring() {
@@ -3833,7 +3818,7 @@ fn uitest_screenshots_composer_focused() {
     }
 }
 
-/// UI-036 needs both tabs in one gesture, and `all()` scenes cannot click, so the switch is
+/// A tab switch needs both tabs in one gesture, and `all()` scenes cannot click, so the switch is
 /// rendered here: the pop-out opens on the short DM, the room tab is clicked, and the shot is what
 /// the long conversation looks like on arrival.
 #[test]
@@ -3865,8 +3850,8 @@ fn uitest_screenshots_tab_switch() {
     harness::shot(&mut harness, "jabber_tab_switch_to_room");
 }
 
-/// The four attribution layouts side by side, which is what UI-037 has to be judged on: the same
-/// report reads differently depending on who is nearest and how wide the card is.
+/// The four attribution layouts side by side, since the same report reads differently depending on
+/// who is nearest and how wide the card is.
 #[test]
 #[ignore = "renders to target/uishots; run with --ignored"]
 fn uitest_screenshots_char_attribution() {
@@ -3882,7 +3867,7 @@ fn uitest_screenshots_char_attribution() {
     }
 }
 
-/// UI-038's before/after: the same low-disk situation with and without anything on screen saying
+/// The same low-disk situation with and without anything on screen saying
 /// so. Sized to the whole window, since the point is that the banner does not displace the chrome.
 #[test]
 #[ignore = "renders to target/uishots; run with --ignored"]
@@ -3899,7 +3884,7 @@ fn uitest_screenshots_disk_banner() {
     }
 }
 
-/// UI-022's measuring stick. The harness asserts layout, not frame time, so the only way to judge
+/// The harness asserts layout, not frame time, so the only way to judge
 /// whether a change to the history loop paid for itself is to time repeated passes over a
 /// full-cap conversation and quote the number.
 #[test]
@@ -3931,10 +3916,9 @@ fn uitest_bench_jabber_long_history() {
     );
 }
 
-/// UI-022. A 1000-message conversation used to build every row on every pass. The history now
-/// skips over anything more than [`MSG_OVERDRAW`] outside the viewport, so what it builds tracks
-/// the window rather than the history. The upper bound is loose on purpose: the point is the shape
-/// of the growth, not a pixel-exact row count.
+/// The history skips over anything more than [`MSG_OVERDRAW`] outside the viewport, so what a
+/// 1000-message conversation builds per pass tracks the window rather than the history. The upper
+/// bound is loose on purpose: the point is the shape of the growth, not a pixel-exact row count.
 #[test]
 fn uitest_jabber_long_history_builds_only_what_is_near_the_viewport() {
     let mut scene = all().into_iter().find(|s| s.name == "jabber_popout_long").expect("scene");
@@ -3949,9 +3933,9 @@ fn uitest_jabber_long_history_builds_only_what_is_near_the_viewport() {
     );
 }
 
-/// Virtualizing broke none of the three things that read the whole history: the newest message is
-/// still what a fresh window lands on, the unread divider still sits where a scan from message
-/// zero puts it, and grouping still suppresses the repeated nick.
+/// Virtualizing must break none of the three things that read the whole history: the newest
+/// message is still what a fresh window lands on, the unread divider still sits where a scan from
+/// message zero puts it, and grouping still suppresses the repeated nick.
 #[test]
 fn uitest_jabber_long_history_keeps_its_tail_divider_and_grouping() {
     use egui_kittest::kittest::NodeT as _;
@@ -4074,7 +4058,7 @@ fn uitest_jabber_long_history_survives_a_scroll_round_trip() {
 
 /// [`alert_window_scene`] with the pin and the countdown under the test's control. Every scene in
 /// `all()` pins the window, which makes `active` permanently true and leaves the expiry path
-/// unrendered (GAP-006).
+/// unrendered.
 fn alert_countdown_scene(name: &'static str, pinned: bool, secs: f32) -> Scene {
     let mut st = crate::app::AlertWindowState {
         enabled: true,
@@ -4151,8 +4135,8 @@ fn uitest_alert_window_auto_dismiss_hands_clicks_back_to_the_game() {
         "the window stopped painting on pass {expired_at:?} but handed clicks back on \
          {passthrough_at:?}"
     );
-    // app.rs only unmaps on Windows; elsewhere the overlay stays mapped and click-through, so a
-    // `Visible(false)` here would be the regression, not the absence of one.
+    // The alert window only unmaps on Windows; elsewhere it stays mapped and click-through, so a
+    // `Visible(false)` here would be a regression.
     let expect_hidden = if cfg!(target_os = "windows") { expired_at } else { None };
     assert_eq!(
         hidden_at, expect_hidden,
@@ -4286,8 +4270,8 @@ fn buttons_labelled(
     button_rects(harness).into_iter().filter(|(l, _)| l == label).collect()
 }
 
-/// UI-019: `Remove` and `Re-auth` carry text labels and sit beside a full-height checkbox, so
-/// `small_button` made them the shortest targets in the view at 17px against its 27px norm.
+/// `Remove` and `Re-auth` carry text labels and sit beside a full-height checkbox, so a
+/// `small_button` would make them the shortest targets in the view at 17px against its 27px norm.
 #[test]
 fn uitest_character_row_buttons_match_the_view() {
     let mut scene = characters_rows_scene("character_button_probe", [1280.0, 800.0]);
@@ -4309,9 +4293,8 @@ fn uitest_character_row_buttons_match_the_view() {
     }
 }
 
-/// UI-019: the condition `Edit` buttons are labelled controls in a form whose every other control
-/// is floored at `interact_size.y`. The `requires:` chips are the nearest peer. Six since the pilot
-/// and system tag conditions.
+/// The condition `Edit` buttons are labelled controls in a form whose every other control is
+/// floored at `interact_size.y`. The `requires:` chips are the nearest peer.
 #[test]
 fn uitest_alert_rule_edit_buttons_match_the_condition_chips() {
     let mut scene = alert_rules_scene("alert_edit_probe", [1280.0, 800.0], None);
@@ -4359,10 +4342,8 @@ fn uitest_dialog_scenes_render_their_dialog() {
     }
 }
 
-/// UI-030: the two reorder arrows used to sit in every rule row and reserve 82px of it, which cut
-/// the name to eight characters in the default 240px panel. They now sit under the list, so the
-/// name gets the row. Guards both halves: full names at the default width, and no return of the
-/// overlap UI-019 fixed (the name's click rect running under the arrows').
+/// The reorder arrows sit under the list, so a rule name gets the whole row. Guards both halves:
+/// full names at the default 240px width, and no overlap of the name's click rect with the arrows.
 #[test]
 fn uitest_alert_rule_names_fit_and_clear_the_arrows() {
     use egui_phosphor::regular as ic;
@@ -4408,8 +4389,8 @@ fn uitest_alert_rule_names_fit_and_clear_the_arrows() {
     }
 }
 
-/// Dialogs used to carry an always-on-top pin in a strip of their own (UI-033), which pushed every
-/// dialog's content down. They are plain windows now, so no dialog may draw one.
+/// Dialogs are plain windows, so none may draw an always-on-top pin, whose strip would push the
+/// dialog's content down.
 #[test]
 fn uitest_dialogs_carry_no_pin() {
     use egui::accesskit::Role;

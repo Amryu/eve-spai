@@ -1,8 +1,6 @@
-/* Card and chip metrics mirror `intel_row`: a flex-wrap row of fixed-height chips, on a card tinted
-   by severity. Compact is density only, exactly as in the app: nothing is hidden. */
-/* `Margin::symmetric(8, 4)` in `intel_row` is 8 horizontal and 4 vertical, and compact is
-   `symmetric(5, 1)`. CSS shorthand is vertical then horizontal, so these read the other way round
-   from the Rust; writing them in the Rust order gave every card tall thin padding. */
+/* Card and chip metrics mirror `intel_row`. Compact changes density only, as in the app. */
+/* `Margin::symmetric(8, 4)` is horizontal then vertical, compact `symmetric(5, 1)`. CSS shorthand
+   is vertical first, so these read reversed from the Rust. */
 .feed { --row: 28px; --icon: 24px; --portrait: 20px; --gap: 6px; --pad: 4px 8px; }
 .feed.compact { --row: 16px; --icon: 16px; --portrait: 16px; --gap: 2px; --pad: 1px 5px; }
 
@@ -43,8 +41,7 @@
 
 .card .tico { font-family: phosphor; font-size: 1.1em; line-height: 1; }
 
-/* Right-aligned to a fixed column so a stack of cards lines up, the same reason the app pads these
-   to a monospace width. */
+/* A fixed right-aligned column so stacked cards line up, as the app pads to monospace width. */
 .card .age,
 .card .jn {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -107,9 +104,8 @@
 
 .count { color: var(--muted); margin: 0 0 0.5rem; }
 
-/* The original message behind a card, shown when the card itself is clicked.
-   `display: contents` on the header means wrapping it costs the layout nothing: its children stay
-   direct flex items of the card, so a card looks identical until it is opened. */
+/* The original message, shown on a card click. `display: contents` keeps the header's children
+   direct flex items of the card. */
 .card .hdr { display: contents; }
 .card .rawmsg { display: none; }
 .card.showraw > :not(.hdr):not(.rawmsg):not(.rep) { display: none; }

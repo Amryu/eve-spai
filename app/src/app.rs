@@ -118,10 +118,9 @@ fn overlay_on() -> bool {
 const DELVE911_RANGE_LY: f64 = 6.0;
 
 /// The jump-off system a titan can bridge to from `stage_pos` that leaves the fleet the fewest
-/// jumps from `target`. Ties at the same jump count go to whichever is closest in lightyears, which
-/// is the only thing the old version ranked on: it picked the geometrically nearest in-range system
-/// outright, and null-sec gate topology does not follow the map, so that was regularly a dozen
-/// gates out while a neighbour of the target sat in range the whole time.
+/// jumps from `target`. Ties at the same jump count go to whichever is closest in lightyears.
+/// Null-sec gate topology does not follow the map, so the geometrically nearest in-range system can
+/// be a dozen gates out while a neighbour of the target sits in range.
 ///
 /// Falls back to the lightyear-nearest candidate when nothing in range can reach the target within
 /// `max_jumps`, so the out-of-range warning still names a system and reports no route rather than
@@ -316,16 +315,14 @@ pub enum IntelClick {
 enum RightDockTab {
     Mode,
     System,
-    /// The route being planned. Its own tab rather than the mode's: UI-063 stopped the map switching
-    /// into a jump-plan mode, and the panel went with it because it was only reachable through one.
+    /// The route being planned. Its own tab, since the map has no jump-plan mode to host it.
     Route,
 }
 
 /// Which list the Jabber left sidebar shows.
 ///
-/// `Convos` is everything you are actually talking in, DMs above rooms, newest first. It replaced a
-/// Contacts list that only showed starred people and a separate Channels list, which between them
-/// made a direct message easy to miss: it could be behind a tab you were not looking at.
+/// `Convos` is everything you are actually talking in, DMs above rooms, newest first, so a direct
+/// message is never behind a tab you are not looking at.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JabberPane {
     Convos,
@@ -1843,7 +1840,7 @@ impl SpaiApp {
                 sde::spawn_traits_bake(store.path().to_path_buf(), ctx.clone());
             }
             // Pre-load remembered pilot names so they're recognised immediately. Negatives are
-            // NOT preloaded — they live in-memory with a TTL (see NEG_TTL), so a name ESI once
+            // not preloaded: they live in-memory with a TTL (see NEG_TTL), so a name ESI once
             // missed is re-checked rather than cached as "not a name" across restarts.
             {
                 let mut c = self.pilots.lock().unwrap();
@@ -1966,7 +1963,6 @@ impl SpaiApp {
             );
         }
 
-        // Fleet-composition poller (FC rescue only).
         #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled && !self.fleet_poller_started {
             let ship_types: std::collections::HashMap<i64, (String, String)> =
@@ -2221,8 +2217,8 @@ impl SpaiApp {
             for (name, hidden) in verdicts {
                 self.apply_pilot_verdict(&name, hidden);
             }
-            // Save a moved position / resized size — but NOT on the open frame, where the window
-            // briefly reports its builder default before the saved geometry is re-applied.
+            // Not on the open frame, where the window briefly reports its builder default before
+            // the saved geometry is re-applied.
             if !just_opened {
                 self.persist_alert_geometry(moved, moved_size);
             }
@@ -2242,10 +2238,6 @@ impl SpaiApp {
         }
     }
 
-    /// One handler for everything that arrives from outside the UI thread.
-    ///
-    /// The overlay subprocess and the web page send the same enum into the same arms, so there is a
-    /// single answer to what a verdict or an acknowledgement does, rather than two that can drift.
     /// The single place a note edit is applied, whichever window or device it came from.
     pub(crate) fn apply_notes_op(
         &mut self,
@@ -2336,6 +2328,10 @@ impl SpaiApp {
         self.notes_view = std::sync::Arc::new(self.notes.view_with(&self.settings.notes_folder, &self.settings.tag_colors));
     }
 
+    /// One handler for everything that arrives from outside the UI thread.
+    ///
+    /// The overlay subprocess and the web page send the same enum into the same arms, so there is a
+    /// single answer to what a verdict or an acknowledgement does, rather than two that can drift.
     fn apply_overlay_message(&mut self, m: crate::ipc::OverlayToMain, ctx: &egui::Context) {
         match m {
             crate::ipc::OverlayToMain::Click(c) => {
@@ -2767,7 +2763,7 @@ impl SpaiApp {
 
     fn persist(&mut self) {
         // Back off rather than retry every frame: ~90 sites set `needs_save`, `persist_main_geometry`
-        // among them, so a failing save used to become a 60Hz loop of failing writes.
+        // among them, so a failing save would otherwise be a 60Hz loop of failing writes.
         if self.persist_retry_at.is_some_and(|t| std::time::Instant::now() < t) {
             return;
         }
@@ -2781,9 +2777,8 @@ impl SpaiApp {
                 self.needs_save = false;
             }
             Err(e) => {
-                // Keep `needs_save` set: clearing it on failure was how settings silently stopped
-                // saving for the rest of a session, reported only to a console a release build
-                // does not have.
+                // Keep `needs_save` set, or settings silently stop saving for the rest of the
+                // session, reported only to a console a release build does not have.
                 eprintln!("save settings: {e:#}");
                 self.store_error = Some(format!("settings could not be saved ({e:#})"));
                 self.persist_retry_at =
@@ -2800,9 +2795,9 @@ impl SpaiApp {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Character").weak());
 
-                    // egui's defaults are a 100px button and a 200px popup: long pilot names got
-                    // truncated and the list capped at ~7 rows however tall the window was. Size
-                    // the button to the widest name and let the popup grow into the window.
+                    // egui's defaults are a 100px button and a 200px popup, which truncate long
+                    // pilot names and cap the list at ~7 rows. Size the button to the widest name
+                    // and let the popup grow into the window.
                     let font = egui::TextStyle::Button.resolve(ui.style());
                     let widest = std::iter::once("No character")
                         .chain(self.characters.iter().map(|c| c.name.as_str()))
@@ -3036,10 +3031,9 @@ impl SpaiApp {
 
     /// A character whose EVE login has stopped working, said out loud.
     ///
-    /// This is the one that went unreported for days: a refresh token expires, every ESI call
-    /// quietly returns nothing, and the symptom the user sees is the map no longer showing where
-    /// they are. Nothing was broken enough to log, so nothing was said. No dismiss, because it does
-    /// not clear itself — logging in again is what clears it.
+    /// An expired refresh token makes every ESI call quietly return nothing, and the only symptom
+    /// is the map no longer showing where they are. No dismiss, because it does not clear itself:
+    /// logging in again clears it.
     pub(crate) fn auth_banner(&mut self, ui: &mut egui::Ui) {
         let hurt: Vec<(i64, String, crate::esi::AuthProblem)> = self
             .characters
@@ -3139,9 +3133,8 @@ impl SpaiApp {
         self.cyno_generators_window(ctx);
         #[cfg(feature = "fc-rescue")]
         if self.settings.fc_rescue_enabled {
-            // The feature being on is the mode. `active` still gates the pollers, which is genuinely
-            // per-session state, but nothing switches it any more: UI-065 removed the only thing
-            // that did and left the fleet poller waiting for a flag that was never set again.
+            // The feature being on is the mode. `active` still gates the pollers, and nothing else
+            // sets it, so the fleet poller would otherwise wait forever.
             {
                 let mut r = self.rescue.lock().unwrap_or_else(|e| e.into_inner());
                 if !r.active {
@@ -3171,9 +3164,8 @@ impl SpaiApp {
                     self.jabber_view(ui, f);
                 }
             }
-            // In the main window, not a viewport of its own: an always-on-top window that had to be
-            // opened and closed was a second place to look and a second thing to lose behind the
-            // game client.
+            // In the main window, not a viewport of its own: a separate always-on-top window is a
+            // second place to look and a second thing to lose behind the game client.
             View::Rescue => self.rescue_view(ui),
             View::Settings => self.settings_view(ui),
         });
@@ -3364,9 +3356,9 @@ impl eframe::App for SpaiApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // A transparent backbuffer (the default) lets the idle alert window and the map
         // overlay be genuinely see-through; the main window and popped-out map cover their
-        // backbuffer with opaque panels, so they still look solid. A semi-opaque clear used
-        // to leak through as a dark/"black" idle alert window. EVE_SPAI_OPAQUE forces a solid
-        // clear if a driver mis-presents transparency.
+        // backbuffer with opaque panels, so they still look solid. A semi-opaque clear leaks
+        // through as a dark idle alert window. EVE_SPAI_OPAQUE forces a solid clear if a driver
+        // mis-presents transparency.
         if crate::transparency_enabled() {
             [0.0, 0.0, 0.0, 0.0]
         } else {
@@ -3940,11 +3932,9 @@ fn is_direct_message(
 
 /// Whether a conversation belongs in the Direct messages list.
 ///
-/// Being a DM is the gate; being sticky only overrides having been closed. It used to be the other
-/// way round — sticky *or* (not closed and a DM) — so anything that ever reached `jabber_sticky`
-/// was listed as a DM whatever it actually was. Every room that went unread did, and the duplicate
-/// row was also dead: two rows with the same jid ask egui to interact with one id twice, and only
-/// one of them can win the hit test.
+/// Being a DM is the gate, and being sticky only overrides having been closed. Otherwise a room that
+/// went unread would be listed twice, and the duplicate row is dead: two rows with the same jid ask
+/// egui to interact with one id twice, and only one of them can win the hit test.
 fn shows_in_dm_list(
     jid: &String,
     dm_keys: &std::collections::HashSet<&String>,
@@ -3974,7 +3964,7 @@ fn motd_one_line(motd: &str) -> String {
 
 /// The first `max` non-empty lines, with a marker when there is more behind them.
 ///
-/// A tooltip carrying a whole MOTD covered the window it was explaining. The cap is what makes it a
+/// A tooltip carrying a whole MOTD covers the window it is explaining. The cap is what makes it a
 /// preview; the marker is what says a preview is what you are looking at.
 fn motd_preview(motd: &str, max: usize) -> String {
     let lines: Vec<&str> = motd.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
@@ -4006,7 +3996,7 @@ fn forget_button(ui: &mut egui::Ui, name: &str, blocked: Option<&str>) -> bool {
         egui::RichText::new(egui_phosphor::regular::X_CIRCLE).color(ui.visuals().weak_text_color()),
     )
     .frame(false)
-    // The glyph alone allocates a 13px-wide target against the app's ~27px norm (UI-014).
+    // The glyph alone allocates a 13px-wide target against the app's ~27px norm.
     .min_size(egui::vec2(24.0, 24.0));
     let resp = ui.add_enabled(blocked.is_none(), btn);
     match blocked {
@@ -4033,8 +4023,6 @@ fn selectable_chip<'a>(
     ui.add(egui::Button::new(text).selected(selected))
 }
 
-// Compact VSCode-style Jabber tabs: uniform height, flush (no rounded box), a leading room icon or
-// presence dot, the name, and a trailing close X on hover/active.
 /// Immediate child viewports repaint in lockstep with the parent, so the count is capped rather
 /// than letting a busy main window drag an unbounded number of chat windows along at 60 fps.
 const MAX_POPOUTS: usize = 6;
@@ -4322,7 +4310,7 @@ fn jabber_tab_lifted(ui: &egui::Ui, rect: egui::Rect) {
 
 /// The chip that follows the pointer while a tab is being dragged, so the gesture is visible where
 /// the user is looking. Painted straight into a foreground layer rather than an `Area`, which would
-/// put a hit target on top of whatever it floats over (UI-020).
+/// put a hit target on top of whatever it floats over.
 fn jabber_drag_ghost(ui: &egui::Ui, win: ChatWinKey, label: &str, at: egui::Pos2) {
     const OFFSET: f32 = 14.0;
     const PAD_Y: f32 = 4.0;
@@ -4387,7 +4375,7 @@ fn jabber_tab_box(
     let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
     // Not `hovered()`: the close X is a second widget inside this rect, so once the pointer reaches
     // it the tab stops being the hovered widget. On an unselected tab that would drop the X, which
-    // un-hovers it, which draws it again — a flicker every other frame. `contains_pointer` is
+    // un-hovers it, which draws it again, a flicker every other frame. `contains_pointer` is
     // geometric and stays true underneath the X.
     let hovered = resp.contains_pointer();
     let body = egui::TextStyle::Body.resolve(ui.style());
@@ -4657,7 +4645,7 @@ pub(crate) fn dscan_view_dialog_ui(
     }
 }
 
-/// A dialog as its own normal window. Dialogs carry no always-on-top pin: the strip it needed pushed
+/// A dialog as its own normal window. Dialogs carry no always-on-top pin: the strip it needs pushes
 /// every dialog's content down, and a dialog is opened from the app, which focuses it.
 #[allow(deprecated)]
 pub(crate) fn dialog_viewport_ext(
@@ -5507,10 +5495,9 @@ fn rule_matches(
         }
     }
     if let Some(mj) = ru.max_jumps {
-        // Distance-limited rule: fire only when the report is provably within range. If the
-        // distance can't be measured — no known character location, or an unreachable target
-        // (e.g. while you're in a wormhole) — it is NOT within range, so don't fire. (Failing
-        // open here flooded alerts for k-space intel while the player sat in w-space.)
+        // Distance-limited rule: fire only when the report is provably within range. An
+        // unmeasurable distance (no known character location, or an unreachable target while in a
+        // wormhole) counts as out of range, or k-space intel floods alerts while in w-space.
         if !jumps.is_some_and(|j| j <= mj) {
             return false;
         }
@@ -5906,8 +5893,6 @@ fn goon_jid(cfg: &str, default: &str) -> String {
     if cfg.trim().is_empty() { default.to_string() } else { cfg.trim().to_string() }
 }
 
-// ---- Rescue checklist section ----
-
 #[cfg(feature = "fc-rescue")]
 const CHK_OK: egui::Color32 = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
 #[cfg(feature = "fc-rescue")]
@@ -6066,8 +6051,8 @@ pub(crate) fn notify_os(summary: &str, body: &str) {
 ///
 /// The apex rises straight up the screen rather than perpendicular to the segment. The map is a
 /// top-down projection of a plane, so "above the plane" is up, whatever direction the bridge runs;
-/// a perpendicular bow made a north-south bridge bulge sideways, which reads as a detour rather than
-/// as height.
+/// a perpendicular bow makes a north-south bridge bulge sideways, which reads as a detour rather
+/// than as height.
 pub(crate) fn arc_polyline(a: egui::Pos2, b: egui::Pos2, bow: f32) -> Vec<egui::Pos2> {
     let d = b - a;
     let len = d.length();
@@ -6339,10 +6324,6 @@ pub(crate) fn render_ping(
     });
 }
 
-/// One line of "why not to fly through here", under a hop.
-///
-/// Intel below Danger is deliberately absent: a nullsec route passes through dozens of systems
-/// someone has said something about, and a warning on all of them is a warning on none.
 /// The warning line as a button, so the intel behind it can be read.
 ///
 /// Returns whether it was clicked. Only clickable when there is intel: a line that only says "3 kills
@@ -6358,7 +6339,11 @@ fn warn_button(ui: &mut egui::Ui, w: &crate::web::route::HopWarning) -> bool {
         .clicked()
 }
 
-/// The warning as one line, or nothing when there is nothing to warn about.
+/// One line of "why not to fly through here", under a hop, or nothing when there is nothing to warn
+/// about.
+///
+/// Intel below Danger is deliberately absent: a nullsec route passes through dozens of systems
+/// someone has said something about, and a warning on all of them is a warning on none.
 fn warn_text(w: &crate::web::route::HopWarning) -> Option<(String, egui::Color32)> {
     let mut bits: Vec<String> = Vec::new();
     if w.sev >= crate::web::route::WARN_SEVERITY {

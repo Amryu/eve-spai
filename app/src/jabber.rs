@@ -230,8 +230,7 @@ pub struct JabberState {
     pub pings_unread: bool,
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
     pub unread: std::collections::BTreeSet<String>,
-    /// How many unread messages each conversation is carrying. A boolean was enough for a dot; a
-    /// list that sorts by recency and shows a count needs the number.
+    /// How many unread messages each conversation is carrying.
     pub unread_counts: std::collections::BTreeMap<String, u32>,
     /// Conversations carrying an unread message that named us.
     pub mentions: std::collections::BTreeSet<String>,
@@ -267,8 +266,8 @@ fn fire_arrival_notification(
             None if cfg.ping_rules.is_empty() => {
                 (false, true, cfg.ping_sound.clone(), 1u8, cfg.ping_volume)
             }
-            // A fleet CALL must still alert even if the FC's rules don't match it — otherwise a
-            // real fleet ping goes silent whenever any (non-matching) rule exists. This was the bug.
+            // A fleet call must still alert when the FC's rules don't match it, otherwise a real
+            // fleet ping goes silent whenever any non-matching rule exists.
             None if p.is_fleet_call() => {
                 (false, true, cfg.ping_sound.clone(), 1u8, cfg.ping_volume)
             }
@@ -700,7 +699,7 @@ async fn session(
         }
         tokio::select! {
             // An *empty* event batch is normal (a stanza that produced no high-level event, e.g. the
-            // roster reply); it does NOT mean the stream ended.
+            // roster reply); it does not mean the stream ended.
             events = agent.wait_for_events() => {
                 last_inbound = Instant::now();
                 probe_sent = false;
@@ -896,17 +895,16 @@ fn handle_event(
             }
         }
         Event::ChatMessage(_, from, body, time_info) => {
-            // Offline/history messages carry a <delay/>; we store them but must NOT
-            // sound/badge them (else the backlog of missed pings screeches on startup).
+            // Offline/history messages carry a <delay/>. They are stored but not sounded or
+            // badged, or the backlog of missed pings screeches on startup.
             let delayed = !time_info.delays.is_empty();
             let stamp = time_info
                 .delays
                 .first()
                 .map(|d| d.stamp.0.timestamp())
                 .unwrap_or(now);
-            // Key by the BARE JID (no /resource): outgoing DMs and presences use the bare form, and
-            // the UI's DM list only surfaces conversations whose key is a valid bare JID — a full
-            // JID here fragmented the thread and hid the incoming DM entirely.
+            // Key by the bare JID (no /resource): outgoing DMs and presences use the bare form, and
+            // the UI's DM list only surfaces conversations whose key is a valid bare JID.
             let key = from.to_bare().to_string();
             let local = key.split('@').next().unwrap_or_default();
             if local.eq_ignore_ascii_case(PING_SENDER) {

@@ -1,17 +1,14 @@
 //! A snapshot built entirely from fixtures.
 //!
-//! Every web ticket after this one needs a browser screenshot in its `after/` folder, and those
-//! folders are committed and pushed to a public repo. Alliance chat is operational information, so a
-//! screenshot taken against the running app would publish room names, pilots and fleet movements.
-//! This is the same rule `harness::assert_no_live_profile` enforces for the egui renders, applied to
-//! the web surface: **the demo serves fixtures and nothing else.**
+//! Web screenshots are committed to a public repo, and alliance chat is operational information.
+//! Like `harness::assert_no_live_profile` for the egui renders, **the demo serves fixtures only.**
 
 use std::collections::{BTreeMap, HashMap};
 
 use super::snapshot::*;
 use super::state::{hash_of, Pane, SharedWeb};
 
-/// 1DQ1-A in the fixture graph, where the fixture player sits.
+/// 1DQ1-A, where the fixture player sits.
 const HOME: i64 = 30_004_759;
 
 pub fn seed(web: &SharedWeb, tick: u64) {
@@ -80,15 +77,13 @@ pub fn seed(web: &SharedWeb, tick: u64) {
     }
 }
 
-/// Built once: every folder and tag gets a fresh uuid, so a rebuilt book would republish each tick
-/// and pull the ids out from under an open editor.
+/// Built once: a rebuilt book gets fresh uuids, republishing each tick and breaking an open editor.
 fn notebook() -> std::sync::Arc<crate::notes::NoteBook> {
     static BOOK: std::sync::OnceLock<std::sync::Arc<crate::notes::NoteBook>> = std::sync::OnceLock::new();
     BOOK.get_or_init(|| std::sync::Arc::new(crate::uitest::fixtures::notebook())).clone()
 }
 
-/// Grows by one report per tick, then wraps. A static page proves the layout and nothing else: a
-/// changing one proves the push channel, the age clock and, once WEB-009 lands, the sound.
+/// Grows by one report per tick, then wraps, so the push channel, age clock and sounds get exercised.
 fn reports_for(tick: u64) -> Vec<crate::intel::IntelReport> {
     use crate::uitest::fixtures as f;
     let all = [
@@ -137,9 +132,7 @@ fn cards(reports: &[crate::intel::IntelReport]) -> Vec<IntelCard> {
     cards
 }
 
-/// The alert feed: the cards a rule would have fired on, which for the fixtures is anything above
-/// Info. Without this the alerts pane renders empty in every screenshot, and WEB-007 would land with
-/// no way to see whether it draws anything at all.
+/// The alert feed: for the fixtures, every card above Info.
 fn alerts(cards: &[IntelCard]) -> crate::ipc::AlertMsg {
     let feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)> = cards
         .iter()
@@ -201,8 +194,7 @@ fn map(cards: &[IntelCard]) -> MapLive {
     }
 }
 
-/// Fake traffic, never the real roster. The screenshots go to a public repo and a contact list is
-/// operational information.
+/// Fake traffic, never the real roster.
 fn jabber() -> crate::web::jabber::JabberSide {
     use crate::web::jabber::WebConvo;
     let dm = |name: &str, unread: u32, mention: bool, ago: i64, colour: &str| WebConvo {
@@ -225,8 +217,7 @@ fn jabber() -> crate::web::jabber::JabberSide {
         mention,
         last_at: crate::uitest::fixtures::now() - ago,
         presence: None,
-        // A real one: several lines, a rule, and a link, which is the shape the header has to cope
-        // with in one line and the dialog has to keep whole.
+        // Multi-line with a rule and a link: the header shows one line, the dialog all of it.
         motd: "DEFENCE FLEETS FORM IN 1DQ1-A\n\
                ------------------------------\n\
                Ping format: [FLEET] FC name / staging / doctrine\n\
@@ -275,8 +266,7 @@ fn meta() -> Meta {
     }
 }
 
-/// A four-system map from the same fixture graph the cards use, so the map pane has something with
-/// real edges to draw.
+/// A four-system map from the fixture graph the cards use.
 pub fn map_geometry() -> super::map::Geometry {
     let systems = crate::uitest::fixtures::systems();
     let coords = [
@@ -302,9 +292,7 @@ pub fn map_geometry() -> super::map::Geometry {
     super::map::build(&rows, &systems)
 }
 
-/// The dialog sources, from the same fixture graph as everything else.
-/// A jabber session with fake history, so the pane has something to draw. Fake, for the same reason
-/// every other fixture is: these screenshots are committed.
+/// A jabber session with fake history.
 fn jabber_state() -> std::sync::Arc<std::sync::Mutex<crate::jabber::JabberState>> {
     let mut st = crate::jabber::JabberState::default();
     st.connected = true;
@@ -335,14 +323,14 @@ fn jabber_state() -> std::sync::Arc<std::sync::Mutex<crate::jabber::JabberState>
     std::sync::Arc::new(std::sync::Mutex::new(st))
 }
 
+/// The dialog sources, from the same fixture graph as everything else.
 pub fn detail() -> super::Detail {
     let d = super::detail();
     let mut st = d.lock().unwrap();
     st.graph = Some(crate::uitest::fixtures::systems());
     st.player_sys = Some(HOME);
     st.jabber = Some(jabber_state());
-    // Sov, traffic, a scanned hole, an upgrade and a bookmark, so every section of the system
-    // dialog has something in it. Empty sections screenshot as if they were never written.
+    // Fill every section of the system dialog, since an empty one screenshots as missing.
     st.status = std::collections::HashMap::from([
         (HOME, crate::systemstatus::SysFlags {
             sov: Some("Goonswarm Federation".to_owned()),

@@ -33,7 +33,7 @@ impl SpaiApp {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             // Deliberately not the theme. It reaches the page through the published snapshot, and
-            // hashing it here meant every colour change tore the listener down and put it back.
+            // hashing it here would restart the listener on every colour change.
             (w.port, w.bind_lan, w.allow_writeback, &w.token, &w.bind_addr, w.no_pairing)
                 .hash(&mut h);
             h.finish()
@@ -55,10 +55,9 @@ impl SpaiApp {
             no_pairing: w.no_pairing,
             map: self.web_map_geometry(),
         };
-        // The ship dialog reads hull stats out of the SDE and `DetailState` never had a handle, so
-        // every one of them said "not in the static data". A second connection rather than the
+        // The ship dialog reads hull stats out of the SDE. A second connection rather than the
         // app's: `Store` owns a rusqlite `Connection` and cannot be shared across threads, and
-        // SQLite is perfectly happy with a second reader on the same file.
+        // SQLite allows a second reader on the same file.
         {
             let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
             if d.store.is_none() {

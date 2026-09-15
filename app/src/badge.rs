@@ -1,9 +1,7 @@
 //! Unread-count badges for the tray and taskbar icons.
 //!
-//! There is no text rasteriser available here: the app's fonts live inside egui and cannot be
-//! reached from the thread that owns the tray, and pulling in a font crate to draw at most three
-//! characters would be a dependency for two digits and a plus sign. So the glyphs are a 3x5 bitmap
-//! font, scaled to whatever the icon can afford.
+//! egui's fonts cannot be reached from the tray thread, and a font crate for at most three
+//! characters is not worth the dependency, so the glyphs are a scaled 3x5 bitmap font.
 
 /// Discord's rule, and the one the sidebar badges use: a real number up to 99, then `99+`.
 pub fn label(count: u32) -> String {
@@ -36,7 +34,6 @@ const GLYPH_W: i32 = 3;
 const GLYPH_H: i32 = 5;
 const GAP: i32 = 1;
 
-/// Red, and white text on it, matching the dot this replaced.
 const BADGE_BG: [u8; 4] = [0xE0, 0x4C, 0x4C, 0xFF];
 const BADGE_FG: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 

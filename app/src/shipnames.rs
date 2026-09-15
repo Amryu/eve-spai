@@ -133,8 +133,7 @@ pub fn aliases(by_name: &HashMap<String, (i64, String)>) -> Vec<(String, (i64, S
             continue;
         }
         let a: String = words.iter().filter_map(|w| w.chars().next()).collect();
-        // Require >= 3 letters — 2-letter acronyms collide with common words
-        // ("is" = InterBus Shuttle, matching the English word "is").
+        // 2-letter acronyms collide with common words ("is" = InterBus Shuttle).
         if a.len() < 3 {
             continue;
         }
@@ -197,7 +196,7 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     // Optimal string alignment: like Levenshtein but an adjacent transposition ("saber" vs
-    // "sabre") costs 1, not 2 — the most common keyboard typo. Needs the row two back.
+    // "sabre") costs 1, not 2, since it is the most common keyboard typo. Needs the row two back.
     let mut prev2: Vec<usize> = vec![0; b.len() + 1];
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut cur = vec![0usize; b.len() + 1];

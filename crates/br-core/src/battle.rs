@@ -470,10 +470,8 @@ fn group_indices(
     dist: &impl Fn(i64, i64) -> Option<u32>,
 ) -> Vec<Vec<usize>> {
     let n = engagements.len();
-    // Belligerent ids per engagement (victim + attackers). Two engagements only chain into the
-    // same battle if they share a participant — otherwise unrelated fights close in space and
-    // time (around a hub like Jita) get merged into one report. Chaining is transitive, so a
-    // battle still holds together through a shared participant on any linking engagement.
+    // Two engagements only chain into the same battle if they share a participant, otherwise
+    // unrelated fights near a hub like Jita merge into one report. Chaining is transitive.
     let parties: Vec<std::collections::HashSet<i64>> = engagements
         .iter()
         .map(|e| {
@@ -839,9 +837,8 @@ fn infer_sides(engs: &[Engagement]) -> Vec<Side> {
             party_by_key.entry(key(&a.party)).or_insert_with(|| a.party.clone());
         }
     }
-    // Sort the keys so party→index assignment is deterministic. HashMap key order is randomized
-    // per map instance, which made the agglomerative merge's net-score tie-breaks (lowest index
-    // wins) — and thus the side partition — differ on every call, so the split preview flickered.
+    // HashMap key order is randomized per instance, and the merge breaks ties by lowest index, so
+    // unsorted keys would change the side partition between calls.
     let mut keys: Vec<String> = party_by_key.keys().cloned().collect();
     keys.sort_unstable();
     let idx: HashMap<String, usize> =

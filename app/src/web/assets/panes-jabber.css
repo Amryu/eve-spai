@@ -1,4 +1,3 @@
-/* Two columns inside the pane: the list decides what the other one shows. */
 .jwrap { flex: 1 1 auto; min-height: 0; display: flex; gap: 0.5rem; }
 .jlist {
   flex: 0 0 11rem;
@@ -29,14 +28,12 @@
   padding: 0.22rem 0.3rem;
   cursor: pointer;
 }
-/* The whole row, not the name. A label-sized target in a full-width list means most of the row does
-   nothing when clicked and nothing when pointed at, which reads as the list being dead. */
+/* The whole row is the target, not just the name. */
 .jrow:hover, .jstart:hover, .jrrow:hover { background: var(--surface-hi); }
 .jrow.on { background: var(--surface-active); }
 .jrow.mentioned .jname { color: var(--accent); font-weight: 600; }
 .jname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Drawn, not a glyph: Phosphor's circle is an outline, and a hollow dot reads as "unknown" rather
-   than as a presence. */
+/* Drawn, because Phosphor's circle is an outline and a hollow dot reads as "unknown". */
 .jdot { flex: 0 0 auto; width: 0.55rem; height: 0.55rem; border-radius: 50%; }
 .jico { flex: 0 0 auto; line-height: 1; }
 .jico { color: var(--muted); font-size: 0.95rem; }
@@ -62,19 +59,15 @@
 }
 .jlog { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0.3rem 0; }
 .jmsg { display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.1rem 0; align-items: baseline; }
-/* Both sides of a conversation are the accent, at two strengths. Muted grey for the other person
-   made the half of the conversation you did not write the harder half to read. */
+/* Both sides use the accent at two strengths, so the other person's lines stay readable. */
 .jwho { color: color-mix(in srgb, var(--accent) 55%, var(--fg)); font-weight: 600; }
 .jmsg.me .jwho { color: var(--accent); }
 .jat { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-/* `pre-wrap`, because a chat message's own line breaks are part of what was said: a fleet ping is
-   several lines and they were arriving as one run-on paragraph. */
+/* `pre-wrap`, because a message's line breaks matter, e.g. a multi-line fleet ping. */
 .jbody { flex: 1 1 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
 .jbody a { color: var(--accent); }
-/* Being named is the one thing in a busy room worth finding by eye. */
 .jmention { color: var(--warning); background: color-mix(in srgb, var(--warning) 18%, transparent); border-radius: 2px; padding: 0 0.15rem; }
-/* A continued line sits under the one before it, indented to where the body starts rather than
-   under the name that is no longer there. */
+/* A continued line is indented to where the body starts. */
 .jmsg.cont { padding-top: 0; }
 .jmsg.cont .jbody { padding-left: 0.2rem; }
 
@@ -99,8 +92,7 @@
   cursor: pointer;
 }
 
-/* A real modal, unlike the system window: starting a conversation is a thing you finish before you
-   go back to reading, and it is opened from a list that would otherwise be underneath it. */
+/* A real modal, since starting a conversation is finished before going back to reading. */
 .jstartdlg {
   position: fixed;
   inset: 0;
@@ -123,12 +115,11 @@
   padding: 0.35rem 0.4rem;
   margin-bottom: 0.4rem;
 }
-/* A fixed height, not a cap: a dialog that shrinks as you type moves the thing you are reaching for
-   out from under the pointer. Capped at a hundred in the script, so this is what the rest live
-   behind. */
+/* A fixed height, because a dialog that shrinks as you type moves targets from under the pointer.
+   The script caps the list at a hundred. */
 .jrecent { height: 16rem; overflow-y: auto; }
 
-/* The list costs more than it gives on a phone, so it stacks above the conversation. */
+/* On a phone the list stacks above the conversation. */
 @media (max-width: 640px) {
   .jwrap { flex-direction: column; }
   .jlist {
@@ -141,8 +132,7 @@
   .jrow, .jstart { padding: 0.45rem 0.3rem; }
 }
 
-/* The room topic on the room's own header bar. One line, whatever the MOTD does: it is a notice
-   board, and wrapped in full it would be most of a phone screen before the first message. */
+/* The room topic, one line, or a long MOTD fills a phone screen before the first message. */
 .jtopic {
   flex: 1 1 auto;
   min-width: 0;
@@ -162,15 +152,14 @@
   background: none;
   border: 0;
   cursor: pointer;
-  /* Thumb-sized: this is the only way to the full text on a phone, where there is no hover. */
+  /* Thumb-sized: the only way to the full text on a phone, where there is no hover. */
   min-width: 2.25rem;
   min-height: 2.25rem;
 }
 .jmotd:hover { color: var(--fg); }
 
 .motddlg .mpanel { min-width: min(34rem, 92vw); max-height: 80vh; overflow-y: auto; }
-/* A MOTD is written with its own line breaks and alignment; reflowing it loses the shape it was
-   written in, which is often what makes it readable. */
+/* A MOTD keeps its own line breaks and alignment, which often make it readable. */
 .jmotdtext {
   margin: 0;
   white-space: pre-wrap;
@@ -179,8 +168,8 @@
   color: var(--fg);
 }
 
-/* The row and its close button, side by side. The button is a sibling because a button inside a
-   button is invalid HTML: the browser hoists it out and the row stops being clickable. */
+/* The close button is a sibling, because a button inside a button is invalid HTML and the browser
+   hoists it out. */
 .jrowwrap { display: flex; align-items: center; }
 .jrowwrap > .jrow { min-width: 0; }
 .jshut {
@@ -195,14 +184,13 @@
   border-radius: 4px;
   cursor: pointer;
   padding: 0.3rem;
-  /* Out of the way until the row is pointed at: a column of crosses down a conversation list reads
-     as clutter, and closing is not the thing you came to the list to do. */
+  /* Hidden until hover, or a column of crosses reads as clutter. */
   opacity: 0;
 }
 .jrowwrap:hover .jshut,
 .jshut:focus-visible { opacity: 1; }
 .jshut:hover { color: var(--hostile); background: var(--surface-hi); }
-/* No hover on a touch screen, so the button is always there and thumb-sized. */
+/* No hover on a touch screen, so the button is always shown and thumb-sized. */
 @media (hover: none) {
   .jshut { opacity: 1; min-width: 2.25rem; min-height: 2.25rem; }
 }

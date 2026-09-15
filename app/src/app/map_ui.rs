@@ -317,8 +317,7 @@ impl SpaiApp {
                 ui.label(egui::RichText::new(&info.name).strong());
             }
             // The same menu the browser has, in the same order, plus the one thing the browser has
-            // no use for. Every other entry this had was a second way to do something the route
-            // drag now does, and a menu of second ways is how nobody finds the first one.
+            // no use for. The route drag covers everything else.
             let anchors = self.map_route_anchors.clone();
             let at = anchors.iter().position(|&a| a == sid);
             let planning = self.map_route_kind_active();
@@ -631,7 +630,7 @@ impl SpaiApp {
         let line_col = ui.visuals().weak_text_color().gamma_multiply(0.5);
         // A gate says where you are as much as where you can go: inside a constellation, out of it,
         // or out of the region entirely. On a map of identical solid lines none of those boundaries
-        // were visible.
+        // would be visible.
         let region_of: std::collections::HashMap<i64, i64> =
             self.map_draw.iter().map(|s| (s.id, s.region_id)).collect();
         let constel_of: std::collections::HashMap<i64, &str> = self
@@ -683,8 +682,8 @@ impl SpaiApp {
         }
         if ov.bridges {
             let bridge_col = egui::Color32::from_rgb(0x3A, 0xD0, 0x6A);
-            // A bridge a route is flying is drawn by that route, animated and in the route's colour.
-            // The plain arc underneath put two lines on one hop, one of them saying nothing.
+            // A bridge a route is flying is drawn by that route, animated and in the route's colour,
+            // so the plain arc is skipped rather than putting two lines on one hop.
             let mut routed: std::collections::HashSet<(i64, i64)> = Default::default();
             let mut note = |a: i64, b: i64| {
                 routed.insert((a.min(b), a.max(b)));
@@ -939,9 +938,8 @@ impl SpaiApp {
                         };
                         if let Some((prev_id, prev_p)) = last {
                             let leg = self.leg_kind(prev_id, id, jumped_hole);
-                            // A bridge arcs here too. This route was the last place drawing one as a
-                            // straight line, which on a map where every other layer arcs them said
-                            // this particular hop was a gate.
+                            // A bridge arcs here too: every other layer arcs them, so a straight
+                            // line would read as a gate.
                             if leg == Leg::Bridge {
                                 polyline_flow(
                                     &painter,
@@ -1145,7 +1143,7 @@ impl SpaiApp {
                     2 | 1 => {
                         let col = if h.kind == 2 { PICK_JUMP } else { PICK_BRIDGE };
                         // Dashed and crawling like the gates and like the browser's: an arc drawn
-                        // solid while the rest of the route moved read as a different kind of thing.
+                        // solid while the rest of the route moves reads as a different kind of thing.
                         polyline_flow(&painter, &arc_polyline(a, b, BRIDGE_BOW), col, phase);
                     }
                     // Crawling dashes, the same as the browser's and the same as this map's own
@@ -1170,7 +1168,7 @@ impl SpaiApp {
             if let Some(tj) = &o.titan_jump {
                 if let (Some(&a), Some(&b)) = (pos.get(&tj.from), pos.get(&tj.to)) {
                     // Its own colour, and running the other way: a different ship doing a different
-                    // thing, and sharing the capital-jump colour said they were the same move.
+                    // thing, which the capital-jump colour would present as the same move.
                     polyline_flow(
                         &painter,
                         &arc_polyline(a, b, BRIDGE_BOW),
@@ -1853,8 +1851,8 @@ impl SpaiApp {
                 self.view = nav::View::Jabber;
                 self.jabber_chat = None;
             }
-            // Opens the window. There is no mode to toggle any more: the feature being on *is* the
-            // mode, so a button that could turn it off was a second switch for one decision.
+            // Opens the window only. The feature being on is the mode, so a toggle here would be a
+            // second switch for one decision.
             let btn = egui::Button::new(format!(
                 "{}  Open rescue window",
                 icon::WARNING_OCTAGON
