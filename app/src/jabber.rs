@@ -95,15 +95,12 @@ fn classify(e: xmpp::tokio_xmpp::Error) -> Preflight {
 pub struct ChatMsg {
     pub from: String,
     pub body: String,
-    #[allow(dead_code)]
     pub time: i64,
     pub outgoing: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Contact {
-    #[allow(dead_code)]
-    pub jid: String,
     pub name: Option<String>,
     pub groups: Vec<String>,
     pub presence: Presence,
@@ -149,16 +146,6 @@ pub enum Cmd {
     JoinRoom { room: String },
     LeaveRoom { room: String },
     SetPresence { show: Presence, status: String },
-    /// Browse the rooms a MUC service advertises (disco#items to the service JID).
-    ///
-    /// Nothing sends this since the Convos rework dropped the Channels pane, which held the only
-    /// "browse the server" button. Kept rather than deleted: the disco#items and per-room disco#info
-    /// handling behind it is a working piece of XMPP, and throwing it away to quiet one warning would
-    /// cost more to write again than it costs to leave.
-    #[allow(dead_code)]
-    DiscoRooms { service: String },
-    /// Probe one room's join policy (disco#info to the room JID).
-    DiscoRoomInfo { room: String },
     /// Skip the remaining reconnect backoff and try again now.
     RetryNow,
 }
@@ -177,12 +164,6 @@ enum SessionEnd {
     /// Connection lost; the reason is shown while backing off.
     Dropped(String),
 }
-
-/// Iq ids matched when their results come back on `Event::Iq`.
-const DISCO_ROOMS_ID: &str = "spai-disco-rooms";
-const DISCO_ROOM_INFO_ID: &str = "spai-room-info";
-/// Cap on how many rooms we access-probe per browse, so a huge service can't flood the server.
-const DISCO_INFO_CAP: usize = 500;
 
 #[derive(Clone, Default)]
 pub struct JabberNotifyCfg {
@@ -216,33 +197,6 @@ pub fn mention_hit(body: &str, names: &[String]) -> bool {
     })
 }
 
-/// Progress of a MUC service room-browse (disco#items).
-#[derive(Default, Clone, PartialEq)]
-pub enum DirState {
-    #[default]
-    Idle,
-    Loading,
-    Ready,
-    Error(String),
-}
-
-/// Whether the browsing user can join a listed room. Determined by a per-room disco#info: a room
-/// is `Restricted` when it advertises `muc_membersonly` or `muc_passwordprotected`. `Unknown` until
-/// its probe returns; the UI only offers rooms confirmed `Open`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RoomAccess {
-    Unknown,
-    Open,
-    Restricted,
-}
-
-#[derive(Clone)]
-pub struct RoomListing {
-    pub jid: String,
-    pub name: String,
-    pub access: RoomAccess,
-}
-
 #[derive(Default)]
 pub struct JabberState {
     pub enabled: bool,
@@ -272,11 +226,6 @@ pub struct JabberState {
     pub rooms_left: std::collections::BTreeSet<String>,
     /// Room MOTD (MUC subject) keyed by room bare JID, last-known value.
     pub room_subjects: std::collections::BTreeMap<String, String>,
-    /// disco#items browse of the MUC service, with per-room join access.
-    pub room_directory: Vec<RoomListing>,
-    pub room_directory_state: DirState,
-    /// Rooms whose access probe (disco#info) is still outstanding.
-    pub room_directory_pending: usize,
     pub notify: Vec<(String, bool)>,
     pub pings_unread: bool,
     pub chats: std::collections::BTreeMap<String, Vec<ChatMsg>>,
@@ -855,40 +804,6 @@ async fn session(
                     }
                     let _ = agent.send_stanza(pres).await;
                 }
-                Cmd::DiscoRooms { service } => {
-                    use xmpp::parsers::disco::DiscoItemsQuery;
-                    use xmpp::parsers::iq::Iq;
-                    match service.parse::<xmpp::jid::Jid>() {
-                        Ok(to) => {
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.room_directory.clear();
-                                s.room_directory_state = DirState::Loading;
-                            }
-                            let iq = Iq::from_get(
-                                DISCO_ROOMS_ID,
-                                DiscoItemsQuery { node: None, rsm: None },
-                            )
-                            .with_to(to);
-                            let _ = agent.send_stanza(iq).await;
-                            ctx.request_repaint();
-                        }
-                        Err(_) => {
-                            state.lock().unwrap().room_directory_state =
-                                DirState::Error(format!("Bad MUC address: {service}"));
-                            ctx.request_repaint();
-                        }
-                    }
-                }
-                Cmd::DiscoRoomInfo { room } => {
-                    use xmpp::parsers::disco::DiscoInfoQuery;
-                    use xmpp::parsers::iq::Iq;
-                    if let Ok(to) = room.parse::<xmpp::jid::Jid>() {
-                        let iq = Iq::from_get(DISCO_ROOM_INFO_ID, DiscoInfoQuery { node: None })
-                            .with_to(to);
-                        let _ = agent.send_stanza(iq).await;
-                    }
-                }
                 Cmd::RetryNow => {}
             },
         }
@@ -952,7 +867,6 @@ fn handle_event(
             let mut s = state.lock().unwrap();
             let known = s.presences.get(&jid).cloned();
             let entry = s.roster.entry(jid.clone()).or_insert_with(|| Contact {
-                jid: jid.clone(),
                 name: None,
                 groups: Vec::new(),
                 presence: Presence::default(),
@@ -1060,78 +974,6 @@ fn handle_event(
         Event::RoomSubject(room, _who, subject, _) => {
             if !subject.trim().is_empty() {
                 state.lock().unwrap().room_subjects.insert(room.to_string(), subject);
-            }
-        }
-        Event::Iq(iq) => {
-            use xmpp::parsers::disco::{DiscoInfoResult, DiscoItemsResult};
-            use xmpp::parsers::iq::{IqHeader, IqPayload};
-            let (IqHeader { id, from, .. }, data) = iq.split();
-            if id == DISCO_ROOMS_ID {
-                match data {
-                    IqPayload::Result(Some(payload)) => match DiscoItemsResult::try_from(payload) {
-                        Ok(res) => {
-                            let mut rooms: Vec<RoomListing> = res
-                                .items
-                                .into_iter()
-                                .map(|it| {
-                                    let jid = it.jid.to_string();
-                                    let name = it.name.unwrap_or_else(|| {
-                                        jid.split('@').next().unwrap_or(&jid).to_owned()
-                                    });
-                                    RoomListing { jid, name, access: RoomAccess::Unknown }
-                                })
-                                .collect();
-                            rooms.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                            // Probe each room's join policy; only confirmed-open rooms are offered.
-                            let probe: Vec<String> =
-                                rooms.iter().take(DISCO_INFO_CAP).map(|r| r.jid.clone()).collect();
-                            {
-                                let mut s = state.lock().unwrap();
-                                s.room_directory_pending = probe.len();
-                                s.room_directory = rooms;
-                                s.room_directory_state = DirState::Ready;
-                            }
-                            for room in probe {
-                                let _ = cmds.send(Cmd::DiscoRoomInfo { room });
-                            }
-                        }
-                        Err(e) => {
-                            state.lock().unwrap().room_directory_state =
-                                DirState::Error(format!("Bad reply: {e}"));
-                        }
-                    },
-                    IqPayload::Error(err) => {
-                        state.lock().unwrap().room_directory_state =
-                            DirState::Error(format!("Server refused the room list: {err:?}"));
-                    }
-                    _ => {}
-                }
-            } else if id == DISCO_ROOM_INFO_ID {
-                // Match the probe to its room by the responder JID; a restricted room advertises
-                // muc_membersonly or muc_passwordprotected (or errors out entirely).
-                let room = from.map(|f| f.to_bare().to_string());
-                let access = match &data {
-                    IqPayload::Result(Some(payload)) => {
-                        match DiscoInfoResult::try_from(payload.clone()) {
-                            Ok(info) => {
-                                let restricted = info.features.contains("muc_membersonly")
-                                    || info.features.contains("muc_passwordprotected");
-                                if restricted { RoomAccess::Restricted } else { RoomAccess::Open }
-                            }
-                            Err(_) => RoomAccess::Restricted,
-                        }
-                    }
-                    _ => RoomAccess::Restricted,
-                };
-                if let Some(room) = room {
-                    let mut s = state.lock().unwrap();
-                    if let Some(r) = s.room_directory.iter_mut().find(|r| r.jid == room) {
-                        if r.access == RoomAccess::Unknown {
-                            r.access = access;
-                            s.room_directory_pending = s.room_directory_pending.saturating_sub(1);
-                        }
-                    }
-                }
             }
         }
         Event::RoomMessage(_, room, nick, body, time_info) => {

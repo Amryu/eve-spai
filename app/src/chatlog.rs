@@ -3,8 +3,6 @@ use std::path::Path;
 #[derive(Clone, Debug)]
 pub struct ChatMeta {
     pub channel: String,
-    #[allow(dead_code)]
-    pub listener: String,
 }
 
 #[derive(Clone, Debug)]
@@ -29,15 +27,13 @@ fn decode_utf16le(bytes: &[u8]) -> String {
 
 fn parse(text: &str) -> Option<(ChatMeta, Vec<ChatMessage>)> {
     let mut channel: Option<String> = None;
-    let mut listener: Option<String> = None;
     let mut messages = Vec::new();
 
     for raw in text.lines() {
         let line = raw.trim_start_matches('\u{feff}').trim();
         if let Some(rest) = line.strip_prefix("Channel Name:") {
             channel = Some(rest.trim().to_owned());
-        } else if let Some(rest) = line.strip_prefix("Listener:") {
-            listener = Some(rest.trim().to_owned());
+        } else if line.starts_with("Listener:") {
         } else if let Some(m) = parse_message(line) {
             messages.push(m);
         }
@@ -46,7 +42,6 @@ fn parse(text: &str) -> Option<(ChatMeta, Vec<ChatMessage>)> {
     Some((
         ChatMeta {
             channel: channel?,
-            listener: listener.unwrap_or_default(),
         },
         messages,
     ))

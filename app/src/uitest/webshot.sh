@@ -23,24 +23,21 @@ url="${SPAI_WEBSHOT_URL:-http://127.0.0.1:6799/?t=demo}"
 # ~/Downloads and get copied out, which is the whole reason an obvious `--screenshot /tmp/x.png`
 # silently produces nothing.
 stage="$HOME/Downloads/.spai-webshot"
-# Assets are served with an ETag keyed on the crate version, so a profile kept between runs answers
-# from cache and shoots the previous build's CSS and JS. Every run starts from an empty profile.
+# A profile kept between runs can answer from its cache and shoot stale CSS and JS, so every run
+# starts from an empty profile.
 rm -rf "$stage/profile"
 mkdir -p "$stage/profile" "$out"
 
 # A server left over from an earlier run serves that run's assets, so a CSS or JS change screenshots
 # as if it had never been made. Reuse is not worth the hours that costs: always start a fresh one.
 fuser -k 6799/tcp >/dev/null 2>&1 || true
-demo_pid=""
-if true; then
-  echo "starting the demo server"
-  ( cd "$repo" && exec cargo test --bin eve-spai webdemo -- --ignored --nocapture >"$stage/demo.log" 2>&1 ) &
-  demo_pid=$!
-  for _ in $(seq 1 60); do
-    curl -sf --max-time 1 http://127.0.0.1:6799/healthz >/dev/null && break
-    sleep 1
-  done
-fi
+echo "starting the demo server"
+( cd "$repo" && exec cargo test --bin eve-spai webdemo -- --ignored --nocapture >"$stage/demo.log" 2>&1 ) &
+demo_pid=$!
+for _ in $(seq 1 60); do
+  curl -sf --max-time 1 http://127.0.0.1:6799/healthz >/dev/null && break
+  sleep 1
+done
 curl -sf --max-time 2 http://127.0.0.1:6799/healthz >/dev/null || { echo "demo server never came up; see $stage/demo.log" >&2; exit 1; }
 
 for size in "${sizes[@]}"; do

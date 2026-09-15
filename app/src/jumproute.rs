@@ -206,10 +206,8 @@ pub fn alternatives(systems: &[MapSystem], max_ly: f64, a: i64, b: i64) -> Vec<i
         .collect()
 }
 
-/// Kept for the tests that pin the fatigue and fuel rules against the wiki figures. The app reads the
-/// per-hop costs directly now, so nothing in a release build calls this, and deleting it would delete
-/// the check rather than the dead weight.
-#[allow(dead_code)]
+/// A whole route's totals, for the tests that pin the fatigue and fuel rules against the wiki figures.
+#[cfg(test)]
 pub struct RouteCost {
     pub jumps: usize,
     pub total_ly: f64,
@@ -259,7 +257,7 @@ pub fn hop_costs(
     out
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn route_cost(systems: &[MapSystem], path: &[i64], class: &ShipClass, jfc: u32) -> RouteCost {
     let hops = hop_costs(systems, path, class, jfc);
     RouteCost {

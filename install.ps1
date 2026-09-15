@@ -8,7 +8,7 @@
 # Override the install dir with $env:EVE_SPAI_DIR.
 $ErrorActionPreference = "Stop"
 
-$Repo   = "Amryu/eve-spai"   # <-- set to your owner/repo
+$Repo   = "Amryu/eve-spai"
 $Dir    = if ($env:EVE_SPAI_DIR) { $env:EVE_SPAI_DIR } else { "$env:LOCALAPPDATA\Programs\eve-spai" }
 $Api    = "https://api.github.com/repos/$Repo"
 $Asset  = "eve-spai-windows-x86_64.exe"

@@ -82,7 +82,6 @@ impl BattleReportDoc {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartyKind {
     Alliance,
@@ -94,10 +93,8 @@ pub enum PartyKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Party {
-    #[allow(dead_code)]
     pub id: i64,
     pub name: String,
-    #[allow(dead_code)]
     pub kind: PartyKind,
 }
 
@@ -133,24 +130,6 @@ pub struct Engagement {
 
 fn default_true() -> bool {
     true
-}
-
-impl Engagement {
-    #[allow(dead_code)]
-    pub fn killer(&self) -> Option<&Party> {
-        let mut counts: HashMap<i64, usize> = HashMap::new();
-        for a in &self.attackers {
-            if a.party.id != 0 {
-                *counts.entry(a.party.id).or_default() += 1;
-            }
-        }
-        counts
-            .into_iter()
-            .max_by_key(|(_, c)| *c)
-            .and_then(|(id, _)| self.attackers.iter().find(|a| a.party.id == id))
-            .or_else(|| self.attackers.first())
-            .map(|a| &a.party)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

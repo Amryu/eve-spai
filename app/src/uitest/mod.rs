@@ -6,8 +6,8 @@
 //! Two tiers:
 //! - `cargo test --bin eve-spai uitest` runs the layout and interaction assertions in [`checks`].
 //!   No GPU, fast enough for every test run.
-//! - `cargo test --bin eve-spai uitest -- --ignored --nocapture` additionally renders every scene
-//!   to `target/uishots/*.png` for eyeballing.
+//! - `cargo test --bin eve-spai uitest_screenshots -- --ignored` renders every scene to
+//!   `target/uishots/*.png` for eyeballing.
 //!
 //! # Covering a dialog
 //!

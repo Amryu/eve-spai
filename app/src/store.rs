@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS kill_details (
     near_dist           REAL
 );
 -- Per-character zKill-activity + account-age cache (4h TTL on active_recent; birthday
--- is fetched once). Persisted so a restart doesn't re-storm zKill. Consumed in Phase 2.
+-- is fetched once). Persisted so a restart doesn't re-storm zKill.
 CREATE TABLE IF NOT EXISTS pilot_activity (
     char_id          INTEGER PRIMARY KEY,
     active_recent    INTEGER NOT NULL,
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS pilot_activity (
     last_corp_change INTEGER,
     fetched_at       INTEGER NOT NULL
 );
--- Per-pilot revival expiry (Phase 2): a pilot revived by wide roaming (or that is still
+-- Per-pilot revival expiry: a pilot revived by wide roaming (or that is still
 -- being mentioned) stays kept until this instant, refreshed on every fresh intel mention.
 -- Name lower-cased.
 CREATE TABLE IF NOT EXISTS pilot_revival (
@@ -334,8 +334,8 @@ impl Store {
         }
     }
 
-    /// Settings, auth and anything the user authored. Always attempted; a failure still teaches
-    /// the disk monitor something, where the old `let _ =` taught nobody anything.
+    /// Settings, auth and anything the user authored. Always attempted, and a failure is reported to
+    /// the disk monitor.
     fn exec_essential(&self, sql: &str, p: impl rusqlite::Params) -> Result<usize> {
         self.conn.execute(sql, p).inspect_err(crate::disk::note_sqlite_error).map_err(Into::into)
     }
@@ -450,16 +450,6 @@ impl Store {
     /// The user chose to start fresh, so the stash is no longer worth protecting.
     pub fn unlock_settings(&self) {
         self.settings_locked.set(false);
-    }
-
-    /// The raw blob that failed to parse, so the stash stops being write-only.
-    ///
-    /// Nothing reads it yet. Kept because it is the recovery half of a safety net whose writing half
-    /// is live: `settings.bad` is the only copy of a config that failed to parse, and deleting the
-    /// reader would make the stash write-only again, which is the state this exists to end.
-    #[allow(dead_code)]
-    pub fn stashed_settings(&self) -> Option<String> {
-        self.kv_get("settings.bad")
     }
 
     pub fn kv_get(&self, key: &str) -> Option<String> {
@@ -838,17 +828,6 @@ impl Store {
         out
     }
 
-    #[allow(dead_code)]
-    pub fn known_negatives(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if let Ok(mut stmt) = self.conn.prepare("SELECT name_lc FROM known_pilots WHERE char_id = 0") {
-            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                out.extend(rows.flatten());
-            }
-        }
-        out
-    }
-
     pub fn add_known_pilot(&self, name: &str, char_id: i64) {
         // Upgrade a previously-stored negative (char_id 0) once ESI confirms a real
         // character with the same name, but never downgrade a confirmed pilot back to 0
@@ -962,7 +941,6 @@ impl Store {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_battle_tag(&self, kill_id: i64, tag: Option<i64>) {
         let _ = self.conn.execute(
             "INSERT INTO battle_overrides(kill_id, group_tag, excluded) VALUES(?1, ?2, 0)
@@ -971,7 +949,6 @@ impl Store {
         );
     }
 
-    #[allow(dead_code)]
     pub fn set_battle_excluded(&self, kill_id: i64, excluded: bool) {
         let _ = self.conn.execute(
             "INSERT INTO battle_overrides(kill_id, group_tag, excluded) VALUES(?1, NULL, ?2)
@@ -980,19 +957,17 @@ impl Store {
         );
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn clear_battle_override(&self, kill_id: i64) {
         let _ = self.conn.execute("DELETE FROM battle_overrides WHERE kill_id=?1", params![kill_id]);
     }
 
-    #[allow(dead_code)]
     pub fn next_battle_tag(&self) -> i64 {
         self.conn
             .query_row("SELECT COALESCE(MAX(group_tag),0)+1 FROM battle_overrides", [], |r| r.get(0))
             .unwrap_or(1)
     }
 
-    #[allow(dead_code)]
     pub fn set_scrub(&self, kill_id: i64, char_id: i64, on: bool) {
         let _ = if on {
             self.conn.execute(
@@ -1007,7 +982,6 @@ impl Store {
         };
     }
 
-    #[allow(dead_code)]
     pub fn load_battle_overrides(&self) -> crate::battle::Overrides {
         let mut o = crate::battle::Overrides::default();
         if let Ok(mut stmt) =
@@ -1036,7 +1010,6 @@ impl Store {
         o
     }
 
-    #[allow(dead_code)]
     pub fn list_excluded_engagements(&self) -> Vec<crate::battle::Engagement> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
@@ -1050,7 +1023,6 @@ impl Store {
         out
     }
 
-    #[allow(dead_code)]
     pub fn list_scrubs(&self) -> Vec<(i64, i64)> {
         let mut out = Vec::new();
         if let Ok(mut stmt) =
@@ -1730,7 +1702,6 @@ impl Store {
         systems
     }
 
-    #[allow(dead_code)]
     pub fn nearest_celestial(&self, system_id: i64, pos: [f64; 3]) -> Option<(String, f64)> {
         let mut stmt = self
             .conn

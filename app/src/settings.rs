@@ -29,8 +29,6 @@ pub struct Settings {
     pub alert_enabled: bool,
     #[serde(default = "default_alert_jumps")]
     pub alert_within_jumps: u32,
-    #[serde(default = "default_true")]
-    pub alert_combat: bool,
     #[serde(default)]
     pub alert_only_undocked: bool,
     #[serde(default = "default_true")]
@@ -75,10 +73,6 @@ pub struct Settings {
     pub route_folders: Vec<String>,
     #[serde(default)]
     pub sov_upgrades: Vec<SovUpgrade>,
-    #[serde(default)]
-    pub jump_favourites: Vec<i64>,
-    #[serde(default)]
-    pub saved_jump_routes: Vec<SavedJumpRoute>,
     #[serde(default)]
     pub saved_map_routes: Vec<SavedMapRoute>,
     #[serde(default)]
@@ -718,25 +712,6 @@ pub struct SovUpgrade {
     pub upgrade: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SavedJumpRoute {
-    pub name: String,
-    #[serde(default)]
-    pub folder: String,
-    pub from: i64,
-    #[serde(default)]
-    pub waypoints: Vec<i64>,
-    pub to: i64,
-    #[serde(default)]
-    pub ship: usize,
-    #[serde(default)]
-    pub jdc: u32,
-    #[serde(default)]
-    pub jfc: u32,
-    #[serde(default)]
-    pub jumps: usize,
-}
-
 /// A route built on the map, saved whole.
 ///
 /// Everything that went into it, not just the endpoints: a route is the anchors *and* what you told
@@ -978,7 +953,6 @@ impl Default for Settings {
             jump_bridges: Vec::new(),
             alert_enabled: true,
             alert_within_jumps: 5,
-            alert_combat: true,
             alert_only_undocked: false,
             kill_intel: true,
             kill_intel_jumps: default_kill_jumps(),
@@ -997,8 +971,6 @@ impl Default for Settings {
             saved_routes: Vec::new(),
             route_folders: Vec::new(),
             sov_upgrades: Vec::new(),
-            jump_favourites: Vec::new(),
-            saved_jump_routes: Vec::new(),
             saved_map_routes: Vec::new(),
             jump_dock: Vec::new(),
             coalitions: default_coalitions(),

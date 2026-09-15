@@ -1719,7 +1719,6 @@ impl Sightings {
         });
     }
 
-    #[allow(dead_code)]
     pub fn distinct_systems_since(&self, name: &str, window_secs: i64, now: i64) -> usize {
         let cutoff = now - window_secs;
         let Some(v) = self.map.get(&name.to_lowercase()) else {
@@ -1732,14 +1731,13 @@ impl Sightings {
             .len()
     }
 
-    #[allow(dead_code)]
     pub fn revived(&self, name: &str, now: i64) -> bool {
         self.distinct_systems_since(name, 3600, now) >= 3
             || self.distinct_systems_since(name, SIGHTINGS_WINDOW, now) >= 5
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn analyze(
     text: &str,
     systems: &Systems,

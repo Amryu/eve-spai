@@ -25,8 +25,6 @@ mod esilog;
 mod eveproc;
 mod kills;
 mod factions;
-mod gamelog;
-mod gamewatcher;
 mod geo;
 mod image_cache;
 mod instance;

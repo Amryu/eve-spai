@@ -194,7 +194,6 @@ enum MapMode {
     Travel,
     Hunting,
     Safety,
-    JumpPlan,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -204,23 +203,15 @@ enum PasteKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum RouteKind {
-    #[default]
-    Travel,
-    Jump,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RouteView {
     #[default]
-    ByType,
+    ByFolder,
     ByName,
     BySystem,
 }
 
 #[derive(Clone)]
 struct RouteItem {
-    kind: RouteKind,
     name: String,
     folder: String,
     from: i64,
@@ -236,7 +227,6 @@ impl MapMode {
             MapMode::Travel => "Travel",
             MapMode::Hunting => "Hunting",
             MapMode::Safety => "Safety",
-            MapMode::JumpPlan => "Jump Plan",
         }
     }
     fn overlay_preset(self) -> MapOverlays {
@@ -251,7 +241,7 @@ impl MapMode {
             camps: !matches!(self, MapMode::Standard),
             bridges: matches!(self, MapMode::Travel | MapMode::Hunting),
             activity: match self {
-                MapMode::Standard | MapMode::JumpPlan => ActivityMode::Off,
+                MapMode::Standard => ActivityMode::Off,
                 _ => ActivityMode::ShipKills,
             },
             cyno_gen: false,
@@ -278,6 +268,9 @@ fn default_threat_jumps() -> u32 {
 }
 
 mod notes_ui;
+
+/// Fired alerts, newest last, as (time, text), for the dashboard.
+type AlertLog = std::sync::Arc<std::sync::Mutex<Vec<(i64, String)>>>;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum IntelClick {
@@ -437,10 +430,8 @@ pub struct SpaiApp {
     pub(crate) verdict_explainer_open: bool,
     filter_add_result: std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>,
     battle_filter_confirm_reset: bool,
-    battle_filter_gen: u64,
     battle_overrides: crate::zkill::SharedOverrides,
     battle_break_shared: std::sync::Arc<std::sync::atomic::AtomicI64>,
-    battle_overrides_gen: u64,
     battle_overrides_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     battle_add_queue: std::sync::Arc<std::sync::Mutex<Vec<i64>>>,
     battle_excluded_count: usize,
@@ -499,7 +490,7 @@ pub struct SpaiApp {
     bridges_applied: Vec<crate::settings::JumpBridge>,
     system_status: crate::systemstatus::SharedStatus,
     alerts_engine: std::sync::Arc<AlertEngine>,
-    recent_alerts: crate::gamewatcher::AlertLog,
+    recent_alerts: AlertLog,
     alert_feed: Vec<(crate::intel::IntelReport, crate::settings::Severity)>,
     pub(crate) alert_rules_open: bool,
     alert_selected_rule: Option<u64>,
@@ -507,7 +498,6 @@ pub struct SpaiApp {
         std::collections::HashMap<u64, Vec<(crate::intel::IntelReport, crate::settings::Severity, bool)>>,
     alert_shared: SharedAlertWindow,
     alert_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
-    os_notify: std::sync::Arc<std::sync::atomic::AtomicBool>,
     proc_monitor: crate::procstat::Monitor,
     pub(crate) jabber: crate::jabber::SharedJabber,
     jabber_tx: Option<crate::jabber::CmdSender>,
@@ -532,7 +522,6 @@ pub struct SpaiApp {
     /// Conversations pinned into the Convos list for as long as the tab stays open, because they
     /// went unread while it was. Reading one must not make it disappear mid-click.
     jabber_sticky: std::collections::BTreeSet<String>,
-    /// Channel JIDs whose MOTD is expanded (full text) in the Channels list.
     /// The room whose MOTD is open in its own window, if any.
     jabber_motd_window: Option<String>,
     jabber_collapsed: std::collections::HashSet<String>,
@@ -645,9 +634,8 @@ pub struct SpaiApp {
     route_save_folder: String,
     route_search: String,
     route_new_folder: String,
-    route_kind: RouteKind,
     route_view: RouteView,
-    route_edit: Option<(RouteKind, String, String)>,
+    route_edit: Option<(String, String)>,
     route_edit_name: String,
     route_edit_folder: String,
     travel_avoid: Vec<i64>,
@@ -655,16 +643,11 @@ pub struct SpaiApp {
     travel_sov_dialog_open: bool,
     travel_route: Option<Vec<i64>>,
     ctx_menu_system: Option<i64>,
-    jump_plan_from: Option<i64>,
-    jump_plan_to: Option<i64>,
     jump_ship: usize,
     jump_jdc: u32,
     jump_jfc: u32,
     jump_skills: crate::esi::SharedJumpSkills,
-    jump_waypoints: Vec<i64>,
-    jump_favourites: std::collections::HashSet<i64>,
     jump_systems: Option<std::sync::Arc<Vec<crate::store::MapSystem>>>,
-    jump_route_key: Option<u64>,
     map_view: crate::map::MapView,
     map_initialized: bool,
     map_history: Vec<crate::map::MapView>,
@@ -782,7 +765,6 @@ pub struct SpaiApp {
     ping_viewport_cb: std::sync::Arc<dyn Fn(&mut egui::Ui, egui::ViewportClass) + Send + Sync>,
     pilots: crate::pilot::SharedPilots,
     affiliations: crate::affiliation::SharedAffil,
-    #[allow(dead_code)]
     activity: crate::activity::SharedActivity,
     sightings: crate::intel::SharedSightings,
     revivals: crate::watcher::SharedRevivals,
@@ -816,14 +798,6 @@ pub struct SpaiApp {
     /// Set when the target sits outside titan range of staging.
     #[cfg(feature = "fc-rescue")]
     rescue_range: Option<RangeWarning>,
-    #[cfg(feature = "fc-rescue")]
-    /// System last pushed to ESI as the auto-destination while the rescue window is open. Reset when
-    /// the window closes so reopening re-applies, and tracked so a static ping isn't re-pushed each frame.
-    #[cfg(feature = "fc-rescue")]
-    rescue_dest_set: Option<i64>,
-    /// Set once the saved geometry has been applied to the rescue viewport after opening. Prevents
-    /// re-asserting position/size every frame (which fights the user dragging/resizing the window).
-    #[cfg(feature = "fc-rescue")]
     /// Fleet poller handle guard: `true` once `spawn_fleet_poller` has been started.
     #[cfg(feature = "fc-rescue")]
     fleet_poller_started: bool,
@@ -902,7 +876,6 @@ impl SpaiApp {
 
         settings.theme.apply(ctx);
 
-        let combat_on = settings.alert_combat;
         if !settings.alerts.seeded {
             settings.alerts.rules.insert(0, crate::settings::default_rule());
             settings.alerts.seeded = true;
@@ -1052,8 +1025,6 @@ impl SpaiApp {
             }
             std::sync::Arc::new(std::sync::Mutex::new(map))
         };
-        let jump_favourites: std::collections::HashSet<i64> =
-            settings.jump_favourites.iter().copied().collect();
 
         let intel_state =
             std::sync::Arc::new(std::sync::Mutex::new(crate::intel::IntelState::default()));
@@ -1064,7 +1035,7 @@ impl SpaiApp {
         }
         let killfeed: crate::zkill::SharedKillFeed =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let recent_alerts: crate::gamewatcher::AlertLog =
+        let recent_alerts: AlertLog =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let alert_shared: SharedAlertWindow =
             std::sync::Arc::new(std::sync::Mutex::new(AlertWindowState::default()));
@@ -1239,10 +1210,8 @@ impl SpaiApp {
             verdict_explainer_open: false,
             filter_add_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             battle_filter_confirm_reset: false,
-            battle_filter_gen: 0,
             battle_overrides: std::sync::Arc::new(std::sync::Mutex::new(crate::battle::Overrides::default())),
             battle_break_shared: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(crate::battle::BATTLE_BREAK_SECS)),
-            battle_overrides_gen: 0,
             battle_overrides_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             battle_add_queue: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             battle_excluded_count: 0,
@@ -1286,7 +1255,6 @@ impl SpaiApp {
             rule_feeds: std::collections::HashMap::new(),
             alert_shared,
             alert_viewport_cb,
-            os_notify: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(combat_on)),
             proc_monitor: crate::procstat::Monitor::new(),
             jabber,
             jabber_tx: None,
@@ -1411,8 +1379,7 @@ impl SpaiApp {
             route_save_folder: String::new(),
             route_search: String::new(),
             route_new_folder: String::new(),
-            route_kind: RouteKind::Travel,
-            route_view: RouteView::ByType,
+            route_view: RouteView::ByFolder,
             route_edit: None,
             route_edit_name: String::new(),
             route_edit_folder: String::new(),
@@ -1421,16 +1388,11 @@ impl SpaiApp {
             travel_sov_dialog_open: false,
             travel_route: None,
             ctx_menu_system: None,
-            jump_plan_from: None,
-            jump_plan_to: None,
             jump_ship: 0,
             jump_jdc: 5,
             jump_jfc: 5,
             jump_skills: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            jump_waypoints: Vec::new(),
-            jump_favourites,
             jump_systems: None,
-            jump_route_key: None,
             map_view: crate::map::MapView::Universe,
             map_initialized: false,
             map_history: Vec::new(),
@@ -1551,10 +1513,6 @@ impl SpaiApp {
             rescue_range_for: None,
             #[cfg(feature = "fc-rescue")]
             rescue_range: None,
-            #[cfg(feature = "fc-rescue")]
-            #[cfg(feature = "fc-rescue")]
-            rescue_dest_set: None,
-            #[cfg(feature = "fc-rescue")]
             #[cfg(feature = "fc-rescue")]
             fleet_poller_started: false,
             rescue_cyno_input: String::new(),
@@ -1977,7 +1935,6 @@ impl SpaiApp {
         f.intel_ttl_secs = self.settings.intel_ttl_secs;
         f.severity = self.settings.severity.clone();
         f.ping_rules = self.settings.jabber_ping_rules.clone();
-        f.alert_enabled = self.settings.alert_enabled;
         f.compact = self.settings.alerts.compact_mode;
         f.theme = self.settings.theme.clone();
         f.allow_writeback = self.settings.web.allow_writeback;
@@ -3187,7 +3144,7 @@ impl SpaiApp {
     /// The X hides, always. Closing a tab is not destructive and does not ask: leaving a room is
     /// the sidebar's remove button and nothing else. This used to branch on a sticky one-time
     /// answer, which silently turned every close into a leave, delve911 included.
-    fn close_jabber_tab(&mut self, jid: &str, is_room: bool, _win: ChatWinKey) {
+    fn close_jabber_tab(&mut self, jid: &str, is_room: bool) {
         // Rescue Mode holds its rooms open, so closing one would reopen on the next frame.
         if self.jabber_rescue_rooms().iter().any(|r| r == jid) {
             return;
@@ -4978,7 +4935,7 @@ impl SpaiApp {
             out.push(TabAction::Select { win, jid });
         }
         if let Some((jid, is_room)) = close_tab {
-            out.push(TabAction::Close { win, jid, is_room });
+            out.push(TabAction::Close { jid, is_room });
         }
         if let Some(jid) = promote {
             out.push(TabAction::Promote { win, jid });
@@ -5451,8 +5408,8 @@ impl SpaiApp {
                     }
                     self.win_set_active(win, jid);
                 }
-                TabAction::Close { win, jid, is_room } => {
-                    self.close_jabber_tab(&jid, is_room, win);
+                TabAction::Close { jid, is_room } => {
+                    self.close_jabber_tab(&jid, is_room);
                 }
                 TabAction::Promote { win, jid } => {
                     let list = match win {
@@ -5660,11 +5617,10 @@ impl SpaiApp {
     #[cfg(feature = "fc-rescue")]
     fn rescue_push_destination(&mut self, sid: i64) {
         if self.active_character == "No character" {
-            return; // nothing to route; leave rescue_dest_set unset so auto-set retries once a char is active
+            return;
         }
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         self.set_destination_esi(cid, self.active_character.clone(), sid);
-        self.rescue_dest_set = Some(sid);
     }
 
     fn set_destination_esi(&self, cid: String, cname: String, dest: i64) {
@@ -7815,7 +7771,6 @@ impl SpaiApp {
         }
         if changed {
             self.needs_save = true;
-            self.battle_filter_gen = self.battle_filter_gen.wrapping_add(1);
             self.battle_filter_gen_shared.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *self.battle_filter.lock().unwrap() = self.settings.battles.clone();
         }
@@ -7888,7 +7843,6 @@ impl SpaiApp {
             self.battle_excluded_count = store.count_excluded();
             self.battle_scrub_count = store.count_scrubs();
         }
-        self.battle_overrides_gen = self.battle_overrides_gen.wrapping_add(1);
         self.battle_overrides_gen_shared
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.battle_detail_cache = None;
@@ -10321,7 +10275,7 @@ impl SpaiApp {
                         }
                     }
                 } else if ui.button(format!("Open in {}", site_label(&site))).clicked() {
-                    let _ = open::that(fit_url(&site, ship_id, loss));
+                    let _ = open::that(fit_url(&site, loss));
                 }
             });
         });
@@ -10732,7 +10686,7 @@ impl SpaiApp {
                     let st = self.jabber.lock().unwrap_or_else(|e| e.into_inner());
                     st.rooms.contains(&jid) || st.rooms_left.contains(&jid)
                 };
-                self.close_jabber_tab(&jid, is_room, ChatWinKey::Main);
+                self.close_jabber_tab(&jid, is_room);
             }
             crate::ipc::OverlayToMain::Bookmark { id, on } => {
                 self.settings.bookmarks.retain(|&b| b != id);
@@ -11596,11 +11550,7 @@ impl SpaiApp {
                 match nearest_system(click, &pos, 10.0) {
                     Some(id) => {
                         self.map_selected = (self.map_selected != Some(id)).then_some(id);
-                        if self.map_mode == MapMode::JumpPlan {
-                            self.jump_click_edit(id);
-                        } else {
-                            self.dock_system(id);
-                        }
+                        self.dock_system(id);
                     }
                     None => self.map_selected = None,
                 }
@@ -11715,16 +11665,6 @@ impl SpaiApp {
                 self.right_dock_tab = RightDockTab::System;
                 ui.close();
             }
-            let fav = self.jump_favourites.contains(&sid);
-            if ui.button(if fav { "Unfavourite" } else { "Favourite" }).clicked() {
-                if fav {
-                    self.jump_favourites.remove(&sid);
-                } else {
-                    self.jump_favourites.insert(sid);
-                }
-                self.persist_jump_favourites();
-                ui.close();
-            }
             ui.separator();
             let view = self.notes_view.clone();
             let label = notes_folder_label(&view);
@@ -11751,12 +11691,6 @@ impl SpaiApp {
         }
 
         let dot = (0.5 * self.map_zoom).clamp(0.7, 12.0);
-        // Rescue mode strips overlays down to bridges + cyno-gen + jump range without touching the
-        // user's saved toggles. `ov` is the effective set used for all gating below (no early
-        // returns follow).
-        // The rescue mode no longer touches the map. Stripping the overlays down to a preset meant
-        // the map changed under whoever was reading it, for a reason they did not ask for and could
-        // not see, and the layer switches they had set were silently ignored while it lasted.
         #[cfg(feature = "fc-rescue")]
         let rescue_active = self.settings.fc_rescue_enabled;
         let ov = self.map_overlays;
@@ -12392,30 +12326,14 @@ impl SpaiApp {
             }
         }
 
-        if self.map_mode == MapMode::JumpPlan {
-            let jcol = egui::Color32::from_rgb(0x9C, 0x6A, 0xF7);
+
+        // Where a capital can sit, while a capital route is being planned.
+        if !self.map_route_anchors.is_empty() && self.map_route_kind != "gate" {
             let teal = egui::Color32::from_rgb(0x4D, 0xB6, 0xAC);
             for d in self.jump_dockable_ids() {
                 if let Some(p) = pos.get(&d) {
                     painter.circle_stroke(*p, 9.0, egui::Stroke::new(1.5, teal));
                 }
-            }
-            let gold = egui::Color32::from_rgb(0xFF, 0xD5, 0x4F);
-            for fav in &self.jump_favourites {
-                if let Some(p) = pos.get(fav) {
-                    painter.circle_filled(*p + egui::vec2(0.0, -11.0), 3.0, gold);
-                }
-            }
-            if let Some(p) = self.jump_plan_from.and_then(|s| pos.get(&s)) {
-                painter.circle_stroke(*p, 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0x66, 0xBB, 0x6A)));
-            }
-            for wp in &self.jump_waypoints {
-                if let Some(p) = pos.get(wp) {
-                    painter.circle_stroke(*p, 7.0, egui::Stroke::new(2.0, jcol));
-                }
-            }
-            if let Some(p) = self.jump_plan_to.and_then(|s| pos.get(&s)) {
-                painter.circle_stroke(*p, 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0xFF, 0xA7, 0x26)));
             }
         }
 
@@ -13447,7 +13365,7 @@ impl SpaiApp {
         if new == self.map_mode {
             return;
         }
-        let keeps_layers = |m: MapMode| matches!(m, MapMode::Standard | MapMode::JumpPlan);
+        let keeps_layers = |m: MapMode| m == MapMode::Standard;
         if keeps_layers(self.map_mode) {
             self.standard_overlays = self.map_overlays;
         }
@@ -13507,22 +13425,10 @@ impl SpaiApp {
         let mut items: Vec<RouteItem> = Vec::new();
         for r in &self.settings.saved_routes {
             items.push(RouteItem {
-                kind: RouteKind::Travel,
                 name: r.name.clone(),
                 folder: r.folder.clone(),
                 from: r.start,
                 to: r.end,
-                jumps: r.jumps,
-                wp: r.waypoints.len(),
-            });
-        }
-        for r in &self.settings.saved_jump_routes {
-            items.push(RouteItem {
-                kind: RouteKind::Jump,
-                name: r.name.clone(),
-                folder: r.folder.clone(),
-                from: r.from,
-                to: r.to,
                 jumps: r.jumps,
                 wp: r.waypoints.len(),
             });
@@ -13537,18 +13443,11 @@ impl SpaiApp {
         folders.dedup();
 
         let q = self.route_search.trim().to_lowercase();
-        let can_save = match self.route_kind {
-            RouteKind::Travel => self.travel_start.is_some() && self.travel_end.is_some(),
-            RouteKind::Jump => self.jump_plan_from.is_some() && self.jump_plan_to.is_some(),
-        };
+        let can_save = self.travel_start.is_some() && self.travel_end.is_some();
         let view = self.route_view;
         let editing = self.route_edit.clone();
         let mut edit_name = self.route_edit_name.clone();
         let mut edit_folder = self.route_edit_folder.clone();
-        let kind_label = |k: RouteKind| match k {
-            RouteKind::Travel => "Travel",
-            RouteKind::Jump => "Jump",
-        };
 
         let mut do_save = false;
         let mut new_folder = false;
@@ -13565,13 +13464,6 @@ impl SpaiApp {
             .default_height(500.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("route_kind")
-                        .selected_text(kind_label(self.route_kind))
-                        .width(78.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.route_kind, RouteKind::Jump, "Jump");
-                            ui.selectable_value(&mut self.route_kind, RouteKind::Travel, "Travel");
-                        });
                     ui.add(
                         egui::TextEdit::singleline(&mut self.route_save_name)
                             .desired_width(130.0)
@@ -13618,7 +13510,7 @@ impl SpaiApp {
                 ui.horizontal(|ui| {
                     ui.label("View");
                     ui.selectable_value(&mut self.route_view, RouteView::ByName, "By Name");
-                    ui.selectable_value(&mut self.route_view, RouteView::ByType, "By Type");
+                    ui.selectable_value(&mut self.route_view, RouteView::ByFolder, "By Folder");
                     ui.selectable_value(&mut self.route_view, RouteView::BySystem, "By System");
                 });
                 ui.add(
@@ -13633,13 +13525,12 @@ impl SpaiApp {
                     let mut emit = |ui: &mut egui::Ui, it: &RouteItem| {
                         let is_ed = editing
                             .as_ref()
-                            .is_some_and(|(k, f, n)| *k == it.kind && *f == it.folder && *n == it.name);
+                            .is_some_and(|(f, n)| *f == it.folder && *n == it.name);
                         match route_item_row(
                             ui,
                             it,
                             &nm(it.from),
                             &nm(it.to),
-                            kind_label(it.kind),
                             is_ed,
                             &mut edit_name,
                             &mut edit_folder,
@@ -13677,37 +13568,22 @@ impl SpaiApp {
                                 });
                             }
                         }
-                        RouteView::ByType => {
-                            for (kind, title) in
-                                [(RouteKind::Jump, "Jump Routes"), (RouteKind::Travel, "Travel routes")]
-                            {
-                                let group: Vec<&RouteItem> =
-                                    visible.iter().copied().filter(|it| it.kind == kind).collect();
-                                if group.is_empty() {
+                        RouteView::ByFolder => {
+                            for it in visible.iter().filter(|it| it.folder.is_empty()) {
+                                emit(ui, it);
+                            }
+                            for f in &folders {
+                                let in_f: Vec<&&RouteItem> = visible.iter().filter(|it| &it.folder == f).collect();
+                                if in_f.is_empty() {
                                     continue;
                                 }
-                                egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
-                                    for it in group.iter().filter(|it| it.folder.is_empty()) {
-                                        emit(ui, it);
-                                    }
-                                    for f in &folders {
-                                        let in_f: Vec<&&RouteItem> =
-                                            group.iter().filter(|it| &it.folder == f).collect();
-                                        if in_f.is_empty() {
-                                            continue;
+                                egui::CollapsingHeader::new(format!("{}  {f}", egui_phosphor::regular::FOLDER))
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        for it in in_f {
+                                            emit(ui, it);
                                         }
-                                        egui::CollapsingHeader::new(format!(
-                                            "{}  {f}",
-                                            egui_phosphor::regular::FOLDER
-                                        ))
-                                        .default_open(true)
-                                        .show(ui, |ui| {
-                                            for it in in_f {
-                                                emit(ui, it);
-                                            }
-                                        });
-                                    }
-                                });
+                                    });
                             }
                         }
                     }
@@ -13729,20 +13605,11 @@ impl SpaiApp {
             self.needs_save = true;
         }
         if let Some(it) = to_delete {
-            match it.kind {
-                RouteKind::Travel => self
-                    .settings
-                    .saved_routes
-                    .retain(|r| !(r.folder == it.folder && r.name == it.name)),
-                RouteKind::Jump => self
-                    .settings
-                    .saved_jump_routes
-                    .retain(|r| !(r.folder == it.folder && r.name == it.name)),
-            }
+            self.settings.saved_routes.retain(|r| !(r.folder == it.folder && r.name == it.name));
             self.needs_save = true;
         }
         if let Some(it) = start_edit {
-            self.route_edit = Some((it.kind, it.folder.clone(), it.name.clone()));
+            self.route_edit = Some((it.folder.clone(), it.name.clone()));
             self.route_edit_name = it.name;
             self.route_edit_folder = it.folder;
         }
@@ -13750,32 +13617,12 @@ impl SpaiApp {
             self.route_edit = None;
         }
         if commit_edit {
-            if let Some((kind, of, on)) = self.route_edit.take() {
+            if let Some((of, on)) = self.route_edit.take() {
                 let (nn, nf) = (self.route_edit_name.trim().to_owned(), self.route_edit_folder.clone());
                 if !nn.is_empty() {
-                    match kind {
-                        RouteKind::Travel => {
-                            if let Some(r) = self
-                                .settings
-                                .saved_routes
-                                .iter_mut()
-                                .find(|r| r.folder == of && r.name == on)
-                            {
-                                r.name = nn;
-                                r.folder = nf;
-                            }
-                        }
-                        RouteKind::Jump => {
-                            if let Some(r) = self
-                                .settings
-                                .saved_jump_routes
-                                .iter_mut()
-                                .find(|r| r.folder == of && r.name == on)
-                            {
-                                r.name = nn;
-                                r.folder = nf;
-                            }
-                        }
+                    if let Some(r) = self.settings.saved_routes.iter_mut().find(|r| r.folder == of && r.name == on) {
+                        r.name = nn;
+                        r.folder = nf;
                     }
                     self.needs_save = true;
                 }
@@ -13794,98 +13641,48 @@ impl SpaiApp {
         let nm = |id: i64| {
             self.systems.as_ref().and_then(|g| g.info_of(id)).map(|i| i.name.clone()).unwrap_or_default()
         };
-        match self.route_kind {
-            RouteKind::Travel => {
-                if self.travel_start.is_none() || self.travel_end.is_none() {
-                    return;
-                }
-                let name = if self.route_save_name.trim().is_empty() {
-                    let mut parts = vec![nm(self.travel_start.unwrap_or(0))];
-                    parts.extend(self.travel_waypoints.iter().map(|w| nm(*w)));
-                    parts.push(nm(self.travel_end.unwrap_or(0)));
-                    parts.join(" \u{2192} ")
-                } else {
-                    self.route_save_name.trim().to_owned()
-                };
-                self.settings.saved_routes.push(crate::settings::SavedRoute {
-                    name,
-                    folder: self.route_save_folder.clone(),
-                    start: self.travel_start.unwrap_or(0),
-                    end: self.travel_end.unwrap_or(0),
-                    waypoints: self.travel_waypoints.clone(),
-                    jumps: self.travel_route.as_ref().map(|r| r.len().saturating_sub(1)).unwrap_or(0),
-                    constraints: Some(crate::settings::RouteConstraints {
-                        sec: self.travel_sec,
-                        metric: self.travel_metric.to_u8(),
-                        regional_gates: self.travel_regional_gates,
-                        jump_bridges: self.travel_jump_bridges,
-                        avoid_camps: self.travel_avoid_camps,
-                        avoid: self.travel_avoid.clone(),
-                        avoid_sov: self.travel_avoid_sov.iter().cloned().collect(),
-                    }),
-                });
-            }
-            RouteKind::Jump => {
-                if self.jump_plan_from.is_none() || self.jump_plan_to.is_none() {
-                    return;
-                }
-                let name = if self.route_save_name.trim().is_empty() {
-                    format!("{} \u{2192} {}", nm(self.jump_plan_from.unwrap_or(0)), nm(self.jump_plan_to.unwrap_or(0)))
-                } else {
-                    self.route_save_name.trim().to_owned()
-                };
-                self.settings.saved_jump_routes.push(crate::settings::SavedJumpRoute {
-                    name,
-                    folder: self.route_save_folder.clone(),
-                    from: self.jump_plan_from.unwrap_or(0),
-                    waypoints: self.jump_waypoints.clone(),
-                    to: self.jump_plan_to.unwrap_or(0),
-                    ship: self.jump_ship,
-                    jdc: self.jump_jdc,
-                    jfc: self.jump_jfc,
-                    // Unreachable since the route panel replaced the jump-plan mode, and the field
-                    // that counted the hops went with it. Left rather than deleted because the save
-                    // dialog's kinds are a matched set.
-                    jumps: 0,
-                });
-            }
+        if self.travel_start.is_none() || self.travel_end.is_none() {
+            return;
         }
+        let name = if self.route_save_name.trim().is_empty() {
+            let mut parts = vec![nm(self.travel_start.unwrap_or(0))];
+            parts.extend(self.travel_waypoints.iter().map(|w| nm(*w)));
+            parts.push(nm(self.travel_end.unwrap_or(0)));
+            parts.join(" \u{2192} ")
+        } else {
+            self.route_save_name.trim().to_owned()
+        };
+        self.settings.saved_routes.push(crate::settings::SavedRoute {
+            name,
+            folder: self.route_save_folder.clone(),
+            start: self.travel_start.unwrap_or(0),
+            end: self.travel_end.unwrap_or(0),
+            waypoints: self.travel_waypoints.clone(),
+            jumps: self.travel_route.as_ref().map(|r| r.len().saturating_sub(1)).unwrap_or(0),
+            constraints: Some(crate::settings::RouteConstraints {
+                sec: self.travel_sec,
+                metric: self.travel_metric.to_u8(),
+                regional_gates: self.travel_regional_gates,
+                jump_bridges: self.travel_jump_bridges,
+                avoid_camps: self.travel_avoid_camps,
+                avoid: self.travel_avoid.clone(),
+                avoid_sov: self.travel_avoid_sov.iter().cloned().collect(),
+            }),
+        });
         self.route_save_name.clear();
         self.needs_save = true;
     }
 
     fn load_route_item(&mut self, it: &RouteItem) {
-        match it.kind {
-            RouteKind::Travel => {
-                if let Some(r) = self
-                    .settings
-                    .saved_routes
-                    .iter()
-                    .find(|r| r.folder == it.folder && r.name == it.name)
-                    .cloned()
-                {
-                    self.load_route(&r);
-                    self.set_map_mode(MapMode::Travel);
-                }
-            }
-            RouteKind::Jump => {
-                if let Some(r) = self
-                    .settings
-                    .saved_jump_routes
-                    .iter()
-                    .find(|r| r.folder == it.folder && r.name == it.name)
-                    .cloned()
-                {
-                    self.jump_plan_from = Some(r.from);
-                    self.jump_waypoints = r.waypoints;
-                    self.jump_plan_to = Some(r.to);
-                    self.jump_ship = r.ship.min(crate::jumproute::SHIP_CLASSES.len() - 1);
-                    self.jump_jdc = r.jdc.min(5);
-                    self.jump_jfc = r.jfc.min(5);
-                    self.jump_route_key = None;
-                    self.set_map_mode(MapMode::JumpPlan);
-                }
-            }
+        if let Some(r) = self
+            .settings
+            .saved_routes
+            .iter()
+            .find(|r| r.folder == it.folder && r.name == it.name)
+            .cloned()
+        {
+            self.load_route(&r);
+            self.set_map_mode(MapMode::Travel);
         }
     }
 
@@ -14096,29 +13893,6 @@ impl SpaiApp {
                 (id, name, sec, c, r)
             })
             .collect()
-    }
-
-    fn jump_click_edit(&mut self, id: i64) {
-        if self.jump_plan_from.is_none() {
-            self.jump_plan_from = Some(id);
-            return;
-        }
-        if Some(id) == self.jump_plan_from
-            || Some(id) == self.jump_plan_to
-            || self.jump_waypoints.contains(&id)
-        {
-            return;
-        }
-        if let Some(old_dest) = self.jump_plan_to.replace(id) {
-            self.jump_waypoints.push(old_dest);
-        }
-    }
-
-    fn persist_jump_favourites(&mut self) {
-        let mut v: Vec<i64> = self.jump_favourites.iter().copied().collect();
-        v.sort_unstable();
-        self.settings.jump_favourites = v;
-        self.needs_save = true;
     }
 
     /// Systems tagged for docking in an online folder. A supercarrier or titan needs Super Docking; any
@@ -15131,7 +14905,6 @@ impl SpaiApp {
                 .on_hover_text("Save, organise and load named routes")
                 .clicked()
             {
-                self.route_kind = RouteKind::Travel;
                 self.routes_dialog_open = true;
             }
             ui.checkbox(&mut self.travel_regional_gates, "Region-crossing gates");
@@ -15633,7 +15406,6 @@ impl SpaiApp {
                                 let label = match self.map_mode {
                                     MapMode::Travel => "Travel",
                                     MapMode::Safety | MapMode::Hunting => "Threat",
-                                    MapMode::JumpPlan => "Jump Plan",
                                     MapMode::Standard => "",
                                 };
                                 if ui
@@ -15684,7 +15456,6 @@ impl SpaiApp {
                                 MapMode::Travel => self.travel_panel_content(ui),
                                 MapMode::Safety => self.threat_board(ui, false),
                                 MapMode::Hunting => self.threat_board(ui, true),
-                                MapMode::JumpPlan => self.jump_plan_content(ui),
                                 MapMode::Standard => {}
                             },
                             RightDockTab::System => {
@@ -15721,8 +15492,6 @@ impl SpaiApp {
                         MapMode::Travel,
                         MapMode::Hunting,
                         MapMode::Safety,
-                        // No JumpPlan: the route panel replaced it and nothing fills the overlay it
-                        // used to draw, so selecting it showed an empty map mode.
                     ] {
                         ui.selectable_value(&mut mode, m, m.label());
                     }
@@ -16893,7 +16662,6 @@ impl SpaiApp {
                 }
             });
         }
-        // TODO: neighbouring intel density over time (sparkline) — deferred.
         SystemInfoOut { nav, show_on_map, intel_click, open_const, open_region }
     }
 
@@ -19805,7 +19573,7 @@ struct AlertRuntime {
 struct AlertEngine {
     config: std::sync::Mutex<AlertConfig>,
     runtime: std::sync::Mutex<AlertRuntime>,
-    recent: crate::gamewatcher::AlertLog,
+    recent: AlertLog,
     alert_shared: SharedAlertWindow,
     ctx: egui::Context,
     overlay_stdin: std::sync::Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
@@ -19815,7 +19583,7 @@ struct AlertEngine {
 
 impl AlertEngine {
     fn new(
-        recent: crate::gamewatcher::AlertLog,
+        recent: AlertLog,
         last_alert_time: i64,
         alert_shared: SharedAlertWindow,
         ctx: egui::Context,
@@ -21065,8 +20833,6 @@ impl eframe::App for SpaiApp {
         self.maybe_rebuild_graph(&ctx);
         self.persist_view_options();
         self.discover_sov_alliances(&ctx);
-        self.os_notify
-            .store(self.settings.alert_combat, std::sync::atomic::Ordering::Relaxed);
         self.drain_alerts();
         self.root_chrome(ui);
 
@@ -21911,7 +21677,7 @@ impl JabberFrame {
 pub(crate) enum TabAction {
     /// `jid: None` is the Fleet pings pseudo-tab, which only the main window has.
     Select { win: ChatWinKey, jid: Option<String> },
-    Close { win: ChatWinKey, jid: String, is_room: bool },
+    Close { jid: String, is_room: bool },
     /// Relocate a tab, or reorder it inside its own bar. Routed through `TabSet`, which cannot see
     /// `Settings`, so a move can never persist the jid as closed.
     Move { jid: String, to: ChatWinKey, index: Option<usize> },
@@ -22544,10 +22310,10 @@ fn status_dot(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
     ui.painter().circle_filled(rect.center(), d / 2.0, color);
 }
 
-/// The sidebar's "remove from the list" affordance. Sized and framed to match the contacts star it
-/// sits beside (UI-019: an icon control is judged against its neighbours, not against a px floor).
 const PINNED_ROOM_TIP: &str = "Rescue Mode needs this channel. Turn Rescue Mode off to remove it. Closing its tab is safe: the room stays joined.";
 
+/// The sidebar's "remove from the list" affordance, sized and framed to match the contacts star it
+/// sits beside, since an icon control is judged against its neighbours rather than a pixel floor.
 fn forget_button(ui: &mut egui::Ui, name: &str, blocked: Option<&str>) -> bool {
     let btn = egui::Button::new(
         egui::RichText::new(egui_phosphor::regular::X_CIRCLE).color(ui.visuals().weak_text_color()),
@@ -25106,7 +24872,6 @@ fn route_item_row(
     it: &RouteItem,
     from_name: &str,
     to_name: &str,
-    kind_label: &str,
     is_editing: bool,
     edit_name: &mut String,
     edit_folder: &mut String,
@@ -25116,7 +24881,7 @@ fn route_item_row(
     if is_editing {
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(edit_name).desired_width(120.0).hint_text("Name"));
-            egui::ComboBox::from_id_salt(("route_edit_folder", kind_label, it.name.as_str()))
+            egui::ComboBox::from_id_salt(("route_edit_folder", it.name.as_str()))
                 .selected_text(if edit_folder.is_empty() {
                     "(root)".to_owned()
                 } else {
@@ -25140,7 +24905,6 @@ fn route_item_row(
             if ui.button("Load").clicked() {
                 act = RowAction::Load;
             }
-            ui.label(egui::RichText::new(kind_label).weak());
             ui.label(egui::RichText::new(&it.name).strong());
             ui.label(egui::RichText::new(format!("{from_name} \u{2192} {to_name}")).weak());
             ui.label(egui::RichText::new(format!("{}j", it.jumps)).weak());
@@ -27285,7 +27049,7 @@ fn site_label(site: &str) -> &str {
     FIT_SITES.iter().find(|(id, _)| *id == site).map(|(_, l)| *l).unwrap_or(site)
 }
 
-fn fit_url(site: &str, _ship_id: i64, loss: &crate::lookup::Loss) -> String {
+fn fit_url(site: &str, loss: &crate::lookup::Loss) -> String {
     match site {
         "eveship" => format!("https://eveship.fit/?fit=killmail:{}/{}", loss.killmail_id, loss.hash),
         "workbench" => "https://eveworkbench.com/fitting".to_owned(),
@@ -29549,7 +29313,7 @@ mod jabber_room_tests {
         a.settings.jabber_rooms = vec![ROOM.to_owned()];
         a.jabber.lock().unwrap().rooms.insert(ROOM.to_owned());
         a.jabber_tabs = vec![ROOM.to_owned()];
-        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
+        a.close_jabber_tab(ROOM, true);
         assert_eq!(a.settings.jabber_closed_rooms, vec![ROOM.to_owned()]);
         assert_eq!(a.settings.jabber_rooms, vec![ROOM.to_owned()], "the X left the room");
         assert!(a.settings.jabber_left_rooms.is_empty(), "the X left the room");
@@ -29781,7 +29545,6 @@ mod jabber_forget_tests {
         a.jabber.lock().unwrap().roster.insert(
             "friend@goonfleet.com".to_owned(),
             crate::jabber::Contact {
-                jid: "friend@goonfleet.com".to_owned(),
                 name: Some("Friend".to_owned()),
                 groups: vec!["Corp".to_owned()],
                 presence: crate::jabber::Presence::default(),
@@ -29928,8 +29691,8 @@ mod jabber_rescue_room_tests {
             st.rooms.insert(SKIRMISH.to_owned());
         }
         a.jabber_tabs = vec![RESCUE.to_owned(), SKIRMISH.to_owned()];
-        a.close_jabber_tab(RESCUE, true, ChatWinKey::Main);
-        a.close_jabber_tab(SKIRMISH, true, ChatWinKey::Main);
+        a.close_jabber_tab(RESCUE, true);
+        a.close_jabber_tab(SKIRMISH, true);
         assert!(a.settings.jabber_closed_rooms.is_empty());
         assert_eq!(a.jabber_tabs, vec![RESCUE.to_owned(), SKIRMISH.to_owned()]);
     }
@@ -29966,7 +29729,7 @@ mod jabber_rescue_room_tests {
         // Every removal path refuses, and the tabs survive another reconcile.
         for room in [RESCUE, SKIRMISH] {
             a.jabber_forget(room, true);
-            a.close_jabber_tab(room, true, ChatWinKey::Main);
+            a.close_jabber_tab(room, true);
         }
         a.jabber_reconcile(&frame(&[RESCUE, SKIRMISH]));
         assert!(a.settings.jabber_left_rooms.is_empty());
@@ -30103,8 +29866,8 @@ mod jabber_tab_persist_tests {
         s.jabber_rooms = vec![ROOM.to_owned()];
         let (_ctx, mut a) = app_with(s);
         a.jabber_tabs = vec![ROOM.to_owned(), DM.to_owned()];
-        a.close_jabber_tab(ROOM, true, ChatWinKey::Main);
-        a.close_jabber_tab(DM, false, ChatWinKey::Main);
+        a.close_jabber_tab(ROOM, true);
+        a.close_jabber_tab(DM, false);
         a.sync_popout_settings();
         assert!(a.settings.jabber_main_tabs.is_empty());
 
@@ -30209,7 +29972,7 @@ mod jabber_force_join_tests {
         a.jabber_reconcile(&frame(&[NEW]));
         assert_eq!(a.jabber_tabs, vec![NEW.to_owned()]);
 
-        a.close_jabber_tab(NEW, true, ChatWinKey::Main);
+        a.close_jabber_tab(NEW, true);
         assert!(a.jabber_tabs.is_empty());
 
         // Same session, many frames.
@@ -30247,7 +30010,7 @@ mod jabber_force_join_tests {
         assert_eq!(a.jabber_tabs, vec![KNOWN.to_owned()]);
         a.jabber_reconcile(&frame(&[KNOWN]));
         assert_eq!(a.jabber_tabs, vec![KNOWN.to_owned()]);
-        a.close_jabber_tab(KNOWN, true, ChatWinKey::Main);
+        a.close_jabber_tab(KNOWN, true);
         a.jabber_reconcile(&frame(&[KNOWN]));
         assert!(a.jabber_tabs.is_empty());
     }

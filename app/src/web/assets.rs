@@ -253,8 +253,8 @@ mod tests {
         let js = find("/assets/app.js").expect("app.js").body;
         assert!(
             !js.contains("await fetch"),
-            "the first paint must not wait on a request: a slow or failed /api/icons.json would \
-             otherwise leave a blank page behind a 'connecting' label"
+            "the first paint must not wait on a request: a slow or failed fetch would otherwise leave \
+             a blank page behind a 'connecting' label"
         );
         assert!(js.contains("boot"), "the page has to read its inlined first snapshot");
     }

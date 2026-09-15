@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct KillInfo {
     pub kill_id: i64,
     pub hash: Option<String>,

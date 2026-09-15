@@ -277,8 +277,6 @@ struct RawMember {
     character_id: i64,
     #[serde(default)]
     ship_type_id: i64,
-    #[serde(default)]
-    solar_system_id: i64,
 }
 
 #[cfg(feature = "fc-rescue")]
@@ -390,27 +388,18 @@ pub fn spawn_fleet_poller(
                 };
                 let ids: Vec<i64> = raw.iter().map(|m| m.character_id).collect();
                 let names = resolve_names(&client, &ids);
-                let now = chrono::Utc::now().timestamp();
                 let members = raw
                     .into_iter()
                     .map(|m| {
-                        let (ship, group) = ship_types
-                            .get(&m.ship_type_id)
-                            .cloned()
-                            .unwrap_or_else(|| (String::new(), String::new()));
-                        let role = crate::rescue::classify(&group);
+                        let group = ship_types.get(&m.ship_type_id).map(|(_, g)| g.as_str()).unwrap_or("");
                         crate::rescue::FleetMember {
                             character_id: m.character_id,
                             name: names.get(&m.character_id).cloned().unwrap_or_default(),
-                            ship_type_id: m.ship_type_id,
-                            ship,
-                            group,
-                            role,
-                            system_id: m.solar_system_id,
+                            role: crate::rescue::classify(group),
                         }
                     })
                     .collect();
-                let mut snap = crate::rescue::FleetSnapshot::build(Some(fleet_id), members, now);
+                let mut snap = crate::rescue::FleetSnapshot::build(Some(fleet_id), members);
                 snap.is_registered =
                     fleet_is_registered(&client, &store, &client_id, ch.id, ch.expires_at, fleet_id);
                 built = Some(snap);

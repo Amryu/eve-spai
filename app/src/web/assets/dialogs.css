@@ -58,10 +58,6 @@
 .mrow { display: flex; gap: 0.75rem; padding: 0.2rem 0; border-top: 1px solid var(--line); }
 .mrow > span:first-child { color: var(--muted); flex: 0 0 9rem; }
 .mrow > span:last-child { flex: 1 1 auto; min-width: 0; }
-.mres b { font-weight: 600; margin-right: 0.6rem; }
-
-.mgates { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-.mgates .chip,
 .mbtns button {
   font: inherit;
   color: var(--fg);

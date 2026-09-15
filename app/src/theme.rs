@@ -209,7 +209,6 @@ pub fn derived(theme: &Theme) -> Derived {
 /// out of a 27k-line file and hope. Named here so both surfaces read the same constant and
 /// `web::css` can emit them, and so a chip's colour can be found by searching for what it is rather
 /// than for its hex.
-#[allow(dead_code)]
 pub mod chip {
     use egui::Color32;
 
@@ -242,7 +241,6 @@ pub mod chip {
     pub const KILL_CARD_BG: Color32 = Color32::from_rgb(0x0C, 0x0C, 0x0C);
 }
 
-#[allow(dead_code)]
 pub mod standing {
     use egui::Color32;
     pub const HOSTILE: Color32 = Color32::from_rgb(0xD8, 0x4C, 0x4C);

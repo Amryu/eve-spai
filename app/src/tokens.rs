@@ -52,7 +52,6 @@ pub fn save_refresh(character_id: i64, refresh_token: &str) -> Result<()> {
         .context("the system keychain could not be used, and the encrypted fallback failed too")
 }
 
-/// (the next save rewrites it as a plain refresh token).
 pub fn load_refresh(character_id: i64) -> Option<String> {
     try_load_refresh(character_id).ok().flatten()
 }

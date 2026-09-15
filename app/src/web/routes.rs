@@ -11,11 +11,8 @@ pub enum Route {
     /// A file from the static table, by path.
     Asset,
     ThemeCss,
-    Icons,
     Font,
     Logo,
-    Snapshot,
-    State,
     MapGeometry,
     JabberChat,
     Route,
@@ -50,9 +47,6 @@ pub fn classify(method: &str, path: &str) -> Route {
         "/" | "/index.html" => Route::Index,
         "/healthz" => Route::Health,
         "/api/theme.css" => Route::ThemeCss,
-        "/api/icons.json" => Route::Icons,
-        "/api/snapshot" => Route::Snapshot,
-        "/api/state" => Route::State,
         "/api/map/geometry" => Route::MapGeometry,
         "/api/jabber/chat" => Route::JabberChat,
         "/api/route" => Route::Route,
@@ -175,9 +169,7 @@ pub fn host_allowed(host: Option<&str>) -> bool {
 }
 
 /// The same test, applied to an `Origin`. Required on writes, where a cross-site form post is the
-/// thing being stopped. Written and tested here with the rest of the access rules; WEB-008 is what
-/// brings the first write for it to guard.
-#[allow(dead_code)]
+/// thing being stopped.
 pub fn origin_allowed(origin: Option<&str>) -> bool {
     let Some(o) = origin.map(str::trim) else { return false };
     let rest = o.strip_prefix("http://").or_else(|| o.strip_prefix("https://"));
@@ -241,10 +233,7 @@ mod tests {
         assert_eq!(classify("GET", "/index.html"), Route::Index);
         assert_eq!(classify("GET", "/healthz"), Route::Health);
         assert_eq!(classify("GET", "/api/theme.css"), Route::ThemeCss);
-        assert_eq!(classify("GET", "/api/icons.json"), Route::Icons);
-        assert_eq!(classify("GET", "/api/snapshot"), Route::Snapshot);
         assert_eq!(classify("GET", "/api/events"), Route::Events);
-        assert_eq!(classify("GET", "/api/state"), Route::State);
         assert_eq!(classify("GET", "/api/map/geometry"), Route::MapGeometry);
         assert_eq!(classify("GET", "/api/system/30004759"), Route::SystemInfo(30_004_759));
         assert_eq!(classify("GET", "/api/ship/587"), Route::ShipInfo(587));
@@ -257,13 +246,13 @@ mod tests {
         assert_eq!(classify("GET", "/api/notes/export/../../etc"), Route::NotFound);
         assert_eq!(classify("GET", "/assets/sound/warning-v6.wav"), Route::Sound("warning".into()));
         assert_eq!(classify("POST", "/api/action"), Route::Action);
-        assert_eq!(classify("POST", "/api/snapshot"), Route::NotAllowed);
+        assert_eq!(classify("POST", "/api/routes"), Route::NotAllowed);
         assert_eq!(classify("GET", "/api/action"), Route::NotFound);
         assert_eq!(classify("GET", "/assets/app.js"), Route::Asset);
         assert_eq!(classify("GET", "/assets/phosphor-9.9.9.ttf"), Route::Font);
         assert_eq!(classify("GET", "/nope"), Route::NotFound);
         assert_eq!(classify("POST", "/"), Route::NotAllowed);
-        assert_eq!(classify("DELETE", "/api/snapshot"), Route::NotAllowed);
+        assert_eq!(classify("DELETE", "/api/routes"), Route::NotAllowed);
     }
 
     /// The socket can be on the LAN, so a sound name must never be able to become a path.
@@ -290,8 +279,6 @@ mod tests {
             Route::Index,
             Route::Asset,
             Route::ThemeCss,
-            Route::Snapshot,
-            Route::State,
             Route::MapGeometry,
             Route::Action,
             Route::Events,
@@ -344,8 +331,8 @@ mod tests {
 
     #[test]
     fn parses_query_and_cookie() {
-        let (p, q) = split_url("/api/snapshot?since=4&t=abc");
-        assert_eq!(p, "/api/snapshot");
+        let (p, q) = split_url("/api/route?since=4&t=abc");
+        assert_eq!(p, "/api/route");
         assert_eq!(query_param(q, "since"), Some("4"));
         assert_eq!(query_param(q, "t"), Some("abc"));
         assert_eq!(query_param(q, "nope"), None);

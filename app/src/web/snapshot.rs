@@ -5,14 +5,10 @@
 //! asks once and gets exactly what it missed. No patch format, because a patch format is a second
 //! thing to get subtly wrong.
 
+// `BTreeMap`, never `HashMap`, throughout this module: the publisher hashes the serialized panes to
+// decide whether anything changed, and a `HashMap` serializes in a per-instance random order, so
+// every pane would republish every tick. See `state::a_hashmap_would_not_have_hashed_stably`.
 use std::collections::BTreeMap;
-
-/// Ordered, not hashed, throughout this module.
-///
-/// The publisher rebuilds these every tick and hashes the result to decide whether anything
-/// changed. A `HashMap` serializes in iteration order and every instance gets its own seed, so two
-/// identical maps hashed differently and every pane republished every tick. See
-/// `state::a_hashmap_would_not_have_hashed_stably`.
 
 use serde::Serialize;
 

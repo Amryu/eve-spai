@@ -29,7 +29,6 @@ pub struct UiFacts {
     pub intel_ttl_secs: i64,
     pub severity: crate::settings::SeverityRules,
     pub ping_rules: Vec<crate::settings::PingRule>,
-    pub alert_enabled: bool,
     pub compact: bool,
     pub theme: crate::theme::Theme,
     pub allow_writeback: bool,

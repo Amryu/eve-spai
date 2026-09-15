@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Ping {

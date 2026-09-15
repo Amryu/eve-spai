@@ -3,13 +3,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Amryu/eve-spai/main/install.sh | sh
 #
-# For a PRIVATE repo, export a GitHub token with `repo` scope first:
-#   export GITHUB_TOKEN=ghp_xxx
-#
 # Override the install dir with PREFIX (default: ~/.local/bin).
 set -eu
 
-REPO="Amryu/eve-spai"          # <-- set to your owner/repo
+REPO="Amryu/eve-spai"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 API="https://api.github.com/repos/$REPO"
 
@@ -35,13 +32,11 @@ if [ "$plat" = "macos" ] && [ "$a" != "aarch64" ]; then
 fi
 asset="eve-spai-$plat-$a"
 
-auth=""
-[ -n "${GITHUB_TOKEN:-}" ] && auth="-H Authorization: token $GITHUB_TOKEN"
 
 echo "Looking up the latest release of $REPO…"
-release_json="$(curl -fsSL $auth -H 'Accept: application/vnd.github+json' "$API/releases/latest")"
+release_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API/releases/latest")"
 tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-[ -n "$tag" ] || { echo "Could not find a release (private repo? set GITHUB_TOKEN)." >&2; exit 1; }
+[ -n "$tag" ] || { echo "Could not find a release." >&2; exit 1; }
 
 # Confirm the asset is actually on this release before trying to download it.
 printf '%s' "$release_json" | grep -q "\"name\": *\"$asset\"" \
@@ -49,9 +44,7 @@ printf '%s' "$release_json" | grep -q "\"name\": *\"$asset\"" \
 
 tmp="$(mktemp)"
 echo "Downloading $asset ($tag)…"
-# Predictable public download URL; the auth header is still honoured (and followed
-# through the redirect) for private repos.
-curl -fSL $auth "https://github.com/$REPO/releases/download/$tag/$asset" -o "$tmp"
+curl -fSL "https://github.com/$REPO/releases/download/$tag/$asset" -o "$tmp"
 
 mkdir -p "$PREFIX"
 chmod +x "$tmp"
@@ -91,12 +84,11 @@ fi
 
 # PATH.
 case ":$PATH:" in
-  *":$PREFIX:"*) ;;
+  *":$PREFIX:"*) echo "Run it with: eve-spai" ;;
   *) if ask "Add $PREFIX to your PATH (via ~/.profile)? [Y/n]" y; then
        printf '\nexport PATH="%s:$PATH"\n' "$PREFIX" >> "$HOME/.profile"
-       echo "Added to ~/.profile — restart your shell (or run $PREFIX/eve-spai now)."
+       echo "Added to ~/.profile. Restart your shell, or run $PREFIX/eve-spai now."
      else
        echo "Run it with: $PREFIX/eve-spai"
      fi ;;
 esac
-echo "Run it with: eve-spai"

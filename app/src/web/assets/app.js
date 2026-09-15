@@ -92,22 +92,15 @@ export function render(dirty = null) {
   for (const pane of PANES) {
     if (dirty && !dirty.has(pane)) continue;
     const el = document.querySelector(`#panes [data-pane="${pane}"]`);
-    if (!el) continue;
-    if (renderers[pane]) {
-      // Re-rendering replaces the scrolled element, which would jump the reader back to the top of
-      // whatever they were reading. Panes are rebuilt rarely now, but "rarely" is not "never".
-      const keep = el.querySelector(".feed");
-      const at = keep ? keep.scrollTop : 0;
-      const wasAtTop = at === 0;
-      renderers[pane](el, state.snapshot);
-      if (!wasAtTop) {
-        const now = el.querySelector(".feed");
-        if (now) now.scrollTop = at;
-      }
-    } else {
-      el.innerHTML = `<h2>${TITLES[pane]}</h2>
-        <p class="placeholder">${count(pane)} carried in the snapshot. The pane that draws them
-        lands in its own ticket.</p>`;
+    if (!el || !renderers[pane]) continue;
+    // Re-rendering replaces the scrolled element, which would jump the reader back to the top of
+    // whatever they were reading.
+    const keep = el.querySelector(".feed");
+    const at = keep ? keep.scrollTop : 0;
+    renderers[pane](el, state.snapshot);
+    if (at !== 0) {
+      const now = el.querySelector(".feed");
+      if (now) now.scrollTop = at;
     }
   }
   for (const fn of afterRender) fn();
@@ -225,16 +218,6 @@ function main() {
   boot();
   render();
   connect();
-  // Only if the island was missing, which means an older server.
-  if (!Object.keys(state.icons).length) {
-    fetch("/api/icons.json")
-      .then((r) => r.json())
-      .then((i) => {
-        state.icons = i;
-        render();
-      })
-      .catch(() => {});
-  }
 }
 
 main();

@@ -65,16 +65,6 @@ body {
 #panes { flex: 1; min-height: 0; min-width: 0; overflow: hidden; padding: 0.75rem; }
 
 .placeholder { color: var(--muted); max-width: 32rem; line-height: 1.5; }
-.placeholder code { color: var(--fg); background: var(--surface-hi); padding: 0 0.25rem; border-radius: 3px; }
-
-.counts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; padding: 0; list-style: none; }
-.counts li {
-  background: var(--surface-hi);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.25rem 0.6rem;
-}
-.counts b { color: var(--accent); font-weight: 600; }
 
 #tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; align-items: center; }
 

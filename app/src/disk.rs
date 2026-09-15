@@ -53,7 +53,7 @@ pub(crate) enum Kind {
     ///
     /// Constructed only by the tests that pin the matrix: production code never asks, because an
     /// essential write is simply attempted. Kept so the split is a type rather than a convention.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     Essential,
     /// The archive: the kill firehose, chat scrollback, caches. Refetchable or expendable, and by
     /// far the highest volume, so it is what stops.

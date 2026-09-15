@@ -102,7 +102,7 @@ impl PilotCache {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn preload_negatives(&mut self, names: &[String]) {
         for lc in names {
             self.resolved.entry(lc.clone()).or_insert(None);
@@ -130,11 +130,6 @@ impl PilotCache {
             .filter_map(|(n, v)| v.map(|id| (n.clone(), id)))
             .filter(|(n, _)| self.user_verdicts.get(n).copied() != Some(true))
             .collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn all_confirmed(&self) -> HashMap<String, i64> {
-        self.resolved.iter().filter_map(|(n, v)| v.map(|id| (n.clone(), id))).collect()
     }
 
     pub fn set_activity_flagged(&mut self, names: std::collections::HashSet<String>) {

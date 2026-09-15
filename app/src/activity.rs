@@ -9,7 +9,6 @@ const BATCH: usize = 20;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Activity {
-    #[allow(dead_code)]
     pub active_recent: bool,
     pub birthday: Option<i64>,
     pub last_corp_change: Option<i64>,
@@ -25,12 +24,10 @@ pub struct ActivityCache {
 pub type SharedActivity = Arc<Mutex<ActivityCache>>;
 
 impl ActivityCache {
-    #[allow(dead_code)]
     pub fn get(&self, char_id: i64) -> Option<Activity> {
         self.map.get(&char_id).copied()
     }
 
-    #[allow(dead_code)]
     pub fn want(&mut self, char_id: i64) {
         if char_id <= 0 {
             return;

@@ -883,7 +883,6 @@ fn resolve_names_batch(
 }
 
 #[derive(Clone, Default)]
-#[allow(dead_code)]
 pub enum BuildFromKill {
     #[default]
     Idle,
@@ -894,7 +893,6 @@ pub enum BuildFromKill {
 
 pub type SharedBuildFromKill = Arc<Mutex<BuildFromKill>>;
 
-#[allow(dead_code)]
 pub fn parse_kill_id(input: &str) -> Option<i64> {
     let s = input.trim();
     if let Ok(id) = s.parse::<i64>() {
@@ -905,7 +903,6 @@ pub fn parse_kill_id(input: &str) -> Option<i64> {
     digits.parse::<i64>().ok().filter(|&id| id > 0)
 }
 
-#[allow(dead_code)]
 pub fn build_report_from_kill(
     kill_id: i64,
     systems: &Systems,
@@ -947,7 +944,6 @@ pub fn build_report_from_kill(
     Ok((engagements, kill_id))
 }
 
-#[allow(dead_code)]
 pub fn spawn_build_from_kill(
     kill_id: i64,
     systems: Arc<Systems>,

@@ -94,27 +94,6 @@ pub enum ShipRole {
 }
 
 impl ShipRole {
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            ShipRole::Titan => "Titans",
-            ShipRole::Supercarrier => "Supers",
-            ShipRole::Dread => "Dreads",
-            ShipRole::Fax => "FAX",
-            ShipRole::Carrier => "Carriers",
-            ShipRole::Logi => "Logi",
-            ShipRole::LogiFrig => "Logi frig",
-            ShipRole::Booster => "Boosters",
-            ShipRole::Dictor => "Dictors",
-            ShipRole::Hictor => "Hictors",
-            ShipRole::Recon => "Recons",
-            ShipRole::CommandDest => "Command dessies",
-            ShipRole::Dps => "DPS",
-            ShipRole::Tackle => "Tackle",
-            ShipRole::Ewar => "EWAR",
-            ShipRole::Other => "Other",
-        }
-    }
 
     pub fn is_titan(self) -> bool {
         self == ShipRole::Titan
@@ -168,19 +147,9 @@ pub fn classify(group: &str) -> ShipRole {
 
 #[derive(Clone, Debug)]
 pub struct FleetMember {
-    // character_id/ship_type_id/group are kept for lookups and future UI; not all are displayed.
-    #[allow(dead_code)]
     pub character_id: i64,
     pub name: String,
-    #[allow(dead_code)]
-    pub ship_type_id: i64,
-    #[allow(dead_code)]
-    pub ship: String,
-    #[allow(dead_code)]
-    pub group: String,
     pub role: ShipRole,
-    #[allow(dead_code)]
-    pub system_id: i64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -190,20 +159,17 @@ pub struct FleetSnapshot {
     pub is_registered: bool,
     pub members: Vec<FleetMember>,
     pub counts: BTreeMap<ShipRole, u32>,
-    /// Unix seconds of the last successful build. 0 = never populated.
-    #[allow(dead_code)]
-    pub updated: i64,
     /// True when the most recent poll failed and this is stale data kept on screen.
     pub stale: bool,
 }
 
 impl FleetSnapshot {
-    pub fn build(fleet_id: Option<i64>, members: Vec<FleetMember>, now: i64) -> Self {
+    pub fn build(fleet_id: Option<i64>, members: Vec<FleetMember>) -> Self {
         let mut counts: BTreeMap<ShipRole, u32> = BTreeMap::new();
         for m in &members {
             *counts.entry(m.role).or_insert(0) += 1;
         }
-        FleetSnapshot { fleet_id, is_registered: false, members, counts, updated: now, stale: false }
+        FleetSnapshot { fleet_id, is_registered: false, members, counts, stale: false }
     }
 
     pub fn count(&self, role: ShipRole) -> u32 {
@@ -260,7 +226,6 @@ pub struct RescueState {
     pub resolved: HashSet<u64>,
     /// Which of the expected actions have been taken, per ping `seq`.
     pub actions: HashMap<u64, PingActions>,
-    #[allow(dead_code)]
     pub dscan: Option<Vec<(String, u32)>>,
     pub op_channel: u8,
     pub doctrine: String,
@@ -279,7 +244,6 @@ pub struct RescueState {
     /// Sticky snowflakes: character_id -> reason tag. Once flagged (capital/cyno/titan/recon) a
     /// pilot STAYS flagged for the session even if they re-ship to a pod, so the FC keeps tracking
     /// them. Keyed by character_id (survives ship changes).
-    #[allow(dead_code)]
     pub snowflakes: HashMap<i64, String>,
 }
 
@@ -1131,11 +1095,7 @@ mod tests {
         let mk = |id: i64, name: &str, group: &str| FleetMember {
             character_id: id,
             name: name.to_string(),
-            ship_type_id: 0,
-            ship: String::new(),
-            group: group.to_string(),
             role: classify(group),
-            system_id: 0,
         };
         let members = vec![
             mk(1, "Cap Pilot", "Titan"),
@@ -1143,7 +1103,7 @@ mod tests {
             mk(3, "Logi Two", "Logistics Cruiser"),
             mk(4, "Scout", "Force Recon Ship"),
         ];
-        let snap = FleetSnapshot::build(Some(42), members, 1000);
+        let snap = FleetSnapshot::build(Some(42), members);
         assert_eq!(snap.count(ShipRole::Logi), 2);
         assert!(snap.has_role(ShipRole::Titan));
         assert!(snap.has_pilot("cap pilot"));
