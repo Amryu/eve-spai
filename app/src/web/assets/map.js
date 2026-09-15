@@ -594,11 +594,12 @@ function paint() {
     }
   }
 
-  // Noted systems: the first tag's colour, or a note glyph when there are only notes.
+  // Noted systems: one tag glyph per tag in its colour, capped as the app caps it, and a note glyph
+  // when any folder has a note.
   if (layers.notes) {
     for (const [id, m] of Object.entries(state.snapshot?.notes?.view?.systems ?? {})) {
-      const t = m.tags.map(tagById).find(Boolean);
-      mark(Number(id), t ? "tag" : "note", t ? rgb(t.color) : pal.muted);
+      for (const t of m.tags.map(tagById).filter(Boolean).slice(0, 5)) mark(Number(id), "tag", rgb(t.color));
+      if (m.parts.some((p) => p.note)) mark(Number(id), "note", pal.muted);
     }
   }
 

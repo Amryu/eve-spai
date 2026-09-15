@@ -566,7 +566,17 @@ function paintManager(wrap, st) {
       `<p class="npathhead">${ico("folder-open")} ${esc(sel.path)}${sel.online ? "" : " <em>offline</em>"}</p>` +
       actions +
       `<section class="scard"><h4>${ico("tag")} Tags</h4><ul class="ntaglist">${tagRows}</ul>${newTag}` +
-      `<details class="nbuiltin"><summary>Built in</summary><p class="ntags">${builtin.map(tagChip).join("")}</p></details></section>` +
+      `<details class="nbuiltin"${st.builtinOpen ? " open" : ""}><summary>Built in</summary>` +
+      (w
+        ? `<ul class="ntaglist">${builtin
+            .map(
+              (t) =>
+                `<li class="ntagrow">${tagChip(t)}<input type="color" data-dcolor="${esc(t.id)}" value="${hex(t.color)}" title="Colour">` +
+                `<button data-dreset="${esc(t.id)}" title="Back to the shipped colour">Reset</button></li>`
+            )
+            .join("")}</ul>`
+        : `<p class="ntags">${builtin.map(tagChip).join("")}</p>`) +
+      `</details></section>` +
       `<section class="scard"><h4>${ico("note")} ${st.kind === "system" ? "Systems" : "Pilots"}</h4>` +
       `<input type="search" class="jq" data-mq placeholder="Filter by name, note or tag" value="${esc(st.q)}">` +
       `<div data-entries>${entryRows(f[kindKey] ?? {}, st, w)}</div></section>`;
@@ -644,7 +654,12 @@ function wireManager(wrap, st, close) {
     const f = findFolder(st.sel)?.folder;
     wrap.querySelector("[data-entries]").innerHTML = entryRows(f?.[kindKey()] ?? {}, st, canWrite());
   });
+  wrap.addEventListener("toggle", (e) => {
+    if (e.target.matches?.(".nbuiltin")) st.builtinOpen = e.target.open;
+  }, true);
   wrap.addEventListener("change", (e) => {
+    const d = e.target.closest("[data-dcolor]");
+    if (d) return post({ DefaultTagColor: { id: d.dataset.dcolor, color: unhex(d.value) } });
     const c = e.target.closest("[data-tcolor]");
     if (!c) return;
     const t = tagOf(c.dataset.tcolor);
@@ -657,6 +672,8 @@ function wireManager(wrap, st, close) {
   wrap.addEventListener("click", async (e) => {
     const t = e.target;
     if (t === wrap || t.closest(".mclose")) return close();
+    const dr = t.closest("[data-dreset]");
+    if (dr) return post({ DefaultTagColor: { id: dr.dataset.dreset, color: null } });
     // Going to a system or pilot opens its dialog, which sits under this modal.
     if (t.closest(".nlink")) return close();
     const k = t.closest("[data-mkind]");

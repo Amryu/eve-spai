@@ -636,7 +636,14 @@ impl NoteBook {
         Some(FolderExport { format: EXPORT_FORMAT.to_owned(), version: 1, folder })
     }
 
+    #[cfg(test)]
     pub fn view(&self, preferred_target: &str) -> NotesView {
+        self.view_with(preferred_target, &BTreeMap::new())
+    }
+
+    /// `colors` recolours built-in tags, which are fixed in code and so cannot carry the user's
+    /// choice themselves.
+    pub fn view_with(&self, preferred_target: &str, colors: &BTreeMap<String, [u8; 3]>) -> NotesView {
         let target = self.target(preferred_target);
         let target_path = self.path(&target).join(" / ");
         let mut v = NotesView { rev: self.rev, target, target_path, ..Default::default() };
@@ -649,9 +656,13 @@ impl NoteBook {
             }
         }
         for t in default_tags().iter().chain(active.iter().flat_map(|(f, _)| f.tags.iter())) {
+            let mut t = t.clone();
+            if let Some(c) = colors.get(&t.id).filter(|_| t.id.starts_with("d:")) {
+                t.color = *c;
+            }
             match t.kind {
-                NoteKind::System => v.system_tags.push(t.clone()),
-                NoteKind::Pilot => v.pilot_tags.push(t.clone()),
+                NoteKind::System => v.system_tags.push(t),
+                NoteKind::Pilot => v.pilot_tags.push(t),
             }
         }
         for (f, path) in &active {
@@ -916,17 +927,19 @@ pub fn color32(c: [u8; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
 }
 
+/// Light tones only: tag markers sit on the map's near-black background, where the mid and dark
+/// shades this used to include (brown, grey, deep purple) all but vanished.
 const PALETTE: [[u8; 3]; 10] = [
-    [0xEF, 0x44, 0x44],
-    [0xFF, 0xA7, 0x26],
-    [0xFF, 0xD5, 0x4F],
-    [0x66, 0xBB, 0x6A],
-    [0x26, 0xC6, 0xDA],
-    [0x42, 0xA5, 0xF5],
-    [0xAB, 0x47, 0xBC],
-    [0xEC, 0x40, 0x7A],
-    [0x8D, 0x6E, 0x63],
-    [0x9E, 0x9E, 0x9E],
+    [0xFF, 0x6B, 0x6B],
+    [0xFF, 0xA9, 0x4D],
+    [0xFF, 0xD4, 0x3B],
+    [0x69, 0xDB, 0x7C],
+    [0x3B, 0xC9, 0xDB],
+    [0x4D, 0xAB, 0xF7],
+    [0xB1, 0x97, 0xFC],
+    [0xF7, 0x83, 0xAC],
+    [0xA9, 0xE3, 0x4B],
+    [0xDE, 0xE2, 0xE6],
 ];
 
 /// A new tag's starting colour, cycling so consecutive tags are told apart without the picker.
@@ -934,38 +947,49 @@ pub fn default_color(n: usize) -> [u8; 3] {
     PALETTE[n % PALETTE.len()]
 }
 
-const DEFAULT_SYSTEM_TAGS: &[&str] = &[
-    "Staging",
-    "Super Docking",
-    "Capital Docking",
-    "Industry",
-    "Research",
-    "Reactions",
-    "Invention",
-    "Mining",
-    "Ratting",
-    "Exploration",
-    "Market Hub",
+const DEFAULT_SYSTEM_TAGS: &[(&str, [u8; 3])] = &[
+    ("Staging", [0x4D, 0xAB, 0xF7]),
+    ("Super Docking", [0xB1, 0x97, 0xFC]),
+    ("Capital Docking", [0xE5, 0x99, 0xF7]),
+    ("Industry", [0xFF, 0xA9, 0x4D]),
+    ("Research", [0x74, 0xC0, 0xFC]),
+    ("Reactions", [0xFF, 0x87, 0x87]),
+    ("Invention", [0x63, 0xE6, 0xBE]),
+    ("Mining", [0xFF, 0xD4, 0x3B]),
+    ("Ratting", [0xA9, 0xE3, 0x4B]),
+    ("Exploration", [0x3B, 0xC9, 0xDB]),
+    ("Market Hub", [0xFF, 0xC0, 0x78]),
 ];
 
-const DEFAULT_PILOT_TAGS: &[&str] = &[
-    "Cyno", "FC", "Wormhole", "Lowsec", "Highsec", "Nullsec", "Pochven", "Ganker", "Crabber", "Miner",
-    "Ratter", "Capital", "Super", "Titan",
+const DEFAULT_PILOT_TAGS: &[(&str, [u8; 3])] = &[
+    ("Cyno", [0xFF, 0x6B, 0x6B]),
+    ("FC", [0xFF, 0xD4, 0x3B]),
+    ("Wormhole", [0x3B, 0xC9, 0xDB]),
+    ("Lowsec", [0xFF, 0xA9, 0x4D]),
+    ("Highsec", [0x69, 0xDB, 0x7C]),
+    ("Nullsec", [0xF7, 0x83, 0xAC]),
+    ("Pochven", [0xB1, 0x97, 0xFC]),
+    ("Ganker", [0xFF, 0xC0, 0x78]),
+    ("Crabber", [0xA9, 0xE3, 0x4B]),
+    ("Miner", [0xC5, 0xF6, 0xFA]),
+    ("Ratter", [0x63, 0xE6, 0xBE]),
+    ("Capital", [0x74, 0xC0, 0xFC]),
+    ("Super", [0xE5, 0x99, 0xF7]),
+    ("Titan", [0xDE, 0xE2, 0xE6]),
 ];
 
 /// Built in, shared by every folder, and fixed. Their ids are derived from the name so a rule or an
 /// export naming one means the same tag on every machine.
 pub fn default_tags() -> &'static [Tag] {
     static TAGS: std::sync::LazyLock<Vec<Tag>> = std::sync::LazyLock::new(|| {
-        let mk = |kind: NoteKind, prefix: &str, names: &[&str]| {
+        let mk = |kind: NoteKind, prefix: &str, names: &[(&str, [u8; 3])]| {
             names
                 .iter()
-                .enumerate()
-                .map(|(i, n)| Tag {
+                .map(|(n, color)| Tag {
                     id: format!("d:{prefix}:{}", n.to_lowercase().replace(' ', "-")),
                     kind,
                     name: (*n).to_owned(),
-                    color: default_color(i),
+                    color: *color,
                 })
                 .collect::<Vec<_>>()
         };
@@ -1084,6 +1108,25 @@ mod tests {
         assert_eq!(a.folder.as_deref(), Some(b.folders[0].id.as_str()));
         run(&mut b, NotesOp::SetEntry { folder: "gone".into(), subject: Subject::System(DQ), note: "again".into(), tags: vec![] });
         assert_eq!(b.folders.len(), 1, "a deleted target falls back to the same Default");
+    }
+
+    #[test]
+    fn built_in_colours_can_be_overridden_per_user() {
+        let b = NoteBook::default();
+        let mut colors = BTreeMap::new();
+        colors.insert("d:pilot:cyno".to_owned(), [1, 2, 3]);
+        colors.insert("user-tag".to_owned(), [9, 9, 9]);
+        let v = b.view_with("", &colors);
+        assert_eq!(v.tag("d:pilot:cyno").unwrap().color, [1, 2, 3]);
+        assert_eq!(b.view("").tag("d:pilot:cyno").unwrap().color, [0xFF, 0x6B, 0x6B]);
+    }
+
+    #[test]
+    fn built_in_colours_are_light_enough_for_the_dark_map() {
+        for t in default_tags().iter().map(|t| t.color).chain(PALETTE) {
+            let luma = 0.2126 * t[0] as f32 + 0.7152 * t[1] as f32 + 0.0722 * t[2] as f32;
+            assert!(luma >= 110.0, "{t:?} is too dark ({luma})");
+        }
     }
 
     #[test]

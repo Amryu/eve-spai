@@ -92,6 +92,7 @@ pub(crate) enum ManagerAction {
     Copy { id: String, compressed: bool },
     OpenImportFile,
     Import { export: FolderExport, mode: ImportMode },
+    DefaultColor { id: String, color: Option<[u8; 3]> },
 }
 
 impl SpaiApp {
@@ -213,6 +214,7 @@ impl SpaiApp {
                 }
             }
             ManagerAction::SetTarget(id) => self.set_notes_target(id),
+            ManagerAction::DefaultColor { id, color } => self.set_default_tag_color(id, color),
             ManagerAction::Edit { folder, subject } => {
                 self.open_note_editor(subject);
                 if let Some(d) = &mut self.note_editor {
@@ -768,17 +770,19 @@ fn folder_detail(
     });
     ui.separator();
     if m.tab == DetailTab::Tags {
-        tags_tab(ui, m, folder, book, kind, noun, actions);
+        tags_tab(ui, m, folder, book, view, kind, noun, actions);
     } else {
         notes_tab(ui, m, folder, book, kind, noun, systems, actions);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tags_tab(
     ui: &mut egui::Ui,
     m: &mut NotesManager,
     folder: &Folder,
     book: &NoteBook,
+    view: &NotesView,
     kind: NoteKind,
     noun: &str,
     actions: &mut Vec<ManagerAction>,
@@ -854,13 +858,31 @@ fn tags_tab(
             m.new_color = crate::notes::default_color(folder.tags.len() + 1);
         }
     });
-    egui::CollapsingHeader::new("Built-in tags").id_salt(("builtin", noun)).default_open(false).show(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for t in crate::notes::default_tags().iter().filter(|t| t.kind == kind) {
-                tag_chip(ui, t, false);
-            }
+    ui.add_space(8.0);
+    egui::CollapsingHeader::new(format!("Built-in {} tags", noun.to_lowercase()))
+        .id_salt(("builtin", noun))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("Shared by every folder. Colours are yours to change.").weak());
+            egui::Grid::new(("builtin_grid", noun)).num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
+                for shipped in crate::notes::default_tags().iter().filter(|t| t.kind == kind) {
+                    let current = view.tag(&shipped.id).cloned().unwrap_or_else(|| shipped.clone());
+                    tag_chip(ui, &current, false);
+                    let mut c = current.color;
+                    if ui.color_edit_button_srgb(&mut c).changed() {
+                        actions.push(ManagerAction::DefaultColor { id: shipped.id.clone(), color: Some(c) });
+                    }
+                    if current.color != shipped.color {
+                        if ui.button("Reset").on_hover_text("Back to the shipped colour").clicked() {
+                            actions.push(ManagerAction::DefaultColor { id: shipped.id.clone(), color: None });
+                        }
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
         });
-    });
 }
 
 #[allow(clippy::too_many_arguments)]

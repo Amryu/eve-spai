@@ -108,6 +108,9 @@ pub struct Settings {
     /// Folder uuid quick note and tag edits go to. Empty or stale falls back to the Default folder.
     #[serde(default)]
     pub notes_folder: String,
+    /// The user's colours for built-in tags, by tag id.
+    #[serde(default)]
+    pub tag_colors: std::collections::BTreeMap<String, [u8; 3]>,
     #[serde(default)]
     pub work_throttle: WorkThrottle,
     #[serde(default = "default_overlay_opacity")]
@@ -1010,6 +1013,7 @@ impl Default for Settings {
             battle_break_secs: default_battle_break(),
             bookmarks: Vec::new(),
             notes_folder: String::new(),
+            tag_colors: Default::default(),
             map_overlay_opacity: 0.9,
             map_overlay_smart: false,
             jabber_enabled: false,

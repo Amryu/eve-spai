@@ -105,6 +105,8 @@ struct MapOverlays {
     notes: bool,
 }
 
+const MAP_TAG_MARKS: usize = 5;
+
 fn overlay_on() -> bool {
     true
 }
@@ -896,7 +898,7 @@ impl SpaiApp {
             .and_then(|s| s.load_settings())
             .unwrap_or_default();
         let notes = std::sync::Arc::new(store.as_ref().map(|s| s.load_notes()).unwrap_or_default());
-        let notes_view = std::sync::Arc::new(notes.view(&settings.notes_folder));
+        let notes_view = std::sync::Arc::new(notes.view_with(&settings.notes_folder, &settings.tag_colors));
 
         settings.theme.apply(ctx);
 
@@ -10652,6 +10654,21 @@ impl SpaiApp {
         }
     }
 
+    pub(crate) fn set_default_tag_color(&mut self, id: String, color: Option<[u8; 3]>) {
+        if !crate::notes::default_tags().iter().any(|t| t.id == id) {
+            return;
+        }
+        let before = self.settings.tag_colors.get(&id).copied();
+        match color {
+            Some(c) => self.settings.tag_colors.insert(id, c),
+            None => self.settings.tag_colors.remove(&id),
+        };
+        if before != color {
+            self.needs_save = true;
+            self.rebuild_notes_view();
+        }
+    }
+
     pub(crate) fn set_notes_target(&mut self, folder: String) {
         if self.notes.find(&folder).is_some() && folder != self.settings.notes_folder {
             self.settings.notes_folder = folder;
@@ -10661,7 +10678,7 @@ impl SpaiApp {
     }
 
     fn rebuild_notes_view(&mut self) {
-        self.notes_view = std::sync::Arc::new(self.notes.view(&self.settings.notes_folder));
+        self.notes_view = std::sync::Arc::new(self.notes.view_with(&self.settings.notes_folder, &self.settings.tag_colors));
     }
 
     fn apply_overlay_message(&mut self, m: crate::ipc::OverlayToMain, ctx: &egui::Context) {
@@ -10677,6 +10694,7 @@ impl SpaiApp {
                 let _ = self.apply_notes_op(op);
             }
             crate::ipc::OverlayToMain::NotesTarget { folder } => self.set_notes_target(folder),
+            crate::ipc::OverlayToMain::DefaultTagColor { id, color } => self.set_default_tag_color(id, color),
             crate::ipc::OverlayToMain::AlertMoved { pos, size } => {
                 self.persist_alert_geometry(pos, size)
             }
@@ -11780,12 +11798,17 @@ impl SpaiApp {
             }
         }
         if ov.notes {
+            let weak = ui.visuals().weak_text_color();
             for (id, m) in &self.notes_view.systems {
-                let (glyph, col) = match self.notes_view.tags_of(m).next() {
-                    Some(t) => (egui_phosphor::regular::TAG, crate::notes::color32(t.color)),
-                    None => (egui_phosphor::regular::NOTE, ui.visuals().weak_text_color()),
-                };
-                lead_icons.entry(*id).or_default().push((glyph, col));
+                let icons = lead_icons.entry(*id).or_default();
+                // One marker per tag, so a second tag is visible without hovering. Capped so a heavily
+                // tagged system does not push its name off across its neighbours.
+                for t in self.notes_view.tags_of(m).take(MAP_TAG_MARKS) {
+                    icons.push((egui_phosphor::regular::TAG, crate::notes::color32(t.color)));
+                }
+                if m.has_note() {
+                    icons.push((egui_phosphor::regular::NOTE, weak));
+                }
             }
         }
         if ov.camps {

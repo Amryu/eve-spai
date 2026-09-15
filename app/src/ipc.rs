@@ -69,6 +69,8 @@ pub enum OverlayToMain {
     Notes(crate::notes::NotesOp),
     /// Where quick note and tag edits go from now on.
     NotesTarget { folder: String },
+    /// Recolour a built-in tag, or `None` to go back to its shipped colour.
+    DefaultTagColor { id: String, color: Option<[u8; 3]> },
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug)]

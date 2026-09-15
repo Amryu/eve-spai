@@ -1191,6 +1191,8 @@ mod tests {
             r#"{"Notes":{"SetOnline":{"id":"f","on":false}}}"#.to_owned(),
             r#"{"NotesTarget":{"folder":"f"}}"#.to_owned(),
             format!(r#"{{"Notes":{{"Import":{{"export":{export},"mode":"Merge","parent":null}}}}}}"#),
+            r#"{"DefaultTagColor":{"id":"d:pilot:cyno","color":[1,2,3]}}"#.to_owned(),
+            r#"{"DefaultTagColor":{"id":"d:pilot:cyno","color":null}}"#.to_owned(),
         ];
         for b in &bodies {
             assert_eq!(post(&c, &s.base, origin, b).status(), 204, "{b}");
