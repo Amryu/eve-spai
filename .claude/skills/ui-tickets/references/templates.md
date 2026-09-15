@@ -87,5 +87,7 @@ lines of test is useful information about where cost actually goes.
 
 ## README.md index
 
-One row per ticket: id, title, severity, status, branch. Plus the wave schedule (which pairs ran
-together) and running cost totals. Update it in the same commit that lands the ticket, not later.
+One row per ticket in its series table (UI, WEB, GAP), in number order: id and title linked to the
+folder, severity (UI only), region, status. Cost lives in each ticket's `review.md` Resolution table,
+not in the index, so there are no running totals to keep in step. Update the row in the same commit
+that lands the ticket, not later.

@@ -26,7 +26,7 @@ ui-tickets/UI-NNN-slug/
   before/       screenshots showing the defect
   after/        screenshots showing it gone
   review.md     the resolution report, written when it lands
-ui-tickets/README.md   the index, status per ticket, wave schedule, cost totals
+ui-tickets/README.md   the index: one row per ticket with its status
 ```
 
 `UI-NNN` for app defects, `GAP-NNN` for things the harness cannot reach. Numbers are never reused,
