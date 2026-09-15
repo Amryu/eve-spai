@@ -5710,7 +5710,7 @@ mod tests {
     fn identical_lines_across_accounts_make_one_card() {
         let s = systems();
         // Mirror the watcher: dedup the raw line, else analyze + amend-or-push.
-        let mut ingest = |st: &mut IntelState, ts: &str, who: &str, text: &str| {
+        let ingest = |st: &mut IntelState, ts: &str, who: &str, text: &str| {
             if st.duplicate_line("ch", ts, who, text) {
                 return;
             }

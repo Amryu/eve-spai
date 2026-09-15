@@ -74,7 +74,7 @@ pub(crate) fn notebook() -> crate::notes::NoteBook {
     use crate::notes::{NoteBook, NoteKind, NotesOp, Subject};
     let mut b = NoteBook::default();
     let name = |id: i64| systems().info_of(id).map(|i| i.name.clone());
-    let mut ok = |b: &mut NoteBook, op| b.apply(op, now() - 3600, &name).expect("fixture op");
+    let ok = |b: &mut NoteBook, op| b.apply(op, now() - 3600, &name).expect("fixture op");
     let mine = ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Default".into() }).folder.unwrap();
     let intel = ok(&mut b, NotesOp::CreateFolder { parent: None, name: "Coalition intel".into() }).folder.unwrap();
     let delve = ok(&mut b, NotesOp::CreateFolder { parent: Some(intel.clone()), name: "Delve".into() }).folder.unwrap();

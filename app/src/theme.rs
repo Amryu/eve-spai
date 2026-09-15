@@ -364,7 +364,7 @@ mod tests {
             let d = derived(&theme);
             let ctx = egui::Context::default();
             theme.apply(&ctx);
-            let v = ctx.style().visuals.clone();
+            let v = ctx.global_style().visuals.clone();
             let n = &theme.name;
             assert_eq!(v.dark_mode, d.dark, "{n} dark_mode");
             assert_eq!(v.override_text_color, Some(d.fg), "{n} text");

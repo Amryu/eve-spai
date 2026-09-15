@@ -766,7 +766,7 @@ fn jabber_start_scene(name: &'static str, rooms: bool) -> Scene {
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ctx(name, [420.0, 400.0], move |ctx| {
         let app = app.get_or_insert_with(|| {
-            let mut a = crate::app::SpaiApp::build(ctx, true);
+            let a = crate::app::SpaiApp::build(ctx, true);
             *a.jabber.lock().unwrap() = fixtures::jabber_state();
             a
         });
