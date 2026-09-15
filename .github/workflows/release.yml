@@ -1,12 +1,10 @@
 name: Release
 
-# Build release binaries and publish a GitHub Release when a v* tag is pushed.
-# (Also runnable manually for testing.)
+# Build release binaries and publish a GitHub Release when a v* tag is pushed. A manual run builds
+# the binaries without publishing, which is a way to try the release build before tagging.
 on:
   push:
     tags: ["v*"]
-  # Run manually (Actions tab) to re-warm the default-branch cache when needed — its
-  # scope, unlike a tag's, is restorable by tag-triggered release builds.
   workflow_dispatch:
 
 permissions:
@@ -33,7 +31,7 @@ jobs:
             target: aarch64-apple-darwin
             ext: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -85,7 +83,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/eve-spai${{ matrix.ext }}" \
              "dist/eve-spai-${{ matrix.name }}${{ matrix.ext }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: eve-spai-${{ matrix.name }}
           path: dist/*
@@ -97,13 +95,13 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true

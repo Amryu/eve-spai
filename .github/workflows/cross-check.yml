@@ -1,7 +1,7 @@
 name: Cross check
 
-# Compile-check the platform-specific code (tray, autostart, window helpers) on Windows and macOS,
-# which can't be built on the Linux dev machine. Catches cfg-gated breakage before a release tag.
+# Run the test suite on Linux, and compile-check the platform-specific code (tray, autostart, window
+# helpers) on Windows and macOS, which can't be built on the Linux dev machine.
 on:
   push:
     branches: [main]
@@ -16,10 +16,36 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # --all-features so the fc-rescue code and its tests keep compiling. Releases build without
       # it, so nothing else in CI would catch a break there.
       - name: cargo check
         run: cargo check --workspace --all-targets --all-features
+
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/server
+      # winit/egui need X11 + Wayland dev libs to link on Linux (mirrors release.yml).
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libxcursor-dev \
+            libxi-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev pkg-config
+      - name: cargo test (all features)
+        run: cargo test --workspace --all-features
+      - name: cargo test (default features)
+        run: cargo test --workspace
+      # The battle report server is its own workspace, so nothing above builds it.
+      - name: Server crate
+        run: cargo test --manifest-path crates/server/Cargo.toml
