@@ -303,7 +303,26 @@ impl SpaiApp {
             return;
         }
 
+        let ingame = self
+            .map_route_opts
+            .get(self.map_route_at)
+            .map(|o| crate::web::route::ingame_waypoints(o, self.player_system()))
+            .unwrap_or_default();
         ui.horizontal_wrapped(|ui| {
+            let has_char = self.active_character != "No character";
+            if ui
+                .add_enabled(has_char && !ingame.is_empty(), egui::Button::new(format!("{}  Set in game", icon::MAP_PIN_LINE)))
+                .on_hover_text(if self.map_route_kind == "gate" {
+                    "Set this route in the game, one waypoint per system"
+                } else {
+                    "Set waypoints in the game at both ends of each leg you fly yourself"
+                })
+                .on_disabled_hover_text("Log a character in to route in the game")
+                .clicked()
+            {
+                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                crate::esi::set_route(cid, self.active_character.clone(), ingame.clone());
+            }
             if ui.button(format!("{}  Save route", icon::COPY)).clicked() {
                 self.map_save_name.clear();
                 self.map_save_open = true;

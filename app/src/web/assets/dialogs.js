@@ -514,6 +514,27 @@ export async function showRoute(kind, anchors, onPick) {
   await fetchRoute();
 }
 
+/// Mirrors `web::route::ingame_waypoints`: the autopilot flies a gate route whole, so every system
+/// is a waypoint; a leg the pilot flies by hand only gets its two ends.
+function ingameWaypoints(o, player) {
+  if (!o?.path?.length) return [];
+  const out = [];
+  const start = o.path[0];
+  if (player !== start) out.push(start);
+  if ((o.hops ?? []).every((h) => !h.kind)) {
+    out.push(...o.path.slice(1));
+  } else {
+    o.hops.forEach((h, i) => {
+      if (!h.kind) return;
+      if (i > 0) out.push(o.hops[i - 1].id);
+      out.push(h.id);
+    });
+    out.push(o.path[o.path.length - 1]);
+  }
+  const uniq = out.filter((id, i) => i === 0 || id !== out[i - 1]);
+  return uniq[0] === player ? uniq.slice(1) : uniq;
+}
+
 async function fetchRoute() {
   const { kind, anchors, onPick } = routeReq;
   const from = anchors[0];
@@ -715,7 +736,11 @@ function paintRoute(kind, onPick) {
           `${esc(o.titan_jump.to_name)}, ${o.titan_jump.ly.toFixed(1)} ly</p>`
         : "") +
       `<ol class="rhops">${o.hops.map(line).join("")}</ol>` +
-      `<p class="rsave"><button data-save>${ico("copy")} Save route</button>` +
+      `<p class="rsave">` +
+      (state.snapshot?.meta?.allow_writeback
+        ? `<button data-ingame>${ico("map-pin-line")} Set in game</button>`
+        : "") +
+      `<button data-save>${ico("copy")} Save route</button>` +
       `<button data-load-open>${ico("arrow-square-out")} Load…</button></p>`
   );
   win_wire(kind, onPick);
@@ -723,6 +748,10 @@ function paintRoute(kind, onPick) {
 
 function win_wire(kind, onPick) {
   const win = shells.get("route");
+  win?.querySelector("[data-ingame]")?.addEventListener("click", () => {
+    const wp = ingameWaypoints(routeOpts[routeAt], state.snapshot?.meta?.player_system ?? null);
+    if (wp.length) send({ SetIngameRoute: { waypoints: wp } });
+  });
   win?.querySelector("[data-save]")?.addEventListener("click", () => saveRoute(kind));
   win?.querySelector("[data-load-open]")?.addEventListener("click", () => loadRoute(onPick));
   win?.querySelectorAll("[data-ropt]").forEach((b) =>

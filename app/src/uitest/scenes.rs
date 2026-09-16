@@ -739,6 +739,21 @@ fn jump_plan_scene(name: &'static str, size: [f32; 2], ship: usize) -> Scene {
     })
 }
 
+/// The route panel with a gate route planned, which is the only state that offers the in-game and
+/// save buttons.
+fn route_panel_scene(name: &'static str) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, [380.0, 620.0], move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.seed_map_route(30_004_759, 30_003_704);
+            a
+        });
+        app.jump_plan_ui(ui);
+    })
+}
+
 fn map_layers_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
@@ -835,6 +850,7 @@ pub(crate) fn all() -> Vec<Scene> {
         jabber_start_scene("jabber_join_room", true),
         // The class list is the subject, so the panel is sized to show the picker and the
         // range readout that moves with it.
+        route_panel_scene("route_panel_gate"),
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
         docked_system_scene("map_dock_system_notes"),

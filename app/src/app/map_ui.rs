@@ -316,6 +316,18 @@ impl SpaiApp {
             if let Some(info) = self.systems.as_ref().and_then(|g| g.info_of(sid)) {
                 ui.label(egui::RichText::new(&info.name).strong());
             }
+            let has_char = self.active_character != "No character";
+            if ui
+                .add_enabled(has_char, egui::Button::new("Set Destination"))
+                .on_disabled_hover_text("Log a character in to route in the game")
+                .clicked()
+            {
+                let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                self.set_destination_esi(cid, self.active_character.clone(), sid);
+                self.route_destination = Some(sid);
+                ui.close();
+            }
+            ui.separator();
             // The same menu the browser has, in the same order, plus the one thing the browser has
             // no use for. The route drag covers everything else.
             let anchors = self.map_route_anchors.clone();

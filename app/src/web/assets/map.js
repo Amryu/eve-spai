@@ -1419,6 +1419,10 @@ function replan() {
 function menuFor(id) {
   const at = anchors.indexOf(id);
   const items = [];
+  if (state.snapshot?.meta?.allow_writeback) {
+    items.push(["setdest", "Set Destination"]);
+    items.push(null);
+  }
   if (routeKind && anchors.length) {
     if (at < 0) {
       items.push(["dest", "Set as Destination"]);
@@ -1471,6 +1475,9 @@ function menuPick(id, kind) {
     return;
   }
   switch (kind) {
+    case "setdest":
+      send({ SetDestination: { id } });
+      return;
     case "dest":
       // One anchor is a start with nowhere to go, so this completes it; more than one replaces the
       // destination and leaves the waypoints where they are.

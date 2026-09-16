@@ -44,6 +44,8 @@ pub enum OverlayToMain {
     /// A system id, and the app decides which character and whether the ESI scope is there. The page
     /// is on the LAN; what it can ask for is "route me here", not "call this endpoint".
     SetDestination { id: i64 },
+    /// Set a planned route in the game: one waypoint per entry, in order, clearing what was there.
+    SetIngameRoute { waypoints: Vec<i64> },
     /// Add or remove a system from a permanent route-avoidance list.
     AvoidSystem { id: i64, jump: bool, on: bool },
     /// A conversation the page is looking at, so its unread marker clears everywhere rather than

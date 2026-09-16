@@ -1080,6 +1080,8 @@ mod tests {
             format!(r#"{{"Notes":{{"Import":{{"export":{export},"mode":"Merge","parent":null}}}}}}"#),
             r#"{"DefaultTagColor":{"id":"d:pilot:cyno","color":[1,2,3]}}"#.to_owned(),
             r#"{"DefaultTagColor":{"id":"d:pilot:cyno","color":null}}"#.to_owned(),
+            r#"{"SetDestination":{"id":30004759}}"#.to_owned(),
+            r#"{"SetIngameRoute":{"waypoints":[30004759,30004608]}}"#.to_owned(),
         ];
         for b in &bodies {
             assert_eq!(post(&c, &s.base, origin, b).status(), 204, "{b}");

@@ -2345,6 +2345,7 @@ impl SpaiApp {
                 self.map_focus = Some(id);
             }
             crate::ipc::OverlayToMain::SetDestination { id } => self.web_set_destination(id),
+            crate::ipc::OverlayToMain::SetIngameRoute { waypoints } => self.set_ingame_route(waypoints),
             crate::ipc::OverlayToMain::AvoidSystem { id, jump, on } => {
                 let list = if jump {
                     &mut self.settings.route_avoid_jump
@@ -2398,6 +2399,21 @@ impl SpaiApp {
     ///
     /// The same two things the map's own context menu does: the in-game destination, and the app's
     /// route overlay, so whoever is sitting at the machine sees where the phone just sent them.
+    /// A planned route as in-game waypoints. Bounded because each one is its own ESI call, and the
+    /// page can ask for anything.
+    fn set_ingame_route(&mut self, waypoints: Vec<i64>) {
+        const MAX: usize = 100;
+        if self.active_character == "No character" || waypoints.is_empty() || waypoints.len() > MAX {
+            return;
+        }
+        let known = |id: &i64| self.systems.as_ref().is_some_and(|g| g.info_of(*id).is_some());
+        if !waypoints.iter().all(known) {
+            return;
+        }
+        let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+        crate::esi::set_route(cid, self.active_character.clone(), waypoints);
+    }
+
     fn web_set_destination(&mut self, id: i64) {
         if self.active_character == "No character" {
             return;
@@ -2732,6 +2748,19 @@ impl SpaiApp {
         self.systems = Some(crate::uitest::fixtures::systems());
         self.notes = std::sync::Arc::new(book);
         self.rebuild_notes_view();
+    }
+
+    /// A planned gate route between two fixture systems, so the route panel has something to draw.
+    #[cfg(test)]
+    pub(crate) fn seed_map_route(&mut self, from: i64, to: i64) {
+        self.systems = Some(crate::uitest::fixtures::systems());
+        let graph = self.systems.clone().expect("seeded");
+        let opt = crate::web::route::gate(&graph, from, to, false, &Default::default(), &Default::default())
+            .expect("the fixture systems are connected");
+        self.map_route_kind = "gate";
+        self.map_route_anchors = vec![from, to];
+        self.map_route_opts = vec![opt];
+        self.map_route_at = 0;
     }
 
     #[cfg(test)]

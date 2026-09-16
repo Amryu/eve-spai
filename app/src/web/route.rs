@@ -122,6 +122,43 @@ pub fn danger_from_marks(
     out
 }
 
+/// The waypoints to push into the game for a planned route.
+///
+/// A gate route is flown by the autopilot, so every system on it becomes a waypoint and the in-game
+/// route matches the planned one. A route with a bridge or a capital jump cannot be: those legs are
+/// flown by hand, so only the systems on either side of them are set, which is where the pilot needs
+/// to be. The start is included when the character is somewhere else, since the route only makes
+/// sense from there.
+pub fn ingame_waypoints(opt: &RouteOption, player: Option<i64>) -> Vec<i64> {
+    let mut out: Vec<i64> = Vec::new();
+    let Some(&start) = opt.path.first() else { return out };
+    if player != Some(start) {
+        out.push(start);
+    }
+    let flown = opt.hops.iter().all(|h| h.kind == 0);
+    if flown {
+        out.extend(opt.path.iter().skip(1).copied());
+    } else {
+        for (i, h) in opt.hops.iter().enumerate() {
+            if h.kind != 0 {
+                if let Some(prev) = opt.hops.get(i.wrapping_sub(1)) {
+                    out.push(prev.id);
+                }
+                out.push(h.id);
+            }
+        }
+        if let Some(&last) = opt.path.last() {
+            out.push(last);
+        }
+    }
+    out.dedup();
+    // A waypoint where the character already sits is completed the moment it is set.
+    if out.first() == player.as_ref() {
+        out.remove(0);
+    }
+    out
+}
+
 /// Warnings from raw reports, because the desktop has no published snapshot when the web view is
 /// off.
 pub fn danger_from_reports(
@@ -903,6 +940,73 @@ fn clone_option(o: &RouteOption) -> RouteOption {
 
 #[cfg(test)]
 mod tests {
+
+    fn opt(path: &[i64], kinds: &[u8]) -> RouteOption {
+        RouteOption {
+            label: String::new(),
+            path: path.to_vec(),
+            hops: path
+                .iter()
+                .zip(kinds)
+                .map(|(id, kind)| Hop {
+                    id: *id,
+                    name: format!("S{id}"),
+                    security: 0.0,
+                    kind: *kind,
+                    ly: None,
+                    fuel: None,
+                    fatigue_min: None,
+                    reactivation_min: None,
+                    warn: None,
+                    anchor: false,
+                })
+                .collect(),
+            gates: 0,
+            jumps: 0,
+            total_ly: 0.0,
+            note: None,
+            detour: None,
+            titan_jump: None,
+            saved: None,
+            uses_wormhole: false,
+        }
+    }
+
+    /// The autopilot can fly every leg of a gate route, so it gets the whole path.
+    #[test]
+    fn a_gate_route_sets_every_system() {
+        let o = opt(&[1, 2, 3, 4], &[0, 0, 0, 0]);
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![2, 3, 4]);
+    }
+
+    /// A route planned from somewhere else is only flyable from its start, so that is the first stop.
+    #[test]
+    fn a_route_that_starts_elsewhere_leads_with_its_start() {
+        let o = opt(&[1, 2, 3], &[0, 0, 0]);
+        assert_eq!(ingame_waypoints(&o, Some(9)), vec![1, 2, 3]);
+        assert_eq!(ingame_waypoints(&o, None), vec![1, 2, 3]);
+    }
+
+    /// The bridge is flown by hand: the waypoints are where to be before it and where to carry on.
+    #[test]
+    fn a_bridged_route_sets_only_the_ends_of_the_legs_it_cannot_fly() {
+        let o = opt(&[1, 2, 3, 4, 5], &[0, 0, 2, 0, 0]);
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![2, 3, 5]);
+        assert_eq!(ingame_waypoints(&o, Some(7)), vec![1, 2, 3, 5]);
+    }
+
+    /// A bridge straight off the start still names the start, since the jump begins there.
+    #[test]
+    fn a_bridge_on_the_first_leg_keeps_both_of_its_ends() {
+        let o = opt(&[1, 2, 3], &[0, 1, 0]);
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![2, 3], "no waypoint on the system it starts in");
+        assert_eq!(ingame_waypoints(&o, Some(9)), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn an_empty_route_sets_nothing() {
+        assert!(ingame_waypoints(&opt(&[], &[]), Some(1)).is_empty());
+    }
     use super::*;
 
     fn graph() -> std::sync::Arc<crate::geo::Systems> {
