@@ -401,8 +401,9 @@ function paint() {
     if (hops[i].kind === 1) routed.add(`${hops[i - 1].id},${hops[i].id}`);
   }
   // The app's own travel route too: it draws its bridged legs as arcs in the route colour, and the
-  // page redraws that route from `live.route` with the same rule.
-  const live_route = live.route ?? [];
+  // page redraws that route from `live.route` with the same rule. Hidden while this page is planning
+  // a route, since two routes over the same systems cannot be told apart.
+  const live_route = planning() ? [] : live.route ?? [];
   for (let i = 1; i < live_route.length; i++) {
     routed.add(`${live_route[i - 1]},${live_route[i]}`);
   }
@@ -672,7 +673,7 @@ function paint() {
 
   // The route, on top of everything it overrides. A leg between gate neighbours is solid; anything
   // else is a bridge or a hole, so it takes the bridge arch or a dash.
-  const route = live.route ?? [];
+  const route = planning() ? [] : live.route ?? [];
   if (route.length > 1) {
     const gate = new Set();
     for (const [a, b] of geo.edges) {
@@ -1416,6 +1417,11 @@ function replan() {
 
 /// What the context menu offers for one system, which depends entirely on whether a route is being
 /// built and whether this system is already part of it.
+/// Whether this page is drawing a route of its own.
+function planning() {
+  return !!routeKind && anchors.length > 0;
+}
+
 function menuFor(id) {
   const at = anchors.indexOf(id);
   const items = [];

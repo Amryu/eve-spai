@@ -102,6 +102,12 @@ impl SpaiApp {
     }
 
     /// Whether a route is being planned at all, which decides what the map's menu offers.
+    /// The in-game destination whose route the map draws. Hidden while the planner is drawing one of
+    /// its own, since two routes over the same systems cannot be told apart.
+    pub(crate) fn set_route_shown(&self) -> Option<i64> {
+        self.route_destination.filter(|_| self.map_route_anchors.is_empty())
+    }
+
     pub(crate) fn map_route_kind_active(&self) -> bool {
         !self.map_route_anchors.is_empty()
     }

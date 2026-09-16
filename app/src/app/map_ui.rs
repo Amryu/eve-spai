@@ -714,7 +714,7 @@ impl SpaiApp {
             }
             // And the in-game destination route, which walks the same graph a few lines below.
             if let (Some(ps), Some(dest), Some(g)) =
-                (player_sys, self.route_destination, self.systems.as_ref())
+                (player_sys, self.set_route_shown(), self.systems.as_ref())
             {
                 let holes = if self.settings.route_via_wormholes {
                     self.wh_adjacency()
@@ -922,7 +922,7 @@ impl SpaiApp {
         }
 
         let mut reached_dest = false;
-        if let (Some(dest), Some(ps)) = (self.route_destination, player_sys) {
+        if let (Some(dest), Some(ps)) = (self.set_route_shown(), player_sys) {
             if ps == dest {
                 reached_dest = true;
             } else {
