@@ -377,10 +377,10 @@ impl SpaiApp {
                 let cost = h.fuel.zip(h.fatigue_min).zip(h.reactivation_min);
                 let warn = h.warn.filter(|w| warn_text(w).is_some());
                 // One button rather than one per action: a row is a system and a distance, and three
-                // buttons beside that is more chrome than content. It closes the row's last line, so
-                // it sits at the far right after the costs and the warning on every kind of hop.
+                // buttons beside that is more chrome than content. It keeps the right edge of the
+                // row on every kind of hop, so it never moves with the costs or the warning.
                 let mut menu = |ui: &mut egui::Ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    {
                         ui.menu_button(icon::DOTS_THREE, |ui| {
                             if h.warn.is_some_and(|w| w.sev >= crate::web::route::WARN_SEVERITY)
                                 && ui.button("Show intel").clicked()
@@ -448,54 +448,51 @@ impl SpaiApp {
                                 }
                             }
                         });
-                    });
+                    }
                 };
                 frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(&h.name)
-                                .color(security_color(h.security))
-                                .strong(),
-                        );
-                        let tail = if i == 0 {
-                            "start".to_owned()
-                        } else {
-                            match h.kind {
-                                2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
-                                1 => "ansiblex".to_owned(),
-                                _ => "gate".to_owned(),
-                            }
-                        };
-                        ui.label(egui::RichText::new(tail).weak().size(11.0));
-                        if cost.is_none() && warn.is_none() {
-                            menu(ui);
-                        }
+                    // The parts of a hop share a line whenever they fit and wrap when they do not,
+                    // so a short row is one line. The menu takes its place on the right first, so it
+                    // keeps the right edge instead of riding along in the wrap.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                        menu(ui);
+                        ui.vertical(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&h.name)
+                                        .color(security_color(h.security))
+                                        .strong(),
+                                );
+                                let tail = if i == 0 {
+                                    "start".to_owned()
+                                } else {
+                                    match h.kind {
+                                        2 => format!("jump {:.1} ly", h.ly.unwrap_or_default()),
+                                        1 => "ansiblex".to_owned(),
+                                        _ => "gate".to_owned(),
+                                    }
+                                };
+                                ui.label(egui::RichText::new(tail).weak().size(11.0));
+                                if let Some(((fuel, fat), react)) = cost {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} iso · fatigue {} · ready in {}",
+                                            fuel.round() as i64,
+                                            fmt_min(fat),
+                                            fmt_min(react)
+                                        ))
+                                        .weak()
+                                        .size(11.0),
+                                    );
+                                }
+                                if let Some(w) = &warn {
+                                    if warn_button(ui, w) {
+                                        warn_intel = Some(h.id);
+                                    }
+                                }
+                            });
+                        });
                     });
-                    if let Some(((fuel, fat), react)) = cost {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} iso · fatigue {} · ready in {}",
-                                    fuel.round() as i64,
-                                    fmt_min(fat),
-                                    fmt_min(react)
-                                ))
-                                .weak()
-                                .size(11.0),
-                            );
-                            if warn.is_none() {
-                                menu(ui);
-                            }
-                        });
-                    }
-                    if let Some(w) = &warn {
-                        ui.horizontal(|ui| {
-                            if warn_button(ui, w) {
-                                warn_intel = Some(h.id);
-                            }
-                            menu(ui);
-                        });
-                    }
                 });
             }
         });

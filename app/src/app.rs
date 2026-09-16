@@ -2787,6 +2787,28 @@ impl SpaiApp {
         self.map_route_at = 0;
     }
 
+    /// Turns a seeded route into the busiest row shape there is: a jump hop with its costs and a
+    /// warning, which is the layout the panel has to fit.
+    #[cfg(test)]
+    pub(crate) fn seed_route_detail(&mut self) {
+        let Some(opt) = self.map_route_opts.get_mut(self.map_route_at) else { return };
+        for (i, h) in opt.hops.iter_mut().enumerate().skip(1) {
+            h.kind = 2;
+            h.ly = Some(4.5);
+            h.fuel = Some(4200.0);
+            h.fatigue_min = Some(74.0);
+            h.reactivation_min = Some(12.0);
+            if i % 2 == 1 {
+                h.warn = Some(crate::web::route::HopWarning {
+                    sev: 3,
+                    at: chrono::Utc::now().timestamp() - 240,
+                    kills: 6,
+                    pods: 2,
+                });
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_jump_ship(&mut self, ship: usize) {
         self.jump_ship = ship;
