@@ -1275,7 +1275,7 @@ function wire() {
         const take = (kind) => {
           routeKind = kind;
           anchors = extend ? [...anchors.slice(0, at + 1), over] : [from, over];
-          if (kind === "gate") send({ SetDestination: { id: over } });
+          if (plainGatePlan(kind)) send({ SetDestination: { id: over } });
           replan();
         };
         // The menu asks the route kind once per route, so extending a route skips it.
@@ -1419,6 +1419,14 @@ function alwaysAvoided() {
   return new Set((routeKind === "jump" ? m?.avoid_jump : m?.avoid_gate) ?? []);
 }
 
+/// Whether planning a destination should also set it in the game. Only while the plan is a plain
+/// start and destination: a bare destination clears the game's other waypoints, so pushing one on a
+/// route that has waypoints wipes them. Those reach the game through the route window's "Set in
+/// game", whole.
+function plainGatePlan(kind) {
+  return kind === "gate" && anchors.length === 2;
+}
+
 /// Plan the route the anchors currently describe, and draw it.
 function replan() {
   if (!routeKind || anchors.length < 2) {
@@ -1506,7 +1514,7 @@ function menuPick(id, kind) {
       // One anchor is a start with nowhere to go, so this completes it; more than one replaces the
       // destination and leaves the waypoints where they are.
       anchors = anchors.length <= 1 ? [...anchors, id] : [...anchors.slice(0, -1), id];
-      if (routeKind === "gate") send({ SetDestination: { id } });
+      if (plainGatePlan(routeKind)) send({ SetDestination: { id } });
       break;
     case "way":
       anchors = [...anchors.slice(0, -1), id, anchors[anchors.length - 1]];

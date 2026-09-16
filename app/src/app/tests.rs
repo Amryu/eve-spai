@@ -2612,3 +2612,57 @@ mod notes_behaviour_tests {
         assert!(serde_json::from_str::<crate::ipc::OverlayToMain>(&text).is_ok());
     }
 }
+
+/// Dragging a gate route on from its own destination, which is how a waypoint gets added without a
+/// menu. The old destination has to survive as a waypoint, on the map and in the game.
+#[cfg(test)]
+mod route_extension_tests {
+    use super::*;
+
+    const DQ: i64 = 30_004_759;
+    const THREE: i64 = 30_004_608;
+    const K5: i64 = 30_003_704;
+
+    fn app() -> (egui::Context, SpaiApp) {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        let mut a = SpaiApp::build(&ctx, true);
+        a.systems = Some(crate::uitest::fixtures::systems());
+        (ctx, a)
+    }
+
+    #[test]
+    fn dragging_on_from_the_destination_keeps_it_as_a_waypoint() {
+        let (_ctx, mut a) = app();
+        a.map_take_route("gate", DQ, THREE);
+        assert_eq!(a.map_route_anchors, vec![DQ, THREE]);
+        a.map_take_route("gate", THREE, K5);
+        assert_eq!(a.map_route_anchors, vec![DQ, THREE, K5], "the old destination became a waypoint");
+        let opt = a.map_route_opts.first().expect("a route");
+        let wp = crate::web::route::ingame_waypoints(opt, Some(DQ));
+        assert!(wp.contains(&THREE), "the waypoint must be a waypoint in the game too, got {wp:?}");
+        assert_eq!(wp.last(), Some(&K5), "the destination is still the last stop");
+    }
+
+    /// A bare destination clears the game's waypoints, so it is only pushed while there are none.
+    #[test]
+    fn only_a_plain_plan_sets_the_destination_in_the_game() {
+        use crate::app::map_route::plain_gate_plan;
+        assert!(plain_gate_plan("gate", 2), "a start and a destination is what it always did");
+        assert!(!plain_gate_plan("gate", 3), "a waypoint would be cleared by a bare destination");
+        assert!(!plain_gate_plan("titan", 2), "a titan route is never flown by the autopilot");
+        assert!(!plain_gate_plan("jump", 2));
+    }
+
+    /// The same by menu: set a destination, then name a further one.
+    #[test]
+    fn setting_a_further_destination_keeps_the_waypoints() {
+        let (_ctx, mut a) = app();
+        a.map_route_start("gate", DQ);
+        a.map_route_set_dest(THREE);
+        a.map_route_add_waypoint(K5);
+        assert_eq!(a.map_route_anchors, vec![DQ, K5, THREE], "a waypoint goes in before the end");
+        a.map_route_set_dest(DQ);
+        assert_eq!(a.map_route_anchors, vec![DQ, K5, DQ], "only the far end is replaced");
+    }
+}

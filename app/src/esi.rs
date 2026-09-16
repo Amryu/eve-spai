@@ -108,11 +108,42 @@ pub fn set_waypoint(
         else {
             return;
         };
-        let url = format!(
-            "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={system_id}"
-        );
-        let _ = client.post(url).bearer_auth(token).send();
+        push_waypoint(&client, &token, system_id, clear);
     });
+}
+
+/// One waypoint into the running client, retried once.
+///
+/// The client drops UI calls that arrive on top of each other and says nothing about it, so a failed
+/// waypoint is logged: a route with a hole in it is worse than no route.
+fn push_waypoint(client: &reqwest::blocking::Client, token: &str, system_id: i64, clear: bool) -> bool {
+    let url = format!(
+        "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={system_id}"
+    );
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+        }
+        match client.post(&url).bearer_auth(token).send() {
+            Ok(r) if r.status().is_success() => return true,
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().unwrap_or_default();
+                if attempt > 0 {
+                    crate::esilog::record(
+                        &format!("ui/autopilot/waypoint {status}"),
+                        &format!("system {system_id}\n{body}"),
+                    );
+                }
+            }
+            Err(e) => {
+                if attempt > 0 {
+                    crate::esilog::record("ui/autopilot/waypoint failed", &format!("system {system_id}\n{e}"));
+                }
+            }
+        }
+    }
+    false
 }
 
 pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
@@ -128,12 +159,22 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
         else {
             return;
         };
+        let mut lost: Vec<i64> = Vec::new();
         for (i, sys) in waypoints.iter().enumerate() {
-            let clear = i == 0;
-            let url = format!(
-                "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={sys}"
+            // Spaced out: the client ignores waypoints that arrive in a burst, which leaves the route
+            // in the game shorter than the one on screen with nothing to say why.
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            if !push_waypoint(&client, &token, *sys, i == 0) {
+                lost.push(*sys);
+            }
+        }
+        if !lost.is_empty() {
+            crate::esilog::record(
+                "ui/autopilot/waypoint route incomplete",
+                &format!("{} of {} waypoints refused: {lost:?}", lost.len(), waypoints.len()),
             );
-            let _ = client.post(url).bearer_auth(&token).send();
         }
     });
 }

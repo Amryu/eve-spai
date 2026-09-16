@@ -530,10 +530,13 @@ function ingameWaypoints(o, player) {
     out.push(...o.path.slice(1));
   } else {
     o.hops.forEach((h, i) => {
+      // A system the user named is a waypoint in the game too, or the route arrives there by
+      // whatever way the game likes, or not at all.
+      if (h.anchor && i > 0 && out[out.length - 1] !== h.id) out.push(h.id);
       // A fork the autopilot would take the other way round needs the branch pinned.
       if (h.fork?.length && o.path[i + 1] != null) out.push(o.path[i + 1]);
       if (!h.kind) return;
-      if (i > 0) out.push(o.hops[i - 1].id);
+      if (i > 0 && out[out.length - 1] !== o.hops[i - 1].id) out.push(o.hops[i - 1].id);
       out.push(h.id);
     });
     out.push(o.path[o.path.length - 1]);

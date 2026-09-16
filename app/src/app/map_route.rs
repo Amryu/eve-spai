@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// Whether planning a destination should also set it in the game.
+///
+/// Only while the plan is a plain start and destination: a bare destination carries
+/// `clear_other_waypoints`, so pushing one on a route that has waypoints wipes them in the game.
+/// A route with waypoints reaches the game through the panel's "Set in game" instead, whole.
+pub(crate) fn plain_gate_plan(kind: &str, anchors: usize) -> bool {
+    kind == "gate" && anchors == 2
+}
+
 impl SpaiApp {
     /// The four things a finished route drag can mean, arranged around where it was let go.
     ///
@@ -89,7 +98,7 @@ impl SpaiApp {
             }
             _ => self.map_route_anchors = vec![from, to],
         }
-        if kind == "gate" {
+        if plain_gate_plan(kind, self.map_route_anchors.len()) {
             self.web_set_destination(to);
             self.route_destination = Some(to);
         }
@@ -136,7 +145,7 @@ impl SpaiApp {
             self.map_route_anchors.pop();
             self.map_route_anchors.push(sid);
         }
-        if self.map_route_kind == "gate" {
+        if plain_gate_plan(self.map_route_kind, self.map_route_anchors.len()) {
             self.web_set_destination(sid);
         }
         self.map_replan_route();

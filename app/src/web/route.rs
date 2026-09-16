@@ -257,8 +257,8 @@ pub fn danger_from_marks(
 /// A gate route is flown by the autopilot, so every system on it becomes a waypoint and the in-game
 /// route matches the planned one. A route with a bridge or a capital jump cannot be: those legs are
 /// flown by hand, so only the systems on either side of them are set, which is where the pilot needs
-/// to be. The start is included when the character is somewhere else, since the route only makes
-/// sense from there.
+/// to be, along with the waypoints the user named and the branches they picked. The start is included
+/// when the character is somewhere else, since the route only makes sense from there.
 pub fn ingame_waypoints(opt: &RouteOption, player: Option<i64>) -> Vec<i64> {
     let mut out: Vec<i64> = Vec::new();
     let Some(&start) = opt.path.first() else { return out };
@@ -270,6 +270,11 @@ pub fn ingame_waypoints(opt: &RouteOption, player: Option<i64>) -> Vec<i64> {
         out.extend(opt.path.iter().skip(1).copied());
     } else {
         for (i, h) in opt.hops.iter().enumerate() {
+            // A system the user named is a waypoint in the game too, or a route planned through one
+            // arrives there by whatever way the game likes, or not at all.
+            if h.anchor && i > 0 && out.last() != Some(&h.id) {
+                out.push(h.id);
+            }
             // A fork the autopilot would take the other way round needs the branch pinned, or the
             // game flies its own equally short route instead of the one on screen.
             if !h.fork.is_empty() {
@@ -279,7 +284,9 @@ pub fn ingame_waypoints(opt: &RouteOption, player: Option<i64>) -> Vec<i64> {
             }
             if h.kind != 0 {
                 if let Some(prev) = opt.hops.get(i.wrapping_sub(1)) {
-                    out.push(prev.id);
+                    if out.last() != Some(&prev.id) {
+                        out.push(prev.id);
+                    }
                 }
                 out.push(h.id);
             }
@@ -1159,6 +1166,18 @@ mod tests {
         let o = opt(&[1, 2, 3, 4, 5], &[0, 0, 2, 0, 0]);
         assert_eq!(ingame_waypoints(&o, Some(1)), vec![2, 3, 5]);
         assert_eq!(ingame_waypoints(&o, Some(7)), vec![1, 2, 3, 5]);
+    }
+
+    /// The waypoint the user named is a waypoint in the game too, even on a route the autopilot
+    /// cannot fly end to end.
+    #[test]
+    fn a_named_waypoint_is_pinned_on_a_bridged_route() {
+        let mut o = opt(&[1, 2, 3, 4, 5, 6], &[0, 0, 0, 1, 0, 0]);
+        o.hops[0].anchor = true;
+        o.hops[2].anchor = true;
+        o.hops[5].anchor = true;
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![3, 4, 6]);
+        assert_eq!(ingame_waypoints(&o, Some(9)), vec![1, 3, 4, 6], "planned from elsewhere");
     }
 
     /// A bridge straight off the start still names the start, since the jump begins there.
