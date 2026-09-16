@@ -1172,12 +1172,14 @@ mod tests {
     /// cannot fly end to end.
     #[test]
     fn a_named_waypoint_is_pinned_on_a_bridged_route() {
-        let mut o = opt(&[1, 2, 3, 4, 5, 6], &[0, 0, 0, 1, 0, 0]);
+        // The waypoint sits well away from the bridge, which is the case that tells a pinned
+        // waypoint apart from a system that is pinned for being one end of a leg.
+        let mut o = opt(&[1, 2, 3, 4, 5, 6, 7], &[0, 0, 0, 0, 0, 1, 0]);
         o.hops[0].anchor = true;
         o.hops[2].anchor = true;
-        o.hops[5].anchor = true;
-        assert_eq!(ingame_waypoints(&o, Some(1)), vec![3, 4, 6]);
-        assert_eq!(ingame_waypoints(&o, Some(9)), vec![1, 3, 4, 6], "planned from elsewhere");
+        o.hops[6].anchor = true;
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![3, 5, 6, 7]);
+        assert_eq!(ingame_waypoints(&o, Some(9)), vec![1, 3, 5, 6, 7], "planned from elsewhere");
     }
 
     /// A bridge straight off the start still names the start, since the jump begins there.
@@ -1267,6 +1269,137 @@ mod tests {
         o.hops[0].fork =
             vec![Branch { id: 2, name: "S2".into() }, Branch { id: 7, name: "S7".into() }];
         assert_eq!(ingame_waypoints(&o, Some(1)), vec![2, 3, 4, 5]);
+    }
+
+    /// The page has its own copy of the waypoint rule, because it pushes the route itself. This runs
+    /// both on the same routes and fails when they disagree: a page that pins a different set wipes
+    /// the route in the game and says nothing.
+    #[test]
+    fn the_page_pins_the_same_waypoints_as_the_app() {
+        if std::process::Command::new("node").arg("--version").output().is_err() {
+            eprintln!("node is not installed, skipping the page's half of the waypoint rule");
+            return;
+        }
+        let fork = |a: i64, b: i64| vec![
+            Branch { id: a, name: format!("S{a}") },
+            Branch { id: b, name: format!("S{b}") },
+        ];
+        let mut bridged = opt(&[1, 2, 3, 4, 5, 6, 7], &[0, 0, 0, 0, 2, 0, 0]);
+        bridged.hops[0].anchor = true;
+        bridged.hops[3].anchor = true;
+        bridged.hops[6].anchor = true;
+        bridged.hops[1].fork = fork(3, 8);
+        let mut gates = opt(&[1, 2, 3, 4], &[0, 0, 0, 0]);
+        gates.hops[2].anchor = true;
+        let mut ansiblex = opt(&[1, 2, 3, 4, 5], &[0, 1, 0, 1, 0]);
+        ansiblex.hops[2].anchor = true;
+        // A waypoint nowhere near the bridge: the case that separates a pinned waypoint from a
+        // system pinned for being the end of a leg.
+        let mut far = opt(&[1, 2, 3, 4, 5, 6, 7], &[0, 0, 0, 0, 0, 1, 0]);
+        far.hops[0].anchor = true;
+        far.hops[2].anchor = true;
+        far.hops[6].anchor = true;
+        let cases: Vec<(RouteOption, Option<i64>)> = vec![
+            (bridged, Some(1)),
+            (gates, Some(1)),
+            (ansiblex, Some(9)),
+            (far, Some(1)),
+            (opt(&[], &[]), Some(1)),
+            (opt(&[1], &[0]), Some(1)),
+        ];
+        let mine: Vec<Vec<i64>> =
+            cases.iter().map(|(o, p)| ingame_waypoints(o, *p)).collect();
+
+        let dir = std::env::temp_dir().join(format!("eve-spai-waypoints-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        std::fs::write(dir.join("waypoints.js"), include_str!("assets/waypoints.js")).expect("module");
+        std::fs::write(
+            dir.join("run.mjs"),
+            r#"import { ingameWaypoints } from "./waypoints.js";
+const cases = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(cases.map(([o, p]) => ingameWaypoints(o, p))));
+"#,
+        )
+        .expect("runner");
+        let payload = serde_json::to_string(&cases).expect("cases");
+        let out = std::process::Command::new("node")
+            .arg(dir.join("run.mjs"))
+            .arg(&payload)
+            .output()
+            .expect("node ran");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.status.success(), "node failed: {}", String::from_utf8_lossy(&out.stderr));
+        let theirs: Vec<Vec<i64>> =
+            serde_json::from_slice(&out.stdout).expect("the page returned waypoint lists");
+        assert_eq!(theirs, mine, "the page and the app pin different waypoints");
+    }
+
+    /// A line of ten systems with a jump bridge from 2 to 9, which makes the way back through the
+    /// bridge much shorter than the way along the line.
+    fn line_with_a_bridge() -> crate::geo::Systems {
+        let mut by_name = std::collections::HashMap::new();
+        let mut adjacency: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+        for id in 1..=10i64 {
+            by_name.insert(format!("S{id}"), crate::geo::SystemInfo {
+                id,
+                name: format!("S{id}"),
+                security: -0.4,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+            if id > 1 {
+                adjacency.entry(id - 1).or_default().push(id);
+                adjacency.entry(id).or_default().push(id - 1);
+            }
+        }
+        let mut g = crate::geo::Systems::new(by_name, adjacency);
+        g.add_bridges(&[(2, 9)]);
+        g
+    }
+
+    /// The whole flow behind the bug: a route planned through a waypoint, on a path the autopilot
+    /// cannot fly end to end. The waypoint has to reach the game, or it is not a waypoint at all.
+    #[test]
+    fn a_waypoint_survives_planning_a_bridged_route() {
+        let g = line_with_a_bridge();
+        let anchors = [1i64, 4, 10];
+        let (_, mut options) = chain(
+            &g,
+            &[],
+            &anchors,
+            "gate",
+            &crate::jumproute::SHIP_CLASSES[0],
+            5,
+            5,
+            6.0,
+            true,
+            &[],
+            false,
+            true,
+            &Avoid::default(),
+            &Default::default(),
+            &[],
+            &Picks::new(),
+        );
+        mark_anchors(&mut options, &anchors);
+        let o = options.first().expect("a route");
+        assert!(o.hops.iter().any(|h| h.kind == 1), "the bridge is the point of this route");
+        let wp = ingame_waypoints(o, Some(1));
+        assert!(wp.contains(&4), "the waypoint the user named was dropped: {wp:?}");
+        assert_eq!(wp.last(), Some(&10), "the destination is the last stop");
+    }
+
+    /// Waypoints, forks and bridge ends all reach the game, in the order they are flown.
+    #[test]
+    fn pinned_systems_keep_their_travel_order() {
+        let mut o = opt(&[1, 2, 3, 4, 5, 6, 7], &[0, 0, 0, 0, 2, 0, 0]);
+        o.hops[0].anchor = true;
+        o.hops[3].anchor = true;
+        o.hops[6].anchor = true;
+        o.hops[1].fork =
+            vec![Branch { id: 3, name: "S3".into() }, Branch { id: 8, name: "S8".into() }];
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![3, 4, 5, 7]);
     }
 
     /// A line of seven systems with two titans near the start reaching different systems. The shared

@@ -2644,6 +2644,42 @@ mod route_extension_tests {
         assert_eq!(wp.last(), Some(&K5), "the destination is still the last stop");
     }
 
+    /// The drag that caused the bug: the second one must not push a destination, because a bare
+    /// destination clears the game's waypoints, and the first one just made the old destination one.
+    #[test]
+    fn extending_a_route_does_not_push_a_destination() {
+        let (_ctx, mut a) = app();
+        a.map_take_route("gate", DQ, THREE);
+        assert_eq!(a.route_destination, Some(THREE), "a plain route still sets its destination");
+        a.map_take_route("gate", THREE, K5);
+        assert_eq!(
+            a.route_destination,
+            Some(THREE),
+            "extending pushed a bare destination, which wipes the waypoints in the game"
+        );
+    }
+
+    /// Dragging off the start is how a route is abandoned, so the waypoints go with it.
+    #[test]
+    fn dragging_from_the_start_restarts_the_route() {
+        let (_ctx, mut a) = app();
+        a.map_take_route("gate", DQ, THREE);
+        a.map_take_route("gate", THREE, K5);
+        a.map_take_route("gate", DQ, K5);
+        assert_eq!(a.map_route_anchors, vec![DQ, K5], "everything after the start is rewritten");
+    }
+
+    /// Two waypoints stay in the order they were added, which is the order they are flown.
+    #[test]
+    fn waypoints_keep_the_order_they_were_added_in() {
+        let (_ctx, mut a) = app();
+        a.map_route_start("gate", DQ);
+        a.map_route_set_dest(K5);
+        a.map_route_add_waypoint(THREE);
+        a.map_route_add_waypoint(DQ);
+        assert_eq!(a.map_route_anchors, vec![DQ, THREE, DQ, K5]);
+    }
+
     /// A bare destination clears the game's waypoints, so it is only pushed while there are none.
     #[test]
     fn only_a_plain_plan_sets_the_destination_in_the_game() {

@@ -108,21 +108,34 @@ pub fn set_waypoint(
         else {
             return;
         };
-        push_waypoint(&client, &token, system_id, clear);
+        push_waypoint(&client, WAYPOINT_API, &token, system_id, clear, RETRY_GAP);
     });
 }
+
+/// The autopilot endpoint. A constant so the tests can point the same code at a local server.
+const WAYPOINT_API: &str = "https://esi.evetech.net/latest/ui/autopilot/waypoint/";
+/// How long to wait before pushing the next waypoint, and before retrying a refused one.
+const WAYPOINT_GAP: std::time::Duration = std::time::Duration::from_millis(300);
+const RETRY_GAP: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// One waypoint into the running client, retried once.
 ///
 /// The client drops UI calls that arrive on top of each other and says nothing about it, so a failed
 /// waypoint is logged: a route with a hole in it is worse than no route.
-fn push_waypoint(client: &reqwest::blocking::Client, token: &str, system_id: i64, clear: bool) -> bool {
+fn push_waypoint(
+    client: &reqwest::blocking::Client,
+    api: &str,
+    token: &str,
+    system_id: i64,
+    clear: bool,
+    retry_gap: std::time::Duration,
+) -> bool {
     let url = format!(
-        "https://esi.evetech.net/latest/ui/autopilot/waypoint/?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={system_id}"
+        "{api}?add_to_beginning=false&clear_other_waypoints={clear}&destination_id={system_id}"
     );
     for attempt in 0..2 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(800));
+        if attempt > 0 && !retry_gap.is_zero() {
+            std::thread::sleep(retry_gap);
         }
         match client.post(&url).bearer_auth(token).send() {
             Ok(r) if r.status().is_success() => return true,
@@ -146,6 +159,31 @@ fn push_waypoint(client: &reqwest::blocking::Client, token: &str, system_id: i64
     false
 }
 
+/// Pushes a whole route, one waypoint at a time, and reports the ones the client refused.
+///
+/// Only the first call clears what was there: the rest have to land on top of it, in order, or the
+/// route in the game is not the route that was planned.
+fn push_route(
+    client: &reqwest::blocking::Client,
+    api: &str,
+    token: &str,
+    waypoints: &[i64],
+    gap: std::time::Duration,
+) -> Vec<i64> {
+    let mut lost: Vec<i64> = Vec::new();
+    for (i, sys) in waypoints.iter().enumerate() {
+        // Spaced out: the client ignores waypoints that arrive in a burst, which leaves the route in
+        // the game shorter than the one on screen with nothing to say why.
+        if i > 0 && !gap.is_zero() {
+            std::thread::sleep(gap);
+        }
+        if !push_waypoint(client, api, token, *sys, i == 0, gap) {
+            lost.push(*sys);
+        }
+    }
+    lost
+}
+
 pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
     std::thread::spawn(move || {
         let Ok(store) = Store::open() else { return };
@@ -159,17 +197,7 @@ pub fn set_route(client_id: String, char_name: String, waypoints: Vec<i64>) {
         else {
             return;
         };
-        let mut lost: Vec<i64> = Vec::new();
-        for (i, sys) in waypoints.iter().enumerate() {
-            // Spaced out: the client ignores waypoints that arrive in a burst, which leaves the route
-            // in the game shorter than the one on screen with nothing to say why.
-            if i > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-            if !push_waypoint(&client, &token, *sys, i == 0) {
-                lost.push(*sys);
-            }
-        }
+        let lost = push_route(&client, WAYPOINT_API, &token, &waypoints, WAYPOINT_GAP);
         if !lost.is_empty() {
             crate::esilog::record(
                 "ui/autopilot/waypoint route incomplete",
@@ -641,5 +669,113 @@ mod tests {
         conn.put(7, "cached", now + 3600);
         assert_eq!(access_token(&conn, "client", 7, None).as_deref(), Some("cached"));
         assert_eq!(access_token(&conn, "client", 7, Some(0)).as_deref(), Some("cached"));
+    }
+}
+
+/// The autopilot pushes, against a local server rather than the real one: the order of the calls and
+/// the clear flag are the difference between the route in the game and a wiped one.
+#[cfg(test)]
+mod waypoint_tests {
+    use super::{push_route, push_waypoint};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct Fake {
+        /// Every request line the server saw, in order.
+        seen: Arc<Mutex<Vec<String>>>,
+        /// Systems to refuse, and how many times each still has to be refused.
+        url: String,
+        _stop: Arc<tiny_http::Server>,
+    }
+
+    /// A server that answers 204 like the real one, refusing the systems in `refuse` for as many
+    /// tries as the count says.
+    fn fake(refuse: Vec<(i64, usize)>) -> Fake {
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("a loopback port"));
+        let port = server.server_addr().to_ip().expect("ip").port();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let srv = server.clone();
+        std::thread::spawn(move || {
+            let mut left: std::collections::HashMap<i64, usize> = refuse.into_iter().collect();
+            for req in srv.incoming_requests() {
+                let url = req.url().to_owned();
+                log.lock().unwrap_or_else(|e| e.into_inner()).push(url.clone());
+                let sys: i64 = url
+                    .rsplit_once("destination_id=")
+                    .and_then(|(_, v)| v.parse().ok())
+                    .unwrap_or_default();
+                let refuse_now = left.get(&sys).is_some_and(|&n| n > 0);
+                if refuse_now {
+                    *left.entry(sys).or_default() -= 1;
+                }
+                let code = if refuse_now { 520 } else { 204 };
+                let _ = req.respond(tiny_http::Response::empty(code));
+            }
+        });
+        Fake {
+            seen,
+            url: format!("http://127.0.0.1:{port}/ui/autopilot/waypoint/"),
+            _stop: server,
+        }
+    }
+
+    impl Fake {
+        fn calls(&self) -> Vec<String> {
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+        fn systems(&self) -> Vec<i64> {
+            self.calls()
+                .iter()
+                .filter_map(|u| u.rsplit_once("destination_id=").and_then(|(_, v)| v.parse().ok()))
+                .collect()
+        }
+    }
+
+    fn client() -> reqwest::blocking::Client {
+        crate::http::client(5).expect("a client")
+    }
+
+    /// The whole route, in travel order, and only the first call wipes what the game had.
+    #[test]
+    fn a_route_arrives_in_order_and_clears_once() {
+        let f = fake(Vec::new());
+        let lost = push_route(&client(), &f.url, "t", &[1, 2, 3, 4], Duration::ZERO);
+        assert!(lost.is_empty(), "nothing was refused");
+        assert_eq!(f.systems(), vec![1, 2, 3, 4], "the game must be walked through the route in order");
+        let clears: Vec<bool> =
+            f.calls().iter().map(|u| u.contains("clear_other_waypoints=true")).collect();
+        assert_eq!(clears, vec![true, false, false, false], "only the first call may clear the route");
+    }
+
+    /// A refused waypoint is tried again rather than left as a hole in the route.
+    #[test]
+    fn a_refused_waypoint_is_retried() {
+        let f = fake(vec![(3, 1)]);
+        let lost = push_route(&client(), &f.url, "t", &[1, 2, 3, 4], Duration::ZERO);
+        assert!(lost.is_empty(), "the retry landed, so nothing is lost");
+        assert_eq!(f.systems(), vec![1, 2, 3, 3, 4], "3 was pushed twice and the route carried on");
+    }
+
+    /// One waypoint the client will not take does not abort the rest, and it is reported.
+    #[test]
+    fn a_waypoint_the_client_keeps_refusing_is_reported() {
+        let f = fake(vec![(2, 9)]);
+        let lost = push_route(&client(), &f.url, "t", &[1, 2, 3], Duration::ZERO);
+        assert_eq!(lost, vec![2], "the caller has to know which waypoint the game never got");
+        assert_eq!(f.systems(), vec![1, 2, 2, 3], "two tries for 2, and 3 still went in");
+    }
+
+    /// The single-waypoint push carries the clear flag it was asked for, since clearing is how a
+    /// destination replaces a route and not clearing is how a waypoint is added to one.
+    #[test]
+    fn a_single_waypoint_carries_its_clear_flag() {
+        let f = fake(Vec::new());
+        assert!(push_waypoint(&client(), &f.url, "t", 30_000_142, true, Duration::ZERO));
+        assert!(push_waypoint(&client(), &f.url, "t", 30_000_144, false, Duration::ZERO));
+        let calls = f.calls();
+        assert!(calls[0].contains("clear_other_waypoints=true") && calls[0].contains("destination_id=30000142"));
+        assert!(calls[1].contains("clear_other_waypoints=false"));
+        assert!(calls.iter().all(|u| u.contains("add_to_beginning=false")), "waypoints go on the end");
     }
 }

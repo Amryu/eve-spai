@@ -5,6 +5,7 @@ import { esc, ico, modal, send, state } from "./app.js";
 import { menu } from "./route.js";
 import { card, fmtAge } from "./panes-intel.js";
 import { section as notesSection } from "./notes.js";
+import { ingameWaypoints } from "./waypoints.js";
 
 
 const secVar = (sec) => `var(--sec-${Math.min(10, Math.max(0, Math.round(sec * 10)))})`;
@@ -517,32 +518,6 @@ export async function showRoute(kind, anchors, onPick) {
   routeReq = { kind, anchors, onPick };
   open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
   await fetchRoute();
-}
-
-/// Mirrors `web::route::ingame_waypoints`: the autopilot flies a gate route whole, so every system
-/// is a waypoint; a leg the pilot flies by hand only gets its two ends.
-function ingameWaypoints(o, player) {
-  if (!o?.path?.length) return [];
-  const out = [];
-  const start = o.path[0];
-  if (player !== start) out.push(start);
-  if ((o.hops ?? []).every((h) => !h.kind)) {
-    out.push(...o.path.slice(1));
-  } else {
-    o.hops.forEach((h, i) => {
-      // A system the user named is a waypoint in the game too, or the route arrives there by
-      // whatever way the game likes, or not at all.
-      if (h.anchor && i > 0 && out[out.length - 1] !== h.id) out.push(h.id);
-      // A fork the autopilot would take the other way round needs the branch pinned.
-      if (h.fork?.length && o.path[i + 1] != null) out.push(o.path[i + 1]);
-      if (!h.kind) return;
-      if (i > 0 && out[out.length - 1] !== o.hops[i - 1].id) out.push(o.hops[i - 1].id);
-      out.push(h.id);
-    });
-    out.push(o.path[o.path.length - 1]);
-  }
-  const uniq = out.filter((id, i) => i === 0 || id !== out[i - 1]);
-  return uniq[0] === player ? uniq.slice(1) : uniq;
 }
 
 async function fetchRoute() {
