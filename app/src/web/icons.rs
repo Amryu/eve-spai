@@ -44,6 +44,7 @@ pub const ICONS: &[(&str, &str)] = &[
     ("speaker-high", icon::SPEAKER_HIGH),
     ("speaker-slash", icon::SPEAKER_SLASH),
     ("arrows-in", icon::ARROWS_IN),
+    ("arrows-split", icon::ARROWS_SPLIT),
     ("arrows-out", icon::ARROWS_OUT),
     ("x", icon::X),
     // Layout chrome.

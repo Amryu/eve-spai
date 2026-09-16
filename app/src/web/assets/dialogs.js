@@ -505,10 +505,15 @@ export const titansOnce = new Set();
 export let currentRoute = null;
 /// Which alternative is picked for each leg.
 let legPick = [];
+/// Which way to leave each system the route forks at, by system id.
+let forkPick = new Map();
 
 export async function showRoute(kind, anchors, onPick) {
   if (kind === "cancel") return;
-  if (routeReq?.anchors?.length !== anchors.length) legPick = [];
+  if (routeReq?.anchors?.length !== anchors.length) {
+    legPick = [];
+    forkPick = new Map();
+  }
   routeReq = { kind, anchors, onPick };
   open("route", `<h3>Route</h3><p class="placeholder">Working it out.</p>`);
   await fetchRoute();
@@ -525,6 +530,8 @@ function ingameWaypoints(o, player) {
     out.push(...o.path.slice(1));
   } else {
     o.hops.forEach((h, i) => {
+      // A fork the autopilot would take the other way round needs the branch pinned.
+      if (h.fork?.length && o.path[i + 1] != null) out.push(o.path[i + 1]);
       if (!h.kind) return;
       if (i > 0) out.push(o.hops[i - 1].id);
       out.push(h.id);
@@ -546,7 +553,8 @@ async function fetchRoute() {
       `/api/route?from=${from}&to=${to}&via=${via}&kind=${encodeURIComponent(kind)}` +
         `&hull=${jump.hull}&jdc=${jump.jdc}&jfc=${jump.jfc}&tstart=${jump.tstart ? 1 : 0}&tself=${jump.tself ? 1 : 0}` +
         `&avoid=${[...avoidOnce].join(",")}&titans=${[...titansOnce].join(",")}` +
-        `&pick=${legPick.join(",")}`
+        `&pick=${legPick.join(",")}` +
+        `&forks=${[...forkPick].map(([at, next]) => `${at}:${next}`).join(",")}`
     );
     out = await r.json();
   } catch {
@@ -708,6 +716,17 @@ function paintRoute(kind, onPick) {
           ? `<span class="rkind bridge">ansiblex</span>`
           : `<span class="rkind">gate</span>`) +
     warn(h.warn, h.id) +
+    // Every way on is the same length, so the choice is the user's and belongs in the list.
+    (h.fork?.length
+      ? `<span class="rfork" title="Ways on from here, all the same length">${ico("arrows-split")}` +
+        h.fork
+          .map((alt) => {
+            const on = o.path[i + 1] === alt.id;
+            return `<button class="ropt${on ? " on" : ""}" data-fork="${h.id}" data-alt-sys="${alt.id}">${esc(alt.name)}</button>`;
+          })
+          .join("") +
+        `</span>`
+      : "") +
     `</span>` +
     // One actions button rather than several, to keep the row compact.
     `<button class="ract" data-act="${h.id}" data-at="${i}" title="Actions">${ico("dots-three")}</button>` +
@@ -754,6 +773,12 @@ function win_wire(kind, onPick) {
   });
   win?.querySelector("[data-save]")?.addEventListener("click", () => saveRoute(kind));
   win?.querySelector("[data-load-open]")?.addEventListener("click", () => loadRoute(onPick));
+  win?.querySelectorAll("[data-fork]").forEach((b) =>
+    b.addEventListener("click", () => {
+      forkPick.set(Number(b.dataset.fork), Number(b.dataset.altSys));
+      fetchRoute();
+    })
+  );
   win?.querySelectorAll("[data-ropt]").forEach((b) =>
     b.addEventListener("click", () => {
       routeAt = Number(b.dataset.ropt);

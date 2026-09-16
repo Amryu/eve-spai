@@ -369,6 +369,14 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                             .collect(),
                         once: ids("avoid"),
                     };
+                    // "at:next,at:next": which way to leave a system the route forks at. Not "via",
+                    // which is already this endpoint's waypoint list.
+                    let forks: super::route::Picks = routes::query_param(query, "forks")
+                        .unwrap_or("")
+                        .split(',')
+                        .filter_map(|p| p.split_once(':'))
+                        .filter_map(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
+                        .collect();
                     let pick: Vec<usize> = routes::query_param(query, "pick")
                         .unwrap_or("")
                         .split(',')
@@ -392,11 +400,13 @@ fn serve(ctx: &Ctx, req: tiny_http::Request, route: Route, path: &str, query: &s
                         &avoid,
                         &d.holes,
                         &pick,
+                        &forks,
                     );
                     out.avoided = super::route::avoided(graph, &avoid);
                     out.legs = legs;
                     out.options = options;
                     super::route::mark_anchors(&mut out.options, &anchors);
+                    super::route::mark_forks(&mut out.options, graph, d.count_bridges, &avoid, &d.holes);
                     {
                         let w = ctx.web.lock().unwrap_or_else(|e| e.into_inner());
                         let danger = super::route::danger_from_marks(

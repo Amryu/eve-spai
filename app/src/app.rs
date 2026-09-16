@@ -706,6 +706,8 @@ pub struct SpaiApp {
     /// The ways of flying each leg, and which one is picked.
     map_route_legs: Vec<crate::web::route::LegChoice>,
     map_leg_pick: Vec<usize>,
+    /// Which way to leave a system the route forks at, chosen in the route list.
+    map_forks: crate::web::route::Picks,
     /// Systems avoided for this route only, kept apart from the two persistent lists.
     map_avoid_once: std::collections::HashSet<i64>,
     /// The system whose intel is being read from a route warning.
@@ -1435,6 +1437,7 @@ impl SpaiApp {
             map_titan_self_jump: false,
             map_route_legs: Vec::new(),
             map_leg_pick: Vec::new(),
+            map_forks: Default::default(),
             map_avoid_once: std::collections::HashSet::new(),
             map_intel_for: None,
             map_titans: Vec::new(),
@@ -2806,6 +2809,19 @@ impl SpaiApp {
                     pods: 2,
                 });
             }
+        }
+    }
+
+    /// A fork on the first hop, which the three-system fixture graph is too small to grow.
+    #[cfg(test)]
+    pub(crate) fn seed_route_fork(&mut self) {
+        let Some(opt) = self.map_route_opts.get_mut(self.map_route_at) else { return };
+        let Some(next) = opt.path.get(1).copied() else { return };
+        if let Some(h) = opt.hops.first_mut() {
+            h.fork = vec![
+                crate::web::route::Branch { id: next, name: "319-3D".into() },
+                crate::web::route::Branch { id: 30_000_142, name: "Jita".into() },
+            ];
         }
     }
 

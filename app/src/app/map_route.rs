@@ -155,6 +155,7 @@ impl SpaiApp {
         self.map_route_opts.clear();
         self.map_route_legs.clear();
         self.map_leg_pick.clear();
+        self.map_forks.clear();
         self.map_avoid_once.clear();
     }
 
@@ -196,12 +197,16 @@ impl SpaiApp {
             &avoid,
             &holes,
             &self.map_leg_pick,
+            &self.map_forks,
         );
         self.map_route_legs = legs;
         self.map_route_opts = opts;
         crate::web::route::annotate(&mut self.map_route_opts, &danger);
         let anchors = self.map_route_anchors.clone();
         crate::web::route::mark_anchors(&mut self.map_route_opts, &anchors);
+        // After the anchors: a fork is a choice within a leg, so the marking needs to know where the
+        // legs end.
+        crate::web::route::mark_forks(&mut self.map_route_opts, &graph, bridges, &avoid, &holes);
     }
 
     /// The intel behind a route warning, as its own window.

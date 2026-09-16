@@ -351,6 +351,7 @@ impl SpaiApp {
                         reactivation_min: h.reactivation_min,
                         warn: h.warn,
                         anchor: h.anchor,
+                        fork: h.fork.clone(),
                     })
                     .collect()
             })
@@ -363,6 +364,7 @@ impl SpaiApp {
         let mut alts_for: Option<usize> = None;
         let mut show_intel: Option<i64> = None;
         let mut warn_intel: Option<i64> = None;
+        let mut fork_now: Option<(i64, i64)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (i, h) in hops.iter().enumerate() {
                 // A system the user named gets its own ground, so the route reads as the legs it was
@@ -490,6 +492,35 @@ impl SpaiApp {
                                         warn_intel = Some(h.id);
                                     }
                                 }
+                                // Every way on is the same length, so the choice is the user's and
+                                // belongs in the list rather than in a menu three clicks away.
+                                if !h.fork.is_empty() {
+                                    let taken = hops.get(i + 1).map(|n| n.id);
+                                    ui.label(
+                                        egui::RichText::new(icon::ARROWS_SPLIT)
+                                            .color(ui.visuals().hyperlink_color)
+                                            .size(11.0),
+                                    )
+                                    .on_hover_text("Ways on from here, all the same length");
+                                    for alt in &h.fork {
+                                        let on = taken == Some(alt.id);
+                                        if ui
+                                            .selectable_label(
+                                                on,
+                                                egui::RichText::new(&alt.name).size(11.0),
+                                            )
+                                            .on_hover_text(if on {
+                                                "The way this route goes"
+                                            } else {
+                                                "Go this way instead"
+                                            })
+                                            .clicked()
+                                            && !on
+                                        {
+                                            fork_now = Some((h.id, alt.id));
+                                        }
+                                    }
+                                }
                             });
                         });
                     });
@@ -497,6 +528,10 @@ impl SpaiApp {
             }
         });
         let show_intel = show_intel.or(warn_intel);
+        if let Some((at, next)) = fork_now {
+            self.map_forks.insert(at, next);
+            self.map_replan_route();
+        }
         if let Some(id) = avoid_now {
             self.map_avoid_once.insert(id);
             self.map_replan_route();

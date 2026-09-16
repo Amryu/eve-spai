@@ -758,6 +758,20 @@ function paint() {
     // The systems the user named, as opposed to the ones the route happens to pass through. Two
     // rings and a tint: one thin ring is lost among the highlight rings this map already draws for
     // your characters, camps and the hovered system.
+    // A system the route could leave another way for the same number of gates: a thin ring, since
+    // the route window holds the choice itself.
+    for (const h of picked.hops ?? []) {
+      if (!h.fork?.length) continue;
+      const n = geo.nodes[geo.byId.get(h.id)];
+      if (!n) continue;
+      const px = sx(n.x), py = sy(n.z);
+      if (!onScreen(px, py)) continue;
+      ctx.strokeStyle = "#5ac8ff";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 3.0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     for (const h of picked.hops ?? []) {
       if (!h.anchor) continue;
       const n = geo.nodes[geo.byId.get(h.id)];

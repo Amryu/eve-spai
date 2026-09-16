@@ -142,6 +142,10 @@
 }
 .rwarn.crit { color: var(--hostile); }
 
+/* The ways on from a system the route forks at, picked in place. */
+.rfork { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; color: var(--accent); }
+.rfork .ropt { font-size: 0.78rem; padding: 0 0.3rem; }
+
 /* On a phone the windows are a bottom sheet: one line per hop, and the panel scrolls rather than
    the lists inside it. */
 @media (max-width: 640px) {

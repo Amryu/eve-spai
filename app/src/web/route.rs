@@ -27,7 +27,22 @@ pub struct Hop {
     /// The start, a waypoint, or the destination, as opposed to a system the route passes through.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub anchor: bool,
+    /// Every equally short way on from here, when there is more than one. The route takes the next
+    /// hop; the others are the branches the user can swap to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fork: Vec<Branch>,
 }
+
+/// One way on from a system that forks. Named, because the branch the route does not take is not on
+/// the path and the page has nowhere else to read its name from.
+#[derive(Serialize, Clone)]
+pub struct Branch {
+    pub id: i64,
+    pub name: String,
+}
+
+/// Which way to leave a system that forks, by system id. Empty means "whichever the search found".
+pub type Picks = std::collections::HashMap<i64, i64>;
 
 /// One leg of a route with its alternatives: same jump count, sorted by distance.
 #[derive(Serialize)]
@@ -86,6 +101,121 @@ pub fn mark_anchors(options: &mut [RouteOption], anchors: &[i64]) {
     }
 }
 
+/// Walks `base` again, leaving each system the user picked a way out of by that way and taking the
+/// shortest way on from there. Falls back to `base` when a pick strands the walk.
+fn take_picks(
+    graph: &crate::geo::Systems,
+    base: Vec<i64>,
+    to: i64,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+    picks: &Picks,
+) -> Vec<i64> {
+    let Some(&start) = base.first() else { return base };
+    let allowed = |id: i64| id == start || id == to || !avoid.blocked(id);
+    let dist = graph.distances_to(to, true, bridges, holes, &allowed);
+    let mut out = vec![start];
+    let mut tail: std::collections::VecDeque<i64> = base.iter().skip(1).copied().collect();
+    let mut cur = start;
+    while cur != to {
+        // The route can only get shorter, so a walk that does not is a bug, not a longer way round.
+        if out.len() > base.len() * 4 + 8 {
+            return base;
+        }
+        let d = dist.get(&cur).copied().unwrap_or_default();
+        let pick = picks.get(&cur).copied().filter(|&n| {
+            d > 0
+                && dist.get(&n) == Some(&(d - 1))
+                && graph.steps_from(cur, to, true, bridges, holes, &allowed).contains(&n)
+        });
+        let next = match pick {
+            Some(p) if tail.front() != Some(&p) => {
+                let Some(rest) = graph.route_with(p, to, true, bridges, holes, &allowed) else {
+                    return base;
+                };
+                tail = rest.iter().skip(1).copied().collect();
+                p
+            }
+            _ => match tail.pop_front() {
+                Some(n) => n,
+                None => return base,
+            },
+        };
+        out.push(next);
+        cur = next;
+    }
+    out
+}
+
+/// Marks every system a route leaves by one of several equally short ways, so the panel can offer
+/// the choice and the in-game route can be pinned to the branch that was taken.
+///
+/// Worked out per leg: between two waypoints "equally short" means equally short to the next
+/// waypoint, not to the far end of the route.
+pub fn mark_forks(
+    options: &mut [RouteOption],
+    graph: &crate::geo::Systems,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+) {
+    for o in options.iter_mut() {
+        for h in o.hops.iter_mut() {
+            h.fork.clear();
+        }
+        let mut seg_start = 0usize;
+        for i in 1..o.path.len() {
+            // A leg ends at a waypoint, and a jump is not a fork: nothing branches off a bridge.
+            let jumped = o.hops.get(i).is_some_and(|h| h.kind == 2);
+            let ends = jumped || o.hops.get(i).is_some_and(|h| h.anchor) || i + 1 == o.path.len();
+            if !ends {
+                continue;
+            }
+            let leg_end = if jumped { i - 1 } else { i };
+            if leg_end > seg_start {
+                mark_leg(o, seg_start, leg_end, graph, bridges, avoid, holes);
+            }
+            seg_start = i;
+        }
+    }
+}
+
+fn mark_leg(
+    o: &mut RouteOption,
+    start: usize,
+    end: usize,
+    graph: &crate::geo::Systems,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+) {
+    let (from, to) = (o.path[start], o.path[end]);
+    let allowed = |id: i64| id == from || id == to || !avoid.blocked(id);
+    let dist = graph.distances_to(to, true, bridges, holes, &allowed);
+    for i in start..end {
+        let id = o.path[i];
+        let Some(&d) = dist.get(&id) else { continue };
+        if d == 0 {
+            continue;
+        }
+        let mut choices: Vec<Branch> = graph
+            .steps_from(id, to, true, bridges, holes, &allowed)
+            .into_iter()
+            .filter(|n| dist.get(n) == Some(&(d - 1)))
+            .map(|n| Branch {
+                id: n,
+                name: graph.info_of(n).map(|i| i.name.clone()).unwrap_or_else(|| n.to_string()),
+            })
+            .collect();
+        if choices.len() < 2 {
+            continue;
+        }
+        choices.sort_by(|a, b| a.name.cmp(&b.name));
+        o.hops[i].fork = choices;
+    }
+}
+
 /// A pass over finished routes rather than an argument to each builder, so the danger lookup lives
 /// in one place instead of three.
 pub fn annotate(
@@ -140,6 +270,13 @@ pub fn ingame_waypoints(opt: &RouteOption, player: Option<i64>) -> Vec<i64> {
         out.extend(opt.path.iter().skip(1).copied());
     } else {
         for (i, h) in opt.hops.iter().enumerate() {
+            // A fork the autopilot would take the other way round needs the branch pinned, or the
+            // game flies its own equally short route instead of the one on screen.
+            if !h.fork.is_empty() {
+                if let Some(next) = opt.path.get(i + 1) {
+                    out.push(*next);
+                }
+            }
             if h.kind != 0 {
                 if let Some(prev) = opt.hops.get(i.wrapping_sub(1)) {
                     out.push(prev.id);
@@ -291,6 +428,7 @@ fn named(graph: &crate::geo::Systems, id: i64, kind: u8, ly: Option<f64>) -> Hop
         reactivation_min: None,
         warn: None,
         anchor: false,
+        fork: Vec::new(),
     }
 }
 
@@ -302,11 +440,30 @@ pub fn gate(
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
 ) -> Option<RouteOption> {
+    gate_via(graph, from, to, bridges, avoid, holes, &Picks::new())
+}
+
+/// A gate route that leaves the systems in `picks` the way the user asked, staying as short as the
+/// search's own answer: a pick is only honoured when it is one of the equally short ways on.
+pub fn gate_via(
+    graph: &crate::geo::Systems,
+    from: i64,
+    to: i64,
+    bridges: bool,
+    avoid: &Avoid,
+    holes: &std::collections::HashMap<i64, Vec<i64>>,
+    picks: &Picks,
+) -> Option<RouteOption> {
     // Endpoints are exempt, or avoiding the system you stand in would yield no route at all.
     // Wormholes arrive as extra edges because that is how the app's own planner takes them.
     let path = graph.route_with(from, to, true, bridges, holes, |id| {
         id == from || id == to || !avoid.blocked(id)
     })?;
+    let path = if picks.is_empty() {
+        path
+    } else {
+        take_picks(graph, path, to, bridges, avoid, holes, picks)
+    };
     let hops: Vec<Hop> = path
         .iter()
         .enumerate()
@@ -535,11 +692,12 @@ fn leg_options(
     bridges: bool,
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
+    picks: &Picks,
 ) -> Vec<RouteOption> {
     let one = |extra: &Avoid| -> Option<RouteOption> {
         match kind {
             "jump" => jump(graph, coords, a, b, class, jdc, jfc, extra),
-            _ => gate(graph, a, b, bridges, extra, holes),
+            _ => gate_via(graph, a, b, bridges, extra, holes, picks),
         }
     };
     let Some(mut best) = one(avoid) else { return Vec::new() };
@@ -613,6 +771,7 @@ pub fn chain(
     avoid: &Avoid,
     holes: &std::collections::HashMap<i64, Vec<i64>>,
     pick: &[usize],
+    picks: &Picks,
 ) -> (Vec<LegChoice>, Vec<RouteOption>) {
     if anchors.len() < 2 {
         return (Vec::new(), Vec::new());
@@ -630,7 +789,7 @@ pub fn chain(
         let options = if i == titan_leg && kind == "titan" {
             titan(graph, coords, a, b, titan_ly, bridges, titan_at_start, avoid, holes, titans, titan_self_jump)
         } else {
-            leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes)
+            leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes, picks)
         };
         legs.push(LegChoice {
             from: a,
@@ -930,6 +1089,7 @@ fn clone_option(o: &RouteOption) -> RouteOption {
                 reactivation_min: h.reactivation_min,
                 warn: h.warn,
                 anchor: h.anchor,
+                fork: h.fork.clone(),
             })
             .collect(),
         gates: o.gates,
@@ -964,6 +1124,7 @@ mod tests {
                     reactivation_min: None,
                     warn: None,
                     anchor: false,
+                    fork: Vec::new(),
                 })
                 .collect(),
             gates: 0,
@@ -1027,6 +1188,66 @@ mod tests {
         assert_eq!(r.path, vec![id]);
         assert_eq!(r.jumps, 0);
         assert_eq!(r.hops.len(), 1);
+    }
+
+    /// Two ways of the same length from 1 to 4, and one way on to 5.
+    fn diamond() -> crate::geo::Systems {
+        let mut by_name = std::collections::HashMap::new();
+        let mut adjacency: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+        for id in 1..=5i64 {
+            by_name.insert(format!("S{id}"), crate::geo::SystemInfo {
+                id,
+                name: format!("S{id}"),
+                security: -0.4,
+                constellation: "C".into(),
+                region: "R".into(),
+                faction: String::new(),
+            });
+        }
+        for (a, b) in [(1, 2), (1, 3), (2, 4), (3, 4), (4, 5)] {
+            adjacency.entry(a).or_default().push(b);
+            adjacency.entry(b).or_default().push(a);
+        }
+        crate::geo::Systems::new(by_name, adjacency)
+    }
+
+    /// Both ways out of the start are three jumps, so the start is a fork and nothing else is.
+    #[test]
+    fn a_system_with_two_equally_short_ways_on_is_a_fork() {
+        let g = diamond();
+        let mut opts =
+            vec![gate(&g, 1, 5, false, &Avoid::default(), &Default::default()).expect("connected")];
+        mark_forks(&mut opts, &g, false, &Avoid::default(), &Default::default());
+        let ids: Vec<i64> = opts[0].hops[0].fork.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![2, 3], "the fork is the system the ways part at");
+        assert!(opts[0].hops[1].fork.is_empty(), "one way on is not a choice");
+        assert!(opts[0].hops.last().expect("hops").fork.is_empty(), "the end goes nowhere");
+    }
+
+    /// The pick is honoured, and a pick that is not a way on is ignored rather than obeyed.
+    #[test]
+    fn a_picked_branch_is_the_one_the_route_takes() {
+        let g = diamond();
+        let route = |picks: &Picks| {
+            gate_via(&g, 1, 5, false, &Avoid::default(), &Default::default(), picks)
+                .expect("connected")
+                .path
+        };
+        assert_eq!(route(&Picks::from([(1, 3)])), vec![1, 3, 4, 5]);
+        assert_eq!(route(&Picks::from([(1, 2)])), vec![1, 2, 4, 5]);
+        let long_way = route(&Picks::from([(1, 5)]));
+        assert_eq!(long_way.len(), 4, "a pick may not make the route longer");
+        assert_eq!(route(&Picks::from([(9, 9)])), route(&Picks::new()), "unknown systems do nothing");
+    }
+
+    /// The autopilot would pick its own way through a fork, so the branch that was taken is a
+    /// waypoint even on a route that is otherwise only pinned at the ends of its legs.
+    #[test]
+    fn a_fork_pins_its_branch_in_the_game() {
+        let mut o = opt(&[1, 2, 3, 4, 5], &[0, 0, 0, 2, 0]);
+        o.hops[0].fork =
+            vec![Branch { id: 2, name: "S2".into() }, Branch { id: 7, name: "S7".into() }];
+        assert_eq!(ingame_waypoints(&o, Some(1)), vec![2, 3, 4, 5]);
     }
 
     /// A line of seven systems with two titans near the start reaching different systems. The shared
@@ -1100,6 +1321,7 @@ mod tests {
             &Avoid::default(),
             &Default::default(),
             &[],
+            &Picks::new(),
         );
         assert_eq!(out.len(), 2, "both titans beat the plain gate route, so there are two options");
         assert!(legs.last().expect("a leg").whole_route, "the titan leg is the route's own choice");
@@ -1121,6 +1343,7 @@ mod tests {
             &Avoid::default(),
             &Default::default(),
             &[],
+            &Picks::new(),
         );
         assert!(gates.iter().all(|l| !l.whole_route), "no gate leg is the whole route");
     }
@@ -1147,6 +1370,7 @@ mod tests {
                 &Avoid::default(),
                 &Default::default(),
                 &[],
+                &Picks::new(),
             );
             let bridge = out
                 .first()
@@ -1186,6 +1410,7 @@ mod tests {
             &Avoid::default(),
             &Default::default(),
             &[],
+            &Picks::new(),
         );
         let via = opts.first().expect("a chained route");
         assert_eq!(via.path.iter().filter(|&&id| id == b).count(), 1, "the waypoint appears once");

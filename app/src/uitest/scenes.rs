@@ -746,6 +746,10 @@ fn route_panel_scene(name: &'static str) -> Scene {
 }
 
 fn route_panel_scene_cfg(name: &'static str, detail: bool) -> Scene {
+    route_panel_scene_full(name, detail, false)
+}
+
+fn route_panel_scene_full(name: &'static str, detail: bool, fork: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, [380.0, 620.0], move |ui| {
@@ -754,6 +758,9 @@ fn route_panel_scene_cfg(name: &'static str, detail: bool) -> Scene {
             a.seed_map_route(30_004_759, 30_003_704);
             if detail {
                 a.seed_route_detail();
+            }
+            if fork {
+                a.seed_route_fork();
             }
             a
         });
@@ -859,6 +866,7 @@ pub(crate) fn all() -> Vec<Scene> {
         // range readout that moves with it.
         route_panel_scene("route_panel_gate"),
         route_panel_scene_cfg("route_panel_costs_and_warnings", true),
+        route_panel_scene_full("route_panel_fork", false, true),
         jump_plan_scene("jump_plan_command_carrier", [360.0, 560.0], 5),
         jump_plan_scene("jump_plan_capital", [360.0, 560.0], 0),
         docked_system_scene("map_dock_system_notes"),

@@ -1186,6 +1186,18 @@ impl SpaiApp {
                     painter.circle_stroke(p, r * 0.6, egui::Stroke::new(1.2, PICK_GATE));
                 }
             }
+            // A system the route could leave another way for the same number of gates. Its own
+            // colour and a thin ring: the panel holds the choice, the map only says there is one.
+            const FORK: egui::Color32 = egui::Color32::from_rgb(0x5A, 0xC8, 0xFF);
+            for h in &o.hops {
+                if h.fork.is_empty() {
+                    continue;
+                }
+                if let Some(&p) = pos.get(&h.id) {
+                    let r = (dot * 3.0).max(6.0);
+                    painter.circle_stroke(p, r, egui::Stroke::new(1.6, FORK));
+                }
+            }
             // The titan's own jump, which the fleet does not fly: a long dash the other way round,
             // so it reads as a second ship moving rather than as part of the route.
             if let Some(tj) = &o.titan_jump {

@@ -294,17 +294,8 @@ impl Systems {
             let gates = self.adjacency.get(&sys).into_iter().flatten().map(|n| (*n, false));
             let holes = holes.get(&sys).into_iter().flatten().map(|n| (*n, true));
             for (n, via_hole) in gates.chain(holes) {
-                if !via_hole {
-                    let is_gate = self.gate_adjacency.get(&sys).is_some_and(|g| g.contains(&n));
-                    if is_gate {
-                        let cross_region = self.info_of(sys).map(|i| &i.region)
-                            != self.info_of(n).map(|i| &i.region);
-                        if cross_region && !allow_regional_gates {
-                            continue;
-                        }
-                    } else if !allow_jump_bridges {
-                        continue;
-                    }
+                if !self.edge_ok(sys, n, via_hole, allow_regional_gates, allow_jump_bridges) {
+                    continue;
                 }
                 if n != to && (!allowed(n) || is_no_transit(n)) {
                     continue;
@@ -326,6 +317,75 @@ impl Systems {
             }
         }
         None
+    }
+
+    /// Whether the edge from `sys` to `n` may be taken, under [`Self::route_with`]'s switches.
+    fn edge_ok(&self, sys: i64, n: i64, via_hole: bool, regional: bool, bridges: bool) -> bool {
+        if via_hole {
+            return true;
+        }
+        let is_gate = self.gate_adjacency.get(&sys).is_some_and(|g| g.contains(&n));
+        if !is_gate {
+            return bridges;
+        }
+        let cross_region = self.info_of(sys).map(|i| &i.region) != self.info_of(n).map(|i| &i.region);
+        regional || !cross_region
+    }
+
+    /// The systems a route at `sys` may step to, under [`Self::route_with`]'s rules. `to` is exempt
+    /// from the transit rules for the same reason it is there: a route may end where it may not pass.
+    pub fn steps_from(
+        &self,
+        sys: i64,
+        to: i64,
+        allow_regional_gates: bool,
+        allow_jump_bridges: bool,
+        holes: &HashMap<i64, Vec<i64>>,
+        allowed: impl Fn(i64) -> bool,
+    ) -> Vec<i64> {
+        let gates = self.adjacency.get(&sys).into_iter().flatten().map(|n| (*n, false));
+        let extra = holes.get(&sys).into_iter().flatten().map(|n| (*n, true));
+        let mut out: Vec<i64> = Vec::new();
+        for (n, via_hole) in gates.chain(extra) {
+            if !self.edge_ok(sys, n, via_hole, allow_regional_gates, allow_jump_bridges) {
+                continue;
+            }
+            if n != to && (!allowed(n) || is_no_transit(n)) {
+                continue;
+            }
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        out
+    }
+
+    /// Jumps to `to` from every system that can reach it, the mirror of [`Self::route_with`]'s
+    /// search. Travel is symmetric, so one walk out of `to` answers "how far is this system from the
+    /// end" for every system on the way.
+    pub fn distances_to(
+        &self,
+        to: i64,
+        allow_regional_gates: bool,
+        allow_jump_bridges: bool,
+        holes: &HashMap<i64, Vec<i64>>,
+        allowed: impl Fn(i64) -> bool,
+    ) -> HashMap<i64, u32> {
+        let mut dist: HashMap<i64, u32> = HashMap::from([(to, 0)]);
+        let mut queue: VecDeque<i64> = VecDeque::from([to]);
+        while let Some(sys) = queue.pop_front() {
+            let d = dist.get(&sys).copied().unwrap_or_default();
+            for n in self.steps_from(sys, to, allow_regional_gates, allow_jump_bridges, holes, &allowed)
+            {
+                if let std::collections::hash_map::Entry::Vacant(slot) = dist.entry(n) {
+                    slot.insert(d + 1);
+                    if allowed(n) && !is_no_transit(n) {
+                        queue.push_back(n);
+                    }
+                }
+            }
+        }
+        dist
     }
 
     /// True when the step from `a` to `b` is not a gate or bridge, i.e. it can only be a wormhole.
