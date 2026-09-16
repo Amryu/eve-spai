@@ -190,6 +190,11 @@ impl SpaiApp {
         crate::esi::set_waypoint(cid, cname, dest, true);
     }
 
+    /// Remembers that the game now holds a route this app set.
+    pub(crate) fn note_ingame_route(&mut self) {
+        self.ingame_route = true;
+    }
+
     pub(crate) fn wormholes_view(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {

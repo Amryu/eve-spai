@@ -325,7 +325,18 @@ impl SpaiApp {
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
                 self.set_destination_esi(cid, self.active_character.clone(), sid);
                 self.route_destination = Some(sid);
+                self.ingame_route = true;
                 ui.close();
+            }
+            if (self.route_destination.is_some() || self.ingame_route) && self.map_route_anchors.is_empty() {
+                if ui
+                    .button(egui::RichText::new("Clear Route").color(crate::theme::standing::HOSTILE))
+                    .on_hover_text("Forget the route here and in the game")
+                    .clicked()
+                {
+                    self.clear_route();
+                    ui.close();
+                }
             }
             ui.separator();
             // The same menu the browser has, in the same order, plus the one thing the browser has
@@ -360,7 +371,7 @@ impl SpaiApp {
                     .button(egui::RichText::new("Clear Route").color(crate::theme::standing::HOSTILE))
                     .clicked()
                 {
-                    self.map_route_clear();
+                    self.clear_route();
                     ui.close();
                 }
                 if self.map_route_kind == "titan" {

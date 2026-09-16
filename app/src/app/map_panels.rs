@@ -322,6 +322,7 @@ impl SpaiApp {
             {
                 let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
                 crate::esi::set_route(cid, self.active_character.clone(), ingame.clone());
+                self.note_ingame_route();
             }
             if ui.button(format!("{}  Save route", icon::COPY)).clicked() {
                 self.map_save_name.clear();
@@ -1572,8 +1573,10 @@ impl SpaiApp {
             self.map_zoom = 1.0;
             self.map_follow = false;
         }
-        if self.route_destination.is_some() && ui.button(format!("{}  Clear route", icon::X)).clicked() {
-            self.route_destination = None;
+        if (self.route_destination.is_some() || self.ingame_route)
+            && ui.button(format!("{}  Clear route", icon::X)).clicked()
+        {
+            self.clear_route();
         }
 
         if !self.map_in_popout {

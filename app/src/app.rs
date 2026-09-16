@@ -740,6 +740,8 @@ pub struct SpaiApp {
     /// Mean colour of a sov logo, by image URL, so the map dot can take the holder's colour.
     logo_avg: std::collections::HashMap<String, egui::Color32>,
     route_destination: Option<i64>,
+    /// Whether this app set the character's in-game route, so clearing here can clear it there too.
+    ingame_route: bool,
     map_search: String,
     map_search_sel: usize,
     map_search_key: String,
@@ -1459,6 +1461,7 @@ impl SpaiApp {
             map_hover_since: None,
             logo_avg: std::collections::HashMap::new(),
             route_destination: None,
+            ingame_route: false,
             map_search: String::new(),
             map_search_sel: 0,
             map_search_key: String::new(),
@@ -2346,6 +2349,7 @@ impl SpaiApp {
             }
             crate::ipc::OverlayToMain::SetDestination { id } => self.web_set_destination(id),
             crate::ipc::OverlayToMain::SetIngameRoute { waypoints } => self.set_ingame_route(waypoints),
+            crate::ipc::OverlayToMain::ClearIngameRoute => self.clear_route(),
             crate::ipc::OverlayToMain::AvoidSystem { id, jump, on } => {
                 let list = if jump {
                     &mut self.settings.route_avoid_jump
@@ -2412,6 +2416,25 @@ impl SpaiApp {
         }
         let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
         crate::esi::set_route(cid, self.active_character.clone(), waypoints);
+        self.ingame_route = true;
+    }
+
+    /// Drop the planned route, the drawn one and, when this app set it, the character's in-game route.
+    ///
+    /// ESI has no "clear the route" call. A waypoint on the system the character is already in, set
+    /// with the clear flag, is how the client is told to forget the rest.
+    pub(crate) fn clear_route(&mut self) {
+        self.map_route_clear();
+        self.route_destination = None;
+        if self.ingame_route {
+            self.ingame_route = false;
+            if let Some(here) = self.player_system() {
+                if self.active_character != "No character" {
+                    let cid = non_empty_or(&self.settings.sso_client_id, auth::DEFAULT_CLIENT_ID);
+                    crate::esi::set_waypoint(cid, self.active_character.clone(), here, true);
+                }
+            }
+        }
     }
 
     fn web_set_destination(&mut self, id: i64) {
@@ -2422,6 +2445,7 @@ impl SpaiApp {
         let cname = self.active_character.clone();
         self.set_destination_esi(cid, cname, id);
         self.route_destination = Some(id);
+        self.ingame_route = true;
     }
 
     /// Open a conversation on behalf of the page, by the same route the app's own start dialog uses.

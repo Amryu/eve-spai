@@ -46,6 +46,8 @@ pub enum OverlayToMain {
     SetDestination { id: i64 },
     /// Set a planned route in the game: one waypoint per entry, in order, clearing what was there.
     SetIngameRoute { waypoints: Vec<i64> },
+    /// Drop the route the app set, in the app and in the game.
+    ClearIngameRoute,
     /// Add or remove a system from a permanent route-avoidance list.
     AvoidSystem { id: i64, jump: bool, on: bool },
     /// A conversation the page is looking at, so its unread marker clears everywhere rather than

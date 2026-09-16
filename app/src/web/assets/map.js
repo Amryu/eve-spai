@@ -1427,6 +1427,10 @@ function menuFor(id) {
   const items = [];
   if (state.snapshot?.meta?.allow_writeback) {
     items.push(["setdest", "Set Destination"]);
+    // The app's own route, which only it can clear.
+    if (!planning() && (state.snapshot?.map?.route?.length ?? 0) > 1) {
+      items.push(["clearingame", "Clear Route", "warn"]);
+    }
     items.push(null);
   }
   if (routeKind && anchors.length) {
@@ -1514,12 +1518,16 @@ function menuPick(id, kind) {
     case "avoid:never":
       send({ AvoidSystem: { id, jump: routeKind === "jump", on: false } });
       break;
+    case "clearingame":
+      send("ClearIngameRoute");
+      return;
     case "clear":
       anchors = [];
       routeKind = null;
       picked = null;
       avoidOnce.clear();
       titansOnce.clear();
+      if ((state.snapshot?.map?.route?.length ?? 0) > 1) send("ClearIngameRoute");
       schedule();
       return;
     case "info":

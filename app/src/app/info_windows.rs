@@ -262,6 +262,7 @@ impl SpaiApp {
             if ui.add_enabled(has_char, egui::Button::new("Set Destination")).clicked() {
                 self.set_destination_esi(cid.clone(), cname.clone(), id);
                 self.route_destination = Some(id);
+                self.note_ingame_route();
             }
             if ui.add_enabled(has_char, egui::Button::new("Add Waypoint")).clicked() {
                 crate::esi::set_waypoint(cid.clone(), cname.clone(), id, false);

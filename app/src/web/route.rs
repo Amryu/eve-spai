@@ -621,10 +621,13 @@ pub fn chain(
         graph.info_of(id).map(|i| i.name.clone()).unwrap_or_else(|| id.to_string())
     };
     let last = anchors.len() - 2;
+    // The titan bridges out of the system it sits in, so with waypoints the bridge belongs to the
+    // first leg when the titan is at the start and to the last leg when it waits at the far end.
+    let titan_leg = if titan_at_start { 0 } else { last };
     let mut legs: Vec<LegChoice> = Vec::new();
     for (i, w) in anchors.windows(2).enumerate() {
         let (a, b) = (w[0], w[1]);
-        let options = if i == last && kind == "titan" {
+        let options = if i == titan_leg && kind == "titan" {
             titan(graph, coords, a, b, titan_ly, bridges, titan_at_start, avoid, holes, titans, titan_self_jump)
         } else {
             leg_options(graph, coords, a, b, kind, class, jdc, jfc, bridges, avoid, holes)
@@ -655,12 +658,14 @@ pub fn chain(
     let chosen = assemble(&|i: usize| pick.get(i).copied().unwrap_or(0));
     let mut out = vec![chosen];
     // Titan alternatives cover the whole route, so they become the route's options.
-    if kind == "titan" && legs[last].options.len() > 1 {
-        out = (0..legs[last].options.len())
-            .map(|k| assemble(&move |i: usize| if i == last { k } else { pick.get(i).copied().unwrap_or(0) }))
+    if kind == "titan" && legs[titan_leg].options.len() > 1 {
+        out = (0..legs[titan_leg].options.len())
+            .map(|k| {
+                assemble(&move |i: usize| if i == titan_leg { k } else { pick.get(i).copied().unwrap_or(0) })
+            })
             .collect();
         // The option tabs choose this leg and `pick` does not reach it, so a switcher would do nothing.
-        legs[last].whole_route = true;
+        legs[titan_leg].whole_route = true;
     }
     (legs, out)
 }
@@ -1024,13 +1029,10 @@ mod tests {
         assert_eq!(r.hops.len(), 1);
     }
 
-    /// A titan leg's options belong to the whole route, and `pick` does not reach that leg, so a
-    /// per-leg switcher for it would do nothing.
-    #[test]
-    fn a_titan_leg_is_marked_so_its_options_are_not_offered_twice() {
+    /// A line of seven systems with two titans near the start reaching different systems. The shared
+    /// fixture is three systems wide, too small for two titan options.
+    fn line_of_seven() -> (crate::geo::Systems, Vec<crate::store::MapSystem>, Vec<i64>) {
         use crate::store::MapSystem;
-        // A line of seven with two titans near the start reaching different systems. The shared
-        // fixture is three systems wide, too small for two titan options.
         let ly = crate::map::LY_METERS;
         let ids: Vec<i64> = (0..7).map(|i| 30_100_000 + i).collect();
         let mut by_name = std::collections::HashMap::new();
@@ -1074,6 +1076,14 @@ mod tests {
             });
         }
         let g = crate::geo::Systems::new(by_name, adjacency);
+        (g, coords, ids)
+    }
+
+    /// A titan leg's options belong to the whole route, and `pick` does not reach that leg, so a
+    /// per-leg switcher for it would do nothing.
+    #[test]
+    fn a_titan_leg_is_marked_so_its_options_are_not_offered_twice() {
+        let (g, coords, ids) = line_of_seven();
         let (legs, out) = chain(
             &g,
             &coords,
@@ -1113,6 +1123,45 @@ mod tests {
             &[],
         );
         assert!(gates.iter().all(|l| !l.whole_route), "no gate leg is the whole route");
+    }
+
+    /// With waypoints the titan leg used to be the last one regardless, so a titan in the start
+    /// system was drawn bridging out of the last waypoint instead.
+    #[test]
+    fn a_titan_in_the_start_system_bridges_from_the_start() {
+        let (g, coords, ids) = line_of_seven();
+        let plan = |at_start: bool| {
+            let (legs, out) = chain(
+                &g,
+                &coords,
+                &[ids[0], ids[2], ids[6]],
+                "titan",
+                &crate::jumproute::SHIP_CLASSES[1],
+                5,
+                5,
+                6.5,
+                at_start,
+                &[],
+                false,
+                false,
+                &Avoid::default(),
+                &Default::default(),
+                &[],
+            );
+            let bridge = out
+                .first()
+                .and_then(|o| o.hops.iter().position(|h| h.kind == 2).map(|i| (o.hops[i - 1].id, o.hops[i].id)));
+            (legs.iter().position(|l| l.whole_route), bridge)
+        };
+        let (leg, bridge) = plan(true);
+        assert_eq!(leg, Some(0), "the titan leg is the first one");
+        assert_eq!(bridge.map(|(from, _)| from), Some(ids[0]), "it bridges out of the start");
+
+        let (_, bridge) = plan(false);
+        assert!(
+            bridge.is_some_and(|(from, _)| from != ids[0]),
+            "waiting at the far end, the titan bridges on the last leg, not out of the start"
+        );
     }
 
     /// Repeating the waypoint would draw a doubled system and count an extra jump.
