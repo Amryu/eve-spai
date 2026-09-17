@@ -2702,3 +2702,76 @@ mod route_extension_tests {
         assert_eq!(a.map_route_anchors, vec![DQ, K5, DQ], "only the far end is replaced");
     }
 }
+
+/// The bind address field: typing one used to rebind the socket per keystroke, on the UI thread,
+/// which froze the app on the resolver.
+#[cfg(test)]
+mod bind_debounce_tests {
+    use super::*;
+    use crate::app::web_glue::{bind_addr_state, BindAddr, BIND_DEBOUNCE};
+    use std::time::{Duration, Instant};
+
+    fn app() -> (egui::Context, SpaiApp) {
+        crate::uitest::harness::scratch_profile();
+        let ctx = egui::Context::default();
+        (ctx.clone(), SpaiApp::build(&ctx, true))
+    }
+
+    fn typed(a: &mut SpaiApp, text: &str, ago: Duration) {
+        a.web_bind_draft = Some((text.to_owned(), Instant::now() - ago));
+    }
+
+    #[test]
+    fn a_typed_address_reads_as_what_it_is() {
+        assert_eq!(bind_addr_state(""), BindAddr::Blank);
+        assert_eq!(bind_addr_state("10.1.2.3"), BindAddr::Literal);
+        assert_eq!(bind_addr_state("10.1.2"), BindAddr::Invalid);
+        assert_eq!(bind_addr_state("nas.local"), BindAddr::Invalid, "a name is a lookup, not an address");
+    }
+
+    /// Nothing is bound while the typing is still going on.
+    #[test]
+    fn a_fresh_edit_waits_for_the_debounce() {
+        let (_c, mut a) = app();
+        typed(&mut a, "10.1.2.3", Duration::ZERO);
+        a.settle_bind_draft();
+        assert!(a.settings.web.bind_addr.is_empty(), "bound while the user was still typing");
+        assert!(a.web_bind_draft.is_some(), "the edit is still pending");
+        let (text, _) = a.bind_status();
+        assert!(text.starts_with("binding in"), "the field has to say it is waiting, said {text:?}");
+    }
+
+    /// Once the typing stops, the address is taken and saved.
+    #[test]
+    fn a_settled_edit_is_taken() {
+        let (_c, mut a) = app();
+        typed(&mut a, " 10.1.2.3 ", BIND_DEBOUNCE + Duration::from_secs(1));
+        a.settle_bind_draft();
+        assert_eq!(a.settings.web.bind_addr, "10.1.2.3", "trimmed and taken");
+        assert!(a.web_bind_draft.is_none());
+        assert!(a.needs_save, "a taken address has to be written down");
+    }
+
+    /// Half an address is never bound, however long it sits there.
+    #[test]
+    fn an_address_that_is_not_one_is_never_taken() {
+        let (_c, mut a) = app();
+        a.settings.web.bind_addr = "10.0.0.1".to_owned();
+        typed(&mut a, "10.0.0", BIND_DEBOUNCE * 4);
+        a.settle_bind_draft();
+        assert_eq!(a.settings.web.bind_addr, "10.0.0.1", "the socket keeps what it had");
+        let (text, _) = a.bind_status();
+        assert_eq!(text, "not an address");
+    }
+
+    /// A saved address that is not one is ignored instead of holding up the start, and the field
+    /// says so rather than letting the page look bound to it.
+    #[test]
+    fn a_saved_address_that_is_not_one_is_ignored() {
+        let (_c, mut a) = app();
+        a.settings.web.bind_addr = "nas.local".to_owned();
+        let (text, _) = a.bind_status();
+        assert_eq!(text, "not an address, ignored");
+        assert_eq!(crate::web::server::usable_bind_addr(&a.settings.web.bind_addr), None);
+    }
+}

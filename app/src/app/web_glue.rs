@@ -2,6 +2,34 @@
 
 use super::*;
 
+/// How long the typing has to stop before the socket is rebound.
+pub(crate) const BIND_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What a typed bind address is.
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub(crate) enum BindAddr {
+    /// Nothing typed: the "reachable from the network" switch decides.
+    Blank,
+    /// An address this machine can be asked to listen on.
+    Literal,
+    /// Not an address at all.
+    Invalid,
+}
+
+/// Reads a typed bind address without touching the resolver.
+///
+/// Literal addresses only, IPv6 in brackets included. A name would be a DNS lookup, and the bind
+/// runs on the UI thread: a half-typed host name freezes the app for as long as the resolver takes.
+pub(crate) fn bind_addr_state(text: &str) -> BindAddr {
+    if text.trim().is_empty() {
+        return BindAddr::Blank;
+    }
+    match crate::web::server::usable_bind_addr(text) {
+        Some(_) => BindAddr::Literal,
+        None => BindAddr::Invalid,
+    }
+}
+
 impl SpaiApp {
     /// Start, stop or restart the web listener to match the settings.
     ///
@@ -11,6 +39,7 @@ impl SpaiApp {
         if !self.web_allowed {
             return;
         }
+        self.settle_bind_draft();
         let w = &self.settings.web;
         if w.enabled && w.token.is_empty() {
             match crate::web::auth::new_token() {
@@ -38,13 +67,17 @@ impl SpaiApp {
                 .hash(&mut h);
             h.finish()
         });
+        self.collect_started_server();
         if want == self.web_started_for {
             return;
         }
         self.web_server = None;
         self.web_started_for = want;
         self.web_error = None;
-        let Some(_) = want else { return };
+        let Some(want_hash) = want else {
+            self.web_starting = None;
+            return;
+        };
         let cfg = crate::web::server::Config {
             port: w.port,
             bind_lan: w.bind_lan,
@@ -55,36 +88,109 @@ impl SpaiApp {
             no_pairing: w.no_pairing,
             map: self.web_map_geometry(),
         };
-        // The ship dialog reads hull stats out of the SDE. A second connection rather than the
-        // app's: `Store` owns a rusqlite `Connection` and cannot be shared across threads, and
-        // SQLite allows a second reader on the same file.
-        {
-            let mut d = self.web_detail.lock().unwrap_or_else(|e| e.into_inner());
-            if d.store.is_none() {
-                match crate::store::Store::open() {
-                    Ok(s) => d.store = Some(s),
-                    Err(e) => eprintln!("[web] no store for the dialogs: {e}"),
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.web_starting = Some((want_hash, rx));
+        let (web, detail, inbox) =
+            (self.web.clone(), self.web_detail.clone(), self.web_inbox.clone());
+        let ctx = self.ui_ctx.clone();
+        // Off the UI thread: binding a socket waits on the resolver and on the last listener letting
+        // go of the port, and a frame that waits for either is a frozen app.
+        std::thread::spawn(move || {
+            // The ship dialog reads hull stats out of the SDE. A second connection rather than the
+            // app's: `Store` owns a rusqlite `Connection` and cannot be shared across threads, and
+            // SQLite allows a second reader on the same file.
+            {
+                let mut d = detail.lock().unwrap_or_else(|e| e.into_inner());
+                if d.store.is_none() {
+                    match crate::store::Store::open() {
+                        Ok(s) => d.store = Some(s),
+                        Err(e) => eprintln!("[web] no store for the dialogs: {e}"),
+                    }
+                }
+                // Coordinates for the jump maths, loaded once here rather than pushed each frame:
+                // the app's own copy is behind the rescue feature, and `all_map_systems` is 5000
+                // rows.
+                if d.coords.is_none() {
+                    if let Some(store) = d.store.as_ref() {
+                        d.coords = Some(std::sync::Arc::new(store.all_map_systems()));
+                    }
                 }
             }
-            // Coordinates for the jump maths, loaded once here rather than pushed each frame: the
-            // app's own copy is behind the rescue feature, and `all_map_systems` is 5000 rows.
-            if d.coords.is_none() {
-                if let Some(store) = d.store.as_ref() {
-                    d.coords = Some(std::sync::Arc::new(store.all_map_systems()));
-                }
+            let out = crate::web::server::start(cfg, web, detail, inbox);
+            // Dropped on a failed send, which stops the listener: by then the settings have moved on
+            // and something else is being bound.
+            let _ = tx.send(out);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Takes a listener a worker finished binding, or the reason it could not.
+    fn collect_started_server(&mut self) {
+        let Some((for_hash, rx)) = &self.web_starting else { return };
+        let (for_hash, out) = match rx.try_recv() {
+            Ok(out) => (*for_hash, out),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.web_starting = None;
+                self.web_error = Some("the listener could not be started".to_owned());
+                return;
             }
+        };
+        self.web_starting = None;
+        // The settings moved on while it was binding, so this listener is already the wrong one.
+        if self.web_started_for != Some(for_hash) {
+            return;
         }
-        match crate::web::server::start(
-            cfg,
-            self.web.clone(),
-            self.web_detail.clone(),
-            self.web_inbox.clone(),
-        ) {
+        match out {
             Ok(h) => self.web_server = Some(h),
             Err(e) => {
                 eprintln!("[web] {e}; web view disabled");
                 self.web_error = Some(e);
             }
+        }
+    }
+
+    /// Commits a typed bind address once the typing has stopped for [`BIND_DEBOUNCE`].
+    ///
+    /// An address that is not one is never committed: the socket keeps what it has rather than
+    /// falling back to every interface, which is the one mistake this field must not make.
+    pub(crate) fn settle_bind_draft(&mut self) {
+        let Some((draft, at)) = &self.web_bind_draft else { return };
+        if bind_addr_state(draft) == BindAddr::Invalid || at.elapsed() < BIND_DEBOUNCE {
+            return;
+        }
+        let addr = draft.trim().to_owned();
+        self.web_bind_draft = None;
+        if self.settings.web.bind_addr != addr {
+            self.settings.web.bind_addr = addr;
+            self.needs_save = true;
+        }
+    }
+
+    /// What the bind address field has to say for itself: bound, refused, not an address, or waiting
+    /// for the typing to stop.
+    pub(crate) fn bind_status(&self) -> (String, egui::Color32) {
+        use crate::theme::standing;
+        let waiting = self.web_bind_draft.as_ref();
+        if let Some((draft, at)) = waiting {
+            if bind_addr_state(draft) == BindAddr::Invalid {
+                return ("not an address".to_owned(), standing::HOSTILE);
+            }
+            let left = BIND_DEBOUNCE.saturating_sub(at.elapsed()).as_secs() + 1;
+            return (format!("binding in {left}s"), standing::WARNING);
+        }
+        if let Some(e) = &self.web_error {
+            return (e.clone(), standing::HOSTILE);
+        }
+        // A saved address that is not one is ignored rather than allowed to hold up the start, so
+        // the field has to say so or the page looks bound to something it is not.
+        if bind_addr_state(&self.settings.web.bind_addr) == BindAddr::Invalid {
+            return ("not an address, ignored".to_owned(), standing::HOSTILE);
+        }
+        match &self.web_server {
+            Some(h) => (format!("bound to {}", h.addr), standing::FRIENDLY),
+            None if self.web_starting.is_some() => ("binding…".to_owned(), standing::WARNING),
+            None => ("not bound".to_owned(), standing::WARNING),
         }
     }
 
@@ -201,8 +307,14 @@ impl SpaiApp {
     pub(crate) fn web_advanced_section(&mut self, ui: &mut egui::Ui) -> bool {
         use egui_phosphor::regular as icon;
         let mut changed = false;
+        // Collapsed until asked for, except when it is already holding something: a setting that
+        // changes who can reach the page has no business being out of sight.
+        let holds_something = !self.settings.web.bind_addr.is_empty()
+            || self.settings.web.no_pairing
+            || self.web_bind_draft.is_some();
         egui::CollapsingHeader::new(format!("{}  Advanced", icon::GEAR_SIX))
             .id_salt("web_advanced")
+            .default_open(holds_something)
             .show(ui, |ui| {
                 if !self.settings.web.advanced_ack {
                     ui.label(
@@ -229,20 +341,34 @@ impl SpaiApp {
                     }
                     return;
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Bind address");
-                    changed |= ui
+                    let mut draft = match &self.web_bind_draft {
+                        Some((t, _)) => t.clone(),
+                        None => self.settings.web.bind_addr.clone(),
+                    };
+                    let edit = ui
                         .add(
-                            egui::TextEdit::singleline(&mut self.settings.web.bind_addr)
+                            egui::TextEdit::singleline(&mut draft)
                                 .hint_text("blank = the choice above")
                                 .desired_width(160.0),
                         )
                         .on_hover_text(
                             "An interface address to listen on instead. Blank uses the LAN setting \
                              above, which is what you want unless you are binding one specific \
-                             interface, such as a VPN.",
-                        )
-                        .changed();
+                             interface, such as a VPN. The socket is rebound once you stop typing, \
+                             since a half-typed address is a different one.",
+                        );
+                    if edit.changed() {
+                        self.web_bind_draft = Some((draft, std::time::Instant::now()));
+                    }
+                    let (text, color) = self.bind_status();
+                    ui.label(egui::RichText::new(text).color(color).size(11.0));
+                    // The countdown has to run down on its own: nothing else repaints a settings
+                    // window that is only being looked at.
+                    if self.web_bind_draft.is_some() {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                    }
                 });
                 changed |= ui
                     .checkbox(&mut self.settings.web.no_pairing, "Serve without pairing")

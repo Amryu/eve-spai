@@ -499,6 +499,14 @@ pub struct SpaiApp {
     /// A bind that failed, kept so settings can say why the page is unreachable rather than leaving
     /// the user to find it in a terminal they never opened.
     pub(crate) web_error: Option<String>,
+    /// The UI context, for waking a frame when a worker finishes something the window is waiting on.
+    ui_ctx: egui::Context,
+    /// A listener being bound on a worker thread, and the settings hash it is being bound for.
+    web_starting: Option<(u64, std::sync::mpsc::Receiver<Result<crate::web::server::Handle, String>>)>,
+    /// A bind address being typed, and when it was last touched. The socket waits for the typing to
+    /// stop: a half-typed address is a different address, and binding one per keystroke stalls the
+    /// UI thread on the resolver.
+    pub(crate) web_bind_draft: Option<(String, std::time::Instant)>,
     /// Off in the UI harness, which builds an app without any of the side effects.
     web_allowed: bool,
     pub(crate) systems: Option<std::sync::Arc<crate::geo::Systems>>,
@@ -1161,6 +1169,9 @@ impl SpaiApp {
             web_server: None,
             web_started_for: None,
             web_error: None,
+            ui_ctx: ctx.clone(),
+            web_starting: None,
+            web_bind_draft: None,
             web_allowed: !headless,
             store,
             settings,

@@ -325,12 +325,23 @@ fn nav_scene(name: &'static str, expanded: bool, height: f32) -> Scene {
 /// port, the LAN toggle and the three link buttons only exist once it is enabled, and those are the
 /// widgets worth checking for overlap and for escaping their row.
 fn web_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    web_settings_scene_cfg(name, size, false)
+}
+
+/// `bind` opens the advanced part with an address being typed, which is where the field says whether
+/// it is bound, waiting or holding something that is not an address.
+fn web_settings_scene_cfg(name: &'static str, size: [f32; 2], bind: bool) -> Scene {
     harness::scratch_profile();
     let mut app: Option<crate::app::SpaiApp> = None;
     Scene::ui(name, size, move |ui| {
         let app = app.get_or_insert_with(|| {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.view = View::Settings;
+            if bind {
+                a.settings.web.advanced_ack = true;
+                a.settings.web.bind_addr = "10.20.30.40".to_owned();
+                a.web_bind_draft = Some(("10.20.30".to_owned(), std::time::Instant::now()));
+            }
             a.settings.web.enabled = true;
             a.settings.web.token = "PAIRING-TOKEN-FOR-THE-SCENE-0123456789ab".to_owned();
             // Path detection finds the real EVE install, so a render of this view carries the
@@ -1040,6 +1051,7 @@ pub(crate) fn all() -> Vec<Scene> {
     // scene that crops its own subject reads as coverage without being any.
     v.push(web_settings_scene("web_settings", [980.0, 2600.0]));
     v.push(web_settings_scene("web_settings_narrow", [720.0, 2600.0]));
+    v.push(web_settings_scene_cfg("web_settings_bind_address", [980.0, 2600.0], true));
     // Both battle toolbars are one wrapping row of groups, so where they break moves with the
     // window. 720 breaks them into the most rows, which is where a divider is most likely to end
     // up at a row edge.

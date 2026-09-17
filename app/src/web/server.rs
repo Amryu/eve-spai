@@ -69,6 +69,20 @@ struct Ctx {
     fails: Mutex<HashMap<IpAddr, (Instant, u32)>>,
 }
 
+/// A hand-picked bind address, if it is one at all.
+///
+/// Literal addresses only. A name would be a DNS lookup on whatever thread binds the socket, and a
+/// saved address that no longer resolves must not be able to hold up a start: anything that is not
+/// an address is ignored here and the network switch decides instead.
+pub fn usable_bind_addr(text: &str) -> Option<&str> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let bare = t.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(t);
+    bare.parse::<std::net::IpAddr>().ok().map(|_| bare)
+}
+
 /// Errs when the port cannot be bound. The caller reports that and leaves the feature off.
 pub fn start(
     cfg: Config,
@@ -76,12 +90,10 @@ pub fn start(
     detail: super::Detail,
     inbox: super::Inbox,
 ) -> Result<Handle, String> {
-    let host: &str = if !cfg.bind_addr.trim().is_empty() {
-        cfg.bind_addr.trim()
-    } else if cfg.bind_lan {
-        "0.0.0.0"
-    } else {
-        "127.0.0.1"
+    let host: &str = match usable_bind_addr(&cfg.bind_addr) {
+        Some(a) => a,
+        None if cfg.bind_lan => "0.0.0.0",
+        None => "127.0.0.1",
     };
     // Retried: a replaced listener's socket stays bound until its last worker drops the
     // `Arc<Server>`, and workers wake on a 500ms timeout.
@@ -665,6 +677,26 @@ margin:0;align-items:center;justify-content:center;text-align:center}p{color:#7a
 <div><h2>EVE Spai</h2><p>This device is not paired. Open the link from the app's settings, which
 carries the pairing token.</p></div>
 "#;
+
+#[cfg(test)]
+mod bind_addr_tests {
+    use super::usable_bind_addr;
+
+    /// Only a literal address is used. A name is a DNS lookup on the thread that binds, and a saved
+    /// one that no longer resolves used to be able to hold up the start.
+    #[test]
+    fn only_a_literal_address_is_used() {
+        assert_eq!(usable_bind_addr("127.0.0.1"), Some("127.0.0.1"));
+        assert_eq!(usable_bind_addr("  10.0.0.5  "), Some("10.0.0.5"), "typed with spaces");
+        assert_eq!(usable_bind_addr("::1"), Some("::1"));
+        assert_eq!(usable_bind_addr("[fe80::1]"), Some("fe80::1"), "the bracketed form is one too");
+        assert_eq!(usable_bind_addr(""), None, "blank leaves the network switch in charge");
+        assert_eq!(usable_bind_addr("   "), None);
+        assert_eq!(usable_bind_addr("192.168.1"), None, "half typed is not an address");
+        assert_eq!(usable_bind_addr("my-nas.local"), None, "a name would be a lookup");
+        assert_eq!(usable_bind_addr("127.0.0.1:8080"), None, "the port is its own setting");
+    }
+}
 
 #[cfg(test)]
 mod tests {
