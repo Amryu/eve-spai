@@ -186,10 +186,27 @@ mod tests {
             ("thrasher Fleet Issues (tFI > scalpel > sentinel )", "tfis"),
             ("Kestrels (Kestrels>Bifrosts>Vigils)", "kestrels"),
             ("Cormorant (Corm > Burst > Bantam > Vigil)", "cormorants"),
+            // Entosis fleets ping the doctrine as the bare word.
+            ("Entosis", "entosis-ships"),
         ];
         for (doctrine, want) in cases {
             let got = link_for(doctrine).unwrap_or_else(|| panic!("no link for {doctrine:?}"));
             assert!(got.contains(want), "{doctrine:?} linked to {got}, wanted the {want} topic");
+        }
+    }
+
+    /// Tiger's Claw has not been pinged since this table was written, so both ways of naming it are
+    /// covered: the topic's own name, and the ships it flies.
+    #[test]
+    fn the_carrier_doctrine_answers_to_either_name() {
+        for name in [
+            "Tiger's Claw (Carriers)",
+            "Tigers Claw",
+            "Carriers (Thanatos > Fax > Support)",
+            "Carrier Fleet",
+        ] {
+            let got = link_for(name).unwrap_or_else(|| panic!("no link for {name:?}"));
+            assert!(got.contains("tigers-claw"), "{name:?} linked to {got}");
         }
     }
 
