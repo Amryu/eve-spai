@@ -847,6 +847,20 @@ fn rescue_chat_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The clock over the checklist, at a fixed time so the render is the same every run, with the
+/// checklist under it the way the ops column stacks them.
+#[cfg(feature = "fc-rescue")]
+fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
+    harness::scratch_profile();
+    let mut state: Option<crate::rescue::RescueState> = None;
+    Scene::ui(name, [300.0, 300.0], move |ui| {
+        let r = state.get_or_insert_with(crate::rescue::RescueState::default);
+        crate::app::ping_timer_row(ui, secs);
+        ui.add_space(4.0);
+        crate::app::rescue_checklist_ui(ui, r);
+    })
+}
+
 /// The screenshot path must not be one forgotten override away from painting a real alliance's
 /// rooms, contacts or messages into a PNG that gets committed to a ticket folder.
 #[test]
@@ -1110,6 +1124,10 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     #[cfg(feature = "fc-rescue")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
+    #[cfg(feature = "fc-rescue")]
+    v.push(rescue_timer_scene("rescue_ping_timer", 372));
+    #[cfg(feature = "fc-rescue")]
+    v.push(rescue_timer_scene("rescue_ping_timer_late", 931));
     // With Rescue Mode on, delve911's remove button is disabled while every other room
     // keeps its own. Only meaningful in a build that has the feature.
     #[cfg(feature = "fc-rescue")]

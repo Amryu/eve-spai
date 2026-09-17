@@ -486,7 +486,10 @@ impl SpaiApp {
                             resolve = Some(*seq);
                         }
                         let age = fmt_age_compact(now - received);
-                        let mut text = egui::RichText::new(chip);
+                        // The clock on the chip, not only in the tooltip: which ping has been
+                        // running longest is the first thing to know with several open.
+                        let mut text =
+                            egui::RichText::new(format!("{chip}  {}", since_ping(now - received)));
                         if i == 0 {
                             text = text.strong().color(egui::Color32::from_rgb(0xE6, 0xA5, 0x1E));
                         }
@@ -590,6 +593,7 @@ impl SpaiApp {
                     let invite_pending = sel_seq.is_some() && acts.invited_op != Some(op_now);
                     let (mut mark_cmd, mut mark_coord, mut mark_invite) = (false, false, false);
 
+                    ping_timer_ui(ui, &r);
                     rescue_checklist_ui(ui, &mut *r);
                     ui.add_space(6.0);
                     ui.separator();
@@ -885,5 +889,68 @@ impl SpaiApp {
             self.settings.rescue_doctrine = doc;
             self.needs_save = true;
         }
+    }
+}
+
+/// Seconds as a stopwatch, because a rescue is counted in minutes and the seconds matter.
+#[cfg(feature = "fc-rescue")]
+pub(crate) fn since_ping(secs: i64) -> String {
+    let s = secs.max(0);
+    if s < 3600 {
+        format!("{}:{:02}", s / 60, s % 60)
+    } else {
+        format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+    }
+}
+
+/// How long the ping being worked has been running.
+///
+/// The pilot calls PANIC and pings at the same moment, near enough, so this is also roughly how much
+/// of the PANIC has gone. It counts up rather than down: the module's length depends on the hull and
+/// the pilot's skills, and a countdown that is wrong is worse than a clock that is not.
+#[cfg(feature = "fc-rescue")]
+fn ping_timer_ui(ui: &mut egui::Ui, r: &crate::rescue::RescueState) {
+    let Some(at) = r.selected_ping.and_then(|seq| r.ping_time(seq)) else { return };
+    ping_timer_row(ui, chrono::Utc::now().timestamp() - at);
+    // A clock that only moves when something else redraws the window is not a clock.
+    ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    ui.add_space(4.0);
+}
+
+/// The row itself, given the seconds, so it can be rendered at a fixed time.
+#[cfg(feature = "fc-rescue")]
+pub(crate) fn ping_timer_row(ui: &mut egui::Ui, secs: i64) {
+    let secs = secs.max(0);
+    // Amber at five minutes, red at ten: past that the PANIC is over on any hull and the question is
+    // whether the fleet is already too late.
+    let color = match secs {
+        0..=299 => egui::Color32::from_rgb(0x4C, 0xC0, 0x6A),
+        300..=599 => egui::Color32::from_rgb(0xE6, 0xA5, 0x1E),
+        _ => egui::Color32::from_rgb(0xE0, 0x3B, 0x2E),
+    };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("SINCE PING").strong().color(color));
+        ui.label(egui::RichText::new(since_ping(secs)).heading().strong().color(color));
+    })
+    .response
+    .on_hover_text(
+        "Time since this delve911 ping. A PANIC is usually called as the ping goes out, so this is \
+         about how much of it has run.",
+    );
+}
+
+#[cfg(all(test, feature = "fc-rescue"))]
+mod tests {
+    use super::since_ping;
+
+    /// Minutes and seconds, because a rescue is over in the time a wall clock would not have moved.
+    #[test]
+    fn the_clock_counts_in_minutes_and_seconds() {
+        assert_eq!(since_ping(0), "0:00");
+        assert_eq!(since_ping(7), "0:07");
+        assert_eq!(since_ping(69), "1:09");
+        assert_eq!(since_ping(599), "9:59");
+        assert_eq!(since_ping(3600), "1:00:00", "an hour old ping is a forgotten one, but it reads");
+        assert_eq!(since_ping(-5), "0:00", "a clock that ran backwards is a bug, not a negative time");
     }
 }

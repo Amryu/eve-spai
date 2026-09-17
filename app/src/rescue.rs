@@ -313,6 +313,11 @@ impl RescueState {
         }
     }
 
+    /// When a ping came in, for the timer the FC works the rescue against.
+    pub fn ping_time(&self, seq: u64) -> Option<i64> {
+        self.events.iter().find(|e| e.seq == seq).map(|e| e.received)
+    }
+
     pub fn actions(&self, seq: u64) -> PingActions {
         self.actions.get(&seq).copied().unwrap_or_default()
     }

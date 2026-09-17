@@ -279,6 +279,8 @@ mod map_ui;
 mod map_route;
 mod battles_ui;
 mod rescue_ui;
+#[cfg(feature = "fc-rescue")]
+pub(crate) use rescue_ui::ping_timer_row;
 mod jabber_ui;
 mod note_widgets;
 pub(crate) use note_widgets::*;
