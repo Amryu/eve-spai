@@ -73,6 +73,26 @@ pub struct OpenFleet {
 /// How many recorded requests the journal keeps.
 pub const JOURNAL_CAP: usize = 200;
 
+/// Which comms fields the free-channel rule chose, so the form can say so and stop re-choosing one
+/// the user has since set by hand.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AutoPicked {
+    pub mumble: bool,
+    pub logi: bool,
+    pub boost: bool,
+}
+
+/// The start form and everything attached to it.
+#[derive(Clone, Debug, Default)]
+pub struct Draft {
+    pub form: StartForm,
+    pub tags: std::collections::BTreeSet<TagId>,
+    pub snowflakes: Vec<Snowflake>,
+    pub formup: Option<Labelled>,
+    pub use_backup: bool,
+    pub auto: AutoPicked,
+}
+
 #[derive(Default)]
 pub struct FleetState {
     pub page: Page,
@@ -83,6 +103,8 @@ pub struct FleetState {
     pub history: Slot<Paged<FleetRow>>,
     pub history_skip: u32,
     pub open: Slot<OpenFleet>,
+    pub draft: Draft,
+    pub preview: Slot<PingPreview>,
     /// Requests that would have gone out, newest last.
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
@@ -117,6 +139,15 @@ impl FleetState {
             }
             Outcome::History(page) => self.history.put(page),
             Outcome::Opened(open) => self.open.put(*open),
+            Outcome::Preview { record, preview } => {
+                // A preview is not a write, so it does not reach the journal.
+                let _ = record;
+                self.preview.put(preview);
+            }
+            Outcome::Started { record, id } => {
+                self.record(record);
+                self.page = Page::Tracking(id);
+            }
             Outcome::Wrote { record } => {
                 self.record(record);
             }
@@ -131,17 +162,178 @@ impl FleetState {
     }
 }
 
+/// What a free-channel pick did, so the form can explain itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct FreePick {
+    pub id: Option<ChannelId>,
+    /// The caller's own choice was still free and was left alone.
+    pub kept: bool,
+    /// Nothing was free, so this is a busy channel or nothing at all.
+    pub all_busy: bool,
+}
+
+/// A channel nobody is meant to claim for a fleet: the standing ones are always up.
+fn is_standing(name: &str) -> bool {
+    name.to_lowercase().contains("standing")
+}
+
+/// The lowest-id channel nothing else is using, keeping the caller's own choice while it is free.
+///
+/// Ordered by id and never by name: the names upstream carry trailing spaces, and their numbering
+/// is the only thing that is stable.
+pub fn pick_free(items: &[ChannelItem], keep: Option<ChannelId>) -> FreePick {
+    if let Some(k) = keep {
+        if items.iter().any(|c| c.id == k && !c.is_in_use) {
+            return FreePick { id: Some(k), kept: true, all_busy: false };
+        }
+    }
+    let mut free: Vec<&ChannelItem> =
+        items.iter().filter(|c| !c.is_in_use && !is_standing(&c.name)).collect();
+    free.sort_by_key(|c| c.id.0);
+    match free.first() {
+        Some(c) => FreePick { id: Some(c.id), kept: false, all_busy: false },
+        None => FreePick { id: keep, kept: keep.is_some(), all_busy: true },
+    }
+}
+
+impl FleetState {
+    /// Fills the form from a preset, picking free comms where it asked us to.
+    pub fn apply_preset(&mut self, p: &crate::settings::FleetPreset) {
+        let d = &mut self.draft;
+        d.form.name = p.name.clone();
+        d.form.description = p.description.clone();
+        d.form.setup_id = p.setup_id;
+        d.form.group_id = p.group_id.map(GroupId);
+        d.form.mumble_channel_id = p.mumble_channel_id.map(ChannelId);
+        d.form.logi_channel_id = p.logi_channel_id.map(ChannelId);
+        d.form.boost_channel_id = p.boost_channel_id.map(ChannelId);
+        d.form.auto_close_type = Some(p.auto_close_type);
+        d.form.auto_close_time = Some(p.auto_close_time);
+        d.form.is_corporation_fleet = p.is_corporation_fleet;
+        d.form.ignore_participation_requirements = p.ignore_participation_requirements;
+        d.form.set_motd = p.set_motd;
+        d.form.doctrine_notes =
+            Some(p.doctrine_notes.clone()).filter(|s| !s.trim().is_empty());
+        d.tags = p.tag_ids.iter().map(|t| TagId(*t)).collect();
+        d.use_backup = p.use_backup;
+        d.formup = p.formup_location.as_ref().map(|(id, label)| Labelled {
+            id: *id,
+            label: label.clone(),
+        });
+        d.snowflakes = p
+            .snowflakes
+            .iter()
+            .filter_map(|(id, name, kind)| {
+                Some(Snowflake {
+                    id: 0,
+                    character_id: *id,
+                    character_name: name.clone(),
+                    kind: SnowflakeType::try_from(*kind).ok()?,
+                })
+            })
+            .collect();
+        d.auto = AutoPicked::default();
+        if p.auto_channels {
+            self.auto_channels();
+        }
+    }
+
+    /// Picks free comms for the three channels, leaving a hand-set one alone.
+    pub fn auto_channels(&mut self) {
+        let (mumble, logi, boost) = (
+            pick_free(&self.seed.mumble_channels, self.draft.form.mumble_channel_id),
+            pick_free(&self.seed.logi_channels, self.draft.form.logi_channel_id),
+            pick_free(&self.seed.boost_channels, self.draft.form.boost_channel_id),
+        );
+        self.draft.form.mumble_channel_id = mumble.id;
+        self.draft.form.logi_channel_id = logi.id;
+        self.draft.form.boost_channel_id = boost.id;
+        self.draft.auto = AutoPicked {
+            mumble: !mumble.kept && mumble.id.is_some(),
+            logi: !logi.kept && logi.id.is_some(),
+            boost: !boost.kept && boost.id.is_some(),
+        };
+    }
+
+    /// What the form would send, or nothing when it is not filled in enough to send.
+    pub fn start_request(&self) -> Option<StartRequest> {
+        let s = self.session.as_ref()?;
+        if self.draft.form.name.trim().is_empty() {
+            return None;
+        }
+        Some(StartRequest {
+            form: self.draft.form.clone(),
+            tag_ids: self.draft.tags.iter().copied().collect(),
+            character_id: s.character_id,
+            character_name: s.character_name.clone(),
+            use_backup: self.draft.use_backup,
+            snowflakes: self.draft.snowflakes.clone(),
+            operation_id: None,
+            formup_location_id: self.draft.formup.as_ref().map(|l| l.id),
+        })
+    }
+
+    /// The ping the form describes. Always available: a preview of an empty form is still useful.
+    pub fn ping_request(&self) -> PingRequest {
+        PingRequest {
+            character_id: self.session.as_ref().map(|s| s.character_id).unwrap_or(0),
+            description: self.draft.form.description.clone(),
+            doctrine_notes: self.draft.form.doctrine_notes.clone(),
+            boost_channel_id: self.draft.form.boost_channel_id,
+            logi_channel_id: self.draft.form.logi_channel_id,
+            mumble_channel_id: self.draft.form.mumble_channel_id,
+            setup_id: self.draft.form.setup_id,
+            solar_system_id: self.draft.formup.as_ref().map(|l| l.id).unwrap_or(0),
+            tag_ids: self.draft.tags.iter().copied().collect(),
+        }
+    }
+
+    /// The form as a preset worth keeping.
+    pub fn preset_from_form(&self, label: &str) -> crate::settings::FleetPreset {
+        let d = &self.draft;
+        crate::settings::FleetPreset {
+            label: label.to_owned(),
+            name: d.form.name.clone(),
+            description: d.form.description.clone(),
+            setup_id: d.form.setup_id,
+            group_id: d.form.group_id.map(|g| g.0),
+            mumble_channel_id: d.form.mumble_channel_id.map(|c| c.0),
+            logi_channel_id: d.form.logi_channel_id.map(|c| c.0),
+            boost_channel_id: d.form.boost_channel_id.map(|c| c.0),
+            auto_channels: d.auto.mumble || d.auto.logi || d.auto.boost,
+            auto_close_type: d.form.auto_close_type.unwrap_or(1),
+            auto_close_time: d.form.auto_close_time.unwrap_or(30),
+            is_corporation_fleet: d.form.is_corporation_fleet,
+            ignore_participation_requirements: d.form.ignore_participation_requirements,
+            set_motd: d.form.set_motd,
+            doctrine_notes: d.form.doctrine_notes.clone().unwrap_or_default(),
+            tag_ids: d.tags.iter().map(|t| t.0).collect(),
+            use_backup: d.use_backup,
+            formup_location: d.formup.as_ref().map(|l| (l.id, l.label.clone())),
+            snowflakes: d
+                .snowflakes
+                .iter()
+                .map(|s| (s.character_id, s.character_name.clone(), u8::from(s.kind)))
+                .collect(),
+        }
+    }
+}
+
 /// Which request a result belongs to. A result for a page the user has left is not wanted.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Gen {
     pub page: u64,
+    /// Bumped per preview request, since the form fires one on every edit.
+    pub preview: u64,
 }
 
 /// Whether a result that came back under `got` is still wanted now that the tab is at `cur`.
 pub fn accepts(cur: Gen, got: Gen, out: &Outcome) -> bool {
     match out {
         // The request was made. Dropping its record would be lying about what this app did.
-        Outcome::Wrote { .. } => true,
+        Outcome::Wrote { .. } | Outcome::Started { .. } => true,
+        // Only the newest preview is worth showing; an older one would flicker the pane backwards.
+        Outcome::Preview { .. } => got == cur,
         _ => got.page == cur.page,
     }
 }
@@ -154,6 +346,9 @@ pub enum Cmd {
     LoadHistory { skip: u32 },
     Open(FleetId),
     Act(FleetId, Action),
+    Preview(PingRequest),
+    Start(StartRequest),
+    Ping(PingRequest),
 }
 
 /// What came back.
@@ -163,6 +358,8 @@ pub enum Outcome {
     Active { strategic: bool, rows: Vec<FleetRow> },
     History(Paged<FleetRow>),
     Opened(Box<OpenFleet>),
+    Preview { record: CallRecord, preview: PingPreview },
+    Started { record: CallRecord, id: FleetId },
     Wrote { record: CallRecord },
     Failed { what: &'static str, why: String },
 }
@@ -190,6 +387,18 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
         Cmd::Act(id, action) => match backend.act(&id, &action) {
             Ok(w) => Outcome::Wrote { record: w.record },
             Err(e) => Outcome::Failed { what: "action", why: e.to_string() },
+        },
+        Cmd::Preview(req) => match backend.ping_preview(&req) {
+            Ok(w) => Outcome::Preview { record: w.record, preview: w.value },
+            Err(e) => Outcome::Failed { what: "ping preview", why: e.to_string() },
+        },
+        Cmd::Start(req) => match backend.start(&req) {
+            Ok(w) => Outcome::Started { record: w.record, id: w.value },
+            Err(e) => Outcome::Failed { what: "start fleet", why: e.to_string() },
+        },
+        Cmd::Ping(req) => match backend.ping(&req) {
+            Ok(w) => Outcome::Wrote { record: w.record },
+            Err(e) => Outcome::Failed { what: "ping", why: e.to_string() },
         },
     }
 }
@@ -246,7 +455,7 @@ mod tests {
     /// the journal has to say so.
     #[test]
     fn a_stale_read_is_dropped_but_a_write_is_kept() {
-        let (cur, old) = (Gen { page: 2 }, Gen { page: 1 });
+        let (cur, old) = (Gen { page: 2, preview: 0 }, Gen { page: 1, preview: 0 });
         let read = Outcome::Active { strategic: true, rows: vec![] };
         assert!(accepts(cur, cur, &read));
         assert!(!accepts(cur, old, &read));
@@ -318,6 +527,149 @@ mod tests {
             format!("PUT {p}")
         });
         assert!(st.journal[0].path.ends_with("/motd"));
+    }
+
+    /// The rule that picks comms: keep a free choice, take the lowest free id otherwise, and never
+    /// hand out a standing channel or one somebody is on.
+    #[test]
+    fn free_channels_are_picked_by_id_and_never_the_standing_one() {
+        let ch = |id: i32, name: &str, busy: bool| ChannelItem {
+            id: ChannelId(id),
+            name: name.to_owned(),
+            is_in_use: busy,
+        };
+        let list = vec![
+            ch(1, "Comms 1", true),
+            ch(3, "Comms 3", false),
+            ch(2, "Comms 2", false),
+            ch(16, "Standing", false),
+        ];
+        // Nothing asked for: the lowest free one, not the lowest one.
+        let pick = pick_free(&list, None);
+        assert_eq!(pick.id, Some(ChannelId(2)));
+        assert!(!pick.kept && !pick.all_busy);
+        // A free choice is left alone.
+        let kept = pick_free(&list, Some(ChannelId(3)));
+        assert_eq!((kept.id, kept.kept), (Some(ChannelId(3)), true));
+        // A busy choice is replaced.
+        assert_eq!(pick_free(&list, Some(ChannelId(1))).id, Some(ChannelId(2)));
+        // The standing channel is never chosen, even when it is the only free one.
+        let busy = vec![ch(1, "Comms 1", true), ch(16, "Standing", false)];
+        let none = pick_free(&busy, None);
+        assert!(none.all_busy && none.id.is_none());
+    }
+
+    /// A preset fills the form, and what the form then sends is the captured payload shape.
+    #[test]
+    fn a_preset_reaches_the_start_payload() {
+        let mut st = state();
+        st.session = Some(Session {
+            identity: st.seed.identity.clone(),
+            character_id: 90_000_001,
+            character_name: "Placeholder Main".into(),
+        });
+        let preset = crate::settings::FleetPreset {
+            label: "Home".into(),
+            name: "Home Defence".into(),
+            setup_id: 46,
+            auto_channels: true,
+            auto_close_type: 1,
+            auto_close_time: 30,
+            set_motd: true,
+            tag_ids: vec![1, 12],
+            formup_location: Some((30_000_772, "Placeholder Staging".into())),
+            snowflakes: vec![(90_000_002, "Placeholder Alt".into(), 4)],
+            ..Default::default()
+        };
+        st.apply_preset(&preset);
+        assert_eq!(st.draft.form.name, "Home Defence");
+        assert_eq!(st.draft.tags.len(), 2);
+        assert_eq!(st.draft.snowflakes[0].kind, SnowflakeType::Hunter);
+        // The preset asked for free comms, and the seed's first channels are busy.
+        assert!(st.draft.auto.mumble && st.draft.auto.logi && st.draft.auto.boost);
+        let picked = st.draft.form.mumble_channel_id.expect("a channel");
+        assert!(st.seed.mumble_channels.iter().any(|c| c.id == picked && !c.is_in_use));
+
+        let req = st.start_request().expect("a filled form");
+        let body = calls::start(&req).body.expect("a body");
+        assert_eq!(body["name"], "Home Defence");
+        assert_eq!(body["setupId"], 46);
+        assert_eq!(body["tagIds"], serde_json::json!([1, 12]));
+        assert_eq!(body["characterName"], "Placeholder Main");
+        assert_eq!(body["formupLocationId"], 30_000_772);
+        assert_eq!(body["snowflakes"][0]["type"], 4);
+    }
+
+    /// A form with no name cannot be sent, so the button has something to disable on.
+    #[test]
+    fn an_unnamed_fleet_is_not_sendable() {
+        let mut st = state();
+        st.session = Some(Session::default());
+        assert!(st.start_request().is_none());
+        st.draft.form.name = "Something".into();
+        assert!(st.start_request().is_some());
+    }
+
+    /// Saving the form as a preset and loading it again is the same form.
+    #[test]
+    fn a_preset_round_trips_through_the_form() {
+        let mut st = state();
+        st.draft.form.name = "Roam".into();
+        st.draft.form.setup_id = 116;
+        st.draft.form.set_motd = true;
+        st.draft.tags = [TagId(2), TagId(33)].into_iter().collect();
+        st.draft.formup = Some(Labelled { id: 30_000_142, label: "Jita".into() });
+        let saved = st.preset_from_form("Evening");
+        let mut other = state();
+        other.apply_preset(&saved);
+        assert_eq!(other.draft.form.name, "Roam");
+        assert_eq!(other.draft.form.setup_id, 116);
+        assert!(other.draft.form.set_motd);
+        assert_eq!(other.draft.tags, st.draft.tags);
+        assert_eq!(other.draft.formup.map(|l| l.id), Some(30_000_142));
+    }
+
+    /// The preview pane shows only the newest answer, or it flickers backwards while typing.
+    #[test]
+    fn only_the_newest_preview_is_shown() {
+        let cur = Gen { page: 1, preview: 5 };
+        let preview = Outcome::Preview {
+            record: calls::ping_preview(&PingRequest::default()),
+            preview: PingPreview::default(),
+        };
+        assert!(accepts(cur, cur, &preview));
+        assert!(!accepts(cur, Gen { page: 1, preview: 4 }, &preview));
+    }
+
+    /// Starting a fleet opens it, and the request reaches the journal.
+    #[test]
+    fn starting_a_fleet_opens_it() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let mut st = state();
+        st.session = Some(Session {
+            identity: seed.identity.clone(),
+            character_id: 90_000_001,
+            character_name: "Placeholder Main".into(),
+        });
+        st.draft.form.name = "Home Defence".into();
+        st.draft.tags = [TagId(1)].into_iter().collect();
+        let req = st.start_request().expect("a filled form");
+        st.apply(run(&b, &seed, Cmd::Start(req)));
+        assert!(matches!(st.page, Page::Tracking(_)), "{:?}", st.page);
+        assert_eq!(st.journal.len(), 1);
+        assert!(st.journal[0].path.ends_with("/start"));
+    }
+
+    /// A preview is not a write: it renders, and the journal stays empty.
+    #[test]
+    fn a_preview_does_not_reach_the_journal() {
+        let b = SpoofBackend::instant();
+        let seed = crate::fleets::seed::invented();
+        let mut st = state();
+        st.apply(run(&b, &seed, Cmd::Preview(st.ping_request())));
+        assert!(st.preview.value.as_ref().is_some_and(|p| p.ping.contains("FC Name:")));
+        assert!(st.journal.is_empty());
     }
 
     /// A refused action says so rather than looking like it worked.

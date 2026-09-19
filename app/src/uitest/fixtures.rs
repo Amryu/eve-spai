@@ -752,3 +752,89 @@ pub(crate) fn seed_fleet_state(app: &crate::app::SpaiApp) {
     let _ = backend.is_dry_run();
     *app.fleet_state_for_test().lock().unwrap() = st;
 }
+
+/// Presets for the start form, invented like everything else a screenshot may show.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_presets() -> Vec<crate::settings::FleetPreset> {
+    vec![
+        crate::settings::FleetPreset {
+            label: "Home Defence".to_owned(),
+            name: "Home Defence".to_owned(),
+            description: "Bad guys in the home system.".to_owned(),
+            setup_id: 46,
+            auto_channels: true,
+            auto_close_type: 1,
+            auto_close_time: 30,
+            set_motd: true,
+            tag_ids: vec![1, 12],
+            formup_location: Some((30_000_772, "Placeholder Staging".to_owned())),
+            ..Default::default()
+        },
+        crate::settings::FleetPreset {
+            label: "Evening roam".to_owned(),
+            name: "Evening roam".to_owned(),
+            setup_id: 116,
+            auto_channels: true,
+            tag_ids: vec![2, 33],
+            ..Default::default()
+        },
+        crate::settings::FleetPreset {
+            label: "Tower bash".to_owned(),
+            name: "Tower bash".to_owned(),
+            setup_id: 125,
+            tag_ids: vec![1, 31],
+            ..Default::default()
+        },
+    ]
+}
+
+/// Opens the start page with the first preset loaded and its ping rendered.
+#[cfg(feature = "fleet")]
+pub(crate) fn open_fleet_start(app: &crate::app::SpaiApp) {
+    use crate::fleets::backend::FleetBackend;
+    use crate::fleets::state::Page;
+
+    let backend = crate::fleets::spoof::SpoofBackend::with(
+        crate::fleets::seed::invented(),
+        std::time::Duration::ZERO,
+    );
+    let mut st = app.fleet_state_for_test().lock().unwrap();
+    st.page = Page::Start;
+    let preset = fleet_presets().remove(0);
+    st.apply_preset(&preset);
+    if let Ok(w) = backend.ping_preview(&st.ping_request()) {
+        st.preview.put(w.value);
+    }
+}
+
+/// Drives a few writes through the dry run so the journal has something to show.
+#[cfg(feature = "fleet")]
+pub(crate) fn record_fleet_requests(app: &crate::app::SpaiApp) {
+    use crate::fleets::backend::{Action, FleetBackend};
+    use crate::fleets::model::{StartForm, StartRequest, TagId};
+
+    let backend = crate::fleets::spoof::SpoofBackend::with(
+        crate::fleets::seed::invented(),
+        std::time::Duration::ZERO,
+    );
+    let mut st = app.fleet_state_for_test().lock().unwrap();
+    let start = StartRequest {
+        form: StartForm {
+            name: "Home Defence".to_owned(),
+            setup_id: 46,
+            set_motd: true,
+            ..StartForm::default()
+        },
+        tag_ids: vec![TagId(1), TagId(12)],
+        character_id: 90_000_001,
+        character_name: "Placeholder Main".to_owned(),
+        formup_location_id: Some(30_000_772),
+        ..StartRequest::default()
+    };
+    if let Ok(w) = backend.start(&start) {
+        st.record(w.record);
+        if let Ok(w) = backend.act(&w.value, &Action::SetMotd) {
+            st.record(w.record);
+        }
+    }
+}

@@ -882,6 +882,47 @@ fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The start form, filled from a preset so every control has something in it, with the ping the
+/// dry run renders beside it.
+#[cfg(feature = "fleet")]
+fn fleet_start_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::fleet_presets();
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_fleet_start(&a);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+/// The journal, with the requests a dry run recorded rather than sent.
+#[cfg(feature = "fleet")]
+fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
+            fixtures::record_fleet_requests(&a);
+            a.fleet_journal_open = true;
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// Clicking a fleet has to open it: the rows are painted frames, so nothing but a real click
 /// through the tree proves they are reachable.
 #[cfg(feature = "fleet")]
@@ -1167,6 +1208,12 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list", [1280.0, 800.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_start_scene("fleet_start_form", [1280.0, 1120.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
     #[cfg(feature = "fc-rescue")]

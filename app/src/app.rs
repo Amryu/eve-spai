@@ -811,6 +811,11 @@ pub struct SpaiApp {
     fleet_gen: crate::fleets::state::Gen,
     #[cfg(feature = "fleet")]
     fleet_booted: bool,
+    /// When the form's next preview is due, so typing does not spawn a worker per keystroke.
+    #[cfg(feature = "fleet")]
+    fleet_preview_at: Option<std::time::Instant>,
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_journal_open: bool,
     #[cfg(feature = "fc-rescue")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
@@ -1553,6 +1558,10 @@ impl SpaiApp {
             fleet_gen: Default::default(),
             #[cfg(feature = "fleet")]
             fleet_booted: false,
+            #[cfg(feature = "fleet")]
+            fleet_preview_at: None,
+            #[cfg(feature = "fleet")]
+            fleet_journal_open: false,
             #[cfg(feature = "fc-rescue")]
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             #[cfg(feature = "fc-rescue")]
