@@ -32,6 +32,37 @@ const STOPWORDS: &[&str] = &[
 const TACKLE_KEYWORDS: &[&str] =
     &["tackled", "tackle", "pointed", "bubbled", "scrammed", "scrambled", "hard tackle"];
 
+/// Words that say the pilot is out.
+const SAFE_WORDS: &[&str] = &["safe", "safed", "safely"];
+
+/// Words that turn a stand-down back into a call for help.
+const NOT_SAFE: &[&str] = &["not", "isnt", "aint", "unsafe", "never", "almost", "nearly"];
+
+/// Past this many words it is a sentence, and a sentence says more than "he is out".
+const SAFE_MAX_WORDS: usize = 6;
+
+/// Whether a delve911 line is nothing but a stand-down.
+///
+/// Deliberately narrow, and it decides whether the FC is pulled out of the game. Getting it wrong
+/// towards "safe" costs a capital, getting it wrong the other way costs one keystroke, so anything
+/// that is not plainly "he is out" is treated as a call.
+pub fn is_safe_call(body: &str) -> bool {
+    let low = body.to_lowercase();
+    let words: Vec<&str> = low
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() || words.len() > SAFE_MAX_WORDS {
+        return false;
+    }
+    if !words.iter().any(|w| SAFE_WORDS.contains(w)) {
+        return false;
+    }
+    // "not safe yet", and "safe now, tackled again on the gate".
+    !words.iter().any(|w| NOT_SAFE.contains(w))
+        && !TACKLE_KEYWORDS.iter().any(|k| low.contains(k))
+}
+
 /// One parsed delve911 line. Always constructed (raw fallback) so nothing is silently dropped.
 #[derive(Clone, Debug)]
 pub struct RescueEvent {
@@ -1025,6 +1056,41 @@ mod tests {
     }
 
     #[test]
+    /// A stand-down is the one line that neither sounds the siren nor pulls the FC out of the game.
+    #[test]
+    fn a_stand_down_is_recognised() {
+        for line in [
+            "safe",
+            "Safe!",
+            "he is safe",
+            "pilot is safe now",
+            "all safe o7",
+            "Rurik Olsen safe",
+            "safely docked",
+        ] {
+            assert!(is_safe_call(line), "{line:?} should read as a stand-down");
+        }
+    }
+
+    /// Everything else wakes the FC, including a line that says safe and then takes it back.
+    #[test]
+    fn anything_that_is_not_plainly_over_is_a_call() {
+        for line in [
+            "",
+            "titan tackled in 1DQ",
+            "not safe yet",
+            "he is not safe",
+            "safe now, tackled again on the gate",
+            "almost safe",
+            "he was safe for a moment and then the bubble went up again",
+            "need 2 more dreads",
+            "cyno is up",
+            "PANIC is running",
+        ] {
+            assert!(!is_safe_call(line), "{line:?} should wake the FC");
+        }
+    }
+
     fn ignores_panic_and_inhib_labels() {
         let e = ev("!bping all Rorqual Tackled \n Rorqual Name: Eben Auditore \n \
                     System:  Q7-FZ8*  \n \

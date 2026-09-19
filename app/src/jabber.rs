@@ -988,6 +988,10 @@ fn handle_event(
             // Our own reflected message (MUC echoes it back under our nick): store it but never
             // notify/sound for it.
             let own = nick.eq_ignore_ascii_case(my_nick);
+            // Read before the body is stored: "he is safe" ends a rescue, so it is the one delve911
+            // line that must not sound the siren.
+            #[cfg(feature = "fc-rescue")]
+            let stand_down = crate::rescue::is_safe_call(&body);
             push_msg(
                 state,
                 &room,
@@ -1000,7 +1004,7 @@ fn handle_event(
             // alerts once (the 5-min gate resets on every message, re-arming only after 5 min of
             // quiet).
             #[cfg(feature = "fc-rescue")]
-            if !delayed && !own {
+            if !delayed && !own && !stand_down {
                 let local = room.split('@').next().unwrap_or(&room);
                 if local.eq_ignore_ascii_case("delve911") {
                     let sound_on = state.lock().unwrap().notify_cfg.sound_enabled;

@@ -19,6 +19,9 @@ impl SpaiApp {
             return;
         }
 
+        // A restart replays the last two minutes (below), and being yanked out of the game by a
+        // ping that was already dealt with before the app started is not a rescue.
+        let catching_up = self.delve911_cursor == 0;
         let fresh: Vec<(String, String, i64)> = {
             let j = self.jabber.lock().unwrap();
             let Some(msgs) = j.chats.get(&jid) else { return };
@@ -39,8 +42,11 @@ impl SpaiApp {
         }
 
         let mut events = Vec::new();
+        // Anything that is not a plain stand-down is worth the FC's attention right now.
+        let mut wake = false;
         for (from, body, time) in fresh {
             self.delve911_cursor = self.delve911_cursor.max(time);
+            wake |= !crate::rescue::is_safe_call(&body);
             // Pure parser under catch_unwind: a bad line drops one event, never the app.
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 crate::rescue::parse_event(&from, &body, time, &systems, &ships)
@@ -52,6 +58,11 @@ impl SpaiApp {
         let mut r = self.rescue.lock().unwrap();
         for ev in events {
             r.push_event(ev);
+        }
+        drop(r);
+        if wake && !catching_up {
+            self.view = nav::View::Rescue;
+            self.raise_main = true;
         }
     }
 
