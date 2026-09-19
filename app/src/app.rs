@@ -278,6 +278,7 @@ mod travel_ui;
 mod map_ui;
 mod map_route;
 mod battles_ui;
+mod fleet_ui;
 mod rescue_ui;
 #[cfg(all(test, feature = "fc-rescue"))]
 pub(crate) use rescue_ui::ping_timer_row;
@@ -794,6 +795,8 @@ pub struct SpaiApp {
     activity: crate::activity::SharedActivity,
     sightings: crate::intel::SharedSightings,
     revivals: crate::watcher::SharedRevivals,
+    #[cfg(feature = "fleet")]
+    fleet: std::sync::Arc<std::sync::Mutex<crate::fleets::FleetState>>,
     #[cfg(feature = "fc-rescue")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
@@ -1518,6 +1521,8 @@ impl SpaiApp {
             activity,
             sightings,
             revivals,
+            #[cfg(feature = "fleet")]
+            fleet: std::sync::Arc::new(std::sync::Mutex::new(crate::fleets::FleetState::default())),
             #[cfg(feature = "fc-rescue")]
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             #[cfg(feature = "fc-rescue")]
@@ -3027,10 +3032,12 @@ impl SpaiApp {
                 let warned: &[nav::View] = if jabber_down { &[nav::View::Jabber] } else { &[] };
                 // Rescue is a row only where the feature exists and is switched on.
                 let has_rescue = cfg!(feature = "fc-rescue") && self.settings.fc_rescue_enabled;
+                let has_fleet = cfg!(feature = "fleet") && self.settings.fleet_enabled;
                 let rows: Vec<nav::View> = nav::View::primary()
                     .iter()
                     .copied()
                     .filter(|v| *v != nav::View::Rescue || has_rescue)
+                    .filter(|v| *v != nav::View::Fleet || has_fleet)
                     .collect();
                 let selected = nav::rail(ui, self.view, &mut expanded, badged, warned, &rows);
                 if selected != self.view {
@@ -3259,6 +3266,7 @@ impl SpaiApp {
             }
             // In the main window, not a viewport of its own: a separate always-on-top window is a
             // second place to look and a second thing to lose behind the game client.
+            View::Fleet => self.fleet_view(ui),
             View::Rescue => self.rescue_view(ui),
             View::Settings => self.settings_view(ui),
         });

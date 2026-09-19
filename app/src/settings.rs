@@ -208,6 +208,21 @@ pub struct Settings {
     #[serde(default)]
     pub fleet_ping_window_size: Option<(f32, f32)>,
 
+    // --- Fleet dashboard (off by default; Imperium-specific, behind the `fleet` build feature) ---
+    // Not cfg-gated, like the rescue fields below: settings are rewritten whole on save, so a build
+    // without the feature still has to round-trip a config written by one with it.
+    #[serde(default)]
+    pub fleet_enabled: bool,
+    /// Labelled fleet presets, the app's own copy of what the site keeps in localStorage.
+    #[serde(default)]
+    pub fleet_presets: Vec<FleetPreset>,
+    /// Character the dashboard acts as.
+    #[serde(default)]
+    pub fleet_character: String,
+    /// EVE chat channel whose boost declarations are counted, e.g. "Awesomeboosts".
+    #[serde(default)]
+    pub fleet_boost_channel: String,
+
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
     pub fc_rescue_enabled: bool,
@@ -853,6 +868,39 @@ where
         .collect())
 }
 
+/// A labelled fleet preset: one click fills the whole start-fleet form.
+///
+/// Plain scalars rather than the `fleets::` id newtypes, and it lives here rather than in `fleets`,
+/// because a build without the `fleet` feature still has to parse and rewrite this.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FleetPreset {
+    /// What the chip says. The only part the user names.
+    pub label: String,
+    pub name: String,
+    pub description: String,
+    pub setup_id: i32,
+    pub group_id: Option<i32>,
+    pub mumble_channel_id: Option<i32>,
+    pub logi_channel_id: Option<i32>,
+    pub boost_channel_id: Option<i32>,
+    /// Let the free-channel rule choose, keeping the ids above only while they are still free.
+    pub auto_channels: bool,
+    /// 0 start, 1 FC left.
+    pub auto_close_type: i32,
+    pub auto_close_time: i32,
+    pub is_corporation_fleet: bool,
+    pub ignore_participation_requirements: bool,
+    pub set_motd: bool,
+    pub doctrine_notes: String,
+    pub tag_ids: Vec<i32>,
+    pub use_backup: bool,
+    /// (solar system id, name).
+    pub formup_location: Option<(i64, String)>,
+    /// (character id, name, snowflake type).
+    pub snowflakes: Vec<(i64, String, u8)>,
+}
+
 /// A rescue doctrine: the short `name` shown in the selector, and the full `description` line that
 /// goes into the ping's "Doctrine:" field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1030,6 +1078,10 @@ impl Default for Settings {
             fleet_ping_window_pos: None,
             fleet_ping_window_size: None,
             work_throttle: WorkThrottle::default(),
+            fleet_enabled: false,
+            fleet_presets: Vec::new(),
+            fleet_character: String::new(),
+            fleet_boost_channel: String::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
@@ -1464,6 +1516,47 @@ mod window_geometry_tests {
     }
 
     #[test]
+    /// The fleet fields are not feature-gated, so a config written by a `fleet` build has to load
+    /// and save unchanged in a build without it. Settings are rewritten whole, so losing them here
+    /// would silently drop every preset the moment the user ran a stock binary.
+    #[test]
+    fn a_fleet_config_round_trips_in_any_build() {
+        let mut s = Settings::default();
+        s.fleet_enabled = true;
+        s.fleet_character = "Amryu".to_owned();
+        s.fleet_boost_channel = "Awesomeboosts".to_owned();
+        s.fleet_presets = vec![FleetPreset {
+            label: "Home Defence".to_owned(),
+            name: "Home Defense".to_owned(),
+            setup_id: 46,
+            auto_channels: true,
+            auto_close_type: 1,
+            auto_close_time: 30,
+            tag_ids: vec![1, 12],
+            snowflakes: vec![(90_000_001, "Scout Alt".to_owned(), 4)],
+            formup_location: Some((30_000_772, "C-J6MT".to_owned())),
+            ..FleetPreset::default()
+        }];
+        let text = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        // Field by field, not the whole struct: `BattleRule.expanded` is a UI flag that is not
+        // serialised, so a whole-Settings equality can never hold.
+        assert_eq!(back.fleet_enabled, s.fleet_enabled);
+        assert_eq!(back.fleet_character, s.fleet_character);
+        assert_eq!(back.fleet_boost_channel, s.fleet_boost_channel);
+        assert_eq!(back.fleet_presets, s.fleet_presets);
+    }
+
+    /// A config written before the tab existed must not fail the parse, which would reset every
+    /// other setting there is.
+    #[test]
+    fn a_config_without_the_fleet_fields_still_parses() {
+        let s: Settings = serde_json::from_str(r#"{"jabber_jid":"a@b"}"#).unwrap();
+        assert_eq!(s.jabber_jid, "a@b");
+        assert!(!s.fleet_enabled);
+        assert!(s.fleet_presets.is_empty());
+    }
+
     fn legacy_string_doctrines_still_parse() {
         // A config saved before doctrine descriptions existed must not fail the whole Settings
         // parse (which would reset every setting). Old form = list of plain name strings.

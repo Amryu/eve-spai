@@ -861,6 +861,23 @@ fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
     })
 }
 
+/// The fleet tab in the shell, so the rail entry and the sub-nav are checked like any other view.
+#[cfg(feature = "fleet")]
+fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// The screenshot path must not be one forgotten override away from painting a real alliance's
 /// rooms, contacts or messages into a PNG that gets committed to a ticket folder.
 #[test]
@@ -1122,6 +1139,8 @@ pub(crate) fn all() -> Vec<Scene> {
         fixtures::jabber_state_long,
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_scene("fleet_empty", [1280.0, 800.0]));
     #[cfg(feature = "fc-rescue")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
     #[cfg(feature = "fc-rescue")]

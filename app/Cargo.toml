@@ -16,6 +16,10 @@ default = []
 # `cargo build --release --features fc-rescue`. CI's cross-check passes --all-features so the
 # gated code and its tests keep compiling.
 fc-rescue = []
+# The GSF fleet dashboard mirror. Off by default: it is Imperium-specific and talks to a service a
+# stock build has no business knowing about. Build with `cargo build --features fleet`. Version 1 is
+# a dry run: it records the requests it would send and sends none of them.
+fleet = []
 
 # Embed the Windows application icon into the .exe (build.rs). winresource is pure Rust and
 # compiles on every host; build.rs only invokes it for a Windows *target*, so non-Windows builds

@@ -12,6 +12,9 @@ pub enum View {
     Characters,
     Alerts,
     Jabber,
+    /// The GSF fleet dashboard mirror. Present unconditionally for the same reason as `Rescue`:
+    /// the rail is handed a list, so only the caller needs to know the build.
+    Fleet,
     /// FC-only capital rescue. Present in the enum unconditionally so the rest of the rail needs no
     /// `cfg`; the caller leaves it out of the list when the build or the setting says so.
     Rescue,
@@ -30,6 +33,7 @@ impl View {
             View::Lookup,
             View::Characters,
             View::Jabber,
+            View::Fleet,
             View::Rescue,
         ]
     }
@@ -45,6 +49,7 @@ impl View {
             View::Characters => "Characters",
             View::Alerts => "Alerts",
             View::Jabber => "Jabber",
+            View::Fleet => "Fleet",
             View::Rescue => "Rescue",
             View::Settings => "Settings",
         }
@@ -61,6 +66,7 @@ impl View {
             View::Characters => icon::USERS,
             View::Alerts => icon::BELL,
             View::Jabber => icon::CHAT_TEXT,
+            View::Fleet => icon::USERS_THREE,
             View::Rescue => icon::WARNING_OCTAGON,
             View::Settings => icon::GEAR_SIX,
         }

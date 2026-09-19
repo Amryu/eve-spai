@@ -37,6 +37,8 @@ mod lookup;
 mod map;
 mod pickers;
 mod pilot;
+#[cfg(feature = "fleet")]
+mod fleets;
 mod nav;
 mod notes;
 mod overlay;
