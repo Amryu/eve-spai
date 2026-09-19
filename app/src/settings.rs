@@ -1511,7 +1511,6 @@ mod window_geometry_tests {
         assert_eq!(s.fleet_ping_window_size, None);
     }
 
-    #[test]
     /// The fleet fields are not feature-gated, so a config written by a `fleet` build has to load
     /// and save unchanged in a build without it. Settings are rewritten whole, so losing them here
     /// would silently drop every preset the moment the user ran a stock binary.
@@ -1551,6 +1550,7 @@ mod window_geometry_tests {
         assert!(s.fleet_presets.is_empty());
     }
 
+    #[test]
     fn legacy_string_doctrines_still_parse() {
         // A config saved before doctrine descriptions existed must not fail the whole Settings
         // parse (which would reset every setting). Old form = list of plain name strings.

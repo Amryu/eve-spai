@@ -7,6 +7,12 @@
 //! Version 1 is a dry run. Every write is turned into a `CallRecord` describing the request that
 //! would go out, and the spoof stops there. Nothing in this module opens a socket.
 
+// The wire model and the call builders land ahead of the UI that calls them, so most of this module
+// is unreferenced until the tab is wired up. Drop this once it is.
+#![allow(dead_code)]
+
+pub mod backend;
+pub mod model;
 pub mod state;
 
 pub use state::{FleetState, Page};
