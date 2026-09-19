@@ -219,9 +219,6 @@ pub struct Settings {
     /// Character the dashboard acts as.
     #[serde(default)]
     pub fleet_character: String,
-    /// EVE chat channel whose boost declarations are counted, e.g. "Awesomeboosts".
-    #[serde(default)]
-    pub fleet_boost_channel: String,
 
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
@@ -1081,7 +1078,6 @@ impl Default for Settings {
             fleet_enabled: false,
             fleet_presets: Vec::new(),
             fleet_character: String::new(),
-            fleet_boost_channel: String::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
@@ -1524,7 +1520,6 @@ mod window_geometry_tests {
         let mut s = Settings::default();
         s.fleet_enabled = true;
         s.fleet_character = "Amryu".to_owned();
-        s.fleet_boost_channel = "Awesomeboosts".to_owned();
         s.fleet_presets = vec![FleetPreset {
             label: "Home Defence".to_owned(),
             name: "Home Defense".to_owned(),
@@ -1543,7 +1538,6 @@ mod window_geometry_tests {
         // serialised, so a whole-Settings equality can never hold.
         assert_eq!(back.fleet_enabled, s.fleet_enabled);
         assert_eq!(back.fleet_character, s.fleet_character);
-        assert_eq!(back.fleet_boost_channel, s.fleet_boost_channel);
         assert_eq!(back.fleet_presets, s.fleet_presets);
     }
 

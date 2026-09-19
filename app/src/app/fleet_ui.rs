@@ -100,22 +100,13 @@ impl SpaiApp {
                 )
                 .changed();
             ui.end_row();
-            ui.label("Boost channel");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.settings.fleet_boost_channel)
-                        .hint_text("e.g. Awesomeboosts")
-                        .desired_width(220.0),
-                )
-                .on_hover_text("EVE chat channel whose boost declarations are counted.")
-                .changed();
-            ui.end_row();
         });
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(format!(
                 "Reference data comes from {}, and falls back to placeholder names when it is \
-                 missing.",
+                 missing. Boost coverage is read from the EVE chat log of whichever boost channel \
+                 the fleet uses, so there is nothing to set here.",
                 crate::fleets::seed_path_hint()
             ))
             .weak(),
