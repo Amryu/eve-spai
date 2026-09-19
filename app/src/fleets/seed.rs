@@ -22,6 +22,8 @@ pub struct Seed {
     pub tags: Vec<TagItem>,
     /// Systems offered by the formup type-ahead.
     pub systems: Vec<Labelled>,
+    /// The hulls each setup flies, keyed by setup id.
+    pub doctrines: Vec<SeedDoctrine>,
     /// True when these are placeholders rather than the real tables.
     #[serde(skip)]
     pub placeholder: bool,
@@ -31,6 +33,15 @@ impl Default for Seed {
     fn default() -> Self {
         invented()
     }
+}
+
+/// One setup's hulls, as the seed file spells them.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SeedDoctrine {
+    pub setup_id: i32,
+    /// (type id, name) per hull the doctrine asks for.
+    pub ships: Vec<(i64, String)>,
 }
 
 fn setup(id: i32, name: &str, opsec: Option<&str>) -> SetupItem {
@@ -163,6 +174,25 @@ pub fn invented() -> Seed {
             Labelled { id: 30_000_772, label: "Placeholder Staging".to_owned() },
             Labelled { id: 30_000_142, label: "Jita".to_owned() },
         ],
+        // Real hull ids, so a fleet read through ESI lines up with them.
+        doctrines: vec![
+            SeedDoctrine {
+                setup_id: 46,
+                ships: vec![
+                    (22_464, "Flycatcher".to_owned()),
+                    (37_458, "Kirin".to_owned()),
+                    (11_381, "Harpy".to_owned()),
+                ],
+            },
+            SeedDoctrine {
+                setup_id: 116,
+                ships: vec![(11_176, "Crow".to_owned()), (11_184, "Crusader".to_owned())],
+            },
+            SeedDoctrine {
+                setup_id: 125,
+                ships: vec![(644, "Typhoon".to_owned()), (11_987, "Guardian".to_owned())],
+            },
+        ],
         placeholder: true,
     }
 }
@@ -212,6 +242,23 @@ impl Seed {
 
     pub fn tag(&self, id: TagId) -> Option<&TagItem> {
         self.tags.iter().find(|t| t.id == id)
+    }
+
+    /// What a setup flies, if the seed says.
+    pub fn doctrine(&self, id: SetupId) -> Option<super::doctrine::Doctrine> {
+        let d = self.doctrines.iter().find(|d| d.setup_id == id.0)?;
+        Some(super::doctrine::Doctrine {
+            setup_id: id,
+            setup_name: self.setup_name(id).unwrap_or_default().to_owned(),
+            ships: d
+                .ships
+                .iter()
+                .map(|(tid, name)| super::doctrine::DoctrineShip {
+                    type_id: *tid,
+                    name: name.clone(),
+                })
+                .collect(),
+        })
     }
 }
 

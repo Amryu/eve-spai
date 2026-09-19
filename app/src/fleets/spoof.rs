@@ -184,12 +184,17 @@ impl SpoofData {
 }
 
 /// Two wings of a plausible size, so the tree has something to fold.
+///
+/// Deliberately mixed: hulls the doctrine asks for, a couple doing jobs every fleet needs, and one
+/// nobody asked for, so the composition view has all three standings to show.
 fn sample_composition(id: &FleetId) -> Composition {
     let ships = [
-        (22_464, "Flycatcher", "Tackle"),
-        (37_458, "Kirin", "Logistics"),
-        (11_381, "Harpy", "DPS"),
-        (11_192, "Crow", "Scout"),
+        (22_464, "Flycatcher", "Interdictor", "Tackle"),
+        (37_458, "Kirin", "Logistics Frigate", "Logistics"),
+        (11_381, "Harpy", "Assault Frigate", "DPS"),
+        (11_176, "Crow", "Interceptor", "Scout"),
+        (11_957, "Falcon", "Force Recon Ship", "Cyno"),
+        (17_740, "Vindicator", "Battleship", "DPS"),
     ];
     let mut wings = Vec::new();
     for w in 0..2i64 {
@@ -197,12 +202,19 @@ fn sample_composition(id: &FleetId) -> Composition {
         for s in 0..2i64 {
             let members = (0..6)
                 .map(|m| {
-                    let (type_id, ship, role) = ships[((w + s + m) % 4) as usize];
+                    // Weighted towards the doctrine hulls: the odd ones out are meant to be rare.
+                    let pick = match (w + s + m) % 8 {
+                        6 => 4,
+                        7 => 5,
+                        n => (n % 4) as i64,
+                    };
+                    let (type_id, ship, group, role) = ships[pick as usize];
                     Member {
                         character_id: 90_100_000 + w * 100 + s * 10 + m,
                         name: format!("Pilot {}{}{}", w + 1, s + 1, m + 1),
                         ship_type_id: type_id,
                         ship_type_name: ship.to_owned(),
+                        ship_group: group.to_owned(),
                         role: role.to_owned(),
                     }
                 })
@@ -339,6 +351,13 @@ impl FleetBackend for SpoofBackend {
     fn composition(&self, id: &FleetId) -> Result<Composition> {
         self.work();
         Ok(self.lock().comps.get(&id.0).cloned().unwrap_or_default())
+    }
+
+    fn doctrine(&self, id: &FleetId) -> Result<Option<crate::fleets::doctrine::Doctrine>> {
+        self.work();
+        let d = self.lock();
+        let setup = d.find(id)?.setup_id;
+        Ok(d.seed.doctrine(setup))
     }
 
     fn boss_check(&self, character_id: i64, _use_backup: bool) -> Result<BossCheck> {

@@ -278,7 +278,7 @@ mod travel_ui;
 mod map_ui;
 mod map_route;
 mod battles_ui;
-mod fleet_ui;
+pub(crate) mod fleet_ui;
 mod rescue_ui;
 #[cfg(all(test, feature = "fc-rescue"))]
 pub(crate) use rescue_ui::ping_timer_row;
@@ -816,6 +816,16 @@ pub struct SpaiApp {
     fleet_preview_at: Option<std::time::Instant>,
     #[cfg(feature = "fleet")]
     pub(crate) fleet_journal_open: bool,
+    /// Which half of a fleet's page is showing: who is in it, or what they are flying.
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
+    /// A destructive action waiting to be confirmed: which fleet, what, and the question asked.
+    #[cfg(feature = "fleet")]
+    fleet_confirm: Option<(
+        crate::fleets::model::FleetId,
+        crate::fleets::backend::Action,
+        &'static str,
+    )>,
     #[cfg(feature = "fc-rescue")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
@@ -1562,6 +1572,10 @@ impl SpaiApp {
             fleet_preview_at: None,
             #[cfg(feature = "fleet")]
             fleet_journal_open: false,
+            #[cfg(feature = "fleet")]
+            fleet_detail_tab: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_confirm: None,
             #[cfg(feature = "fc-rescue")]
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             #[cfg(feature = "fc-rescue")]

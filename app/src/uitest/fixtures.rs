@@ -838,3 +838,21 @@ pub(crate) fn record_fleet_requests(app: &crate::app::SpaiApp) {
         }
     }
 }
+
+/// Opens the first active fleet, with its members, report and doctrine.
+#[cfg(feature = "fleet")]
+pub(crate) fn open_first_fleet(app: &crate::app::SpaiApp) {
+    use crate::fleets::backend::FleetBackend;
+    use crate::fleets::state::{Cmd, Page};
+
+    let backend = crate::fleets::spoof::SpoofBackend::with(
+        crate::fleets::seed::invented(),
+        std::time::Duration::ZERO,
+    );
+    let seed = crate::fleets::seed::invented();
+    let id = backend.active(true).ok().and_then(|r| r.first().map(|x| x.id.clone()));
+    let Some(id) = id else { return };
+    let mut st = app.fleet_state_for_test().lock().unwrap();
+    st.page = Page::Tracking(id.clone());
+    st.apply(crate::fleets::state::run(&backend, &seed, Cmd::Open(id)));
+}

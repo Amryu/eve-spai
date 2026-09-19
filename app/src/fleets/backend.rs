@@ -214,6 +214,10 @@ pub mod calls {
         CallRecord::new(Method::Get, format!("{FLEET}/{id}/report"), None)
     }
 
+    pub fn doctrine(id: &FleetId) -> CallRecord {
+        CallRecord::new(Method::Get, format!("{FLEET}/{id}/doctrine"), None)
+    }
+
     pub fn boss_check(character_id: i64, use_backup: bool) -> CallRecord {
         CallRecord::new(Method::Get, format!("{FLEET}/check/{character_id}/{use_backup}"), None)
     }
@@ -316,6 +320,8 @@ pub trait FleetBackend: Send + Sync + 'static {
     fn fleet(&self, id: &FleetId) -> Result<Fleet>;
     fn report(&self, id: &FleetId) -> Result<FleetReport>;
     fn composition(&self, id: &FleetId) -> Result<Composition>;
+    /// The hulls this fleet's setup flies, when the dashboard knows them.
+    fn doctrine(&self, id: &FleetId) -> Result<Option<super::doctrine::Doctrine>>;
     fn boss_check(&self, character_id: i64, use_backup: bool) -> Result<BossCheck>;
     fn search(&self, kind: SearchKind, value: &str, strict: bool) -> Result<Vec<Labelled>>;
 

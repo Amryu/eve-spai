@@ -4,6 +4,7 @@ use super::*;
 
 #[cfg(feature = "fleet")]
 use crate::fleets::{
+    backend::Action,
     model::{FleetRow, Perm, TagItem},
     state::{Cmd, Outcome, Page, Slot},
 };
@@ -106,7 +107,10 @@ impl SpaiApp {
         let seed_hint = crate::fleets::seed_path_hint();
         let presets = self.settings.fleet_presets.clone();
         let journal_open = self.fleet_journal_open;
+        let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
+        let mut set_tab: Option<DetailTab> = None;
+        let mut act_on: Option<Action> = None;
         let mut goto: Option<Page> = None;
         let mut cmd: Option<Cmd> = None;
         let mut refresh = false;
@@ -187,11 +191,11 @@ impl SpaiApp {
             match &page {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &mut act),
-                Page::Tracking(_) | Page::Historic(_) => {
-                    ui.add_space(8.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("The tracking view is not built yet.").weak())
-                    });
+                Page::Tracking(_) => {
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on)
+                }
+                Page::Historic(_) => {
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on)
                 }
             }
         });
@@ -210,6 +214,20 @@ impl SpaiApp {
         if toggle_journal {
             self.fleet_journal_open = !self.fleet_journal_open;
         }
+        if let Some(t) = set_tab {
+            self.fleet_detail_tab = t;
+        }
+        if let Some(action) = act_on {
+            if let Some(id) = page.fleet().cloned() {
+                // Anything that cannot be taken back asks first. The rest is one click.
+                if let Some(question) = confirm_question(&action) {
+                    self.fleet_confirm = Some((id, action, question));
+                } else {
+                    self.fleet_dispatch(Cmd::Act(id, action));
+                }
+            }
+        }
+        self.fleet_confirm_modal(ui.ctx());
         self.fleet_apply_form(act);
     }
 
@@ -952,4 +970,356 @@ fn journal_pane(ui: &mut egui::Ui, st: &crate::fleets::FleetState) {
             ui.add_space(4.0);
         }
     });
+}
+
+/// The question a destructive action asks before it is recorded, or nothing when it is harmless.
+#[cfg(feature = "fleet")]
+fn confirm_question(action: &Action) -> Option<&'static str> {
+    Some(match action {
+        Action::Close => "Close this fleet?",
+        Action::KickAll => "Kick everyone out of the fleet?",
+        Action::KickCapsules => "Kick every pod out of the fleet?",
+        Action::Kick { .. } | Action::KickMany { .. } => "Kick them out of the fleet?",
+        _ => return None,
+    })
+}
+
+/// Which half of a fleet's page is showing.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum DetailTab {
+    /// Who is in the fleet, by wing and squad, the way the dashboard lists them.
+    #[default]
+    Members,
+    /// What they are flying, grouped by hull and judged against the doctrine.
+    Composition,
+}
+
+/// A tracked fleet, or a closed one read back.
+#[cfg(feature = "fleet")]
+fn tracking_page(
+    ui: &mut egui::Ui,
+    st: &mut crate::fleets::FleetState,
+    read_only: bool,
+    tab: DetailTab,
+    set_tab: &mut Option<DetailTab>,
+    act_on: &mut Option<Action>,
+) {
+    let Some(open) = st.open.value.clone() else {
+        ui.add_space(8.0);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(if st.open.loading {
+                "Loading the fleet."
+            } else {
+                "No fleet open."
+            })
+            .weak())
+        });
+        return;
+    };
+
+    let seed = st.seed.clone();
+    egui::Panel::top("fleet_header").show_inside(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(&open.fleet.name);
+            if let Some(name) = seed.setup_name(open.fleet.setup_id) {
+                ui.label(egui::RichText::new(name).weak());
+            }
+            if read_only {
+                ui.label(
+                    egui::RichText::new("closed").color(crate::theme::standing::WARNING),
+                );
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let now = chrono::Utc::now().timestamp();
+                if let Some(t) = crate::fleets::model::parse_iso(&open.fleet.started_at) {
+                    let end = open
+                        .fleet
+                        .closed_at
+                        .as_deref()
+                        .and_then(crate::fleets::model::parse_iso)
+                        .unwrap_or(now);
+                    ui.label(egui::RichText::new(fmt_age(end - t)).strong())
+                        .on_hover_text("How long the fleet has been up.");
+                }
+                if let Some(c) = &open.fleet.commander {
+                    ui.label(egui::RichText::new(&c.label).weak());
+                }
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            let comms = [
+                ("Comms", seed.channel_name(&seed.mumble_channels, open.fleet.mumble_channel_id)),
+                ("Logi", seed.channel_name(&seed.logi_channels, open.fleet.logi_channel_id)),
+                ("Boost", seed.channel_name(&seed.boost_channels, open.fleet.boost_channel_id)),
+            ];
+            for (label, name) in comms {
+                if let Some(n) = name {
+                    ui.label(egui::RichText::new(format!("{label}: {n}")).weak());
+                }
+            }
+            if let Some(f) = &open.fleet.formup_location {
+                ui.label(egui::RichText::new(format!("Formup: {}", f.label)).weak());
+            }
+            for t in open.fleet.tag_ids.iter().filter_map(|t| seed.tag(*t)) {
+                fleet_tag_chip(ui, t);
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            for (t, label) in
+                [(DetailTab::Members, "Members"), (DetailTab::Composition, "Composition")]
+            {
+                if selectable_chip(ui, tab == t, label).clicked() {
+                    *set_tab = Some(t);
+                }
+            }
+            ui.label(
+                egui::RichText::new(format!("{} pilots", open.composition.total())).weak(),
+            );
+        });
+        ui.add_space(4.0);
+    });
+
+    egui::Panel::bottom("fleet_actions").show_inside(ui, |ui| {
+        ui.add_space(4.0);
+        action_bar(ui, st, read_only, act_on);
+        ui.add_space(4.0);
+    });
+
+    egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
+            DetailTab::Members => members_view(ui, &open),
+            DetailTab::Composition => composition_view(ui, &open),
+        });
+    });
+}
+
+/// What can be done to the fleet, and what this account may not do.
+#[cfg(feature = "fleet")]
+fn action_bar(
+    ui: &mut egui::Ui,
+    st: &crate::fleets::FleetState,
+    read_only: bool,
+    act_on: &mut Option<Action>,
+) {
+    use egui_phosphor::regular as icon;
+    ui.horizontal_wrapped(|ui| {
+        if read_only {
+            ui.label(
+                egui::RichText::new("Closed fleet, read-only.")
+                    .color(crate::theme::standing::WARNING),
+            );
+            return;
+        }
+        // Inviting needs somebody to invite, which is a picker this page does not have yet.
+        let actions: [(&str, &str, Action); 5] = [
+            (icon::MEGAPHONE, "Set MOTD", Action::SetMotd),
+            (icon::STACK, "Add wing", Action::AddWing),
+            (icon::PROHIBIT, "Kick pods", Action::KickCapsules),
+            (icon::SIGN_OUT, "Kick everyone", Action::KickAll),
+            (icon::X_CIRCLE, "Close fleet", Action::Close),
+        ];
+        for (glyph, label, action) in actions {
+            let perm = action.perm();
+            let allowed = st.can(perm);
+            let resp = ui
+                .add_enabled(allowed, egui::Button::new(format!("{glyph}  {label}")))
+                .on_disabled_hover_text(format!(
+                    "Your account does not have the {} permission.",
+                    perm.as_str()
+                ));
+            let resp = if allowed {
+                resp.on_hover_text("Records the request this would send. Nothing leaves the app.")
+            } else {
+                resp
+            };
+            if resp.clicked() {
+                *act_on = Some(action);
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                egui::RichText::new("recorded, not sent").color(crate::theme::standing::WARNING),
+            );
+        });
+    });
+}
+
+/// Who is in the fleet, by wing and squad.
+#[cfg(feature = "fleet")]
+fn members_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
+    use crate::fleets::doctrine::classify;
+    let doctrine = open.doctrine.as_ref();
+    if open.composition.wings.is_empty() {
+        ui.label(egui::RichText::new("Nobody in the fleet.").weak());
+        return;
+    }
+    for wing in &open.composition.wings {
+        let pilots: usize = wing.squads.iter().map(|s| s.members.len()).sum();
+        egui::CollapsingHeader::new(format!("{}   {pilots}", wing.name))
+            .id_salt(("wing", wing.id.0))
+            .default_open(true)
+            .show(ui, |ui| {
+                for squad in &wing.squads {
+                    egui::CollapsingHeader::new(format!(
+                        "{}   {}",
+                        squad.name,
+                        squad.members.len()
+                    ))
+                    .id_salt(("squad", wing.id.0, squad.id.0))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new(("members", wing.id.0, squad.id.0))
+                            .num_columns(4)
+                            .striped(true)
+                            .spacing([16.0, 2.0])
+                            .min_col_width(110.0)
+                            .show(ui, |ui| {
+                                for m in &squad.members {
+                                    ui.label(&m.name);
+                                    let standing =
+                                        classify(m.ship_type_id, &m.ship_group, doctrine);
+                                    ui.label(
+                                        egui::RichText::new(&m.ship_type_name)
+                                            .color(standing_colour(ui, standing)),
+                                    )
+                                    .on_hover_text(standing.label());
+                                    ui.label(egui::RichText::new(&m.ship_group).weak());
+                                    ui.label(egui::RichText::new(&m.role).weak());
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                }
+            });
+    }
+}
+
+/// What the fleet is flying, and whether the doctrine asked for it.
+#[cfg(feature = "fleet")]
+fn composition_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
+    use crate::fleets::doctrine::{by_ship, unexpected_pilots, Standing};
+    let doctrine = open.doctrine.as_ref();
+    let lines = by_ship(&open.composition, doctrine);
+    if lines.is_empty() {
+        ui.label(egui::RichText::new("Nobody in the fleet.").weak());
+        return;
+    }
+    let total = open.composition.total().max(1);
+
+    ui.horizontal_wrapped(|ui| {
+        match doctrine {
+            Some(d) => ui.label(format!("Against {}", d.setup_name)),
+            None => ui.label(
+                egui::RichText::new("No doctrine for this setup, so nothing can be out of it.")
+                    .weak(),
+            ),
+        };
+        let odd = unexpected_pilots(&lines);
+        if odd > 0 {
+            ui.label(
+                egui::RichText::new(format!("{odd} not in doctrine"))
+                    .color(crate::theme::standing::HOSTILE)
+                    .strong(),
+            );
+        }
+    });
+    if let Some(missing) = doctrine.map(|d| d.missing(&open.composition)) {
+        if !missing.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("Nobody flying: {}", missing.join(", ")))
+                    .color(crate::theme::standing::WARNING),
+            );
+        }
+    }
+    ui.add_space(4.0);
+
+    for (title, standing) in [
+        ("Doctrine", Standing::Doctrine),
+        ("Support", Standing::Support),
+        ("Not in doctrine", Standing::Unexpected),
+    ] {
+        let group: Vec<_> = lines.iter().filter(|l| l.standing == standing).collect();
+        if group.is_empty() {
+            continue;
+        }
+        let pilots: usize = group.iter().map(|l| l.count).sum();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(title).strong().color(standing_colour(ui, standing)),
+            );
+            ui.label(egui::RichText::new(format!("{pilots}")).weak());
+            if standing == Standing::Support {
+                ui.label(egui::RichText::new("jobs every fleet needs").weak());
+            }
+        });
+        egui::Grid::new(("ships", title)).num_columns(5).striped(true).spacing([12.0, 3.0]).show(
+            ui,
+            |ui| {
+                for line in group {
+                    ui.label(&line.name);
+                    ui.label(egui::RichText::new(format!("{}", line.count)).strong());
+                    let share = line.count as f32 / total as f32;
+                    ui.label(egui::RichText::new(format!("{:.0}%", share * 100.0)).weak());
+                    ui.add(
+                        egui::ProgressBar::new(share).desired_width(200.0).desired_height(6.0),
+                    );
+                    ui.label(egui::RichText::new(&line.group).weak());
+                    ui.end_row();
+                }
+            },
+        );
+        ui.add_space(6.0);
+    }
+}
+
+/// Doctrine reads as normal, support as a quiet aside, anything else as a problem.
+#[cfg(feature = "fleet")]
+fn standing_colour(ui: &egui::Ui, standing: crate::fleets::doctrine::Standing) -> egui::Color32 {
+    use crate::fleets::doctrine::Standing;
+    match standing {
+        Standing::Doctrine => ui.visuals().text_color(),
+        Standing::Support => ui.visuals().hyperlink_color,
+        Standing::Unexpected => crate::theme::standing::HOSTILE,
+    }
+}
+
+impl SpaiApp {
+    /// Asks before anything that cannot be taken back.
+    #[cfg(feature = "fleet")]
+    fn fleet_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some((id, action, question)) = self.fleet_confirm.clone() else { return };
+        let mut decided: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("fleet_confirm")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.heading(question);
+            ui.label(
+                egui::RichText::new("This build records the request and sends nothing.").weak(),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    decided = Some(false);
+                }
+                if ui
+                    .button(
+                        egui::RichText::new("Do it").color(crate::theme::standing::HOSTILE),
+                    )
+                    .clicked()
+                {
+                    decided = Some(true);
+                }
+            });
+        });
+        match decided {
+            Some(true) => {
+                self.fleet_confirm = None;
+                self.fleet_dispatch(Cmd::Act(id, action));
+            }
+            Some(false) => self.fleet_confirm = None,
+            None => {}
+        }
+    }
 }

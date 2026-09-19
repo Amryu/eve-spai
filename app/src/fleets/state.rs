@@ -68,6 +68,7 @@ pub struct OpenFleet {
     pub fleet: Fleet,
     pub report: FleetReport,
     pub composition: Composition,
+    pub doctrine: Option<super::doctrine::Doctrine>,
 }
 
 /// How many recorded requests the journal keeps.
@@ -408,6 +409,7 @@ fn boot(backend: &dyn FleetBackend, seed: &Seed) -> Result<(Session, Seed)> {
     // The reference tables travel together: a form with half of them is a form that cannot be
     // filled in.
     let seed = Seed {
+        doctrines: seed.doctrines.clone(),
         identity: session.identity.clone(),
         characters: backend.characters()?,
         sigs: backend.sigs()?,
@@ -427,6 +429,7 @@ fn open(backend: &dyn FleetBackend, id: &FleetId) -> Result<OpenFleet> {
         fleet: backend.fleet(id)?,
         report: backend.report(id)?,
         composition: backend.composition(id)?,
+        doctrine: backend.doctrine(id)?,
     })
 }
 

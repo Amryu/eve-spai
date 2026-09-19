@@ -903,6 +903,30 @@ fn fleet_start_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+/// A tracked fleet, in either of its two halves: who is in it, and what they are flying.
+#[cfg(feature = "fleet")]
+fn fleet_detail_scene(
+    name: &'static str,
+    size: [f32; 2],
+    tab: crate::app::fleet_ui::DetailTab,
+) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.view = View::Fleet;
+            a.fleet_detail_tab = tab;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_first_fleet(&a);
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
 /// The journal, with the requests a dry run recorded rather than sent.
 #[cfg(feature = "fleet")]
 fn fleet_journal_scene(name: &'static str, size: [f32; 2]) -> Scene {
@@ -939,10 +963,10 @@ fn uitest_fleet_rows_open_the_fleet() {
         .rect();
     harness::click_at(&h, row.center());
     h.run();
-    assert!(
-        h.query_by_label_contains("tracking view").is_some(),
-        "clicking a fleet did not open it"
-    );
+    // The fleet loads on a worker, so either its page or the loading state proves the click landed.
+    let opened = h.query_by_label_contains("Members").is_some()
+        || h.query_by_label_contains("Loading the fleet").is_some();
+    assert!(opened, "clicking a fleet did not open it");
 }
 
 /// The screenshot path must not be one forgotten override away from painting a real alliance's
@@ -1214,6 +1238,14 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_start_scene("fleet_start_form_narrow", [820.0, 1200.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_detail_scene("fleet_members", [1280.0, 1180.0], crate::app::fleet_ui::DetailTab::Members));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_detail_scene(
+        "fleet_composition",
+        [1280.0, 900.0],
+        crate::app::fleet_ui::DetailTab::Composition,
+    ));
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
     #[cfg(feature = "fc-rescue")]

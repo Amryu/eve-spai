@@ -494,6 +494,9 @@ pub struct Member {
     pub name: String,
     pub ship_type_id: i64,
     pub ship_type_name: String,
+    /// The hull's group, e.g. "Interdictor". What decides whether an off-doctrine ship is a job
+    /// the fleet needs or a pilot in the wrong hull.
+    pub ship_group: String,
     pub role: String,
 }
 
