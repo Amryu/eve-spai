@@ -66,7 +66,7 @@ impl View {
             View::Characters => icon::USERS,
             View::Alerts => icon::BELL,
             View::Jabber => icon::CHAT_TEXT,
-            View::Fleet => icon::USERS_THREE,
+            View::Fleet => icon::ROCKET_LAUNCH,
             View::Rescue => icon::WARNING_OCTAGON,
             View::Settings => icon::GEAR_SIX,
         }

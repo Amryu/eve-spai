@@ -27,11 +27,7 @@ impl SpaiApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let tab = page.tab();
-                for (p, label) in [
-                    (Page::Fleets, "Fleets"),
-                    (Page::Start, "Start fleet"),
-                    (Page::Boosts, "Boosts"),
-                ] {
+                for (p, label) in [(Page::Fleets, "Fleets"), (Page::Start, "Start fleet")] {
                     if selectable_chip(ui, tab == p, label).clicked() {
                         goto = Some(p);
                     }
@@ -59,7 +55,6 @@ impl SpaiApp {
             let what = match page {
                 Page::Fleets => "The fleet list is not built yet.",
                 Page::Start => "The start form is not built yet.",
-                Page::Boosts => "Boost coverage is not built yet.",
                 Page::Tracking(_) => "The tracking view is not built yet.",
                 Page::Historic(_) => "The historic view is not built yet.",
             };

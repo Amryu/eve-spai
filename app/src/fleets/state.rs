@@ -10,7 +10,6 @@ pub enum Page {
     #[default]
     Fleets,
     Start,
-    Boosts,
     Tracking(String),
     Historic(String),
 }
@@ -41,6 +40,5 @@ mod tests {
         assert_eq!(Page::Tracking("abc".into()).tab(), Page::Fleets);
         assert_eq!(Page::Historic("abc".into()).tab(), Page::Fleets);
         assert_eq!(Page::Start.tab(), Page::Start);
-        assert_eq!(Page::Boosts.tab(), Page::Boosts);
     }
 }
