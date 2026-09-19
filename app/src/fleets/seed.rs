@@ -1,0 +1,285 @@
+//! The reference data the dry run answers from.
+//!
+//! The real ids and names are alliance-internal, so they are not in this repo. They load from a
+//! JSON file in the profile directory (override with `EVE_SPAI_FLEET_SEED`); without it the tab
+//! runs on placeholders that have the right shape and the right id numbers but invented names.
+
+use serde::{Deserialize, Serialize};
+
+use super::model::*;
+
+/// Everything the tab needs before it can render a form.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Seed {
+    pub identity: Identity,
+    pub characters: Vec<AccountCharacter>,
+    pub sigs: Vec<Labelled>,
+    pub setups: Vec<SetupItem>,
+    pub mumble_channels: Vec<ChannelItem>,
+    pub logi_channels: Vec<ChannelItem>,
+    pub boost_channels: Vec<ChannelItem>,
+    pub tags: Vec<TagItem>,
+    /// Systems offered by the formup type-ahead.
+    pub systems: Vec<Labelled>,
+    /// True when these are placeholders rather than the real tables.
+    #[serde(skip)]
+    pub placeholder: bool,
+}
+
+impl Default for Seed {
+    fn default() -> Self {
+        invented()
+    }
+}
+
+fn setup(id: i32, name: &str, opsec: Option<&str>) -> SetupItem {
+    SetupItem {
+        id: SetupId(id),
+        name: name.to_owned(),
+        minimal_opsec_level_description: opsec.map(str::to_owned),
+        priority: 0,
+        is_default: false,
+    }
+}
+
+fn channel(id: i32, name: &str, in_use: bool) -> ChannelItem {
+    ChannelItem { id: ChannelId(id), name: name.to_owned(), is_in_use: in_use }
+}
+
+fn tag(id: i32, name: &str, colour: &str, primary: bool, strategic: bool) -> TagItem {
+    TagItem {
+        id: TagId(id),
+        name: name.to_owned(),
+        colour_class: colour.to_owned(),
+        is_primary: primary,
+        is_strategic: strategic,
+    }
+}
+
+/// Placeholders. The ids are the real ones, because the payload tests and a later switch to the
+/// real backend both care about them; every name here is invented.
+pub fn invented() -> Seed {
+    Seed {
+        identity: Identity {
+            name: "Placeholder FC".to_owned(),
+            command_group: "FC".to_owned(),
+            sigs: vec![],
+            // Everything, so the UI can be driven. A narrower identity is what the tests use.
+            permissions: [
+                Perm::AccessFleet,
+                Perm::AccessFleetModule,
+                Perm::StartFleet,
+                Perm::InviteMember,
+                Perm::KickMember,
+                Perm::MoveMember,
+                Perm::ManageFleetSnowflakes,
+                Perm::FlagFleet,
+                Perm::AccessPayouts,
+                Perm::AccessCommanderStats,
+                Perm::AccessLogiAnchorStats,
+                Perm::AccessStatisticsModule,
+            ]
+            .iter()
+            .map(|p| p.as_str().to_owned())
+            .collect(),
+        },
+        characters: vec![
+            AccountCharacter {
+                id: 90_000_001,
+                name: "Placeholder Main".to_owned(),
+                corporation_id: 98_000_001,
+                is_hidden: false,
+            },
+            AccountCharacter {
+                id: 90_000_002,
+                name: "Placeholder Alt".to_owned(),
+                corporation_id: 98_000_001,
+                is_hidden: false,
+            },
+        ],
+        sigs: vec![Labelled { id: 1871, label: "[S] Placeholder SIG".to_owned() }],
+        setups: vec![
+            setup(61, "FC Choice", None),
+            setup(19, "Entosis", Some("FC")),
+            setup(30, "Destroyers", Some("FC")),
+            setup(46, "Fast Tackle", Some("FC")),
+            setup(51, "Frigates", Some("FC")),
+            setup(60, "Bombers", Some("FC")),
+            setup(65, "Assault Frigates", Some("FC")),
+            setup(84, "Battlecruisers", Some("FC")),
+            setup(100, "Cruisers", Some("FC")),
+            setup(116, "Interceptors", Some("FC")),
+            setup(125, "Battleships", Some("FC")),
+            setup(128, "Tactical Destroyers", Some("FC")),
+            setup(140, "Heavy Battleships", Some("FC")),
+            setup(149, "Incursions", None),
+        ],
+        mumble_channels: (1..=6)
+            .map(|i| channel(i, &format!("Comms {i}"), i <= 2))
+            .chain([
+                channel(7, "Lobby", false),
+                channel(10, "Home Defence", false),
+                channel(11, "Capitals", true),
+                channel(12, "Comms 11", false),
+                channel(15, "Camp", false),
+                channel(16, "Standing", false),
+            ])
+            .collect(),
+        logi_channels: (1..=8)
+            .map(|i| channel(i, &format!("Logi {i}"), i <= 2))
+            .collect(),
+        boost_channels: (1..=6)
+            .map(|i| channel(i, &format!("Boosts {i}"), i == 1))
+            .collect(),
+        tags: vec![
+            tag(1, "STRATEGIC", "red", true, true),
+            tag(2, "PEACETIME", "green", true, false),
+            tag(3, "SIG/SQUAD", "yellow", true, false),
+            tag(20, "Squad A", "yellow", true, true),
+            tag(21, "Squad B", "yellow", true, true),
+            tag(22, "Squad C", "yellow", true, false),
+            tag(27, "Corp", "yellow", true, false),
+            tag(37, "Group A", "dark", true, false),
+            tag(41, "Group B", "dark", true, false),
+            tag(49, "Incursions", "yellow", true, false),
+            tag(4, "Gatecamp", "dark", false, false),
+            tag(12, "Home Defence", "blue", false, false),
+            tag(18, "Move op", "dark", false, false),
+            tag(19, "Training", "dark", false, false),
+            tag(28, "Capital Save", "blue", false, false),
+            tag(29, "Structure Defence", "blue", false, false),
+            tag(30, "ESS Defence", "blue", false, false),
+            tag(31, "Structure Bash", "dark", false, false),
+            tag(32, "PVE", "light", false, false),
+            tag(33, "Roam", "dark", false, false),
+            tag(34, "Whaling", "dark", false, false),
+            tag(35, "Other", "light", false, false),
+            tag(36, "Standing Fleet", "light", false, false),
+            tag(60, "Entosis", "blue", false, false),
+            tag(63, "ADM", "blue", false, false),
+        ],
+        systems: vec![
+            Labelled { id: 30_000_772, label: "Placeholder Staging".to_owned() },
+            Labelled { id: 30_000_142, label: "Jita".to_owned() },
+        ],
+        placeholder: true,
+    }
+}
+
+/// Where the real table is read from.
+pub fn path() -> Option<std::path::PathBuf> {
+    match std::env::var("EVE_SPAI_FLEET_SEED") {
+        Ok(p) if !p.trim().is_empty() => Some(std::path::PathBuf::from(p)),
+        _ => crate::store::data_dir().ok().map(|d| d.join("fleet-seed.json")),
+    }
+}
+
+/// A seed file's contents. Anything it leaves out keeps the placeholder table, so a hand-written
+/// file can carry only the parts someone cared about.
+///
+/// `placeholder` is not in the file: it records where the data came from, which only the reader
+/// knows. It has to be cleared here because the struct's `Default` is the invented table.
+pub fn parse(text: &str) -> std::result::Result<Seed, String> {
+    let mut seed: Seed = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    seed.placeholder = false;
+    Ok(seed)
+}
+
+/// The real table if it is there, placeholders if not. A broken file is reported and then ignored:
+/// a dry run with invented names is better than no tab at all.
+pub fn load() -> Seed {
+    let Some(p) = path() else { return invented() };
+    let Ok(text) = std::fs::read_to_string(&p) else { return invented() };
+    match parse(&text) {
+        Ok(seed) => seed,
+        Err(e) => {
+            crate::esilog::record("fleet seed unreadable", &format!("{}: {e}", p.display()));
+            invented()
+        }
+    }
+}
+
+impl Seed {
+    pub fn setup_name(&self, id: SetupId) -> Option<&str> {
+        self.setups.iter().find(|s| s.id == id).map(|s| s.name.trim())
+    }
+
+    pub fn channel_name<'a>(&self, list: &'a [ChannelItem], id: Option<ChannelId>) -> Option<&'a str> {
+        let id = id?;
+        list.iter().find(|c| c.id == id).map(|c| c.name.trim())
+    }
+
+    pub fn tag(&self, id: TagId) -> Option<&TagItem> {
+        self.tags.iter().find(|t| t.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The placeholder table has to be complete enough to drive every control, or the dry run
+    /// cannot exercise the code paths it exists to exercise.
+    #[test]
+    fn the_placeholder_seed_fills_every_control() {
+        let s = invented();
+        assert!(s.placeholder);
+        assert!(s.setups.len() >= 10);
+        assert_eq!(s.logi_channels.len(), 8);
+        assert_eq!(s.boost_channels.len(), 6);
+        assert!(s.tags.iter().any(|t| t.is_primary) && s.tags.iter().any(|t| !t.is_primary));
+        assert!(s.tags.iter().any(|t| t.is_strategic));
+        assert!(!s.characters.is_empty() && !s.sigs.is_empty() && !s.systems.is_empty());
+        assert!(s.identity.can(Perm::StartFleet));
+    }
+
+    /// Some channels are busy, or the free-channel rule has nothing to do.
+    #[test]
+    fn the_placeholder_seed_has_busy_and_free_channels() {
+        let s = invented();
+        for list in [&s.mumble_channels, &s.logi_channels, &s.boost_channels] {
+            assert!(list.iter().any(|c| c.is_in_use), "nothing is busy");
+            assert!(list.iter().any(|c| !c.is_in_use), "nothing is free");
+        }
+    }
+
+    /// The ids are the real ones even though the names are not, because a later switch to the real
+    /// backend has to line up.
+    #[test]
+    fn the_placeholder_ids_are_the_real_ones() {
+        let s = invented();
+        assert!(s.setups.iter().any(|x| x.id == SetupId(61)));
+        assert_eq!(s.tag(TagId(1)).map(|t| t.name.as_str()), Some("STRATEGIC"));
+        assert!(s.tag(TagId(60)).is_some_and(|t| !t.is_primary), "60 is a tag, not the setup");
+        assert!(s.setups.iter().any(|x| x.id == SetupId(60)), "60 is also a setup");
+    }
+
+    /// A seed file round-trips, so the documented shape is the one `load` reads. Anything that
+    /// parsed from a file is by definition not a placeholder, even though the struct's Default is.
+    #[test]
+    fn a_seed_file_round_trips_and_is_not_a_placeholder() {
+        let s = invented();
+        let text = serde_json::to_string(&s).expect("serialise");
+        let back = parse(&text).expect("parse");
+        assert_eq!(back.setups, s.setups);
+        assert_eq!(back.tags, s.tags);
+        assert!(!back.placeholder);
+    }
+
+    /// A partial file is filled in rather than rejected, so a hand-written seed can carry only the
+    /// tables someone cared about.
+    #[test]
+    fn a_partial_seed_file_keeps_its_defaults() {
+        let back = parse(r#"{"sigs":[{"id":5,"label":"Mine"}]}"#).expect("parse");
+        assert_eq!(back.sigs.len(), 1);
+        assert!(!back.setups.is_empty(), "the rest falls back to the placeholders");
+        assert!(!back.placeholder);
+    }
+
+    /// A broken file must not be mistaken for real data.
+    #[test]
+    fn a_broken_seed_file_is_refused() {
+        assert!(parse("{not json").is_err());
+    }
+}

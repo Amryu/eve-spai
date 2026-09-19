@@ -727,3 +727,28 @@ pub(crate) fn jabber_popout(id: u64, active: &str) -> crate::app::ChatWindow {
         ..Default::default()
     }
 }
+
+/// Fills the fleet tab's state from the dry-run backend, the way its own workers would.
+///
+/// Scenes never touch a seed file: the placeholder table is the only thing that may reach a
+/// committed screenshot.
+#[cfg(feature = "fleet")]
+pub(crate) fn seed_fleet_state(app: &crate::app::SpaiApp) {
+    use crate::fleets::backend::FleetBackend;
+    use crate::fleets::state::{Cmd, FleetState};
+
+    let backend = crate::fleets::spoof::SpoofBackend::with(crate::fleets::seed::invented(),
+                                                           std::time::Duration::ZERO);
+    let seed = crate::fleets::seed::invented();
+    let mut st = FleetState { seed: seed.clone(), ..FleetState::default() };
+    for cmd in [
+        Cmd::Bootstrap,
+        Cmd::LoadActive { strategic: true },
+        Cmd::LoadActive { strategic: false },
+        Cmd::LoadHistory { skip: 0 },
+    ] {
+        st.apply(crate::fleets::state::run(&backend, &seed, cmd));
+    }
+    let _ = backend.is_dry_run();
+    *app.fleet_state_for_test().lock().unwrap() = st;
+}

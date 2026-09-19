@@ -13,9 +13,11 @@
 
 pub mod backend;
 pub mod model;
+pub mod seed;
+pub mod spoof;
 pub mod state;
 
-pub use state::{FleetState, Page};
+pub use state::FleetState;
 
 /// Where the reference data is read from, for the one line settings shows about it.
 pub fn seed_path_hint() -> String {

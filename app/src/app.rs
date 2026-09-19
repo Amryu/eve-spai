@@ -797,6 +797,20 @@ pub struct SpaiApp {
     revivals: crate::watcher::SharedRevivals,
     #[cfg(feature = "fleet")]
     fleet: std::sync::Arc<std::sync::Mutex<crate::fleets::FleetState>>,
+    /// Answers the tab's questions. A dry run today, an HTTP client later, same trait.
+    #[cfg(feature = "fleet")]
+    fleet_backend: std::sync::Arc<dyn crate::fleets::backend::FleetBackend>,
+    /// One channel for the whole tab: several commands are in flight at once, so a single slot the
+    /// way the web server's start does it would not do.
+    #[cfg(feature = "fleet")]
+    fleet_tx: std::sync::mpsc::Sender<(crate::fleets::state::Gen, crate::fleets::state::Outcome)>,
+    #[cfg(feature = "fleet")]
+    fleet_rx: std::sync::mpsc::Receiver<(crate::fleets::state::Gen, crate::fleets::state::Outcome)>,
+    /// Bumped on every navigation, so a result for a page the user has left is dropped.
+    #[cfg(feature = "fleet")]
+    fleet_gen: crate::fleets::state::Gen,
+    #[cfg(feature = "fleet")]
+    fleet_booted: bool,
     #[cfg(feature = "fc-rescue")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,
     /// Highest rescue-event seq already surfaced into the ping feed (drained in `ui`).
@@ -873,6 +887,8 @@ impl SpaiApp {
     /// state still runs, so the resulting app renders the same as a live one.
     pub(crate) fn build(ctx: &egui::Context, headless: bool) -> Self {
         crate::theme::install_fonts(ctx);
+        #[cfg(feature = "fleet")]
+        let (fleet_tx, fleet_rx) = std::sync::mpsc::channel();
 
         if !headless {
             crate::image_cache::install_image_loaders_cached(ctx);
@@ -1523,6 +1539,20 @@ impl SpaiApp {
             revivals,
             #[cfg(feature = "fleet")]
             fleet: std::sync::Arc::new(std::sync::Mutex::new(crate::fleets::FleetState::default())),
+            #[cfg(feature = "fleet")]
+            fleet_backend: std::sync::Arc::new(if headless {
+                crate::fleets::spoof::SpoofBackend::instant()
+            } else {
+                crate::fleets::spoof::SpoofBackend::seeded()
+            }),
+            #[cfg(feature = "fleet")]
+            fleet_tx,
+            #[cfg(feature = "fleet")]
+            fleet_rx,
+            #[cfg(feature = "fleet")]
+            fleet_gen: Default::default(),
+            #[cfg(feature = "fleet")]
+            fleet_booted: false,
             #[cfg(feature = "fc-rescue")]
             rescue: std::sync::Arc::new(std::sync::Mutex::new(crate::rescue::RescueState::default())),
             #[cfg(feature = "fc-rescue")]
@@ -2786,6 +2816,14 @@ impl SpaiApp {
         self.pilot_query = report.name.clone();
         *self.pilot_lookup.lock().unwrap() = crate::lookup::LookupState::Done(report);
         self.pilot_window_open = true;
+    }
+
+    /// The fleet tab's shared state, so a scene can fill it the way the workers would.
+    #[cfg(all(test, feature = "fleet"))]
+    pub(crate) fn fleet_state_for_test(
+        &self,
+    ) -> &std::sync::Arc<std::sync::Mutex<crate::fleets::FleetState>> {
+        &self.fleet
     }
 
     #[cfg(test)]

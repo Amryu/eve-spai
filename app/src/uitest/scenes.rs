@@ -862,6 +862,9 @@ fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
 }
 
 /// The fleet tab in the shell, so the rail entry and the sub-nav are checked like any other view.
+///
+/// Headless starts no workers, so the state is filled from the dry-run backend here rather than
+/// left on a permanent loading state.
 #[cfg(feature = "fleet")]
 fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
     harness::scratch_profile();
@@ -871,11 +874,34 @@ fn fleet_scene(name: &'static str, size: [f32; 2]) -> Scene {
             let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
             a.settings.fleet_enabled = true;
             a.view = View::Fleet;
+            fixtures::seed_fleet_state(&a);
             a
         });
         app.root_chrome(ui);
         app.root_central(ui, None);
     })
+}
+
+/// Clicking a fleet has to open it: the rows are painted frames, so nothing but a real click
+/// through the tree proves they are reachable.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_fleet_rows_open_the_fleet() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = fleet_scene("fleet_click", [1280.0, 800.0]);
+    let mut h = harness::build(&mut scene, false);
+    let row = h
+        .query_all_by_label_contains("Home Defence")
+        .next()
+        .expect("the seeded fleet is on screen")
+        .rect();
+    harness::click_at(&h, row.center());
+    h.run();
+    assert!(
+        h.query_by_label_contains("tracking view").is_some(),
+        "clicking a fleet did not open it"
+    );
 }
 
 /// The screenshot path must not be one forgotten override away from painting a real alliance's
@@ -1140,7 +1166,9 @@ pub(crate) fn all() -> Vec<Scene> {
     ));
     v.push(jabber_tab_drag_scene("jabber_popout_tab_drag", [520.0, 480.0], [200.0, 150.0]));
     #[cfg(feature = "fleet")]
-    v.push(fleet_scene("fleet_empty", [1280.0, 800.0]));
+    v.push(fleet_scene("fleet_list", [1280.0, 800.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
     #[cfg(feature = "fc-rescue")]
     v.push(rescue_chat_scene("rescue_chat_stamps", [420.0, 260.0]));
     #[cfg(feature = "fc-rescue")]
