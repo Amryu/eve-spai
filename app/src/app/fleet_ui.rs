@@ -149,6 +149,39 @@ impl SpaiApp {
         });
     }
 
+    /// The systems the formup field offers, resolved out of the app's own map rather than the
+    /// dashboard's reference list, which carries only a handful.
+    #[cfg(feature = "fleet")]
+    fn fleet_places(&self) -> Places {
+        let named = |name: &str| {
+            self.systems
+                .as_ref()
+                .and_then(|g| g.lookup(name))
+                .map(|i| (i.id, i.name.clone()))
+        };
+        let staging = named(&self.settings.rescue_staging_system);
+        let recent: Vec<(i64, String)> = self
+            .settings
+            .fleet_recent_formup
+            .iter()
+            .filter_map(|n| named(n))
+            .filter(|(id, _)| Some(*id) != staging.as_ref().map(|(i, _)| *i))
+            .take(3)
+            .collect();
+        let query: String = self
+            .ui_ctx
+            .data(|d| d.get_temp(egui::Id::new("fleet_formup_query")).unwrap_or_default());
+        let hits = match self.store.as_ref().filter(|_| query.trim().len() >= 2) {
+            Some(store) => store
+                .search_systems(query.trim(), 8)
+                .into_iter()
+                .map(|(id, name, _)| (id, name))
+                .collect(),
+            None => Vec::new(),
+        };
+        Places { staging, recent, hits }
+    }
+
     #[cfg(feature = "fleet")]
     fn fleet_body(&mut self, ui: &mut egui::Ui) {
         self.fleet_collect();
@@ -184,6 +217,7 @@ impl SpaiApp {
                 .is_some_and(|(c, me)| c.label.trim().to_lowercase() == me)
         };
         let mut join_comms: Option<String> = None;
+        let places = self.fleet_places();
         let journal_open = self.fleet_journal_open;
         let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
@@ -290,7 +324,7 @@ impl SpaiApp {
             }
             match &page {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
-                Page::Start => start_page(ui, &mut st, &presets, &mut act),
+                Page::Start => start_page(ui, &mut st, &presets, &places, &mut act),
                 Page::Tracking(_) => {
                     tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
@@ -412,6 +446,30 @@ impl SpaiApp {
                     kind: crate::fleets::backend::SearchKind::Character,
                     value: name,
                 });
+            }
+        }
+        // Remembered only when it is not the staging system: the button back to staging is
+        // always there, so keeping it in the recents would waste one of three slots.
+        {
+            let chosen = self
+                .fleet
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .draft
+                .formup
+                .as_ref()
+                .map(|l| l.label.clone());
+            if let Some(name) = chosen {
+                let staging = self.settings.rescue_staging_system.trim().to_owned();
+                let recents = &mut self.settings.fleet_recent_formup;
+                if !name.eq_ignore_ascii_case(&staging)
+                    && recents.first().map(|s| s.as_str()) != Some(name.as_str())
+                {
+                    recents.retain(|s| !s.eq_ignore_ascii_case(&name));
+                    recents.insert(0, name);
+                    recents.truncate(3);
+                    self.needs_save = true;
+                }
             }
         }
         if act.check_boss {
@@ -540,7 +598,19 @@ impl SpaiApp {
         }
         let mut changed = false;
         let mut open = true;
-        let setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
+        let mut add_custom: Option<String> = None;
+        let mut setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
+        // Hand-added doctrines sit beside the dashboard's, with negative ids so the two id spaces
+        // cannot collide however the setup list changes upstream.
+        for (id, name) in &self.settings.fleet_custom_doctrines {
+            setups.push(crate::fleets::model::SetupItem {
+                id: crate::fleets::model::SetupId(*id),
+                name: name.clone(),
+                minimal_opsec_level_description: None,
+                priority: 0,
+                is_default: false,
+            });
+        }
         let placeholder =
             self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.placeholder;
         let pick_id = egui::Id::new("fleet_boost_editor_pick");
@@ -550,7 +620,9 @@ impl SpaiApp {
 
         egui::Window::new("Boosts per doctrine")
             .open(&mut open)
-            .default_size([760.0, 520.0])
+            .default_size([780.0, 540.0])
+            .min_size([560.0, 320.0])
+            .resizable(true)
             .collapsible(false)
             .show(ctx, |ui| {
                 if placeholder {
@@ -581,27 +653,61 @@ impl SpaiApp {
                             ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
                         }
                         ui.separator();
-                        egui::ScrollArea::vertical().id_salt("boost_setups").show(ui, |ui| {
-                            for s in &setups {
-                                let name = s.name.trim();
-                                if !tag_matches(name, &query) {
-                                    continue;
+                        egui::ScrollArea::vertical()
+                            .id_salt("boost_setups")
+                            .auto_shrink([false, false])
+                            .max_height(ui.available_height() - 34.0)
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                for s in &setups {
+                                    let name = s.name.trim();
+                                    if !tag_matches(name, &query) {
+                                        continue;
+                                    }
+                                    let n = rules.iter().filter(|r| r.setup_id == s.id.0).count();
+                                    let label = if n == 0 {
+                                        clip(name, 24)
+                                    } else {
+                                        format!("{}  ({n})", clip(name, 20))
+                                    };
+                                    if ui
+                                        .menu_label(picked == s.id.0, label)
+                                        .on_hover_text(name)
+                                        .clicked()
+                                    {
+                                        picked = s.id.0;
+                                    }
                                 }
-                                let n = rules.iter().filter(|r| r.setup_id == s.id.0).count();
-                                let label = if n == 0 {
-                                    name.to_owned()
-                                } else {
-                                    format!("{name}  ({n})")
-                                };
-                                if ui.menu_label(picked == s.id.0, label).clicked() {
-                                    picked = s.id.0;
-                                }
-                            }
-                        });
+                            });
+                        // A doctrine the dashboard does not list, so boosts can be set for one
+                        // before it exists upstream.
+                        let typed = query.trim().to_owned();
+                        let known = setups.iter().any(|s| s.name.trim().eq_ignore_ascii_case(&typed));
+                        if ui
+                            .add_enabled(
+                                !typed.is_empty() && !known,
+                                egui::Button::new(format!(
+                                    "{}  Add \"{}\"",
+                                    egui_phosphor::regular::PLUS,
+                                    clip(&typed, 14)
+                                )),
+                            )
+                            .on_disabled_hover_text(if typed.is_empty() {
+                                "Type a name above first."
+                            } else {
+                                "That doctrine is already listed."
+                            })
+                            .clicked()
+                        {
+                            add_custom = Some(typed);
+                        }
                     });
                     ui.separator();
 
                     ui.vertical(|ui| {
+                        // The remaining width, not the content's: otherwise picking a doctrine
+                        // with a long name widened the whole window.
+                        ui.set_width(ui.available_width());
                         let name = setups
                             .iter()
                             .find(|s| s.id.0 == picked)
@@ -609,7 +715,10 @@ impl SpaiApp {
                             .unwrap_or_else(|| "No doctrine".to_owned());
                         let mine = rules.iter().filter(|r| r.setup_id == picked).count();
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(&name).strong());
+                            ui.label(
+                                egui::RichText::new(clip(&name, 26)).strong(),
+                            )
+                            .on_hover_text(&name);
                             let armor = boosts::looks_like_armor(&name);
                             if ui
                                 .add_enabled(
@@ -641,6 +750,53 @@ impl SpaiApp {
                                 rules.extend(boosts::default_rules(picked.into(), !armor));
                                 changed = true;
                             }
+                            let sources: Vec<(i32, String)> = setups
+                                .iter()
+                                .filter(|s| s.id.0 != picked)
+                                .filter(|s| rules.iter().any(|r| r.setup_id == s.id.0))
+                                .map(|s| (s.id.0, s.name.trim().to_owned()))
+                                .collect();
+                            let mut copy_from: Option<i32> = None;
+                            ui.add_enabled_ui(mine == 0 && !sources.is_empty(), |ui| {
+                                egui::ComboBox::from_id_salt("boost_copy_from")
+                                    .selected_text(format!(
+                                        "{}  Copy from",
+                                        egui_phosphor::regular::COPY
+                                    ))
+                                    .width(150.0)
+                                    .show_ui(ui, |ui| {
+                                        for (id, name) in &sources {
+                                            let n = rules
+                                                .iter()
+                                                .filter(|r| r.setup_id == *id)
+                                                .count();
+                                            if ui
+                                                .menu_label(false, format!("{name}  ({n})"))
+                                                .clicked()
+                                            {
+                                                copy_from = Some(*id);
+                                            }
+                                        }
+                                    });
+                            })
+                            .response
+                            .on_disabled_hover_text(if mine > 0 {
+                                "This doctrine already has boosts set."
+                            } else {
+                                "No other doctrine has boosts set."
+                            });
+                            if let Some(from) = copy_from {
+                                let copied: Vec<_> = rules
+                                    .iter()
+                                    .filter(|r| r.setup_id == from)
+                                    .map(|r| crate::settings::FleetBoostRequirement {
+                                        setup_id: picked,
+                                        ..r.clone()
+                                    })
+                                    .collect();
+                                rules.extend(copied);
+                                changed = true;
+                            }
                             if ui
                                 .add_enabled(mine > 0, egui::Button::new("Clear"))
                                 .on_disabled_hover_text("Nothing to clear.")
@@ -653,35 +809,41 @@ impl SpaiApp {
                         ui.add_space(4.0);
 
                         let mut remove: Option<usize> = None;
+                        // Shield, armor, information, skirmish, each block together, so a glance
+                        // says what is covered.
+                        let mut order: Vec<usize> = rules
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, r)| r.setup_id == picked)
+                            .map(|(i, _)| i)
+                            .collect();
+                        order.sort_by_key(|i| {
+                            let r = &rules[*i];
+                            (
+                                boosts::burst_of(&r.charge).map(|b| b as u8).unwrap_or(u8::MAX),
+                                r.charge.clone(),
+                            )
+                        });
                         egui::ScrollArea::vertical().id_salt("boost_rules").show(ui, |ui| {
                             egui::Grid::new("boost_rule_rows")
                                 .num_columns(3)
                                 .striped(true)
                                 .spacing([10.0, 4.0])
                                 .show(ui, |ui| {
-                                    for (i, rule) in rules.iter_mut().enumerate() {
-                                        if rule.setup_id != picked {
-                                            continue;
-                                        }
+                                    for i in order {
+                                        let rule = &mut rules[i];
                                         cell(ui, 220.0, |ui| {
+                                            let here = boosts::burst_of(&rule.charge);
+                                            let text = egui::RichText::new(rule.charge.clone())
+                                                .color(match here {
+                                                    Some(b) => burst_colour(ui, b),
+                                                    None => ui.visuals().weak_text_color(),
+                                                });
                                             egui::ComboBox::from_id_salt(("boost_charge", i))
-                                                .selected_text(rule.charge.clone())
+                                                .selected_text(text)
                                                 .width(210.0)
                                                 .show_ui(ui, |ui| {
-                                                    for b in COMBAT_BURSTS {
-                                                        changed |= ui
-                                                            .menu_value(
-                                                                &mut rule.charge,
-                                                                b.label().to_owned(),
-                                                                format!(
-                                                                    "Any {}",
-                                                                    b.label().to_lowercase()
-                                                                ),
-                                                            )
-                                                            .changed();
-                                                    }
-                                                    ui.separator();
-                                                    for (n, _) in CHARGES
+                                                    for (n, b) in CHARGES
                                                         .iter()
                                                         .filter(|(_, b)| COMBAT_BURSTS.contains(b))
                                                     {
@@ -689,7 +851,8 @@ impl SpaiApp {
                                                             .menu_value(
                                                                 &mut rule.charge,
                                                                 (*n).to_owned(),
-                                                                *n,
+                                                                egui::RichText::new(*n)
+                                                                    .color(burst_colour(ui, *b)),
                                                             )
                                                             .changed();
                                                     }
@@ -744,7 +907,7 @@ impl SpaiApp {
                         {
                             rules.push(crate::settings::FleetBoostRequirement {
                                 setup_id: picked,
-                                charge: boosts::Burst::Shield.label().to_owned(),
+                                charge: boosts::CHARGES[0].0.to_owned(),
                                 priority: Priority::Medium.as_str().to_owned(),
                             });
                             changed = true;
@@ -753,6 +916,19 @@ impl SpaiApp {
                 });
             });
 
+        if let Some(name) = add_custom {
+            let next = self
+                .settings
+                .fleet_custom_doctrines
+                .iter()
+                .map(|(id, _)| *id)
+                .min()
+                .unwrap_or(0)
+                - 1;
+            self.settings.fleet_custom_doctrines.push((next, name));
+            picked = next;
+            changed = true;
+        }
         ctx.data_mut(|d| d.insert_temp(pick_id, picked));
         if !open {
             self.fleet_boost_editor = false;
@@ -973,6 +1149,8 @@ pub(crate) struct FormAct {
     pub quick_preset: Option<usize>,
     /// A character name to look up for the snowflake row.
     pub search_character: Option<String>,
+    /// A solar system name to look up for the formup field.
+    pub search_system: Option<String>,
     pub edited: bool,
     pub start: bool,
     pub ping: bool,
@@ -984,6 +1162,7 @@ fn start_page(
     ui: &mut egui::Ui,
     st: &mut crate::fleets::FleetState,
     presets: &[crate::settings::FleetPreset],
+    places: &Places,
     act: &mut FormAct,
 ) {
     let can_start = st.can(Perm::StartFleet);
@@ -1075,7 +1254,7 @@ fn start_page(
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             preset_bar(ui, presets, act);
             ui.separator();
-            form_grid(ui, st, act);
+            form_grid(ui, st, places, act);
             ui.add_space(6.0);
             tag_pickers(ui, st, act);
             ui.add_space(6.0);
@@ -1240,22 +1419,42 @@ const FORM_COL_W: f32 = LABEL_W + 8.0 + FIELD_W;
 /// The split is what the fleet is on the left and how it runs on the right, so a narrow window
 /// stacking them still reads in a sensible order.
 #[cfg(feature = "fleet")]
-fn form_grid(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
+fn form_grid(
+    ui: &mut egui::Ui,
+    st: &mut crate::fleets::FleetState,
+    places: &Places,
+    act: &mut FormAct,
+) {
     if ui.available_width() >= 2.0 * FORM_COL_W + 24.0 {
         ui.columns(2, |cols| {
-            form_identity(&mut cols[0], st, act);
+            form_identity(&mut cols[0], st, places, act);
             form_running(&mut cols[1], st, act);
         });
     } else {
-        form_identity(ui, st, act);
+        form_identity(ui, st, places, act);
         ui.add_space(6.0);
         form_running(ui, st, act);
     }
 }
 
+/// The systems the formup field offers: the app's staging, the last few chosen instead of it, and
+/// whatever the typed query turned up.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Places {
+    pub staging: Option<(i64, String)>,
+    pub recent: Vec<(i64, String)>,
+    pub hits: Vec<(i64, String)>,
+}
+
 /// What the fleet is: its name, what it flies, who it is for, where it forms.
 #[cfg(feature = "fleet")]
-fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
+fn form_identity(
+    ui: &mut egui::Ui,
+    st: &mut crate::fleets::FleetState,
+    places: &Places,
+    act: &mut FormAct,
+) {
     let seed = st.seed.clone();
     egui::Grid::new("fleet_form_identity")
         .num_columns(2)
@@ -1350,25 +1549,15 @@ fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mu
                     }
                 },
             );
+            let _ = d;
             ui.end_row();
 
             ui.label("Formup");
-            let current =
-                d.formup.as_ref().map(|l| l.label.clone()).unwrap_or_else(|| "none".to_owned());
-            egui::ComboBox::from_id_salt("fleet_formup")
-                .width(FIELD_W)
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for sys in &seed.systems {
-                        if ui.menu_label(false, &sys.label).clicked() {
-                            d.formup = Some(sys.clone());
-                            act.edited = true;
-                        }
-                    }
-                });
+            act.edited |= formup_field(ui, &mut st.draft, places, act);
             ui.end_row();
 
             ui.label("Doctrine notes");
+            let d = &mut st.draft;
             let mut notes = d.form.doctrine_notes.clone().unwrap_or_default();
             if ui
                 .add(
@@ -1518,6 +1707,92 @@ fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAc
             act.check_boss = true;
         }
     });
+}
+
+/// Where the fleet forms up: any solar system, with the ones worth one click in front.
+///
+/// The field is a search box rather than a list: the dashboard takes a system id, and there are
+/// five thousand of them.
+#[cfg(feature = "fleet")]
+fn formup_field(
+    ui: &mut egui::Ui,
+    draft: &mut crate::fleets::state::Draft,
+    places: &Places,
+    act: &mut FormAct,
+) -> bool {
+    use crate::fleets::model::Labelled;
+    let mut changed = false;
+    let query_id = egui::Id::new("fleet_formup_query");
+    let mut query: String = ui.data(|d| d.get_temp(query_id).unwrap_or_default());
+    let at_staging = draft
+        .formup
+        .as_ref()
+        .zip(places.staging.as_ref())
+        .is_some_and(|(l, (id, _))| l.id == *id);
+
+    ui.horizontal(|ui| {
+        // The chosen system reads as a badge rather than as text in the box, which is a search
+        // box and has to stay typable.
+        if let Some(l) = draft.formup.clone() {
+            if ui
+                .add(
+                    egui::Button::new(format!("{}  {}", l.label, egui_phosphor::regular::X))
+                        .fill(ui.visuals().selection.bg_fill)
+                        .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)),
+                )
+                .on_hover_text("Clear the formup location")
+                .clicked()
+            {
+                draft.formup = None;
+                changed = true;
+            }
+        }
+        let width = (ui.available_width() - 40.0).clamp(80.0, FIELD_W);
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut query)
+                .hint_text("Search systems")
+                .desired_width(width),
+        );
+        if field.changed() {
+            act.search_system = Some(query.trim().to_owned());
+        }
+        if let Some((id, name)) = places.staging.clone() {
+            if ui
+                .add_enabled(
+                    !at_staging,
+                    egui::Button::new(egui_phosphor::regular::HOUSE).frame(false),
+                )
+                .on_hover_text(format!("Form up at {name}, the staging set in settings"))
+                .on_disabled_hover_text("Already forming up at staging.")
+                .clicked()
+            {
+                draft.formup = Some(Labelled { id, label: name });
+                changed = true;
+            }
+        }
+
+        // Nothing typed yet: the staging system and the last few chosen instead of it.
+        let offered: Vec<(i64, String)> = if query.trim().is_empty() {
+            places.staging.iter().cloned().chain(places.recent.iter().cloned()).collect()
+        } else {
+            places.hits.clone()
+        };
+        egui::Popup::from_response(&field)
+            .open(field.has_focus() && !offered.is_empty())
+            .width(FIELD_W)
+            .show(|ui| {
+                for (id, name) in &offered {
+                    let on = draft.formup.as_ref().is_some_and(|l| l.id == *id);
+                    if ui.menu_label(on, name.as_str()).clicked() {
+                        draft.formup = Some(Labelled { id: *id, label: name.clone() });
+                        changed = true;
+                        query.clear();
+                    }
+                }
+            });
+    });
+    ui.data_mut(|d| d.insert_temp(query_id, query));
+    changed
 }
 
 /// One comms combo, marking what is taken and what was picked for you.
@@ -2285,6 +2560,30 @@ fn comms_buttons(
         if ui.add(button).on_hover_text(tip).clicked() {
             *join = Some(url);
         }
+    }
+}
+
+/// Shortens a label so a long one cannot widen the panel it sits in.
+#[cfg(feature = "fleet")]
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{}\u{2026}", kept.trim_end())
+}
+
+/// One colour per burst, so shield, armor, information and skirmish read apart at a glance.
+#[cfg(feature = "fleet")]
+fn burst_colour(ui: &egui::Ui, burst: crate::fleets::boosts::Burst) -> egui::Color32 {
+    use crate::fleets::boosts::Burst;
+    use crate::theme::{chip, standing};
+    match burst {
+        Burst::Shield => ui.visuals().hyperlink_color,
+        Burst::Armor => chip::ISK,
+        Burst::Information => chip::STRUCTURE,
+        Burst::Skirmish => standing::FRIENDLY,
+        Burst::Mining => ui.visuals().weak_text_color(),
     }
 }
 

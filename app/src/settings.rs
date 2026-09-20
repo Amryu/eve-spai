@@ -222,6 +222,13 @@ pub struct Settings {
     /// Which boosts each doctrine wants, and how badly.
     #[serde(default)]
     pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
+    /// Formup systems chosen other than the staging one, newest first, capped at three.
+    #[serde(default)]
+    pub fleet_recent_formup: Vec<String>,
+    /// Doctrines the user added by hand, for boosts the dashboard's setup list does not cover.
+    /// `(setup id, name)`, with negative ids so they cannot collide with the dashboard's.
+    #[serde(default)]
+    pub fleet_custom_doctrines: Vec<(i32, String)>,
 
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
@@ -1100,6 +1107,8 @@ impl Default for Settings {
             fleet_presets: Vec::new(),
             fleet_character: String::new(),
             fleet_boost_requirements: Vec::new(),
+            fleet_recent_formup: Vec::new(),
+            fleet_custom_doctrines: Vec::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
@@ -1541,6 +1550,8 @@ mod window_geometry_tests {
         let mut s = Settings::default();
         s.fleet_enabled = true;
         s.fleet_character = "Amryu".to_owned();
+        s.fleet_recent_formup = vec!["1DQ1-A".to_owned(), "319-3D".to_owned()];
+        s.fleet_custom_doctrines = vec![(-1, "Shield Cruisers".to_owned())];
         s.fleet_boost_requirements = vec![FleetBoostRequirement {
             setup_id: 46,
             charge: "Shield Extension".to_owned(),
@@ -1567,6 +1578,8 @@ mod window_geometry_tests {
         assert_eq!(back.fleet_character, s.fleet_character);
         assert_eq!(back.fleet_presets, s.fleet_presets);
         assert_eq!(back.fleet_boost_requirements, s.fleet_boost_requirements);
+        assert_eq!(back.fleet_recent_formup, s.fleet_recent_formup);
+        assert_eq!(back.fleet_custom_doctrines, s.fleet_custom_doctrines);
     }
 
     /// A config written before the tab existed must not fail the parse, which would reset every
@@ -1578,6 +1591,8 @@ mod window_geometry_tests {
         assert!(!s.fleet_enabled);
         assert!(s.fleet_presets.is_empty());
         assert!(s.fleet_boost_requirements.is_empty());
+        assert!(s.fleet_recent_formup.is_empty());
+        assert!(s.fleet_custom_doctrines.is_empty());
     }
 
     #[test]
