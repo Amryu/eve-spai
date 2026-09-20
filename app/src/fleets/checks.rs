@@ -42,12 +42,7 @@ pub const LOGI_DANGER: f32 = 0.10;
 pub const LOGI_WARNING: f32 = 0.15;
 
 fn count(comp: &Composition, want: Category) -> usize {
-    comp.wings
-        .iter()
-        .flat_map(|w| &w.squads)
-        .flat_map(|s| &s.members)
-        .filter(|m| Category::of(&m.ship_group) == want)
-        .count()
+    comp.members().filter(|m| Category::of(&m.ship_group) == want).count()
 }
 
 /// How the fleet is for logi, as a share of everyone in it.
@@ -181,10 +176,17 @@ mod tests {
             }
         }
         Composition {
+            commander: None,
             wings: vec![Wing {
                 id: WingId(1),
                 name: "Wing 1".into(),
-                squads: vec![Squad { id: SquadId(1), name: "Squad 1".into(), members }],
+                commander: None,
+                squads: vec![Squad {
+                    id: SquadId(1),
+                    name: "Squad 1".into(),
+                    commander: None,
+                    members,
+                }],
             }],
         }
     }

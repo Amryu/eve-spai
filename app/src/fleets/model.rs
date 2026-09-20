@@ -471,6 +471,8 @@ pub struct Paged<T> {
 /// through the accessors so a real shape can land without touching the view.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Composition {
+    /// The fleet boss. One seat, filled or empty.
+    pub commander: Option<Member>,
     pub wings: Vec<Wing>,
 }
 
@@ -478,6 +480,8 @@ pub struct Composition {
 pub struct Wing {
     pub id: WingId,
     pub name: String,
+    /// The wing commander. One seat.
+    pub commander: Option<Member>,
     pub squads: Vec<Squad>,
 }
 
@@ -485,7 +489,40 @@ pub struct Wing {
 pub struct Squad {
     pub id: SquadId,
     pub name: String,
+    /// The squad commander. One seat.
+    pub commander: Option<Member>,
     pub members: Vec<Member>,
+}
+
+/// A place in the fleet a pilot can be moved to. Every seat holds one pilot except a squad's
+/// member list, which holds as many as the squad takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Seat {
+    Boss,
+    WingCommander(WingId),
+    SquadCommander(WingId, SquadId),
+    Squad(WingId, SquadId),
+}
+
+impl Seat {
+    /// The wing and squad ids the move payload carries. `-1` is "no wing" and "no squad", which is
+    /// how a commander sits above the level below them.
+    pub fn ids(self) -> (WingId, SquadId) {
+        match self {
+            Seat::Boss => (WingId(-1), SquadId(-1)),
+            Seat::WingCommander(w) => (w, SquadId(-1)),
+            Seat::SquadCommander(w, s) | Seat::Squad(w, s) => (w, s),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Seat::Boss => "fleet commander",
+            Seat::WingCommander(_) => "wing commander",
+            Seat::SquadCommander(..) => "squad commander",
+            Seat::Squad(..) => "squad",
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -501,19 +538,66 @@ pub struct Member {
 }
 
 impl Composition {
-    pub fn total(&self) -> usize {
-        self.wings.iter().flat_map(|w| &w.squads).map(|s| s.members.len()).sum()
+    /// Everyone in the fleet, commanders included: a wing commander is a pilot in a ship like any
+    /// other, and leaving them out of the count understates the fleet.
+    pub fn members(&self) -> impl Iterator<Item = &Member> {
+        self.commander.iter().chain(self.wings.iter().flat_map(|w| {
+            w.commander.iter().chain(
+                w.squads.iter().flat_map(|s| s.commander.iter().chain(s.members.iter())),
+            )
+        }))
     }
 
-    pub fn find(&self, character_id: i64) -> Option<(WingId, SquadId, &Member)> {
+    pub fn total(&self) -> usize {
+        self.members().count()
+    }
+
+    /// Where a pilot is sitting.
+    pub fn seat_of(&self, character_id: i64) -> Option<Seat> {
+        let is = |m: &Option<Member>| m.as_ref().is_some_and(|m| m.character_id == character_id);
+        if is(&self.commander) {
+            return Some(Seat::Boss);
+        }
         for w in &self.wings {
+            if is(&w.commander) {
+                return Some(Seat::WingCommander(w.id));
+            }
             for s in &w.squads {
-                if let Some(m) = s.members.iter().find(|m| m.character_id == character_id) {
-                    return Some((w.id, s.id, m));
+                if is(&s.commander) {
+                    return Some(Seat::SquadCommander(w.id, s.id));
+                }
+                if s.members.iter().any(|m| m.character_id == character_id) {
+                    return Some(Seat::Squad(w.id, s.id));
                 }
             }
         }
         None
+    }
+
+    /// Who already holds a seat, so the tree can say why a drop is refused.
+    pub fn holder(&self, seat: Seat) -> Option<&Member> {
+        match seat {
+            Seat::Boss => self.commander.as_ref(),
+            Seat::WingCommander(w) => {
+                self.wings.iter().find(|x| x.id == w)?.commander.as_ref()
+            }
+            Seat::SquadCommander(w, s) => self
+                .wings
+                .iter()
+                .find(|x| x.id == w)?
+                .squads
+                .iter()
+                .find(|x| x.id == s)?
+                .commander
+                .as_ref(),
+            Seat::Squad(..) => None,
+        }
+    }
+
+    pub fn find(&self, character_id: i64) -> Option<(WingId, SquadId, &Member)> {
+        let m = self.members().find(|m| m.character_id == character_id)?;
+        let (w, s) = self.seat_of(character_id)?.ids();
+        Some((w, s, m))
     }
 }
 
@@ -687,25 +771,68 @@ mod tests {
         assert_eq!(FleetId("439f833e-2aca-44c3".into()).short(), "439f833e");
     }
 
-    #[test]
-    fn a_composition_counts_and_finds_its_members() {
-        let comp = Composition {
+    fn pilot(id: i64, name: &str) -> Member {
+        Member { character_id: id, name: name.into(), ..Member::default() }
+    }
+
+    fn crewed() -> Composition {
+        Composition {
+            commander: Some(pilot(1, "Boss")),
             wings: vec![Wing {
                 id: WingId(1),
                 name: "Wing 1".into(),
+                commander: Some(pilot(2, "Wing Lead")),
                 squads: vec![Squad {
                     id: SquadId(10),
                     name: "Squad 1".into(),
-                    members: vec![
-                        Member { character_id: 5, name: "A".into(), ..Member::default() },
-                        Member { character_id: 6, name: "B".into(), ..Member::default() },
-                    ],
+                    commander: Some(pilot(3, "Squad Lead")),
+                    members: vec![pilot(5, "A"), pilot(6, "B")],
                 }],
             }],
-        };
-        assert_eq!(comp.total(), 2);
+        }
+    }
+
+    /// A commander is a pilot in a ship like any other, so the count includes all three seats.
+    #[test]
+    fn a_composition_counts_and_finds_its_members() {
+        let comp = crewed();
+        assert_eq!(comp.total(), 5);
         assert_eq!(comp.find(6).map(|(w, s, m)| (w, s, m.name.clone())),
                    Some((WingId(1), SquadId(10), "B".to_owned())));
         assert!(comp.find(99).is_none());
+    }
+
+    /// Where each pilot is sitting, and what the move payload spells it as.
+    #[test]
+    fn every_seat_is_found_and_has_its_own_ids() {
+        let comp = crewed();
+        assert_eq!(comp.seat_of(1), Some(Seat::Boss));
+        assert_eq!(comp.seat_of(2), Some(Seat::WingCommander(WingId(1))));
+        assert_eq!(comp.seat_of(3), Some(Seat::SquadCommander(WingId(1), SquadId(10))));
+        assert_eq!(comp.seat_of(5), Some(Seat::Squad(WingId(1), SquadId(10))));
+        assert_eq!(comp.seat_of(99), None);
+
+        // -1 is "no wing" and "no squad", which is how a commander sits above the level below.
+        assert_eq!(Seat::Boss.ids(), (WingId(-1), SquadId(-1)));
+        assert_eq!(Seat::WingCommander(WingId(1)).ids(), (WingId(1), SquadId(-1)));
+        assert_eq!(Seat::Squad(WingId(1), SquadId(10)).ids(), (WingId(1), SquadId(10)));
+    }
+
+    /// A seat holds one pilot, and the tree has to say who, so a second one is not dropped in.
+    #[test]
+    fn a_commander_seat_names_who_holds_it() {
+        let comp = crewed();
+        assert_eq!(comp.holder(Seat::Boss).map(|m| m.name.as_str()), Some("Boss"));
+        assert_eq!(
+            comp.holder(Seat::WingCommander(WingId(1))).map(|m| m.name.as_str()),
+            Some("Wing Lead")
+        );
+        assert!(comp.holder(Seat::WingCommander(WingId(9))).is_none());
+        // A squad's member list is not a seat, so nobody holds it.
+        assert!(comp.holder(Seat::Squad(WingId(1), SquadId(10))).is_none());
+
+        let empty = Composition { commander: None, wings: vec![] };
+        assert!(empty.holder(Seat::Boss).is_none());
+        assert_eq!(empty.total(), 0);
     }
 }

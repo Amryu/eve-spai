@@ -1988,58 +1988,113 @@ fn members_view(
     can_kick: bool,
     act_on: &mut Option<Action>,
 ) {
-    use crate::fleets::doctrine::classify;
-    let doctrine = open.doctrine.as_ref();
-    if open.composition.wings.is_empty() {
+    use crate::fleets::model::Seat;
+    let comp = &open.composition;
+    if comp.wings.is_empty() && comp.commander.is_none() {
         ui.label(egui::RichText::new("Nobody in the fleet.").weak());
         return;
     }
-    for wing in &open.composition.wings {
-        let pilots: usize = wing.squads.iter().map(|s| s.members.len()).sum();
+    let mut drop_on: Option<(i64, Seat)> = None;
+    // A roster reads as a table, so the rows sit closer together than the app's default rhythm.
+    ui.spacing_mut().item_spacing.y = 2.0;
+
+    commander_seat(ui, open, Seat::Boss, comp.commander.as_ref(), can_move, can_kick, act_on,
+                   &mut drop_on);
+
+    for wing in &comp.wings {
+        let pilots: usize = wing.squads.iter().map(|s| s.members.len() + usize::from(s.commander.is_some())).sum::<usize>()
+            + usize::from(wing.commander.is_some());
         egui::CollapsingHeader::new(format!("{}   {pilots}", wing.name))
             .id_salt(("wing", wing.id.0))
             .default_open(true)
             .show(ui, |ui| {
+                commander_seat(ui, open, Seat::WingCommander(wing.id), wing.commander.as_ref(),
+                               can_move, can_kick, act_on, &mut drop_on);
                 for squad in &wing.squads {
-                    egui::CollapsingHeader::new(format!(
-                        "{}   {}",
-                        squad.name,
-                        squad.members.len()
-                    ))
-                    .id_salt(("squad", wing.id.0, squad.id.0))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        // The whole squad body takes a drop, so a pilot can be dragged onto an
-                        // empty squad as well as onto one with rows in it.
-                        let (_, dropped) = ui.dnd_drop_zone::<DragPilot, _>(
-                            egui::Frame::NONE,
-                            |ui| {
-                                ui.set_min_size(egui::vec2(ui.available_width(), 16.0));
-                                if squad.members.is_empty() {
-                                    ui.label(egui::RichText::new("Empty").weak());
-                                }
-                                for m in &squad.members {
-                                    let standing =
-                                        classify(m.ship_type_id, &m.ship_group, doctrine);
-                                    member_row(
-                                        ui, m, standing, wing.id, squad.id, can_move, can_kick,
-                                        act_on,
-                                    );
-                                }
-                            },
-                        );
-                        if let Some(p) = dropped {
-                            if can_move && (p.wing != wing.id || p.squad != squad.id) {
-                                *act_on = Some(Action::Move {
-                                    character_id: p.character_id,
-                                    wing: wing.id,
-                                    squad: squad.id,
+                    let n = squad.members.len() + usize::from(squad.commander.is_some());
+                    egui::CollapsingHeader::new(format!("{}   {n}", squad.name))
+                        .id_salt(("squad", wing.id.0, squad.id.0))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            commander_seat(
+                                ui,
+                                open,
+                                Seat::SquadCommander(wing.id, squad.id),
+                                squad.commander.as_ref(),
+                                can_move,
+                                can_kick,
+                                act_on,
+                                &mut drop_on,
+                            );
+                            // The whole squad body takes a drop, so a pilot can be dragged onto an
+                            // empty squad as well as onto one with rows in it.
+                            let (_, dropped) =
+                                ui.dnd_drop_zone::<DragPilot, _>(egui::Frame::NONE, |ui| {
+                                    ui.set_min_size(egui::vec2(ui.available_width(), 16.0));
+                                    if squad.members.is_empty() {
+                                        ui.label(egui::RichText::new("Empty").weak());
+                                    }
+                                    for m in &squad.members {
+                                        member_row(ui, open, m, Seat::Squad(wing.id, squad.id),
+                                                   None, can_move, can_kick, act_on);
+                                    }
                                 });
+                            if let Some(p) = dropped {
+                                drop_on =
+                                    Some((p.character_id, Seat::Squad(wing.id, squad.id)));
                             }
-                        }
-                    });
+                        });
+                    ui.add_space(2.0);
                 }
             });
+        ui.add_space(2.0);
+    }
+
+    // A move that would change nothing is not a request worth recording.
+    if let Some((character_id, seat)) = drop_on {
+        if can_move && comp.seat_of(character_id) != Some(seat) {
+            let (wing, squad) = seat.ids();
+            *act_on = Some(Action::Move { character_id, wing, squad });
+        }
+    }
+}
+
+/// One commander seat. Holds at most one pilot, which is what makes it a seat rather than a list.
+#[cfg(feature = "fleet")]
+#[allow(clippy::too_many_arguments)]
+fn commander_seat(
+    ui: &mut egui::Ui,
+    open: &crate::fleets::state::OpenFleet,
+    seat: crate::fleets::model::Seat,
+    holder: Option<&crate::fleets::model::Member>,
+    can_move: bool,
+    can_kick: bool,
+    act_on: &mut Option<Action>,
+    drop_on: &mut Option<(i64, crate::fleets::model::Seat)>,
+) {
+    let title = match seat {
+        crate::fleets::model::Seat::Boss => "FC",
+        crate::fleets::model::Seat::WingCommander(_) => "WC",
+        _ => "SC",
+    };
+    let (_, dropped) = ui.dnd_drop_zone::<DragPilot, _>(egui::Frame::NONE, |ui| {
+        ui.set_min_width(ui.available_width());
+        match holder {
+            Some(m) => member_row(ui, open, m, seat, Some(title), can_move, can_kick, act_on),
+            None => {
+                ui.horizontal(|ui| {
+                    seat_badge(ui, title, seat);
+                    ui.label(egui::RichText::new("empty").weak());
+                });
+            }
+        }
+    });
+    if let Some(p) = dropped {
+        // One commander per seat: the holder has to be moved out before anyone else moves in, so
+        // the drop is refused rather than silently sending a request the server will reject.
+        if holder.is_none() {
+            *drop_on = Some((p.character_id, seat));
+        }
     }
 }
 
@@ -2048,13 +2103,24 @@ fn members_view(
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct DragPilot {
     character_id: i64,
-    wing: crate::fleets::model::WingId,
-    squad: crate::fleets::model::SquadId,
+    seat: crate::fleets::model::Seat,
 }
 
 /// Column widths every fleet table shares, so the member list and the composition line up.
 #[cfg(feature = "fleet")]
 const COL: [f32; 4] = [190.0, 150.0, 120.0, 90.0];
+/// The FC / WC / SC column, present on every roster row so the names align.
+#[cfg(feature = "fleet")]
+const BADGE_W: f32 = 30.0;
+
+/// Which seat a roster row is, when it is one.
+#[cfg(feature = "fleet")]
+fn seat_badge(ui: &mut egui::Ui, title: &str, seat: crate::fleets::model::Seat) {
+    cell(ui, BADGE_W, |ui| {
+        ui.label(egui::RichText::new(title).strong().color(ui.visuals().hyperlink_color))
+            .on_hover_text(seat.label());
+    });
+}
 
 /// Lays out one cell of a fleet table at a fixed width.
 #[cfg(feature = "fleet")]
@@ -2071,21 +2137,33 @@ fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
 
 /// One pilot: draggable by the name, with a kick of their own.
 #[cfg(feature = "fleet")]
+#[allow(clippy::too_many_arguments)]
 fn member_row(
     ui: &mut egui::Ui,
+    open: &crate::fleets::state::OpenFleet,
     m: &crate::fleets::model::Member,
-    standing: crate::fleets::doctrine::Standing,
-    wing: crate::fleets::model::WingId,
-    squad: crate::fleets::model::SquadId,
+    seat: crate::fleets::model::Seat,
+    badge: Option<&str>,
     can_move: bool,
     can_kick: bool,
     act_on: &mut Option<Action>,
 ) {
+    let standing = crate::fleets::doctrine::classify(
+        m.ship_type_id,
+        &m.ship_group,
+        open.doctrine.as_ref(),
+    );
     ui.horizontal(|ui| {
         let id = egui::Id::new(("fleet_pilot", m.character_id));
+        // Every row carries the badge column, filled or not, so a commander's name starts at the
+        // same edge as the pilots under them.
+        match badge {
+            Some(b) => seat_badge(ui, b, seat),
+            None => cell(ui, BADGE_W, |_| {}),
+        }
         cell(ui, COL[0], |ui| {
             if can_move {
-                let payload = DragPilot { character_id: m.character_id, wing, squad };
+                let payload = DragPilot { character_id: m.character_id, seat };
                 ui.dnd_drag_source(id, payload, |ui| {
                     ui.label(format!("{}  {}", egui_phosphor::regular::DOTS_SIX_VERTICAL, m.name));
                 })

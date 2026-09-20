@@ -141,9 +141,7 @@ impl Doctrine {
     pub fn missing(&self, comp: &Composition) -> Vec<String> {
         self.ships
             .iter()
-            .filter(|s| !comp.wings.iter().flat_map(|w| &w.squads).any(|sq| {
-                sq.members.iter().any(|m| m.ship_type_id == s.type_id)
-            }))
+            .filter(|s| !comp.members().any(|m| m.ship_type_id == s.type_id))
             .map(|s| s.name.clone())
             .collect()
     }
@@ -175,7 +173,7 @@ pub struct ShipLine {
 /// The fleet grouped by hull, most flown first, so a composition reads as ships rather than names.
 pub fn by_ship(comp: &Composition, doctrine: Option<&Doctrine>) -> Vec<ShipLine> {
     let mut by: std::collections::HashMap<i64, ShipLine> = Default::default();
-    for m in comp.wings.iter().flat_map(|w| &w.squads).flat_map(|s| &s.members) {
+    for m in comp.members() {
         by.entry(m.ship_type_id)
             .and_modify(|l| l.count += 1)
             .or_insert_with(|| ShipLine {
@@ -248,10 +246,7 @@ pub fn track_off_doctrine(
     now: i64,
 ) -> Vec<OffDoctrine> {
     let mut out: Vec<OffDoctrine> = comp
-        .wings
-        .iter()
-        .flat_map(|w| &w.squads)
-        .flat_map(|s| &s.members)
+        .members()
         .filter(|m| classify(m.ship_type_id, &m.ship_group, doctrine) == Standing::Unexpected)
         .map(|m| {
             let since = prev
@@ -296,10 +291,17 @@ mod tests {
 
     fn comp(members: Vec<Member>) -> Composition {
         Composition {
+            commander: None,
             wings: vec![Wing {
                 id: WingId(1),
                 name: "Wing 1".into(),
-                squads: vec![Squad { id: SquadId(1), name: "Squad 1".into(), members }],
+                commander: None,
+                squads: vec![Squad {
+                    id: SquadId(1),
+                    name: "Squad 1".into(),
+                    commander: None,
+                    members,
+                }],
             }],
         }
     }

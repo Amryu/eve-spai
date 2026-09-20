@@ -196,6 +196,17 @@ fn sample_composition(id: &FleetId) -> Composition {
         (11_957, "Falcon", "Force Recon Ship", "Cyno"),
         (17_740, "Vindicator", "Battleship", "DPS"),
     ];
+    let pilot = |id: i64, name: String, pick: usize| {
+        let (type_id, ship, group, role) = ships[pick];
+        Member {
+            character_id: id,
+            name,
+            ship_type_id: type_id,
+            ship_type_name: ship.to_owned(),
+            ship_group: group.to_owned(),
+            role: role.to_owned(),
+        }
+    };
     let mut wings = Vec::new();
     for w in 0..2i64 {
         let mut squads = Vec::new();
@@ -219,17 +230,49 @@ fn sample_composition(id: &FleetId) -> Composition {
                     }
                 })
                 .collect();
-            squads.push(Squad { id: SquadId(w * 10 + s), name: format!("Squad {}", s + 1), members });
+            // Only the first squad of each wing has anybody in the seat, so the tree renders both
+            // a filled and an empty one.
+            let commander = (s == 0)
+                .then(|| pilot(90_200_000 + w * 10 + s, format!("Squad Lead {}{}", w + 1, s + 1), 0));
+            squads.push(Squad {
+                id: SquadId(w * 10 + s),
+                name: format!("Squad {}", s + 1),
+                commander,
+                members,
+            });
         }
-        wings.push(Wing { id: WingId(w), name: format!("Wing {}", w + 1), squads });
+        let commander = (w == 0)
+            .then(|| pilot(90_300_000 + w, format!("Wing Lead {}", w + 1), 3));
+        wings.push(Wing { id: WingId(w), name: format!("Wing {}", w + 1), commander, squads });
     }
     let _ = id;
-    Composition { wings }
+    Composition {
+        commander: Some(pilot(90_400_000, "Fleet Boss".to_owned(), 3)),
+        wings,
+    }
+}
+
+/// Takes matching pilots out of every seat, commanders included: the seats are separate lists, so
+/// a kick that only walked the squad rosters would leave a commander who is no longer in the fleet.
+fn take_out(c: &mut Composition, drop: &dyn Fn(&Member) -> bool) {
+    if c.commander.as_ref().is_some_and(|m| drop(m)) {
+        c.commander = None;
+    }
+    for w in &mut c.wings {
+        if w.commander.as_ref().is_some_and(|m| drop(m)) {
+            w.commander = None;
+        }
+        for s in &mut w.squads {
+            if s.commander.as_ref().is_some_and(|m| drop(m)) {
+                s.commander = None;
+            }
+            s.members.retain(|m| !drop(m));
+        }
+    }
 }
 
 fn report_for(comp: &Composition) -> FleetReport {
-    let members: Vec<&Member> =
-        comp.wings.iter().flat_map(|w| &w.squads).flat_map(|s| &s.members).collect();
+    let members: Vec<&Member> = comp.members().collect();
     let total = members.len() as i64;
     let pct = |n: i64| if total == 0 { 0.0 } else { n as f64 * 100.0 / total as f64 };
     let mut ships: std::collections::BTreeMap<(i64, String), i64> = Default::default();
@@ -455,27 +498,54 @@ impl FleetBackend for SpoofBackend {
             }
             Action::Kick { character_id, .. } => {
                 if let Some(c) = d.comps.get_mut(&id.0) {
-                    for w in &mut c.wings {
-                        for s in &mut w.squads {
-                            s.members.retain(|m| m.character_id != *character_id);
-                        }
-                    }
+                    take_out(c, &|m: &Member| m.character_id == *character_id);
                 }
             }
             Action::KickMany { character_ids, .. } => {
                 if let Some(c) = d.comps.get_mut(&id.0) {
-                    for w in &mut c.wings {
-                        for s in &mut w.squads {
-                            s.members.retain(|m| !character_ids.contains(&m.character_id));
-                        }
-                    }
+                    take_out(c, &|m: &Member| character_ids.contains(&m.character_id));
                 }
             }
             Action::KickAll => {
                 if let Some(c) = d.comps.get_mut(&id.0) {
-                    for w in &mut c.wings {
-                        for s in &mut w.squads {
-                            s.members.clear();
+                    take_out(c, &|_: &Member| true);
+                }
+            }
+            Action::Move { character_id, wing, squad } => {
+                if let Some(c) = d.comps.get_mut(&id.0) {
+                    let found = c.members().find(|m| m.character_id == *character_id).cloned();
+                    if let Some(mut m) = found {
+                        take_out(c, &|x: &Member| x.character_id == *character_id);
+                        // -1 is "no wing" and "no squad", which is how the payload spells a
+                        // commander sitting above the level below them.
+                        let seat = match (wing.0, squad.0) {
+                            (-1, _) => Some(Seat::Boss),
+                            (w, -1) => Some(Seat::WingCommander(WingId(w))),
+                            (w, sq) => Some(Seat::Squad(WingId(w), SquadId(sq))),
+                        };
+                        m.role = match seat {
+                            Some(Seat::Boss) => "FC".to_owned(),
+                            Some(Seat::WingCommander(_)) => "WC".to_owned(),
+                            _ => m.role,
+                        };
+                        match seat {
+                            Some(Seat::Boss) => c.commander = Some(m),
+                            Some(Seat::WingCommander(w)) => {
+                                if let Some(x) = c.wings.iter_mut().find(|x| x.id == w) {
+                                    x.commander = Some(m);
+                                }
+                            }
+                            Some(Seat::Squad(w, sq)) => {
+                                if let Some(x) = c
+                                    .wings
+                                    .iter_mut()
+                                    .find(|x| x.id == w)
+                                    .and_then(|x| x.squads.iter_mut().find(|y| y.id == sq))
+                                {
+                                    x.members.push(m);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -483,7 +553,12 @@ impl FleetBackend for SpoofBackend {
             Action::AddWing => {
                 if let Some(c) = d.comps.get_mut(&id.0) {
                     let n = c.wings.len() as i64;
-                    c.wings.push(Wing { id: WingId(n), name: format!("Wing {}", n + 1), squads: vec![] });
+                    c.wings.push(Wing {
+                        id: WingId(n),
+                        name: format!("Wing {}", n + 1),
+                        commander: None,
+                        squads: vec![],
+                    });
                 }
             }
             Action::AddSquad(wing) => {
@@ -493,6 +568,7 @@ impl FleetBackend for SpoofBackend {
                         w.squads.push(Squad {
                             id: SquadId(wing.0 * 10 + n),
                             name: format!("Squad {}", n + 1),
+                            commander: None,
                             members: vec![],
                         });
                     }
