@@ -85,9 +85,44 @@ impl SpaiApp {
             Page::Tracking(id) | Page::Historic(id) => {
                 self.fleet.lock().unwrap_or_else(|e| e.into_inner()).open.begin();
                 self.fleet_dispatch(Cmd::Open(id.clone()));
+                self.fleet_boosts_read = None;
             }
             Page::Start => {}
         }
+    }
+
+    /// Re-reads the open fleet's boost channel off disk, at most every `BOOST_REREAD`.
+    ///
+    /// It waits for the fleet itself because the channel is never configured: the fleet carries the
+    /// id, the reference table names it and that name is the log file's own prefix. A fleet with no
+    /// boost channel, or one whose log has not reached this machine, reads nothing and says so.
+    #[cfg(feature = "fleet")]
+    fn fleet_read_boosts(&mut self) {
+        // A screenshot must never read the machine's real chat logs.
+        if self.headless {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.fleet_boosts_read.is_some_and(|t| now.duration_since(t) < BOOST_REREAD) {
+            return;
+        }
+        let Some(dir) = crate::logpaths::chat_logs_dir(&self.settings.eve_logs_dir) else { return };
+        let cmd = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(open) = st.open.value.as_ref() else { return };
+            let Some(channel) =
+                st.seed.channel_name(&st.seed.boost_channels, open.fleet.boost_channel_id)
+            else {
+                return;
+            };
+            let Some(from) = crate::fleets::model::parse_iso(&open.fleet.started_at) else {
+                return;
+            };
+            let to = open.fleet.closed_at.as_deref().and_then(crate::fleets::model::parse_iso);
+            Cmd::ReadBoosts { dir, channel: channel.to_owned(), from, to }
+        };
+        self.fleet_boosts_read = Some(now);
+        self.fleet_dispatch(cmd);
     }
 
     #[cfg(feature = "fleet")]
@@ -103,9 +138,13 @@ impl SpaiApp {
         // Cloned before the lock, because the render closures cannot borrow `self` while the state
         // is held. Deferred work goes into the slots below and is applied once it is dropped.
         let page = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).page.clone();
+        if matches!(page, Page::Tracking(_) | Page::Historic(_)) {
+            self.fleet_read_boosts();
+        }
         let dry = self.fleet_backend.is_dry_run();
         let seed_hint = crate::fleets::seed_path_hint();
         let presets = self.settings.fleet_presets.clone();
+        let boost_rules = self.settings.fleet_boost_requirements.clone();
         let journal_open = self.fleet_journal_open;
         let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
@@ -192,10 +231,10 @@ impl SpaiApp {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &mut act),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules)
                 }
             }
         });
@@ -326,6 +365,8 @@ impl SpaiApp {
                 .changed();
             ui.end_row();
         });
+        ui.add_space(8.0);
+        changed |= self.fleet_boost_rules(ui);
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(format!(
@@ -336,6 +377,117 @@ impl SpaiApp {
             ))
             .weak(),
         );
+        changed
+    }
+
+    /// Which boosts each doctrine wants, and in what order to put them on.
+    ///
+    /// The setup list comes from the dashboard, so this needs the tab to have signed in once; the
+    /// rows survive on their own ids either way.
+    #[cfg(feature = "fleet")]
+    fn fleet_boost_rules(&mut self, ui: &mut egui::Ui) -> bool {
+        use crate::fleets::boosts::{Burst, Priority, CHARGES, COMBAT_BURSTS};
+        let mut changed = false;
+        let setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
+
+        let any = !self.settings.fleet_boost_requirements.is_empty();
+        egui::CollapsingHeader::new("Boosts per doctrine").default_open(any).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "What each doctrine wants running. The tracked fleet's composition tab flags \
+                     whichever of these nobody is on, highest priority first.",
+                )
+                .weak(),
+            );
+            ui.add_space(4.0);
+
+            let mut remove: Option<usize> = None;
+            egui::Grid::new("fleet_boost_rules")
+                .num_columns(4)
+                .spacing([8.0, 6.0])
+                .show(ui, |ui| {
+                    for (i, rule) in self.settings.fleet_boost_requirements.iter_mut().enumerate() {
+                        let setup_name = setups
+                            .iter()
+                            .find(|s| s.id.0 == rule.setup_id)
+                            .map(|s| s.name.clone())
+                            .unwrap_or_else(|| format!("Setup {}", rule.setup_id));
+                        egui::ComboBox::from_id_salt(("boost_rule_setup", i))
+                            .selected_text(setup_name)
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                for s in &setups {
+                                    changed |= ui
+                                        .selectable_value(&mut rule.setup_id, s.id.0, &s.name)
+                                        .changed();
+                                }
+                            });
+                        egui::ComboBox::from_id_salt(("boost_rule_charge", i))
+                            .selected_text(rule.charge.clone())
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for b in COMBAT_BURSTS {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut rule.charge,
+                                            b.label().to_owned(),
+                                            format!("Any {}", b.label().to_lowercase()),
+                                        )
+                                        .changed();
+                                }
+                                ui.separator();
+                                for (name, _) in
+                                    CHARGES.iter().filter(|(_, b)| COMBAT_BURSTS.contains(b))
+                                {
+                                    changed |= ui
+                                        .selectable_value(
+                                            &mut rule.charge,
+                                            (*name).to_owned(),
+                                            *name,
+                                        )
+                                        .changed();
+                                }
+                            });
+                        let mut prio = Priority::parse(&rule.priority);
+                        egui::ComboBox::from_id_salt(("boost_rule_priority", i))
+                            .selected_text(prio.label())
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                for p in Priority::ALL {
+                                    if ui.selectable_value(&mut prio, p, p.label()).changed() {
+                                        rule.priority = p.as_str().to_owned();
+                                        changed = true;
+                                    }
+                                }
+                            });
+                        if ui
+                            .button(egui_phosphor::regular::TRASH)
+                            .on_hover_text("Remove this requirement.")
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                        ui.end_row();
+                    }
+                });
+            if let Some(i) = remove {
+                self.settings.fleet_boost_requirements.remove(i);
+                changed = true;
+            }
+            if ui
+                .button(format!("{}  Add a boost", egui_phosphor::regular::PLUS))
+                .clicked()
+            {
+                self.settings.fleet_boost_requirements.push(
+                    crate::settings::FleetBoostRequirement {
+                        setup_id: setups.first().map(|s| s.id.0).unwrap_or_default(),
+                        charge: Burst::Shield.label().to_owned(),
+                        priority: Priority::Medium.as_str().to_owned(),
+                    },
+                );
+                changed = true;
+            }
+        });
         changed
     }
 
@@ -508,6 +660,11 @@ fn fleet_tag_chip(ui: &mut egui::Ui, tag: &TagItem) {
 /// How long the form waits after the last edit before rendering the ping again.
 #[cfg(feature = "fleet")]
 const PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How often the boost channel is re-read. Boosters post once and then argue, so this is about
+/// picking up a swap, not about latency.
+#[cfg(feature = "fleet")]
+const BOOST_REREAD: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// What the start form asked for, applied once the state lock is gone.
 #[cfg(feature = "fleet")]
@@ -1004,6 +1161,7 @@ fn tracking_page(
     tab: DetailTab,
     set_tab: &mut Option<DetailTab>,
     act_on: &mut Option<Action>,
+    boost_rules: &[crate::settings::FleetBoostRequirement],
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
@@ -1019,6 +1177,8 @@ fn tracking_page(
     };
 
     let seed = st.seed.clone();
+    let boosts = st.boosts.clone();
+    let wanted = crate::fleets::boosts::wanted_for(open.fleet.setup_id.0.into(), boost_rules);
     egui::Panel::top("fleet_header").show_inside(ui, |ui| {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
@@ -1091,9 +1251,140 @@ fn tracking_page(
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
             DetailTab::Members => members_view(ui, &open),
-            DetailTab::Composition => composition_view(ui, &open),
+            DetailTab::Composition => composition_view(ui, &open, &boosts, &wanted),
         });
     });
+}
+
+/// What is thin about the fleet, worst first. Advice, so nothing here blocks anything.
+#[cfg(feature = "fleet")]
+fn checks_strip(ui: &mut egui::Ui, checks: &[crate::fleets::checks::Check]) {
+    use crate::fleets::checks::Level;
+    let loud: Vec<_> = checks.iter().filter(|c| c.level != Level::Fine).collect();
+    if loud.is_empty() {
+        if !checks.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
+                        .color(crate::theme::standing::FRIENDLY),
+                );
+                ui.label(egui::RichText::new("Logi, interdiction and tackle all fine.").weak());
+            });
+            ui.add_space(4.0);
+        }
+        return;
+    }
+    for c in loud {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(level_icon(c.level)).color(level_colour(c.level)));
+            ui.label(egui::RichText::new(&c.what).strong().color(level_colour(c.level)));
+            ui.label(&c.detail);
+        });
+    }
+    ui.add_space(4.0);
+}
+
+#[cfg(feature = "fleet")]
+fn level_colour(level: crate::fleets::checks::Level) -> egui::Color32 {
+    use crate::fleets::checks::Level;
+    match level {
+        Level::Fine => crate::theme::standing::FRIENDLY,
+        Level::Warning => crate::theme::standing::WARNING,
+        Level::Danger => crate::theme::chip::TACKLED,
+        Level::Critical => crate::theme::standing::HOSTILE,
+    }
+}
+
+#[cfg(feature = "fleet")]
+fn level_icon(level: crate::fleets::checks::Level) -> &'static str {
+    use crate::fleets::checks::Level;
+    use egui_phosphor::regular as icon;
+    match level {
+        Level::Fine => icon::CHECK_CIRCLE,
+        Level::Warning | Level::Danger => icon::WARNING,
+        Level::Critical => icon::WARNING_OCTAGON,
+    }
+}
+
+/// Who is on which boost, read out of the fleet's own boost channel.
+#[cfg(feature = "fleet")]
+fn boost_strip(
+    ui: &mut egui::Ui,
+    boosts: &[crate::fleets::boosts::Coverage],
+    wanted: &[crate::fleets::boosts::Wanted],
+) {
+    use crate::fleets::boosts;
+    if boosts.is_empty() && wanted.is_empty() {
+        return;
+    }
+    let gaps = boosts::gaps(wanted, boosts);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Boosts").strong());
+        if gaps.is_empty() {
+            ui.label(
+                egui::RichText::new(if wanted.is_empty() {
+                    "nothing set for this doctrine".to_owned()
+                } else {
+                    format!("all {} the doctrine wants are up", wanted.len())
+                })
+                .weak(),
+            );
+        } else {
+            ui.label(egui::RichText::new("run next").weak());
+            for g in &gaps {
+                ui.label(
+                    egui::RichText::new(&g.what).color(priority_colour(g.priority)).strong(),
+                )
+                .on_hover_text(format!("{} priority for this doctrine.", g.priority.label()));
+            }
+        }
+    });
+    if boosts.is_empty() {
+        ui.label(egui::RichText::new("Nobody has posted in the boost channel yet.").weak());
+    } else {
+        egui::Grid::new("boost_coverage").num_columns(4).striped(true).spacing([12.0, 3.0]).show(
+            ui,
+            |ui| {
+                for c in boosts {
+                    ui.label(&c.what);
+                    // A pilot who typed "skirm" named the burst and no charge, so repeating it in
+                    // the second column would read as two facts instead of one.
+                    ui.label(
+                        egui::RichText::new(if c.generic {
+                            "charge not named"
+                        } else {
+                            c.burst.label()
+                        })
+                        .weak(),
+                    );
+                    ui.label(egui::RichText::new(format!("{}", c.pilots)).strong())
+                        .on_hover_text("Pilots running this.");
+                    if c.mindlinked > 0 {
+                        ui.label(
+                            egui::RichText::new(format!("{} ML", c.mindlinked))
+                                .color(crate::theme::chip::ISK)
+                                .strong(),
+                        )
+                        .on_hover_text("Of those, how many have a mindlink.");
+                    } else {
+                        ui.label(egui::RichText::new("no ML").weak());
+                    }
+                    ui.end_row();
+                }
+            },
+        );
+    }
+    ui.add_space(6.0);
+}
+
+#[cfg(feature = "fleet")]
+fn priority_colour(p: crate::fleets::boosts::Priority) -> egui::Color32 {
+    use crate::fleets::boosts::Priority;
+    match p {
+        Priority::High => crate::theme::standing::HOSTILE,
+        Priority::Medium => crate::theme::standing::WARNING,
+        Priority::Low => crate::theme::standing::NEUTRAL,
+    }
 }
 
 /// What can be done to the fleet, and what this account may not do.
@@ -1199,7 +1490,12 @@ fn members_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
 
 /// What the fleet is flying, and whether the doctrine asked for it.
 #[cfg(feature = "fleet")]
-fn composition_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
+fn composition_view(
+    ui: &mut egui::Ui,
+    open: &crate::fleets::state::OpenFleet,
+    boosts: &[crate::fleets::boosts::Coverage],
+    wanted: &[crate::fleets::boosts::Wanted],
+) {
     use crate::fleets::doctrine::{by_ship, unexpected_pilots, Standing};
     let doctrine = open.doctrine.as_ref();
     let lines = by_ship(&open.composition, doctrine);
@@ -1208,6 +1504,9 @@ fn composition_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
         return;
     }
     let total = open.composition.total().max(1);
+
+    checks_strip(ui, &crate::fleets::checks::hulls(&open.composition));
+    boost_strip(ui, boosts, wanted);
 
     ui.horizontal_wrapped(|ui| {
         match doctrine {

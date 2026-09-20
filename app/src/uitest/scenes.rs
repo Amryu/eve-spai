@@ -918,12 +918,63 @@ fn fleet_detail_scene(
             a.settings.fleet_enabled = true;
             a.view = View::Fleet;
             a.fleet_detail_tab = tab;
+            a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             fixtures::seed_fleet_state(&a);
             fixtures::open_first_fleet(&a);
             a
         });
         app.root_chrome(ui);
         app.root_central(ui, None);
+    })
+}
+
+/// The composition of a fleet that is short of everything, so every check renders in its own
+/// colour instead of the quiet line.
+#[cfg(feature = "fleet")]
+fn fleet_thin_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
+            a.view = View::Fleet;
+            a.fleet_detail_tab = crate::app::fleet_ui::DetailTab::Composition;
+            fixtures::seed_fleet_state(&a);
+            fixtures::open_thin_fleet(&a);
+            // Booting would re-open the fleet from the spoof and put back what the fixture took
+            // out.
+            a.fleet_booted = true;
+            a
+        });
+        app.root_chrome(ui);
+        app.root_central(ui, None);
+    })
+}
+
+/// The fleet settings section on its own: the whole settings page would need a canvas thousands of
+/// pixels tall to reach it.
+#[cfg(feature = "fleet")]
+fn fleet_settings_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            // Otherwise the hint carries this machine's home directory into a committed PNG.
+            std::env::set_var("EVE_SPAI_FLEET_SEED", "/fixture/EVE/fleet-seed.json");
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_character = "Placeholder FC".to_owned();
+            a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            a
+        });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(8.0);
+            app.fleet_settings_section(ui);
+        });
     })
 }
 
@@ -1243,9 +1294,13 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene(
         "fleet_composition",
-        [1280.0, 900.0],
+        [1280.0, 1120.0],
         crate::app::fleet_ui::DetailTab::Composition,
     ));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_thin_scene("fleet_composition_thin", [1280.0, 820.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
     #[cfg(feature = "fc-rescue")]

@@ -855,4 +855,57 @@ pub(crate) fn open_first_fleet(app: &crate::app::SpaiApp) {
     let mut st = app.fleet_state_for_test().lock().unwrap();
     st.page = Page::Tracking(id.clone());
     st.apply(crate::fleets::state::run(&backend, &seed, Cmd::Open(id)));
+    st.boosts = fleet_boost_coverage();
+}
+
+/// The same fleet with its logi, dictors and fast tackle gone and nobody on boosts, so the
+/// composition tab renders every warning it has rather than only the quiet state.
+#[cfg(feature = "fleet")]
+pub(crate) fn open_thin_fleet(app: &crate::app::SpaiApp) {
+    open_first_fleet(app);
+    let thin = ["Logistics", "Logistics Frigate", "Force Auxiliary", "Interdictor",
+                "Heavy Interdiction Cruiser", "Interceptor", "Assault Frigate",
+                "Command Destroyer"];
+    let mut st = app.fleet_state_for_test().lock().unwrap();
+    st.boosts.clear();
+    let Some(open) = st.open.value.as_mut() else { return };
+    for squad in open.composition.wings.iter_mut().flat_map(|w| &mut w.squads) {
+        squad.members.retain(|m| !thin.contains(&m.ship_group.as_str()));
+    }
+}
+
+/// What a shield doctrine wants running, in the order to put it on.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_boost_rules() -> Vec<crate::settings::FleetBoostRequirement> {
+    let rule = |charge: &str, priority: &str| crate::settings::FleetBoostRequirement {
+        setup_id: 46,
+        charge: charge.to_owned(),
+        priority: priority.to_owned(),
+    };
+    vec![
+        rule("Shield", "high"),
+        rule("Information", "high"),
+        rule("Skirmish", "medium"),
+        rule("Electronic Superiority", "low"),
+    ]
+}
+
+/// Invented boost-channel traffic, in the shapes the real channel carries: pasted charges, a
+/// mindlink, shorthand, and a pilot who dropped what they had.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_boost_coverage() -> Vec<crate::fleets::boosts::Coverage> {
+    use crate::fleets::boosts::{coverage, parse};
+    let lines: Vec<_> = [
+        ("Wren Ashbourne", "Shield Extension Charge  Shield Harmonizing Charge +ML", 100),
+        ("Dagen Corrow", "Shield Harmonizing Charge  Active Shielding Charge", 140),
+        ("Lys Vantor", "Evasive Maneuvers Charge  Rapid Deployment Charge ml", 180),
+        ("Moro Tenhall", "Sensor Optimization Charge  Electronic Hardening Charge", 220),
+        ("Beck Arrowood", "skirm", 260),
+        ("Ilva Renn", "Armor Energizing Charge", 300),
+        ("Ilva Renn", "-armor. got tackled", 340),
+    ]
+    .iter()
+    .filter_map(|(p, t, at)| parse(p, t, *at))
+    .collect();
+    coverage(&lines, 0)
 }

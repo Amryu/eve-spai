@@ -106,6 +106,8 @@ pub struct FleetState {
     pub open: Slot<OpenFleet>,
     pub draft: Draft,
     pub preview: Slot<PingPreview>,
+    /// The tracked fleet's boost channel as it stands, read off disk rather than from the API.
+    pub boosts: Vec<super::boosts::Coverage>,
     /// Requests that would have gone out, newest last.
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
@@ -140,6 +142,7 @@ impl FleetState {
             }
             Outcome::History(page) => self.history.put(page),
             Outcome::Opened(open) => self.open.put(*open),
+            Outcome::Boosts(rows) => self.boosts = rows,
             Outcome::Preview { record, preview } => {
                 // A preview is not a write, so it does not reach the journal.
                 let _ = record;
@@ -346,6 +349,9 @@ pub enum Cmd {
     LoadActive { strategic: bool },
     LoadHistory { skip: u32 },
     Open(FleetId),
+    /// Re-read the tracked fleet's boost channel off disk. Not a request, so it never reaches the
+    /// journal, but it rides the same worker because it touches the filesystem.
+    ReadBoosts { dir: std::path::PathBuf, channel: String, from: i64, to: Option<i64> },
     Act(FleetId, Action),
     Preview(PingRequest),
     Start(StartRequest),
@@ -359,6 +365,7 @@ pub enum Outcome {
     Active { strategic: bool, rows: Vec<FleetRow> },
     History(Paged<FleetRow>),
     Opened(Box<OpenFleet>),
+    Boosts(Vec<super::boosts::Coverage>),
     Preview { record: CallRecord, preview: PingPreview },
     Started { record: CallRecord, id: FleetId },
     Wrote { record: CallRecord },
@@ -385,6 +392,9 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Ok(open) => Outcome::Opened(Box::new(open)),
             Err(e) => Outcome::Failed { what: "fleet", why: e.to_string() },
         },
+        Cmd::ReadBoosts { dir, channel, from, to } => {
+            Outcome::Boosts(super::boosts::read_window(&dir, &channel, from, to))
+        }
         Cmd::Act(id, action) => match backend.act(&id, &action) {
             Ok(w) => Outcome::Wrote { record: w.record },
             Err(e) => Outcome::Failed { what: "action", why: e.to_string() },

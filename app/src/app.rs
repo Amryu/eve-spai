@@ -810,12 +810,18 @@ pub struct SpaiApp {
     #[cfg(feature = "fleet")]
     fleet_gen: crate::fleets::state::Gen,
     #[cfg(feature = "fleet")]
-    fleet_booted: bool,
+    pub(crate) fleet_booted: bool,
     /// When the form's next preview is due, so typing does not spawn a worker per keystroke.
     #[cfg(feature = "fleet")]
     fleet_preview_at: Option<std::time::Instant>,
     #[cfg(feature = "fleet")]
     pub(crate) fleet_journal_open: bool,
+    /// When the tracked fleet's boost channel was last read off disk.
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_boosts_read: Option<std::time::Instant>,
+    /// Built for a screenshot or an assertion, so nothing may reach the real profile or its logs.
+    #[cfg(feature = "fleet")]
+    pub(crate) headless: bool,
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
@@ -1572,6 +1578,10 @@ impl SpaiApp {
             fleet_preview_at: None,
             #[cfg(feature = "fleet")]
             fleet_journal_open: false,
+            #[cfg(feature = "fleet")]
+            fleet_boosts_read: None,
+            #[cfg(feature = "fleet")]
+            headless,
             #[cfg(feature = "fleet")]
             fleet_detail_tab: Default::default(),
             #[cfg(feature = "fleet")]

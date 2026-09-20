@@ -219,6 +219,9 @@ pub struct Settings {
     /// Character the dashboard acts as.
     #[serde(default)]
     pub fleet_character: String,
+    /// Which boosts each doctrine wants, and how badly.
+    #[serde(default)]
+    pub fleet_boost_requirements: Vec<FleetBoostRequirement>,
 
     // --- FC / delve911 Rescue Mode (off by default; FC-only feature) ---
     #[serde(default)]
@@ -898,6 +901,21 @@ pub struct FleetPreset {
     pub snowflakes: Vec<(i64, String, u8)>,
 }
 
+/// One boost a doctrine wants, and how badly, so the tracking view can say what to put on next.
+///
+/// `priority` is a string rather than an enum for the same reason `FleetPreset` uses plain scalars:
+/// a build without the `fleet` feature rewrites this file whole, and an unknown value written by a
+/// later version must not fail the parse and reset every other setting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FleetBoostRequirement {
+    pub setup_id: i32,
+    /// The charge's name as the fitting window gives it, without the trailing "Charge".
+    pub charge: String,
+    /// "high", "medium" or "low".
+    pub priority: String,
+}
+
 /// A rescue doctrine: the short `name` shown in the selector, and the full `description` line that
 /// goes into the ping's "Doctrine:" field.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1078,6 +1096,7 @@ impl Default for Settings {
             fleet_enabled: false,
             fleet_presets: Vec::new(),
             fleet_character: String::new(),
+            fleet_boost_requirements: Vec::new(),
             fc_rescue_enabled: false,
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
@@ -1519,6 +1538,11 @@ mod window_geometry_tests {
         let mut s = Settings::default();
         s.fleet_enabled = true;
         s.fleet_character = "Amryu".to_owned();
+        s.fleet_boost_requirements = vec![FleetBoostRequirement {
+            setup_id: 46,
+            charge: "Shield Extension".to_owned(),
+            priority: "high".to_owned(),
+        }];
         s.fleet_presets = vec![FleetPreset {
             label: "Home Defence".to_owned(),
             name: "Home Defense".to_owned(),
@@ -1538,6 +1562,7 @@ mod window_geometry_tests {
         assert_eq!(back.fleet_enabled, s.fleet_enabled);
         assert_eq!(back.fleet_character, s.fleet_character);
         assert_eq!(back.fleet_presets, s.fleet_presets);
+        assert_eq!(back.fleet_boost_requirements, s.fleet_boost_requirements);
     }
 
     /// A config written before the tab existed must not fail the parse, which would reset every
@@ -1548,6 +1573,7 @@ mod window_geometry_tests {
         assert_eq!(s.jabber_jid, "a@b");
         assert!(!s.fleet_enabled);
         assert!(s.fleet_presets.is_empty());
+        assert!(s.fleet_boost_requirements.is_empty());
     }
 
     #[test]

@@ -12,6 +12,8 @@
 #![allow(dead_code)]
 
 pub mod backend;
+pub mod boosts;
+pub mod checks;
 pub mod doctrine;
 pub mod model;
 pub mod seed;
