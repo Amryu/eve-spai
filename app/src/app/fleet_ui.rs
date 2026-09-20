@@ -2442,17 +2442,6 @@ fn tracking_page(
             });
         });
         ui.horizontal_wrapped(|ui| {
-            let comms = [
-                ("Comms", seed.channel_name(&seed.mumble_channels, open.fleet.mumble_channel_id)),
-                ("Logi", seed.channel_name(&seed.logi_channels, open.fleet.logi_channel_id)),
-                ("Boost", seed.channel_name(&seed.boost_channels, open.fleet.boost_channel_id)),
-            ];
-            for (label, name) in comms {
-                if let Some(n) = name {
-                    ui.label(egui::RichText::new(format!("{label}: {n}")).weak());
-                }
-            }
-
             if let Some(f) = &open.fleet.formup_location {
                 ui.label(egui::RichText::new(format!("Formup: {}", f.label)).weak());
             }
@@ -2496,9 +2485,17 @@ fn tracking_page(
     });
 
     if *sidebar {
-        egui::Panel::right("fleet_sidebar").default_size(280.0).show_inside(ui, |ui| {
-            fleet_sidebar(ui, st, &open, read_only, act_on);
-        });
+        egui::Panel::right("fleet_sidebar")
+            .resizable(true)
+            .default_size(330.0)
+            .size_range(270.0..=540.0)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    readiness_pane(ui, &open, &boosts, &wanted, open_editor);
+                    ui.separator();
+                    fleet_sidebar(ui, st, &open, read_only, act_on);
+                });
+            });
     }
 
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
@@ -2587,6 +2584,156 @@ fn burst_colour(ui: &egui::Ui, burst: crate::fleets::boosts::Burst) -> egui::Col
     }
 }
 
+/// Whether the fleet can fight, and why it reads that way.
+///
+/// The numbers are the point: "Logi danger" on its own is an argument, "3 of 40, two Guardians in
+/// a shield fleet" is something to act on.
+#[cfg(feature = "fleet")]
+fn readiness_pane(
+    ui: &mut egui::Ui,
+    open: &crate::fleets::state::OpenFleet,
+    coverage: &[crate::fleets::boosts::Coverage],
+    wanted: &[crate::fleets::boosts::Wanted],
+    open_editor: &mut bool,
+) {
+    use crate::fleets::{checks, logi};
+    let comp = &open.composition;
+    if comp.total() == 0 {
+        return;
+    }
+    let tank = wanted_tank(wanted);
+    let report = logi::report(comp, open.doctrine.as_ref(), tank);
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Readiness").strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(egui::Button::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).frame(false))
+                .on_hover_text("Set which boosts this doctrine wants")
+                .clicked()
+            {
+                *open_editor = true;
+            }
+        });
+    });
+    ui.add_space(2.0);
+
+    status_line(ui, &checks::logi_from(&report));
+    detail_line(
+        ui,
+        format!(
+            "{} brought, {} usable, wants {} {}",
+            report.brought(),
+            report.counted,
+            report.size.label(),
+            tank.map(|t| t.label()).unwrap_or("logi"),
+        ),
+        None,
+    );
+    for r in &report.rejected {
+        detail_line(
+            ui,
+            format!("{}, {}", r.pilot, r.why.label()),
+            Some((r.ship.clone(), crate::theme::standing::HOSTILE)),
+        );
+    }
+    ui.add_space(6.0);
+
+    // The pane's own headline, short: the gaps are listed as chips under it rather than run
+    // together into a sentence that wraps three lines in a sidebar.
+    let long = checks::boosts(wanted, coverage);
+    let gaps = crate::fleets::boosts::gaps(wanted, coverage);
+    let short = match (wanted.is_empty(), gaps.len()) {
+        (true, _) => "Nothing set for this doctrine.".to_owned(),
+        (false, 0) => format!("All {} covered.", wanted.len()),
+        (false, n) => format!("{n} of {} not covered.", wanted.len()),
+    };
+    status_line(ui, &checks::Check { detail: short, ..long });
+    if !gaps.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("run next").weak());
+            for g in &gaps {
+                // Extend rather than wrap: a charge name broken across two lines inside a wrapped
+                // row lands on top of the chips beside it.
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&g.what).color(priority_colour(g.priority)).strong(),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
+                )
+                .on_hover_text(format!("{} priority for this doctrine.", g.priority.label()));
+            }
+        });
+    }
+    if coverage.is_empty() {
+        detail_line(ui, "Nobody has posted in the boost channel.".to_owned(), None);
+    }
+    for c in coverage {
+        let ml = if c.mindlinked > 0 {
+            format!("{} with ML", c.mindlinked)
+        } else {
+            "no ML".to_owned()
+        };
+        let colour = burst_colour(ui, c.burst);
+        detail_line(ui, format!("{} pilot(s), {ml}", c.pilots), Some((c.what.clone(), colour)));
+    }
+    ui.add_space(6.0);
+
+    for check in [checks::interdiction(comp), checks::tackle(comp)] {
+        status_line(ui, &check);
+    }
+    ui.add_space(4.0);
+}
+
+/// One check as a coloured headline plus its reason.
+#[cfg(feature = "fleet")]
+fn status_line(ui: &mut egui::Ui, check: &crate::fleets::checks::Check) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(level_icon(check.level)).color(level_colour(check.level)));
+        ui.label(egui::RichText::new(&check.what).strong().color(level_colour(check.level)));
+        ui.label(&check.detail);
+    });
+}
+
+/// An indented line under a status, optionally led by a coloured name.
+#[cfg(feature = "fleet")]
+fn detail_line(ui: &mut egui::Ui, text: String, lead: Option<(String, egui::Color32)>) {
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(14.0);
+        if let Some((name, colour)) = lead {
+            ui.add(
+                egui::Label::new(egui::RichText::new(name).color(colour))
+                    .wrap_mode(egui::TextWrapMode::Extend),
+            );
+        }
+        ui.label(egui::RichText::new(text).weak());
+    });
+}
+
+/// Which way the fleet tanks, taken from the boosts its doctrine asks for. The user maintains that
+/// list, so it beats guessing from the doctrine's name.
+#[cfg(feature = "fleet")]
+fn wanted_tank(wanted: &[crate::fleets::boosts::Wanted]) -> Option<crate::fleets::logi::Tank> {
+    use crate::fleets::boosts::{burst_of, Burst};
+    use crate::fleets::logi::Tank;
+    let mut shield = 0usize;
+    let mut armor = 0usize;
+    for w in wanted {
+        match burst_of(&w.what).or_else(|| Burst::parse(&w.what)) {
+            Some(Burst::Shield) => shield += 1,
+            Some(Burst::Armor) => armor += 1,
+            _ => {}
+        }
+    }
+    match shield.cmp(&armor) {
+        std::cmp::Ordering::Greater => Some(Tank::Shield),
+        std::cmp::Ordering::Less => Some(Tank::Armor),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
 /// What can still be changed about a fleet that is already up: what it flies and where it talks.
 ///
 /// Staged rather than live, because every field here is a request: changing the setup three times
@@ -2657,6 +2804,20 @@ fn fleet_sidebar(
                 ui.end_row();
             }
         });
+
+    ui.add_space(6.0);
+    ui.label("Tags");
+    let tags = seed.tags.clone();
+    for (salt, primary) in [("track_tag_primary", true), ("track_tag_secondary", false)] {
+        let mut pool: Vec<_> = tags.iter().filter(|t| t.is_primary == primary).cloned().collect();
+        if primary {
+            pool.sort_by_key(|t| (headline_rank(&t.name), t.id.0));
+            headline_tags(ui, &pool, &mut e.tags);
+        }
+        ui.horizontal(|ui| {
+            tag_field(ui, salt, &pool, &mut e.tags, primary);
+        });
+    }
 
     ui.add_space(6.0);
     ui.checkbox(&mut e.set_motd, "Re-set the MOTD")
@@ -2782,8 +2943,13 @@ fn boost_strip(
         } else {
             ui.label(egui::RichText::new("run next").weak());
             for g in &gaps {
-                ui.label(
-                    egui::RichText::new(&g.what).color(priority_colour(g.priority)).strong(),
+                // Extend rather than wrap: a charge name broken across two lines inside a wrapped
+                // row lands on top of the chips beside it.
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&g.what).color(priority_colour(g.priority)).strong(),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
                 )
                 .on_hover_text(format!("{} priority for this doctrine.", g.priority.label()));
             }

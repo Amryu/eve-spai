@@ -45,6 +45,40 @@ fn count(comp: &Composition, want: Category) -> usize {
     comp.members().filter(|m| Category::of(&m.ship_group) == want).count()
 }
 
+fn band(share: f32) -> Level {
+    if share < LOGI_CRITICAL {
+        Level::Critical
+    } else if share < LOGI_DANGER {
+        Level::Danger
+    } else if share < LOGI_WARNING {
+        Level::Warning
+    } else {
+        Level::Fine
+    }
+}
+
+/// How the fleet is for logi, counting only the hulls that can do the job.
+///
+/// Takes the logi report rather than the composition, so logi that cannot keep up, reps the wrong
+/// way or was never in the doctrine does not read as cover.
+pub fn logi_from(report: &super::logi::Report) -> Check {
+    let (total, n) = (report.fleet, report.counted);
+    if total == 0 {
+        return Check { level: Level::Fine, what: "Logi".into(), detail: "Nobody in fleet.".into() };
+    }
+    let share = report.share();
+    let level = band(share);
+    let want = (LOGI_WARNING * total as f32).ceil() as usize;
+    let mut detail = format!("{n} of {total}, {:.0}%.", share * 100.0);
+    if !report.rejected.is_empty() {
+        detail.push_str(&format!(" {} not counted.", report.rejected.len()));
+    }
+    if level != Level::Fine {
+        detail.push_str(&format!(" {want} would be 15%."));
+    }
+    Check { level, what: "Logi".into(), detail }
+}
+
 /// How the fleet is for logi, as a share of everyone in it.
 pub fn logi(comp: &Composition) -> Check {
     let total = comp.total();
@@ -53,15 +87,7 @@ pub fn logi(comp: &Composition) -> Check {
         return Check { level: Level::Fine, what: "Logi".into(), detail: "Nobody in fleet.".into() };
     }
     let share = n as f32 / total as f32;
-    let level = if share < LOGI_CRITICAL {
-        Level::Critical
-    } else if share < LOGI_DANGER {
-        Level::Danger
-    } else if share < LOGI_WARNING {
-        Level::Warning
-    } else {
-        Level::Fine
-    };
+    let level = band(share);
     let want = (LOGI_WARNING * total as f32).ceil() as usize;
     let detail = match level {
         Level::Fine => format!("{n} of {total}, {:.0}%.", share * 100.0),
@@ -211,6 +237,32 @@ mod tests {
     fn every_kind_of_logi_counts() {
         let c = comp(&[("Logistics Frigate", 10), ("Force Auxiliary", 5), ("Frigate", 85)]);
         assert_eq!(logi(&c).level, Level::Fine);
+    }
+
+    /// The report's count is what the band is read off, not the hull count.
+    #[test]
+    fn unusable_logi_does_not_count_as_cover() {
+        use crate::fleets::logi::{Reason, Rejected, Report, Size};
+        let report = Report {
+            counted: 1,
+            fleet: 20,
+            rejected: vec![
+                Rejected { pilot: "A".into(), ship: "Guardian".into(), why: Reason::WrongTank },
+                Rejected { pilot: "B".into(), ship: "Kirin".into(), why: Reason::TooSmall },
+            ],
+            tank: None,
+            size: Size::Line,
+        };
+        let check = logi_from(&report);
+        assert_eq!(check.level, Level::Danger, "three hulls but only one of them reps");
+        assert!(check.detail.contains("1 of 20"), "{}", check.detail);
+        assert!(check.detail.contains("2 not counted"), "{}", check.detail);
+        assert!(check.detail.contains("3 would be 15%"), "{}", check.detail);
+
+        // All of them usable is the same fleet reading Fine.
+        let good = Report { counted: 3, fleet: 20, rejected: Vec::new(), ..report };
+        assert_eq!(logi_from(&good).level, Level::Fine);
+        assert!(!logi_from(&good).detail.contains("not counted"));
     }
 
     /// A thin fleet says what would not be thin.

@@ -112,6 +112,7 @@ pub struct FleetEdit {
     pub mumble: Option<ChannelId>,
     pub logi: Option<ChannelId>,
     pub boost: Option<ChannelId>,
+    pub tags: std::collections::BTreeSet<TagId>,
     /// Re-set the fleet MOTD after applying, since the MOTD names the channels.
     pub set_motd: bool,
 }
@@ -128,6 +129,7 @@ impl FleetEdit {
             mumble: f.mumble_channel_id,
             logi: f.logi_channel_id,
             boost: f.boost_channel_id,
+            tags: f.tag_ids.iter().copied().collect(),
             set_motd: true,
         };
     }
@@ -138,6 +140,7 @@ impl FleetEdit {
             || self.mumble != f.mumble_channel_id
             || self.logi != f.logi_channel_id
             || self.boost != f.boost_channel_id
+            || self.tags != f.tag_ids.iter().copied().collect()
     }
 
     /// The fleet as the edit would leave it.
@@ -147,6 +150,7 @@ impl FleetEdit {
             mumble_channel_id: self.mumble,
             logi_channel_id: self.logi,
             boost_channel_id: self.boost,
+            tag_ids: self.tags.iter().copied().collect(),
             ..f.clone()
         }
     }

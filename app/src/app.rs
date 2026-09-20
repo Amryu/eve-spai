@@ -1606,8 +1606,10 @@ impl SpaiApp {
             headless,
             #[cfg(feature = "fleet")]
             fleet_boost_editor: false,
+            // Open by default: what a fleet flies and where it talks is the first thing checked
+            // on a fleet that is already up.
             #[cfg(feature = "fleet")]
-            fleet_sidebar_open: false,
+            fleet_sidebar_open: true,
             #[cfg(feature = "fleet")]
             fleet_quick_open: false,
             #[cfg(feature = "fleet")]
