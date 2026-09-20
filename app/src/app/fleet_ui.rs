@@ -601,11 +601,8 @@ impl SpaiApp {
         let mut open = true;
         let mut add_custom: Option<String> = None;
         // Every ship in the game, for the hull picker's type-ahead.
-        let ships: Vec<(String, String)> = self
-            .store
-            .as_ref()
-            .map(|s| s.all_ships().into_iter().map(|(_, n, g)| (n, g)).collect())
-            .unwrap_or_default();
+        let ships: Vec<(i64, String, String)> =
+            self.store.as_ref().map(|s| s.all_ships()).unwrap_or_default();
         let mut setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
         // Hand-added doctrines sit beside the dashboard's, with negative ids so the two id spaces
         // cannot collide however the setup list changes upstream.
@@ -668,6 +665,11 @@ impl SpaiApp {
                                 ui.set_min_width(ui.available_width());
                                 for s in &setups {
                                     let name = s.name.trim();
+                                    // FC Choice is the absence of a doctrine, so there is nothing
+                                    // to configure for it.
+                                    if !crate::fleets::doctrine::is_doctrine(s.id) {
+                                        continue;
+                                    }
                                     if !tag_matches(name, &query) {
                                         continue;
                                     }
@@ -724,7 +726,9 @@ impl SpaiApp {
                         let tab_id = egui::Id::new("fleet_doctrine_tab");
                         let mut tab: u8 = ui.data(|d| d.get_temp(tab_id).unwrap_or(0));
                         ui.horizontal(|ui| {
-                            for (i, label) in [(0u8, "Boosts"), (1, "Ships")] {
+                            for (i, label) in
+                                [(0u8, "Boosts"), (1, "Ships"), (2, "Always allowed")]
+                            {
                                 if selectable_chip(ui, tab == i, label).clicked() {
                                     tab = i;
                                 }
@@ -733,7 +737,18 @@ impl SpaiApp {
                         ui.data_mut(|d| d.insert_temp(tab_id, tab));
                         ui.add_space(4.0);
                         if tab == 1 {
-                            changed |= hull_editor(ui, picked, &name, &mut self.settings.fleet_hulls, &ships);
+                            changed |= hull_editor(
+                                ui,
+                                picked,
+                                &name,
+                                "flown by this doctrine",
+                                &mut self.settings.fleet_hulls,
+                                &ships,
+                            );
+                            return;
+                        }
+                        if tab == 2 {
+                            changed |= always_allowed(ui, &mut self.settings.fleet_hulls, &ships);
                             return;
                         }
                         ui.horizontal_wrapped(|ui| {
@@ -1799,8 +1814,12 @@ fn formup_field(
         } else {
             places.hits.clone()
         };
-        egui::Popup::from_response(&field)
-            .open(field.has_focus() && !offered.is_empty())
+        let hov_id = egui::Id::new("fleet_formup_hover");
+        let was_over: bool = ui.data(|d| d.get_temp(hov_id).unwrap_or(false));
+        // Kept open while the pointer is over it, or clicking an item would take focus off the
+        // field and close the popup before the click landed.
+        let popup = egui::Popup::from_response(&field)
+            .open(!offered.is_empty() && (field.has_focus() || was_over))
             .width(FIELD_W)
             .show(|ui| {
                 for (id, name) in &offered {
@@ -1812,6 +1831,8 @@ fn formup_field(
                     }
                 }
             });
+        let over = popup.as_ref().is_some_and(|r| r.response.contains_pointer());
+        ui.data_mut(|d| d.insert_temp(hov_id, over));
     });
     ui.data_mut(|d| d.insert_temp(query_id, query));
     changed
@@ -2120,9 +2141,9 @@ fn snowflake_rows(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &m
     // nobody has is worse than none at all.
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let name_id = ui.id().with("snowflake_name");
+        let name_id = egui::Id::new("fleet_snowflake_name");
         let mut name: String = ui.data(|d| d.get_temp(name_id).unwrap_or_default());
-        let kind_id = ui.id().with("snowflake_kind");
+        let kind_id = egui::Id::new("fleet_snowflake_kind");
         let mut kind: SnowflakeType = ui.data(|d| d.get_temp(kind_id).unwrap_or_default());
 
         cell(ui, 110.0, |ui| {
@@ -2189,7 +2210,7 @@ fn snowflake_rows(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &m
             for l in v.iter().take(6) {
                 if selectable_chip(ui, false, l.label.trim()).clicked() {
                     ui.data_mut(|d| {
-                        d.insert_temp(ui.id().with("snowflake_name"), l.label.clone())
+                        d.insert_temp(egui::Id::new("fleet_snowflake_name"), l.label.clone())
                     });
                 }
             }
@@ -2606,16 +2627,14 @@ fn hull_editor(
     ui: &mut egui::Ui,
     setup_id: i32,
     setup_name: &str,
+    hint: &str,
     hulls: &mut Vec<crate::settings::FleetHull>,
-    ships: &[(String, String)],
+    ships: &[(i64, String, String)],
 ) -> bool {
     use crate::fleets::doctrine::Tank;
     let mut changed = false;
 
-    for (owner, title, hint) in [
-        (setup_id, setup_name, "flown by this doctrine"),
-        (0, "Any fleet", "welcome in every fleet: cynos, bridges, scouts"),
-    ] {
+    for (owner, title, hint) in [(setup_id, setup_name, hint)] {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(clip(title, 26)).strong()).on_hover_text(title);
             ui.label(egui::RichText::new(hint).weak());
@@ -2673,29 +2692,35 @@ fn hull_editor(
             let field = ui.add(
                 egui::TextEdit::singleline(&mut query).hint_text("Add a hull").desired_width(200.0),
             );
-            let hits: Vec<&(String, String)> = if query.trim().len() >= 2 {
+            let hits: Vec<&(i64, String, String)> = if query.trim().len() >= 2 {
                 ships
                     .iter()
-                    .filter(|(n, _)| tag_matches(n, &query))
-                    .filter(|(n, _)| {
-                        !hulls
-                            .iter()
-                            .any(|h| h.setup_id == owner && h.name.eq_ignore_ascii_case(n))
+                    .filter(|(_, n, _)| tag_matches(n, &query))
+                    .filter(|(id, n, _)| {
+                        !hulls.iter().any(|h| {
+                            h.setup_id == owner
+                                && (h.type_id == *id || h.name.eq_ignore_ascii_case(n))
+                        })
                     })
                     .take(10)
                     .collect()
             } else {
                 Vec::new()
             };
-            egui::Popup::from_response(&field)
-                .open(field.has_focus() && !hits.is_empty())
+            let hov_id = ui.id().with(("hull_popup_hover", owner));
+            let was_over: bool = ui.data(|d| d.get_temp(hov_id).unwrap_or(false));
+            // Kept open while the pointer is over it: clicking an item takes focus off the field,
+            // and a popup that closes on the press never sees the click.
+            let popup = egui::Popup::from_response(&field)
+                .open(!hits.is_empty() && (field.has_focus() || was_over))
                 .width(260.0)
                 .show(|ui| {
-                    for (n, g) in &hits {
+                    for (id, n, g) in &hits {
                         if ui.menu_label(false, format!("{n}   {g}")).clicked() {
                             hulls.push(crate::settings::FleetHull {
                                 setup_id: owner,
-                                name: (*n).clone(),
+                                type_id: *id,
+                                name: n.clone(),
                                 tank: String::new(),
                             });
                             changed = true;
@@ -2703,6 +2728,8 @@ fn hull_editor(
                         }
                     }
                 });
+            let over = popup.as_ref().is_some_and(|r| r.response.contains_pointer());
+            ui.data_mut(|d| d.insert_temp(hov_id, over));
             if ships.is_empty() {
                 ui.label(egui::RichText::new("no ship data loaded").weak());
             }
@@ -2711,6 +2738,33 @@ fn hull_editor(
         ui.add_space(8.0);
     }
     changed
+}
+
+/// The hulls every fleet takes, whatever it is flying.
+///
+/// The groups are built in and not worth a list to maintain; anything else is named here, and a
+/// hull that only suits one kind of fleet carries its tank.
+#[cfg(feature = "fleet")]
+fn always_allowed(
+    ui: &mut egui::Ui,
+    hulls: &mut Vec<crate::settings::FleetHull>,
+    ships: &[(i64, String, String)],
+) -> bool {
+    ui.label(
+        egui::RichText::new(
+            "Never out of doctrine, in any fleet. The fleet commander's own ship is exempt too.",
+        )
+        .weak(),
+    );
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Always:").strong());
+        for g in crate::fleets::doctrine::SUPPORT_GROUPS {
+            ui.label(egui::RichText::new(*g).color(ui.visuals().hyperlink_color));
+        }
+    });
+    ui.add_space(8.0);
+    hull_editor(ui, 0, "Hulls", "welcome in every fleet: cynos, bridges, scouts", hulls, ships)
 }
 
 /// Shortens a label so a long one cannot widen the panel it sits in.
@@ -2820,6 +2874,7 @@ fn readiness_pane(
             }
         });
     }
+    detail_line(ui, checks::booster_line(comp, open.doctrine.as_ref()), None);
     if coverage.is_empty() {
         detail_line(ui, "Nobody has posted in the boost channel.".to_owned(), None);
     }
@@ -3410,12 +3465,8 @@ fn member_row(
     act_on: &mut Vec<Action>,
 ) {
     use crate::fleets::doctrine::Standing;
-    let standing = crate::fleets::doctrine::classify(
-        m.ship_type_id,
-        &m.ship_type_name,
-        &m.ship_group,
-        open.doctrine.as_ref(),
-    );
+    let standing =
+        crate::fleets::doctrine::classify_in(&open.composition, m, open.doctrine.as_ref());
     // A tint rather than coloured text: on a red or orange theme a hostile-coloured ship name is
     // barely a shade away from a normal one.
     let tint = match standing {

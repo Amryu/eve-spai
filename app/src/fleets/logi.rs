@@ -178,7 +178,7 @@ pub fn report(comp: &Composition, doctrine: Option<&Doctrine>, tank: Option<Tank
         let Some((hull_tank, hull_size)) = logi_hull(&m.ship_type_name, &m.ship_group) else {
             continue;
         };
-        match reject(m, hull_tank, hull_size, size, tank, doctrine) {
+        match reject(comp, m, hull_tank, hull_size, size, tank, doctrine) {
             Some(why) => out.rejected.push(Rejected {
                 pilot: m.name.clone(),
                 ship: m.ship_type_name.clone(),
@@ -194,7 +194,9 @@ pub fn report(comp: &Composition, doctrine: Option<&Doctrine>, tank: Option<Tank
 /// The first thing wrong with a logi hull, worst first: a ship nobody asked for is a conversation
 /// before its tank is, and a hull that cannot keep up with the fleet cannot help whichever way it
 /// reps.
+#[allow(clippy::too_many_arguments)]
 fn reject(
+    comp: &Composition,
     m: &Member,
     hull_tank: Option<Tank>,
     hull_size: Size,
@@ -202,10 +204,7 @@ fn reject(
     want_tank: Option<Tank>,
     doctrine: Option<&Doctrine>,
 ) -> Option<Reason> {
-    if doctrine.is_some()
-        && super::doctrine::classify(m.ship_type_id, &m.ship_type_name, &m.ship_group, doctrine)
-            .odd()
-    {
+    if doctrine.is_some() && super::doctrine::classify_in(comp, m, doctrine).odd() {
         return Some(Reason::OffDoctrine);
     }
     match hull_size.cmp(&want_size) {

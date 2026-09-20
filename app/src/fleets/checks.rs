@@ -96,15 +96,35 @@ pub fn logi(comp: &Composition) -> Check {
     Check { level, what: "Logi".into(), detail }
 }
 
-/// Whether anything can hold a target down.
+fn count_group(comp: &Composition, group: &str) -> usize {
+    comp.members().filter(|m| m.ship_group.trim().eq_ignore_ascii_case(group)).count()
+}
+
+/// Whether anything can hold a target down, split into the two hulls that do it: a bubble and a
+/// point are different tools and an FC counts them separately.
 pub fn interdiction(comp: &Composition) -> Check {
-    let n = count(comp, Category::Interdiction);
-    let level = if n == 0 && comp.total() > 0 { Level::Warning } else { Level::Fine };
-    let detail = match n {
-        0 => "No dictors or hictors in fleet.".to_owned(),
-        n => format!("{n} in fleet."),
+    let dictors = count_group(comp, "Interdictor");
+    let hictors = count_group(comp, "Heavy Interdiction Cruiser");
+    let level =
+        if dictors + hictors == 0 && comp.total() > 0 { Level::Warning } else { Level::Fine };
+    let detail = match (dictors, hictors) {
+        (0, 0) => "No dictors or hictors in fleet.".to_owned(),
+        (d, h) => format!("{d} dictors, {h} hictors."),
     };
     Check { level, what: "Interdiction".into(), detail }
+}
+
+/// The hulls that can put a boost up, which is what a missing boost is asked of.
+///
+/// Command destroyers only count when the doctrine has no command ships in it. A fleet flying
+/// command ships is boosting off those, and its destroyers are there to boosh.
+pub fn boosters(comp: &Composition, doctrine: Option<&Doctrine>) -> (usize, usize) {
+    let ships = count_group(comp, "Command Ship");
+    let doctrine_boosts = doctrine.is_some_and(|d| {
+        d.ships.iter().any(|s| s.name.trim().eq_ignore_ascii_case("command ship"))
+    }) || ships > 0;
+    let destroyers = if doctrine_boosts { 0 } else { count_group(comp, "Command Destroyer") };
+    (ships, destroyers)
 }
 
 /// Whether anything can catch a target.
@@ -150,6 +170,17 @@ pub fn boosts(wanted: &[Wanted], have: &[Coverage]) -> Check {
         level,
         what: "Boosts".into(),
         detail: format!("Nobody on {}. Run {} next.", names.join(", "), worst.what),
+    }
+}
+
+/// How many hulls are in fleet that could put a boost up, in the FC's words.
+pub fn booster_line(comp: &Composition, doctrine: Option<&Doctrine>) -> String {
+    let (ships, destroyers) = boosters(comp, doctrine);
+    match (ships, destroyers) {
+        (0, 0) => "No command ships in fleet.".to_owned(),
+        (s, 0) => format!("{s} command ships."),
+        (0, d) => format!("{d} command destroyers."),
+        (s, d) => format!("{s} command ships, {d} command destroyers."),
     }
 }
 
@@ -273,6 +304,49 @@ mod tests {
         assert_eq!(check.level, Level::Danger);
         assert!(check.detail.contains("1 of 20"), "{}", check.detail);
         assert!(check.detail.contains("3 would be 15%"), "{}", check.detail);
+    }
+
+    /// Bubbles and points are counted apart, because they are different tools.
+    #[test]
+    fn interdiction_counts_dictors_and_hictors_apart() {
+        let c = comp(&[
+            ("Battleship", 10),
+            ("Interdictor", 2),
+            ("Heavy Interdiction Cruiser", 1),
+        ]);
+        let check = interdiction(&c);
+        assert_eq!(check.level, Level::Fine);
+        assert!(check.detail.contains("2 dictors"), "{}", check.detail);
+        assert!(check.detail.contains("1 hictors"), "{}", check.detail);
+        assert_eq!(
+            interdiction(&comp(&[("Battleship", 10)])).detail,
+            "No dictors or hictors in fleet."
+        );
+    }
+
+    /// A fleet flying command ships boosts off those, so its destroyers are booshers.
+    #[test]
+    fn command_destroyers_only_count_where_nothing_else_boosts() {
+        let both = comp(&[("Command Ship", 2), ("Command Destroyer", 3), ("Battleship", 10)]);
+        assert_eq!(boosters(&both, None), (2, 0));
+        assert_eq!(booster_line(&both, None), "2 command ships.");
+
+        let destroyers_only = comp(&[("Command Destroyer", 3), ("Battleship", 10)]);
+        assert_eq!(boosters(&destroyers_only, None), (0, 3));
+        assert_eq!(booster_line(&destroyers_only, None), "3 command destroyers.");
+
+        assert_eq!(booster_line(&comp(&[("Battleship", 10)]), None), "No command ships in fleet.");
+
+        // A doctrine that flies command ships discounts the destroyers even before one undocks.
+        let d = crate::fleets::doctrine::Doctrine {
+            ships: vec![crate::fleets::doctrine::DoctrineShip {
+                type_id: 0,
+                name: "Command Ship".into(),
+                tank: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(boosters(&destroyers_only, Some(&d)), (0, 0));
     }
 
     /// Nobody to hold a target, and nobody to catch one.

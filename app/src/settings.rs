@@ -924,6 +924,10 @@ pub struct FleetPreset {
 pub struct FleetHull {
     /// The setup this belongs to, or 0 for a hull welcome in any fleet.
     pub setup_id: i32,
+    /// The hull's type id, which is what a composition is matched on. 0 for a row written before
+    /// ids were stored, which still matches by name.
+    #[serde(default)]
+    pub type_id: i64,
     pub name: String,
     /// "shield", "armor", or empty when it does not matter or is not known.
     pub tank: String,
@@ -1572,8 +1576,18 @@ mod window_geometry_tests {
         s.fleet_recent_formup = vec!["1DQ1-A".to_owned(), "319-3D".to_owned()];
         s.fleet_custom_doctrines = vec![(-1, "Shield Cruisers".to_owned())];
         s.fleet_hulls = vec![
-            FleetHull { setup_id: 46, name: "Harpy".to_owned(), tank: "shield".to_owned() },
-            FleetHull { setup_id: 0, name: "Falcon".to_owned(), tank: String::new() },
+            FleetHull {
+                setup_id: 46,
+                type_id: 11_381,
+                name: "Harpy".to_owned(),
+                tank: "shield".to_owned(),
+            },
+            FleetHull {
+                setup_id: 0,
+                type_id: 11_957,
+                name: "Falcon".to_owned(),
+                tank: String::new(),
+            },
         ];
         s.fleet_boost_requirements = vec![FleetBoostRequirement {
             setup_id: 46,

@@ -892,6 +892,7 @@ pub(crate) fn open_thin_fleet(app: &crate::app::SpaiApp) {
 pub(crate) fn fleet_hulls() -> Vec<crate::settings::FleetHull> {
     let hull = |setup: i32, name: &str, tank: &str| crate::settings::FleetHull {
         setup_id: setup,
+        type_id: 0,
         name: name.to_owned(),
         tank: tank.to_owned(),
     };

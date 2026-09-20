@@ -40,14 +40,11 @@ impl Standing {
 /// By group rather than by hull, because the list is about the job: anything that bridges, lights a
 /// cyno, scouts ahead or has already lost its ship is not an out-of-doctrine pilot.
 pub const SUPPORT_GROUPS: &[&str] = &[
-    "Titan",             // bridges the fleet
-    "Black Ops",         // the same, quietly
-    "Force Recon Ship",  // cyno
-    "Combat Recon Ship",
-    "Covert Ops",        // scouting
-    "Interceptor",       // scouting and fast tackle
-    "Command Destroyer", // boosh
-    "Capsule",           // already lost the ship it came in
+    "Titan",            // bridges the fleet
+    "Force Recon Ship", // cyno
+    "Interceptor",      // scouting and fast tackle
+    "Interdictor",      // bubbles, wanted whatever the doctrine is
+    "Capsule",          // not a ship anyone chose to bring
     "Shuttle",
 ];
 
@@ -177,9 +174,13 @@ impl Doctrine {
         self.ships.iter().any(|s| s.type_id != 0 && s.type_id == type_id)
     }
 
-    fn named<'a>(list: &'a [DoctrineShip], ship: &str) -> Option<&'a DoctrineShip> {
+    /// By type id where there is one, since the client renders hull names in the player's own
+    /// language and the id is the same everywhere.
+    fn found<'a>(list: &'a [DoctrineShip], type_id: i64, ship: &str) -> Option<&'a DoctrineShip> {
         let ship = ship.trim();
-        list.iter().find(|s| s.name.trim().eq_ignore_ascii_case(ship))
+        list.iter().find(|s| {
+            (s.type_id != 0 && s.type_id == type_id) || s.name.trim().eq_ignore_ascii_case(ship)
+        })
     }
 
     /// Hulls the doctrine wants that nobody is flying.
@@ -197,6 +198,15 @@ impl Doctrine {
     }
 }
 
+/// The setup that means "no setup": the FC brings whatever they like, so there is nothing to be
+/// out of. Held by id rather than by name, since the name is alliance-side and could change.
+pub const FC_CHOICE: SetupId = SetupId(61);
+
+/// Whether a setup describes a doctrine at all.
+pub fn is_doctrine(setup_id: SetupId) -> bool {
+    setup_id != FC_CHOICE && setup_id.0 != 0
+}
+
 /// Builds a doctrine from what the user configured, folding in whatever the seed knows.
 ///
 /// `hulls` carries every configured hull for every setup; the ones with setup 0 are welcome in any
@@ -208,8 +218,11 @@ pub fn configured(
     hulls: &[crate::settings::FleetHull],
     tank: Option<Tank>,
 ) -> Option<Doctrine> {
+    if !is_doctrine(setup_id) {
+        return None;
+    }
     let ship = |h: &crate::settings::FleetHull| DoctrineShip {
-        type_id: 0,
+        type_id: h.type_id,
         name: h.name.trim().to_owned(),
         tank: Tank::parse(&h.tank),
     };
@@ -247,10 +260,10 @@ pub fn classify(type_id: i64, ship: &str, group: &str, doctrine: Option<&Doctrin
     let Some(d) = doctrine else {
         return if is_support_group(group) { Standing::Support } else { Standing::Unexpected };
     };
-    if d.has(type_id) || Doctrine::named(&d.ships, ship).is_some() {
+    if Doctrine::found(&d.ships, type_id, ship).is_some() {
         return Standing::Doctrine;
     }
-    if let Some(s) = Doctrine::named(&d.support, ship) {
+    if let Some(s) = Doctrine::found(&d.support, type_id, ship) {
         // A support hull that only suits one kind of fleet is out of place in the other.
         return match (s.tank, d.tank) {
             (Some(a), Some(b)) if a != b => Standing::WrongTank,
@@ -261,6 +274,17 @@ pub fn classify(type_id: i64, ship: &str, group: &str, doctrine: Option<&Doctrin
         return Standing::Support;
     }
     Standing::Unexpected
+}
+
+/// Where a hull stands, for a pilot in a known fleet.
+///
+/// The fleet boss is never out of doctrine: the FC flies whatever the job needs, and telling them
+/// their own ship is wrong is the one thing this list must not do.
+pub fn classify_in(comp: &Composition, m: &Member, doctrine: Option<&Doctrine>) -> Standing {
+    if comp.commander.as_ref().is_some_and(|c| c.character_id == m.character_id) {
+        return Standing::Doctrine;
+    }
+    classify(m.ship_type_id, &m.ship_type_name, &m.ship_group, doctrine)
 }
 
 fn is_support_group(group: &str) -> bool {
@@ -290,7 +314,7 @@ pub fn by_ship(comp: &Composition, doctrine: Option<&Doctrine>) -> Vec<ShipLine>
                 group: m.ship_group.clone(),
                 category: Category::of(&m.ship_group),
                 count: 1,
-                standing: classify(m.ship_type_id, &m.ship_type_name, &m.ship_group, doctrine),
+                standing: classify_in(comp, m, doctrine),
             });
     }
     let mut lines: Vec<ShipLine> = by.into_values().collect();
@@ -355,7 +379,7 @@ pub fn track_off_doctrine(
 ) -> Vec<OffDoctrine> {
     let mut out: Vec<OffDoctrine> = comp
         .members()
-        .filter(|m| classify(m.ship_type_id, &m.ship_type_name, &m.ship_group, doctrine).odd())
+        .filter(|m| classify_in(comp, m, doctrine).odd())
         .map(|m| {
             let since = prev
                 .iter()
@@ -441,13 +465,37 @@ mod tests {
     fn the_support_jobs_are_never_flagged() {
         let d = doctrine();
         for group in
-            ["Titan", "Black Ops", "Force Recon Ship", "Covert Ops", "Interceptor",
-             "Command Destroyer", "Capsule", "Shuttle"]
+            ["Titan", "Force Recon Ship", "Interceptor", "Interdictor", "Capsule", "Shuttle"]
         {
             assert_eq!(classify(99, "Hull", group, Some(&d)), Standing::Support, "{group} was flagged");
         }
+        // Anything else is a choice the pilot made, and belongs in the configurable list if the
+        // fleet wants it.
+        for group in ["Black Ops", "Covert Ops", "Combat Recon Ship", "Command Destroyer"] {
+            assert_eq!(
+                classify(99, "Hull", group, Some(&d)),
+                Standing::Unexpected,
+                "{group} was waved through"
+            );
+        }
         // Case and stray spaces come from data, not from the pilot.
         assert_eq!(classify(99, "Hull", " force recon ship ", Some(&d)), Standing::Support);
+    }
+
+    /// The FC flies whatever the job needs, so their own ship is never the wrong one.
+    #[test]
+    fn the_fleet_boss_is_never_out_of_doctrine() {
+        let d = doctrine();
+        let boss = member(9, "Vindicator", "Battleship");
+        let other = member(9, "Vindicator", "Battleship");
+        let mut c = comp(vec![other.clone()]);
+        assert_eq!(classify_in(&c, &other, Some(&d)), Standing::Unexpected);
+
+        c.commander = Some(boss.clone());
+        assert_eq!(classify_in(&c, &boss, Some(&d)), Standing::Doctrine);
+        // Only the boss: a wing commander in the same hull is still in the wrong hull.
+        let wc = member(11, "Vindicator", "Battleship");
+        assert_eq!(classify_in(&c, &wc, Some(&d)), Standing::Unexpected);
     }
 
     /// A doctrine hull stays doctrine even when its group is also a support one, since the fleet
@@ -464,7 +512,7 @@ mod tests {
     /// Without a doctrine nothing can be called out of it: only the support list applies.
     #[test]
     fn no_doctrine_means_nothing_is_out_of_it() {
-        assert_eq!(classify(1, "Hull", "Interdictor", None), Standing::Unexpected);
+        assert_eq!(classify(1, "Hull", "Battleship", None), Standing::Unexpected);
         assert_eq!(classify(1, "Hull", "Titan", None), Standing::Support);
     }
 
@@ -575,6 +623,7 @@ mod tests {
     fn the_configured_hulls_decide_what_belongs() {
         let hull = |setup: i32, name: &str, tank: &str| crate::settings::FleetHull {
             setup_id: setup,
+            type_id: 0,
             name: name.to_owned(),
             tank: tank.to_owned(),
         };
@@ -614,11 +663,13 @@ mod tests {
         let hulls = vec![
             crate::settings::FleetHull {
                 setup_id: 46,
+                type_id: 0,
                 name: " flycatcher ".to_owned(),
                 tank: String::new(),
             },
             crate::settings::FleetHull {
                 setup_id: 46,
+                type_id: 0,
                 name: "Harpy".to_owned(),
                 tank: String::new(),
             },
@@ -628,6 +679,22 @@ mod tests {
         assert_eq!(d.setup_name, "Fast Tackle");
         assert!(d.has(22_464));
         assert_eq!(classify(0, "Harpy", "Assault Frigate", Some(&d)), Standing::Doctrine);
+    }
+
+    /// FC Choice is the absence of a doctrine, so nothing can be out of it.
+    #[test]
+    fn fc_choice_is_not_a_doctrine() {
+        assert!(!is_doctrine(FC_CHOICE));
+        assert!(!is_doctrine(SetupId(0)));
+        assert!(is_doctrine(SetupId(46)));
+
+        let hulls = vec![crate::settings::FleetHull {
+            setup_id: FC_CHOICE.0,
+            type_id: 0,
+            name: "Muninn".to_owned(),
+            tank: String::new(),
+        }];
+        assert!(configured(FC_CHOICE, "FC Choice", None, &hulls, None).is_none());
     }
 
     /// An unknown group is not a free pass.
