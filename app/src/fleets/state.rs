@@ -178,6 +178,8 @@ pub struct FleetState {
     pub preview: Slot<PingPreview>,
     /// The tracked fleet's boost channel as it stands, read off disk rather than from the API.
     pub boosts: Vec<super::boosts::Coverage>,
+    /// Boosts the FC marked covered or uncovered by hand, overriding the channel.
+    pub boosts_forced: super::boosts::Forced,
     /// How long each pilot flying something nobody asked for has been in it.
     pub off_doctrine: Vec<super::doctrine::OffDoctrine>,
     /// Staged changes to the open fleet, applied on a button rather than as they are typed.
@@ -220,6 +222,10 @@ impl FleetState {
             }
             Outcome::History(page) => self.history.put(page),
             Outcome::Opened(open) => {
+                // A different fleet is a different set of boosters, so the hand-marked ones go.
+                if self.edit.of.as_ref() != Some(&open.fleet.id) {
+                    self.boosts_forced.clear();
+                }
                 self.edit.seed(&open.fleet);
                 // Before the snapshot lands, so the clock is carried forward from the last one.
                 self.off_doctrine = super::doctrine::track_off_doctrine(

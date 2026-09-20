@@ -471,6 +471,30 @@ pub struct Wanted {
     pub priority: Priority,
 }
 
+/// Boosts the FC has judged for themselves, overriding what the channel says.
+///
+/// The channel is people typing, so it is wrong sometimes: a booster who never posted, or one who
+/// posted and then left. Keyed by the charge or burst name the requirement is written with.
+pub type Forced = std::collections::BTreeMap<String, bool>;
+
+/// What the FC said about this boost, if anything.
+pub fn forced(want: &str, forced: &Forced) -> Option<bool> {
+    forced.iter().find(|(k, _)| k.eq_ignore_ascii_case(want.trim())).map(|(_, v)| *v)
+}
+
+/// Whether anybody is on a wanted boost, with the FC's own judgement taken first.
+pub fn covered_with(want: &str, have: &[Coverage], marks: &Forced) -> bool {
+    forced(want, marks).unwrap_or_else(|| covered(want, have))
+}
+
+/// What the doctrine wants that nobody is on, with the FC's own judgement taken first.
+pub fn gaps_with<'a>(wanted: &'a [Wanted], have: &[Coverage], marks: &Forced) -> Vec<&'a Wanted> {
+    let mut out: Vec<&Wanted> =
+        wanted.iter().filter(|w| !covered_with(&w.what, have, marks)).collect();
+    out.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.what.cmp(&b.what)));
+    out
+}
+
 /// Whether anybody is on a wanted boost.
 ///
 /// A requirement is either one charge or a whole burst, because a doctrine that wants "some shield"
@@ -488,10 +512,10 @@ pub fn covered(want: &str, have: &[Coverage]) -> bool {
     })
 }
 
-/// What the doctrine wants that nobody is on, worst first.
+/// What the doctrine wants that nobody is on, most important first.
 pub fn gaps<'a>(wanted: &'a [Wanted], have: &[Coverage]) -> Vec<&'a Wanted> {
     let mut out: Vec<&Wanted> = wanted.iter().filter(|w| !covered(&w.what, have)).collect();
-    out.sort_by_key(|w| w.priority);
+    out.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.what.cmp(&b.what)));
     out
 }
 
@@ -893,6 +917,53 @@ mod tests {
         for n in ["Harpy Fleet", "Flycatchers", "Maelstrom", "Cormorant", ""] {
             assert!(!looks_like_armor(n), "{n}");
         }
+    }
+
+    /// The FC's own judgement beats the channel in both directions.
+    #[test]
+    fn a_boost_can_be_marked_by_hand() {
+        let wanted = vec![
+            Wanted { what: "Shield Extension".into(), priority: Priority::High },
+            Wanted { what: "Sensor Optimization".into(), priority: Priority::Low },
+        ];
+        let have = coverage(&[line("P", "Shield Extension Charge", 1)], 0);
+        assert_eq!(gaps(&wanted, &have).len(), 1);
+
+        // Marked covered even though nobody posted it.
+        let mut marks = Forced::new();
+        marks.insert("Sensor Optimization".to_owned(), true);
+        assert!(gaps_with(&wanted, &have, &marks).is_empty());
+
+        // And marked uncovered even though somebody did.
+        marks.insert("shield extension".to_owned(), false);
+        let out = gaps_with(&wanted, &have, &marks);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].what, "Shield Extension");
+
+        assert_eq!(forced("SHIELD EXTENSION", &marks), Some(false));
+        assert_eq!(forced("Rapid Deployment", &marks), None);
+    }
+
+    /// Gaps come out most important first, and by name within a priority.
+    #[test]
+    fn gaps_are_ordered_by_importance() {
+        let w = |name: &str, p: Priority| Wanted { what: name.into(), priority: p };
+        let wanted = vec![
+            w("Sensor Optimization", Priority::Low),
+            w("Shield Harmonizing", Priority::High),
+            w("Active Shielding", Priority::High),
+            w("Rapid Deployment", Priority::Medium),
+        ];
+        let names: Vec<&str> = gaps(&wanted, &[]).iter().map(|g| g.what.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "Active Shielding",
+                "Shield Harmonizing",
+                "Rapid Deployment",
+                "Sensor Optimization"
+            ]
+        );
     }
 
     /// An unknown priority string must not take the rest of the list down with it.

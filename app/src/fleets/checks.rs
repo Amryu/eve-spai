@@ -166,11 +166,7 @@ pub fn boosts(wanted: &[Wanted], have: &[Coverage]) -> Check {
     };
     let names: Vec<String> =
         gaps.iter().map(|g| format!("{} ({})", g.what, g.priority.label().to_lowercase())).collect();
-    Check {
-        level,
-        what: "Boosts".into(),
-        detail: format!("Nobody on {}. Run {} next.", names.join(", "), worst.what),
-    }
+    Check { level, what: "Boosts".into(), detail: format!("Nobody on {}.", names.join(", ")) }
 }
 
 /// How many hulls are in fleet that could put a boost up, in the FC's words.
@@ -380,7 +376,7 @@ mod tests {
         assert_eq!(boosts(&wanted(Priority::Low), &[]).level, Level::Fine);
 
         let check = boosts(&wanted(Priority::High), &[]);
-        assert!(check.detail.contains("Run Shield Extension next"), "{}", check.detail);
+        assert!(check.detail.contains("Nobody on Shield Extension (high)"), "{}", check.detail);
 
         // A doctrine nobody has set requirements for says nothing.
         assert_eq!(boosts(&[], &[]).level, Level::Fine);

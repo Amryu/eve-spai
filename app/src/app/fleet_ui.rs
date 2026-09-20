@@ -2547,7 +2547,7 @@ fn tracking_page(
             .size_range(270.0..=540.0)
             .show_inside(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    readiness_pane(ui, &open, &boosts, &wanted, open_editor);
+                    readiness_pane(ui, &open, &boosts, &wanted, &mut st.boosts_forced, open_editor);
                     ui.separator();
                     fleet_sidebar(ui, st, &open, read_only, act_on);
                 });
@@ -2562,7 +2562,7 @@ fn tracking_page(
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
             DetailTab::Members => members_view(ui, &open, can_move, can_kick, act_on),
             DetailTab::Composition => {
-                composition_view(ui, &open, &boosts, &wanted, &off_doctrine, open_editor)
+                composition_view(ui, &open, &off_doctrine)
             }
         });
     });
@@ -2801,6 +2801,7 @@ fn readiness_pane(
     open: &crate::fleets::state::OpenFleet,
     coverage: &[crate::fleets::boosts::Coverage],
     wanted: &[crate::fleets::boosts::Wanted],
+    marks: &mut crate::fleets::boosts::Forced,
     open_editor: &mut bool,
 ) {
     use crate::fleets::{checks, logi};
@@ -2850,29 +2851,57 @@ fn readiness_pane(
     // The pane's own headline, short: the gaps are listed as chips under it rather than run
     // together into a sentence that wraps three lines in a sidebar.
     let long = checks::boosts(wanted, coverage);
-    let gaps = crate::fleets::boosts::gaps(wanted, coverage);
+    let gaps = crate::fleets::boosts::gaps_with(wanted, coverage, marks);
+    let level = match gaps.first().map(|g| g.priority) {
+        Some(crate::fleets::boosts::Priority::High) => checks::Level::Danger,
+        Some(crate::fleets::boosts::Priority::Medium) => checks::Level::Warning,
+        _ => checks::Level::Fine,
+    };
     let short = match (wanted.is_empty(), gaps.len()) {
         (true, _) => "Nothing set for this doctrine.".to_owned(),
         (false, 0) => format!("All {} covered.", wanted.len()),
         (false, n) => format!("{n} of {} not covered.", wanted.len()),
     };
-    status_line(ui, &checks::Check { detail: short, ..long });
+    status_line(ui, &checks::Check { detail: short, level, ..long });
     if !gaps.is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("run next").weak());
+            ui.label(egui::RichText::new("Not covered").weak());
             for g in &gaps {
-                // Extend rather than wrap: a charge name broken across two lines inside a wrapped
-                // row lands on top of the chips beside it.
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&g.what).color(priority_colour(g.priority)).strong(),
-                    )
-                    .wrap_mode(egui::TextWrapMode::Extend),
-                )
-                .on_hover_text(format!("{} priority for this doctrine.", g.priority.label()));
+                if gap_chip(ui, g).clicked() {
+                    marks.insert(g.what.clone(), true);
+                }
             }
         });
+    }
+    // Anything the FC judged for themselves, and a way back.
+    let by_hand: Vec<(String, bool)> = marks.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut undo: Option<String> = None;
+    if !by_hand.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("By hand").weak());
+            for (what, on) in &by_hand {
+                let text = egui::RichText::new(format!(
+                    "{what} {}",
+                    if *on { "covered" } else { "not covered" }
+                ));
+                if ui
+                    .add(
+                        egui::Button::new(text)
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color())),
+                    )
+                    .on_hover_text("Go back to what the channel says")
+                    .clicked()
+                {
+                    undo = Some(what.clone());
+                }
+            }
+        });
+    }
+    if let Some(what) = undo {
+        marks.remove(&what);
     }
     detail_line(ui, checks::booster_line(comp, open.doctrine.as_ref()), None);
     if coverage.is_empty() {
@@ -2885,7 +2914,27 @@ fn readiness_pane(
             "no ML".to_owned()
         };
         let colour = burst_colour(ui, c.burst);
-        detail_line(ui, format!("{} pilot(s), {ml}", c.pilots), Some((c.what.clone(), colour)));
+        // Both halves take the click, not just the last one laid out.
+        let resp = ui
+            .horizontal_wrapped(|ui| {
+                ui.add_space(14.0);
+                let name = ui.add(
+                    egui::Label::new(egui::RichText::new(&c.what).color(colour))
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .sense(egui::Sense::click()),
+                );
+                let count = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("{} pilot(s), {ml}", c.pilots)).weak(),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                name.union(count)
+            })
+            .inner;
+        if resp.on_hover_text("Mark this one as not covered").clicked() {
+            marks.insert(c.what.clone(), false);
+        }
     }
     ui.add_space(6.0);
 
@@ -2893,6 +2942,27 @@ fn readiness_pane(
         status_line(ui, &check);
     }
     ui.add_space(4.0);
+}
+
+/// One boost nobody is on. The important ones carry a filled background, since a colour alone on
+/// a red or amber theme is not much of a difference.
+#[cfg(feature = "fleet")]
+fn gap_chip(ui: &mut egui::Ui, g: &crate::fleets::boosts::Wanted) -> egui::Response {
+    use crate::fleets::boosts::Priority;
+    let colour = priority_colour(g.priority);
+    let text = egui::RichText::new(&g.what).color(colour).strong();
+    let button = egui::Button::new(text).wrap_mode(egui::TextWrapMode::Extend);
+    let button = match g.priority {
+        Priority::High => button
+            .fill(colour.gamma_multiply(0.25))
+            .stroke(egui::Stroke::new(1.0, colour)),
+        Priority::Medium => button.stroke(egui::Stroke::new(1.0, colour.gamma_multiply(0.6))),
+        Priority::Low => button.frame(false),
+    };
+    ui.add(button).on_hover_text(format!(
+        "{} priority. Click to mark it covered.",
+        g.priority.label()
+    ))
 }
 
 /// One check as a coloured headline plus its reason.
@@ -3068,34 +3138,6 @@ fn fleet_sidebar(
     }
 }
 
-/// What is thin about the fleet, worst first. Advice, so nothing here blocks anything.
-#[cfg(feature = "fleet")]
-fn checks_strip(ui: &mut egui::Ui, checks: &[crate::fleets::checks::Check]) {
-    use crate::fleets::checks::Level;
-    let loud: Vec<_> = checks.iter().filter(|c| c.level != Level::Fine).collect();
-    if loud.is_empty() {
-        if !checks.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
-                        .color(crate::theme::standing::FRIENDLY),
-                );
-                ui.label(egui::RichText::new("Logi, interdiction and tackle all fine.").weak());
-            });
-            ui.add_space(4.0);
-        }
-        return;
-    }
-    for c in loud {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(level_icon(c.level)).color(level_colour(c.level)));
-            ui.label(egui::RichText::new(&c.what).strong().color(level_colour(c.level)));
-            ui.label(&c.detail);
-        });
-    }
-    ui.add_space(4.0);
-}
-
 #[cfg(feature = "fleet")]
 fn level_colour(level: crate::fleets::checks::Level) -> egui::Color32 {
     use crate::fleets::checks::Level;
@@ -3116,98 +3158,6 @@ fn level_icon(level: crate::fleets::checks::Level) -> &'static str {
         Level::Warning | Level::Danger => icon::WARNING,
         Level::Critical => icon::WARNING_OCTAGON,
     }
-}
-
-/// Who is on which boost, read out of the fleet's own boost channel.
-#[cfg(feature = "fleet")]
-fn boost_strip(
-    ui: &mut egui::Ui,
-    boosts: &[crate::fleets::boosts::Coverage],
-    wanted: &[crate::fleets::boosts::Wanted],
-    open_editor: &mut bool,
-) {
-    use crate::fleets::boosts;
-    let gaps = boosts::gaps(wanted, boosts);
-    ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Boosts").strong());
-        if ui
-            .add(
-                egui::Button::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).frame(false),
-            )
-            .on_hover_text("Set which boosts this doctrine wants")
-            .clicked()
-        {
-            *open_editor = true;
-        }
-        if gaps.is_empty() {
-            ui.label(
-                egui::RichText::new(if wanted.is_empty() {
-                    "nothing set for this doctrine".to_owned()
-                } else {
-                    format!("all {} the doctrine wants are up", wanted.len())
-                })
-                .weak(),
-            );
-        } else {
-            ui.label(egui::RichText::new("run next").weak());
-            for g in &gaps {
-                // Extend rather than wrap: a charge name broken across two lines inside a wrapped
-                // row lands on top of the chips beside it.
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&g.what).color(priority_colour(g.priority)).strong(),
-                    )
-                    .wrap_mode(egui::TextWrapMode::Extend),
-                )
-                .on_hover_text(format!("{} priority for this doctrine.", g.priority.label()));
-            }
-        }
-    });
-    if boosts.is_empty() {
-        ui.label(egui::RichText::new("Nobody has posted in the boost channel yet.").weak());
-    } else {
-        // Same columns as the composition tables below: name, count, then the detail.
-        egui::Grid::new("boost_coverage").num_columns(4).striped(true).spacing([12.0, 3.0]).show(
-            ui,
-            |ui| {
-                for c in boosts {
-                    cell(ui, COL[0], |ui| {
-                        ui.label(&c.what);
-                    });
-                    cell(ui, 40.0, |ui| {
-                        ui.label(egui::RichText::new(format!("{}", c.pilots)).strong())
-                            .on_hover_text("Pilots running this.");
-                    });
-                    cell(ui, 110.0, |ui| {
-                        if c.mindlinked > 0 {
-                            ui.label(
-                                egui::RichText::new(format!("{} ML", c.mindlinked))
-                                    .color(crate::theme::chip::ISK)
-                                    .strong(),
-                            )
-                            .on_hover_text("Of those, how many have a mindlink.");
-                        } else {
-                            ui.label(egui::RichText::new("no ML").weak());
-                        }
-                    });
-                    cell(ui, COL[1] + COL[2], |ui| {
-                        // A pilot who typed "skirm" named the burst and no charge, so repeating it
-                        // here would read as two facts instead of one.
-                        ui.label(
-                            egui::RichText::new(if c.generic {
-                                "charge not named"
-                            } else {
-                                c.burst.label()
-                            })
-                            .weak(),
-                        );
-                    });
-                    ui.end_row();
-                }
-            },
-        );
-    }
-    ui.add_space(6.0);
 }
 
 #[cfg(feature = "fleet")]
@@ -3540,10 +3490,7 @@ fn member_row(
 fn composition_view(
     ui: &mut egui::Ui,
     open: &crate::fleets::state::OpenFleet,
-    boosts: &[crate::fleets::boosts::Coverage],
-    wanted: &[crate::fleets::boosts::Wanted],
     off_doctrine: &[crate::fleets::doctrine::OffDoctrine],
-    open_editor: &mut bool,
 ) {
     use crate::fleets::doctrine::{by_category, by_ship, unexpected_pilots, Standing};
     let doctrine = open.doctrine.as_ref();
@@ -3552,23 +3499,8 @@ fn composition_view(
         ui.label(egui::RichText::new("Nobody in the fleet.").weak());
         return;
     }
+    // Everything above the tables lives in the readiness pane now, so the tab is the tables.
     let total = open.composition.total().max(1);
-
-    checks_strip(ui, &crate::fleets::checks::hulls(&open.composition));
-    boost_strip(ui, boosts, wanted, open_editor);
-
-    if let Some(missing) = doctrine.map(|d| d.missing(&open.composition)) {
-        if !missing.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Nobody flying").strong());
-                ui.label(
-                    egui::RichText::new(missing.join(", "))
-                        .color(crate::theme::standing::WARNING),
-                );
-            });
-            ui.add_space(4.0);
-        }
-    }
 
     // The doctrine hulls are the ones an FC counts one by one, so they stay per hull. Everything
     // else reads as a role with the hulls behind it.
