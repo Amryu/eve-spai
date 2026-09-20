@@ -260,7 +260,16 @@ impl SpaiApp {
             if let Some(id) = page.fleet().cloned() {
                 // Anything that cannot be taken back asks first. The rest is one click.
                 if let Some(question) = confirm_question(&action) {
-                    self.fleet_confirm = Some((id, action, question));
+                    let pilots = self
+                        .fleet
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .open
+                        .value
+                        .as_ref()
+                        .map(|o| o.composition.total())
+                        .unwrap_or(0);
+                    self.fleet_confirm = Some((id, action, question, pilots));
                 } else {
                     self.fleet_dispatch(Cmd::Act(id, action));
                 }
@@ -1275,6 +1284,93 @@ fn confirm_question(action: &Action) -> Option<&'static str> {
     })
 }
 
+/// How much damage an action does if it was not meant.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Danger {
+    None,
+    /// Undoable, but somebody has to be re-invited.
+    Caution,
+    /// Takes the whole fleet with it.
+    Severe,
+}
+
+#[cfg(feature = "fleet")]
+fn danger(action: &Action) -> Danger {
+    match action {
+        Action::Close | Action::KickAll => Danger::Severe,
+        Action::KickCapsules | Action::Kick { .. } | Action::KickMany { .. } => Danger::Caution,
+        _ => Danger::None,
+    }
+}
+
+/// The word a severe action has to be typed out with, so it cannot be a stray click.
+#[cfg(feature = "fleet")]
+fn confirm_word(action: &Action) -> Option<&'static str> {
+    match action {
+        Action::Close => Some("CLOSE"),
+        Action::KickAll => Some("KICK ALL"),
+        _ => None,
+    }
+}
+
+/// What a severe action costs, spelled out rather than implied.
+#[cfg(feature = "fleet")]
+fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
+    match action {
+        Action::Close => Some(format!(
+            "The fleet stops being tracked and {pilots} pilots stop earning PAPs for it."
+        )),
+        Action::KickAll => {
+            Some(format!("All {pilots} pilots are removed. They have to be invited back one by one."))
+        }
+        Action::KickCapsules => Some("Every pilot in a pod is removed.".to_owned()),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, feature = "fleet"))]
+mod confirm_tests {
+    use super::*;
+
+    /// Closing a fleet and emptying it are the two that need typing out; the rest are one dialog.
+    #[test]
+    fn only_the_worst_actions_ask_for_a_word() {
+        assert_eq!(confirm_word(&Action::Close), Some("CLOSE"));
+        assert_eq!(confirm_word(&Action::KickAll), Some("KICK ALL"));
+        assert_eq!(confirm_word(&Action::KickCapsules), None);
+        assert_eq!(confirm_word(&Action::Kick { character_id: 1, exclude: false }), None);
+
+        assert_eq!(danger(&Action::Close), Danger::Severe);
+        assert_eq!(danger(&Action::KickAll), Danger::Severe);
+        assert_eq!(danger(&Action::KickCapsules), Danger::Caution);
+        assert_eq!(danger(&Action::SetMotd), Danger::None);
+        assert_eq!(danger(&Action::AddWing), Danger::None);
+
+        // Everything that asks for a word also says what it costs.
+        for a in [Action::Close, Action::KickAll] {
+            let line = confirm_consequence(&a, 42).expect("a consequence");
+            assert!(line.contains("42"), "{line}");
+        }
+        assert!(confirm_consequence(&Action::SetMotd, 42).is_none());
+    }
+
+    /// Anything that asks a question has a danger level, and anything dangerous asks.
+    #[test]
+    fn a_dangerous_action_always_asks_first() {
+        for a in [
+            Action::Close,
+            Action::KickAll,
+            Action::KickCapsules,
+            Action::Kick { character_id: 1, exclude: false },
+        ] {
+            assert_ne!(danger(&a), Danger::None, "{a:?}");
+            assert!(confirm_question(&a).is_some(), "{a:?}");
+        }
+        assert!(confirm_question(&Action::SetMotd).is_none());
+    }
+}
+
 /// Which half of a fleet's page is showing.
 #[cfg(feature = "fleet")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -1563,12 +1659,17 @@ fn action_bar(
         for (glyph, label, action) in actions {
             let perm = action.perm();
             let allowed = st.can(perm);
-            let resp = ui
-                .add_enabled(allowed, egui::Button::new(format!("{glyph}  {label}")))
-                .on_disabled_hover_text(format!(
-                    "Your account does not have the {} permission.",
-                    perm.as_str()
-                ));
+            let text = egui::RichText::new(format!("{glyph}  {label}"));
+            let button = match danger(&action) {
+                Danger::Severe => egui::Button::new(text.color(crate::theme::standing::HOSTILE))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::standing::HOSTILE)),
+                Danger::Caution => egui::Button::new(text.color(crate::theme::standing::WARNING)),
+                Danger::None => egui::Button::new(text),
+            };
+            let resp = ui.add_enabled(allowed, button).on_disabled_hover_text(format!(
+                "Your account does not have the {} permission.",
+                perm.as_str()
+            ));
             let resp = if allowed {
                 resp.on_hover_text("Records the request this would send. Nothing leaves the app.")
             } else {
@@ -1905,36 +2006,61 @@ fn standing_colour(ui: &egui::Ui, standing: crate::fleets::doctrine::Standing) -
 impl SpaiApp {
     /// Asks before anything that cannot be taken back.
     #[cfg(feature = "fleet")]
-    fn fleet_confirm_modal(&mut self, ctx: &egui::Context) {
-        let Some((id, action, question)) = self.fleet_confirm.clone() else { return };
+    pub(crate) fn fleet_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some((id, action, question, pilots)) = self.fleet_confirm.clone() else { return };
+        let word = confirm_word(&action);
+        let typed_id = egui::Id::new("fleet_confirm_typed");
+        let mut typed: String = ctx.data(|d| d.get_temp(typed_id).unwrap_or_default());
         let mut decided: Option<bool> = None;
         egui::Modal::new(egui::Id::new("fleet_confirm")).show(ctx, |ui| {
-            ui.set_max_width(360.0);
-            ui.heading(question);
+            ui.set_max_width(380.0);
+            ui.heading(egui::RichText::new(question).color(match danger(&action) {
+                Danger::Severe => crate::theme::standing::HOSTILE,
+                _ => ui.visuals().text_color(),
+            }));
+            if let Some(line) = confirm_consequence(&action, pilots) {
+                ui.label(line);
+            }
             ui.label(
                 egui::RichText::new("This build records the request and sends nothing.").weak(),
             );
+            if let Some(w) = word {
+                ui.add_space(6.0);
+                ui.label(format!("Type {w} to confirm."));
+                ui.add(egui::TextEdit::singleline(&mut typed).desired_width(200.0));
+            }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
                     decided = Some(false);
                 }
+                let armed = word.is_none_or(|w| typed.trim().eq_ignore_ascii_case(w));
                 if ui
-                    .button(
-                        egui::RichText::new("Do it").color(crate::theme::standing::HOSTILE),
+                    .add_enabled(
+                        armed,
+                        egui::Button::new(
+                            egui::RichText::new("Do it").color(crate::theme::standing::HOSTILE),
+                        )
+                        .stroke(egui::Stroke::new(1.0, crate::theme::standing::HOSTILE)),
                     )
+                    .on_disabled_hover_text("Type the word above first.")
                     .clicked()
                 {
                     decided = Some(true);
                 }
             });
         });
+        ctx.data_mut(|d| d.insert_temp(typed_id, typed));
         match decided {
             Some(true) => {
                 self.fleet_confirm = None;
+                ctx.data_mut(|d| d.insert_temp(typed_id, String::new()));
                 self.fleet_dispatch(Cmd::Act(id, action));
             }
-            Some(false) => self.fleet_confirm = None,
+            Some(false) => {
+                self.fleet_confirm = None;
+                ctx.data_mut(|d| d.insert_temp(typed_id, String::new()));
+            }
             None => {}
         }
     }

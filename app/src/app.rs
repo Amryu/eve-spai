@@ -825,12 +825,14 @@ pub struct SpaiApp {
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
-    /// A destructive action waiting to be confirmed: which fleet, what, and the question asked.
+    /// A destructive action waiting to be confirmed: which fleet, what, and how much of the fleet
+    /// it takes with it.
     #[cfg(feature = "fleet")]
-    fleet_confirm: Option<(
+    pub(crate) fleet_confirm: Option<(
         crate::fleets::model::FleetId,
         crate::fleets::backend::Action,
         &'static str,
+        usize,
     )>,
     #[cfg(feature = "fc-rescue")]
     rescue: std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>>,

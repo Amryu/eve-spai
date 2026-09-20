@@ -953,6 +953,35 @@ fn fleet_thin_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The dialog behind the worst button on the page, which has to be typed out rather than clicked
+/// through. On its own, because a modal painted over the page reads to the overlap check as text
+/// on top of text.
+#[cfg(feature = "fleet")]
+fn fleet_confirm_scene(
+    name: &'static str,
+    size: [f32; 2],
+    action: crate::fleets::backend::Action,
+    question: &'static str,
+) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            a.fleet_booted = true;
+            a.fleet_confirm = Some((
+                crate::fleets::model::FleetId("fixture-fleet".to_owned()),
+                action.clone(),
+                question,
+                24,
+            ));
+            a
+        });
+        app.fleet_confirm_modal(ctx);
+    })
+}
+
 /// The fleet settings section on its own: the whole settings page would need a canvas thousands of
 /// pixels tall to reach it.
 #[cfg(feature = "fleet")]
@@ -1301,6 +1330,20 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_thin_scene("fleet_composition_thin", [1280.0, 820.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_confirm_scene(
+        "fleet_confirm_kick_all",
+        [560.0, 340.0],
+        crate::fleets::backend::Action::KickAll,
+        "Kick everyone out of the fleet?",
+    ));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_confirm_scene(
+        "fleet_confirm_kick_pods",
+        [560.0, 300.0],
+        crate::fleets::backend::Action::KickCapsules,
+        "Kick every pod out of the fleet?",
+    ));
     #[cfg(feature = "fleet")]
     v.push(fleet_scene("fleet_list_narrow", [720.0, 700.0]));
     #[cfg(feature = "fc-rescue")]
