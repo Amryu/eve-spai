@@ -2622,8 +2622,7 @@ fn comms_buttons(
     let sector = comms::sector(&tags);
     let op_name = seed.channel_name(&seed.mumble_channels, open.fleet.mumble_channel_id);
     let op_url = op_name.and_then(comms::op_url);
-    let command_url =
-        open.fleet.mumble_channel_id.map(|c| comms::command_url(sector, c.0));
+    let command_url = op_name.and_then(|n| comms::command_url(sector, n));
 
     // Drawn in a right-to-left strip, so the order here is the reverse of how it reads: the
     // fleet's own comms end up first.

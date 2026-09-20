@@ -42,13 +42,41 @@ pub fn sector(tags: &[TagItem]) -> Sector {
     }
 }
 
-/// The command channel for an op number, in the right sector.
+/// The command channel that goes with an op channel, by name.
 ///
-/// Ops 9 and up carry a "- SC" suffix, which is how the server spells the ones an SC runs.
-pub fn command_url(sector: Sector, op: i32) -> String {
-    let op = op.clamp(1, 12);
-    let chan = if op >= 9 { format!("Command {op} - SC") } else { format!("Command {op}") };
-    link(&[sector.channel(), &chan])
+/// The op channels are not numbered the way their ids are (id 8 is "Op 9"), so this reads the
+/// name the API gave rather than counting. Anything that is not an op channel, like capital or
+/// standing comms, has no command channel of its own.
+pub fn command_channel(op_name: &str) -> Option<String> {
+    let n = op_name.trim();
+    if n.eq_ignore_ascii_case("o7") {
+        return Some("Command 7".to_owned());
+    }
+    for named in ["HD", "Locust", "SV"] {
+        if n.eq_ignore_ascii_case(named) {
+            return Some(format!("{named} Command"));
+        }
+    }
+    if n.eq_ignore_ascii_case("Scouts") {
+        return Some("Scouts".to_owned());
+    }
+    let rest = n.get(..3).filter(|p| p.eq_ignore_ascii_case("op "))?;
+    let _ = rest;
+    let k: i32 = n[3..].trim().parse().ok()?;
+    (1..=12).contains(&k).then(|| format!("Command {k}"))
+}
+
+/// The command channel for an op channel, in the right sector.
+///
+/// Alpha spells its last four "Command 9 - SC" and Bravo does not, which is the sort of thing only
+/// a link that fails to open tells you about.
+pub fn command_url(sector: Sector, op_name: &str) -> Option<String> {
+    let chan = command_channel(op_name)?;
+    let chan = match (sector, chan.strip_prefix("Command ").and_then(|k| k.parse::<i32>().ok())) {
+        (Sector::Alpha, Some(k)) if k >= 9 => format!("Command {k} - SC"),
+        _ => chan,
+    };
+    Some(link(&[sector.channel(), &chan]))
 }
 
 /// The fleet's own op channel, by the name the dashboard gave it.
@@ -108,25 +136,47 @@ mod tests {
         assert_eq!(sector(&[tag("PEACETIME", false), tag("STRATEGIC", true)]), Sector::Alpha);
     }
 
-    /// The command link names its sector and its channel, with the SC suffix where the server has
-    /// one.
+    /// The op channels are not numbered the way their ids are, so the name is what is read.
+    #[test]
+    fn the_command_channel_follows_the_op_channels_name() {
+        assert_eq!(command_channel("Op 3").as_deref(), Some("Command 3"));
+        assert_eq!(command_channel(" op 12 ").as_deref(), Some("Command 12"));
+        // Channel id 7 is spelled "o7" and its command channel is the seventh.
+        assert_eq!(command_channel("o7").as_deref(), Some("Command 7"));
+        assert_eq!(command_channel("HD").as_deref(), Some("HD Command"));
+        assert_eq!(command_channel("Locust").as_deref(), Some("Locust Command"));
+        assert_eq!(command_channel("SV").as_deref(), Some("SV Command"));
+        assert_eq!(command_channel("Scouts").as_deref(), Some("Scouts"));
+        // Nothing an FC sits above.
+        assert_eq!(command_channel("Capital Comms"), None);
+        assert_eq!(command_channel("Standing Comms"), None);
+        assert_eq!(command_channel("Op 99"), None);
+        assert_eq!(command_channel(""), None);
+    }
+
+    /// Alpha suffixes its last four and Bravo does not.
     #[test]
     fn a_command_link_points_at_its_sector() {
-        let a = command_url(Sector::Alpha, 3);
+        let path = |s: Sector, n: &str| {
+            command_url(s, n).and_then(|u| crate::mumble::channel_path(&u))
+        };
         assert_eq!(
-            crate::mumble::channel_path(&a).as_deref(),
+            path(Sector::Alpha, "Op 3").as_deref(),
             Some("Ops/Command Sector Alpha/Command 3")
         );
-        let b = command_url(Sector::Bravo, 11);
         assert_eq!(
-            crate::mumble::channel_path(&b).as_deref(),
-            Some("Ops/Command Sector Bravo/Command 11 - SC")
+            path(Sector::Alpha, "Op 11").as_deref(),
+            Some("Ops/Command Sector Alpha/Command 11 - SC")
         );
-        // Out of range is clamped rather than producing a channel nobody has.
         assert_eq!(
-            crate::mumble::channel_path(&command_url(Sector::Alpha, 99)).as_deref(),
-            Some("Ops/Command Sector Alpha/Command 12 - SC")
+            path(Sector::Bravo, "Op 11").as_deref(),
+            Some("Ops/Command Sector Bravo/Command 11")
         );
+        assert_eq!(
+            path(Sector::Bravo, "HD").as_deref(),
+            Some("Ops/Command Sector Bravo/HD Command")
+        );
+        assert_eq!(path(Sector::Alpha, "Capital Comms"), None);
     }
 
     /// The op link uses the channel's own name, which is not always its number.

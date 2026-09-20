@@ -63,7 +63,8 @@ pub enum Category {
 const CATEGORY_GROUPS: &[(Category, &[&str])] = &[
     (Category::Logistics, &["Logistics", "Logistics Frigate", "Force Auxiliary"]),
     (Category::Interdiction, &["Interdictor", "Heavy Interdiction Cruiser"]),
-    (Category::Tackle, &["Interceptor", "Assault Frigate", "Command Destroyer"]),
+    // Assault frigates are the damage in a frigate fleet, not the tackle on it.
+    (Category::Tackle, &["Interceptor", "Command Destroyer"]),
     (Category::Command, &["Command Ship"]),
     (
         Category::Recon,
@@ -551,6 +552,7 @@ mod tests {
             ("Force Auxiliary", Category::Logistics),
             ("Heavy Interdiction Cruiser", Category::Interdiction),
             ("Command Destroyer", Category::Tackle),
+            ("Assault Frigate", Category::Line),
             ("Command Ship", Category::Command),
             ("Force Recon Ship", Category::Recon),
             ("Titan", Category::Capital),
