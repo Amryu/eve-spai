@@ -592,6 +592,40 @@ impl SpaiApp {
         false
     }
 
+    /// Writes every doctrine's configuration to a file the user picks.
+    #[cfg(feature = "fleet")]
+    fn fleet_export_doctrines(&self, names: &dyn Fn(i32) -> Option<String>) -> Option<String> {
+        let bundle = crate::fleets::config::export(&self.settings, names);
+        let path = rfd::FileDialog::new()
+            .set_file_name("doctrines.spaifleet.json")
+            .add_filter("EVE Spai doctrines", &["json"])
+            .save_file()?;
+        Some(match std::fs::write(&path, crate::fleets::config::to_json(&bundle)) {
+            Ok(()) => format!("Exported {} doctrines.", bundle.doctrines.len()),
+            Err(e) => format!("Export failed: {e}"),
+        })
+    }
+
+    /// Reads one back. A doctrine the file names replaces that doctrine and nothing else, so one
+    /// can be shared without taking the rest of somebody's configuration with it.
+    #[cfg(feature = "fleet")]
+    fn fleet_import_doctrines(&mut self) -> Option<String> {
+        let path = rfd::FileDialog::new()
+            .add_filter("EVE Spai doctrines", &["json"])
+            .pick_file()?;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => return Some(format!("Could not read it: {e}")),
+        };
+        let bundle = match crate::fleets::config::from_json(&text) {
+            Ok(b) => b,
+            Err(e) => return Some(format!("Not a doctrine file: {e}")),
+        };
+        let n = crate::fleets::config::import(&mut self.settings, &bundle, false);
+        self.needs_save = true;
+        Some(format!("Imported {} doctrines, {} hulls, {} boosts.", n.doctrines, n.hulls, n.boosts))
+    }
+
     /// The editor window. Doctrines on the left, that doctrine's boosts on the right.
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_boost_editor(&mut self, ctx: &egui::Context) -> bool {
@@ -602,6 +636,9 @@ impl SpaiApp {
         let mut changed = false;
         let mut open = true;
         let mut add_custom: Option<String> = None;
+        let mut io: Option<bool> = None;
+        let status_id = egui::Id::new("fleet_doctrine_io_status");
+        let status: Option<String> = ctx.data(|d| d.get_temp(status_id));
         // Every ship in the game, for the hull picker's type-ahead.
         let ships: Vec<(i64, String, String)> =
             self.store.as_ref().map(|s| s.all_ships()).unwrap_or_default();
@@ -662,7 +699,8 @@ impl SpaiApp {
                         egui::ScrollArea::vertical()
                             .id_salt("boost_setups")
                             .auto_shrink([false, false])
-                            .max_height(ui.available_height() - 34.0)
+                            // Room for the Add button and the two file buttons under it.
+                            .max_height((ui.available_height() - 70.0).max(80.0))
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
                                 for s in &setups {
@@ -711,6 +749,35 @@ impl SpaiApp {
                             .clicked()
                         {
                             add_custom = Some(typed);
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!(
+                                    "{}  Export",
+                                    egui_phosphor::regular::UPLOAD_SIMPLE
+                                ))
+                                .on_hover_text("Save every doctrine's hulls and boosts to a file")
+                                .clicked()
+                            {
+                                io = Some(false);
+                            }
+                            if ui
+                                .button(format!(
+                                    "{}  Import",
+                                    egui_phosphor::regular::DOWNLOAD_SIMPLE
+                                ))
+                                .on_hover_text(
+                                    "Read a file back. Doctrines it names are replaced, the rest \
+                                     are left alone.",
+                                )
+                                .clicked()
+                            {
+                                io = Some(true);
+                            }
+                        });
+                        if let Some(note) = &status {
+                            ui.label(egui::RichText::new(note).weak());
                         }
                     });
                     ui.separator();
@@ -979,6 +1046,24 @@ impl SpaiApp {
                 });
             });
 
+        if let Some(importing) = io {
+            let names = {
+                let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+                let setups = st.seed.setups.clone();
+                move |id: i32| {
+                    setups.iter().find(|s| s.id.0 == id).map(|s| s.name.trim().to_owned())
+                }
+            };
+            let note = if importing {
+                self.fleet_import_doctrines()
+            } else {
+                self.fleet_export_doctrines(&names)
+            };
+            if let Some(note) = note {
+                ctx.data_mut(|d| d.insert_temp(status_id, note));
+                changed = true;
+            }
+        }
         if let Some(name) = add_custom {
             let next = self
                 .settings

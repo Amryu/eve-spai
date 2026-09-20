@@ -1429,9 +1429,9 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
     #[cfg(feature = "fleet")]
-    v.push(fleet_boost_editor_scene("fleet_boost_editor", [840.0, 620.0]));
+    v.push(fleet_boost_editor_scene("fleet_boost_editor", [860.0, 660.0]));
     #[cfg(feature = "fleet")]
-    v.push(fleet_hull_editor_scene("fleet_hull_editor", [840.0, 620.0]));
+    v.push(fleet_hull_editor_scene("fleet_hull_editor", [860.0, 660.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
     #[cfg(feature = "fleet")]
