@@ -828,6 +828,15 @@ pub struct SpaiApp {
     /// The tracked fleet's settings sidebar is open.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_sidebar_open: bool,
+    /// Where Mumble last said it was, as a `mumble://` URL.
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_mumble_at: Option<String>,
+    #[cfg(feature = "fleet")]
+    fleet_mumble_asked: Option<std::time::Instant>,
+    #[cfg(feature = "fleet")]
+    fleet_mumble_tx: std::sync::mpsc::Sender<Option<String>>,
+    #[cfg(feature = "fleet")]
+    fleet_mumble_rx: std::sync::mpsc::Receiver<Option<String>>,
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
@@ -918,6 +927,8 @@ impl SpaiApp {
         crate::theme::install_fonts(ctx);
         #[cfg(feature = "fleet")]
         let (fleet_tx, fleet_rx) = std::sync::mpsc::channel();
+        #[cfg(feature = "fleet")]
+        let fleet_mumble = std::sync::mpsc::channel();
 
         if !headless {
             crate::image_cache::install_image_loaders_cached(ctx);
@@ -1594,6 +1605,14 @@ impl SpaiApp {
             fleet_boost_editor: false,
             #[cfg(feature = "fleet")]
             fleet_sidebar_open: false,
+            #[cfg(feature = "fleet")]
+            fleet_mumble_at: None,
+            #[cfg(feature = "fleet")]
+            fleet_mumble_asked: None,
+            #[cfg(feature = "fleet")]
+            fleet_mumble_tx: fleet_mumble.0,
+            #[cfg(feature = "fleet")]
+            fleet_mumble_rx: fleet_mumble.1,
             #[cfg(feature = "fleet")]
             fleet_detail_tab: Default::default(),
             #[cfg(feature = "fleet")]
@@ -6052,9 +6071,9 @@ fn is_ping_bot(nick: &str) -> bool {
     ["delvebot", "directorbot"].contains(&nick.to_ascii_lowercase().as_str())
 }
 
-/// Soft amber pulse marking an action the FC hasn't taken yet on the current ping. `None` once
-/// done, so the button falls back to its normal styling.
-#[cfg(feature = "fc-rescue")]
+/// Soft amber pulse marking an action the FC hasn't taken yet. `None` once done, so the button
+/// falls back to its normal styling.
+#[cfg(any(feature = "fc-rescue", feature = "fleet"))]
 fn pulse_fill(ui: &egui::Ui, pending: bool) -> Option<egui::Color32> {
     if !pending {
         return None;

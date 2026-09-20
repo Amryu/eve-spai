@@ -50,6 +50,9 @@ impl SpaiApp {
     /// frozen app.
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_collect(&mut self) {
+        while let Ok(at) = self.fleet_mumble_rx.try_recv() {
+            self.fleet_mumble_at = at;
+        }
         let cur = self.fleet_gen;
         let mut done: Vec<Outcome> = Vec::new();
         while let Ok((gen, out)) = self.fleet_rx.try_recv() {
@@ -125,6 +128,27 @@ impl SpaiApp {
         self.fleet_dispatch(cmd);
     }
 
+    /// Asks Mumble where it is, off the UI thread and no more than once every `MUMBLE_POLL`.
+    ///
+    /// A session-bus round trip is fast until the bus is busy or Mumble is wedged, and a frame
+    /// that waits on one is a frame that stutters.
+    #[cfg(feature = "fleet")]
+    fn fleet_poll_mumble(&mut self, ctx: &egui::Context) {
+        if self.headless {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.fleet_mumble_asked.is_some_and(|t| now.duration_since(t) < MUMBLE_POLL) {
+            return;
+        }
+        self.fleet_mumble_asked = Some(now);
+        let (tx, ctx) = (self.fleet_mumble_tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::mumble::current_url());
+            ctx.request_repaint();
+        });
+    }
+
     #[cfg(feature = "fleet")]
     fn fleet_body(&mut self, ui: &mut egui::Ui) {
         self.fleet_collect();
@@ -140,6 +164,7 @@ impl SpaiApp {
         let page = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).page.clone();
         if matches!(page, Page::Tracking(_) | Page::Historic(_)) {
             self.fleet_read_boosts();
+            self.fleet_poll_mumble(ui.ctx());
         }
         let dry = self.fleet_backend.is_dry_run();
         let seed_hint = crate::fleets::seed_path_hint();
@@ -147,6 +172,18 @@ impl SpaiApp {
         let boost_rules = self.settings.fleet_boost_requirements.clone();
         let mut open_boost_editor = false;
         let mut sidebar_open = self.fleet_sidebar_open;
+        let here = self.fleet_mumble_at.clone();
+        let mine = {
+            let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            let me = st.session.as_ref().map(|s| s.character_name.trim().to_lowercase());
+            st.open
+                .value
+                .as_ref()
+                .and_then(|o| o.fleet.commander.as_ref())
+                .zip(me)
+                .is_some_and(|(c, me)| c.label.trim().to_lowercase() == me)
+        };
+        let mut join_comms: Option<String> = None;
         let journal_open = self.fleet_journal_open;
         let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
@@ -233,10 +270,10 @@ impl SpaiApp {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &mut act),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
             }
         });
@@ -281,6 +318,9 @@ impl SpaiApp {
             self.fleet_boost_editor = true;
         }
         self.fleet_sidebar_open = sidebar_open;
+        if let Some(url) = join_comms {
+            crate::mumble::open_url(&url);
+        }
         self.fleet_confirm_modal(ui.ctx());
         self.fleet_apply_form(act);
     }
@@ -829,6 +869,11 @@ fn fleet_tag_chip(ui: &mut egui::Ui, tag: &TagItem) {
 /// How long the form waits after the last edit before rendering the ping again.
 #[cfg(feature = "fleet")]
 const PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How often Mumble is asked where it is. Someone moving channel mid-fleet is rare, and the
+/// answer only drives a pulse.
+#[cfg(feature = "fleet")]
+const MUMBLE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How often the boost channel is re-read. Boosters post once and then argue, so this is about
 /// picking up a swap, not about latency.
@@ -1842,6 +1887,9 @@ fn tracking_page(
     boost_rules: &[crate::settings::FleetBoostRequirement],
     open_editor: &mut bool,
     sidebar: &mut bool,
+    mine: bool,
+    here: Option<String>,
+    join: &mut Option<String>,
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
@@ -1900,12 +1948,16 @@ fn tracking_page(
                     ui.label(egui::RichText::new(format!("{label}: {n}")).weak());
                 }
             }
+
             if let Some(f) = &open.fleet.formup_location {
                 ui.label(egui::RichText::new(format!("Formup: {}", f.label)).weak());
             }
             for t in open.fleet.tag_ids.iter().filter_map(|t| seed.tag(*t)) {
                 fleet_tag_chip(ui, t);
             }
+            // After the fleet's own details: these are actions, and they read as actions at the
+            // end of the line rather than wedged between two facts.
+            comms_buttons(ui, &seed, &open, mine, here.as_deref(), join);
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1940,7 +1992,7 @@ fn tracking_page(
     });
 
     if *sidebar {
-        egui::Panel::right("fleet_sidebar").default_width(280.0).show_inside(ui, |ui| {
+        egui::Panel::right("fleet_sidebar").default_size(280.0).show_inside(ui, |ui| {
             fleet_sidebar(ui, st, &open, read_only, act_on);
         });
     }
@@ -1957,6 +2009,54 @@ fn tracking_page(
             }
         });
     });
+}
+
+/// Join the fleet's own comms and the command channel its FC belongs in.
+///
+/// On the FC's own fleet the buttons also say whether Mumble is actually there: a fleet running
+/// with its commander in the wrong channel is a fleet nobody can reach, and it is the kind of
+/// mistake that goes unnoticed until it matters.
+#[cfg(feature = "fleet")]
+fn comms_buttons(
+    ui: &mut egui::Ui,
+    seed: &crate::fleets::seed::Seed,
+    open: &crate::fleets::state::OpenFleet,
+    mine: bool,
+    here: Option<&str>,
+    join: &mut Option<String>,
+) {
+    use crate::fleets::comms;
+    let tags: Vec<_> = open.fleet.tag_ids.iter().filter_map(|t| seed.tag(*t)).cloned().collect();
+    let sector = comms::sector(&tags);
+    let op_name = seed.channel_name(&seed.mumble_channels, open.fleet.mumble_channel_id);
+    let op_url = op_name.and_then(comms::op_url);
+    let command_url =
+        open.fleet.mumble_channel_id.map(|c| comms::command_url(sector, c.0));
+
+    for (label, url) in [
+        ("Join comms".to_owned(), op_url),
+        (format!("Join {} command", sector.label()), command_url),
+    ] {
+        let Some(url) = url else { continue };
+        // Only a fleet this account is running is worth nagging about: being outside somebody
+        // else's comms is the normal state of affairs.
+        let away = mine && here.is_some_and(|h| !crate::mumble::in_channel(h, &url));
+        let text = egui::RichText::new(format!("{}  {label}", egui_phosphor::regular::HEADPHONES));
+        let button = match pulse_fill(ui, away) {
+            Some(c) => egui::Button::new(text).fill(c),
+            None => egui::Button::new(text),
+        };
+        let tip = match (mine, here) {
+            (true, Some(_)) if away => "Your fleet, and Mumble is somewhere else.".to_owned(),
+            (true, Some(_)) => "You are in this channel.".to_owned(),
+            (true, None) => "Mumble is not running, so there is nothing to check against."
+                .to_owned(),
+            _ => format!("Opens {}", crate::mumble::channel_path(&url).unwrap_or_default()),
+        };
+        if ui.add(button).on_hover_text(tip).clicked() {
+            *join = Some(url);
+        }
+    }
 }
 
 /// What can still be changed about a fleet that is already up: what it flies and where it talks.
