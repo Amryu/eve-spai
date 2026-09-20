@@ -1049,6 +1049,34 @@ fn uitest_fleet_rows_open_the_fleet() {
     assert!(opened, "clicking a fleet did not open it");
 }
 
+/// The tag field is a badge field plus a dropdown, so nothing about the list is on screen until
+/// the caret is clicked. Only a real click through the tree proves it opens and filters.
+#[cfg(feature = "fleet")]
+#[test]
+fn uitest_the_tag_field_opens_and_filters() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    let mut scene = fleet_start_scene("fleet_tag_popup", [1440.0, 900.0]);
+    let mut h = harness::build(&mut scene, false);
+
+    // Two carets, one per tag row. The second is the secondary tags, which take more than one.
+    let carets: Vec<egui::Rect> = h
+        .query_all_by_label_contains(egui_phosphor::regular::CARET_DOWN)
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(carets.len(), 2, "one caret per tag row");
+    harness::click_at(&h, carets[1].center());
+    h.run();
+
+    let listed = |h: &egui_kittest::Harness<'_>, name: &str| {
+        h.query_all_by_label_contains(name).count()
+    };
+    assert!(listed(&h, "Structure Bash") > 0, "the secondary tags are not listed");
+    assert!(listed(&h, "Roam") > 0);
+
+    // What typing does to the list is `tag_matches`, unit-tested beside it.
+}
+
 /// The screenshot path must not be one forgotten override away from painting a real alliance's
 /// rooms, contacts or messages into a PNG that gets committed to a ticket folder.
 #[test]

@@ -1138,22 +1138,138 @@ fn channel_row(
 #[cfg(feature = "fleet")]
 fn tag_pickers(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
     let tags = st.seed.tags.clone();
-    for (title, primary) in [("Primary tags", true), ("Secondary tags", false)] {
-        ui.label(egui::RichText::new(title).strong());
+    egui::Grid::new("fleet_form_tags")
+        .num_columns(2)
+        .min_col_width(LABEL_W)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            for (title, salt, primary) in
+                [("Primary tag", "fleet_tag_primary", true), ("Secondary tags", "fleet_tag_secondary", false)]
+            {
+                ui.label(title);
+                let pool: Vec<_> = tags.iter().filter(|t| t.is_primary == primary).cloned().collect();
+                act.edited |= tag_field(ui, salt, &pool, &mut st.draft.tags, primary);
+                ui.end_row();
+            }
+        });
+}
+
+/// Whether a tag survives what has been typed into the search box.
+///
+/// Every word has to appear somewhere in the name, so "struct bash" finds "Structure Bash" without
+/// the words being adjacent or in that order.
+#[cfg(feature = "fleet")]
+fn tag_matches(name: &str, query: &str) -> bool {
+    let name = name.to_lowercase();
+    query.split_whitespace().all(|w| name.contains(&w.to_lowercase()))
+}
+
+/// A field of tag badges that opens a searchable list.
+///
+/// `single` is the primary row, where picking one replaces whatever was there: the dashboard takes
+/// exactly one, so the field enforces it rather than letting the request be refused later.
+#[cfg(feature = "fleet")]
+fn tag_field(
+    ui: &mut egui::Ui,
+    salt: &str,
+    pool: &[TagItem],
+    selected: &mut std::collections::BTreeSet<crate::fleets::model::TagId>,
+    single: bool,
+) -> bool {
+    let mut changed = false;
+    let mut remove: Option<crate::fleets::model::TagId> = None;
+
+    // The badges sit inside a frame the size of the other controls, so the row reads as a field
+    // rather than as a loose run of chips.
+    let frame = egui::Frame::new()
+        .stroke(ui.visuals().widgets.inactive.bg_stroke)
+        .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+        .inner_margin(egui::Margin::symmetric(6, 4));
+    let inner = frame.show(ui, |ui| {
+        ui.set_width(FIELD_W - 12.0);
         ui.horizontal_wrapped(|ui| {
-            for t in tags.iter().filter(|t| t.is_primary == primary) {
-                let on = st.draft.tags.contains(&t.id);
-                if selectable_chip(ui, on, t.name.trim()).clicked() {
-                    if on {
-                        st.draft.tags.remove(&t.id);
-                    } else {
-                        st.draft.tags.insert(t.id);
-                    }
-                    act.edited = true;
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let chosen: Vec<&TagItem> = pool.iter().filter(|t| selected.contains(&t.id)).collect();
+            if chosen.is_empty() {
+                ui.label(
+                    egui::RichText::new(if single { "none" } else { "none selected" }).weak(),
+                );
+            }
+            for t in chosen {
+                if ui
+                    .add(
+                        egui::Button::new(format!(
+                            "{}  {}",
+                            t.name.trim(),
+                            egui_phosphor::regular::X
+                        ))
+                        .fill(ui.visuals().selection.bg_fill)
+                        .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)),
+                    )
+                    .on_hover_text("Remove this tag")
+                    .clicked()
+                {
+                    remove = Some(t.id);
                 }
             }
         });
+    });
+
+    let open_button = ui
+        .button(egui_phosphor::regular::CARET_DOWN)
+        .on_hover_text(if single { "Choose the primary tag" } else { "Choose secondary tags" });
+    let _ = inner;
+
+    egui::Popup::from_toggle_button_response(&open_button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(260.0)
+        .show(|ui| {
+            let search_id = ui.id().with((salt, "search"));
+            let mut query: String = ui.data(|d| d.get_temp(search_id).unwrap_or_default());
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text("Search tags")
+                    .desired_width(f32::INFINITY),
+            );
+            if edit.changed() {
+                ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                let mut any = false;
+                for t in pool {
+                    let name = t.name.trim();
+                    if !tag_matches(name, &query) {
+                        continue;
+                    }
+                    any = true;
+                    let on = selected.contains(&t.id);
+                    if ui.selectable_label(on, name).clicked() {
+                        if on {
+                            selected.remove(&t.id);
+                        } else {
+                            if single {
+                                // Exactly one primary, so the others in this pool go.
+                                for other in pool {
+                                    selected.remove(&other.id);
+                                }
+                            }
+                            selected.insert(t.id);
+                        }
+                        changed = true;
+                    }
+                }
+                if !any {
+                    ui.label(egui::RichText::new("Nothing matches.").weak());
+                }
+            });
+        });
+
+    if let Some(id) = remove {
+        selected.remove(&id);
+        changed = true;
     }
+    changed
 }
 
 /// The pilots called out in the ping.
@@ -1332,6 +1448,19 @@ fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
 #[cfg(all(test, feature = "fleet"))]
 mod confirm_tests {
     use super::*;
+
+    /// What the tag search keeps and what it drops.
+    #[test]
+    fn the_tag_search_matches_every_word_anywhere() {
+        assert!(tag_matches("Structure Bash", ""));
+        assert!(tag_matches("Structure Bash", "  "));
+        assert!(tag_matches("Structure Bash", "bash"));
+        assert!(tag_matches("Structure Bash", "STRUCT"));
+        // Out of order and not adjacent.
+        assert!(tag_matches("Structure Bash", "bash struct"));
+        assert!(!tag_matches("Structure Bash", "roam"));
+        assert!(!tag_matches("Structure Bash", "bash roam"));
+    }
 
     /// Closing a fleet and emptying it are the two that need typing out; the rest are one dialog.
     #[test]
