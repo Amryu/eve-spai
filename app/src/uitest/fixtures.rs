@@ -896,6 +896,51 @@ pub(crate) fn open_thin_fleet(app: &crate::app::SpaiApp) {
     }
 }
 
+/// Presets a rescue can run on: one tagged Capital Save and one that is not, so the picker's
+/// filtering is visible in the render.
+#[cfg(feature = "fc-rescue")]
+pub(crate) fn rescue_presets() -> Vec<crate::settings::FleetPreset> {
+    let mut out = fleet_presets();
+    out.push(crate::settings::FleetPreset {
+        label: "Capital Save".to_owned(),
+        folder: "Rescue".to_owned(),
+        name: "CAP Save".to_owned(),
+        description: "Give me a titan on standby".to_owned(),
+        setup_id: 46,
+        mumble_channel_id: Some(3),
+        tag_ids: vec![1, crate::settings::CAPITAL_SAVE_TAG],
+        ..Default::default()
+    });
+    out
+}
+
+/// A delve911 ping in the state, which is what the rescue panel renders around.
+#[cfg(feature = "fc-rescue")]
+pub(crate) fn seed_rescue_ping(app: &crate::app::SpaiApp) {
+    let mut r = app.rescue_state_for_test().lock().unwrap();
+    r.active = true;
+    r.capital_pilot = Some("Placeholder Capsuleer".to_owned());
+    r.capital_system_name = Some("1DQ1-A".to_owned());
+    r.cap_class = Some(crate::rescue::CapClass::Dread);
+    r.cyno_pilot = Some("Placeholder Scout".to_owned());
+    r.op_channel = 3;
+    r.doctrine = "Capital Save".to_owned();
+    r.push_event(crate::rescue::RescueEvent {
+        seq: 0,
+        received: now() - 180,
+        author: "Placeholder Capsuleer".to_owned(),
+        raw: "!bping all Dread tackled in 1DQ1-A".to_owned(),
+        is_ping: true,
+        pilot: Some("Placeholder Capsuleer".to_owned()),
+        system_id: Some(30_004_759),
+        system_name: Some("1DQ1-A".to_owned()),
+        cyno: Some("Placeholder Scout".to_owned()),
+        cap_class: Some(crate::rescue::CapClass::Dread),
+        anomaly: None,
+    });
+    r.select_newest();
+}
+
 /// The hulls a doctrine flies, plus the ones any fleet takes, so classification has something to
 /// work from. Invented names in the doctrine, real hulls for the support jobs.
 #[cfg(feature = "fleet")]

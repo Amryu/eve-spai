@@ -854,10 +854,8 @@ fn rescue_timer_scene(name: &'static str, secs: i64) -> Scene {
     harness::scratch_profile();
     let mut state: Option<crate::rescue::RescueState> = None;
     Scene::ui(name, [300.0, 300.0], move |ui| {
-        let r = state.get_or_insert_with(crate::rescue::RescueState::default);
+        let _ = state.get_or_insert_with(crate::rescue::RescueState::default);
         crate::app::ping_timer_row(ui, secs);
-        ui.add_space(4.0);
-        crate::app::rescue_checklist_ui(ui, r);
     })
 }
 
@@ -982,6 +980,27 @@ fn fleet_confirm_scene(
             a
         });
         app.fleet_confirm_modal(ctx);
+    })
+}
+
+/// The rescue panel with a ping in it, which is the only way to see the ops column at all.
+#[cfg(feature = "fc-rescue")]
+fn rescue_panel_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ui(name, size, move |ui| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ui.ctx(), true);
+            a.settings.fc_rescue_enabled = true;
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::rescue_presets();
+            a.settings.rescue_preset = "Capital Save".to_owned();
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            fixtures::seed_rescue_ping(&a);
+            a
+        });
+        app.rescue_window_body(ui);
     })
 }
 
@@ -1434,6 +1453,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_hull_editor_scene("fleet_hull_editor", [860.0, 660.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
+    #[cfg(feature = "fc-rescue")]
+    v.push(rescue_panel_scene("rescue_panel", [1100.0, 700.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",

@@ -103,124 +103,6 @@ impl CapClass {
     }
 }
 
-/// Fleet role bucket derived from a ship's SDE group. `Ord` puts capitals first for display.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ShipRole {
-    Titan,
-    Supercarrier,
-    Dread,
-    Fax,
-    Carrier,
-    Logi,
-    LogiFrig,
-    Booster,
-    Dictor,
-    Hictor,
-    Recon,
-    CommandDest,
-    Dps,
-    Tackle,
-    Ewar,
-    Other,
-}
-
-impl ShipRole {
-
-    pub fn is_titan(self) -> bool {
-        self == ShipRole::Titan
-    }
-
-    /// Recons carry covert cynos (Arazu/Lachesis/Huginn/Rapier), so flag them as possible cyno.
-    pub fn is_recon(self) -> bool {
-        self == ShipRole::Recon
-    }
-}
-
-/// Classify a ship by its SDE group name. Order matters: check the more specific group first
-/// (Supercarrier before Carrier, Logistics Frigate before Logistics).
-pub fn classify(group: &str) -> ShipRole {
-    let g = group.to_lowercase();
-    let has = |needle: &str| g.contains(needle);
-    if has("titan") {
-        ShipRole::Titan
-    } else if has("supercarrier") {
-        ShipRole::Supercarrier
-    } else if has("force auxiliary") {
-        ShipRole::Fax
-    } else if has("dreadnought") {
-        ShipRole::Dread
-    } else if has("carrier") {
-        ShipRole::Carrier
-    } else if has("logistics frigate") {
-        ShipRole::LogiFrig
-    } else if has("logistics") {
-        ShipRole::Logi
-    } else if has("heavy interdiction cruiser") {
-        ShipRole::Hictor
-    } else if has("interdictor") {
-        ShipRole::Dictor
-    } else if has("force recon") || has("combat recon") {
-        ShipRole::Recon
-    } else if has("command destroyer") {
-        ShipRole::CommandDest
-    } else if has("command ship") {
-        ShipRole::Booster
-    } else if has("electronic attack") {
-        ShipRole::Ewar
-    } else if has("interceptor") {
-        ShipRole::Tackle
-    } else if g.is_empty() {
-        ShipRole::Other
-    } else {
-        ShipRole::Dps
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct FleetMember {
-    pub character_id: i64,
-    pub name: String,
-    pub role: ShipRole,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct FleetSnapshot {
-    pub fleet_id: Option<i64>,
-    /// ESI: the fleet is registered / advertised (GET /fleets/{id}/ is_registered).
-    pub is_registered: bool,
-    pub members: Vec<FleetMember>,
-    pub counts: BTreeMap<ShipRole, u32>,
-    /// True when the most recent poll failed and this is stale data kept on screen.
-    pub stale: bool,
-}
-
-impl FleetSnapshot {
-    pub fn build(fleet_id: Option<i64>, members: Vec<FleetMember>) -> Self {
-        let mut counts: BTreeMap<ShipRole, u32> = BTreeMap::new();
-        for m in &members {
-            *counts.entry(m.role).or_insert(0) += 1;
-        }
-        FleetSnapshot { fleet_id, is_registered: false, members, counts, stale: false }
-    }
-
-    pub fn count(&self, role: ShipRole) -> u32 {
-        self.counts.get(&role).copied().unwrap_or(0)
-    }
-
-    pub fn has_role(&self, role: ShipRole) -> bool {
-        self.count(role) > 0
-    }
-
-    pub fn has_pilot(&self, name: &str) -> bool {
-        self.member(name).is_some()
-    }
-
-    pub fn member(&self, name: &str) -> Option<&FleetMember> {
-        let n = name.trim().to_lowercase();
-        self.members.iter().find(|m| m.name.to_lowercase() == n)
-    }
-}
-
 /// Per-ping record of the three actions the FC is expected to take. Comms actions remember which
 /// op they were done for, so changing the op channel re-arms them.
 #[derive(Default, Clone, Copy)]
@@ -271,32 +153,6 @@ pub struct RescueState {
     pub delve911_reply: String,
     /// Selected chat tab: 0 = delve911, 1 = skirmish_commanders.
     pub chat_tab: u8,
-    pub fleet: FleetSnapshot,
-    /// Sticky snowflakes: character_id -> reason tag. Once flagged (capital/cyno/titan/recon) a
-    /// pilot stays flagged for the session even if they re-ship to a pod, so the FC keeps tracking
-    /// them. Keyed by character_id (survives ship changes).
-    pub snowflakes: HashMap<i64, String>,
-}
-
-/// Why a fleet member is a snowflake right now (None if not currently one). The result is made
-/// sticky by the caller so a later re-ship (e.g. to a pod) doesn't drop the flag.
-pub fn snowflake_tag(
-    m: &FleetMember,
-    capital: Option<&str>,
-    cyno: Option<&str>,
-) -> Option<&'static str> {
-    let nlc = m.name.to_lowercase();
-    if capital.is_some_and(|c| c == nlc) {
-        Some("CAPITAL")
-    } else if cyno.is_some_and(|c| c == nlc) {
-        Some("CYNO")
-    } else if m.role.is_titan() {
-        Some("TITAN")
-    } else if m.role.is_recon() {
-        Some("RECON cyno?")
-    } else {
-        None
-    }
 }
 
 impl RescueState {
@@ -1141,44 +997,6 @@ mod tests {
         let e = ev("!bping all Rorqual Tackled");
         assert_eq!(e.pilot, None);
         assert_eq!(e.cap_class, Some(CapClass::Rorqual));
-    }
-
-    #[test]
-    fn classify_covers_key_groups() {
-        assert_eq!(classify("Titan"), ShipRole::Titan);
-        assert_eq!(classify("Supercarrier"), ShipRole::Supercarrier);
-        assert_eq!(classify("Force Auxiliary"), ShipRole::Fax);
-        assert_eq!(classify("Dreadnought"), ShipRole::Dread);
-        assert_eq!(classify("Carrier"), ShipRole::Carrier);
-        assert_eq!(classify("Logistics Cruiser"), ShipRole::Logi);
-        assert_eq!(classify("Logistics Frigate"), ShipRole::LogiFrig);
-        assert_eq!(classify("Interdictor"), ShipRole::Dictor);
-        assert_eq!(classify("Heavy Interdiction Cruiser"), ShipRole::Hictor);
-        assert_eq!(classify("Force Recon Ship"), ShipRole::Recon);
-        assert_eq!(classify("Combat Recon Ship"), ShipRole::Recon);
-        assert_eq!(classify("Command Ship"), ShipRole::Booster);
-        assert_eq!(classify("Command Destroyer"), ShipRole::CommandDest);
-        assert_eq!(classify("Assault Frigate"), ShipRole::Dps);
-    }
-
-    #[test]
-    fn fleet_snapshot_counts_roles() {
-        let mk = |id: i64, name: &str, group: &str| FleetMember {
-            character_id: id,
-            name: name.to_string(),
-            role: classify(group),
-        };
-        let members = vec![
-            mk(1, "Cap Pilot", "Titan"),
-            mk(2, "Logi One", "Logistics Cruiser"),
-            mk(3, "Logi Two", "Logistics Cruiser"),
-            mk(4, "Scout", "Force Recon Ship"),
-        ];
-        let snap = FleetSnapshot::build(Some(42), members);
-        assert_eq!(snap.count(ShipRole::Logi), 2);
-        assert!(snap.has_role(ShipRole::Titan));
-        assert!(snap.has_pilot("cap pilot"));
-        assert!(!snap.has_pilot("nobody"));
     }
 
     #[test]

@@ -882,15 +882,8 @@ pub struct SpaiApp {
     /// Set when the target sits outside titan range of staging.
     #[cfg(feature = "fc-rescue")]
     rescue_range: Option<RangeWarning>,
-    /// Fleet poller handle guard: `true` once `spawn_fleet_poller` has been started.
-    #[cfg(feature = "fc-rescue")]
-    fleet_poller_started: bool,
     /// Cyno-generator list editing. Not rescue-gated: the generator map overlay is useful on its own.
     rescue_cyno_input: String,
-    #[cfg(feature = "fc-rescue")]
-    rescue_doctrine_input: String,
-    #[cfg(feature = "fc-rescue")]
-    rescue_doctrines_open: bool,
     cyno_generators_open: bool,
     /// Set true to arm rescue mode (a delve911 ping arrived); the banner offers 1-click entry.
     #[cfg(feature = "fc-rescue")]
@@ -1644,13 +1637,7 @@ impl SpaiApp {
             rescue_range_for: None,
             #[cfg(feature = "fc-rescue")]
             rescue_range: None,
-            #[cfg(feature = "fc-rescue")]
-            fleet_poller_started: false,
             rescue_cyno_input: String::new(),
-            #[cfg(feature = "fc-rescue")]
-            rescue_doctrine_input: String::new(),
-            #[cfg(feature = "fc-rescue")]
-            rescue_doctrines_open: false,
             cyno_generators_open: false,
             #[cfg(feature = "fc-rescue")]
             rescue_armed: false,
@@ -2009,13 +1996,17 @@ impl SpaiApp {
             ctx.clone(),
         );
 
-        // Seed the rescue selectors from persisted settings before the poller/window read them.
+        // Seed the rescue selectors from persisted settings before the window reads them, and turn
+        // the old cap-save template into a fleet preset the first time this build runs.
         #[cfg(feature = "fc-rescue")]
         {
+            if crate::settings::seed_rescue_preset(&mut self.settings) {
+                self.needs_save = true;
+            }
             let mut r = self.rescue.lock().unwrap();
             r.op_channel = self.settings.rescue_op_channel.clamp(1, 12);
             if r.doctrine.is_empty() {
-                r.doctrine = self.settings.rescue_doctrine.clone();
+                r.doctrine = self.settings.rescue_preset.clone();
             }
         }
 
@@ -2070,19 +2061,6 @@ impl SpaiApp {
             );
         }
 
-        #[cfg(feature = "fc-rescue")]
-        if self.settings.fc_rescue_enabled && !self.fleet_poller_started {
-            let ship_types: std::collections::HashMap<i64, (String, String)> =
-                store.all_ships().into_iter().map(|(id, name, group)| (id, (name, group))).collect();
-            crate::esi::spawn_fleet_poller(
-                self.settings.sso_client_id.clone(),
-                self.player.clone(),
-                self.rescue.clone(),
-                std::sync::Arc::new(ship_types),
-                ctx.clone(),
-            );
-            self.fleet_poller_started = true;
-        }
     }
 
     /// The intel toolbar's search field. Its own hint text is the floor: a field too narrow to
@@ -2897,6 +2875,14 @@ impl SpaiApp {
         &self.fleet
     }
 
+    /// The rescue panel's shared state, so a scene can put a ping in it the way the watcher would.
+    #[cfg(all(test, feature = "fc-rescue"))]
+    pub(crate) fn rescue_state_for_test(
+        &self,
+    ) -> &std::sync::Arc<std::sync::Mutex<crate::rescue::RescueState>> {
+        &self.rescue
+    }
+
     #[cfg(test)]
     pub(crate) fn seed_notes(&mut self, book: crate::notes::NoteBook) {
         self.systems = Some(crate::uitest::fixtures::systems());
@@ -3351,7 +3337,6 @@ impl SpaiApp {
                     r.select_newest();
                 }
             }
-            self.rescue_doctrines_window(ctx);
             self.update_rescue_range();
         }
     }
@@ -6153,94 +6138,6 @@ fn rescue_comms_invite(author: Option<&str>, op: u8) -> Option<String> {
 #[cfg(feature = "fc-rescue")]
 fn goon_jid(cfg: &str, default: &str) -> String {
     if cfg.trim().is_empty() { default.to_string() } else { cfg.trim().to_string() }
-}
-
-#[cfg(feature = "fc-rescue")]
-const CHK_OK: egui::Color32 = egui::Color32::from_rgb(0x5A, 0xC8, 0x6A);
-#[cfg(feature = "fc-rescue")]
-const CHK_WARN: egui::Color32 = egui::Color32::from_rgb(0xE0, 0xA4, 0x3A);
-#[cfg(feature = "fc-rescue")]
-const CHK_PENDING: egui::Color32 = egui::Color32::from_rgb(0x9A, 0xA3, 0xA8);
-
-#[cfg(feature = "fc-rescue")]
-#[derive(Clone, Copy, PartialEq)]
-enum ChkStatus {
-    Ok,
-    Attention,
-    Pending,
-}
-
-#[cfg(feature = "fc-rescue")]
-impl ChkStatus {
-    fn glyph(self) -> &'static str {
-        match self {
-            ChkStatus::Ok => egui_phosphor::regular::CHECK_CIRCLE,
-            ChkStatus::Attention => egui_phosphor::regular::WARNING,
-            ChkStatus::Pending => egui_phosphor::regular::QUESTION,
-        }
-    }
-    fn color(self) -> egui::Color32 {
-        match self {
-            ChkStatus::Ok => CHK_OK,
-            ChkStatus::Attention => CHK_WARN,
-            ChkStatus::Pending => CHK_PENDING,
-        }
-    }
-}
-
-#[cfg(feature = "fc-rescue")]
-fn chk_auto_row(ui: &mut egui::Ui, status: ChkStatus, label: &str) {
-    ui.horizontal(|ui| {
-        ui.colored_label(status.color(), status.glyph());
-        if status == ChkStatus::Attention {
-            ui.colored_label(status.color(), label);
-        } else {
-            ui.label(label);
-        }
-    });
-}
-
-#[cfg(feature = "fc-rescue")]
-fn chk_ok_or_warn(satisfied: bool) -> ChkStatus {
-    if satisfied { ChkStatus::Ok } else { ChkStatus::Attention }
-}
-
-#[cfg(feature = "fc-rescue")]
-fn chk_reminder(ui: &mut egui::Ui, text: &str) {
-    ui.horizontal(|ui| {
-        ui.colored_label(CHK_WARN, egui_phosphor::regular::WARNING);
-        ui.colored_label(CHK_WARN, text);
-    });
-}
-
-/// Entirely ESI-auto-detected. When the signal isn't available yet (no fleet data) the item shows
-/// as Pending (grey "?"), never a manual checkbox.
-#[cfg(feature = "fc-rescue")]
-pub(crate) fn rescue_checklist_ui(ui: &mut egui::Ui, r: &mut crate::rescue::RescueState) {
-    use crate::rescue::ShipRole;
-
-    let comp_known = !r.fleet.members.is_empty();
-    let pending_if = |known: bool, status: ChkStatus| if known { status } else { ChkStatus::Pending };
-
-    ui.label(egui::RichText::new("CHECKLIST").strong().color(CHK_PENDING));
-    ui.add_space(2.0);
-    chk_auto_row(ui, if r.fleet.fleet_id.is_some() { ChkStatus::Ok } else { ChkStatus::Pending }, "Fleet created");
-    chk_auto_row(ui, pending_if(comp_known, chk_ok_or_warn(r.fleet.is_registered)), "Advert up");
-    chk_auto_row(ui, pending_if(comp_known, chk_ok_or_warn(r.fleet.has_role(ShipRole::Titan))), "Titan in fleet");
-    let cap_known = comp_known && r.capital_pilot.is_some();
-    let cap_ok = r.capital_pilot.as_deref().is_some_and(|n| r.fleet.has_pilot(n));
-    chk_auto_row(ui, pending_if(cap_known, chk_ok_or_warn(cap_ok)), "Capital pilot in fleet");
-    let cyno_known = comp_known && r.cyno_pilot.is_some();
-    let cyno_ok = r.cyno_pilot.as_deref().is_some_and(|n| r.fleet.has_pilot(n));
-    chk_auto_row(ui, pending_if(cyno_known, chk_ok_or_warn(cyno_ok)), "Cyno char in fleet");
-
-    ui.add_space(4.0);
-    ui.separator();
-    ui.add_space(2.0);
-    chk_reminder(ui, "Tell pilot to siege red AND boosts down");
-    chk_reminder(ui, "Ask about his cyno status");
-    chk_reminder(ui, "Ask for PANIC timer");
-    chk_reminder(ui, "Ask for what's on grid (attacking it)");
 }
 
 /// Floating pin, for viewports whose content is a bare central panel with no row to host it.

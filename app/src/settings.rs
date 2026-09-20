@@ -254,14 +254,17 @@ pub struct Settings {
     /// System ids that host a friendly cyno generator (ESI can't enumerate these).
     #[serde(default)]
     pub cyno_generators: Vec<i64>,
-    #[serde(default = "default_rescue_doctrines", deserialize_with = "de_rescue_doctrines")]
-    pub rescue_doctrines: Vec<RescueDoctrine>,
+
     #[serde(default = "default_rescue_op_channel")]
     pub rescue_op_channel: u8,
-    #[serde(default)]
-    pub rescue_doctrine: String,
     #[serde(default = "default_rescue_template")]
     pub rescue_ping_template: String,
+    /// Label of the fleet preset the rescue ping is built from. Empty until one is picked.
+    #[serde(default)]
+    pub rescue_preset: String,
+    /// The cap-save template has been turned into a fleet preset, so it is not done twice.
+    #[serde(default)]
+    pub rescue_preset_seeded: bool,
     /// skirmish_commanders room JID: where the FC posts `!bping <group>` ping requests and watches
     /// the responses. coord/fc/all are directorbot ping groups, not separate rooms.
     #[serde(default)]
@@ -925,6 +928,42 @@ pub struct FleetPreset {
     pub snowflakes: Vec<(i64, String, u8)>,
 }
 
+/// The secondary tag that marks a preset as one a capital rescue runs on. A rescue picks from
+/// these and nothing else, so an FC under pressure is not scrolling past every roam they saved.
+#[cfg(feature = "fc-rescue")]
+pub const CAPITAL_SAVE_TAG: i32 = 28;
+
+/// Turns the old free-text cap-save template into a fleet preset, once.
+///
+/// The template already carried everything a preset does: a name, a formup location, a comms
+/// channel and a doctrine line. It only lacked somewhere to live.
+#[cfg(feature = "fc-rescue")]
+pub fn seed_rescue_preset(s: &mut Settings) -> bool {
+    if s.rescue_preset_seeded
+        || s.fleet_presets.iter().any(|p| p.tag_ids.contains(&CAPITAL_SAVE_TAG))
+    {
+        s.rescue_preset_seeded = true;
+        return false;
+    }
+    let label = "Capital Save".to_owned();
+    s.fleet_presets.push(FleetPreset {
+        label: label.clone(),
+        folder: "Rescue".to_owned(),
+        name: "CAP Save".to_owned(),
+        description: "Give me a titan on standby".to_owned(),
+        mumble_channel_id: Some(i32::from(s.rescue_op_channel)),
+        auto_close_type: 1,
+        auto_close_time: 30,
+        set_motd: true,
+        // Strategic, because a capital is on the field, and the tag that makes it a rescue preset.
+        tag_ids: vec![1, CAPITAL_SAVE_TAG],
+        ..FleetPreset::default()
+    });
+    s.rescue_preset = label;
+    s.rescue_preset_seeded = true;
+    true
+}
+
 /// A hull that belongs somewhere: in one doctrine, or in any fleet at all.
 ///
 /// The dashboard's setup list carries no hulls, so without this everything a fleet flies reads as
@@ -957,54 +996,15 @@ pub struct FleetBoostRequirement {
     pub priority: String,
 }
 
-/// A rescue doctrine: the short `name` shown in the selector, and the full `description` line that
-/// goes into the ping's "Doctrine:" field.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RescueDoctrine {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-}
 
 /// Accept both the old form (a list of plain name strings) and the new `{name, description}` form,
 /// so a config saved before descriptions existed still loads instead of resetting all settings.
-fn de_rescue_doctrines<'de, D>(d: D) -> Result<Vec<RescueDoctrine>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneDoctrine {
-        Name(String),
-        Full(RescueDoctrine),
-    }
-    let items = Vec::<OneDoctrine>::deserialize(d)?;
-    Ok(items
-        .into_iter()
-        .map(|o| match o {
-            OneDoctrine::Name(name) => RescueDoctrine { name, description: String::new() },
-            OneDoctrine::Full(r) => r,
-        })
-        .collect())
-}
 
 fn default_rescue_channel() -> String {
     "delve911".to_owned()
 }
 fn default_rescue_staging() -> String {
     "C-J6MT".to_owned()
-}
-fn default_rescue_doctrines() -> Vec<RescueDoctrine> {
-    let d = |name: &str, description: &str| RescueDoctrine {
-        name: name.to_owned(),
-        description: description.to_owned(),
-    };
-    vec![
-        d("FNIs", "Hammer Fleet (FNI) (Boosters > Ferox Navy Issue > Basilisk > Support)"),
-        d("Svipuls", "Svipul (Boosters > Kirin/Scalpel > Svipul > Else)"),
-        d("Harpy", "Harpy Fleet (Boosters > Kirin/Scalpel > Harpy > Else)"),
-        d("Flycatchers", "Flycatchers (Boosters > Kirin/Scalpel > Flycatcher > Else)"),
-    ]
 }
 fn default_rescue_op_channel() -> u8 {
     1
@@ -1148,10 +1148,10 @@ impl Default for Settings {
             rescue_channel: default_rescue_channel(),
             rescue_staging_system: default_rescue_staging(),
             cyno_generators: Vec::new(),
-            rescue_doctrines: default_rescue_doctrines(),
             rescue_op_channel: default_rescue_op_channel(),
-            rescue_doctrine: "FNIs".to_owned(),
             rescue_ping_template: default_rescue_template(),
+            rescue_preset: String::new(),
+            rescue_preset_seeded: false,
             rescue_skirmish_jid: String::new(),
             rescue_delve911_jid: String::new(),
             rescue_window_pos: None,
@@ -1628,6 +1628,37 @@ mod window_geometry_tests {
         assert_eq!(back.fleet_doctrine_strict, s.fleet_doctrine_strict);
     }
 
+    /// The cap-save template becomes a preset once, and never overwrites one that exists.
+    #[cfg(feature = "fc-rescue")]
+    #[test]
+    fn the_rescue_template_becomes_a_preset_once() {
+        let mut s = Settings::default();
+        s.rescue_op_channel = 4;
+        assert!(seed_rescue_preset(&mut s));
+        assert_eq!(s.fleet_presets.len(), 1);
+        let p = &s.fleet_presets[0];
+        assert!(p.tag_ids.contains(&CAPITAL_SAVE_TAG));
+        assert_eq!(p.mumble_channel_id, Some(4), "the op channel it was set to came across");
+        assert_eq!(s.rescue_preset, p.label);
+        assert!(s.rescue_preset_seeded);
+
+        // Twice does nothing.
+        assert!(!seed_rescue_preset(&mut s));
+        assert_eq!(s.fleet_presets.len(), 1);
+
+        // And an existing capital-save preset is left alone even on a fresh flag.
+        let mut other = Settings::default();
+        other.fleet_presets = vec![FleetPreset {
+            label: "Mine".to_owned(),
+            tag_ids: vec![CAPITAL_SAVE_TAG],
+            ..FleetPreset::default()
+        }];
+        assert!(!seed_rescue_preset(&mut other));
+        assert_eq!(other.fleet_presets.len(), 1);
+        assert_eq!(other.fleet_presets[0].label, "Mine");
+        assert!(other.rescue_preset_seeded);
+    }
+
     /// A config written before the tab existed must not fail the parse, which would reset every
     /// other setting there is.
     #[test]
@@ -1643,23 +1674,10 @@ mod window_geometry_tests {
         assert!(s.fleet_doctrine_tanks.is_empty());
         assert!(s.fleet_doctrine_urls.is_empty());
         assert!(s.fleet_doctrine_strict.is_empty());
+        assert!(s.rescue_preset.is_empty());
+        assert!(!s.rescue_preset_seeded);
     }
 
-    #[test]
-    fn legacy_string_doctrines_still_parse() {
-        // A config saved before doctrine descriptions existed must not fail the whole Settings
-        // parse (which would reset every setting). Old form = list of plain name strings.
-        let json = r#"{"rescue_doctrines":["Harpy","FNI","Flycatcher"],"jabber_jid":"a@b"}"#;
-        let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.jabber_jid, "a@b");
-        assert_eq!(s.rescue_doctrines.len(), 3);
-        assert_eq!(s.rescue_doctrines[0].name, "Harpy");
-        assert_eq!(s.rescue_doctrines[0].description, "");
-        // New object form still parses too.
-        let json2 = r#"{"rescue_doctrines":[{"name":"FNIs","description":"Hammer Fleet"}]}"#;
-        let s2: Settings = serde_json::from_str(json2).unwrap();
-        assert_eq!(s2.rescue_doctrines[0].description, "Hammer Fleet");
-    }
 
     #[test]
     fn chat_window_cfgs_roundtrip() {

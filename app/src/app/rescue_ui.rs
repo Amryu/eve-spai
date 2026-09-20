@@ -196,10 +196,6 @@ impl SpaiApp {
             )
             .changed();
 
-        ui.add_space(6.0);
-        if ui.button(format!("{}  Configure doctrines…", egui_phosphor::regular::LIST_BULLETS)).clicked() {
-            self.rescue_doctrines_open = true;
-        }
         changed
     }
 
@@ -259,16 +255,23 @@ impl SpaiApp {
         let cyno = r.cyno_pilot.clone().unwrap_or_else(|| "?".into());
         let anom = r.anomaly.clone().unwrap_or_else(|| "?".into());
         let op = r.op_channel.to_string();
-        let doctrine = self
-            .settings
-            .rescue_doctrines
-            .iter()
-            .find(|d| d.name == r.doctrine)
-            .map(|d| if d.description.is_empty() { d.name.clone() } else { d.description.clone() })
-            .unwrap_or_else(|| if r.doctrine.is_empty() { "?".into() } else { r.doctrine.clone() });
-        let staging = self.settings.rescue_staging_system.clone();
-        let fc = if self.active_character.is_empty() { "?".into() } else { self.active_character.clone() };
         let mumble = op_comms_url(r.op_channel);
+        let want = r.doctrine.clone();
+        // Dropped before anything that takes it again: `rescue_preset` locks the same mutex, and a
+        // std Mutex taken twice on one thread is a hang, not an error.
+        drop(r);
+        // The doctrine and the formup come from the fleet preset the rescue is running on, so
+        // there is one place they are configured rather than two that drift apart.
+        let all = self.rescue_presets();
+        let preset = all.iter().find(|p| p.label == want).or_else(|| all.first());
+        let doctrine = preset
+            .map(|p| self.fleet_setup_name(p.setup_id))
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "?".into());
+        let staging = preset
+            .and_then(|p| p.formup_location.as_ref().map(|(_, n)| n.clone()))
+            .unwrap_or_else(|| self.settings.rescue_staging_system.clone());
+        let fc = if self.active_character.is_empty() { "?".into() } else { self.active_character.clone() };
         self.settings
             .rescue_ping_template
             .replace("{system}", &sys)
@@ -280,6 +283,54 @@ impl SpaiApp {
             .replace("{staging}", &staging)
             .replace("{fc}", &fc)
             .replace("{mumble}", &mumble)
+    }
+
+    /// Hands the rescue over to the fleet tab: the preset fills the start form, the comms channel
+    /// follows whatever the rescue settled on, and the user lands on the form ready to track.
+    #[cfg(feature = "fc-rescue")]
+    pub(crate) fn rescue_start_tracking(&mut self) {
+        let (want, op) = {
+            let r = self.rescue.lock().unwrap();
+            (r.doctrine.clone(), r.op_channel)
+        };
+        let all = self.rescue_presets();
+        let Some(mut preset) =
+            all.iter().find(|p| p.label == want).or_else(|| all.first()).cloned()
+        else {
+            return;
+        };
+        // The rescue's own op channel wins: it is the one the FC has been telling people.
+        preset.mumble_channel_id = Some(i32::from(op));
+        {
+            let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+            st.apply_preset(&preset);
+            st.page = crate::fleets::state::Page::Start;
+        }
+        self.view = nav::View::Fleet;
+        self.raise_main = true;
+    }
+
+    /// The presets a rescue can run on: the ones tagged Capital Save, and nothing else.
+    #[cfg(feature = "fc-rescue")]
+    pub(crate) fn rescue_presets(&self) -> Vec<crate::settings::FleetPreset> {
+        self.settings
+            .fleet_presets
+            .iter()
+            .filter(|p| p.tag_ids.contains(&crate::settings::CAPITAL_SAVE_TAG))
+            .cloned()
+            .collect()
+    }
+
+    /// A setup's name out of the fleet seed, for the doctrine line of a ping.
+    #[cfg(feature = "fc-rescue")]
+    pub(crate) fn fleet_setup_name(&self, setup_id: i32) -> String {
+        let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+        st.seed
+            .setups
+            .iter()
+            .find(|s| s.id.0 == setup_id)
+            .map(|s| s.name.trim().to_owned())
+            .unwrap_or_default()
     }
 
     /// (connected, status text, seconds until the next automatic retry, a worker thread is alive).
@@ -377,10 +428,11 @@ impl SpaiApp {
         let tx = self.jabber_tx.clone();
         let ops_w = self.settings.rescue_col_ops_w.clamp(180.0, 640.0);
         let mut new_ops_w = ops_w;
-        let doctrines = self.settings.rescue_doctrines.clone();
+        let presets = self.rescue_presets();
         let (jab_connected, jab_status, jab_retry_in, _) = self.jabber_conn();
         let mut retry_click = false;
         let mut set_dest: Option<i64> = None;
+        let mut start_tracking = false;
         let mut chat_dm: Option<String> = None;
         let has_char = self.active_character != "No character";
         let range_warning = self.rescue_range.as_ref().map(|w| {
@@ -476,9 +528,6 @@ impl SpaiApp {
                 ui.heading(egui::RichText::new(sys).strong());
                 if let Some(class) = r.cap_class {
                     ui.label(format!("[{}]", class.label()));
-                }
-                if r.fleet.stale {
-                    ui.colored_label(egui::Color32::from_rgb(0xE0, 0xA0, 0x30), "· stale");
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -605,8 +654,7 @@ impl SpaiApp {
                     let (mut mark_cmd, mut mark_coord, mut mark_invite) = (false, false, false);
 
                     ping_timer_ui(ui, &r);
-                    rescue_checklist_ui(ui, &mut *r);
-                    ui.add_space(6.0);
+                    ui.add_space(4.0);
                     ui.separator();
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Ping (editable, not auto-sent)").strong());
@@ -632,16 +680,31 @@ impl SpaiApp {
                                     ui.menu_value(&mut r.op_channel, n, n.to_string());
                                 }
                             });
-                        ui.label("Doctrine");
+                        ui.label("Preset");
                         let cur = r.doctrine.clone();
-                        egui::ComboBox::from_id_salt("rescue_doc")
-                            .width(150.0)
+                        egui::ComboBox::from_id_salt("rescue_preset")
+                            .width(170.0)
                             .selected_text(if cur.is_empty() { "—".into() } else { cur })
                             .show_ui(ui, |ui| {
-                                for d in &doctrines {
-                                    ui.menu_value(&mut r.doctrine, d.name.clone(), &d.name);
+                                if presets.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new("No preset tagged Capital Save").weak(),
+                                    );
                                 }
-                            });
+                                for p in &presets {
+                                    if ui.menu_value(&mut r.doctrine, p.label.clone(), &p.label)
+                                        .changed()
+                                    {
+                                        // A preset carries its own comms; the op stays editable
+                                        // after, since a rescue often moves channel.
+                                        if let Some(c) = p.mumble_channel_id {
+                                            r.op_channel = c.clamp(1, 12) as u8;
+                                        }
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("A different doctrine means a different preset.");
                     });
                     {
                         let btn = egui::Button::new(format!(
@@ -718,6 +781,25 @@ impl SpaiApp {
                             }
                         }
                     });
+
+                    // Handing over to the fleet tab: the preset fills the start form and the
+                    // fleet it starts is the one being tracked from here on.
+                    ui.add_space(6.0);
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 24.0],
+                            egui::Button::new(format!(
+                                "{}  Start tracking",
+                                egui_phosphor::regular::ROCKET_LAUNCH
+                            )),
+                        )
+                        .on_hover_text(
+                            "Fill the start form from this preset and open the fleet tab",
+                        )
+                        .clicked()
+                    {
+                        start_tracking = true;
+                    }
 
                     // Pull the pilot who raised the ping into the op's REGULAR comms, addressed by
                     // their delve911 nick so it reads as a direct call-out in the channel.
@@ -890,14 +972,18 @@ impl SpaiApp {
             self.raise_main = true;
         }
 
-        // Persist op/doctrine so the next rescue starts where we left off.
-        let (op, doc) = {
+        if start_tracking {
+            self.rescue_start_tracking();
+        }
+
+        // Persist op and preset so the next rescue starts where we left off.
+        let (op, preset) = {
             let r = self.rescue.lock().unwrap();
             (r.op_channel, r.doctrine.clone())
         };
-        if op != self.settings.rescue_op_channel || doc != self.settings.rescue_doctrine {
+        if op != self.settings.rescue_op_channel || preset != self.settings.rescue_preset {
             self.settings.rescue_op_channel = op;
-            self.settings.rescue_doctrine = doc;
+            self.settings.rescue_preset = preset;
             self.needs_save = true;
         }
     }

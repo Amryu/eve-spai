@@ -3685,6 +3685,7 @@ struct RowCtx<'a> {
     toggle_lock: &'a mut Option<i64>,
 }
 
+#[cfg(feature = "fleet")]
 #[allow(clippy::too_many_arguments)]
 fn member_row(
     ui: &mut egui::Ui,
