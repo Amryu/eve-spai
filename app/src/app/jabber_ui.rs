@@ -2531,36 +2531,6 @@ impl SpaiApp {
 
     /// The Fleet pings pseudo-tab. Main window only: a pop-out has no pings feed.
     pub(crate) fn jabber_pings_ui(&mut self, ui: &mut egui::Ui, f: &JabberFrame) {
-        // Rescue destination shortcuts: one per recent delve911 rescue ping, so you can
-        // route to any of the last few reported systems without opening the rescue
-        // window. Sourced from the rescue events, each using that ping's own system.
-        #[cfg(feature = "fc-rescue")]
-        {
-        let recent = self.rescue_recent_dests(3);
-        let mut set_rescue_dest: Option<i64> = None;
-        if !recent.is_empty() {
-            ui.label(egui::RichText::new(format!(
-                "{}  Rescue",
-                egui_phosphor::regular::WARNING_OCTAGON
-            )).strong());
-            for (sid, name) in &recent {
-                let name = if name.is_empty() { "?" } else { name.as_str() };
-                if ui
-                    .button(format!(
-                        "{}  Set Destination: {name}",
-                        egui_phosphor::regular::MAP_PIN_LINE
-                    ))
-                    .clicked()
-                {
-                    set_rescue_dest = Some(*sid);
-                }
-            }
-            ui.separator();
-        }
-        if let Some(sid) = set_rescue_dest {
-            self.rescue_push_destination(sid);
-        }
-        }
         let systems = self.systems.clone();
         let pings = &f.pings;
         let hl: Vec<bool> =

@@ -148,22 +148,6 @@ impl SpaiApp {
         }
     }
 
-    /// The most recent `n` rescue pings that resolved a system, newest first, as (system_id, name).
-    /// Each is a real delve911 ping, so its system is exactly what that ping reported.
-    #[cfg(feature = "fc-rescue")]
-    pub(crate) fn rescue_recent_dests(&self, n: usize) -> Vec<(i64, String)> {
-        let r = self.rescue.lock().unwrap();
-        r.events
-            .iter()
-            .rev()
-            .filter_map(|e| match (e.is_ping, e.system_id) {
-                (true, Some(id)) => Some((id, e.system_name.clone().unwrap_or_default())),
-                _ => None,
-            })
-            .take(n)
-            .collect()
-    }
-
     /// Push the rescue capital's system to the active character as an ESI autopilot destination.
     /// No-op without an active character.
     #[cfg(feature = "fc-rescue")]
