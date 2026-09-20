@@ -2457,6 +2457,9 @@ fn tracking_page(
             if let Some(name) = seed.setup_name(open.fleet.setup_id) {
                 ui.label(egui::RichText::new(name).weak());
             }
+            for t in open.fleet.tag_ids.iter().filter_map(|t| seed.tag(*t)) {
+                fleet_tag_chip(ui, t);
+            }
             if read_only {
                 ui.label(
                     egui::RichText::new("closed").color(crate::theme::standing::WARNING),
@@ -2479,17 +2482,9 @@ fn tracking_page(
                 }
             });
         });
-        ui.horizontal_wrapped(|ui| {
-            if let Some(f) = &open.fleet.formup_location {
-                ui.label(egui::RichText::new(format!("Formup: {}", f.label)).weak());
-            }
-            for t in open.fleet.tag_ids.iter().filter_map(|t| seed.tag(*t)) {
-                fleet_tag_chip(ui, t);
-            }
-            // After the fleet's own details: these are actions, and they read as actions at the
-            // end of the line rather than wedged between two facts.
-            comms_buttons(ui, &seed, &open, mine, here.as_deref(), join);
-        });
+        if let Some(f) = &open.fleet.formup_location {
+            ui.label(egui::RichText::new(format!("Formup: {}", f.label)).weak());
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             for (t, label) in
@@ -2513,6 +2508,8 @@ fn tracking_page(
                 {
                     *sidebar = !*sidebar;
                 }
+                // Right-to-left, so writing these after Settings puts them before it.
+                comms_buttons(ui, &seed, &open, mine, here.as_deref(), join);
             });
         });
         ui.add_space(4.0);
@@ -2572,9 +2569,11 @@ fn comms_buttons(
     let command_url =
         open.fleet.mumble_channel_id.map(|c| comms::command_url(sector, c.0));
 
+    // Drawn in a right-to-left strip, so the order here is the reverse of how it reads: the
+    // fleet's own comms end up first.
     for (label, url) in [
-        ("Join comms".to_owned(), op_url),
         (format!("Join {} command", sector.label()), command_url),
+        ("Join comms".to_owned(), op_url),
     ] {
         let Some(url) = url else { continue };
         // Only a fleet this account is running is worth nagging about: being outside somebody
