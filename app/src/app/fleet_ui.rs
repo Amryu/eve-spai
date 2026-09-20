@@ -146,11 +146,12 @@ impl SpaiApp {
         let presets = self.settings.fleet_presets.clone();
         let boost_rules = self.settings.fleet_boost_requirements.clone();
         let mut open_boost_editor = false;
+        let mut sidebar_open = self.fleet_sidebar_open;
         let journal_open = self.fleet_journal_open;
         let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
         let mut set_tab: Option<DetailTab> = None;
-        let mut act_on: Option<Action> = None;
+        let mut act_on: Vec<Action> = Vec::new();
         let mut goto: Option<Page> = None;
         let mut cmd: Option<Cmd> = None;
         let mut refresh = false;
@@ -232,10 +233,10 @@ impl SpaiApp {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &mut act),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open)
                 }
             }
         });
@@ -257,7 +258,7 @@ impl SpaiApp {
         if let Some(t) = set_tab {
             self.fleet_detail_tab = t;
         }
-        if let Some(action) = act_on {
+        for action in act_on {
             if let Some(id) = page.fleet().cloned() {
                 // Anything that cannot be taken back asks first. The rest is one click.
                 if let Some(question) = confirm_question(&action) {
@@ -279,6 +280,7 @@ impl SpaiApp {
         if open_boost_editor {
             self.fleet_boost_editor = true;
         }
+        self.fleet_sidebar_open = sidebar_open;
         self.fleet_confirm_modal(ui.ctx());
         self.fleet_apply_form(act);
     }
@@ -1836,9 +1838,10 @@ fn tracking_page(
     read_only: bool,
     tab: DetailTab,
     set_tab: &mut Option<DetailTab>,
-    act_on: &mut Option<Action>,
+    act_on: &mut Vec<Action>,
     boost_rules: &[crate::settings::FleetBoostRequirement],
     open_editor: &mut bool,
+    sidebar: &mut bool,
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
@@ -1916,6 +1919,18 @@ fn tracking_page(
             ui.label(
                 egui::RichText::new(format!("{} pilots", open.composition.total())).weak(),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if selectable_chip(
+                    ui,
+                    *sidebar,
+                    format!("{}  Settings", egui_phosphor::regular::SLIDERS_HORIZONTAL),
+                )
+                .on_hover_text("Change the doctrine or the comms of this fleet")
+                .clicked()
+                {
+                    *sidebar = !*sidebar;
+                }
+            });
         });
         ui.add_space(4.0);
     });
@@ -1923,6 +1938,12 @@ fn tracking_page(
     egui::Panel::bottom("fleet_actions").frame(bar_frame(ui)).show_inside(ui, |ui| {
         action_bar(ui, st, read_only, act_on);
     });
+
+    if *sidebar {
+        egui::Panel::right("fleet_sidebar").default_width(280.0).show_inside(ui, |ui| {
+            fleet_sidebar(ui, st, &open, read_only, act_on);
+        });
+    }
 
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
         let (can_move, can_kick) = (
@@ -1936,6 +1957,118 @@ fn tracking_page(
             }
         });
     });
+}
+
+/// What can still be changed about a fleet that is already up: what it flies and where it talks.
+///
+/// Staged rather than live, because every field here is a request: changing the setup three times
+/// while making up your mind would be three PUTs and three MOTDs.
+#[cfg(feature = "fleet")]
+fn fleet_sidebar(
+    ui: &mut egui::Ui,
+    st: &mut crate::fleets::FleetState,
+    open: &crate::fleets::state::OpenFleet,
+    read_only: bool,
+    act_on: &mut Vec<Action>,
+) {
+    let seed = st.seed.clone();
+    let fleet = open.fleet.clone();
+    let can = st.can(Perm::AccessFleet) && !read_only;
+    let e = &mut st.edit;
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Fleet settings").strong());
+    ui.add_space(4.0);
+
+    egui::Grid::new("fleet_sidebar_grid")
+        .num_columns(2)
+        .min_col_width(60.0)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Setup");
+            let current = seed
+                .setups
+                .iter()
+                .find(|s| s.id == e.setup_id)
+                .map(|s| s.name.trim().to_owned())
+                .unwrap_or_else(|| "== Choose a setup ==".to_owned());
+            egui::ComboBox::from_id_salt("sidebar_setup")
+                .width(190.0)
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for s in &seed.setups {
+                        ui.selectable_value(&mut e.setup_id, s.id, s.name.trim());
+                    }
+                });
+            ui.end_row();
+
+            for (label, salt, list, slot) in [
+                ("Comms", "sidebar_mumble", &seed.mumble_channels, &mut e.mumble),
+                ("Logi", "sidebar_logi", &seed.logi_channels, &mut e.logi),
+                ("Boost", "sidebar_boost", &seed.boost_channels, &mut e.boost),
+            ] {
+                ui.label(label);
+                let current = slot
+                    .and_then(|id| list.iter().find(|c| c.id == id))
+                    .map(|c| c.name.trim().to_owned())
+                    .unwrap_or_else(|| "none".to_owned());
+                egui::ComboBox::from_id_salt(salt).width(190.0).selected_text(current).show_ui(
+                    ui,
+                    |ui| {
+                        ui.selectable_value(slot, None, "none");
+                        for c in list {
+                            let text = if c.is_in_use {
+                                egui::RichText::new(format!("{}  in use", c.name.trim())).weak()
+                            } else {
+                                egui::RichText::new(c.name.trim().to_owned())
+                            };
+                            ui.selectable_value(slot, Some(c.id), text);
+                        }
+                    },
+                );
+                ui.end_row();
+            }
+        });
+
+    ui.add_space(6.0);
+    ui.checkbox(&mut e.set_motd, "Re-set the MOTD")
+        .on_hover_text("The MOTD names the channels, so it goes stale when they change.");
+    ui.add_space(6.0);
+
+    let dirty = e.differs(&fleet);
+    ui.horizontal(|ui| {
+        let apply = ui
+            .add_enabled(
+                can && dirty,
+                egui::Button::new(format!("{}  Apply", egui_phosphor::regular::CHECK)),
+            )
+            .on_disabled_hover_text(if read_only {
+                "Closed fleet, read-only."
+            } else if !dirty {
+                "Nothing changed."
+            } else {
+                "Your account does not have the accessFleet permission."
+            });
+        if apply.clicked() {
+            act_on.push(Action::Update(Box::new(e.applied(&fleet))));
+            if e.set_motd {
+                act_on.push(Action::SetMotd);
+            }
+        }
+        if ui
+            .add_enabled(dirty, egui::Button::new("Discard"))
+            .on_disabled_hover_text("Nothing changed.")
+            .clicked()
+        {
+            e.of = None;
+            e.seed(&fleet);
+        }
+    });
+    if dirty {
+        ui.label(
+            egui::RichText::new("Not applied yet.").color(crate::theme::standing::WARNING),
+        );
+    }
 }
 
 /// What is thin about the fleet, worst first. Advice, so nothing here blocks anything.
@@ -2091,7 +2224,7 @@ fn action_bar(
     ui: &mut egui::Ui,
     st: &crate::fleets::FleetState,
     read_only: bool,
-    act_on: &mut Option<Action>,
+    act_on: &mut Vec<Action>,
 ) {
     use egui_phosphor::regular as icon;
     ui.horizontal_wrapped(|ui| {
@@ -2130,7 +2263,7 @@ fn action_bar(
                 resp
             };
             if resp.clicked() {
-                *act_on = Some(action);
+                act_on.push(action);
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2148,7 +2281,7 @@ fn members_view(
     open: &crate::fleets::state::OpenFleet,
     can_move: bool,
     can_kick: bool,
-    act_on: &mut Option<Action>,
+    act_on: &mut Vec<Action>,
 ) {
     use crate::fleets::model::Seat;
     let comp = &open.composition;
@@ -2216,7 +2349,7 @@ fn members_view(
     if let Some((character_id, seat)) = drop_on {
         if can_move && comp.seat_of(character_id) != Some(seat) {
             let (wing, squad) = seat.ids();
-            *act_on = Some(Action::Move { character_id, wing, squad });
+            act_on.push(Action::Move { character_id, wing, squad });
         }
     }
 }
@@ -2231,7 +2364,7 @@ fn commander_seat(
     holder: Option<&crate::fleets::model::Member>,
     can_move: bool,
     can_kick: bool,
-    act_on: &mut Option<Action>,
+    act_on: &mut Vec<Action>,
     drop_on: &mut Option<(i64, crate::fleets::model::Seat)>,
 ) {
     let title = match seat {
@@ -2308,7 +2441,7 @@ fn member_row(
     badge: Option<&str>,
     can_move: bool,
     can_kick: bool,
-    act_on: &mut Option<Action>,
+    act_on: &mut Vec<Action>,
 ) {
     let standing = crate::fleets::doctrine::classify(
         m.ship_type_id,
@@ -2356,7 +2489,7 @@ fn member_row(
             .on_hover_text(format!("Kick {}", m.name))
             .clicked()
         {
-            *act_on = Some(Action::Kick { character_id: m.character_id, exclude: false });
+            act_on.push(Action::Kick { character_id: m.character_id, exclude: false });
         }
     });
 }

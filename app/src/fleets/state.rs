@@ -99,6 +99,57 @@ pub struct Draft {
     pub configured: Configured,
 }
 
+/// What the tracking sidebar has changed but not yet sent.
+///
+/// Seeded from the fleet each time a different one opens, and left alone after that: a poll landing
+/// mid-edit must not pull the setup back from under the cursor.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct FleetEdit {
+    pub of: Option<FleetId>,
+    pub setup_id: SetupId,
+    pub mumble: Option<ChannelId>,
+    pub logi: Option<ChannelId>,
+    pub boost: Option<ChannelId>,
+    /// Re-set the fleet MOTD after applying, since the MOTD names the channels.
+    pub set_motd: bool,
+}
+
+impl FleetEdit {
+    /// Loads the fleet's own values, unless they are already loaded.
+    pub fn seed(&mut self, f: &Fleet) {
+        if self.of.as_ref() == Some(&f.id) {
+            return;
+        }
+        *self = FleetEdit {
+            of: Some(f.id.clone()),
+            setup_id: f.setup_id,
+            mumble: f.mumble_channel_id,
+            logi: f.logi_channel_id,
+            boost: f.boost_channel_id,
+            set_motd: true,
+        };
+    }
+
+    /// Whether anything would actually change.
+    pub fn differs(&self, f: &Fleet) -> bool {
+        self.setup_id != f.setup_id
+            || self.mumble != f.mumble_channel_id
+            || self.logi != f.logi_channel_id
+            || self.boost != f.boost_channel_id
+    }
+
+    /// The fleet as the edit would leave it.
+    pub fn applied(&self, f: &Fleet) -> Fleet {
+        Fleet {
+            setup_id: self.setup_id,
+            mumble_channel_id: self.mumble,
+            logi_channel_id: self.logi,
+            boost_channel_id: self.boost,
+            ..f.clone()
+        }
+    }
+}
+
 /// The comms a preset or the user chose, before anything was taken off them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Configured {
@@ -123,6 +174,8 @@ pub struct FleetState {
     pub boosts: Vec<super::boosts::Coverage>,
     /// How long each pilot flying something nobody asked for has been in it.
     pub off_doctrine: Vec<super::doctrine::OffDoctrine>,
+    /// Staged changes to the open fleet, applied on a button rather than as they are typed.
+    pub edit: FleetEdit,
     /// Requests that would have gone out, newest last.
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
@@ -157,6 +210,7 @@ impl FleetState {
             }
             Outcome::History(page) => self.history.put(page),
             Outcome::Opened(open) => {
+                self.edit.seed(&open.fleet);
                 // Before the snapshot lands, so the clock is carried forward from the last one.
                 self.off_doctrine = super::doctrine::track_off_doctrine(
                     &self.off_doctrine,
@@ -602,6 +656,35 @@ mod tests {
 
     /// The rule that picks comms: keep a free choice, take the lowest free id otherwise, and never
     /// hand out a standing channel or one somebody is on.
+    /// The sidebar loads a fleet's own values once and then leaves them alone, so a poll cannot
+    /// pull a half-made change back.
+    #[test]
+    fn a_staged_edit_survives_the_next_poll() {
+        let fleet = Fleet {
+            id: FleetId("abc".into()),
+            setup_id: SetupId(46),
+            mumble_channel_id: Some(ChannelId(3)),
+            ..Fleet::default()
+        };
+        let mut e = FleetEdit::default();
+        e.seed(&fleet);
+        assert_eq!(e.setup_id, SetupId(46));
+        assert!(!e.differs(&fleet));
+        assert!(e.set_motd, "the MOTD names the channels, so re-setting it is the default");
+
+        e.setup_id = SetupId(60);
+        e.seed(&fleet);
+        assert_eq!(e.setup_id, SetupId(60), "the poll overwrote a staged change");
+        assert!(e.differs(&fleet));
+        assert_eq!(e.applied(&fleet).setup_id, SetupId(60));
+        assert_eq!(e.applied(&fleet).id, fleet.id, "applying kept the rest of the fleet");
+
+        // A different fleet starts over.
+        let other = Fleet { id: FleetId("def".into()), setup_id: SetupId(19), ..Fleet::default() };
+        e.seed(&other);
+        assert_eq!(e.setup_id, SetupId(19));
+    }
+
     /// Auto keeps what is free and replaces only what is taken; picking free starts over; forcing
     /// puts the preset's own channels back whatever else is on them.
     #[test]

@@ -825,6 +825,9 @@ pub struct SpaiApp {
     /// The per-doctrine boost editor window is open.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_boost_editor: bool,
+    /// The tracked fleet's settings sidebar is open.
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_sidebar_open: bool,
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
@@ -1589,6 +1592,8 @@ impl SpaiApp {
             headless,
             #[cfg(feature = "fleet")]
             fleet_boost_editor: false,
+            #[cfg(feature = "fleet")]
+            fleet_sidebar_open: false,
             #[cfg(feature = "fleet")]
             fleet_detail_tab: Default::default(),
             #[cfg(feature = "fleet")]

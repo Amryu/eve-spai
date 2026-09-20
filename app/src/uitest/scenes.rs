@@ -918,6 +918,9 @@ fn fleet_detail_scene(
             a.settings.fleet_enabled = true;
             a.view = View::Fleet;
             a.fleet_detail_tab = tab;
+            // Open on the roster so the sidebar is rendered somewhere, and closed on the
+            // composition so that tab's own width is what the scene shows.
+            a.fleet_sidebar_open = tab == crate::app::fleet_ui::DetailTab::Members;
             a.settings.fleet_boost_requirements = fixtures::fleet_boost_rules();
             fixtures::seed_fleet_state(&a);
             fixtures::open_first_fleet(&a);
