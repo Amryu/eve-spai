@@ -982,6 +982,28 @@ fn fleet_confirm_scene(
     })
 }
 
+/// The per-doctrine boost editor, filled for one doctrine so both halves have something in them.
+#[cfg(feature = "fleet")]
+fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_boost_requirements =
+                crate::fleets::boosts::default_rules(46, false);
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            a.fleet_boost_editor = true;
+            // Land on the doctrine that has rules, or the right half renders its empty state.
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("fleet_boost_editor_pick"), 46_i32));
+            a
+        });
+        app.fleet_boost_editor(ctx);
+    })
+}
+
 /// The fleet settings section on its own: the whole settings page would need a canvas thousands of
 /// pixels tall to reach it.
 #[cfg(feature = "fleet")]
@@ -1358,6 +1380,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_thin_scene("fleet_composition_thin", [1280.0, 820.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_boost_editor_scene("fleet_boost_editor", [840.0, 620.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",

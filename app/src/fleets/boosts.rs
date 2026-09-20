@@ -500,6 +500,35 @@ pub fn suggestion<'a>(wanted: &'a [Wanted], have: &[Coverage]) -> Option<&'a Wan
     gaps(wanted, have).first().copied()
 }
 
+/// A sensible starting point for a doctrine: every charge of the bursts a combat fleet runs, at
+/// Medium, so an FC only has to raise the ones that matter and delete the rest.
+///
+/// Shield and armor are alternatives, never both: a doctrine tanks one way.
+pub fn default_rules(setup_id: i64, armor: bool) -> Vec<crate::settings::FleetBoostRequirement> {
+    let tank = if armor { Burst::Armor } else { Burst::Shield };
+    CHARGES
+        .iter()
+        .filter(|(_, b)| *b == tank || *b == Burst::Information || *b == Burst::Skirmish)
+        .map(|(name, _)| crate::settings::FleetBoostRequirement {
+            setup_id: setup_id as i32,
+            charge: (*name).to_owned(),
+            priority: Priority::Medium.as_str().to_owned(),
+        })
+        .collect()
+}
+
+/// Whether a doctrine's name reads as an armor fleet. A guess the dialog shows and the user flips,
+/// not a fact: the API says nothing about how a setup tanks.
+pub fn looks_like_armor(setup_name: &str) -> bool {
+    const ARMOR: &[&str] = &[
+        "abaddon", "apoc", "armor", "armour", "baltec", "guardian", "harbinger", "legion",
+        "machariel", "mega", "prophecy", "proteus", "sacrilege", "zealot", "retri", "damnation",
+        "absolution", "eos", "astarte", "myrmidon", "brutix",
+    ];
+    let n = setup_name.to_lowercase();
+    ARMOR.iter().any(|a| n.contains(a))
+}
+
 /// The requirements the user set for one doctrine, worst first.
 pub fn wanted_for(setup_id: i64, rows: &[crate::settings::FleetBoostRequirement]) -> Vec<Wanted> {
     let mut out: Vec<Wanted> = rows
@@ -831,6 +860,39 @@ mod tests {
         // And the shorthand in the channel satisfies it too.
         let short = coverage(&[line("P", "shield", 1)], 0);
         assert!(covered("Shield", &short));
+    }
+
+    /// The starting point for a doctrine covers one tank, information and skirmish, all Medium.
+    #[test]
+    fn the_default_rules_pick_one_tank() {
+        let shield = default_rules(46, false);
+        let names: Vec<&str> = shield.iter().map(|r| r.charge.as_str()).collect();
+        assert!(names.contains(&"Shield Extension"));
+        assert!(names.contains(&"Sensor Optimization"));
+        assert!(names.contains(&"Rapid Deployment"));
+        assert!(!names.iter().any(|n| burst_of(n) == Some(Burst::Armor)), "{names:?}");
+        assert!(!names.iter().any(|n| burst_of(n) == Some(Burst::Mining)), "{names:?}");
+        assert_eq!(shield.len(), 9);
+        assert!(shield.iter().all(|r| r.priority == "medium"));
+        assert!(shield.iter().all(|r| r.setup_id == 46));
+
+        let armor = default_rules(46, true);
+        let names: Vec<&str> = armor.iter().map(|r| r.charge.as_str()).collect();
+        assert!(names.contains(&"Armor Energizing"));
+        assert!(names.contains(&"Rapid Repair"));
+        assert!(!names.iter().any(|n| burst_of(n) == Some(Burst::Shield)), "{names:?}");
+        assert_eq!(armor.len(), 9);
+    }
+
+    /// The tank guess reads the doctrine's name, and admits when it cannot tell.
+    #[test]
+    fn an_armor_doctrine_is_guessed_from_its_name() {
+        for n in ["Retri Fleet", "Hammer Fleet (Prophecy)", "Baltec", "armor cruisers"] {
+            assert!(looks_like_armor(n), "{n}");
+        }
+        for n in ["Harpy Fleet", "Flycatchers", "Maelstrom", "Cormorant", ""] {
+            assert!(!looks_like_armor(n), "{n}");
+        }
     }
 
     /// An unknown priority string must not take the rest of the list down with it.

@@ -822,6 +822,8 @@ pub struct SpaiApp {
     /// Built for a screenshot or an assertion, so nothing may reach the real profile or its logs.
     #[cfg(feature = "fleet")]
     pub(crate) headless: bool,
+    /// The per-doctrine boost editor window is open.
+    pub(crate) fleet_boost_editor: bool,
     /// Which half of a fleet's page is showing: who is in it, or what they are flying.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_detail_tab: crate::app::fleet_ui::DetailTab,
@@ -1584,6 +1586,7 @@ impl SpaiApp {
             fleet_boosts_read: None,
             #[cfg(feature = "fleet")]
             headless,
+            fleet_boost_editor: false,
             #[cfg(feature = "fleet")]
             fleet_detail_tab: Default::default(),
             #[cfg(feature = "fleet")]
@@ -3343,6 +3346,11 @@ impl SpaiApp {
             View::Rescue => self.rescue_view(ui),
             View::Settings => self.settings_view(ui),
         });
+        // Its own window, opened from settings and from a tracked fleet, so it cannot live inside
+        // either view's body.
+        if self.fleet_boost_editor(ui.ctx()) {
+            self.needs_save = true;
+        }
     }
 }
 

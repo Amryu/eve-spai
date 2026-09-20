@@ -145,6 +145,7 @@ impl SpaiApp {
         let seed_hint = crate::fleets::seed_path_hint();
         let presets = self.settings.fleet_presets.clone();
         let boost_rules = self.settings.fleet_boost_requirements.clone();
+        let mut open_boost_editor = false;
         let journal_open = self.fleet_journal_open;
         let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
@@ -231,10 +232,10 @@ impl SpaiApp {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &mut act),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor)
                 }
             }
         });
@@ -274,6 +275,9 @@ impl SpaiApp {
                     self.fleet_dispatch(Cmd::Act(id, action));
                 }
             }
+        }
+        if open_boost_editor {
+            self.fleet_boost_editor = true;
         }
         self.fleet_confirm_modal(ui.ctx());
         self.fleet_apply_form(act);
@@ -391,113 +395,264 @@ impl SpaiApp {
 
     /// Which boosts each doctrine wants, and in what order to put them on.
     ///
-    /// The setup list comes from the dashboard, so this needs the tab to have signed in once; the
-    /// rows survive on their own ids either way.
+    /// Its own window rather than a row in settings: there are two dozen doctrines and nine
+    /// charges each, which is a page of its own however it is folded into this one.
     #[cfg(feature = "fleet")]
     fn fleet_boost_rules(&mut self, ui: &mut egui::Ui) -> bool {
-        use crate::fleets::boosts::{Burst, Priority, CHARGES, COMBAT_BURSTS};
-        let mut changed = false;
-        let setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
-
-        let any = !self.settings.fleet_boost_requirements.is_empty();
-        egui::CollapsingHeader::new("Boosts per doctrine").default_open(any).show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(
-                    "What each doctrine wants running. The tracked fleet's composition tab flags \
-                     whichever of these nobody is on, highest priority first.",
-                )
-                .weak(),
-            );
-            ui.add_space(4.0);
-
-            let mut remove: Option<usize> = None;
-            egui::Grid::new("fleet_boost_rules")
-                .num_columns(4)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    for (i, rule) in self.settings.fleet_boost_requirements.iter_mut().enumerate() {
-                        let setup_name = setups
-                            .iter()
-                            .find(|s| s.id.0 == rule.setup_id)
-                            .map(|s| s.name.clone())
-                            .unwrap_or_else(|| format!("Setup {}", rule.setup_id));
-                        egui::ComboBox::from_id_salt(("boost_rule_setup", i))
-                            .selected_text(setup_name)
-                            .width(200.0)
-                            .show_ui(ui, |ui| {
-                                for s in &setups {
-                                    changed |= ui
-                                        .selectable_value(&mut rule.setup_id, s.id.0, &s.name)
-                                        .changed();
-                                }
-                            });
-                        egui::ComboBox::from_id_salt(("boost_rule_charge", i))
-                            .selected_text(rule.charge.clone())
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for b in COMBAT_BURSTS {
-                                    changed |= ui
-                                        .selectable_value(
-                                            &mut rule.charge,
-                                            b.label().to_owned(),
-                                            format!("Any {}", b.label().to_lowercase()),
-                                        )
-                                        .changed();
-                                }
-                                ui.separator();
-                                for (name, _) in
-                                    CHARGES.iter().filter(|(_, b)| COMBAT_BURSTS.contains(b))
-                                {
-                                    changed |= ui
-                                        .selectable_value(
-                                            &mut rule.charge,
-                                            (*name).to_owned(),
-                                            *name,
-                                        )
-                                        .changed();
-                                }
-                            });
-                        let mut prio = Priority::parse(&rule.priority);
-                        egui::ComboBox::from_id_salt(("boost_rule_priority", i))
-                            .selected_text(prio.label())
-                            .width(110.0)
-                            .show_ui(ui, |ui| {
-                                for p in Priority::ALL {
-                                    if ui.selectable_value(&mut prio, p, p.label()).changed() {
-                                        rule.priority = p.as_str().to_owned();
-                                        changed = true;
-                                    }
-                                }
-                            });
-                        if ui
-                            .button(egui_phosphor::regular::TRASH)
-                            .on_hover_text("Remove this requirement.")
-                            .clicked()
-                        {
-                            remove = Some(i);
-                        }
-                        ui.end_row();
-                    }
-                });
-            if let Some(i) = remove {
-                self.settings.fleet_boost_requirements.remove(i);
-                changed = true;
-            }
+        let n = self.settings.fleet_boost_requirements.len();
+        ui.horizontal(|ui| {
             if ui
-                .button(format!("{}  Add a boost", egui_phosphor::regular::PLUS))
+                .button(format!(
+                    "{}  Boosts per doctrine...",
+                    egui_phosphor::regular::SLIDERS_HORIZONTAL
+                ))
                 .clicked()
             {
-                self.settings.fleet_boost_requirements.push(
-                    crate::settings::FleetBoostRequirement {
-                        setup_id: setups.first().map(|s| s.id.0).unwrap_or_default(),
-                        charge: Burst::Shield.label().to_owned(),
-                        priority: Priority::Medium.as_str().to_owned(),
-                    },
-                );
-                changed = true;
+                self.fleet_boost_editor = true;
             }
+            ui.label(
+                egui::RichText::new(match n {
+                    0 => "nothing set".to_owned(),
+                    n => format!("{n} set"),
+                })
+                .weak(),
+            );
         });
+        false
+    }
+
+    /// The editor window. Doctrines on the left, that doctrine's boosts on the right.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn fleet_boost_editor(&mut self, ctx: &egui::Context) -> bool {
+        use crate::fleets::boosts::{self, Priority, CHARGES, COMBAT_BURSTS};
+        if !self.fleet_boost_editor {
+            return false;
+        }
+        let mut changed = false;
+        let mut open = true;
+        let setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
+        let placeholder =
+            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.placeholder;
+        let pick_id = egui::Id::new("fleet_boost_editor_pick");
+        let mut picked: i32 = ctx.data(|d| {
+            d.get_temp(pick_id).unwrap_or_else(|| setups.first().map(|s| s.id.0).unwrap_or(0))
+        });
+
+        egui::Window::new("Boosts per doctrine")
+            .open(&mut open)
+            .default_size([760.0, 520.0])
+            .collapsible(false)
+            .show(ctx, |ui| {
+                if placeholder {
+                    ui.label(
+                        egui::RichText::new(
+                            "These are placeholder doctrines. Drop a seed file in the profile \
+                             directory to configure the real ones.",
+                        )
+                        .color(crate::theme::standing::WARNING),
+                    );
+                }
+                let rules = &mut self.settings.fleet_boost_requirements;
+                ui.horizontal_top(|ui| {
+                    // Doctrines, with how many boosts each already has.
+                    ui.vertical(|ui| {
+                        ui.set_width(240.0);
+                        let search_id = ui.id().with("search");
+                        let mut query: String =
+                            ui.data(|d| d.get_temp(search_id).unwrap_or_default());
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut query)
+                                    .hint_text("Search doctrines")
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .changed()
+                        {
+                            ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical().id_salt("boost_setups").show(ui, |ui| {
+                            for s in &setups {
+                                let name = s.name.trim();
+                                if !tag_matches(name, &query) {
+                                    continue;
+                                }
+                                let n = rules.iter().filter(|r| r.setup_id == s.id.0).count();
+                                let label = if n == 0 {
+                                    name.to_owned()
+                                } else {
+                                    format!("{name}  ({n})")
+                                };
+                                if ui.selectable_label(picked == s.id.0, label).clicked() {
+                                    picked = s.id.0;
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    ui.vertical(|ui| {
+                        let name = setups
+                            .iter()
+                            .find(|s| s.id.0 == picked)
+                            .map(|s| s.name.trim().to_owned())
+                            .unwrap_or_else(|| "No doctrine".to_owned());
+                        let mine = rules.iter().filter(|r| r.setup_id == picked).count();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(&name).strong());
+                            let armor = boosts::looks_like_armor(&name);
+                            if ui
+                                .add_enabled(
+                                    mine == 0,
+                                    egui::Button::new(format!(
+                                        "{}  Fill ({})",
+                                        egui_phosphor::regular::PLUS,
+                                        if armor { "armor" } else { "shield" }
+                                    )),
+                                )
+                                .on_disabled_hover_text("This doctrine already has boosts set.")
+                                .on_hover_text(
+                                    "Add every relevant charge at Medium, guessing the tank from \
+                                     the name.",
+                                )
+                                .clicked()
+                            {
+                                rules.extend(boosts::default_rules(picked.into(), armor));
+                                changed = true;
+                            }
+                            if ui
+                                .add_enabled(
+                                    mine == 0,
+                                    egui::Button::new(if armor { "Fill (shield)" } else { "Fill (armor)" }),
+                                )
+                                .on_disabled_hover_text("This doctrine already has boosts set.")
+                                .clicked()
+                            {
+                                rules.extend(boosts::default_rules(picked.into(), !armor));
+                                changed = true;
+                            }
+                            if ui
+                                .add_enabled(mine > 0, egui::Button::new("Clear"))
+                                .on_disabled_hover_text("Nothing to clear.")
+                                .clicked()
+                            {
+                                rules.retain(|r| r.setup_id != picked);
+                                changed = true;
+                            }
+                        });
+                        ui.add_space(4.0);
+
+                        let mut remove: Option<usize> = None;
+                        egui::ScrollArea::vertical().id_salt("boost_rules").show(ui, |ui| {
+                            egui::Grid::new("boost_rule_rows")
+                                .num_columns(3)
+                                .striped(true)
+                                .spacing([10.0, 4.0])
+                                .show(ui, |ui| {
+                                    for (i, rule) in rules.iter_mut().enumerate() {
+                                        if rule.setup_id != picked {
+                                            continue;
+                                        }
+                                        cell(ui, 220.0, |ui| {
+                                            egui::ComboBox::from_id_salt(("boost_charge", i))
+                                                .selected_text(rule.charge.clone())
+                                                .width(210.0)
+                                                .show_ui(ui, |ui| {
+                                                    for b in COMBAT_BURSTS {
+                                                        changed |= ui
+                                                            .selectable_value(
+                                                                &mut rule.charge,
+                                                                b.label().to_owned(),
+                                                                format!(
+                                                                    "Any {}",
+                                                                    b.label().to_lowercase()
+                                                                ),
+                                                            )
+                                                            .changed();
+                                                    }
+                                                    ui.separator();
+                                                    for (n, _) in CHARGES
+                                                        .iter()
+                                                        .filter(|(_, b)| COMBAT_BURSTS.contains(b))
+                                                    {
+                                                        changed |= ui
+                                                            .selectable_value(
+                                                                &mut rule.charge,
+                                                                (*n).to_owned(),
+                                                                *n,
+                                                            )
+                                                            .changed();
+                                                    }
+                                                });
+                                        });
+                                        cell(ui, 120.0, |ui| {
+                                            let mut prio = Priority::parse(&rule.priority);
+                                            egui::ComboBox::from_id_salt(("boost_prio", i))
+                                                .selected_text(prio.label())
+                                                .width(110.0)
+                                                .show_ui(ui, |ui| {
+                                                    for p in Priority::ALL {
+                                                        if ui
+                                                            .selectable_value(
+                                                                &mut prio,
+                                                                p,
+                                                                p.label(),
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            rule.priority =
+                                                                p.as_str().to_owned();
+                                                            changed = true;
+                                                        }
+                                                    }
+                                                });
+                                        });
+                                        if ui
+                                            .button(egui_phosphor::regular::TRASH)
+                                            .on_hover_text("Remove this boost")
+                                            .clicked()
+                                        {
+                                            remove = Some(i);
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                            if mine == 0 {
+                                ui.label(
+                                    egui::RichText::new("No boosts set for this doctrine.").weak(),
+                                );
+                            }
+                        });
+                        if let Some(i) = remove {
+                            rules.remove(i);
+                            changed = true;
+                        }
+                        ui.add_space(4.0);
+                        if ui
+                            .button(format!("{}  Add a boost", egui_phosphor::regular::PLUS))
+                            .clicked()
+                        {
+                            rules.push(crate::settings::FleetBoostRequirement {
+                                setup_id: picked,
+                                charge: boosts::Burst::Shield.label().to_owned(),
+                                priority: Priority::Medium.as_str().to_owned(),
+                            });
+                            changed = true;
+                        }
+                    });
+                });
+            });
+
+        ctx.data_mut(|d| d.insert_temp(pick_id, picked));
+        if !open {
+            self.fleet_boost_editor = false;
+        }
         changed
+    }
+
+    #[cfg(not(feature = "fleet"))]
+    pub(crate) fn fleet_boost_editor(&mut self, _ctx: &egui::Context) -> bool {
+        false
     }
 
     #[cfg(not(feature = "fleet"))]
@@ -1521,6 +1676,7 @@ fn tracking_page(
     set_tab: &mut Option<DetailTab>,
     act_on: &mut Option<Action>,
     boost_rules: &[crate::settings::FleetBoostRequirement],
+    open_editor: &mut bool,
 ) {
     let Some(open) = st.open.value.clone() else {
         ui.add_space(8.0);
@@ -1614,7 +1770,7 @@ fn tracking_page(
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
             DetailTab::Members => members_view(ui, &open, can_move, can_kick, act_on),
             DetailTab::Composition => {
-                composition_view(ui, &open, &boosts, &wanted, &off_doctrine)
+                composition_view(ui, &open, &boosts, &wanted, &off_doctrine, open_editor)
             }
         });
     });
@@ -1676,14 +1832,21 @@ fn boost_strip(
     ui: &mut egui::Ui,
     boosts: &[crate::fleets::boosts::Coverage],
     wanted: &[crate::fleets::boosts::Wanted],
+    open_editor: &mut bool,
 ) {
     use crate::fleets::boosts;
-    if boosts.is_empty() && wanted.is_empty() {
-        return;
-    }
     let gaps = boosts::gaps(wanted, boosts);
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new("Boosts").strong());
+        if ui
+            .add(
+                egui::Button::new(egui_phosphor::regular::SLIDERS_HORIZONTAL).frame(false),
+            )
+            .on_hover_text("Set which boosts this doctrine wants")
+            .clicked()
+        {
+            *open_editor = true;
+        }
         if gaps.is_empty() {
             ui.label(
                 egui::RichText::new(if wanted.is_empty() {
@@ -1966,6 +2129,7 @@ fn composition_view(
     boosts: &[crate::fleets::boosts::Coverage],
     wanted: &[crate::fleets::boosts::Wanted],
     off_doctrine: &[crate::fleets::doctrine::OffDoctrine],
+    open_editor: &mut bool,
 ) {
     use crate::fleets::doctrine::{by_category, by_ship, unexpected_pilots, Standing};
     let doctrine = open.doctrine.as_ref();
@@ -1977,7 +2141,7 @@ fn composition_view(
     let total = open.composition.total().max(1);
 
     checks_strip(ui, &crate::fleets::checks::hulls(&open.composition));
-    boost_strip(ui, boosts, wanted);
+    boost_strip(ui, boosts, wanted, open_editor);
 
     if let Some(missing) = doctrine.map(|d| d.missing(&open.composition)) {
         if !missing.is_empty() {
