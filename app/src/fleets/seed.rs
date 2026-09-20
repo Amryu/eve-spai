@@ -256,8 +256,11 @@ impl Seed {
                 .map(|(tid, name)| super::doctrine::DoctrineShip {
                     type_id: *tid,
                     name: name.clone(),
+                    tank: None,
                 })
                 .collect(),
+            support: Vec::new(),
+            tank: None,
         })
     }
 }

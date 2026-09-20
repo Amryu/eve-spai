@@ -1005,6 +1005,30 @@ fn fleet_quick_scene(name: &'static str, size: [f32; 2]) -> Scene {
     })
 }
 
+/// The same window on its Ships tab, which is what stops every hull reading as out of doctrine.
+#[cfg(feature = "fleet")]
+fn fleet_hull_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_hulls = fixtures::fleet_hulls();
+            fixtures::seed_fleet_state(&a);
+            a.fleet_booted = true;
+            a.fleet_boost_editor = true;
+            ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new("fleet_boost_editor_pick"), 46_i32);
+                // The window remembers which tab it was on, so the scene asks for the Ships half.
+                d.insert_temp(egui::Id::new("fleet_doctrine_tab"), 1_u8);
+            });
+            a
+        });
+        app.fleet_boost_editor(ctx);
+    })
+}
+
 /// The per-doctrine boost editor, filled for one doctrine so both halves have something in them.
 #[cfg(feature = "fleet")]
 fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
@@ -1018,6 +1042,7 @@ fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
                 crate::fleets::boosts::default_rules(46, false);
             fixtures::seed_fleet_state(&a);
             a.fleet_booted = true;
+            a.settings.fleet_hulls = fixtures::fleet_hulls();
             a.fleet_boost_editor = true;
             // Land on the doctrine that has rules, or the right half renders its empty state.
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("fleet_boost_editor_pick"), 46_i32));
@@ -1405,6 +1430,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_boost_editor_scene("fleet_boost_editor", [840.0, 620.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_hull_editor_scene("fleet_hull_editor", [840.0, 620.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
     #[cfg(feature = "fleet")]

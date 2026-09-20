@@ -5,24 +5,10 @@
 //! who brought the wrong ship rather than cover. Each of those is worth naming, because an FC who
 //! is told "four logi, two of them useless" can do something about it.
 
-use super::doctrine::{Category, Doctrine, Standing};
+use super::doctrine::{Category, Doctrine};
 use super::model::{Composition, Member};
 
-/// Which way a fleet is repaired.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tank {
-    Shield,
-    Armor,
-}
-
-impl Tank {
-    pub fn label(self) -> &'static str {
-        match self {
-            Tank::Shield => "shield",
-            Tank::Armor => "armor",
-        }
-    }
-}
+pub use super::doctrine::Tank;
 
 /// How big the hulls are, which is what decides whether logi can hold the fleet's speed and range.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -217,7 +203,8 @@ fn reject(
     doctrine: Option<&Doctrine>,
 ) -> Option<Reason> {
     if doctrine.is_some()
-        && super::doctrine::classify(m.ship_type_id, &m.ship_group, doctrine) == Standing::Unexpected
+        && super::doctrine::classify(m.ship_type_id, &m.ship_type_name, &m.ship_group, doctrine)
+            .odd()
     {
         return Some(Reason::OffDoctrine);
     }
@@ -356,9 +343,11 @@ mod tests {
             setup_id: crate::fleets::model::SetupId(46),
             setup_name: "Shield Cruisers".into(),
             ships: vec![
-                DoctrineShip { type_id: 1, name: "Muninn".into() },
-                DoctrineShip { type_id: 4, name: "Scimitar".into() },
+                DoctrineShip { type_id: 1, name: "Muninn".into(), tank: None },
+                DoctrineShip { type_id: 4, name: "Scimitar".into(), tank: None },
             ],
+            support: Vec::new(),
+            tank: Some(Tank::Shield),
         };
         let c = comp(vec![
             member(1, "Muninn", "Heavy Assault Cruiser"),

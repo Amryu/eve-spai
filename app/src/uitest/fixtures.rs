@@ -886,6 +886,25 @@ pub(crate) fn open_thin_fleet(app: &crate::app::SpaiApp) {
     }
 }
 
+/// The hulls a doctrine flies, plus the ones any fleet takes, so classification has something to
+/// work from. Invented names in the doctrine, real hulls for the support jobs.
+#[cfg(feature = "fleet")]
+pub(crate) fn fleet_hulls() -> Vec<crate::settings::FleetHull> {
+    let hull = |setup: i32, name: &str, tank: &str| crate::settings::FleetHull {
+        setup_id: setup,
+        name: name.to_owned(),
+        tank: tank.to_owned(),
+    };
+    vec![
+        hull(46, "Flycatcher", ""),
+        hull(46, "Kirin", ""),
+        hull(46, "Harpy", ""),
+        hull(0, "Falcon", ""),
+        hull(0, "Crow", ""),
+        hull(0, "Guardian", "armor"),
+    ]
+}
+
 /// What a shield doctrine wants running, in the order to put it on.
 #[cfg(feature = "fleet")]
 pub(crate) fn fleet_boost_rules() -> Vec<crate::settings::FleetBoostRequirement> {

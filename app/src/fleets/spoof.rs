@@ -32,9 +32,12 @@ impl SpoofBackend {
         Self::with(seed::load(), std::time::Duration::from_millis(120))
     }
 
-    /// What tests and headless renders run: the same data, no waiting.
+    /// What tests and headless renders run: no waiting, and never the seed file.
+    ///
+    /// Always the invented tables: a machine with a real seed file would otherwise assert against
+    /// alliance names, and a screenshot would render them.
     pub fn instant() -> Self {
-        Self::with(seed::load(), std::time::Duration::ZERO)
+        Self::with(seed::invented(), std::time::Duration::ZERO)
     }
 
     /// An identity holding only these permissions, for checking what the UI does without them.

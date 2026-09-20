@@ -203,6 +203,7 @@ impl SpaiApp {
         let seed_hint = crate::fleets::seed_path_hint();
         let presets = self.settings.fleet_presets.clone();
         let boost_rules = self.settings.fleet_boost_requirements.clone();
+        let fleet_hulls = self.settings.fleet_hulls.clone();
         let mut open_boost_editor = false;
         let mut sidebar_open = self.fleet_sidebar_open;
         let here = self.fleet_mumble_at.clone();
@@ -326,10 +327,10 @@ impl SpaiApp {
                 Page::Fleets => fleets_page(ui, &mut st, &mut goto, &mut cmd, &mut refresh),
                 Page::Start => start_page(ui, &mut st, &presets, &places, &mut act),
                 Page::Tracking(_) => {
-                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
+                    tracking_page(ui, &mut st, false, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
                 Page::Historic(_) => {
-                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
+                    tracking_page(ui, &mut st, true, detail_tab, &mut set_tab, &mut act_on, &boost_rules, &fleet_hulls, &mut open_boost_editor, &mut sidebar_open, mine, here.clone(), &mut join_comms)
                 }
             }
         });
@@ -571,7 +572,7 @@ impl SpaiApp {
         ui.horizontal(|ui| {
             if ui
                 .button(format!(
-                    "{}  Boosts per doctrine...",
+                    "{}  Doctrines...",
                     egui_phosphor::regular::SLIDERS_HORIZONTAL
                 ))
                 .clicked()
@@ -599,6 +600,12 @@ impl SpaiApp {
         let mut changed = false;
         let mut open = true;
         let mut add_custom: Option<String> = None;
+        // Every ship in the game, for the hull picker's type-ahead.
+        let ships: Vec<(String, String)> = self
+            .store
+            .as_ref()
+            .map(|s| s.all_ships().into_iter().map(|(_, n, g)| (n, g)).collect())
+            .unwrap_or_default();
         let mut setups = self.fleet.lock().unwrap_or_else(|e| e.into_inner()).seed.setups.clone();
         // Hand-added doctrines sit beside the dashboard's, with negative ids so the two id spaces
         // cannot collide however the setup list changes upstream.
@@ -618,7 +625,7 @@ impl SpaiApp {
             d.get_temp(pick_id).unwrap_or_else(|| setups.first().map(|s| s.id.0).unwrap_or(0))
         });
 
-        egui::Window::new("Boosts per doctrine")
+        egui::Window::new("Doctrines")
             .open(&mut open)
             .default_size([780.0, 540.0])
             .min_size([560.0, 320.0])
@@ -714,6 +721,21 @@ impl SpaiApp {
                             .map(|s| s.name.trim().to_owned())
                             .unwrap_or_else(|| "No doctrine".to_owned());
                         let mine = rules.iter().filter(|r| r.setup_id == picked).count();
+                        let tab_id = egui::Id::new("fleet_doctrine_tab");
+                        let mut tab: u8 = ui.data(|d| d.get_temp(tab_id).unwrap_or(0));
+                        ui.horizontal(|ui| {
+                            for (i, label) in [(0u8, "Boosts"), (1, "Ships")] {
+                                if selectable_chip(ui, tab == i, label).clicked() {
+                                    tab = i;
+                                }
+                            }
+                        });
+                        ui.data_mut(|d| d.insert_temp(tab_id, tab));
+                        ui.add_space(4.0);
+                        if tab == 1 {
+                            changed |= hull_editor(ui, picked, &name, &mut self.settings.fleet_hulls, &ships);
+                            return;
+                        }
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
                                 egui::RichText::new(clip(&name, 26)).strong(),
@@ -2389,6 +2411,7 @@ fn tracking_page(
     set_tab: &mut Option<DetailTab>,
     act_on: &mut Vec<Action>,
     boost_rules: &[crate::settings::FleetBoostRequirement],
+    hulls: &[crate::settings::FleetHull],
     open_editor: &mut bool,
     sidebar: &mut bool,
     mine: bool,
@@ -2411,6 +2434,21 @@ fn tracking_page(
     let seed = st.seed.clone();
     let boosts = st.boosts.clone();
     let off_doctrine = st.off_doctrine.clone();
+    // Rebuilt from settings rather than taken from the snapshot, so editing the hull list shows
+    // up without waiting for the next poll.
+    let open = crate::fleets::state::OpenFleet {
+        doctrine: crate::fleets::doctrine::configured(
+            open.fleet.setup_id,
+            seed.setup_name(open.fleet.setup_id).unwrap_or_default(),
+            open.doctrine.clone(),
+            hulls,
+            wanted_tank(&crate::fleets::boosts::wanted_for(
+                open.fleet.setup_id.0.into(),
+                boost_rules,
+            )),
+        ),
+        ..open
+    };
     let wanted = crate::fleets::boosts::wanted_for(open.fleet.setup_id.0.into(), boost_rules);
     egui::Panel::top("fleet_header").show_inside(ui, |ui| {
         ui.add_space(4.0);
@@ -2558,6 +2596,122 @@ fn comms_buttons(
             *join = Some(url);
         }
     }
+}
+
+/// Which hulls a doctrine flies, and which are welcome in any fleet.
+///
+/// The dashboard hands over no hulls at all, so without this list every ship in the fleet reads as
+/// out of doctrine.
+#[cfg(feature = "fleet")]
+fn hull_editor(
+    ui: &mut egui::Ui,
+    setup_id: i32,
+    setup_name: &str,
+    hulls: &mut Vec<crate::settings::FleetHull>,
+    ships: &[(String, String)],
+) -> bool {
+    use crate::fleets::doctrine::Tank;
+    let mut changed = false;
+
+    for (owner, title, hint) in [
+        (setup_id, setup_name, "flown by this doctrine"),
+        (0, "Any fleet", "welcome in every fleet: cynos, bridges, scouts"),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(clip(title, 26)).strong()).on_hover_text(title);
+            ui.label(egui::RichText::new(hint).weak());
+        });
+
+        let mut remove: Option<usize> = None;
+        egui::Grid::new(("hull_rows", owner)).num_columns(3).striped(true).spacing([10.0, 3.0]).show(
+            ui,
+            |ui| {
+                for (i, h) in hulls.iter_mut().enumerate() {
+                    if h.setup_id != owner {
+                        continue;
+                    }
+                    cell(ui, 200.0, |ui| {
+                        ui.label(&h.name);
+                    });
+                    cell(ui, 120.0, |ui| {
+                        // Only worth setting for a hull that suits one kind of fleet; a doctrine's
+                        // own ships are its tank by definition.
+                        let mut tank = Tank::parse(&h.tank);
+                        egui::ComboBox::from_id_salt(("hull_tank", owner, i))
+                            .selected_text(tank.map(|t| t.label()).unwrap_or("any tank"))
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                for t in [None, Some(Tank::Shield), Some(Tank::Armor)] {
+                                    let label = t.map(|t| t.label()).unwrap_or("any tank");
+                                    if ui.menu_value(&mut tank, t, label).changed() {
+                                        h.tank =
+                                            t.map(|t| t.label().to_owned()).unwrap_or_default();
+                                        changed = true;
+                                    }
+                                }
+                            });
+                    });
+                    if ui
+                        .button(egui_phosphor::regular::TRASH)
+                        .on_hover_text(format!("Drop {}", h.name))
+                        .clicked()
+                    {
+                        remove = Some(i);
+                    }
+                    ui.end_row();
+                }
+            },
+        );
+        if let Some(i) = remove {
+            hulls.remove(i);
+            changed = true;
+        }
+
+        // Typed and picked, so the name matches what the composition will carry.
+        let q_id = ui.id().with(("hull_query", owner));
+        let mut query: String = ui.data(|d| d.get_temp(q_id).unwrap_or_default());
+        ui.horizontal(|ui| {
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut query).hint_text("Add a hull").desired_width(200.0),
+            );
+            let hits: Vec<&(String, String)> = if query.trim().len() >= 2 {
+                ships
+                    .iter()
+                    .filter(|(n, _)| tag_matches(n, &query))
+                    .filter(|(n, _)| {
+                        !hulls
+                            .iter()
+                            .any(|h| h.setup_id == owner && h.name.eq_ignore_ascii_case(n))
+                    })
+                    .take(10)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            egui::Popup::from_response(&field)
+                .open(field.has_focus() && !hits.is_empty())
+                .width(260.0)
+                .show(|ui| {
+                    for (n, g) in &hits {
+                        if ui.menu_label(false, format!("{n}   {g}")).clicked() {
+                            hulls.push(crate::settings::FleetHull {
+                                setup_id: owner,
+                                name: (*n).clone(),
+                                tank: String::new(),
+                            });
+                            changed = true;
+                            query.clear();
+                        }
+                    }
+                });
+            if ships.is_empty() {
+                ui.label(egui::RichText::new("no ship data loaded").weak());
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(q_id, query));
+        ui.add_space(8.0);
+    }
+    changed
 }
 
 /// Shortens a label so a long one cannot widen the panel it sits in.
@@ -3259,14 +3413,17 @@ fn member_row(
     use crate::fleets::doctrine::Standing;
     let standing = crate::fleets::doctrine::classify(
         m.ship_type_id,
+        &m.ship_type_name,
         &m.ship_group,
         open.doctrine.as_ref(),
     );
     // A tint rather than coloured text: on a red or orange theme a hostile-coloured ship name is
     // barely a shade away from a normal one.
-    let tint = (standing == Standing::Unexpected).then(|| {
-        crate::theme::standing::HOSTILE.gamma_multiply(0.18)
-    });
+    let tint = match standing {
+        Standing::Unexpected => Some(crate::theme::standing::HOSTILE.gamma_multiply(0.18)),
+        Standing::WrongTank => Some(crate::theme::standing::WARNING.gamma_multiply(0.16)),
+        _ => None,
+    };
     let frame = match tint {
         Some(c) => egui::Frame::NONE.fill(c).inner_margin(egui::Margin::symmetric(0, 1)),
         None => egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 1)),
@@ -3499,6 +3656,7 @@ fn standing_colour(ui: &egui::Ui, standing: crate::fleets::doctrine::Standing) -
     match standing {
         Standing::Doctrine => ui.visuals().text_color(),
         Standing::Support => ui.visuals().hyperlink_color,
+        Standing::WrongTank => crate::theme::standing::WARNING,
         Standing::Unexpected => crate::theme::standing::HOSTILE,
     }
 }
