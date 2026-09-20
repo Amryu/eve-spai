@@ -432,6 +432,22 @@ pub struct BossCheck {
     pub error_message: Option<String>,
 }
 
+impl BossCheck {
+    /// Whether the fleet can be tracked as this character, and what to say about it.
+    pub fn verdict(&self) -> (bool, String) {
+        if let Some(e) = self.error_message.as_deref().filter(|e| !e.trim().is_empty()) {
+            return (false, e.to_owned());
+        }
+        match (self.is_fleet_boss, self.backup_available) {
+            (true, _) => (true, "Fleet boss in game.".to_owned()),
+            (false, true) => (true, "Not fleet boss, but the backup key can track it.".to_owned()),
+            (false, false) => {
+                (false, "Not the boss of a fleet in game, so there is nothing to track.".to_owned())
+            }
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BonusRequest {
@@ -816,6 +832,27 @@ mod tests {
         assert_eq!(Seat::Boss.ids(), (WingId(-1), SquadId(-1)));
         assert_eq!(Seat::WingCommander(WingId(1)).ids(), (WingId(1), SquadId(-1)));
         assert_eq!(Seat::Squad(WingId(1), SquadId(10)).ids(), (WingId(1), SquadId(10)));
+    }
+
+    /// What the boss check means for whether the fleet can be tracked at all.
+    #[test]
+    fn a_boss_check_says_whether_it_can_be_tracked() {
+        let check = |boss, backup, err: Option<&str>| BossCheck {
+            is_fleet_boss: boss,
+            backup_available: backup,
+            error_message: err.map(str::to_owned),
+        };
+        assert!(check(true, false, None).verdict().0);
+        // Not the boss, but the backup key can read the fleet anyway.
+        assert!(check(false, true, None).verdict().0);
+        assert!(!check(false, false, None).verdict().0);
+
+        // An error from the server is the answer, whatever the flags say.
+        let (ok, why) = check(true, true, Some("ESI token expired")).verdict();
+        assert!(!ok);
+        assert_eq!(why, "ESI token expired");
+        // An empty message is not an error.
+        assert!(check(true, false, Some("  ")).verdict().0);
     }
 
     /// A seat holds one pilot, and the tree has to say who, so a second one is not dropped in.

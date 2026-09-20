@@ -405,8 +405,21 @@ impl FleetBackend for SpoofBackend {
 
     fn boss_check(&self, character_id: i64, _use_backup: bool) -> Result<BossCheck> {
         self.work();
-        let known = self.lock().seed.characters.iter().any(|c| c.id == character_id);
-        Ok(BossCheck { is_fleet_boss: known, backup_available: false, error_message: None })
+        let d = self.lock();
+        let Some(i) = d.seed.characters.iter().position(|c| c.id == character_id) else {
+            return Ok(BossCheck {
+                is_fleet_boss: false,
+                backup_available: false,
+                error_message: Some("That character is not on this account.".to_owned()),
+            });
+        };
+        // The first character is boss of something, the rest are not, so the form renders both
+        // answers without needing a live fleet.
+        Ok(BossCheck {
+            is_fleet_boss: i == 0,
+            backup_available: i == 1,
+            error_message: None,
+        })
     }
 
     fn search(&self, kind: SearchKind, value: &str, strict: bool) -> Result<Vec<Labelled>> {

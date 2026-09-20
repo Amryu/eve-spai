@@ -985,6 +985,26 @@ fn fleet_confirm_scene(
     })
 }
 
+/// The Quick Fleet picker, which is the whole of what the button does.
+#[cfg(feature = "fleet")]
+fn fleet_quick_scene(name: &'static str, size: [f32; 2]) -> Scene {
+    harness::scratch_profile();
+    let mut app: Option<crate::app::SpaiApp> = None;
+    Scene::ctx(name, size, move |ctx| {
+        let app = app.get_or_insert_with(|| {
+            let mut a = crate::app::SpaiApp::build(ctx, true);
+            a.settings.fleet_enabled = true;
+            a.settings.fleet_presets = fixtures::fleet_presets();
+            a.fleet_booted = true;
+            a.fleet_quick_open = true;
+            a
+        });
+        let presets = app.settings.fleet_presets.clone();
+        let mut act = crate::app::fleet_ui::FormAct::default();
+        app.quick_fleet_window(ctx, &presets, &mut act);
+    })
+}
+
 /// The per-doctrine boost editor, filled for one doctrine so both halves have something in them.
 #[cfg(feature = "fleet")]
 fn fleet_boost_editor_scene(name: &'static str, size: [f32; 2]) -> Scene {
@@ -1385,6 +1405,8 @@ pub(crate) fn all() -> Vec<Scene> {
     v.push(fleet_settings_scene("fleet_settings", [900.0, 620.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_boost_editor_scene("fleet_boost_editor", [840.0, 620.0]));
+    #[cfg(feature = "fleet")]
+    v.push(fleet_quick_scene("fleet_quick", [520.0, 460.0]));
     #[cfg(feature = "fleet")]
     v.push(fleet_confirm_scene(
         "fleet_confirm_kick_all",

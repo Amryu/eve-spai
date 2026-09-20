@@ -187,6 +187,8 @@ impl SpaiApp {
         let journal_open = self.fleet_journal_open;
         let detail_tab = self.fleet_detail_tab;
         let mut toggle_journal = false;
+        let quick_open = self.fleet_quick_open;
+        let mut toggle_quick = false;
         let mut set_tab: Option<DetailTab> = None;
         let mut act_on: Vec<Action> = Vec::new();
         let mut goto: Option<Page> = None;
@@ -196,13 +198,25 @@ impl SpaiApp {
 
         egui::Panel::top("fleet_subnav").show_inside(ui, |ui| {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            // Narrow, the status group drops below the tabs instead of landing on top of them.
+            let roomy = ui.available_width() >= 900.0;
+            ui.horizontal_wrapped(|ui| {
                 let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
                 let tab = page.tab();
                 for (p, label) in [(Page::Fleets, "Fleets"), (Page::Start, "Start fleet")] {
                     if selectable_chip(ui, tab == p, label).clicked() && page != p {
                         goto = Some(p);
                     }
+                }
+                if selectable_chip(
+                    ui,
+                    quick_open,
+                    format!("{}  Quick Fleet", egui_phosphor::regular::LIGHTNING),
+                )
+                .on_hover_text("Start from a saved preset")
+                .clicked()
+                {
+                    toggle_quick = true;
                 }
                 if let Some(id) = page.fleet() {
                     ui.label(egui_phosphor::regular::CARET_RIGHT);
@@ -211,7 +225,15 @@ impl SpaiApp {
                         egui::RichText::new(name.unwrap_or_else(|| id.short().to_owned())).strong(),
                     );
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !roomy {
+                    ui.end_row();
+                }
+                let layout = if roomy {
+                    egui::Layout::right_to_left(egui::Align::Center)
+                } else {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                };
+                ui.with_layout(layout, |ui| {
                     if dry {
                         ui.label(
                             egui::RichText::new("DRY RUN - nothing is sent")
@@ -314,6 +336,9 @@ impl SpaiApp {
                 }
             }
         }
+        if toggle_quick {
+            self.fleet_quick_open = !self.fleet_quick_open;
+        }
         if open_boost_editor {
             self.fleet_boost_editor = true;
         }
@@ -321,13 +346,14 @@ impl SpaiApp {
         if let Some(url) = join_comms {
             crate::mumble::open_url(&url);
         }
+        self.quick_fleet_window(ui.ctx(), &presets, &mut act);
         self.fleet_confirm_modal(ui.ctx());
         self.fleet_apply_form(act);
     }
 
     /// Applies what the start form asked for once the state lock is gone.
     #[cfg(feature = "fleet")]
-    fn fleet_apply_form(&mut self, act: FormAct) {
+    fn fleet_apply_form(&mut self, mut act: FormAct) {
         if let Some(i) = act.load_preset {
             if let Some(p) = self.settings.fleet_presets.get(i).cloned() {
                 let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
@@ -357,6 +383,36 @@ impl SpaiApp {
         if act.auto_channels {
             self.fleet.lock().unwrap_or_else(|e| e.into_inner()).auto_channels();
             self.fleet_preview_now();
+        }
+        if act.free_channels {
+            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).free_channels();
+            self.fleet_preview_now();
+        }
+        if act.force_channels {
+            self.fleet.lock().unwrap_or_else(|e| e.into_inner()).force_configured();
+            self.fleet_preview_now();
+        }
+        if let Some(i) = act.quick_preset {
+            let presets = self.settings.fleet_presets.clone();
+            if let Some(p) = presets.get(i) {
+                let mut st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+                st.apply_preset(p);
+                st.page = Page::Start;
+            }
+            self.fleet_quick_open = false;
+            self.fleet_preview_now();
+            // A quick fleet skips reading the form, so whether the FC can actually track it is
+            // the one thing worth knowing before the button is pressed.
+            act.check_boss = true;
+        }
+        if act.check_boss {
+            let (who, use_backup) = {
+                let st = self.fleet.lock().unwrap_or_else(|e| e.into_inner());
+                (st.fc(), st.draft.use_backup)
+            };
+            if let Some((character_id, _)) = who {
+                self.fleet_dispatch(Cmd::CheckBoss { character_id, use_backup });
+            }
         }
         if act.edited {
             // The site re-renders its preview on every change. Debounced, so typing a fleet name
@@ -891,6 +947,10 @@ pub(crate) struct FormAct {
     pub auto_channels: bool,
     pub free_channels: bool,
     pub force_channels: bool,
+    /// Ask the dashboard whether the chosen FC is boss of a fleet in game.
+    pub check_boss: bool,
+    /// A preset the Quick Fleet picker chose, which loads the form and goes to it.
+    pub quick_preset: Option<usize>,
     pub edited: bool,
     pub start: bool,
     pub ping: bool,
@@ -1173,13 +1233,43 @@ fn form_grid(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut Fo
 #[cfg(feature = "fleet")]
 fn form_identity(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut FormAct) {
     let seed = st.seed.clone();
-    let d = &mut st.draft;
     egui::Grid::new("fleet_form_identity")
         .num_columns(2)
         .min_col_width(LABEL_W)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
+            ui.label("FC");
+            ui.vertical(|ui| {
+                let signed_in = st.session.as_ref().map(|s| (s.character_id, s.character_name.clone()));
+                let current = st
+                    .fc()
+                    .map(|(_, n)| n)
+                    .or_else(|| signed_in.as_ref().map(|(_, n)| n.clone()))
+                    .unwrap_or_else(|| "none".to_owned());
+                let mut pick = st.draft.fc_character;
+                egui::ComboBox::from_id_salt("fleet_fc")
+                    .width(FIELD_W)
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        if let Some((id, name)) = &signed_in {
+                            ui.selectable_value(&mut pick, None, format!("{name}  (signed in)"));
+                            let _ = id;
+                        }
+                        for c in seed.characters.iter().filter(|c| !c.is_hidden) {
+                            ui.selectable_value(&mut pick, Some(c.id), &c.name);
+                        }
+                    });
+                if pick != st.draft.fc_character {
+                    st.draft.fc_character = pick;
+                    act.check_boss = true;
+                    act.edited = true;
+                }
+                boss_line(ui, st, act);
+            });
+            ui.end_row();
+
             ui.label("Name");
+            let d = &mut st.draft;
             act.edited |= ui
                 .add(egui::TextEdit::singleline(&mut d.form.name).desired_width(FIELD_W))
                 .changed();
@@ -1369,6 +1459,39 @@ fn form_running(ui: &mut egui::Ui, st: &mut crate::fleets::FleetState, act: &mut
             .clicked()
         {
             act.force_channels = true;
+        }
+    });
+}
+
+/// Whether the character the fleet would be started as is actually boss of a fleet.
+///
+/// Only the account's own characters can be checked, which is the same set the picker offers, so
+/// there is nothing here to guard against.
+#[cfg(feature = "fleet")]
+fn boss_line(ui: &mut egui::Ui, st: &crate::fleets::FleetState, act: &mut FormAct) {
+    let Some((id, _)) = st.fc() else { return };
+    ui.horizontal(|ui| {
+        match st.boss.as_ref().filter(|(who, _)| *who == id) {
+            Some((_, check)) => {
+                let (ok, why) = check.verdict();
+                let (glyph, colour) = if ok {
+                    (egui_phosphor::regular::CHECK_CIRCLE, crate::theme::standing::FRIENDLY)
+                } else {
+                    (egui_phosphor::regular::WARNING, crate::theme::standing::WARNING)
+                };
+                ui.label(egui::RichText::new(glyph).color(colour));
+                ui.label(egui::RichText::new(why).color(colour));
+            }
+            None => {
+                ui.label(egui::RichText::new("Fleet boss not checked").weak());
+            }
+        }
+        if ui
+            .small_button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+            .on_hover_text("Ask again whether this character is boss of a fleet")
+            .clicked()
+        {
+            act.check_boss = true;
         }
     });
 }
@@ -2770,6 +2893,100 @@ fn standing_colour(ui: &egui::Ui, standing: crate::fleets::doctrine::Standing) -
 }
 
 impl SpaiApp {
+    /// The preset picker: type, pick, and the start form comes up filled in.
+    ///
+    /// A window rather than a menu, because there are enough presets across enough folders that
+    /// the search is the point.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn quick_fleet_window(
+        &mut self,
+        ctx: &egui::Context,
+        presets: &[crate::settings::FleetPreset],
+        act: &mut FormAct,
+    ) {
+        if !self.fleet_quick_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Quick Fleet")
+            .open(&mut open)
+            .default_size([340.0, 420.0])
+            .collapsible(false)
+            .show(ctx, |ui| {
+                if presets.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "No presets yet. Fill the start form and save it as one.",
+                        )
+                        .weak(),
+                    );
+                    return;
+                }
+                let search_id = ui.id().with("quick_search");
+                let mut query: String = ui.data(|d| d.get_temp(search_id).unwrap_or_default());
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text("Search presets")
+                        .desired_width(f32::INFINITY),
+                );
+                edit.request_focus();
+                if edit.changed() {
+                    ui.data_mut(|d| d.insert_temp(search_id, query.clone()));
+                }
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let mut any = false;
+                    let mut groups: Vec<String> = vec![String::new()];
+                    groups.extend(preset_folders(presets));
+                    for folder in groups {
+                        let hits: Vec<usize> = presets
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, p)| p.folder.trim() == folder)
+                            // The folder name counts as part of what a preset is called, so
+                            // typing the folder finds everything in it.
+                            .filter(|(_, p)| {
+                                tag_matches(&format!("{} {}", p.folder, p.label), &query)
+                            })
+                            .map(|(i, _)| i)
+                            .collect();
+                        if hits.is_empty() {
+                            continue;
+                        }
+                        any = true;
+                        if !folder.is_empty() {
+                            ui.label(egui::RichText::new(&folder).strong());
+                        }
+                        for i in hits {
+                            let p = &presets[i];
+                            // The description first, then the fleet name, and neither when it
+                            // only repeats the label the button already carries.
+                            let sub = [p.description.as_str(), p.name.as_str()]
+                                .into_iter()
+                                .map(str::trim)
+                                .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case(p.label.trim()))
+                                .unwrap_or_default();
+                            let resp = ui.add(
+                                egui::Button::new(format!("{}   {sub}", p.label))
+                                    .min_size(egui::vec2(ui.available_width(), 0.0)),
+                            );
+                            if resp.clicked() {
+                                act.quick_preset = Some(i);
+                            }
+                        }
+                        ui.add_space(4.0);
+                    }
+                    if !any {
+                        ui.label(egui::RichText::new("Nothing matches.").weak());
+                    }
+                });
+            });
+        if !open {
+            self.fleet_quick_open = false;
+        }
+    }
+
     /// Asks before anything that cannot be taken back.
     #[cfg(feature = "fleet")]
     pub(crate) fn fleet_confirm_modal(&mut self, ctx: &egui::Context) {

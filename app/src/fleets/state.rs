@@ -93,6 +93,8 @@ pub struct Draft {
     pub snowflakes: Vec<Snowflake>,
     pub formup: Option<Labelled>,
     pub use_backup: bool,
+    /// Which of the account's characters is the FC. `None` is whoever is signed in.
+    pub fc_character: Option<i64>,
     pub auto: AutoPicked,
     /// What a preset or the user actually asked for, which auto-picking overrides and
     /// `force_configured` puts back.
@@ -176,6 +178,8 @@ pub struct FleetState {
     pub off_doctrine: Vec<super::doctrine::OffDoctrine>,
     /// Staged changes to the open fleet, applied on a button rather than as they are typed.
     pub edit: FleetEdit,
+    /// The last fleet-boss answer, and who it was about.
+    pub boss: Option<(i64, BossCheck)>,
     /// Requests that would have gone out, newest last.
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
@@ -221,6 +225,7 @@ impl FleetState {
                 self.open.put(*open);
             }
             Outcome::Boosts(rows) => self.boosts = rows,
+            Outcome::Boss { character_id, check } => self.boss = Some((character_id, check)),
             Outcome::Preview { record, preview } => {
                 // A preview is not a write, so it does not reach the journal.
                 let _ = record;
@@ -369,17 +374,32 @@ impl FleetState {
         };
     }
 
+    /// Who the fleet is started as: the picked character, or whoever is signed in.
+    pub fn fc(&self) -> Option<(i64, String)> {
+        let s = self.session.as_ref()?;
+        match self.draft.fc_character {
+            Some(id) => self
+                .seed
+                .characters
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| (c.id, c.name.clone()))
+                .or(Some((s.character_id, s.character_name.clone()))),
+            None => Some((s.character_id, s.character_name.clone())),
+        }
+    }
+
     /// What the form would send, or nothing when it is not filled in enough to send.
     pub fn start_request(&self) -> Option<StartRequest> {
-        let s = self.session.as_ref()?;
+        let (character_id, character_name) = self.fc()?;
         if self.draft.form.name.trim().is_empty() {
             return None;
         }
         Some(StartRequest {
             form: self.draft.form.clone(),
             tag_ids: self.draft.tags.iter().copied().collect(),
-            character_id: s.character_id,
-            character_name: s.character_name.clone(),
+            character_id,
+            character_name,
             use_backup: self.draft.use_backup,
             snowflakes: self.draft.snowflakes.clone(),
             operation_id: None,
@@ -460,6 +480,7 @@ pub enum Cmd {
     LoadActive { strategic: bool },
     LoadHistory { skip: u32 },
     Open(FleetId),
+    CheckBoss { character_id: i64, use_backup: bool },
     /// Re-read the tracked fleet's boost channel off disk. Not a request, so it never reaches the
     /// journal, but it rides the same worker because it touches the filesystem.
     ReadBoosts { dir: std::path::PathBuf, channel: String, from: i64, to: Option<i64> },
@@ -476,6 +497,7 @@ pub enum Outcome {
     Active { strategic: bool, rows: Vec<FleetRow> },
     History(Paged<FleetRow>),
     Opened(Box<OpenFleet>),
+    Boss { character_id: i64, check: BossCheck },
     Boosts(Vec<super::boosts::Coverage>),
     Preview { record: CallRecord, preview: PingPreview },
     Started { record: CallRecord, id: FleetId },
@@ -503,6 +525,12 @@ pub fn run(backend: &dyn FleetBackend, seed: &Seed, cmd: Cmd) -> Outcome {
             Ok(open) => Outcome::Opened(Box::new(open)),
             Err(e) => Outcome::Failed { what: "fleet", why: e.to_string() },
         },
+        Cmd::CheckBoss { character_id, use_backup } => {
+            match backend.boss_check(character_id, use_backup) {
+                Ok(check) => Outcome::Boss { character_id, check },
+                Err(e) => Outcome::Failed { what: "fleet boss check", why: e.to_string() },
+            }
+        }
         Cmd::ReadBoosts { dir, channel, from, to } => {
             Outcome::Boosts(super::boosts::read_window(&dir, &channel, from, to))
         }

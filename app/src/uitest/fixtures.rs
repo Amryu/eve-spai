@@ -805,6 +805,13 @@ pub(crate) fn open_fleet_start(app: &crate::app::SpaiApp) {
     if let Ok(w) = backend.ping_preview(&st.ping_request()) {
         st.preview.put(w.value);
     }
+    // Headless starts no workers, so the boss check never comes back on its own and the row would
+    // render its "not checked" state forever.
+    if let Some((id, _)) = st.fc() {
+        if let Ok(check) = backend.boss_check(id, false) {
+            st.boss = Some((id, check));
+        }
+    }
 }
 
 /// Drives a few writes through the dry run so the journal has something to show.

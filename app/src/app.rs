@@ -828,6 +828,9 @@ pub struct SpaiApp {
     /// The tracked fleet's settings sidebar is open.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_sidebar_open: bool,
+    /// The Quick Fleet preset picker is open.
+    #[cfg(feature = "fleet")]
+    pub(crate) fleet_quick_open: bool,
     /// Where Mumble last said it was, as a `mumble://` URL.
     #[cfg(feature = "fleet")]
     pub(crate) fleet_mumble_at: Option<String>,
@@ -1605,6 +1608,8 @@ impl SpaiApp {
             fleet_boost_editor: false,
             #[cfg(feature = "fleet")]
             fleet_sidebar_open: false,
+            #[cfg(feature = "fleet")]
+            fleet_quick_open: false,
             #[cfg(feature = "fleet")]
             fleet_mumble_at: None,
             #[cfg(feature = "fleet")]
