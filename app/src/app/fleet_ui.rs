@@ -3520,7 +3520,7 @@ fn members_view(
     for wing in &comp.wings {
         let pilots: usize = wing.squads.iter().map(|s| s.members.len() + usize::from(s.commander.is_some())).sum::<usize>()
             + usize::from(wing.commander.is_some());
-        egui::CollapsingHeader::new(format!("{}   {pilots}", wing.name))
+        egui::CollapsingHeader::new(headcount(&wing.name, pilots))
             .id_salt(("wing", wing.id.0))
             .default_open(true)
             .show(ui, |ui| {
@@ -3528,7 +3528,7 @@ fn members_view(
                                wing.commander.as_ref(), &mut ctx, act_on, &mut drop_on);
                 for squad in &wing.squads {
                     let n = squad.members.len() + usize::from(squad.commander.is_some());
-                    egui::CollapsingHeader::new(format!("{}   {n}", squad.name))
+                    egui::CollapsingHeader::new(headcount(&squad.name, n))
                         .id_salt(("squad", wing.id.0, squad.id.0))
                         .default_open(true)
                         .show(ui, |ui| {
@@ -3635,6 +3635,20 @@ const NAME_W: f32 = 230.0;
 /// Ship icon beside a hull name.
 #[cfg(feature = "fleet")]
 const SHIP_ICON: f32 = 18.0;
+/// The padlock column, held open on every row so the kick buttons stay in a line.
+#[cfg(feature = "fleet")]
+const LOCK_W: f32 = 30.0;
+
+/// A wing or squad heading. The count is spelled out: "Squad 1  17" reads as a name with a number
+/// stuck to it, which is not what it is.
+#[cfg(feature = "fleet")]
+fn headcount(name: &str, n: usize) -> String {
+    match n {
+        0 => format!("{name}  ·  empty"),
+        1 => format!("{name}  ·  1 pilot"),
+        n => format!("{name}  ·  {n} pilots"),
+    }
+}
 
 /// Which seat a roster row is, when it is one.
 #[cfg(feature = "fleet")]
@@ -3741,9 +3755,14 @@ fn member_row(
             cell(ui, COL[3], |ui| {
                 ui.label(egui::RichText::new(&m.role).weak());
             });
-            // Only offered where it means something: a hull the doctrine refuses, which the FC
-            // can confirm is meant to be there.
-            if standing.odd() || locked {
+            // A fixed column whether or not the row has a lock in it, or every row that does
+            // pushes its kick button out of line with the rows that do not.
+            cell(ui, LOCK_W, |ui| {
+                // Only offered where it means something: a hull the doctrine refuses, which the
+                // FC can confirm is meant to be there.
+                if !(standing.odd() || locked) {
+                    return;
+                }
                 let glyph = if locked {
                     egui_phosphor::regular::LOCK
                 } else {
@@ -3765,9 +3784,7 @@ fn member_row(
                 {
                     *ctx.toggle_lock = Some(m.character_id);
                 }
-            } else {
-                cell(ui, 26.0, |_| {});
-            }
+            });
             if ui
                 .add_enabled(
                     ctx.can_kick,
