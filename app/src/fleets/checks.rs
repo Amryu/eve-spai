@@ -4,7 +4,7 @@
 //! looked at and what it would rather see, so a warning can be read and dismissed in one glance.
 
 use super::boosts::{self, Coverage, Priority, Wanted};
-use super::doctrine::Doctrine;
+use super::doctrine::{Category, Doctrine};
 use super::model::Composition;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -41,26 +41,19 @@ pub const LOGI_CRITICAL: f32 = 0.05;
 pub const LOGI_DANGER: f32 = 0.10;
 pub const LOGI_WARNING: f32 = 0.15;
 
-/// Hulls that repair the fleet.
-const LOGI_GROUPS: &[&str] = &["Logistics", "Logistics Frigate", "Force Auxiliary"];
-/// Hulls that stop something leaving.
-const INTERDICTION_GROUPS: &[&str] = &["Interdictor", "Heavy Interdiction Cruiser"];
-/// Hulls that catch something in the first place.
-const TACKLE_GROUPS: &[&str] = &["Interceptor", "Assault Frigate", "Command Destroyer"];
-
-fn count_groups(comp: &Composition, groups: &[&str]) -> usize {
+fn count(comp: &Composition, want: Category) -> usize {
     comp.wings
         .iter()
         .flat_map(|w| &w.squads)
         .flat_map(|s| &s.members)
-        .filter(|m| groups.iter().any(|g| g.eq_ignore_ascii_case(m.ship_group.trim())))
+        .filter(|m| Category::of(&m.ship_group) == want)
         .count()
 }
 
 /// How the fleet is for logi, as a share of everyone in it.
 pub fn logi(comp: &Composition) -> Check {
     let total = comp.total();
-    let n = count_groups(comp, LOGI_GROUPS);
+    let n = count(comp, Category::Logistics);
     if total == 0 {
         return Check { level: Level::Fine, what: "Logi".into(), detail: "Nobody in fleet.".into() };
     }
@@ -84,7 +77,7 @@ pub fn logi(comp: &Composition) -> Check {
 
 /// Whether anything can hold a target down.
 pub fn interdiction(comp: &Composition) -> Check {
-    let n = count_groups(comp, INTERDICTION_GROUPS);
+    let n = count(comp, Category::Interdiction);
     let level = if n == 0 && comp.total() > 0 { Level::Warning } else { Level::Fine };
     let detail = match n {
         0 => "No dictors or hictors in fleet.".to_owned(),
@@ -95,7 +88,7 @@ pub fn interdiction(comp: &Composition) -> Check {
 
 /// Whether anything can catch a target.
 pub fn tackle(comp: &Composition) -> Check {
-    let n = count_groups(comp, TACKLE_GROUPS);
+    let n = count(comp, Category::Tackle);
     let level = if n == 0 && comp.total() > 0 { Level::Warning } else { Level::Fine };
     let detail = match n {
         0 => "Nothing fast enough to tackle.".to_owned(),

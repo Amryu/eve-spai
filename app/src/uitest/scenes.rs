@@ -1290,7 +1290,7 @@ pub(crate) fn all() -> Vec<Scene> {
     #[cfg(feature = "fleet")]
     v.push(fleet_journal_scene("fleet_journal", [1280.0, 800.0]));
     #[cfg(feature = "fleet")]
-    v.push(fleet_detail_scene("fleet_members", [1280.0, 1180.0], crate::app::fleet_ui::DetailTab::Members));
+    v.push(fleet_detail_scene("fleet_members", [1280.0, 1420.0], crate::app::fleet_ui::DetailTab::Members));
     #[cfg(feature = "fleet")]
     v.push(fleet_detail_scene(
         "fleet_composition",

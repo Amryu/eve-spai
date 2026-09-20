@@ -856,6 +856,11 @@ pub(crate) fn open_first_fleet(app: &crate::app::SpaiApp) {
     st.page = Page::Tracking(id.clone());
     st.apply(crate::fleets::state::run(&backend, &seed, Cmd::Open(id)));
     st.boosts = fleet_boost_coverage();
+    // The clock starts at the snapshot, so without backdating one pilot the off-doctrine report
+    // never renders and the scene would pass for coverage of something it does not show.
+    if let Some(row) = st.off_doctrine.first_mut() {
+        row.since -= 26 * 60;
+    }
 }
 
 /// The same fleet with its logi, dictors and fast tackle gone and nobody on boosts, so the

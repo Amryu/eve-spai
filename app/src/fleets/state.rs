@@ -69,6 +69,8 @@ pub struct OpenFleet {
     pub report: FleetReport,
     pub composition: Composition,
     pub doctrine: Option<super::doctrine::Doctrine>,
+    /// When this snapshot was taken, which is what the off-doctrine clock counts from.
+    pub at: i64,
 }
 
 /// How many recorded requests the journal keeps.
@@ -108,6 +110,8 @@ pub struct FleetState {
     pub preview: Slot<PingPreview>,
     /// The tracked fleet's boost channel as it stands, read off disk rather than from the API.
     pub boosts: Vec<super::boosts::Coverage>,
+    /// How long each pilot flying something nobody asked for has been in it.
+    pub off_doctrine: Vec<super::doctrine::OffDoctrine>,
     /// Requests that would have gone out, newest last.
     pub journal: Vec<CallRecord>,
     /// The one problem worth a banner. A failed refresh is not one.
@@ -141,7 +145,16 @@ impl FleetState {
                 }
             }
             Outcome::History(page) => self.history.put(page),
-            Outcome::Opened(open) => self.open.put(*open),
+            Outcome::Opened(open) => {
+                // Before the snapshot lands, so the clock is carried forward from the last one.
+                self.off_doctrine = super::doctrine::track_off_doctrine(
+                    &self.off_doctrine,
+                    &open.composition,
+                    open.doctrine.as_ref(),
+                    open.at,
+                );
+                self.open.put(*open);
+            }
             Outcome::Boosts(rows) => self.boosts = rows,
             Outcome::Preview { record, preview } => {
                 // A preview is not a write, so it does not reach the journal.
@@ -440,6 +453,7 @@ fn open(backend: &dyn FleetBackend, id: &FleetId) -> Result<OpenFleet> {
         report: backend.report(id)?,
         composition: backend.composition(id)?,
         doctrine: backend.doctrine(id)?,
+        at: chrono::Utc::now().timestamp(),
     })
 }
 

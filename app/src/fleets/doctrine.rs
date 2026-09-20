@@ -43,6 +43,81 @@ pub const SUPPORT_GROUPS: &[&str] = &[
     "Shuttle",
 ];
 
+/// What a hull is for, which is what an FC reads a composition by: how much logi, how much tackle,
+/// who can stop something leaving.
+///
+/// Coarser than the API's ship group, because "Logistics" and "Logistics Frigate" answer the same
+/// question, and a composition listing every group separately is a list to count rather than read.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum Category {
+    Logistics,
+    Interdiction,
+    Tackle,
+    Command,
+    Recon,
+    Capital,
+    Pod,
+    Line,
+}
+
+const CATEGORY_GROUPS: &[(Category, &[&str])] = &[
+    (Category::Logistics, &["Logistics", "Logistics Frigate", "Force Auxiliary"]),
+    (Category::Interdiction, &["Interdictor", "Heavy Interdiction Cruiser"]),
+    (Category::Tackle, &["Interceptor", "Assault Frigate", "Command Destroyer"]),
+    (Category::Command, &["Command Ship"]),
+    (
+        Category::Recon,
+        &[
+            "Force Recon Ship",
+            "Combat Recon Ship",
+            "Covert Ops",
+            "Electronic Attack Ship",
+            "Stealth Bomber",
+        ],
+    ),
+    (
+        Category::Capital,
+        &[
+            "Titan",
+            "Supercarrier",
+            "Carrier",
+            "Dreadnought",
+            "Lancer Dreadnought",
+            "Black Ops",
+            "Freighter",
+            "Jump Freighter",
+            "Capital Industrial Ship",
+        ],
+    ),
+    (Category::Pod, &["Capsule", "Shuttle", "Corvette"]),
+];
+
+impl Category {
+    /// Anything unlisted is line: an unknown group is a hull doing the shooting until something
+    /// says otherwise.
+    pub fn of(group: &str) -> Category {
+        let g = group.trim();
+        CATEGORY_GROUPS
+            .iter()
+            .find(|(_, groups)| groups.iter().any(|x| x.eq_ignore_ascii_case(g)))
+            .map(|(c, _)| *c)
+            .unwrap_or(Category::Line)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Logistics => "Logi",
+            Category::Interdiction => "Interdiction",
+            Category::Tackle => "Tackle",
+            Category::Command => "Command",
+            Category::Recon => "Recon",
+            Category::Capital => "Capital",
+            Category::Pod => "Pods",
+            Category::Line => "Line",
+        }
+    }
+}
+
 /// The hulls a setup flies.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Doctrine {
@@ -92,6 +167,7 @@ pub struct ShipLine {
     pub type_id: i64,
     pub name: String,
     pub group: String,
+    pub category: Category,
     pub count: usize,
     pub standing: Standing,
 }
@@ -106,6 +182,7 @@ pub fn by_ship(comp: &Composition, doctrine: Option<&Doctrine>) -> Vec<ShipLine>
                 type_id: m.ship_type_id,
                 name: m.ship_type_name.clone(),
                 group: m.ship_group.clone(),
+                category: Category::of(&m.ship_group),
                 count: 1,
                 standing: classify(m.ship_type_id, &m.ship_group, doctrine),
             });
@@ -118,6 +195,88 @@ pub fn by_ship(comp: &Composition, doctrine: Option<&Doctrine>) -> Vec<ShipLine>
 /// How many pilots are flying something nobody asked for.
 pub fn unexpected_pilots(lines: &[ShipLine]) -> usize {
     lines.iter().filter(|l| l.standing == Standing::Unexpected).map(|l| l.count).sum()
+}
+
+/// One role, how many are in it, and which hulls make it up.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CategoryLine {
+    pub category: Category,
+    pub count: usize,
+    /// Hull and how many, most flown first.
+    pub ships: Vec<(String, usize)>,
+}
+
+/// The same hulls rolled up by what they are for, biggest role first.
+pub fn by_category(lines: &[ShipLine]) -> Vec<CategoryLine> {
+    let mut by: std::collections::BTreeMap<Category, CategoryLine> = Default::default();
+    for l in lines {
+        let e = by.entry(l.category).or_insert_with(|| CategoryLine {
+            category: l.category,
+            count: 0,
+            ships: Vec::new(),
+        });
+        e.count += l.count;
+        e.ships.push((l.name.clone(), l.count));
+    }
+    let mut out: Vec<CategoryLine> = by.into_values().collect();
+    for c in &mut out {
+        c.ships.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    }
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.category.cmp(&b.category)));
+    out
+}
+
+/// A pilot who has been in a hull the doctrine never asked for, and since when.
+#[derive(Clone, PartialEq, Debug)]
+pub struct OffDoctrine {
+    pub character_id: i64,
+    pub name: String,
+    pub ship: String,
+    /// When this pilot was first seen in this hull.
+    pub since: i64,
+}
+
+/// Carries forward how long each off-doctrine pilot has been in the hull they are in.
+///
+/// The clock belongs to the pilot and the hull together: reshipping into a different wrong ship
+/// starts again, because that is a new thing to ask them about, and reshipping into the doctrine
+/// drops them off the list.
+pub fn track_off_doctrine(
+    prev: &[OffDoctrine],
+    comp: &Composition,
+    doctrine: Option<&Doctrine>,
+    now: i64,
+) -> Vec<OffDoctrine> {
+    let mut out: Vec<OffDoctrine> = comp
+        .wings
+        .iter()
+        .flat_map(|w| &w.squads)
+        .flat_map(|s| &s.members)
+        .filter(|m| classify(m.ship_type_id, &m.ship_group, doctrine) == Standing::Unexpected)
+        .map(|m| {
+            let since = prev
+                .iter()
+                .find(|p| p.character_id == m.character_id && p.ship == m.ship_type_name)
+                .map(|p| p.since)
+                .unwrap_or(now);
+            OffDoctrine {
+                character_id: m.character_id,
+                name: m.name.clone(),
+                ship: m.ship_type_name.clone(),
+                since,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.since.cmp(&b.since).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// Long enough in the wrong ship to be worth a word, rather than someone who just undocked.
+pub const OFF_DOCTRINE_GRACE: i64 = 600;
+
+/// Who has been off doctrine longer than `grace`, longest first.
+pub fn lingering(rows: &[OffDoctrine], now: i64, grace: i64) -> Vec<&OffDoctrine> {
+    rows.iter().filter(|r| now - r.since >= grace).collect()
 }
 
 #[cfg(test)]
@@ -222,6 +381,80 @@ mod tests {
         assert_eq!(doctrine().missing(&c), vec!["Kirin".to_owned()]);
         let full = comp(vec![member(1, "F", "Interdictor"), member(2, "K", "Logistics Frigate")]);
         assert!(doctrine().missing(&full).is_empty());
+    }
+
+    /// The roles an FC reads a composition by, and everything else shooting things.
+    #[test]
+    fn a_hull_group_lands_in_its_role() {
+        for (group, want) in [
+            ("Logistics Frigate", Category::Logistics),
+            ("Force Auxiliary", Category::Logistics),
+            ("Heavy Interdiction Cruiser", Category::Interdiction),
+            ("Command Destroyer", Category::Tackle),
+            ("Command Ship", Category::Command),
+            ("Force Recon Ship", Category::Recon),
+            ("Titan", Category::Capital),
+            ("Capsule", Category::Pod),
+            ("Battleship", Category::Line),
+            ("Heavy Assault Cruiser", Category::Line),
+            (" logistics ", Category::Logistics),
+            ("", Category::Line),
+        ] {
+            assert_eq!(Category::of(group), want, "{group}");
+        }
+    }
+
+    /// Rolled up by role, biggest first, with the hulls behind each one.
+    #[test]
+    fn the_composition_rolls_up_by_role() {
+        let c = comp(vec![
+            member(1, "Kirin", "Logistics Frigate"),
+            member(1, "Kirin", "Logistics Frigate"),
+            member(2, "Scythe", "Logistics"),
+            member(3, "Crow", "Interceptor"),
+        ]);
+        let cats = by_category(&by_ship(&c, None));
+        assert_eq!(cats[0].category, Category::Logistics);
+        assert_eq!(cats[0].count, 3);
+        assert_eq!(cats[0].ships, vec![("Kirin".to_owned(), 2), ("Scythe".to_owned(), 1)]);
+        assert_eq!(cats[1].category, Category::Tackle);
+        assert_eq!(cats[1].count, 1);
+    }
+
+    /// The clock starts when a pilot first turns up in the wrong hull and survives the next poll.
+    #[test]
+    fn an_off_doctrine_pilot_keeps_their_clock() {
+        let d = doctrine();
+        let wrong = comp(vec![member(9, "Vindicator", "Battleship")]);
+        let first = track_off_doctrine(&[], &wrong, Some(&d), 1000);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].since, 1000);
+
+        // Still there two minutes later: the clock is the first sighting, not this one.
+        let again = track_off_doctrine(&first, &wrong, Some(&d), 1120);
+        assert_eq!(again[0].since, 1000);
+
+        // Reshipping into another wrong hull is a new thing to ask about.
+        let other = comp(vec![member(9, "Rokh", "Battleship")]);
+        assert_eq!(track_off_doctrine(&again, &other, Some(&d), 1200)[0].since, 1200);
+
+        // And reshipping into the doctrine takes them off the list.
+        let right = comp(vec![member(1, "Flycatcher", "Interdictor")]);
+        assert!(track_off_doctrine(&again, &right, Some(&d), 1300).is_empty());
+    }
+
+    /// Someone who just undocked wrong is not yet worth a report.
+    #[test]
+    fn only_a_long_stay_off_doctrine_is_reported() {
+        let rows = vec![
+            OffDoctrine { character_id: 1, name: "Late Arrival".into(), ship: "Rokh".into(), since: 1000 },
+            OffDoctrine { character_id: 2, name: "Old Hand".into(), ship: "Raven".into(), since: 100 },
+        ];
+        let late = lingering(&rows, 1100, OFF_DOCTRINE_GRACE);
+        assert_eq!(late.len(), 1);
+        assert_eq!(late[0].name, "Old Hand");
+        assert!(lingering(&rows, 1000, OFF_DOCTRINE_GRACE).len() <= 1);
+        assert!(lingering(&rows, 100, OFF_DOCTRINE_GRACE).is_empty());
     }
 
     /// An unknown group is not a free pass.

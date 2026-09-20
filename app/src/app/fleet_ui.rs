@@ -1178,6 +1178,7 @@ fn tracking_page(
 
     let seed = st.seed.clone();
     let boosts = st.boosts.clone();
+    let off_doctrine = st.off_doctrine.clone();
     let wanted = crate::fleets::boosts::wanted_for(open.fleet.setup_id.0.into(), boost_rules);
     egui::Panel::top("fleet_header").show_inside(ui, |ui| {
         ui.add_space(4.0);
@@ -1249,9 +1250,15 @@ fn tracking_page(
     });
 
     egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+        let (can_move, can_kick) = (
+            !read_only && st.can(Perm::MoveMember),
+            !read_only && st.can(Perm::KickMember),
+        );
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
-            DetailTab::Members => members_view(ui, &open),
-            DetailTab::Composition => composition_view(ui, &open, &boosts, &wanted),
+            DetailTab::Members => members_view(ui, &open, can_move, can_kick, act_on),
+            DetailTab::Composition => {
+                composition_view(ui, &open, &boosts, &wanted, &off_doctrine)
+            }
         });
     });
 }
@@ -1342,33 +1349,42 @@ fn boost_strip(
     if boosts.is_empty() {
         ui.label(egui::RichText::new("Nobody has posted in the boost channel yet.").weak());
     } else {
+        // Same columns as the composition tables below: name, count, then the detail.
         egui::Grid::new("boost_coverage").num_columns(4).striped(true).spacing([12.0, 3.0]).show(
             ui,
             |ui| {
                 for c in boosts {
-                    ui.label(&c.what);
-                    // A pilot who typed "skirm" named the burst and no charge, so repeating it in
-                    // the second column would read as two facts instead of one.
-                    ui.label(
-                        egui::RichText::new(if c.generic {
-                            "charge not named"
+                    cell(ui, COL[0], |ui| {
+                        ui.label(&c.what);
+                    });
+                    cell(ui, 40.0, |ui| {
+                        ui.label(egui::RichText::new(format!("{}", c.pilots)).strong())
+                            .on_hover_text("Pilots running this.");
+                    });
+                    cell(ui, 110.0, |ui| {
+                        if c.mindlinked > 0 {
+                            ui.label(
+                                egui::RichText::new(format!("{} ML", c.mindlinked))
+                                    .color(crate::theme::chip::ISK)
+                                    .strong(),
+                            )
+                            .on_hover_text("Of those, how many have a mindlink.");
                         } else {
-                            c.burst.label()
-                        })
-                        .weak(),
-                    );
-                    ui.label(egui::RichText::new(format!("{}", c.pilots)).strong())
-                        .on_hover_text("Pilots running this.");
-                    if c.mindlinked > 0 {
+                            ui.label(egui::RichText::new("no ML").weak());
+                        }
+                    });
+                    cell(ui, COL[1] + COL[2], |ui| {
+                        // A pilot who typed "skirm" named the burst and no charge, so repeating it
+                        // here would read as two facts instead of one.
                         ui.label(
-                            egui::RichText::new(format!("{} ML", c.mindlinked))
-                                .color(crate::theme::chip::ISK)
-                                .strong(),
-                        )
-                        .on_hover_text("Of those, how many have a mindlink.");
-                    } else {
-                        ui.label(egui::RichText::new("no ML").weak());
-                    }
+                            egui::RichText::new(if c.generic {
+                                "charge not named"
+                            } else {
+                                c.burst.label()
+                            })
+                            .weak(),
+                        );
+                    });
                     ui.end_row();
                 }
             },
@@ -1440,7 +1456,13 @@ fn action_bar(
 
 /// Who is in the fleet, by wing and squad.
 #[cfg(feature = "fleet")]
-fn members_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
+fn members_view(
+    ui: &mut egui::Ui,
+    open: &crate::fleets::state::OpenFleet,
+    can_move: bool,
+    can_kick: bool,
+    act_on: &mut Option<Action>,
+) {
     use crate::fleets::doctrine::classify;
     let doctrine = open.doctrine.as_ref();
     if open.composition.wings.is_empty() {
@@ -1462,30 +1484,116 @@ fn members_view(ui: &mut egui::Ui, open: &crate::fleets::state::OpenFleet) {
                     .id_salt(("squad", wing.id.0, squad.id.0))
                     .default_open(true)
                     .show(ui, |ui| {
-                        egui::Grid::new(("members", wing.id.0, squad.id.0))
-                            .num_columns(4)
-                            .striped(true)
-                            .spacing([16.0, 2.0])
-                            .min_col_width(110.0)
-                            .show(ui, |ui| {
+                        // The whole squad body takes a drop, so a pilot can be dragged onto an
+                        // empty squad as well as onto one with rows in it.
+                        let (_, dropped) = ui.dnd_drop_zone::<DragPilot, _>(
+                            egui::Frame::NONE,
+                            |ui| {
+                                ui.set_min_size(egui::vec2(ui.available_width(), 16.0));
+                                if squad.members.is_empty() {
+                                    ui.label(egui::RichText::new("Empty").weak());
+                                }
                                 for m in &squad.members {
-                                    ui.label(&m.name);
                                     let standing =
                                         classify(m.ship_type_id, &m.ship_group, doctrine);
-                                    ui.label(
-                                        egui::RichText::new(&m.ship_type_name)
-                                            .color(standing_colour(ui, standing)),
-                                    )
-                                    .on_hover_text(standing.label());
-                                    ui.label(egui::RichText::new(&m.ship_group).weak());
-                                    ui.label(egui::RichText::new(&m.role).weak());
-                                    ui.end_row();
+                                    member_row(
+                                        ui, m, standing, wing.id, squad.id, can_move, can_kick,
+                                        act_on,
+                                    );
                                 }
-                            });
+                            },
+                        );
+                        if let Some(p) = dropped {
+                            if can_move && (p.wing != wing.id || p.squad != squad.id) {
+                                *act_on = Some(Action::Move {
+                                    character_id: p.character_id,
+                                    wing: wing.id,
+                                    squad: squad.id,
+                                });
+                            }
+                        }
                     });
                 }
             });
     }
+}
+
+/// A pilot in flight between two squads.
+#[cfg(feature = "fleet")]
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct DragPilot {
+    character_id: i64,
+    wing: crate::fleets::model::WingId,
+    squad: crate::fleets::model::SquadId,
+}
+
+/// Column widths every fleet table shares, so the member list and the composition line up.
+#[cfg(feature = "fleet")]
+const COL: [f32; 4] = [190.0, 150.0, 120.0, 90.0];
+
+/// Lays out one cell of a fleet table at a fixed width.
+#[cfg(feature = "fleet")]
+fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            add(ui);
+        },
+    );
+}
+
+/// One pilot: draggable by the name, with a kick of their own.
+#[cfg(feature = "fleet")]
+fn member_row(
+    ui: &mut egui::Ui,
+    m: &crate::fleets::model::Member,
+    standing: crate::fleets::doctrine::Standing,
+    wing: crate::fleets::model::WingId,
+    squad: crate::fleets::model::SquadId,
+    can_move: bool,
+    can_kick: bool,
+    act_on: &mut Option<Action>,
+) {
+    ui.horizontal(|ui| {
+        let id = egui::Id::new(("fleet_pilot", m.character_id));
+        cell(ui, COL[0], |ui| {
+            if can_move {
+                let payload = DragPilot { character_id: m.character_id, wing, squad };
+                ui.dnd_drag_source(id, payload, |ui| {
+                    ui.label(format!("{}  {}", egui_phosphor::regular::DOTS_SIX_VERTICAL, m.name));
+                })
+                .response
+                .on_hover_text("Drag onto another squad to move this pilot.");
+            } else {
+                ui.label(&m.name);
+            }
+        });
+        cell(ui, COL[1], |ui| {
+            ui.label(
+                egui::RichText::new(&m.ship_type_name).color(standing_colour(ui, standing)),
+            )
+            .on_hover_text(standing.label());
+        });
+        cell(ui, COL[2], |ui| {
+            ui.label(egui::RichText::new(&m.ship_group).weak());
+        });
+        cell(ui, COL[3], |ui| {
+            ui.label(egui::RichText::new(&m.role).weak());
+        });
+        if ui
+            .add_enabled(
+                can_kick,
+                egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false),
+            )
+            .on_disabled_hover_text("Your account does not have the kickMember permission.")
+            .on_hover_text(format!("Kick {}", m.name))
+            .clicked()
+        {
+            *act_on = Some(Action::Kick { character_id: m.character_id, exclude: false });
+        }
+    });
 }
 
 /// What the fleet is flying, and whether the doctrine asked for it.
@@ -1495,8 +1603,9 @@ fn composition_view(
     open: &crate::fleets::state::OpenFleet,
     boosts: &[crate::fleets::boosts::Coverage],
     wanted: &[crate::fleets::boosts::Wanted],
+    off_doctrine: &[crate::fleets::doctrine::OffDoctrine],
 ) {
-    use crate::fleets::doctrine::{by_ship, unexpected_pilots, Standing};
+    use crate::fleets::doctrine::{by_category, by_ship, unexpected_pilots, Standing};
     let doctrine = open.doctrine.as_ref();
     let lines = by_ship(&open.composition, doctrine);
     if lines.is_empty() {
@@ -1508,70 +1617,146 @@ fn composition_view(
     checks_strip(ui, &crate::fleets::checks::hulls(&open.composition));
     boost_strip(ui, boosts, wanted);
 
-    ui.horizontal_wrapped(|ui| {
-        match doctrine {
-            Some(d) => ui.label(format!("Against {}", d.setup_name)),
-            None => ui.label(
-                egui::RichText::new("No doctrine for this setup, so nothing can be out of it.")
-                    .weak(),
-            ),
-        };
-        let odd = unexpected_pilots(&lines);
-        if odd > 0 {
-            ui.label(
-                egui::RichText::new(format!("{odd} not in doctrine"))
-                    .color(crate::theme::standing::HOSTILE)
-                    .strong(),
-            );
-        }
-    });
     if let Some(missing) = doctrine.map(|d| d.missing(&open.composition)) {
         if !missing.is_empty() {
-            ui.label(
-                egui::RichText::new(format!("Nobody flying: {}", missing.join(", ")))
-                    .color(crate::theme::standing::WARNING),
-            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Nobody flying").strong());
+                ui.label(
+                    egui::RichText::new(missing.join(", "))
+                        .color(crate::theme::standing::WARNING),
+                );
+            });
+            ui.add_space(4.0);
         }
     }
-    ui.add_space(4.0);
 
-    for (title, standing) in [
-        ("Doctrine", Standing::Doctrine),
-        ("Support", Standing::Support),
-        ("Not in doctrine", Standing::Unexpected),
-    ] {
-        let group: Vec<_> = lines.iter().filter(|l| l.standing == standing).collect();
-        if group.is_empty() {
-            continue;
-        }
-        let pilots: usize = group.iter().map(|l| l.count).sum();
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(title).strong().color(standing_colour(ui, standing)),
-            );
-            ui.label(egui::RichText::new(format!("{pilots}")).weak());
-            if standing == Standing::Support {
-                ui.label(egui::RichText::new("jobs every fleet needs").weak());
-            }
-        });
-        egui::Grid::new(("ships", title)).num_columns(5).striped(true).spacing([12.0, 3.0]).show(
+    // The doctrine hulls are the ones an FC counts one by one, so they stay per hull. Everything
+    // else reads as a role with the hulls behind it.
+    let core: Vec<_> = lines.iter().filter(|l| l.standing == Standing::Doctrine).collect();
+    if !core.is_empty() {
+        section_head(ui, "Doctrine", core.iter().map(|l| l.count).sum(), Standing::Doctrine);
+        egui::Grid::new("comp_doctrine").num_columns(4).striped(true).spacing([12.0, 3.0]).show(
             ui,
             |ui| {
-                for line in group {
-                    ui.label(&line.name);
-                    ui.label(egui::RichText::new(format!("{}", line.count)).strong());
-                    let share = line.count as f32 / total as f32;
-                    ui.label(egui::RichText::new(format!("{:.0}%", share * 100.0)).weak());
-                    ui.add(
-                        egui::ProgressBar::new(share).desired_width(200.0).desired_height(6.0),
-                    );
-                    ui.label(egui::RichText::new(&line.group).weak());
-                    ui.end_row();
+                for l in &core {
+                    share_row(ui, &l.name, l.count, total, None);
                 }
             },
         );
         ui.add_space(6.0);
     }
+
+    for (title, standing) in
+        [("Support", Standing::Support), ("Not in doctrine", Standing::Unexpected)]
+    {
+        let group: Vec<_> =
+            lines.iter().filter(|l| l.standing == standing).cloned().collect();
+        if group.is_empty() {
+            continue;
+        }
+        section_head(ui, title, group.iter().map(|l| l.count).sum(), standing);
+        egui::Grid::new(("comp", title)).num_columns(4).striped(true).spacing([12.0, 3.0]).show(
+            ui,
+            |ui| {
+                for c in by_category(&group) {
+                    let hulls: Vec<String> =
+                        c.ships.iter().map(|(n, k)| format!("{n} {k}")).collect();
+                    share_row(
+                        ui,
+                        c.category.label(),
+                        c.count,
+                        total,
+                        Some(hulls.join(", ")),
+                    );
+                }
+            },
+        );
+        ui.add_space(6.0);
+    }
+
+    let odd = unexpected_pilots(&lines);
+    off_doctrine_report(ui, off_doctrine, open.at, odd);
+}
+
+/// The heading over one composition table.
+#[cfg(feature = "fleet")]
+fn section_head(
+    ui: &mut egui::Ui,
+    title: &str,
+    pilots: usize,
+    standing: crate::fleets::doctrine::Standing,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).strong().color(standing_colour(ui, standing)));
+        ui.label(egui::RichText::new(format!("{pilots}")).weak());
+    });
+}
+
+/// One row of a composition table: what, how many, what share, and what it is made of.
+#[cfg(feature = "fleet")]
+fn share_row(ui: &mut egui::Ui, name: &str, count: usize, total: usize, detail: Option<String>) {
+    let share = count as f32 / total as f32;
+    cell(ui, COL[0], |ui| {
+        ui.label(name);
+    });
+    cell(ui, 40.0, |ui| {
+        ui.label(egui::RichText::new(format!("{count}")).strong());
+    });
+    cell(ui, 110.0, |ui| {
+        ui.label(egui::RichText::new(format!("{:.0}%", share * 100.0)).weak());
+        ui.add(egui::ProgressBar::new(share).desired_width(70.0).desired_height(6.0));
+    });
+    cell(ui, COL[1] + COL[2], |ui| {
+        if let Some(d) = detail {
+            ui.label(egui::RichText::new(d).weak());
+        }
+    });
+    ui.end_row();
+}
+
+/// Who has been in the wrong ship long enough that it was not a mistake on undock.
+#[cfg(feature = "fleet")]
+fn off_doctrine_report(
+    ui: &mut egui::Ui,
+    rows: &[crate::fleets::doctrine::OffDoctrine],
+    now: i64,
+    odd: usize,
+) {
+    use crate::fleets::doctrine::{lingering, OFF_DOCTRINE_GRACE};
+    let late = lingering(rows, now, OFF_DOCTRINE_GRACE);
+    if late.is_empty() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Off doctrine")
+                .strong()
+                .color(crate::theme::standing::HOSTILE),
+        );
+        let _ = odd;
+        ui.label(egui::RichText::new(format!("{}", late.len())).weak()).on_hover_text(format!(
+            "In a hull the doctrine never asked for, for more than {} minutes.",
+            OFF_DOCTRINE_GRACE / 60
+        ));
+    });
+    egui::Grid::new("comp_off_doctrine").num_columns(3).striped(true).spacing([12.0, 3.0]).show(
+        ui,
+        |ui| {
+            for r in &late {
+                cell(ui, COL[0], |ui| {
+                    ui.label(&r.name);
+                });
+                cell(ui, 150.0, |ui| {
+                    ui.label(egui::RichText::new(fmt_age(now - r.since)).strong());
+                });
+                cell(ui, COL[1] + COL[2], |ui| {
+                    ui.label(egui::RichText::new(&r.ship).color(crate::theme::standing::HOSTILE));
+                });
+                ui.end_row();
+            }
+        },
+    );
+    ui.add_space(6.0);
 }
 
 /// Doctrine reads as normal, support as a quiet aside, anything else as a problem.
