@@ -180,6 +180,8 @@ pub struct FleetState {
     pub boosts: Vec<super::boosts::Coverage>,
     /// Boosts the FC marked covered or uncovered by hand, overriding the channel.
     pub boosts_forced: super::boosts::Forced,
+    /// Pilots the FC confirmed are meant to be in the hull they are in.
+    pub locked: super::doctrine::Locked,
     /// How long each pilot flying something nobody asked for has been in it.
     pub off_doctrine: Vec<super::doctrine::OffDoctrine>,
     /// Staged changes to the open fleet, applied on a button rather than as they are typed.
@@ -225,6 +227,7 @@ impl FleetState {
                 // A different fleet is a different set of boosters, so the hand-marked ones go.
                 if self.edit.of.as_ref() != Some(&open.fleet.id) {
                     self.boosts_forced.clear();
+                    self.locked.clear();
                 }
                 self.edit.seed(&open.fleet);
                 // Before the snapshot lands, so the clock is carried forward from the last one.
@@ -234,6 +237,8 @@ impl FleetState {
                     open.doctrine.as_ref(),
                     open.at,
                 );
+                // A confirmed pilot has stopped being a question, so the report stops asking.
+                self.off_doctrine.retain(|o| !self.locked.contains(&o.character_id));
                 self.open.put(*open);
             }
             Outcome::Boosts(rows) => self.boosts = rows,

@@ -2403,7 +2403,8 @@ fn confirm_question(action: &Action) -> Option<&'static str> {
         Action::Close => "Close this fleet?",
         Action::KickAll => "Kick everyone out of the fleet?",
         Action::KickCapsules => "Kick every pod out of the fleet?",
-        Action::Kick { .. } | Action::KickMany { .. } => "Kick them out of the fleet?",
+        Action::KickMany { .. } => "Kick everyone in the wrong ship?",
+        Action::Kick { .. } => "Kick them out of the fleet?",
         _ => return None,
     })
 }
@@ -2422,8 +2423,8 @@ enum Danger {
 #[cfg(feature = "fleet")]
 fn danger(action: &Action) -> Danger {
     match action {
-        Action::Close | Action::KickAll => Danger::Severe,
-        Action::KickCapsules | Action::Kick { .. } | Action::KickMany { .. } => Danger::Caution,
+        Action::Close | Action::KickAll | Action::KickMany { .. } => Danger::Severe,
+        Action::KickCapsules | Action::Kick { .. } => Danger::Caution,
         _ => Danger::None,
     }
 }
@@ -2439,6 +2440,10 @@ fn confirm_consequence(action: &Action, pilots: usize) -> Option<String> {
             Some(format!("All {pilots} pilots are removed. They have to be invited back one by one."))
         }
         Action::KickCapsules => Some("Every pilot in a pod is removed.".to_owned()),
+        Action::KickMany { character_ids, .. } => Some(format!(
+            "{} pilots are removed. Bridges and the FC are left where they are.",
+            character_ids.len()
+        )),
         _ => None,
     }
 }
@@ -2496,6 +2501,17 @@ mod confirm_tests {
         assert_eq!(danger(&Action::Close), Danger::Severe);
         assert_eq!(danger(&Action::KickAll), Danger::Severe);
         assert_eq!(danger(&Action::KickCapsules), Danger::Caution);
+        assert_eq!(
+            danger(&Action::KickMany { character_ids: vec![1, 2], exclude: false }),
+            Danger::Severe
+        );
+        // A sweep says how many it takes.
+        let line = confirm_consequence(
+            &Action::KickMany { character_ids: vec![1, 2, 3], exclude: false },
+            42,
+        )
+        .expect("a consequence");
+        assert!(line.contains('3'), "{line}");
         assert_eq!(danger(&Action::SetMotd), Danger::None);
         assert_eq!(danger(&Action::AddWing), Danger::None);
 
@@ -2679,12 +2695,26 @@ fn tracking_page(
             !read_only && st.can(Perm::MoveMember),
             !read_only && st.can(Perm::KickMember),
         );
+        let mut toggle_lock: Option<i64> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match tab {
-            DetailTab::Members => members_view(ui, &open, can_move, can_kick, act_on),
+            DetailTab::Members => members_view(
+                ui,
+                &open,
+                &st.locked,
+                can_move,
+                can_kick,
+                act_on,
+                &mut toggle_lock,
+            ),
             DetailTab::Composition => {
                 composition_view(ui, &open, &off_doctrine)
             }
         });
+        if let Some(id) = toggle_lock {
+            if !st.locked.insert(id) {
+                st.locked.remove(&id);
+            }
+        }
     });
 }
 
@@ -3369,6 +3399,52 @@ fn action_bar(
             );
             return;
         }
+        // The sweep is built from the roster, so it cannot live in the static table below.
+        if let Some(open) = st.open.value.as_ref() {
+            let victims =
+                crate::fleets::doctrine::off_doctrine_kickable(
+                    &open.composition,
+                    open.doctrine.as_ref(),
+                    &st.locked,
+                );
+            let n = victims.len();
+            let allowed = st.can(Perm::KickMember);
+            let text = egui::RichText::new(format!("{}  Kick off-doctrine  {n}", icon::BROOM))
+                .color(crate::theme::standing::HOSTILE);
+            let resp = ui
+                .add_enabled(
+                    allowed && n > 0,
+                    egui::Button::new(text)
+                        .stroke(egui::Stroke::new(1.0, crate::theme::standing::HOSTILE)),
+                )
+                .on_disabled_hover_text(if !allowed {
+                    "Your account does not have the kickMember permission.".to_owned()
+                } else {
+                    "Nobody is in a hull the doctrine refuses.".to_owned()
+                });
+            let resp = if n > 0 {
+                let who: Vec<String> = victims
+                    .iter()
+                    .take(8)
+                    .map(|m| format!("{} in a {}", m.name, m.ship_type_name))
+                    .collect();
+                let more = n.saturating_sub(who.len());
+                resp.on_hover_text(if more > 0 {
+                    format!("{}\nand {more} more", who.join("\n"))
+                } else {
+                    who.join("\n")
+                })
+            } else {
+                resp
+            };
+            if resp.clicked() {
+                act_on.push(Action::KickMany {
+                    character_ids: victims.iter().map(|m| m.character_id).collect(),
+                    exclude: false,
+                });
+            }
+        }
+
         // Inviting needs somebody to invite, which is a picker this page does not have yet.
         let actions: [(&str, &str, Action); 5] = [
             (icon::MEGAPHONE, "Set MOTD", Action::SetMotd),
@@ -3410,12 +3486,15 @@ fn action_bar(
 
 /// Who is in the fleet, by wing and squad.
 #[cfg(feature = "fleet")]
+#[allow(clippy::too_many_arguments)]
 fn members_view(
     ui: &mut egui::Ui,
     open: &crate::fleets::state::OpenFleet,
+    locked: &crate::fleets::doctrine::Locked,
     can_move: bool,
     can_kick: bool,
     act_on: &mut Vec<Action>,
+    toggle_lock: &mut Option<i64>,
 ) {
     use crate::fleets::model::Seat;
     let comp = &open.composition;
@@ -3430,10 +3509,12 @@ fn members_view(
     // name and nothing else steps right as it nests.
     let left = ui.max_rect().left();
 
+    let mut ctx = RowCtx { locked, can_move, can_kick, toggle_lock };
+
     // Indented like a wing, so the fleet commander has the same left rail as everything under it.
     ui.indent("fleet_boss", |ui| {
-        commander_seat(ui, open, left, Seat::Boss, comp.commander.as_ref(), can_move, can_kick,
-                       act_on, &mut drop_on);
+        commander_seat(ui, open, left, Seat::Boss, comp.commander.as_ref(), &mut ctx, act_on,
+                       &mut drop_on);
     });
 
     for wing in &comp.wings {
@@ -3444,7 +3525,7 @@ fn members_view(
             .default_open(true)
             .show(ui, |ui| {
                 commander_seat(ui, open, left, Seat::WingCommander(wing.id),
-                               wing.commander.as_ref(), can_move, can_kick, act_on, &mut drop_on);
+                               wing.commander.as_ref(), &mut ctx, act_on, &mut drop_on);
                 for squad in &wing.squads {
                     let n = squad.members.len() + usize::from(squad.commander.is_some());
                     egui::CollapsingHeader::new(format!("{}   {n}", squad.name))
@@ -3457,8 +3538,7 @@ fn members_view(
                                 left,
                                 Seat::SquadCommander(wing.id, squad.id),
                                 squad.commander.as_ref(),
-                                can_move,
-                                can_kick,
+                                &mut ctx,
                                 act_on,
                                 &mut drop_on,
                             );
@@ -3473,7 +3553,7 @@ fn members_view(
                                     for m in &squad.members {
                                         member_row(ui, open, left, m,
                                                    Seat::Squad(wing.id, squad.id), None,
-                                                   can_move, can_kick, act_on);
+                                                   &mut ctx, act_on);
                                     }
                                 });
                             if let Some(p) = dropped {
@@ -3489,7 +3569,7 @@ fn members_view(
 
     // A move that would change nothing is not a request worth recording.
     if let Some((character_id, seat)) = drop_on {
-        if can_move && comp.seat_of(character_id) != Some(seat) {
+        if ctx.can_move && comp.seat_of(character_id) != Some(seat) {
             let (wing, squad) = seat.ids();
             act_on.push(Action::Move { character_id, wing, squad });
         }
@@ -3505,8 +3585,7 @@ fn commander_seat(
     left: f32,
     seat: crate::fleets::model::Seat,
     holder: Option<&crate::fleets::model::Member>,
-    can_move: bool,
-    can_kick: bool,
+    ctx: &mut RowCtx<'_>,
     act_on: &mut Vec<Action>,
     drop_on: &mut Option<(i64, crate::fleets::model::Seat)>,
 ) {
@@ -3518,9 +3597,7 @@ fn commander_seat(
     let (_, dropped) = ui.dnd_drop_zone::<DragPilot, _>(egui::Frame::NONE, |ui| {
         ui.set_min_width(ui.available_width());
         match holder {
-            Some(m) => {
-                member_row(ui, open, left, m, seat, Some(title), can_move, can_kick, act_on)
-            }
+            Some(m) => member_row(ui, open, left, m, seat, Some(title), ctx, act_on),
             None => {
                 ui.horizontal(|ui| {
                     seat_badge(ui, title, seat);
@@ -3584,6 +3661,16 @@ fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
 
 /// One pilot: draggable by the name, with a kick of their own.
 #[cfg(feature = "fleet")]
+/// What every roster row needs besides the pilot: what the account may do, who is confirmed, and
+/// somewhere to put a confirmation.
+#[cfg(feature = "fleet")]
+struct RowCtx<'a> {
+    locked: &'a crate::fleets::doctrine::Locked,
+    can_move: bool,
+    can_kick: bool,
+    toggle_lock: &'a mut Option<i64>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn member_row(
     ui: &mut egui::Ui,
@@ -3592,8 +3679,7 @@ fn member_row(
     m: &crate::fleets::model::Member,
     seat: crate::fleets::model::Seat,
     badge: Option<&str>,
-    can_move: bool,
-    can_kick: bool,
+    ctx: &mut RowCtx<'_>,
     act_on: &mut Vec<Action>,
 ) {
     use crate::fleets::doctrine::Standing;
@@ -3601,8 +3687,12 @@ fn member_row(
         crate::fleets::doctrine::classify_in(&open.composition, m, open.doctrine.as_ref());
     // A tint rather than coloured text: on a red or orange theme a hostile-coloured ship name is
     // barely a shade away from a normal one.
+    let locked = ctx.locked.contains(&m.character_id);
+    // A confirmed pilot loses the tint: the FC has already looked at it.
     let tint = match standing {
-        Standing::Unexpected => Some(crate::theme::standing::HOSTILE.gamma_multiply(0.18)),
+        Standing::Unexpected if !locked => {
+            Some(crate::theme::standing::HOSTILE.gamma_multiply(0.18))
+        }
         _ => None,
     };
     let frame = match tint {
@@ -3623,7 +3713,7 @@ fn member_row(
             // sit on the same edge whatever depth the row is at.
             let indent = (ui.max_rect().left() - left).max(0.0);
             cell(ui, (NAME_W - indent).max(60.0), |ui| {
-                if can_move {
+                if ctx.can_move {
                     let payload = DragPilot { character_id: m.character_id, seat };
                     ui.dnd_drag_source(id, payload, |ui| {
                         ui.label(format!(
@@ -3651,9 +3741,36 @@ fn member_row(
             cell(ui, COL[3], |ui| {
                 ui.label(egui::RichText::new(&m.role).weak());
             });
+            // Only offered where it means something: a hull the doctrine refuses, which the FC
+            // can confirm is meant to be there.
+            if standing.odd() || locked {
+                let glyph = if locked {
+                    egui_phosphor::regular::LOCK
+                } else {
+                    egui_phosphor::regular::LOCK_SIMPLE_OPEN
+                };
+                let text = egui::RichText::new(glyph).color(if locked {
+                    crate::theme::standing::FRIENDLY
+                } else {
+                    ui.visuals().weak_text_color()
+                });
+                if ui
+                    .add(egui::Button::new(text).frame(false))
+                    .on_hover_text(if locked {
+                        "Confirmed as meant to be here. Click to take it back."
+                    } else {
+                        "Confirm this ship is meant to be here"
+                    })
+                    .clicked()
+                {
+                    *ctx.toggle_lock = Some(m.character_id);
+                }
+            } else {
+                cell(ui, 26.0, |_| {});
+            }
             if ui
                 .add_enabled(
-                    can_kick,
+                    ctx.can_kick,
                     egui::Button::new(egui_phosphor::regular::SIGN_OUT).frame(false),
                 )
                 .on_disabled_hover_text("Your account does not have the kickMember permission.")
@@ -3699,28 +3816,37 @@ fn composition_view(
         ui.add_space(6.0);
     }
 
-    for (title, standing) in
-        [("Support", Standing::Support), ("Not in doctrine", Standing::Unexpected)]
-    {
-        let group: Vec<_> =
-            lines.iter().filter(|l| l.standing == standing).cloned().collect();
-        if group.is_empty() {
-            continue;
-        }
-        section_head(ui, title, group.iter().map(|l| l.count).sum(), standing);
-        egui::Grid::new(("comp", title)).num_columns(4).striped(true).spacing([12.0, 3.0]).show(
+    // Support rolls up by role, because the job is what matters about a cyno or a scout. Anything
+    // out of doctrine is listed by hull, because the hull is the thing to ask about.
+    let support: Vec<_> = lines.iter().filter(|l| l.standing == Standing::Support).cloned().collect();
+    if !support.is_empty() {
+        section_head(ui, "Support", support.iter().map(|l| l.count).sum(), Standing::Support);
+        egui::Grid::new("comp_support").num_columns(4).striped(true).spacing([12.0, 3.0]).show(
             ui,
             |ui| {
-                for c in by_category(&group) {
+                for c in by_category(&support) {
                     let hulls: Vec<String> =
                         c.ships.iter().map(|(n, k)| format!("{n} {k}")).collect();
-                    share_row(
-                        ui,
-                        c.category.label(),
-                        c.count,
-                        total,
-                        Some(hulls.join(", ")),
-                    );
+                    share_row(ui, c.category.label(), c.count, total, Some(hulls.join(", ")));
+                }
+            },
+        );
+        ui.add_space(6.0);
+    }
+
+    let odd_lines: Vec<_> = lines.iter().filter(|l| l.standing.odd()).collect();
+    if !odd_lines.is_empty() {
+        section_head(
+            ui,
+            "Not in doctrine",
+            odd_lines.iter().map(|l| l.count).sum(),
+            Standing::Unexpected,
+        );
+        egui::Grid::new("comp_odd").num_columns(4).striped(true).spacing([12.0, 3.0]).show(
+            ui,
+            |ui| {
+                for l in &odd_lines {
+                    share_row(ui, &l.name, l.count, total, Some(l.group.clone()));
                 }
             },
         );
@@ -3775,32 +3901,43 @@ fn off_doctrine_report(
     now: i64,
     odd: usize,
 ) {
-    use crate::fleets::doctrine::{lingering, OFF_DOCTRINE_GRACE};
-    let late = lingering(rows, now, OFF_DOCTRINE_GRACE);
-    if late.is_empty() {
+    use crate::fleets::doctrine::OFF_DOCTRINE_GRACE;
+    if rows.is_empty() {
         return;
     }
+    let late = rows.iter().filter(|r| now - r.since >= OFF_DOCTRINE_GRACE).count();
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("Off doctrine")
+            egui::RichText::new("Who is off doctrine")
                 .strong()
                 .color(crate::theme::standing::HOSTILE),
         );
         let _ = odd;
-        ui.label(egui::RichText::new(format!("{}", late.len())).weak()).on_hover_text(format!(
-            "In a hull the doctrine never asked for, for more than {} minutes.",
-            OFF_DOCTRINE_GRACE / 60
-        ));
+        ui.label(
+            egui::RichText::new(match late {
+                0 => format!("{}", rows.len()),
+                n => format!("{}, {n} for over {} minutes", rows.len(), OFF_DOCTRINE_GRACE / 60),
+            })
+            .weak(),
+        );
     });
     egui::Grid::new("comp_off_doctrine").num_columns(3).striped(true).spacing([12.0, 3.0]).show(
         ui,
         |ui| {
-            for r in &late {
+            for r in rows {
+                let age = now - r.since;
+                // Long enough that it was not a mistake on undock.
+                let loud = age >= OFF_DOCTRINE_GRACE;
                 cell(ui, COL[0], |ui| {
                     ui.label(&r.name);
                 });
                 cell(ui, 150.0, |ui| {
-                    ui.label(egui::RichText::new(fmt_age(now - r.since)).strong());
+                    let text = egui::RichText::new(fmt_age(age));
+                    ui.label(if loud {
+                        text.strong().color(crate::theme::standing::HOSTILE)
+                    } else {
+                        text.weak()
+                    });
                 });
                 cell(ui, COL[1] + COL[2], |ui| {
                     ui.label(egui::RichText::new(&r.ship).color(crate::theme::standing::HOSTILE));

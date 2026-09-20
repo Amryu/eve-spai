@@ -275,6 +275,34 @@ pub fn classify(type_id: i64, ship: &str, group: &str, doctrine: Option<&Doctrin
     Standing::Unexpected
 }
 
+/// Hulls that are in fleet to move it, not to fight in it.
+///
+/// A bridge is dropped into a fleet for one cyno and is meant to look out of place, so it survives
+/// a sweep of everything that does not belong even where the doctrine refuses everything else.
+pub const BRIDGE_GROUPS: &[&str] = &["Titan", "Black Ops"];
+
+/// Pilots the FC has confirmed are meant to be in what they are in.
+pub type Locked = std::collections::BTreeSet<i64>;
+
+/// Who a sweep of the off-doctrine pilots would remove.
+///
+/// Four exemptions. Anybody the FC locked, which is the whole point of locking. Anybody holding a
+/// command seat, because kicking a wing commander out of the fleet they are running is never the
+/// intent. Bridges, dropped in for one cyno and meant to look out of place. And the fleet boss,
+/// already exempt through `classify_in`.
+pub fn off_doctrine_kickable<'a>(
+    comp: &'a Composition,
+    doctrine: Option<&Doctrine>,
+    locked: &Locked,
+) -> Vec<&'a Member> {
+    comp.members()
+        .filter(|m| classify_in(comp, m, doctrine).odd())
+        .filter(|m| !locked.contains(&m.character_id))
+        .filter(|m| matches!(comp.seat_of(m.character_id), Some(Seat::Squad(..))))
+        .filter(|m| !BRIDGE_GROUPS.iter().any(|g| g.eq_ignore_ascii_case(m.ship_group.trim())))
+        .collect()
+}
+
 /// Where a hull stands, for a pilot in a known fleet.
 ///
 /// The fleet boss is never out of doctrine: the FC flies whatever the job needs, and telling them
@@ -713,6 +741,49 @@ mod tests {
             name: "Muninn".to_owned(),
         }];
         assert!(configured(FC_CHOICE, "FC Choice", None, &hulls, None, false).is_none());
+    }
+
+    /// A sweep of the off-doctrine pilots leaves the bridges and the FC where they are.
+    #[test]
+    fn a_sweep_spares_the_bridges_and_the_boss() {
+        let d = doctrine();
+        let mut c = comp(vec![
+            member(1, "Flycatcher", "Interdictor"),
+            member(7, "Vindicator", "Battleship"),
+            member(8, "Rokh", "Battleship"),
+            member(9, "Erebus", "Titan"),
+            member(10, "Sin", "Black Ops"),
+        ]);
+        c.commander = Some(member(11, "Raven", "Battleship"));
+        c.wings[0].commander = Some(member(12, "Scorpion", "Battleship"));
+        c.wings[0].squads[0].commander = Some(member(13, "Armageddon", "Battleship"));
+
+        let none = Locked::new();
+        let out: Vec<&str> = off_doctrine_kickable(&c, Some(&d), &none)
+            .iter()
+            .map(|m| m.ship_type_name.as_str())
+            .collect();
+        assert_eq!(out, vec!["Vindicator", "Rokh"], "a commander was swept");
+
+        // A locked pilot is a confirmed one, whatever they are flying.
+        let locked: Locked = [7].into_iter().collect();
+        let out: Vec<&str> = off_doctrine_kickable(&c, Some(&d), &locked)
+            .iter()
+            .map(|m| m.ship_type_name.as_str())
+            .collect();
+        assert_eq!(out, vec!["Rokh"]);
+
+        // A strict doctrine refuses the titan as a hull, and still does not sweep it.
+        let strict = Doctrine { strict: true, ..d };
+        let out: Vec<&str> = off_doctrine_kickable(&c, Some(&strict), &none)
+            .iter()
+            .map(|m| m.ship_type_name.as_str())
+            .collect();
+        assert!(!out.contains(&"Erebus"), "{out:?}");
+        assert!(!out.contains(&"Sin"), "{out:?}");
+        assert!(!out.contains(&"Raven"), "the boss was swept");
+        assert!(!out.contains(&"Scorpion"), "a wing commander was swept");
+        assert!(!out.contains(&"Armageddon"), "a squad commander was swept");
     }
 
     /// An unknown group is not a free pass.

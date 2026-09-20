@@ -863,10 +863,20 @@ pub(crate) fn open_first_fleet(app: &crate::app::SpaiApp) {
     st.page = Page::Tracking(id.clone());
     st.apply(crate::fleets::state::run(&backend, &seed, Cmd::Open(id)));
     st.boosts = fleet_boost_coverage();
-    // The clock starts at the snapshot, so without backdating one pilot the off-doctrine report
-    // never renders and the scene would pass for coverage of something it does not show.
+    // The clock starts at the snapshot, so without backdating one pilot the report renders every
+    // offender as a fresh one and the scene would not show the state that matters.
     if let Some(row) = st.off_doctrine.first_mut() {
         row.since -= 26 * 60;
+    }
+    // One pilot the FC has already looked at, so the lock renders in both states.
+    let confirmed = st
+        .open
+        .value
+        .as_ref()
+        .and_then(|o| o.composition.members().find(|m| m.ship_type_name == "Falcon"))
+        .map(|m| m.character_id);
+    if let Some(id) = confirmed {
+        st.locked.insert(id);
     }
 }
 
